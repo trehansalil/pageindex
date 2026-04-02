@@ -1,0 +1,7 @@
+doc_store/
+.env
+uv.lock
+.venv/
+__pycache__/
+*.pyc
+preprocess.log

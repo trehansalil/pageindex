@@ -1,0 +1,34 @@
+[project]
+name = "pageindex-mcp"
+version = "1.0.0"
+description = "PageIndex MCP Server — vectorless reasoning-based RAG via FastMCP"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp[tasks]==3.0.0",
+    "litellm==1.82.0",
+    "pymupdf==1.26.4",
+    "PyPDF2==3.0.1",
+    "python-dotenv==1.1.0",
+    "pyyaml==6.0.2",
+    "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
+    "minio>=7.2.0",
+    "python-docx>=1.2.0",
+    "langchain-mcp-adapters>=0.2.2",
+    "langchain[openai]>=1.2.14",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pageindex_mcp"]
+
+[project.scripts]
+pageindex-mcp = "pageindex_mcp.server:main"
