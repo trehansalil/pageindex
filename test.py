@@ -27,7 +27,7 @@ async def main():
     agent = create_agent(llm, tools)
 
     response = await agent.ainvoke({
-        "messages": [{"role": "user", "content": "What are the HR FAQs that I should be aware of?"}]
+        "messages": [{"role": "user", "content": "How do I apply for annual leave?"}]
     })
     print(response["messages"][-1].content)
 
