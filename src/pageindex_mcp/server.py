@@ -7,20 +7,16 @@ from . import tools as _tools
 mcp = FastMCP("pageindex-local")
 
 # ---------------------------------------------------------------------------
-# Synchronous tools
+# All tools — FastMCP handles sync and async functions automatically.
+# No special flags needed for long-running async tools.
 # ---------------------------------------------------------------------------
-# mcp.tool()(_tools.list_documents)
 mcp.tool()(_tools.get_document_summary)
 mcp.tool()(_tools.search_document)
 mcp.tool()(_tools.sync_preloaded_documents)
 mcp.tool()(_tools.find_relevant_documents)
-
-# ---------------------------------------------------------------------------
-# Long-running task tools
-# ---------------------------------------------------------------------------
-mcp.tool(task=True)(_tools.delete_document)
-mcp.tool(task=True)(_tools.process_document)
-mcp.tool(task=True)(_tools.upload_and_process_document)
+mcp.tool()(_tools.delete_document)
+mcp.tool()(_tools.process_document)
+mcp.tool()(_tools.upload_and_process_document)
 
 
 def main() -> None:

@@ -1,9 +1,19 @@
-from .config import settings
+"""RAG helpers: LLM call + tree-search pipeline."""
+
+import json
+import os
+import re
+
+import openai
+
+from .storage import load_doc
+
 
 async def _llm(prompt: str) -> str:
-    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    """Call the configured OpenAI-compatible model."""
+    client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     r = await client.chat.completions.create(
-        model=settings.MODEL,
+        model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
     )
@@ -11,7 +21,7 @@ async def _llm(prompt: str) -> str:
 
 
 def _strip_text(nodes: list) -> list:
-    """Return tree copy without 'text' fields (keeps search prompt small)."""
+    """Return tree copy without 'text' fields to reduce prompt token usage."""
     result = []
     for n in nodes:
         copy = {k: v for k, v in n.items() if k != "text"}
@@ -21,13 +31,34 @@ def _strip_text(nodes: list) -> list:
     return result
 
 
-async def _rag(query: str, doc_names: list[str]) -> str:
-    """Run PageIndex tree-search + answer-generation pipeline."""
+def _build_node_map(nodes: list, nm: dict) -> None:
+    """Recursively flatten tree into {node_id: node} dict."""
+    for n in nodes:
+        if "node_id" in n:
+            nm[n["node_id"]] = n
+        if n.get("nodes"):
+            _build_node_map(n["nodes"], nm)
+
+
+async def _rag(query: str, doc_ids: list[str]) -> str:
+    """
+    Run PageIndex tree-search + answer-generation pipeline.
+    doc_ids: list of doc_id strings as stored in MinIO processed/ prefix.
+    """
     context_parts: list[str] = []
 
-    for name in doc_names:
-        tree_slim = _strip_text(documents[name])
-        nm        = node_maps[name]
+    for doc_id in doc_ids:
+        try:
+            data = load_doc(doc_id)
+        except ValueError:
+            continue
+
+        tree = data.get("tree", [])
+        name = data.get("filename", doc_id)
+        tree_slim = _strip_text(tree)
+
+        nm: dict = {}
+        _build_node_map(tree, nm)
 
         search_prompt = (
             "You are given a question and a document tree.\n"
@@ -41,7 +72,6 @@ async def _rag(query: str, doc_names: list[str]) -> str:
 
         raw = await _llm(search_prompt)
 
-        # Strip markdown code fences if the model adds them
         clean = re.sub(r"^```[a-z]*\n?", "", raw.strip())
         clean = re.sub(r"\n?```$", "", clean).strip()
 
