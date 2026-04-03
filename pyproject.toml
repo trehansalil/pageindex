@@ -13,12 +13,10 @@ dependencies = [
     "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
     "minio>=7.2.0",
     "python-docx>=1.2.0",
-    "langchain-mcp-adapters>=0.2.2",
-    "langchain[openai]>=1.2.14",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx"]
+dev = ["pytest", "pytest-asyncio", "httpx", "langchain-mcp-adapters", "langchain[openai]"]
 
 [build-system]
 requires = ["hatchling"]
