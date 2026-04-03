@@ -9,10 +9,11 @@ mcp = FastMCP("pageindex-local")
 # ---------------------------------------------------------------------------
 # Synchronous tools
 # ---------------------------------------------------------------------------
-mcp.tool()(_tools.list_documents)
+# mcp.tool()(_tools.list_documents)
 mcp.tool()(_tools.get_document_summary)
 mcp.tool()(_tools.search_document)
 mcp.tool()(_tools.sync_preloaded_documents)
+mcp.tool()(_tools.find_relevant_documents)
 
 # ---------------------------------------------------------------------------
 # Long-running task tools

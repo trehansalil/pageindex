@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from ..converters import flatten_nodes
+from ..helpers import _rag
 from ..storage import (
     delete_doc,
     list_processed_docs,
@@ -26,6 +27,15 @@ def list_documents() -> str:
         return json.dumps({"documents": [], "message": "No documents processed yet. Use process_document first."})
     return json.dumps({"documents": docs, "count": len(docs)})
 
+async def find_relevant_documents(query: str) -> str:
+    """Search documents by query. Uses PageIndex reasoning-based tree search;
+    automatically falls back to AI semantic search. Returns relevant content
+    and a generated answer."""
+    
+    documents = list_processed_docs()
+    if not documents:
+        return "No documents are indexed. Add *_structure.json files to the indices directory and restart."
+    return await _rag(query, list(documents.keys()))
 
 def get_document_summary(doc_id: str) -> str:
     """

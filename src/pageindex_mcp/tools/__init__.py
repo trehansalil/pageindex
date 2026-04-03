@@ -6,6 +6,7 @@ from .documents import (
     list_documents,
     search_document,
     sync_preloaded_documents,
+    find_relevant_documents,
 )
 from .processing import (
     process_document,
@@ -20,4 +21,5 @@ __all__ = [
     "search_document",
     "sync_preloaded_documents",
     "upload_and_process_document",
+    "find_relevant_documents",
 ]
