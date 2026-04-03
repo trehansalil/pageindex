@@ -35,7 +35,7 @@ async def find_relevant_documents(query: str) -> str:
     documents = list_processed_docs()
     if not documents:
         return "No documents are indexed. Add *_structure.json files to the indices directory and restart."
-    return await _rag(query, list(documents.keys()))
+    return await _rag(query, [d["doc_id"] for d in documents])
 
 def get_document_summary(doc_id: str) -> str:
     """
