@@ -10,11 +10,14 @@ mcp = FastMCP("pageindex-local")
 # All tools — FastMCP handles sync and async functions automatically.
 # No special flags needed for long-running async tools.
 # ---------------------------------------------------------------------------
-mcp.tool()(_tools.get_document_summary)
-mcp.tool()(_tools.search_document)
-mcp.tool()(_tools.sync_preloaded_documents)
+mcp.tool()(_tools.recent_documents)
 mcp.tool()(_tools.find_relevant_documents)
-mcp.tool()(_tools.delete_document)
+mcp.tool()(_tools.get_document)
+mcp.tool()(_tools.get_document_structure)
+mcp.tool()(_tools.get_page_content)
+mcp.tool()(_tools.get_document_image)
+mcp.tool()(_tools.remove_document)
+mcp.tool()(_tools.sync_preloaded_documents)
 mcp.tool()(_tools.process_document)
 mcp.tool()(_tools.upload_and_process_document)
 

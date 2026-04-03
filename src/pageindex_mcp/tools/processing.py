@@ -1,4 +1,9 @@
-"""MCP tools: PDF URL processing and base64 upload/processing."""
+"""MCP tools: PDF URL processing and base64 upload/processing.
+
+Calls pageindex functions (page_index, md_to_tree) directly — matching
+the output format of run_pageindex.py — so the stored tree always
+contains text, summary, and node_id fields needed by _rag().
+"""
 
 import asyncio
 import json
@@ -13,6 +18,58 @@ import httpx
 from ..converters import docx_to_markdown, pptx_to_markdown
 from ..storage import save_doc, save_raw
 
+_MODEL = os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20")
+
+
+def _index_pdf(pdf_path: str) -> dict:
+    """Run pageindex on a PDF and return the full result dict (with text)."""
+    from pageindex import page_index
+
+    return page_index(
+        doc=pdf_path,
+        model=_MODEL,
+        if_add_node_id="yes",
+        if_add_node_summary="yes",
+        if_add_node_text="yes",
+        if_add_doc_description="yes",
+    )
+
+
+async def _index_markdown(md_path: str) -> dict:
+    """Run md_to_tree on a markdown file and return the full result dict."""
+    from pageindex.page_index_md import md_to_tree
+
+    return await md_to_tree(
+        md_path=md_path,
+        if_thinning=False,
+        if_add_node_summary="yes",
+        summary_token_threshold=200,
+        model=_MODEL,
+        if_add_doc_description="yes",
+        if_add_node_text="yes",
+        if_add_node_id="yes",
+    )
+
+
+def _persist(result: dict, filename: str, source_url: str, file_bytes: bytes) -> dict:
+    """Save processed result + raw file to MinIO and return the response dict."""
+    doc_id = str(uuid.uuid4())[:8]
+    save_raw(doc_id, filename, file_bytes)
+    save_doc(doc_id, {
+        "doc_id":          doc_id,
+        "filename":        filename,
+        "source_url":      source_url,
+        "processed_at":    datetime.now(timezone.utc).isoformat(),
+        "doc_name":        result.get("doc_name", ""),
+        "doc_description": result.get("doc_description", ""),
+        "tree":            result.get("structure", []),
+    })
+    return {
+        "doc_id":   doc_id,
+        "filename": filename,
+        "message":  f"Document processed successfully. Use doc_id '{doc_id}' with other tools.",
+    }
+
 
 async def process_document(url: str) -> str:
     """
@@ -23,8 +80,6 @@ async def process_document(url: str) -> str:
 
     url: HTTPS URL or absolute local file path to a PDF
     """
-    from pageindex import PageIndexClient
-
     url = url.strip()
     tmp_path = None
 
@@ -70,32 +125,9 @@ async def process_document(url: str) -> str:
         if file_bytes[:4] != b"%PDF":
             return json.dumps({"error": "Not a valid PDF file"})
 
-        pi_client = PageIndexClient(
-            model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
-            workspace=None,
-        )
-
-        doc_id_local = await asyncio.to_thread(pi_client.index, pdf_path, "pdf")
-        doc_data = json.loads(pi_client.get_document(doc_id_local))
-        structure = json.loads(pi_client.get_document_structure(doc_id_local))
-
-        doc_id = str(uuid.uuid4())[:8]
-        await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
-        await asyncio.to_thread(save_doc, doc_id, {
-            "doc_id":          doc_id,
-            "filename":        filename,
-            "source_url":      url,
-            "processed_at":    datetime.now(timezone.utc).isoformat(),
-            "tree":            structure,
-            "doc_name":        doc_data.get("doc_name", ""),
-            "doc_description": doc_data.get("doc_description", ""),
-        })
-
-        return json.dumps({
-            "doc_id":   doc_id,
-            "filename": filename,
-            "message":  f"Document processed successfully. Use doc_id '{doc_id}' with other tools.",
-        })
+        result = await asyncio.to_thread(_index_pdf, pdf_path)
+        resp = await asyncio.to_thread(_persist, result, filename, url, file_bytes)
+        return json.dumps(resp)
 
     except httpx.HTTPError as e:
         return json.dumps({"error": f"Failed to download document: {e}"})
@@ -118,7 +150,6 @@ async def upload_and_process_document(filename: str, content_base64: str) -> str
     content_base64: base64-encoded bytes of the file
     """
     import base64 as _base64
-    from pageindex import PageIndexClient
 
     filename = filename.strip()
     ext = Path(filename).suffix.lower()
@@ -142,15 +173,10 @@ async def upload_and_process_document(filename: str, content_base64: str) -> str
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
-        pi_client = PageIndexClient(
-            model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
-            workspace=None,
-        )
-
         if ext == ".pdf":
             if file_bytes[:4] != b"%PDF":
                 return json.dumps({"error": "Not a valid PDF file"})
-            doc_id_local = await asyncio.to_thread(pi_client.index, tmp_path, "pdf")
+            result = await asyncio.to_thread(_index_pdf, tmp_path)
 
         elif ext in (".docx", ".pptx"):
             converter = docx_to_markdown if ext == ".docx" else pptx_to_markdown
@@ -160,31 +186,13 @@ async def upload_and_process_document(filename: str, content_base64: str) -> str
             ) as md_tmp:
                 md_tmp.write(md_content)
                 md_tmp_path = md_tmp.name
-            doc_id_local = await asyncio.to_thread(pi_client.index, md_tmp_path, "md")
+            result = await _index_markdown(md_tmp_path)
 
         else:  # .md or .txt
-            doc_id_local = await asyncio.to_thread(pi_client.index, tmp_path, "md")
+            result = await _index_markdown(tmp_path)
 
-        doc_data  = json.loads(pi_client.get_document(doc_id_local))
-        structure = json.loads(pi_client.get_document_structure(doc_id_local))
-
-        doc_id = str(uuid.uuid4())[:8]
-        await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
-        await asyncio.to_thread(save_doc, doc_id, {
-            "doc_id":          doc_id,
-            "filename":        filename,
-            "source_url":      "",
-            "processed_at":    datetime.now(timezone.utc).isoformat(),
-            "tree":            structure,
-            "doc_name":        doc_data.get("doc_name", ""),
-            "doc_description": doc_data.get("doc_description", ""),
-        })
-
-        return json.dumps({
-            "doc_id":   doc_id,
-            "filename": filename,
-            "message":  f"Document processed successfully. Use doc_id '{doc_id}' with other tools.",
-        })
+        resp = await asyncio.to_thread(_persist, result, filename, "", file_bytes)
+        return json.dumps(resp)
 
     except Exception as e:
         return json.dumps({"error": str(e)})
