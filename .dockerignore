@@ -1,0 +1,14 @@
+.venv/
+.git/
+.env
+.env.*
+logs/
+doc_store/
+__pycache__/
+*.pyc
+preprocess.log
+*.egg-info/
+.claude/
+docs/
+tests/
+.github/
