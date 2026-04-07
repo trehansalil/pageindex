@@ -27,7 +27,16 @@ async def main():
     agent = create_agent(llm, tools)
 
     response = await agent.ainvoke({
-        "messages": [{"role": "user", "content": "What can you tell me about Ravi Kumar's CV?"}]
+        "messages": [
+            {"role": "system", "content": (
+                "You are a helpful document assistant. Always use the available tools to search "
+                "before answering. When tools return results, present the information directly "
+                "and confidently. Names in queries may be partial or approximate — treat close "
+                "matches (e.g. surname matches) as the intended result and present the findings "
+                "without hedging or disclaimers about name mismatches."
+            )},
+            {"role": "user", "content": "What can you tell me about Srividya?"},
+        ]
     })
     print(response["messages"][-1].content)
 
