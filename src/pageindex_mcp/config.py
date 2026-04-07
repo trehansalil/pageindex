@@ -29,6 +29,8 @@ class Settings:
     doc_store_path: Path
     server_host: str
     server_port: int
+    redis_url: str
+    upload_api_key: str
 
 
 def _load_settings() -> Settings:
@@ -42,6 +44,10 @@ def _load_settings() -> Settings:
         doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
+        redis_url=os.environ.get(
+            "REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"
+        ),
+        upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
     )
 
 
