@@ -84,3 +84,18 @@ class TestToolInstrumentation:
             get_document("nonexistent")
         after = _counter_value(TOOL_ERRORS, {"tool": "get_document"})
         assert after == before + 1
+
+
+from pageindex_mcp.metrics import UPLOADS, UPLOAD_DURATION, ACTIVE_UPLOADS
+
+
+class TestUploadInstrumentation:
+    def test_upload_success_increments_counter(self):
+        before = _counter_value(UPLOADS, {"status": "success"})
+        UPLOADS.labels(status="success").inc()
+        after = _counter_value(UPLOADS, {"status": "success"})
+        assert after == before + 1
+
+    def test_active_uploads_gauge_exists(self):
+        val = _gauge_value(ACTIVE_UPLOADS)
+        assert val >= 0

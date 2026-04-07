@@ -1,6 +1,7 @@
 """FastAPI sub-app: POST /upload/files and GET /upload/status/{job_id}."""
 
 import asyncio
+import time
 import os
 import secrets
 import shutil
@@ -15,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Header, UploadFile
 
 from .client import CustomPageIndexClient, _SUPPORTED
 from .config import settings
+from .metrics import ACTIVE_UPLOADS, UPLOADS, UPLOAD_DURATION
 
 JOB_TTL = 86_400  # 24 hours in seconds
 _WRITE_CHUNK = 64 * 1024  # 64 KiB chunks for streaming writes
@@ -65,21 +67,28 @@ async def _process_file(
 ) -> None:
     """Index a file and write the result to Redis. Cleans up temp dir on exit."""
     tmp_dir = os.path.dirname(tmp_path)
+    ACTIVE_UPLOADS.inc()
+    start = time.monotonic()
     try:
         client = CustomPageIndexClient()
         doc_id = await client.index(tmp_path)
         await redis.hset(_job_key(job_id), mapping={"status": "done", "doc_id": doc_id})
         await redis.expire(_job_key(job_id), JOB_TTL)
+        UPLOADS.labels(status="success").inc()
     except asyncio.CancelledError:
         await redis.hset(
             _job_key(job_id), mapping={"status": "error", "error": "cancelled"}
         )
         await redis.expire(_job_key(job_id), JOB_TTL)
+        UPLOADS.labels(status="error").inc()
         raise
     except Exception as exc:
         await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
         await redis.expire(_job_key(job_id), JOB_TTL)
+        UPLOADS.labels(status="error").inc()
     finally:
+        UPLOAD_DURATION.observe(time.monotonic() - start)
+        ACTIVE_UPLOADS.dec()
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
