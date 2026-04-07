@@ -1,0 +1,426 @@
+{
+  "info": {
+    "name": "PageIndex API",
+    "description": "Collection for the PageIndex MCP Server — document upload, job status polling, MCP query tools, and Prometheus metrics.\n\nBase URL: http://pageindex.aiwithsalil.work",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "X-API-Key", "type": "string" },
+      { "key": "value", "value": "{{API_KEY}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://pageindex.aiwithsalil.work",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "value": "",
+      "type": "string",
+      "description": "X-API-Key header value for upload endpoints"
+    },
+    {
+      "key": "JOB_ID",
+      "value": "",
+      "type": "string",
+      "description": "Set automatically after uploading a file"
+    },
+    {
+      "key": "DOC_ID",
+      "value": "",
+      "type": "string",
+      "description": "8-char document ID returned after processing completes"
+    }
+  ],
+  "item": [
+    {
+      "name": "Upload",
+      "description": "File upload and job tracking endpoints (mounted at /upload).",
+      "item": [
+        {
+          "name": "Upload Files",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/upload/files",
+              "host": ["{{BASE_URL}}"],
+              "path": ["upload", "files"]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "files",
+                  "type": "file",
+                  "src": [],
+                  "description": "One or more files to upload. Supported: .pdf, .md, .markdown, .txt, .docx, .pptx, .html"
+                }
+              ]
+            },
+            "description": "Upload one or more documents for async indexing. Returns 202 with job IDs.\n\nSupported formats: `.pdf`, `.md`, `.markdown`, `.txt`, `.docx`, `.pptx`, `.html`\n\nRequires `X-API-Key` header."
+          },
+          "response": [
+            {
+              "name": "202 — Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/files",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "files"]
+                }
+              },
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "[\n  {\n    \"job_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n    \"filename\": \"report.pdf\"\n  }\n]"
+            },
+            {
+              "name": "400 — Unsupported File Type",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/files",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "files"]
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"detail\": \"Unsupported file type '.xlsx'. Supported: .docx, .html, .markdown, .md, .pdf, .pptx, .txt\"\n}"
+            },
+            {
+              "name": "401 — Invalid API Key",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/files",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "files"]
+                }
+              },
+              "status": "Unauthorized",
+              "code": 401,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"detail\": \"Invalid or missing X-API-Key\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 202 Accepted', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "});",
+                  "",
+                  "pm.test('Response is an array with job_id', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.be.an('array').that.is.not.empty;",
+                  "    pm.expect(jsonData[0]).to.have.property('job_id');",
+                  "    pm.expect(jsonData[0]).to.have.property('filename');",
+                  "});",
+                  "",
+                  "// Save first job_id for status polling",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.length > 0) {",
+                  "    pm.collectionVariables.set('JOB_ID', jsonData[0].job_id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Job Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/upload/status/{{JOB_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["upload", "status", "{{JOB_ID}}"]
+            },
+            "description": "Poll the status of an upload job. States: `pending`, `done`, `error`.\n\nWhen `done`, the response includes `doc_id` (8-char UUID prefix).\n\nRequires `X-API-Key` header."
+          },
+          "response": [
+            {
+              "name": "200 — Pending",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/status/{{JOB_ID}}",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "status", "{{JOB_ID}}"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"job_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"status\": \"pending\",\n  \"filename\": \"report.pdf\",\n  \"submitted_at\": \"2026-04-07T16:00:00+00:00\"\n}"
+            },
+            {
+              "name": "200 — Done",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/status/{{JOB_ID}}",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "status", "{{JOB_ID}}"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"job_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"status\": \"done\",\n  \"doc_id\": \"f8a3b2c1\",\n  \"filename\": \"report.pdf\",\n  \"submitted_at\": \"2026-04-07T16:00:00+00:00\"\n}"
+            },
+            {
+              "name": "200 — Error",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/status/{{JOB_ID}}",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "status", "{{JOB_ID}}"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"job_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"status\": \"error\",\n  \"error\": \"File not found: /tmp/xyz/report.pdf\",\n  \"filename\": \"report.pdf\",\n  \"submitted_at\": \"2026-04-07T16:00:00+00:00\"\n}"
+            },
+            {
+              "name": "404 — Job Not Found",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{BASE_URL}}/upload/status/{{JOB_ID}}",
+                  "host": ["{{BASE_URL}}"],
+                  "path": ["upload", "status", "{{JOB_ID}}"]
+                }
+              },
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"detail\": \"Job 'invalid-id' not found or expired\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has status field', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('status');",
+                  "    pm.expect(['pending', 'done', 'error']).to.include(jsonData.status);",
+                  "});",
+                  "",
+                  "// Save doc_id when processing completes",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.status === 'done' && jsonData.doc_id) {",
+                  "    pm.collectionVariables.set('DOC_ID', jsonData.doc_id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "MCP Tools",
+      "description": "MCP protocol tools exposed via StreamableHTTP at /mcp. These are JSON-RPC calls over HTTP using the Model Context Protocol.",
+      "item": [
+        {
+          "name": "Recent Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"recent_documents\",\n    \"arguments\": {\n      \"page\": 1,\n      \"page_size\": 10\n    }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Browse indexed documents with pagination. Returns documents sorted by upload date (newest first) with processing status and node count.\n\nParameters:\n- `page` (int, default 1): Page number\n- `page_size` (int, default 10): Results per page",
+            "auth": { "type": "noauth" }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Find Relevant Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"find_relevant_documents\",\n    \"arguments\": {\n      \"query\": \"your search query here\"\n    }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Search all indexed documents by natural language query. Uses PageIndex reasoning-based tree search with AI semantic fallback. Returns relevant content and a generated answer.\n\nParameters:\n- `query` (string, required): Natural language search query",
+            "auth": { "type": "noauth" }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Document",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"get_document\",\n    \"arguments\": {\n      \"doc_id\": \"{{DOC_ID}}\"\n    }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Get detailed info about a specific document including top-level sections.\n\nParameters:\n- `doc_id` (string, required): 8-char document ID",
+            "auth": { "type": "noauth" }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Document Structure",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"get_document_structure\",\n    \"arguments\": {\n      \"doc_id\": \"{{DOC_ID}}\"\n    }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Extract the full hierarchical tree structure of a document (without text content).\n\nParameters:\n- `doc_id` (string, required): 8-char document ID",
+            "auth": { "type": "noauth" }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Page Content",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"get_page_content\",\n    \"arguments\": {\n      \"doc_id\": \"{{DOC_ID}}\",\n      \"pages\": \"1-3\"\n    }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Extract specific page content from a processed document.\n\nParameters:\n- `doc_id` (string, required): 8-char document ID\n- `pages` (string, required): Page selection — single ('5'), range ('3-7'), or multiple ('3,5,7')",
+            "auth": { "type": "noauth" }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "description": "Prometheus metrics endpoint for observability.",
+      "item": [
+        {
+          "name": "Get Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/metrics",
+              "host": ["{{BASE_URL}}"],
+              "path": ["metrics"]
+            },
+            "description": "Prometheus-compatible metrics endpoint. Returns counters and histograms for tool calls, upload durations, active uploads, document totals, and storage operations.",
+            "auth": { "type": "noauth" }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains Prometheus metrics', function () {",
+                  "    pm.expect(pm.response.text()).to.include('# HELP');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
