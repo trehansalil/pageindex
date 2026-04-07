@@ -73,6 +73,19 @@ async def test_status_missing_api_key_returns_401(client):
     assert response.status_code == 401
 
 
+async def test_unconfigured_api_key_returns_503(app):
+    empty_settings = MagicMock()
+    empty_settings.upload_api_key = ""
+    with patch("pageindex_mcp.upload_app.settings", empty_settings):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as c:
+            response = await c.post(
+                "/files", files=[_pdf_file()], headers={"X-API-Key": "any"}
+            )
+    assert response.status_code == 503
+
+
 # ---------------------------------------------------------------------------
 # Validation tests
 # ---------------------------------------------------------------------------
