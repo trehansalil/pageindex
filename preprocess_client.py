@@ -15,6 +15,7 @@ files are skipped automatically. The cache is stored in MinIO at
 hashes/processed_hashes.json and is shared with the rest of the document store.
 """
 
+
 import asyncio
 import subprocess
 import sys
