@@ -1,6 +1,7 @@
 """MinIO client singleton and document storage CRUD."""
 
 import json
+import time
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
@@ -9,6 +10,7 @@ from minio import Minio
 from minio.error import S3Error
 
 from .config import settings
+from .metrics import MINIO_DURATION, MINIO_OPS
 
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
@@ -38,6 +40,8 @@ def get_minio() -> Minio:
 
 def load_doc(doc_id: str) -> dict:
     """Fetch and deserialize processed/<doc_id>.json. Raises ValueError if absent."""
+    MINIO_OPS.labels(operation="get").inc()
+    start = time.monotonic()
     mc = get_minio()
     try:
         response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.json")
@@ -48,6 +52,7 @@ def load_doc(doc_id: str) -> dict:
             raise ValueError(f"Document not found: {doc_id}")
         raise
     finally:
+        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
         try:
             response.close()
             response.release_conn()
@@ -57,49 +62,64 @@ def load_doc(doc_id: str) -> dict:
 
 def save_doc(doc_id: str, data: dict) -> None:
     """Serialize data and PUT to processed/<doc_id>.json."""
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
     mc = get_minio()
-    content = json.dumps(data, indent=2).encode()
-    mc.put_object(
-        settings.minio_bucket,
-        f"processed/{doc_id}.json",
-        BytesIO(content),
-        len(content),
-        content_type="application/json",
-    )
+    try:
+        content = json.dumps(data, indent=2).encode()
+        mc.put_object(
+            settings.minio_bucket,
+            f"processed/{doc_id}.json",
+            BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
 def delete_doc(doc_id: str) -> None:
     """Remove processed/<doc_id>.json and all objects under uploads/<doc_id>/."""
+    MINIO_OPS.labels(operation="delete").inc()
+    start = time.monotonic()
     mc = get_minio()
-    mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
-    for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
-        mc.remove_object(settings.minio_bucket, obj.object_name)
+    try:
+        mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
+        for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
+            mc.remove_object(settings.minio_bucket, obj.object_name)
+    finally:
+        MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
 
 def list_processed_docs() -> list[dict]:
     """List all objects under processed/, returning summary dicts."""
+    MINIO_OPS.labels(operation="list").inc()
+    start = time.monotonic()
     mc = get_minio()
-    docs = []
-    for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
-        doc_id = Path(obj.object_name).stem
-        try:
-            response = mc.get_object(settings.minio_bucket, obj.object_name)
-            data = json.loads(response.read())
-            docs.append({
-                "doc_id":       data.get("doc_id", doc_id),
-                "doc_name":     data.get("doc_name", data.get("filename", "unknown")),
-                "source_url":   data.get("source_url", ""),
-                "processed_at": data.get("processed_at", ""),
-            })
-        except Exception:
-            continue
-        finally:
+    try:
+        docs = []
+        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
+            doc_id = Path(obj.object_name).stem
             try:
-                response.close()
-                response.release_conn()
+                response = mc.get_object(settings.minio_bucket, obj.object_name)
+                data = json.loads(response.read())
+                docs.append({
+                    "doc_id":       data.get("doc_id", doc_id),
+                    "doc_name":     data.get("doc_name", data.get("filename", "unknown")),
+                    "source_url":   data.get("source_url", ""),
+                    "processed_at": data.get("processed_at", ""),
+                })
             except Exception:
-                pass
-    return docs
+                continue
+            finally:
+                try:
+                    response.close()
+                    response.release_conn()
+                except Exception:
+                    pass
+        return docs
+    finally:
+        MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
 
 
 # ---------------------------------------------------------------------------
@@ -108,16 +128,21 @@ def list_processed_docs() -> list[dict]:
 
 def save_raw(doc_id: str, filename: str, data: bytes) -> None:
     """Store raw file bytes at uploads/<doc_id>/<filename>."""
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
     mc = get_minio()
-    ext = Path(filename).suffix.lower()
-    content_type = "application/pdf" if ext == ".pdf" else "application/octet-stream"
-    mc.put_object(
-        settings.minio_bucket,
-        f"uploads/{doc_id}/{filename}",
-        BytesIO(data),
-        len(data),
-        content_type=content_type,
-    )
+    try:
+        ext = Path(filename).suffix.lower()
+        content_type = "application/pdf" if ext == ".pdf" else "application/octet-stream"
+        mc.put_object(
+            settings.minio_bucket,
+            f"uploads/{doc_id}/{filename}",
+            BytesIO(data),
+            len(data),
+            content_type=content_type,
+        )
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +154,8 @@ HASH_OBJECT = "hashes/processed_hashes.json"
 
 def load_hash_cache() -> dict[str, str]:
     """Load {filename: sha256} dedup cache from MinIO. Returns empty dict if absent."""
+    MINIO_OPS.labels(operation="get").inc()
+    start = time.monotonic()
     mc = get_minio()
     response = None
     try:
@@ -139,6 +166,7 @@ def load_hash_cache() -> dict[str, str]:
             return {}
         raise
     finally:
+        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
         if response is not None:
             try:
                 response.close()
@@ -149,15 +177,20 @@ def load_hash_cache() -> dict[str, str]:
 
 def save_hash_cache(cache: dict[str, str]) -> None:
     """Write {filename: sha256} dedup cache to MinIO."""
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
     mc = get_minio()
-    content = json.dumps(cache, indent=2).encode()
-    mc.put_object(
-        settings.minio_bucket,
-        HASH_OBJECT,
-        BytesIO(content),
-        len(content),
-        content_type="application/json",
-    )
+    try:
+        content = json.dumps(cache, indent=2).encode()
+        mc.put_object(
+            settings.minio_bucket,
+            HASH_OBJECT,
+            BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
 # ---------------------------------------------------------------------------

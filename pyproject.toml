@@ -21,6 +21,7 @@ dependencies = [
     "uvicorn>=0.30.0",
     "anyio>=4.0.0",
     "python-multipart>=0.0.9",
+    "prometheus_client>=0.20.0",
     "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
 ]
 

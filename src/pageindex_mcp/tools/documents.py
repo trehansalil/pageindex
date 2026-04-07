@@ -1,21 +1,35 @@
 """MCP query tools: document listing, retrieval, and structured search."""
 
 import json
+import time
 
 from ..helpers import _rag, _strip_text, _build_node_map
+from ..metrics import (
+    DOCUMENTS_TOTAL,
+    TOOL_CALLS,
+    TOOL_DURATION,
+    TOOL_ERRORS,
+)
 from ..storage import list_processed_docs, load_doc
 
 
 def recent_documents(page: int = 1, page_size: int = 10) -> str:
     """Browse your document collection with pagination. Returns documents sorted
     by upload date (newest first) with processing status."""
+    TOOL_CALLS.labels(tool="recent_documents").inc()
+    start = time.monotonic()
     try:
         docs = list_processed_docs()
     except Exception as e:
+        TOOL_ERRORS.labels(tool="recent_documents").inc()
         return json.dumps({"error": f"Failed to list documents: {e}"})
+    finally:
+        TOOL_DURATION.labels(tool="recent_documents").observe(time.monotonic() - start)
 
-    start = (page - 1) * page_size
-    page_docs = docs[start : start + page_size]
+    DOCUMENTS_TOTAL.set(len(docs))
+
+    begin = (page - 1) * page_size
+    page_docs = docs[begin : begin + page_size]
 
     enriched = []
     for d in page_docs:
@@ -47,20 +61,33 @@ async def find_relevant_documents(query: str) -> str:
     """Search documents by query. Uses PageIndex reasoning-based tree search;
     automatically falls back to AI semantic search. Returns relevant content
     and a generated answer."""
-    documents = list_processed_docs()
-    if not documents:
-        return "No documents are indexed. Process documents first."
-    return await _rag(query, [d["doc_id"] for d in documents])
+    TOOL_CALLS.labels(tool="find_relevant_documents").inc()
+    start = time.monotonic()
+    try:
+        documents = list_processed_docs()
+        if not documents:
+            return "No documents are indexed. Process documents first."
+        return await _rag(query, [d["doc_id"] for d in documents])
+    except Exception as e:
+        TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
+        raise
+    finally:
+        TOOL_DURATION.labels(tool="find_relevant_documents").observe(time.monotonic() - start)
 
 
 def get_document(doc_id: str) -> str:
     """Get detailed information about a specific document by doc_id. Requires
     doc_id (string). Use recent_documents() to find available doc_ids."""
+    TOOL_CALLS.labels(tool="get_document").inc()
+    start = time.monotonic()
     try:
         data = load_doc(doc_id)
-    except ValueError as e:
+    except Exception:
+        TOOL_ERRORS.labels(tool="get_document").inc()
         available = [d["doc_id"] for d in list_processed_docs()]
-        return json.dumps({"error": str(e), "available": available})
+        return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
+    finally:
+        TOOL_DURATION.labels(tool="get_document").observe(time.monotonic() - start)
 
     structure = data.get("structure", [])
     nm: dict = {}
@@ -84,11 +111,16 @@ def get_document(doc_id: str) -> str:
 
 def get_document_structure(doc_id: str) -> str:
     """Extract the hierarchical structure of a completed document."""
+    TOOL_CALLS.labels(tool="get_document_structure").inc()
+    start = time.monotonic()
     try:
         data = load_doc(doc_id)
-    except ValueError as e:
+    except Exception:
+        TOOL_ERRORS.labels(tool="get_document_structure").inc()
         available = [d["doc_id"] for d in list_processed_docs()]
-        return json.dumps({"error": str(e), "available": available})
+        return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
+    finally:
+        TOOL_DURATION.labels(tool="get_document_structure").observe(time.monotonic() - start)
 
     return json.dumps({
         "doc_id":    doc_id,
@@ -99,11 +131,16 @@ def get_document_structure(doc_id: str) -> str:
 def get_page_content(doc_id: str, pages: str) -> str:
     """Extract specific page content from processed documents. Flexible page
     selection: single page ('5'), ranges ('3-7'), or multiple pages ('3,5,7')."""
+    TOOL_CALLS.labels(tool="get_page_content").inc()
+    start = time.monotonic()
     try:
         data = load_doc(doc_id)
-    except ValueError as e:
+    except Exception:
+        TOOL_ERRORS.labels(tool="get_page_content").inc()
         available = [d["doc_id"] for d in list_processed_docs()]
-        return json.dumps({"error": str(e), "available": available})
+        return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
+    finally:
+        TOOL_DURATION.labels(tool="get_page_content").observe(time.monotonic() - start)
 
     wanted: set[int] = set()
     for part in pages.split(","):

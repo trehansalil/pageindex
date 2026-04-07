@@ -3,8 +3,10 @@
 import anyio
 import uvicorn
 from fastmcp import FastMCP
+from starlette.routing import Route
 
 from . import tools as _tools
+from .metrics import metrics_response
 
 mcp = FastMCP("pageindex-local")
 
@@ -25,11 +27,15 @@ def main() -> None:
 
     print(f"Starting PageIndex MCP server at http://{settings.server_host}:{settings.server_port}/mcp")
     print(f"Upload service at http://{settings.server_host}:{settings.server_port}/upload")
+    print(f"Metrics at http://{settings.server_host}:{settings.server_port}/metrics")
     print(f"MinIO endpoint: {settings.minio_endpoint}  bucket: {settings.minio_bucket}")
     print("Press Ctrl+C to stop\n")
 
     # Build the FastMCP Starlette app (includes its own lifespan for MCP session management).
     starlette_app = mcp.http_app(transport="streamable-http")
+
+    # Add /metrics route for Prometheus scraping.
+    starlette_app.routes.insert(0, Route("/metrics", metrics_response))
 
     # Mount the upload FastAPI app at /upload.
     upload_app = create_upload_app()
