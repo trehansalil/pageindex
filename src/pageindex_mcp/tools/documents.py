@@ -1,129 +1,134 @@
-"""MCP tools: document listing, summary, search, deletion, and preloaded sync."""
+"""MCP query tools: document listing, retrieval, and structured search."""
 
-import asyncio
 import json
 
-from ..converters import flatten_nodes
-from ..helpers import _rag
-from ..storage import (
-    delete_doc,
-    list_processed_docs,
-    load_doc,
-    sync_preloaded_to_minio,
-)
+from ..helpers import _rag, _strip_text, _build_node_map
+from ..storage import list_processed_docs, load_doc
 
 
-def list_documents() -> str:
-    """
-    List all documents that have been processed and stored in MinIO.
-    Returns doc_id, filename, and processing timestamp for each document.
-    """
+def recent_documents(page: int = 1, page_size: int = 10) -> str:
+    """Browse your document collection with pagination. Returns documents sorted
+    by upload date (newest first) with processing status."""
     try:
         docs = list_processed_docs()
     except Exception as e:
         return json.dumps({"error": f"Failed to list documents: {e}"})
 
-    if not docs:
-        return json.dumps({"documents": [], "message": "No documents processed yet. Use process_document first."})
-    return json.dumps({"documents": docs, "count": len(docs)})
+    start = (page - 1) * page_size
+    page_docs = docs[start : start + page_size]
+
+    enriched = []
+    for d in page_docs:
+        doc_id = d["doc_id"]
+        node_count = 0
+        try:
+            data = load_doc(doc_id)
+            nm: dict = {}
+            _build_node_map(data.get("structure", []), nm)
+            node_count = len(nm)
+        except Exception:
+            pass
+        enriched.append({
+            "doc_id":     doc_id,
+            "doc_name":   d.get("doc_name", "unknown"),
+            "status":     "completed",
+            "node_count": node_count,
+        })
+
+    return json.dumps({
+        "total":     len(docs),
+        "page":      page,
+        "page_size": page_size,
+        "documents": enriched,
+    }, indent=2)
+
 
 async def find_relevant_documents(query: str) -> str:
     """Search documents by query. Uses PageIndex reasoning-based tree search;
     automatically falls back to AI semantic search. Returns relevant content
     and a generated answer."""
-    
     documents = list_processed_docs()
     if not documents:
-        return "No documents are indexed. Add *_structure.json files to the indices directory and restart."
-    return await _rag(query, list(documents.keys()))
+        return "No documents are indexed. Process documents first."
+    return await _rag(query, [d["doc_id"] for d in documents])
 
-def get_document_summary(doc_id: str) -> str:
-    """
-    Get a comprehensive summary of a processed document.
-    Returns the top-level structure, section titles, and any available summaries.
-    Use list_documents() to find available doc_ids.
-    """
+
+def get_document(doc_id: str) -> str:
+    """Get detailed information about a specific document by doc_id. Requires
+    doc_id (string). Use recent_documents() to find available doc_ids."""
     try:
         data = load_doc(doc_id)
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        available = [d["doc_id"] for d in list_processed_docs()]
+        return json.dumps({"error": str(e), "available": available})
 
-    tree     = data.get("tree", [])
-    filename = data.get("filename", "unknown")
-
-    sections = []
-    for node in tree:
-        sections.append({
-            "title":       node.get("title", ""),
-            "summary":     node.get("summary", ""),
-            "pages":       f"{node.get('start_index', '?')}–{node.get('end_index', '?')}",
-            "subsections": len(node.get("nodes", [])),
-        })
+    structure = data.get("structure", [])
+    nm: dict = {}
+    _build_node_map(structure, nm)
 
     return json.dumps({
-        "doc_id":         doc_id,
-        "filename":       filename,
-        "total_sections": len(sections),
-        "sections":       sections,
-    })
+        "doc_id":             doc_id,
+        "doc_name":           data.get("doc_name", data.get("filename", "unknown")),
+        "status":             "completed",
+        "total_nodes":        len(nm),
+        "top_level_sections": [
+            {
+                "title":   n.get("title"),
+                "node_id": n.get("node_id"),
+                "pages":   f"{n.get('start_index')}-{n.get('end_index')}",
+            }
+            for n in structure
+        ],
+    }, indent=2)
 
 
-def search_document(doc_id: str, query: str) -> str:
-    """
-    Search within a processed document for sections matching the query.
-    Searches section titles and summaries using keyword matching.
-    Returns matching sections with their summaries and page ranges.
-    Use list_documents() to find available doc_ids.
-    """
+def get_document_structure(doc_id: str) -> str:
+    """Extract the hierarchical structure of a completed document."""
     try:
         data = load_doc(doc_id)
     except ValueError as e:
-        return json.dumps({"error": str(e)})
-
-    tree        = data.get("tree", [])
-    query_lower = query.lower()
-
-    results: list = []
-    flatten_nodes(tree, results, query_lower)
-
-    if not results:
-        return json.dumps({
-            "doc_id":  doc_id,
-            "query":   query,
-            "matches": [],
-            "message": "No matching sections found. Try a different query or use get_document_summary for an overview.",
-        })
+        available = [d["doc_id"] for d in list_processed_docs()]
+        return json.dumps({"error": str(e), "available": available})
 
     return json.dumps({
-        "doc_id":      doc_id,
-        "query":       query,
-        "match_count": len(results),
-        "matches":     results[:20],
-    })
+        "doc_id":    doc_id,
+        "structure": _strip_text(data.get("structure", [])),
+    }, indent=2)
 
 
-async def delete_document(doc_id: str) -> str:
-    """
-    Delete a processed document and its raw upload from MinIO.
-    Use list_documents() to find available doc_ids.
-    """
+def get_page_content(doc_id: str, pages: str) -> str:
+    """Extract specific page content from processed documents. Flexible page
+    selection: single page ('5'), ranges ('3-7'), or multiple pages ('3,5,7')."""
     try:
-        load_doc(doc_id)  # verify exists
+        data = load_doc(doc_id)
     except ValueError as e:
-        return json.dumps({"error": str(e)})
-    await asyncio.to_thread(delete_doc, doc_id)
-    return json.dumps({"message": f"Document '{doc_id}' deleted successfully."})
+        available = [d["doc_id"] for d in list_processed_docs()]
+        return json.dumps({"error": str(e), "available": available})
 
+    wanted: set[int] = set()
+    for part in pages.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            wanted.update(range(int(a), int(b) + 1))
+        else:
+            wanted.add(int(part))
 
-def sync_preloaded_documents() -> str:
-    """
-    Upload any files in the local doc_store/ directory to MinIO (preloaded/ prefix).
-    Run this once after deploying to persist pre-loaded source documents.
-    """
-    try:
-        synced = sync_preloaded_to_minio()
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-    if not synced:
-        return json.dumps({"message": "All pre-loaded documents already synced.", "synced": []})
-    return json.dumps({"message": f"Synced {len(synced)} file(s) to MinIO.", "synced": synced})
+    nm: dict = {}
+    _build_node_map(data.get("structure", []), nm)
+
+    hits = [
+        {
+            "node_id": nid,
+            "title":   n.get("title"),
+            "pages":   f"{n.get('start_index')}-{n.get('end_index')}",
+            "text":    n["text"],
+        }
+        for nid, n in nm.items()
+        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted
+        and "text" in n
+    ]
+
+    if not hits:
+        return json.dumps({"error": f"No content found for pages '{pages}' in doc '{doc_id}'."})
+    return json.dumps({"doc_id": doc_id, "pages": pages, "content": hits}, indent=2)

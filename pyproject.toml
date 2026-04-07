@@ -4,15 +4,19 @@ version = "1.0.0"
 description = "PageIndex MCP Server — vectorless reasoning-based RAG via FastMCP"
 requires-python = ">=3.12"
 dependencies = [
-    "fastmcp[tasks]==3.0.0",
-    "litellm==1.82.0",
-    "pymupdf==1.26.4",
-    "PyPDF2==3.0.1",
-    "python-dotenv==1.1.0",
-    "pyyaml==6.0.2",
-    "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
-    "minio>=7.2.0",
+    "fastmcp>=3.2.0",
+    "litellm>=1.82.0",
+    "pymupdf>=1.26.4",
+    "PyPDF2>=3.0.1",
+    "python-dotenv>=1.1.0",
+    "pyyaml>=6.0.2",
+    "openai>=1.30.0",
+    "httpx>=0.27.0",
+    "python-pptx>=1.0.0",
     "python-docx>=1.2.0",
+    "minio>=7.2.0",
+    "html2text>=2020.1.16",
+    "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
 ]
 
 [project.optional-dependencies]

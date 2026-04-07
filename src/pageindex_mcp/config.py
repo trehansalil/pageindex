@@ -1,24 +1,12 @@
 """Application configuration: env loading, path setup, settings dataclass."""
 
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# ---------------------------------------------------------------------------
-# Env loading — runs once at import time, before any other module touches env
-# ---------------------------------------------------------------------------
 load_dotenv()
-
-# ---------------------------------------------------------------------------
-# PageIndex library path — insert into sys.path if the checkout is present
-# ---------------------------------------------------------------------------
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # .../pageindex_deployment
-_PAGEINDEX_LIB = _REPO_ROOT / "PageIndex"
-if _PAGEINDEX_LIB.is_dir() and str(_PAGEINDEX_LIB) not in sys.path:
-    sys.path.insert(0, str(_PAGEINDEX_LIB))
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
@@ -44,13 +32,14 @@ class Settings:
 
 
 def _load_settings() -> Settings:
+    repo_root = Path(__file__).resolve().parent.parent.parent
     return Settings(
-        minio_endpoint=os.environ.get("MINIO_ENDPOINT", "10.43.246.106:9000"),
+        minio_endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
         minio_access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
         minio_bucket=os.environ.get("MINIO_BUCKET", "pageindex"),
         minio_secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-        doc_store_path=_REPO_ROOT / "doc_store",
+        doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
     )

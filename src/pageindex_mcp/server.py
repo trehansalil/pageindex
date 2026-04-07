@@ -7,20 +7,13 @@ from . import tools as _tools
 mcp = FastMCP("pageindex-local")
 
 # ---------------------------------------------------------------------------
-# Synchronous tools
+# Query tools only — document processing is handled by CustomPageIndexClient.
 # ---------------------------------------------------------------------------
-# mcp.tool()(_tools.list_documents)
-mcp.tool()(_tools.get_document_summary)
-mcp.tool()(_tools.search_document)
-mcp.tool()(_tools.sync_preloaded_documents)
+mcp.tool()(_tools.recent_documents)
 mcp.tool()(_tools.find_relevant_documents)
-
-# ---------------------------------------------------------------------------
-# Long-running task tools
-# ---------------------------------------------------------------------------
-mcp.tool(task=True)(_tools.delete_document)
-mcp.tool(task=True)(_tools.process_document)
-mcp.tool(task=True)(_tools.upload_and_process_document)
+mcp.tool()(_tools.get_document)
+mcp.tool()(_tools.get_document_structure)
+mcp.tool()(_tools.get_page_content)
 
 
 def main() -> None:
