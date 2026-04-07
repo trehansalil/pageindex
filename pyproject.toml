@@ -16,11 +16,12 @@ dependencies = [
     "python-docx>=1.2.0",
     "minio>=7.2.0",
     "html2text>=2020.1.16",
+    "redis[asyncio]>=5.0.0",
     "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx", "langchain-mcp-adapters", "langchain[openai]"]
+dev = ["pytest", "pytest-asyncio", "httpx", "fakeredis[aioredis]", "langchain-mcp-adapters", "langchain[openai]"]
 
 [build-system]
 requires = ["hatchling"]
@@ -31,6 +32,9 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pageindex_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [project.scripts]
 pageindex-mcp = "pageindex_mcp.server:main"
