@@ -1,5 +1,6 @@
 """FastMCP server composition root and entry point."""
 
+import logging
 import anyio
 import uvicorn
 from fastmcp import FastMCP
@@ -7,6 +8,12 @@ from starlette.routing import Route
 
 from . import tools as _tools
 from .metrics import metrics_response
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 mcp = FastMCP("pageindex-local")
 

@@ -1,6 +1,7 @@
 """FastAPI sub-app: POST /upload/files and GET /upload/status/{job_id}."""
 
 import asyncio
+import logging
 import time
 import os
 import secrets
@@ -17,6 +18,8 @@ from fastapi import Depends, FastAPI, HTTPException, Header, UploadFile
 from .client import CustomPageIndexClient, _SUPPORTED
 from .config import settings
 from .metrics import ACTIVE_UPLOADS, UPLOADS, UPLOAD_DURATION
+
+logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400  # 24 hours in seconds
 _WRITE_CHUNK = 64 * 1024  # 64 KiB chunks for streaming writes
@@ -67,25 +70,30 @@ async def _process_file(
 ) -> None:
     """Index a file and write the result to Redis. Cleans up temp dir on exit."""
     tmp_dir = os.path.dirname(tmp_path)
+    filename = os.path.basename(tmp_path)
     ACTIVE_UPLOADS.inc()
     start = time.monotonic()
+    logger.info("Processing started: job=%s file=%s", job_id, filename)
     try:
         client = CustomPageIndexClient()
         doc_id = await client.index(tmp_path)
         await redis.hset(_job_key(job_id), mapping={"status": "done", "doc_id": doc_id})
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="success").inc()
+        logger.info("Processing done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start)
     except asyncio.CancelledError:
         await redis.hset(
             _job_key(job_id), mapping={"status": "error", "error": "cancelled"}
         )
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="error").inc()
+        logger.warning("Processing cancelled: job=%s file=%s", job_id, filename)
         raise
     except Exception as exc:
         await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="error").inc()
+        logger.error("Processing failed: job=%s file=%s error=%s", job_id, filename, exc, exc_info=True)
     finally:
         UPLOAD_DURATION.observe(time.monotonic() - start)
         ACTIVE_UPLOADS.dec()
@@ -107,12 +115,14 @@ def create_upload_app() -> FastAPI:
         redis: aioredis.Redis = Depends(get_redis),
     ) -> list[dict]:
         """Accept one or more files, enqueue async indexing, return job IDs."""
+        logger.info("Upload request received: %d file(s)", len(files))
         results = []
         for file in files:
             # Sanitize: strip path components to prevent path traversal.
             filename = Path(file.filename or "upload").name
             ext = Path(filename).suffix.lower()
             if ext not in _SUPPORTED:
+                logger.warning("Rejected unsupported file type: %s (%s)", filename, ext)
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -129,6 +139,7 @@ def create_upload_app() -> FastAPI:
 
             # Stream to disk in chunks to avoid holding entire file in memory.
             await asyncio.to_thread(_stream_to_disk, file.file, tmp_path)
+            logger.debug("Saved upload to temp path: %s", tmp_path)
 
             job_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc).isoformat()
@@ -146,6 +157,7 @@ def create_upload_app() -> FastAPI:
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
             results.append({"job_id": job_id, "filename": filename})
+            logger.info("Enqueued job %s for file %s", job_id, filename)
 
         return results
 
@@ -158,10 +170,12 @@ def create_upload_app() -> FastAPI:
         """Return current state of a job: pending, done, or error."""
         data = await redis.hgetall(_job_key(job_id))
         if not data:
+            logger.debug("Status poll for unknown/expired job: %s", job_id)
             raise HTTPException(
                 status_code=404,
                 detail=f"Job '{job_id}' not found or expired",
             )
+        logger.debug("Status poll: job=%s status=%s", job_id, data.get("status"))
         return {"job_id": job_id, **data}
 
     return app

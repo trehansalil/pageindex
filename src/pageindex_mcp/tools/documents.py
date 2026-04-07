@@ -1,6 +1,7 @@
 """MCP query tools: document listing, retrieval, and structured search."""
 
 import json
+import logging
 import time
 
 from ..helpers import _rag, _strip_text, _build_node_map
@@ -12,19 +13,25 @@ from ..metrics import (
 )
 from ..storage import list_processed_docs, load_doc
 
+logger = logging.getLogger(__name__)
+
 
 def recent_documents(page: int = 1, page_size: int = 10) -> str:
     """Browse your document collection with pagination. Returns documents sorted
     by upload date (newest first) with processing status."""
     TOOL_CALLS.labels(tool="recent_documents").inc()
     start = time.monotonic()
+    logger.info("recent_documents called (page=%d, page_size=%d)", page, page_size)
     try:
         docs = list_processed_docs()
     except Exception as e:
         TOOL_ERRORS.labels(tool="recent_documents").inc()
+        logger.error("recent_documents failed to list docs: %s", e)
         return json.dumps({"error": f"Failed to list documents: {e}"})
     finally:
-        TOOL_DURATION.labels(tool="recent_documents").observe(time.monotonic() - start)
+        elapsed = time.monotonic() - start
+        TOOL_DURATION.labels(tool="recent_documents").observe(elapsed)
+        logger.debug("recent_documents completed in %.3fs", elapsed)
 
     DOCUMENTS_TOTAL.set(len(docs))
 
@@ -41,7 +48,7 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
             _build_node_map(data.get("structure", []), nm)
             node_count = len(nm)
         except Exception:
-            pass
+            logger.warning("recent_documents: failed to load doc %s for enrichment", doc_id)
         enriched.append({
             "doc_id":     doc_id,
             "doc_name":   d.get("doc_name", "unknown"),
@@ -49,6 +56,7 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
             "node_count": node_count,
         })
 
+    logger.info("recent_documents returning %d/%d documents", len(enriched), len(docs))
     return json.dumps({
         "total":     len(docs),
         "page":      page,
@@ -63,16 +71,22 @@ async def find_relevant_documents(query: str) -> str:
     and a generated answer."""
     TOOL_CALLS.labels(tool="find_relevant_documents").inc()
     start = time.monotonic()
+    logger.info("find_relevant_documents called (query=%r)", query[:100])
     try:
         documents = list_processed_docs()
+        logger.info("find_relevant_documents: %d documents indexed", len(documents))
         if not documents:
+            logger.warning("find_relevant_documents: no documents indexed")
             return "No documents are indexed. Process documents first."
         return await _rag(query, [d["doc_id"] for d in documents])
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
+        logger.error("find_relevant_documents failed: %s", e, exc_info=True)
         raise
     finally:
-        TOOL_DURATION.labels(tool="find_relevant_documents").observe(time.monotonic() - start)
+        elapsed = time.monotonic() - start
+        TOOL_DURATION.labels(tool="find_relevant_documents").observe(elapsed)
+        logger.debug("find_relevant_documents completed in %.3fs", elapsed)
 
 
 def get_document(doc_id: str) -> str:
@@ -80,19 +94,24 @@ def get_document(doc_id: str) -> str:
     doc_id (string). Use recent_documents() to find available doc_ids."""
     TOOL_CALLS.labels(tool="get_document").inc()
     start = time.monotonic()
+    logger.info("get_document called (doc_id=%s)", doc_id)
     try:
         data = load_doc(doc_id)
     except Exception:
         TOOL_ERRORS.labels(tool="get_document").inc()
+        logger.warning("get_document: doc %s not found", doc_id)
         available = [d["doc_id"] for d in list_processed_docs()]
         return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
     finally:
-        TOOL_DURATION.labels(tool="get_document").observe(time.monotonic() - start)
+        elapsed = time.monotonic() - start
+        TOOL_DURATION.labels(tool="get_document").observe(elapsed)
+        logger.debug("get_document completed in %.3fs", elapsed)
 
     structure = data.get("structure", [])
     nm: dict = {}
     _build_node_map(structure, nm)
 
+    logger.info("get_document: %s has %d nodes", doc_id, len(nm))
     return json.dumps({
         "doc_id":             doc_id,
         "doc_name":           data.get("doc_name", data.get("filename", "unknown")),
@@ -113,14 +132,18 @@ def get_document_structure(doc_id: str) -> str:
     """Extract the hierarchical structure of a completed document."""
     TOOL_CALLS.labels(tool="get_document_structure").inc()
     start = time.monotonic()
+    logger.info("get_document_structure called (doc_id=%s)", doc_id)
     try:
         data = load_doc(doc_id)
     except Exception:
         TOOL_ERRORS.labels(tool="get_document_structure").inc()
+        logger.warning("get_document_structure: doc %s not found", doc_id)
         available = [d["doc_id"] for d in list_processed_docs()]
         return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
     finally:
-        TOOL_DURATION.labels(tool="get_document_structure").observe(time.monotonic() - start)
+        elapsed = time.monotonic() - start
+        TOOL_DURATION.labels(tool="get_document_structure").observe(elapsed)
+        logger.debug("get_document_structure completed in %.3fs", elapsed)
 
     return json.dumps({
         "doc_id":    doc_id,
@@ -133,14 +156,18 @@ def get_page_content(doc_id: str, pages: str) -> str:
     selection: single page ('5'), ranges ('3-7'), or multiple pages ('3,5,7')."""
     TOOL_CALLS.labels(tool="get_page_content").inc()
     start = time.monotonic()
+    logger.info("get_page_content called (doc_id=%s, pages=%s)", doc_id, pages)
     try:
         data = load_doc(doc_id)
     except Exception:
         TOOL_ERRORS.labels(tool="get_page_content").inc()
+        logger.warning("get_page_content: doc %s not found", doc_id)
         available = [d["doc_id"] for d in list_processed_docs()]
         return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
     finally:
-        TOOL_DURATION.labels(tool="get_page_content").observe(time.monotonic() - start)
+        elapsed = time.monotonic() - start
+        TOOL_DURATION.labels(tool="get_page_content").observe(elapsed)
+        logger.debug("get_page_content completed in %.3fs", elapsed)
 
     wanted: set[int] = set()
     for part in pages.split(","):
@@ -167,5 +194,7 @@ def get_page_content(doc_id: str, pages: str) -> str:
     ]
 
     if not hits:
+        logger.warning("get_page_content: no content for pages %s in doc %s", pages, doc_id)
         return json.dumps({"error": f"No content found for pages '{pages}' in doc '{doc_id}'."})
+    logger.info("get_page_content: returning %d hits for pages %s", len(hits), pages)
     return json.dumps({"doc_id": doc_id, "pages": pages, "content": hits}, indent=2)

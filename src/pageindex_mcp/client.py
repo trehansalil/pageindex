@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 import os
 import shutil
 import tempfile
@@ -22,6 +23,8 @@ from .storage import (
     save_hash_cache,
     save_raw,
 )
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html"}
 
@@ -63,6 +66,7 @@ class CustomPageIndexClient(PageIndexClient):
 
         filename = os.path.basename(file_path)
         ext = Path(filename).suffix.lower()
+        logger.info("Indexing file: %s (ext=%s)", filename, ext)
 
         if ext not in _SUPPORTED:
             raise ValueError(
@@ -71,6 +75,7 @@ class CustomPageIndexClient(PageIndexClient):
 
         file_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
         sha256 = hashlib.sha256(file_bytes).hexdigest()
+        logger.debug("File %s: size=%d bytes, sha256=%s", filename, len(file_bytes), sha256[:12])
 
         # Hash-based dedup: skip if content unchanged.
         # Lock prevents parallel calls from all seeing a cache-miss simultaneously.
@@ -80,6 +85,7 @@ class CustomPageIndexClient(PageIndexClient):
                 docs = await asyncio.to_thread(list_processed_docs)
                 for d in docs:
                     if d.get("doc_name") == filename:
+                        logger.info("Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"])
                         return d["doc_id"]
 
         # Convert / index
@@ -88,17 +94,22 @@ class CustomPageIndexClient(PageIndexClient):
 
         try:
             if ext == ".pdf":
+                logger.info("Running page_index on PDF: %s", filename)
                 result = await asyncio.to_thread(self._run_page_index, file_path)
 
             elif ext in (".md", ".markdown", ".txt"):
+                logger.info("Running md_to_tree on: %s", filename)
                 result = await self._run_md_to_tree(file_path)
 
             elif ext in (".docx", ".pptx"):
+                logger.info("Converting %s to PDF via LibreOffice", filename)
                 pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
                 tmp_lo_dir = os.path.dirname(pdf_path)
+                logger.info("Running page_index on converted PDF: %s", pdf_path)
                 result = await asyncio.to_thread(self._run_page_index, pdf_path)
 
             else:  # .html
+                logger.info("Converting HTML to markdown: %s", filename)
                 md_content = await html_to_markdown_with_images(file_path, self.model)
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
@@ -133,6 +144,7 @@ class CustomPageIndexClient(PageIndexClient):
                 cache[filename] = sha256
                 await asyncio.to_thread(save_hash_cache, cache)
 
+            logger.info("Indexed %s → doc_id=%s (%d sections)", filename, doc_id, len(result.get("structure", [])))
             return doc_id
 
         finally:

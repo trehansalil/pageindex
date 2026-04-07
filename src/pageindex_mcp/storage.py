@@ -1,6 +1,7 @@
 """MinIO client singleton and document storage CRUD."""
 
 import json
+import logging
 import time
 from io import BytesIO
 from pathlib import Path
@@ -12,6 +13,8 @@ from minio.error import S3Error
 from .config import settings
 from .metrics import MINIO_DURATION, MINIO_OPS
 
+logger = logging.getLogger(__name__)
+
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
 
@@ -22,6 +25,7 @@ def get_minio() -> Minio:
     if _minio_client is None:
         with _minio_lock:
             if _minio_client is None:
+                logger.info("Initialising MinIO client: endpoint=%s bucket=%s", settings.minio_endpoint, settings.minio_bucket)
                 client = Minio(
                     settings.minio_endpoint,
                     access_key=settings.minio_access_key,
@@ -29,6 +33,7 @@ def get_minio() -> Minio:
                     secure=settings.minio_secure,
                 )
                 if not client.bucket_exists(settings.minio_bucket):
+                    logger.info("Creating MinIO bucket: %s", settings.minio_bucket)
                     client.make_bucket(settings.minio_bucket)
                 _minio_client = client
     return _minio_client
@@ -46,10 +51,13 @@ def load_doc(doc_id: str) -> dict:
     try:
         response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.json")
         data = json.loads(response.read())
+        logger.debug("Loaded doc %s from MinIO", doc_id)
         return data
     except S3Error as e:
         if e.code == "NoSuchKey":
+            logger.warning("Document not found in MinIO: %s", doc_id)
             raise ValueError(f"Document not found: {doc_id}")
+        logger.error("MinIO error loading doc %s: %s", doc_id, e)
         raise
     finally:
         MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
@@ -74,6 +82,7 @@ def save_doc(doc_id: str, data: dict) -> None:
             len(content),
             content_type="application/json",
         )
+        logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
@@ -85,8 +94,11 @@ def delete_doc(doc_id: str) -> None:
     mc = get_minio()
     try:
         mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
+        removed = 0
         for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
             mc.remove_object(settings.minio_bucket, obj.object_name)
+            removed += 1
+        logger.info("Deleted doc %s from MinIO (1 processed + %d uploads)", doc_id, removed)
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
@@ -109,7 +121,8 @@ def list_processed_docs() -> list[dict]:
                     "source_url":   data.get("source_url", ""),
                     "processed_at": data.get("processed_at", ""),
                 })
-            except Exception:
+            except Exception as e:
+                logger.warning("Failed to read processed doc %s: %s", obj.object_name, e)
                 continue
             finally:
                 try:
@@ -117,6 +130,7 @@ def list_processed_docs() -> list[dict]:
                     response.release_conn()
                 except Exception:
                     pass
+        logger.debug("Listed %d processed documents", len(docs))
         return docs
     finally:
         MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
