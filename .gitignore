@@ -4,3 +4,4 @@ doc_store/
 __pycache__/
 *.pyc
 preprocess.log
+.worktrees/
