@@ -2,7 +2,7 @@ name: Build & Push to GHCR
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 env:
   IMAGE_NAME: ghcr.io/trehansalil/pageindex-mcp
