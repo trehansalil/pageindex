@@ -28,6 +28,7 @@ def _job_key(job_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 _redis: aioredis.Redis | None = None
+_background_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
@@ -54,7 +55,10 @@ def get_redis() -> aioredis.Redis:
 async def require_api_key(
     x_api_key: Annotated[str | None, Header()] = None,
 ) -> None:
-    if not x_api_key or x_api_key != settings.upload_api_key:
+    configured = settings.upload_api_key
+    if not configured:
+        raise HTTPException(status_code=503, detail="Upload API key not configured")
+    if not x_api_key or x_api_key != configured:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
@@ -130,7 +134,9 @@ def create_upload_app() -> FastAPI:
             )
             await redis.expire(_job_key(job_id), JOB_TTL)
 
-            asyncio.create_task(_process_file(job_id, tmp_path, redis))
+            task = asyncio.create_task(_process_file(job_id, tmp_path, redis))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
             results.append({"job_id": job_id, "filename": filename})
 
         return results
