@@ -53,8 +53,8 @@ async def _rag(query: str, doc_ids: list[str]) -> str:
         except ValueError:
             continue
 
-        tree = data.get("tree", [])
-        name = data.get("filename", doc_id)
+        tree = data.get("structure", [])
+        name = data.get("doc_name", data.get("filename", doc_id))
         tree_slim = _strip_text(tree)
 
         nm: dict = {}

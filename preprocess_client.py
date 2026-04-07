@@ -1,5 +1,5 @@
 """
-FastMCP client — preprocess files from the doc_store folder.
+Preprocess files from the doc_store folder using CustomPageIndexClient directly.
 
 Usage:
     python preprocess_client.py [filename] [--bg]
@@ -8,77 +8,98 @@ Usage:
                 If omitted, all supported files in doc_store/ are processed.
     --bg      — detach and run as a background process; output goes to preprocess.log
 
-Supported extensions: .pdf  .docx  .pptx  .md  .txt
+Supported extensions: .pdf  .docx  .pptx  .md  .txt  .html
 
-Hash cache is stored in MinIO at hashes/processed_hashes.json so it persists
-across machines and is consistent with the rest of the document store.
+Hash-based deduplication is handled inside CustomPageIndexClient.index() — unchanged
+files are skipped automatically. The cache is stored in MinIO at
+hashes/processed_hashes.json and is shared with the rest of the document store.
 """
 
 import asyncio
-import base64
-import hashlib
-import json
-import os
 import subprocess
 import sys
-from io import BytesIO
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Suppress litellm LoggingWorker shutdown noise.
+# These tracebacks are written directly to stderr by asyncio internals and
+# bypass the loop exception handler, so we filter at the stream level.
+# The filter is *stateful*: once a "trigger" line is seen, the entire
+# traceback block (indented frames, chained-exception headers, etc.) is
+# suppressed until a clearly non-traceback line appears.
+# ---------------------------------------------------------------------------
+_NOISE_TRIGGERS = (
+    "Task was destroyed but it is pending",
+    "Task exception was never retrieved",
+    "unhandled exception during asyncio.run() shutdown",
+    "future: <Task finished",
+    "task_done() called too many times",
+    "cannot reuse already awaited coroutine",
+    "LoggingWorker",
+    "logging_worker.py",
+    "litellm_logging.py",
+)
+
+
+class _FilteredStderr:
+    """Stateful stderr filter that drops entire litellm traceback blocks."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+        self._buf = ""
+        self._suppressing = False
+
+    def _is_traceback_continuation(self, line: str) -> bool:
+        """Return True if *line* looks like part of an ongoing traceback."""
+        s = line.strip()
+        return (
+            not s
+            or line[0] in (" ", "\t")
+            or s.startswith("Traceback")
+            or s.startswith("File ")
+            or s.startswith("During handling")
+            or s.startswith("The above exception")
+            or s.startswith("asyncio.exceptions.")
+            or s.startswith("ValueError:")
+            or s.startswith("RuntimeError:")
+            or s.startswith("future:")
+            or s.startswith("task:")
+            or all(c in "^ " for c in s)
+        )
+
+    def write(self, text: str) -> int:
+        self._buf += text
+        lines = self._buf.split("\n")
+        self._buf = lines[-1]  # hold incomplete last line
+        for line in lines[:-1]:
+            # Trigger: enter suppression mode
+            if any(t in line for t in _NOISE_TRIGGERS):
+                self._suppressing = True
+                continue
+            if self._suppressing:
+                if self._is_traceback_continuation(line):
+                    continue
+                # Non-traceback line — stop suppressing and emit it
+                self._suppressing = False
+            self._wrapped.write(line + "\n")
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buf and not self._suppressing:
+            self._wrapped.write(self._buf)
+        self._buf = ""
+        self._wrapped.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
 from dotenv import load_dotenv
-from fastmcp import Client
-from minio import Minio
-from minio.error import S3Error
 
 load_dotenv()
 
-SERVER_URL = "http://localhost:8201/mcp"
-DOC_STORE  = Path(__file__).parent / "doc_store"
-SUPPORTED  = {".pdf", ".docx", ".pptx", ".md", ".txt"}
-LOG_FILE   = Path(__file__).parent / "preprocess.log"
-
-MINIO_ENDPOINT   = os.environ.get("MINIO_ENDPOINT",   "10.43.246.106:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET     = os.environ.get("MINIO_BUCKET",     "pageindex")
-MINIO_SECURE     = os.environ.get("MINIO_SECURE",     "false").lower() == "true"
-HASH_OBJECT      = "hashes/processed_hashes.json"
-
-_mc: Minio | None = None
-
-
-def _minio() -> Minio:
-    global _mc
-    if _mc is None:
-        _mc = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
-                    secret_key=MINIO_SECRET_KEY, secure=MINIO_SECURE)
-        if not _mc.bucket_exists(MINIO_BUCKET):
-            _mc.make_bucket(MINIO_BUCKET)
-    return _mc
-
-
-def _load_hash_cache() -> dict[str, str]:
-    try:
-        response = _minio().get_object(MINIO_BUCKET, HASH_OBJECT)
-        return json.loads(response.read())
-    except S3Error as e:
-        if e.code == "NoSuchKey":
-            return {}
-        raise
-    finally:
-        try:
-            response.close(); response.release_conn()
-        except Exception:
-            pass
-
-
-def _save_hash_cache(cache: dict[str, str]) -> None:
-    data = json.dumps(cache, indent=2).encode()
-    _minio().put_object(MINIO_BUCKET, HASH_OBJECT, BytesIO(data), len(data),
-                        content_type="application/json")
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+DOC_STORE = Path(__file__).parent / "doc_store"
+SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".txt", ".html"}
+LOG_FILE  = Path(__file__).parent / "preprocess.log"
 
 
 def _files_to_process(arg: str | None) -> list[Path]:
@@ -87,62 +108,28 @@ def _files_to_process(arg: str | None) -> list[Path]:
         if not path.exists():
             sys.exit(f"Error: {path} not found")
         if path.suffix.lower() not in SUPPORTED:
-            sys.exit(f"Error: unsupported extension '{path.suffix}'. "
-                     f"Supported: {', '.join(sorted(SUPPORTED))}")
+            sys.exit(
+                f"Error: unsupported extension '{path.suffix}'. "
+                f"Supported: {', '.join(sorted(SUPPORTED))}"
+            )
         return [path]
     return sorted(p for p in DOC_STORE.iterdir() if p.suffix.lower() in SUPPORTED)
 
 
-async def _process_one(
-    client: Client,
-    file: Path,
-    file_hash: str,
-    cache: dict[str, str],
-    cache_lock: asyncio.Lock,
-) -> None:
-    content_b64 = base64.b64encode(file.read_bytes()).decode()
-
-    result = await client.call_tool(
-        "upload_and_process_document",
-        {"filename": file.name, "content_base64": content_b64},
-    )
-
-    raw = result.content[0].text if result.content else "{}"
-    data = json.loads(raw)
-
-    if "error" in data:
-        print(f"  [{file.name}] ERROR: {data['error']}", flush=True)
-    else:
-        print(f"  [{file.name}] doc_id: {data.get('doc_id')} — {data.get('message')}", flush=True)
-        async with cache_lock:
-            cache[file.name] = file_hash
-            _save_hash_cache(cache)
+async def _process_one(client, file: Path) -> None:
+    try:
+        doc_id = await client.index(str(file))
+        print(f"  [{file.name}] doc_id: {doc_id}", flush=True)
+    except Exception as e:
+        print(f"  [{file.name}] ERROR: {e}", flush=True)
 
 
 async def preprocess(files: list[Path]) -> None:
-    print("Loading hash cache from MinIO...", flush=True)
-    cache = _load_hash_cache()
-    cache_lock = asyncio.Lock()
+    from pageindex_mcp.client import CustomPageIndexClient
 
-    to_run: list[tuple[Path, str]] = []
-    for file in files:
-        h = _sha256(file)
-        if cache.get(file.name) == h:
-            print(f"Skipping (unchanged): {file.name}", flush=True)
-        else:
-            to_run.append((file, h))
-
-    if not to_run:
-        print("Nothing to process.")
-        return
-
-    print(f"Processing {len(to_run)} file(s) in parallel...", flush=True)
-    client = Client(SERVER_URL)
-    async with client:
-        await asyncio.gather(*(
-            _process_one(client, f, h, cache, cache_lock)
-            for f, h in to_run
-        ))
+    print(f"Processing {len(files)} file(s) in parallel...", flush=True)
+    client = CustomPageIndexClient()
+    await asyncio.gather(*(_process_one(client, f) for f in files))
 
 
 if __name__ == "__main__":
@@ -161,7 +148,8 @@ if __name__ == "__main__":
         log = open(LOG_FILE, "w")
         proc = subprocess.Popen(
             [sys.executable, __file__] + ([arg] if arg else []),
-            stdout=log, stderr=log,
+            stdout=log,
+            stderr=log,
             start_new_session=True,
         )
         print(f"Background process started (PID {proc.pid}). Logging to {LOG_FILE}")
@@ -172,4 +160,29 @@ if __name__ == "__main__":
         print(f"  {f.name}")
     print()
 
-    asyncio.run(preprocess(files))
+    # Install stderr filter before running so litellm LoggingWorker shutdown
+    # noise is suppressed regardless of whether it comes through asyncio's
+    # exception handler or is written directly to stderr by the runtime.
+    sys.stderr = _FilteredStderr(sys.stderr)
+    try:
+        with asyncio.Runner() as runner:
+            loop = runner.get_loop()
+            _orig = loop.call_exception_handler
+
+            def _exception_handler(ctx: dict) -> None:
+                exc = ctx.get("exception")
+                msg = ctx.get("message", "")
+                task = ctx.get("task")
+                if (
+                    any(s in msg for s in _NOISE_TRIGGERS)
+                    or any(s in repr(task) for s in _NOISE_TRIGGERS)
+                    or (isinstance(exc, (ValueError, RuntimeError))
+                        and any(s in str(exc) for s in _NOISE_TRIGGERS))
+                ):
+                    return
+                _orig(ctx)
+
+            loop.set_exception_handler(_exception_handler)
+            runner.run(preprocess(files))
+    finally:
+        sys.stderr = sys.stderr._wrapped  # type: ignore[union-attr]

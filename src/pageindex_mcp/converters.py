@@ -1,5 +1,117 @@
 """Document format conversion helpers and tree search utilities."""
 
+import asyncio
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+
+
+def libreoffice_to_pdf(input_path: str) -> str:
+    """Convert a DOCX/PPTX file to PDF via LibreOffice headless.
+
+    Returns the path to the generated PDF in a temporary directory.
+    The caller is responsible for cleaning up the parent directory:
+        shutil.rmtree(os.path.dirname(pdf_path), ignore_errors=True)
+    """
+    lo = shutil.which("libreoffice") or shutil.which("soffice")
+    if not lo:
+        raise RuntimeError(
+            "LibreOffice not found. Install libreoffice-headless and ensure it is on PATH."
+        )
+    outdir = tempfile.mkdtemp(prefix="lo_pdf_")
+    # Each conversion gets its own profile dir so parallel invocations don't conflict.
+    profile_dir = os.path.join(outdir, "lo_profile")
+    os.makedirs(profile_dir, exist_ok=True)
+    try:
+        result = subprocess.run(
+            [
+                lo,
+                f"-env:UserInstallation=file://{profile_dir}",
+                "--headless",
+                "--convert-to", "pdf",
+                "--outdir", outdir,
+                input_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        stem = os.path.splitext(os.path.basename(input_path))[0]
+        pdf_path = os.path.join(outdir, f"{stem}.pdf")
+        # Check for the PDF first; a non-zero exit may be a recoverable warning
+        if not os.path.isfile(pdf_path):
+            pdfs = [f for f in os.listdir(outdir) if f.endswith(".pdf")]
+            if pdfs:
+                pdf_path = os.path.join(outdir, pdfs[0])
+            elif result.returncode != 0:
+                raise RuntimeError(
+                    f"LibreOffice conversion failed (exit {result.returncode}): {result.stderr.strip()}"
+                )
+            else:
+                raise RuntimeError("LibreOffice did not produce a PDF file.")
+        return pdf_path
+    except Exception:
+        shutil.rmtree(outdir, ignore_errors=True)
+        raise
+
+
+async def html_to_markdown_with_images(path: str, model: str) -> str:
+    """Convert an HTML file to markdown, replacing <img> tags with vision-API descriptions.
+
+    Images are described concurrently via the OpenAI vision API and inserted as
+    [Image: <description>] markers at the position of the original <img> tag.
+    """
+    import html2text
+    import openai
+
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        html_content = f.read()
+
+    img_pattern = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"'][^>]*/?>", re.IGNORECASE)
+    srcs = img_pattern.findall(html_content)
+
+    async def _describe(src: str) -> str:
+        try:
+            client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": src}},
+                            {
+                                "type": "text",
+                                "text": "Describe this image concisely in 1-2 sentences for document context.",
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=150,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return "image"
+
+    descriptions = await asyncio.gather(*(_describe(src) for src in srcs))
+
+    counter = iter(range(len(descriptions)))
+
+    def _replace(match: re.Match) -> str:
+        i = next(counter, None)
+        desc = descriptions[i] if i is not None else "image"
+        return f"[Image: {desc}]"
+
+    modified_html = img_pattern.sub(_replace, html_content)
+
+    h = html2text.HTML2Text()
+    h.ignore_images = True
+    h.ignore_links = False
+    h.body_width = 0
+    return h.handle(modified_html)
+
 
 def flatten_nodes(nodes: list, results: list, query_lower: str) -> None:
     """Recursively walk PageIndex tree nodes and collect keyword matches in-place."""

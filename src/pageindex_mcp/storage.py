@@ -87,7 +87,7 @@ def list_processed_docs() -> list[dict]:
             data = json.loads(response.read())
             docs.append({
                 "doc_id":       data.get("doc_id", doc_id),
-                "filename":     data.get("filename", "unknown"),
+                "doc_name":     data.get("doc_name", data.get("filename", "unknown")),
                 "source_url":   data.get("source_url", ""),
                 "processed_at": data.get("processed_at", ""),
             })
@@ -117,6 +117,46 @@ def save_raw(doc_id: str, filename: str, data: bytes) -> None:
         BytesIO(data),
         len(data),
         content_type=content_type,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hash cache  (MinIO: hashes/processed_hashes.json)
+# ---------------------------------------------------------------------------
+
+HASH_OBJECT = "hashes/processed_hashes.json"
+
+
+def load_hash_cache() -> dict[str, str]:
+    """Load {filename: sha256} dedup cache from MinIO. Returns empty dict if absent."""
+    mc = get_minio()
+    response = None
+    try:
+        response = mc.get_object(settings.minio_bucket, HASH_OBJECT)
+        return json.loads(response.read())
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            return {}
+        raise
+    finally:
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+
+
+def save_hash_cache(cache: dict[str, str]) -> None:
+    """Write {filename: sha256} dedup cache to MinIO."""
+    mc = get_minio()
+    content = json.dumps(cache, indent=2).encode()
+    mc.put_object(
+        settings.minio_bucket,
+        HASH_OBJECT,
+        BytesIO(content),
+        len(content),
+        content_type="application/json",
     )
 
 
