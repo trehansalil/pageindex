@@ -100,6 +100,20 @@ async def test_unsupported_extension_returns_400(client):
     assert ".exe" in response.json()["detail"]
 
 
+async def test_path_traversal_filename_is_sanitized(client):
+    """A filename with path separators must be stripped to the basename."""
+    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
+        MockClient.return_value.index = AsyncMock(return_value="abc12345")
+        response = await client.post(
+            "/files",
+            files=[("files", ("../../etc/passwd.pdf", b"%PDF-1.4 fake", "application/pdf"))],
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+    assert response.status_code == 202
+    body = response.json()
+    assert body[0]["filename"] == "passwd.pdf"
+
+
 # ---------------------------------------------------------------------------
 # Upload + status flow tests
 # ---------------------------------------------------------------------------

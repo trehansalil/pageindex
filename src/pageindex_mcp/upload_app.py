@@ -92,7 +92,8 @@ def create_upload_app() -> FastAPI:
         """Accept one or more files, enqueue async indexing, return job IDs."""
         results = []
         for file in files:
-            filename = file.filename or "upload"
+            # Sanitize: strip path components to prevent path traversal.
+            filename = Path(file.filename or "upload").name
             ext = Path(filename).suffix.lower()
             if ext not in _SUPPORTED:
                 raise HTTPException(
