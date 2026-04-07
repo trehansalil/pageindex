@@ -18,6 +18,8 @@ dependencies = [
     "html2text>=2020.1.16",
     "redis[asyncio]>=5.0.0",
     "fastapi>=0.110.0",
+    "uvicorn>=0.30.0",
+    "anyio>=4.0.0",
     "python-multipart>=0.0.9",
     "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
 ]

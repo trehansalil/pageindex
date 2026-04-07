@@ -8,7 +8,11 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
-from pageindex_mcp.upload_app import create_upload_app, get_redis, require_api_key
+from pageindex_mcp.upload_app import (
+    create_upload_app,
+    get_redis,
+    _background_tasks,
+)
 
 TEST_API_KEY = "test-key-123"
 
@@ -50,6 +54,15 @@ def _pdf_file(name: str = "report.pdf") -> tuple[str, bytes, str]:
 
 def _txt_file(name: str = "notes.txt") -> tuple[str, bytes, str]:
     return ("files", (name, b"hello world", "text/plain"))
+
+
+async def _wait_for_tasks(timeout: float = 2.0) -> None:
+    """Wait until all background tasks have completed, with a timeout."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while _background_tasks:
+        if asyncio.get_event_loop().time() > deadline:
+            raise TimeoutError("Background tasks did not complete in time")
+        await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +184,9 @@ async def test_status_pending_immediately_after_upload(client, fake_redis):
     assert status_resp.status_code == 200
     assert status_resp.json()["status"] == "pending"
 
-    # Unblock and let the background task finish cleanly before the test exits.
+    # Unblock and let the background task finish cleanly.
     block.set()
-    await asyncio.sleep(0.1)
+    await _wait_for_tasks()
 
 
 async def test_status_done_after_processing(client, fake_redis):
@@ -185,8 +198,7 @@ async def test_status_done_after_processing(client, fake_redis):
             headers={"X-API-Key": TEST_API_KEY},
         )
         job_id = response.json()[0]["job_id"]
-        # Yield to let background task complete
-        await asyncio.sleep(0.1)
+        await _wait_for_tasks()
 
     status_resp = await client.get(
         f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
@@ -206,7 +218,7 @@ async def test_status_error_on_processing_failure(client, fake_redis):
             headers={"X-API-Key": TEST_API_KEY},
         )
         job_id = response.json()[0]["job_id"]
-        await asyncio.sleep(0.1)
+        await _wait_for_tasks()
 
     status_resp = await client.get(
         f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
@@ -222,3 +234,37 @@ async def test_unknown_job_id_returns_404(client):
         "/status/nonexistent-job-id", headers={"X-API-Key": TEST_API_KEY}
     )
     assert response.status_code == 404
+
+
+async def test_cancelled_task_writes_error_status(client, fake_redis):
+    """If a background task is cancelled, the job should get an error status."""
+    block = asyncio.Event()
+
+    async def blocking_index(_path):
+        await block.wait()
+        return "abc12345"
+
+    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
+        MockClient.return_value.index = blocking_index
+        response = await client.post(
+            "/files",
+            files=[_pdf_file()],
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+        job_id = response.json()[0]["job_id"]
+
+        # Give the background task a chance to start and block on the event.
+        await asyncio.sleep(0.05)
+
+        # Cancel and await the task so the CancelledError handler runs.
+        tasks = list(_background_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    status_resp = await client.get(
+        f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
+    )
+    data = status_resp.json()
+    assert data["status"] == "error"
+    assert "cancelled" in data["error"]

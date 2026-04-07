@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import secrets
 import shutil
 import tempfile
 import uuid
@@ -16,6 +17,7 @@ from .client import CustomPageIndexClient, _SUPPORTED
 from .config import settings
 
 JOB_TTL = 86_400  # 24 hours in seconds
+_WRITE_CHUNK = 64 * 1024  # 64 KiB chunks for streaming writes
 
 
 def _job_key(job_id: str) -> str:
@@ -48,7 +50,7 @@ async def require_api_key(
     configured = settings.upload_api_key
     if not configured:
         raise HTTPException(status_code=503, detail="Upload API key not configured")
-    if not x_api_key or x_api_key != configured:
+    if not x_api_key or not secrets.compare_digest(x_api_key, configured):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
@@ -68,6 +70,12 @@ async def _process_file(
         doc_id = await client.index(tmp_path)
         await redis.hset(_job_key(job_id), mapping={"status": "done", "doc_id": doc_id})
         await redis.expire(_job_key(job_id), JOB_TTL)
+    except asyncio.CancelledError:
+        await redis.hset(
+            _job_key(job_id), mapping={"status": "error", "error": "cancelled"}
+        )
+        await redis.expire(_job_key(job_id), JOB_TTL)
+        raise
     except Exception as exc:
         await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
         await redis.expire(_job_key(job_id), JOB_TTL)
@@ -104,14 +112,14 @@ def create_upload_app() -> FastAPI:
                     ),
                 )
 
-            content = await file.read()
-
             # Use a unique temp dir so concurrent uploads of the same filename don't clash.
             # The file must keep its original name so CustomPageIndexClient's hash-based
             # dedup (which keys on basename) works correctly.
             tmp_dir = tempfile.mkdtemp()
             tmp_path = os.path.join(tmp_dir, filename)
-            Path(tmp_path).write_bytes(content)
+
+            # Stream to disk in chunks to avoid holding entire file in memory.
+            await asyncio.to_thread(_stream_to_disk, file.file, tmp_path)
 
             job_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc).isoformat()
@@ -148,3 +156,10 @@ def create_upload_app() -> FastAPI:
         return {"job_id": job_id, **data}
 
     return app
+
+
+def _stream_to_disk(src, dest_path: str) -> None:
+    """Copy a file-like object to *dest_path* in chunks (runs in a thread)."""
+    with open(dest_path, "wb") as f:
+        while chunk := src.read(_WRITE_CHUNK):
+            f.write(chunk)
