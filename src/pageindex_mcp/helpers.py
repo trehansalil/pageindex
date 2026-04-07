@@ -3,21 +3,33 @@
 import json
 import os
 import re
+import time
 
 import openai
 
+from .metrics import (
+    LLM_CALLS,
+    LLM_DURATION,
+    RAG_DURATION,
+    RAG_SEARCHES,
+)
 from .storage import load_doc
 
 
 async def _llm(prompt: str) -> str:
     """Call the configured OpenAI-compatible model."""
-    client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    r = await client.chat.completions.create(
-        model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-    )
-    return r.choices[0].message.content.strip()
+    LLM_CALLS.inc()
+    start = time.monotonic()
+    try:
+        client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        r = await client.chat.completions.create(
+            model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        return r.choices[0].message.content.strip()
+    finally:
+        LLM_DURATION.observe(time.monotonic() - start)
 
 
 def _strip_text(nodes: list) -> list:
@@ -45,6 +57,15 @@ async def _rag(query: str, doc_ids: list[str]) -> str:
     Run PageIndex tree-search + answer-generation pipeline.
     doc_ids: list of doc_id strings as stored in MinIO processed/ prefix.
     """
+    RAG_SEARCHES.inc()
+    start = time.monotonic()
+    try:
+        return await _rag_inner(query, doc_ids)
+    finally:
+        RAG_DURATION.observe(time.monotonic() - start)
+
+
+async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     context_parts: list[str] = []
 
     for doc_id in doc_ids:

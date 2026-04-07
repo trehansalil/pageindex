@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from starlette.applications import Starlette
 from starlette.routing import Route
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from pageindex_mcp.metrics import metrics_response, TOOL_CALLS, TOOL_ERRORS, TOOL_DURATION, DOCUMENTS_TOTAL
 
@@ -99,3 +99,54 @@ class TestUploadInstrumentation:
     def test_active_uploads_gauge_exists(self):
         val = _gauge_value(ACTIVE_UPLOADS)
         assert val >= 0
+
+
+import asyncio
+from pageindex_mcp.metrics import LLM_CALLS, LLM_DURATION, RAG_SEARCHES, RAG_DURATION
+
+
+class TestLLMInstrumentation:
+    def test_llm_call_increments_counter(self):
+        before = _counter_value(LLM_CALLS)
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "test answer"
+
+        with patch("pageindex_mcp.helpers.openai.AsyncOpenAI") as MockClient:
+            MockClient.return_value.chat.completions.create = AsyncMock(
+                return_value=mock_response
+            )
+            from pageindex_mcp.helpers import _llm
+            asyncio.get_event_loop().run_until_complete(_llm("test prompt"))
+
+        after = _counter_value(LLM_CALLS)
+        assert after == before + 1
+
+
+from pageindex_mcp.metrics import MINIO_OPS, MINIO_DURATION
+
+
+class TestStorageInstrumentation:
+    def test_list_processed_docs_increments_minio_ops(self):
+        before = _counter_value(MINIO_OPS, {"operation": "list"})
+        mock_minio = MagicMock()
+        mock_minio.list_objects.return_value = []
+        with patch("pageindex_mcp.storage.get_minio", return_value=mock_minio):
+            from pageindex_mcp.storage import list_processed_docs
+            list_processed_docs()
+        after = _counter_value(MINIO_OPS, {"operation": "list"})
+        assert after == before + 1
+
+    def test_load_doc_increments_minio_ops(self):
+        before = _counter_value(MINIO_OPS, {"operation": "get"})
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"structure": []}'
+        mock_minio = MagicMock()
+        mock_minio.get_object.return_value = mock_response
+        with patch("pageindex_mcp.storage.get_minio", return_value=mock_minio), \
+             patch("pageindex_mcp.storage.settings") as mock_settings:
+            mock_settings.minio_bucket = "test"
+            from pageindex_mcp.storage import load_doc
+            load_doc("abc123")
+        after = _counter_value(MINIO_OPS, {"operation": "get"})
+        assert after == before + 1
