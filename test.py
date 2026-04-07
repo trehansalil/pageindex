@@ -13,7 +13,7 @@ async def main():
     client = MultiServerMCPClient({
         "pageindex": {
             "transport": "streamable_http",
-            "url": "http://localhost:8201/mcp",
+            "url": "http://pageindex.aiwithsalil.work/mcp",
             "headers": {
                 "Authorization": f"Bearer {MCP_BEARER_TOKEN}"
             }
@@ -27,7 +27,7 @@ async def main():
     agent = create_agent(llm, tools)
 
     response = await agent.ainvoke({
-        "messages": [{"role": "user", "content": "How do I apply for annual leave?"}]
+        "messages": [{"role": "user", "content": "What can you tell me about Ravi Kumar's CV?"}]
     })
     print(response["messages"][-1].content)
 
