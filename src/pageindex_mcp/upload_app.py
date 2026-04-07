@@ -5,7 +5,6 @@ import os
 import shutil
 import tempfile
 import uuid
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -31,20 +30,11 @@ _redis: aioredis.Redis | None = None
 _background_tasks: set[asyncio.Task] = set()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _redis
-    _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
-    try:
-        yield
-    finally:
-        await _redis.aclose()
-
-
 def get_redis() -> aioredis.Redis:
-    """Dependency: returns the module-level Redis client."""
+    """Dependency: returns the Redis client, initialising it on first call."""
+    global _redis
     if _redis is None:
-        raise RuntimeError("Redis client not initialised")
+        _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     return _redis
 
 
@@ -91,7 +81,7 @@ async def _process_file(
 
 def create_upload_app() -> FastAPI:
     """Return a FastAPI app to be mounted at /upload on the parent Starlette app."""
-    app = FastAPI(title="PageIndex Upload", lifespan=lifespan)
+    app = FastAPI(title="PageIndex Upload")
 
     @app.post("/files", status_code=202)
     async def upload_files(
