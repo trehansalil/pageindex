@@ -64,7 +64,6 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
     [Image: <description>] markers at the position of the original <img> tag.
     """
     import html2text
-    import openai
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         html_content = f.read()
@@ -74,11 +73,8 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
 
     async def _describe(src: str) -> str:
         try:
-            from .config import settings
-            client = openai.AsyncOpenAI(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_base_url,
-            )
+            from .config import get_openai_client
+            client = get_openai_client()
             response = await client.chat.completions.create(
                 model=model,
                 messages=[

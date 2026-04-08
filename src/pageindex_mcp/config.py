@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import openai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,6 +38,7 @@ class Settings:
     # LLM configuration
     openai_api_key: str
     openai_base_url: str | None
+    azure_api_version: str | None
     llm_model: str
     llm_filter_model: str
     llm_search_model: str
@@ -62,6 +64,7 @@ def _load_settings() -> Settings:
         mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        azure_api_version=os.environ.get("AZURE_API_VERSION"),
         llm_model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
         llm_filter_model=os.environ.get("PAGEINDEX_FILTER_MODEL", "gpt-4o-mini"),
         llm_search_model=os.environ.get("PAGEINDEX_SEARCH_MODEL", "gpt-4o-mini"),
@@ -71,3 +74,22 @@ def _load_settings() -> Settings:
 
 # Module-level singleton — all other modules do `from .config import settings`
 settings: Settings = _load_settings()
+
+
+def _is_azure_url(url: str | None) -> bool:
+    """Return True when the base URL points to Azure OpenAI."""
+    return bool(url and ".openai.azure.com" in url)
+
+
+def get_openai_client() -> openai.AsyncOpenAI:
+    """Return an AsyncOpenAI or AsyncAzureOpenAI client based on the configured base URL."""
+    if _is_azure_url(settings.openai_base_url):
+        return openai.AsyncAzureOpenAI(
+            api_key=settings.openai_api_key,
+            azure_endpoint=settings.openai_base_url,
+            api_version=settings.azure_api_version or "2024-08-01-preview",
+        )
+    return openai.AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+    )

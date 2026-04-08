@@ -112,8 +112,8 @@ class TestLLMInstrumentation:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "test answer"
 
-        with patch("pageindex_mcp.helpers.openai.AsyncOpenAI") as MockClient:
-            MockClient.return_value.chat.completions.create = AsyncMock(
+        with patch("pageindex_mcp.helpers.get_openai_client") as MockFactory:
+            MockFactory.return_value.chat.completions.create = AsyncMock(
                 return_value=mock_response
             )
             from pageindex_mcp.helpers import _llm

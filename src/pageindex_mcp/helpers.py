@@ -6,9 +6,7 @@ import logging
 import re
 import time
 
-import openai
-
-from .config import settings
+from .config import get_openai_client, settings
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
@@ -31,10 +29,7 @@ async def _llm(prompt: str, model: str | None = None) -> str:
     LLM_CALLS.inc()
     start = time.monotonic()
     try:
-        client = openai.AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-        )
+        client = get_openai_client()
         r = await client.chat.completions.create(
             model=model or _ANSWER_MODEL,
             messages=[{"role": "user", "content": prompt}],
