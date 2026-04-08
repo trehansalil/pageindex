@@ -11,12 +11,10 @@ from httpx import AsyncClient, ASGITransport
 from pageindex_mcp.upload_app import (
     create_upload_app,
     get_redis,
-    _background_tasks,
 )
 
 TEST_API_KEY = "test-key-123"
 
-# Patch settings for the entire test module so require_api_key uses our key.
 _mock_settings = MagicMock()
 _mock_settings.upload_api_key = TEST_API_KEY
 
@@ -33,10 +31,22 @@ def fake_redis():
 
 
 @pytest.fixture
-def app(fake_redis):
+def mock_arq_pool():
+    pool = AsyncMock()
+    pool.enqueue_job = AsyncMock()
+    return pool
+
+
+@pytest.fixture
+def app(fake_redis, mock_arq_pool):
     _app = create_upload_app()
     _app.dependency_overrides[get_redis] = lambda: fake_redis
-    return _app
+
+    async def _fake_get_arq_pool():
+        return mock_arq_pool
+
+    with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
+        yield _app
 
 
 @pytest_asyncio.fixture
@@ -48,21 +58,11 @@ async def client(app):
 
 
 def _pdf_file(name: str = "report.pdf") -> tuple[str, bytes, str]:
-    """Return (field_name, content, filename) for a fake PDF upload."""
     return ("files", (name, b"%PDF-1.4 fake content", "application/pdf"))
 
 
 def _txt_file(name: str = "notes.txt") -> tuple[str, bytes, str]:
     return ("files", (name, b"hello world", "text/plain"))
-
-
-async def _wait_for_tasks(timeout: float = 2.0) -> None:
-    """Wait until all background tasks have completed, with a timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while _background_tasks:
-        if asyncio.get_event_loop().time() > deadline:
-            raise TimeoutError("Background tasks did not complete in time")
-        await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -114,14 +114,11 @@ async def test_unsupported_extension_returns_400(client):
 
 
 async def test_path_traversal_filename_is_sanitized(client):
-    """A filename with path separators must be stripped to the basename."""
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = AsyncMock(return_value="abc12345")
-        response = await client.post(
-            "/files",
-            files=[("files", ("../../etc/passwd.pdf", b"%PDF-1.4 fake", "application/pdf"))],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
+    response = await client.post(
+        "/files",
+        files=[("files", ("../../etc/passwd.pdf", b"%PDF-1.4 fake", "application/pdf"))],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
     assert response.status_code == 202
     body = response.json()
     assert body[0]["filename"] == "passwd.pdf"
@@ -132,13 +129,11 @@ async def test_path_traversal_filename_is_sanitized(client):
 # ---------------------------------------------------------------------------
 
 async def test_single_upload_returns_job_id(client):
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = AsyncMock(return_value="abc12345")
-        response = await client.post(
-            "/files",
-            files=[_pdf_file("invoice.pdf")],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
+    response = await client.post(
+        "/files",
+        files=[_pdf_file("invoice.pdf")],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
     assert response.status_code == 202
     body = response.json()
     assert len(body) == 1
@@ -147,83 +142,78 @@ async def test_single_upload_returns_job_id(client):
 
 
 async def test_multi_file_upload_returns_one_job_per_file(client):
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = AsyncMock(return_value="abc12345")
-        response = await client.post(
-            "/files",
-            files=[_pdf_file("a.pdf"), _txt_file("b.txt")],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
+    response = await client.post(
+        "/files",
+        files=[_pdf_file("a.pdf"), _txt_file("b.txt")],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
     assert response.status_code == 202
     body = response.json()
     assert len(body) == 2
     job_ids = {item["job_id"] for item in body}
-    assert len(job_ids) == 2  # distinct job IDs
+    assert len(job_ids) == 2
 
 
-async def test_status_pending_immediately_after_upload(client, fake_redis):
-    # Block index so the task stays pending while we check the status.
-    block = asyncio.Event()
+async def test_upload_enqueues_arq_job(client, mock_arq_pool):
+    response = await client.post(
+        "/files",
+        files=[_pdf_file()],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    assert response.status_code == 202
+    mock_arq_pool.enqueue_job.assert_awaited_once()
+    call_args = mock_arq_pool.enqueue_job.call_args
+    assert call_args[0][0] == "process_document_job"
 
-    async def slow_index(_path):
-        await block.wait()
-        return "abc12345"
 
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = slow_index
-        response = await client.post(
-            "/files",
-            files=[_pdf_file()],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
+async def test_status_pending_after_upload(client, fake_redis):
+    response = await client.post(
+        "/files",
+        files=[_pdf_file()],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
     job_id = response.json()[0]["job_id"]
-
     status_resp = await client.get(
         f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
     )
     assert status_resp.status_code == 200
     assert status_resp.json()["status"] == "pending"
 
-    # Unblock and let the background task finish cleanly.
-    block.set()
-    await _wait_for_tasks()
 
+async def test_status_done_when_worker_completes(client, fake_redis):
+    """Simulate worker completion by writing done status to Redis."""
+    response = await client.post(
+        "/files",
+        files=[_pdf_file()],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    job_id = response.json()[0]["job_id"]
 
-async def test_status_done_after_processing(client, fake_redis):
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = AsyncMock(return_value="deadbeef")
-        response = await client.post(
-            "/files",
-            files=[_pdf_file()],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
-        job_id = response.json()[0]["job_id"]
-        await _wait_for_tasks()
+    # Simulate worker writing done status
+    await fake_redis.hset(f"pageindex:job:{job_id}", mapping={"status": "done", "doc_id": "deadbeef"})
 
     status_resp = await client.get(
         f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
     )
-    assert status_resp.status_code == 200
     data = status_resp.json()
     assert data["status"] == "done"
     assert data["doc_id"] == "deadbeef"
 
 
-async def test_status_error_on_processing_failure(client, fake_redis):
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = AsyncMock(side_effect=RuntimeError("indexing failed"))
-        response = await client.post(
-            "/files",
-            files=[_pdf_file()],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
-        job_id = response.json()[0]["job_id"]
-        await _wait_for_tasks()
+async def test_status_error_when_worker_fails(client, fake_redis):
+    """Simulate worker failure by writing error status to Redis."""
+    response = await client.post(
+        "/files",
+        files=[_pdf_file()],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    job_id = response.json()[0]["job_id"]
+
+    await fake_redis.hset(f"pageindex:job:{job_id}", mapping={"status": "error", "error": "indexing failed"})
 
     status_resp = await client.get(
         f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
     )
-    assert status_resp.status_code == 200
     data = status_resp.json()
     assert data["status"] == "error"
     assert "indexing failed" in data["error"]
@@ -234,37 +224,3 @@ async def test_unknown_job_id_returns_404(client):
         "/status/nonexistent-job-id", headers={"X-API-Key": TEST_API_KEY}
     )
     assert response.status_code == 404
-
-
-async def test_cancelled_task_writes_error_status(client, fake_redis):
-    """If a background task is cancelled, the job should get an error status."""
-    block = asyncio.Event()
-
-    async def blocking_index(_path):
-        await block.wait()
-        return "abc12345"
-
-    with patch("pageindex_mcp.upload_app.CustomPageIndexClient") as MockClient:
-        MockClient.return_value.index = blocking_index
-        response = await client.post(
-            "/files",
-            files=[_pdf_file()],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
-        job_id = response.json()[0]["job_id"]
-
-        # Give the background task a chance to start and block on the event.
-        await asyncio.sleep(0.05)
-
-        # Cancel and await the task so the CancelledError handler runs.
-        tasks = list(_background_tasks)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    status_resp = await client.get(
-        f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
-    )
-    data = status_resp.json()
-    assert data["status"] == "error"
-    assert "cancelled" in data["error"]

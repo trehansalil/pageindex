@@ -2,10 +2,8 @@
 
 import asyncio
 import logging
-import time
 import os
 import secrets
-import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -13,11 +11,12 @@ from pathlib import Path
 from typing import Annotated
 
 import redis.asyncio as aioredis
+from arq import create_pool
+from arq.connections import RedisSettings
 from fastapi import Depends, FastAPI, HTTPException, Header, UploadFile
 
-from .client import CustomPageIndexClient, _SUPPORTED
+from .client import _SUPPORTED
 from .config import settings
-from .metrics import ACTIVE_UPLOADS, UPLOADS, UPLOAD_DURATION
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,8 @@ def _job_key(job_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 _redis: aioredis.Redis | None = None
-_background_tasks: set[asyncio.Task] = set()
+_arq_pool = None
+_arq_lock = asyncio.Lock()
 
 
 def get_redis() -> aioredis.Redis:
@@ -43,6 +43,18 @@ def get_redis() -> aioredis.Redis:
     if _redis is None:
         _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     return _redis
+
+
+async def _get_arq_pool():
+    """Lazy-init arq connection pool for enqueuing jobs."""
+    global _arq_pool
+    if _arq_pool is None:
+        async with _arq_lock:
+            if _arq_pool is None:
+                _arq_pool = await create_pool(
+                    RedisSettings.from_dsn(settings.redis_url)
+                )
+    return _arq_pool
 
 
 # ---------------------------------------------------------------------------
@@ -57,47 +69,6 @@ async def require_api_key(
         raise HTTPException(status_code=503, detail="Upload API key not configured")
     if not x_api_key or not secrets.compare_digest(x_api_key, configured):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
-
-
-# ---------------------------------------------------------------------------
-# Background processing
-# ---------------------------------------------------------------------------
-
-async def _process_file(
-    job_id: str,
-    tmp_path: str,
-    redis: aioredis.Redis,
-) -> None:
-    """Index a file and write the result to Redis. Cleans up temp dir on exit."""
-    tmp_dir = os.path.dirname(tmp_path)
-    filename = os.path.basename(tmp_path)
-    ACTIVE_UPLOADS.inc()
-    start = time.monotonic()
-    logger.info("Processing started: job=%s file=%s", job_id, filename)
-    try:
-        client = CustomPageIndexClient()
-        doc_id = await client.index(tmp_path)
-        await redis.hset(_job_key(job_id), mapping={"status": "done", "doc_id": doc_id})
-        await redis.expire(_job_key(job_id), JOB_TTL)
-        UPLOADS.labels(status="success").inc()
-        logger.info("Processing done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start)
-    except asyncio.CancelledError:
-        await redis.hset(
-            _job_key(job_id), mapping={"status": "error", "error": "cancelled"}
-        )
-        await redis.expire(_job_key(job_id), JOB_TTL)
-        UPLOADS.labels(status="error").inc()
-        logger.warning("Processing cancelled: job=%s file=%s", job_id, filename)
-        raise
-    except Exception as exc:
-        await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
-        await redis.expire(_job_key(job_id), JOB_TTL)
-        UPLOADS.labels(status="error").inc()
-        logger.error("Processing failed: job=%s file=%s error=%s", job_id, filename, exc, exc_info=True)
-    finally:
-        UPLOAD_DURATION.observe(time.monotonic() - start)
-        ACTIVE_UPLOADS.dec()
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +87,9 @@ def create_upload_app() -> FastAPI:
     ) -> list[dict]:
         """Accept one or more files, enqueue async indexing, return job IDs."""
         logger.info("Upload request received: %d file(s)", len(files))
+        arq_pool = await _get_arq_pool()
         results = []
         for file in files:
-            # Sanitize: strip path components to prevent path traversal.
             filename = Path(file.filename or "upload").name
             ext = Path(filename).suffix.lower()
             if ext not in _SUPPORTED:
@@ -131,13 +102,8 @@ def create_upload_app() -> FastAPI:
                     ),
                 )
 
-            # Use a unique temp dir so concurrent uploads of the same filename don't clash.
-            # The file must keep its original name so CustomPageIndexClient's hash-based
-            # dedup (which keys on basename) works correctly.
             tmp_dir = tempfile.mkdtemp()
             tmp_path = os.path.join(tmp_dir, filename)
-
-            # Stream to disk in chunks to avoid holding entire file in memory.
             await asyncio.to_thread(_stream_to_disk, file.file, tmp_path)
             logger.debug("Saved upload to temp path: %s", tmp_path)
 
@@ -153,9 +119,9 @@ def create_upload_app() -> FastAPI:
             )
             await redis.expire(_job_key(job_id), JOB_TTL)
 
-            task = asyncio.create_task(_process_file(job_id, tmp_path, redis))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            await arq_pool.enqueue_job(
+                "process_document_job", tmp_path, job_id,
+            )
             results.append({"job_id": job_id, "filename": filename})
             logger.info("Enqueued job %s for file %s", job_id, filename)
 
