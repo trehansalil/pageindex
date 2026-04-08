@@ -73,8 +73,9 @@ async def find_relevant_documents(query: str) -> str:
     start = time.monotonic()
     logger.info("find_relevant_documents called (query=%r)", query[:100])
     try:
+        list_t0 = time.monotonic()
         documents = list_processed_docs()
-        logger.info("find_relevant_documents: %d documents indexed", len(documents))
+        logger.info("find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)", time.monotonic() - list_t0, len(documents))
         if not documents:
             logger.warning("find_relevant_documents: no documents indexed")
             return "No documents are indexed. Process documents first."
