@@ -13,7 +13,7 @@ async def main():
     client = MultiServerMCPClient({
         "pageindex": {
             "transport": "streamable_http",
-            "url": "http://pageindex.aiwithsalil.work/mcp",
+            "url": "https://pageindex.aiwithsalil.work/mcp",
             "headers": {
                 "Authorization": f"Bearer {MCP_BEARER_TOKEN}"
             }

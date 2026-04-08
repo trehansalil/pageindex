@@ -23,7 +23,7 @@ Environment variables (copy to `.env`):
 - `MINIO_SECURE` — defaults to `false`
 - `REDIS_URL` — Redis connection string (defaults to `redis://neonatal-care-redis.neonatal-care:6379/1`)
 - `UPLOAD_API_KEY` — required for the `/upload` endpoint
-- `WEB_CONCURRENCY` — number of gunicorn workers (default: `2 * CPU + 1`, max 9)
+- `WEB_CONCURRENCY` — number of gunicorn workers (default: `1`; must stay 1 because MCP sessions are in-memory per worker — scale via pod replicas + Traefik sticky sessions)
 - `CACHE_TTL` — Redis cache TTL in seconds for processed documents (default: `300`)
 
 ## Running the Server
