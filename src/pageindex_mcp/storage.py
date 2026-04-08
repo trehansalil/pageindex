@@ -10,6 +10,7 @@ from threading import Lock
 from minio import Minio
 from minio.error import S3Error
 
+from .cache import doc_cache_delete, doc_cache_get, doc_cache_set
 from .config import settings
 from .metrics import MINIO_DURATION, MINIO_OPS
 
@@ -44,7 +45,12 @@ def get_minio() -> Minio:
 # ---------------------------------------------------------------------------
 
 def load_doc(doc_id: str) -> dict:
-    """Fetch and deserialize processed/<doc_id>.json. Raises ValueError if absent."""
+    """Fetch processed/<doc_id>.json. Uses Redis cache when available."""
+    cached = doc_cache_get(doc_id)
+    if cached is not None:
+        logger.debug("Cache hit for doc %s", doc_id)
+        return cached
+
     MINIO_OPS.labels(operation="get").inc()
     start = time.monotonic()
     mc = get_minio()
@@ -52,6 +58,7 @@ def load_doc(doc_id: str) -> dict:
         response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.json")
         data = json.loads(response.read())
         logger.debug("Loaded doc %s from MinIO", doc_id)
+        doc_cache_set(doc_id, data)
         return data
     except S3Error as e:
         if e.code == "NoSuchKey":
@@ -83,6 +90,7 @@ def save_doc(doc_id: str, data: dict) -> None:
             content_type="application/json",
         )
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
+        doc_cache_delete(doc_id)
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
@@ -93,6 +101,7 @@ def delete_doc(doc_id: str) -> None:
     start = time.monotonic()
     mc = get_minio()
     try:
+        doc_cache_delete(doc_id)
         mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.meta.json")

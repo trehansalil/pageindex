@@ -31,6 +31,7 @@ class Settings:
     server_port: int
     redis_url: str
     upload_api_key: str
+    cache_ttl: int
 
 
 def _load_settings() -> Settings:
@@ -48,6 +49,7 @@ def _load_settings() -> Settings:
             "REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"
         ),
         upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
+        cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
     )
 
 
