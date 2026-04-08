@@ -21,11 +21,22 @@ Environment variables (copy to `.env`):
 - `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — defaults to `minioadmin`/`minioadmin`
 - `MINIO_BUCKET` — defaults to `pageindex`
 - `MINIO_SECURE` — defaults to `false`
+- `REDIS_URL` — Redis connection string (defaults to `redis://neonatal-care-redis.neonatal-care:6379/1`)
+- `UPLOAD_API_KEY` — required for the `/upload` endpoint
+- `WEB_CONCURRENCY` — number of gunicorn workers (default: `2 * CPU + 1`, max 9)
+- `CACHE_TTL` — Redis cache TTL in seconds for processed documents (default: `300`)
 
 ## Running the Server
 
 ```bash
-uv run python mcp_server.py      # starts HTTP MCP server at http://0.0.0.0:8201/mcp
+# Development (single process)
+uv run python mcp_server.py
+
+# Production (gunicorn with uvicorn workers)
+uv run gunicorn -c gunicorn.conf.py pageindex_mcp.server:app
+
+# Start arq workers (separate process for document processing)
+uv run arq pageindex_mcp.worker.WorkerSettings
 ```
 
 ## Uploading Documents
@@ -48,14 +59,17 @@ uv run python preprocess_client.py --bg           # background, logs to preproce
 
 ## Architecture
 
-**`mcp_server.py`** — the core server. Registers these MCP tools via `FastMCP`:
-- `process_document(url)` — downloads/reads a PDF, runs `page_index_main` to build an index tree, stores raw upload + processed JSON in MinIO
-- `upload_and_process_document(filename, content_base64)` — same but accepts base64 content; converts DOCX/PPTX to markdown first via `md_to_tree`
-- `list_documents()` / `get_document_summary(doc_id)` / `search_document(doc_id, query)` — query the stored index
-- `delete_document(doc_id)` / `sync_preloaded_documents()` — management operations
+**`mcp_server.py`** / **`server.py`** — the core server. Exposes a module-level ASGI `app` for gunicorn and registers these MCP query tools via `FastMCP`:
+- `recent_documents()` / `find_relevant_documents(query)` / `get_document(doc_id)` — query the stored index
+- `get_document_structure(doc_id)` / `get_page_content(doc_id, pages)` — retrieve document structure and content
+
+**`worker.py`** — arq worker process. Runs `process_document_job` tasks enqueued by the upload endpoint. Start separately from the MCP server so document processing doesn't compete with query serving.
+
+**`cache.py`** — Redis-backed document cache shared across gunicorn workers. `load_doc` checks Redis before hitting MinIO. Invalidated on `save_doc`/`delete_doc`.
 
 **Storage layout in MinIO:**
 - `processed/<doc_id>.json` — the indexed tree (title, summary, nodes hierarchy)
+- `processed/<doc_id>.meta.json` — lightweight metadata sidecar (doc_id, doc_name, source_url, processed_at) used by listing to avoid downloading full trees
 - `uploads/<doc_id>/<filename>` — the raw source file
 - `preloaded/<filename>` — source files synced from local `doc_store/`
 - `hashes/processed_hashes.json` — change-detection cache used by `preprocess_client.py`
@@ -71,5 +85,7 @@ uv run python preprocess_client.py --bg           # background, logs to preproce
 ## Notes
 
 - `doc_id` values are 8-character UUID prefixes generated at processing time.
-- Long-running tools (`process_document`, `upload_and_process_document`, `delete_document`) are decorated with `task=True` so FastMCP runs them as async background tasks with progress reporting.
+- Document processing is offloaded to arq workers via Redis queue — the MCP server only handles queries.
+- The upload endpoint (`POST /upload/files`) enqueues jobs; poll `GET /upload/status/{job_id}` for results.
 - The server path is hardcoded to port `8201` in all client scripts.
+- Production deployments should run gunicorn (multi-worker) + separate arq worker processes.
