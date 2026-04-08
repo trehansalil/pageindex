@@ -243,33 +243,16 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
 
     if not context_parts:
         logger.warning("RAG: no relevant content found across %d doc(s) for query=%r", len(doc_ids), query[:100])
-        return "No relevant content found for the query."
+        return json.dumps({"query": query, "sources": [], "content": "No relevant content found for the query."})
 
-    logger.info("RAG: generating answer from %d context part(s) (%d total chars)",
-                len(context_parts), sum(len(p) for p in context_parts))
+    logger.info("RAG: returning %d context part(s) (%d total chars) from %d source(s)",
+                len(context_parts), sum(len(p) for p in context_parts), len(matched_docs))
 
-    doc_summary = "\n".join(
-        f"- {name} (doc_id: {did})" for did, name in matched_docs
-    )
-
-    answer_prompt = (
-        "Answer the question using the context below.\n\n"
-        "Important rules:\n"
-        "- The search system already matched the query to these documents. "
-        "Treat the context as relevant even if names are not an exact match.\n"
-        "- Names in queries may be partial, abbreviated, or approximate "
-        "(e.g. a surname-only query should match the full name). "
-        "Do NOT refuse to answer because of inexact name matches.\n"
-        "- Provide a thorough answer using the available information. "
-        "Cite the source document name.\n\n"
-        f"Question: {query}\n\n"
-        f"Source documents:\n{doc_summary}\n\n"
-        f"Context:\n{chr(10).join(context_parts)}"
-    )
-
-    # --- Phase 3: LLM answer generation ---
-    phase3_t0 = time.monotonic()
-    answer = await _llm(answer_prompt)
-    logger.info("RAG TIMING: Phase 3 (LLM answer generation) = %.3fs", time.monotonic() - phase3_t0)
+    # Return raw context + source metadata — let the calling agent synthesize the answer
+    result = json.dumps({
+        "query": query,
+        "sources": [{"doc_id": did, "doc_name": name} for did, name in matched_docs],
+        "content": "\n\n".join(context_parts),
+    })
     logger.info("RAG TIMING: Total _rag_inner = %.3fs", time.monotonic() - rag_t0)
-    return answer
+    return result

@@ -66,9 +66,9 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
 
 
 async def find_relevant_documents(query: str) -> str:
-    """Search documents by query. Uses PageIndex reasoning-based tree search;
-    automatically falls back to AI semantic search. Returns relevant content
-    and a generated answer."""
+    """Search documents by query. Uses PageIndex reasoning-based tree search
+    to find relevant content. Returns matching document excerpts and source
+    metadata (doc_id, doc_name) as JSON — the caller synthesizes the answer."""
     TOOL_CALLS.labels(tool="find_relevant_documents").inc()
     start = time.monotonic()
     logger.info("find_relevant_documents called (query=%r)", query[:100])
