@@ -35,6 +35,18 @@
       "value": "",
       "type": "string",
       "description": "8-char document ID returned after processing completes"
+    },
+    {
+      "key": "BEARER_TOKEN",
+      "value": "",
+      "type": "string",
+      "description": "Bearer token for MCP endpoint authentication (MCP_BEARER_TOKEN)"
+    },
+    {
+      "key": "MCP_SESSION_ID",
+      "value": "",
+      "type": "string",
+      "description": "MCP session ID — set automatically by the Initialize Session request"
     }
   ],
   "item": [
@@ -257,14 +269,106 @@
     },
     {
       "name": "MCP Tools",
-      "description": "MCP protocol tools exposed via StreamableHTTP at /mcp. These are JSON-RPC calls over HTTP using the Model Context Protocol.",
+      "description": "MCP protocol tools exposed via StreamableHTTP at /mcp. These are JSON-RPC calls over HTTP using the Model Context Protocol.\n\n**Usage:** Run \"Initialize Session\" first to obtain a session ID, then run any tool request.",
       "item": [
+        {
+          "name": "Initialize Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-03-26\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"postman\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Initialize an MCP session. The response includes an `Mcp-Session-Id` header that is automatically saved and used by all subsequent tool requests.\n\n**Run this first before calling any MCP tool.**",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "// Capture session ID from response header",
+                  "var sessionId = pm.response.headers.get('Mcp-Session-Id');",
+                  "if (sessionId) {",
+                  "    pm.collectionVariables.set('MCP_SESSION_ID', sessionId);",
+                  "    console.log('Saved MCP session ID: ' + sessionId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Initialized Notification",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Mcp-Session-Id", "value": "{{MCP_SESSION_ID}}" }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/mcp",
+              "host": ["{{BASE_URL}}"],
+              "path": ["mcp"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"notifications/initialized\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "description": "Complete the MCP handshake by sending the initialized notification. Run this after \"Initialize Session\" and before any tool call.\n\nThis is a JSON-RPC notification (no `id` field), so the server returns 202 with no body.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 202 or 204', function () {",
+                  "    pm.expect([202, 204]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
         {
           "name": "Recent Documents",
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Mcp-Session-Id", "value": "{{MCP_SESSION_ID}}" }
             ],
             "url": {
               "raw": "{{BASE_URL}}/mcp",
@@ -277,7 +381,12 @@
               "options": { "raw": { "language": "json" } }
             },
             "description": "Browse indexed documents with pagination. Returns documents sorted by upload date (newest first) with processing status and node count.\n\nParameters:\n- `page` (int, default 1): Page number\n- `page_size` (int, default 10): Results per page",
-            "auth": { "type": "noauth" }
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
           },
           "response": [],
           "event": [
@@ -299,7 +408,9 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Mcp-Session-Id", "value": "{{MCP_SESSION_ID}}" }
             ],
             "url": {
               "raw": "{{BASE_URL}}/mcp",
@@ -312,7 +423,12 @@
               "options": { "raw": { "language": "json" } }
             },
             "description": "Search all indexed documents by natural language query. Uses PageIndex reasoning-based tree search with AI semantic fallback. Returns relevant content and a generated answer.\n\nParameters:\n- `query` (string, required): Natural language search query",
-            "auth": { "type": "noauth" }
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
           },
           "response": []
         },
@@ -321,7 +437,9 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Mcp-Session-Id", "value": "{{MCP_SESSION_ID}}" }
             ],
             "url": {
               "raw": "{{BASE_URL}}/mcp",
@@ -334,7 +452,12 @@
               "options": { "raw": { "language": "json" } }
             },
             "description": "Get detailed info about a specific document including top-level sections.\n\nParameters:\n- `doc_id` (string, required): 8-char document ID",
-            "auth": { "type": "noauth" }
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
           },
           "response": []
         },
@@ -343,7 +466,9 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Mcp-Session-Id", "value": "{{MCP_SESSION_ID}}" }
             ],
             "url": {
               "raw": "{{BASE_URL}}/mcp",
@@ -356,7 +481,12 @@
               "options": { "raw": { "language": "json" } }
             },
             "description": "Extract the full hierarchical tree structure of a document (without text content).\n\nParameters:\n- `doc_id` (string, required): 8-char document ID",
-            "auth": { "type": "noauth" }
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
           },
           "response": []
         },
@@ -365,7 +495,9 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" },
+              { "key": "Mcp-Session-Id", "value": "{{MCP_SESSION_ID}}" }
             ],
             "url": {
               "raw": "{{BASE_URL}}/mcp",
@@ -378,7 +510,12 @@
               "options": { "raw": { "language": "json" } }
             },
             "description": "Extract specific page content from a processed document.\n\nParameters:\n- `doc_id` (string, required): 8-char document ID\n- `pages` (string, required): Page selection — single ('5'), range ('3-7'), or multiple ('3,5,7')",
-            "auth": { "type": "noauth" }
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{BEARER_TOKEN}}", "type": "string" }
+              ]
+            }
           },
           "response": []
         }

@@ -74,7 +74,11 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
 
     async def _describe(src: str) -> str:
         try:
-            client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            from .config import settings
+            client = openai.AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+            )
             response = await client.chat.completions.create(
                 model=model,
                 messages=[

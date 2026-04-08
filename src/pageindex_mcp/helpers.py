@@ -3,12 +3,12 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 
 import openai
 
+from .config import settings
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
@@ -20,10 +20,10 @@ from .storage import load_doc
 logger = logging.getLogger(__name__)
 
 
-_FILTER_MODEL = os.environ.get("PAGEINDEX_FILTER_MODEL", "gpt-4o-mini")
-_SEARCH_MODEL = os.environ.get("PAGEINDEX_SEARCH_MODEL", "gpt-4o-mini")
-_ANSWER_MODEL = os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20")
-_SEARCH_CONCURRENCY = int(os.environ.get("PAGEINDEX_SEARCH_CONCURRENCY", "3"))
+_FILTER_MODEL = settings.llm_filter_model
+_SEARCH_MODEL = settings.llm_search_model
+_ANSWER_MODEL = settings.llm_model
+_SEARCH_CONCURRENCY = settings.llm_search_concurrency
 
 
 async def _llm(prompt: str, model: str | None = None) -> str:
@@ -31,7 +31,10 @@ async def _llm(prompt: str, model: str | None = None) -> str:
     LLM_CALLS.inc()
     start = time.monotonic()
     try:
-        client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        client = openai.AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        )
         r = await client.chat.completions.create(
             model=model or _ANSWER_MODEL,
             messages=[{"role": "user", "content": prompt}],

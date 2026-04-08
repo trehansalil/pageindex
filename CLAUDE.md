@@ -17,6 +17,11 @@ uv sync --extra dev      # include pytest/httpx for testing
 
 Environment variables (copy to `.env`):
 - `OPENAI_API_KEY` or `CHATGPT_API_KEY` — required by the PageIndex library
+- `OPENAI_BASE_URL` — optional base URL for OpenAI-compatible API providers (e.g. Azure, local models)
+- `PAGEINDEX_MODEL` — main LLM model (default: `gpt-4o-2024-11-20`)
+- `PAGEINDEX_FILTER_MODEL` — model for pre-filtering documents (default: `gpt-4o-mini`)
+- `PAGEINDEX_SEARCH_MODEL` — model for tree search (default: `gpt-4o-mini`)
+- `PAGEINDEX_SEARCH_CONCURRENCY` — parallel search concurrency (default: `3`)
 - `MINIO_ENDPOINT` — defaults to `10.43.246.106:9000`
 - `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — defaults to `minioadmin`/`minioadmin`
 - `MINIO_BUCKET` — defaults to `pageindex`

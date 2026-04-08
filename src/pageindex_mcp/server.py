@@ -5,6 +5,7 @@ from fastmcp import FastMCP
 from starlette.routing import Route
 
 from . import tools as _tools
+from .auth import BearerAuthMiddleware
 from .config import settings
 from .metrics import metrics_response
 from .upload_app import create_upload_app
@@ -30,6 +31,7 @@ mcp.tool()(_tools.get_page_content)
 # Build the ASGI app (importable by gunicorn as pageindex_mcp.server:app)
 # ---------------------------------------------------------------------------
 starlette_app = mcp.http_app(transport="streamable-http")
+starlette_app.add_middleware(BearerAuthMiddleware)
 starlette_app.routes.insert(0, Route("/metrics", metrics_response))
 starlette_app.mount("/upload", create_upload_app())
 

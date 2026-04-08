@@ -32,6 +32,15 @@ class Settings:
     redis_url: str
     upload_api_key: str
     cache_ttl: int
+    # Auth
+    mcp_bearer_token: str
+    # LLM configuration
+    openai_api_key: str
+    openai_base_url: str | None
+    llm_model: str
+    llm_filter_model: str
+    llm_search_model: str
+    llm_search_concurrency: int
 
 
 def _load_settings() -> Settings:
@@ -50,6 +59,13 @@ def _load_settings() -> Settings:
         ),
         upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
         cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
+        mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),
+        openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+        openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        llm_model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
+        llm_filter_model=os.environ.get("PAGEINDEX_FILTER_MODEL", "gpt-4o-mini"),
+        llm_search_model=os.environ.get("PAGEINDEX_SEARCH_MODEL", "gpt-4o-mini"),
+        llm_search_concurrency=int(os.environ.get("PAGEINDEX_SEARCH_CONCURRENCY", "3")),
     )
 
 
