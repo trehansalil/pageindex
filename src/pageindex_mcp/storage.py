@@ -88,32 +88,72 @@ def save_doc(doc_id: str, data: dict) -> None:
 
 
 def delete_doc(doc_id: str) -> None:
-    """Remove processed/<doc_id>.json and all objects under uploads/<doc_id>/."""
+    """Remove processed/<doc_id>.json, .meta.json, and all uploads/<doc_id>/ objects."""
     MINIO_OPS.labels(operation="delete").inc()
     start = time.monotonic()
     mc = get_minio()
     try:
         mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
+        try:
+            mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.meta.json")
+        except S3Error:
+            pass
         removed = 0
         for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
             mc.remove_object(settings.minio_bucket, obj.object_name)
             removed += 1
-        logger.info("Deleted doc %s from MinIO (1 processed + %d uploads)", doc_id, removed)
+        logger.info("Deleted doc %s from MinIO (processed + meta + %d uploads)", doc_id, removed)
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
 
+_META_FIELDS = ("doc_id", "doc_name", "source_url", "processed_at")
+
+
+def save_doc_meta(doc_id: str, meta: dict) -> None:
+    """Write a lightweight sidecar with only listing-relevant fields."""
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    try:
+        content = json.dumps(
+            {k: meta.get(k, "") for k in _META_FIELDS}, indent=2
+        ).encode()
+        mc.put_object(
+            settings.minio_bucket,
+            f"processed/{doc_id}.meta.json",
+            BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+        logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+
+
 def list_processed_docs() -> list[dict]:
-    """List all objects under processed/, returning summary dicts."""
+    """List all processed documents.  Reads lightweight .meta.json sidecars
+    when available, falling back to full .json for legacy documents."""
     MINIO_OPS.labels(operation="list").inc()
     start = time.monotonic()
     mc = get_minio()
     try:
-        docs = []
+        meta_keys: dict[str, str] = {}   # doc_id -> object_name (prefer .meta.json)
         for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
-            doc_id = Path(obj.object_name).stem
+            name = obj.object_name
+            if name.endswith(".meta.json"):
+                doc_id = Path(name).stem.removesuffix(".meta")
+                meta_keys[doc_id] = name
+            elif name.endswith(".json"):
+                doc_id = Path(name).stem
+                if doc_id not in meta_keys:
+                    meta_keys[doc_id] = name
+
+        docs = []
+        for doc_id, obj_name in meta_keys.items():
+            response = None
             try:
-                response = mc.get_object(settings.minio_bucket, obj.object_name)
+                response = mc.get_object(settings.minio_bucket, obj_name)
                 data = json.loads(response.read())
                 docs.append({
                     "doc_id":       data.get("doc_id", doc_id),
@@ -122,14 +162,15 @@ def list_processed_docs() -> list[dict]:
                     "processed_at": data.get("processed_at", ""),
                 })
             except Exception as e:
-                logger.warning("Failed to read processed doc %s: %s", obj.object_name, e)
+                logger.warning("Failed to read doc metadata %s: %s", obj_name, e)
                 continue
             finally:
-                try:
-                    response.close()
-                    response.release_conn()
-                except Exception:
-                    pass
+                if response is not None:
+                    try:
+                        response.close()
+                        response.release_conn()
+                    except Exception:
+                        pass
         logger.debug("Listed %d processed documents", len(docs))
         return docs
     finally:

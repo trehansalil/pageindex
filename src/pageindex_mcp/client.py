@@ -20,6 +20,7 @@ from .storage import (
     load_doc,
     load_hash_cache,
     save_doc,
+    save_doc_meta,
     save_hash_cache,
     save_raw,
 )
@@ -128,15 +129,24 @@ class CustomPageIndexClient(PageIndexClient):
                 f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
             )
 
+            processed_at = datetime.now(timezone.utc).isoformat()
             await asyncio.to_thread(save_doc, doc_id, {
                 "doc_id":          doc_id,
                 "doc_name":        filename,
                 "source_url":      source_url,
-                "processed_at":    datetime.now(timezone.utc).isoformat(),
+                "processed_at":    processed_at,
                 "sha256":          sha256,
                 "doc_description": result.get("doc_description", ""),
                 "structure":       result.get("structure", []),
             })
+
+            meta = {
+                "doc_id":       doc_id,
+                "doc_name":     filename,
+                "source_url":   source_url,
+                "processed_at": processed_at,
+            }
+            await asyncio.to_thread(save_doc_meta, doc_id, meta)
 
             # Reload before writing so we don't overwrite other parallel tasks' entries.
             async with self._cache_lock:
