@@ -24,7 +24,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "prometheus_client>=0.20.0",
     "gunicorn>=22.0.0",
-    "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
+    "pageindex>=0.1.0",
 ]
 
 [project.optional-dependencies]
