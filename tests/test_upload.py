@@ -46,7 +46,11 @@ def app(fake_redis, mock_arq_pool):
         return mock_arq_pool
 
     with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
-        yield _app
+        with patch(
+            "pageindex_mcp.upload_app.upload_staging",
+            side_effect=lambda job_id, filename, data: f"uploads/staging/{job_id}/{filename}",
+        ):
+            yield _app
 
 
 @pytest_asyncio.fixture

@@ -2,9 +2,7 @@
 
 import asyncio
 import logging
-import os
 import secrets
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,11 +15,11 @@ from fastapi import Depends, FastAPI, HTTPException, Header, UploadFile
 
 from .client import _SUPPORTED
 from .config import settings
+from .storage import upload_staging
 
 logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400  # 24 hours in seconds
-_WRITE_CHUNK = 64 * 1024  # 64 KiB chunks for streaming writes
 
 
 def _job_key(job_id: str) -> str:
@@ -102,12 +100,15 @@ def create_upload_app() -> FastAPI:
                     ),
                 )
 
-            tmp_dir = tempfile.mkdtemp()
-            tmp_path = os.path.join(tmp_dir, filename)
-            await asyncio.to_thread(_stream_to_disk, file.file, tmp_path)
-            logger.debug("Saved upload to temp path: %s", tmp_path)
-
             job_id = str(uuid.uuid4())
+
+            # Read file bytes and stage in MinIO (shared storage)
+            file_bytes = await file.read()
+            staging_key = await asyncio.to_thread(
+                upload_staging, job_id, filename, file_bytes,
+            )
+            logger.debug("Staged upload in MinIO: %s", staging_key)
+
             now = datetime.now(timezone.utc).isoformat()
             await redis.hset(
                 _job_key(job_id),
@@ -120,7 +121,7 @@ def create_upload_app() -> FastAPI:
             await redis.expire(_job_key(job_id), JOB_TTL)
 
             await arq_pool.enqueue_job(
-                "process_document_job", tmp_path, job_id,
+                "process_document_job", staging_key, job_id,
             )
             results.append({"job_id": job_id, "filename": filename})
             logger.info("Enqueued job %s for file %s", job_id, filename)
@@ -147,8 +148,3 @@ def create_upload_app() -> FastAPI:
     return app
 
 
-def _stream_to_disk(src, dest_path: str) -> None:
-    """Copy a file-like object to *dest_path* in chunks (runs in a thread)."""
-    with open(dest_path, "wb") as f:
-        while chunk := src.read(_WRITE_CHUNK):
-            f.write(chunk)

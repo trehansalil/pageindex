@@ -28,13 +28,13 @@ async def main():
     tools = await client.get_tools()
     print(f"Available tools: {[t.name for t in tools]}\n")
 
-    llm_kwargs = dict(model=TEST_MODEL, api_key=OPENAI_API_KEY, streaming=True)
+    llm_kwargs = dict(model=TEST_MODEL, api_key=OPENAI_API_KEY, streaming=True, temperature=0.1, top_p=0.1)
     if OPENAI_BASE_URL:
         llm_kwargs["base_url"] = OPENAI_BASE_URL
     llm = ChatOpenAI(**llm_kwargs)
     agent = create_agent(llm, tools)
 
-    query = "I want an expert GenAI Engineer. What are the technical questions I can ask Srividya for her to qualify here?? Give me ideal answers that I should be expecting from her??"
+    query = "Give me a summary about Srividya"
     print(f"Query: {query}")
     print(f"Sending at: {time.strftime('%H:%M:%S')}\n")
 
