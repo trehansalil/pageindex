@@ -1814,15 +1814,14 @@ wheels = [
 
 [[package]]
 name = "pageindex"
-version = "0.2.8"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.0"
+source = { git = "https://github.com/trehansalil/PageIndex-salil.git#9f93bdcf5ea32e1e177fdb1b9a845bad273b541d" }
 dependencies = [
-    { name = "openai" },
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/33/cc/27fb5f21b9ea91ed4b74a4d31190271b820955e71a323f260e138f50ef83/pageindex-0.2.8.tar.gz", hash = "sha256:b5baeed581a974cc8348b96527916e9021d48513c2310bb9b3f66a8b677e610c", size = 4986, upload-time = "2026-03-15T20:13:01.554Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/6e/e4ca8bd2453d19aae7d134f5ea37abe3c2f625dd1a5164fcca520d36da5a/pageindex-0.2.8-py3-none-any.whl", hash = "sha256:723321734061990420a338f223abe651502ff082c228d112f9d9bc39e8deaed0", size = 5977, upload-time = "2026-03-15T20:13:00.517Z" },
+    { name = "litellm" },
+    { name = "pymupdf" },
+    { name = "pypdf2" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [[package]]
@@ -1865,33 +1864,33 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", specifier = ">=4.0.0" },
-    { name = "arq", specifier = ">=0.26.1" },
+    { name = "anyio", specifier = ">=4.13.0" },
+    { name = "arq", specifier = ">=0.27.0" },
     { name = "fakeredis", extras = ["aioredis"], marker = "extra == 'dev'" },
-    { name = "fastapi", specifier = ">=0.110.0" },
-    { name = "fastmcp", specifier = ">=3.2.0" },
-    { name = "gunicorn", specifier = ">=22.0.0" },
-    { name = "html2text", specifier = ">=2020.1.16" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "fastapi", specifier = ">=0.135.3" },
+    { name = "fastmcp", specifier = ">=3.2.3" },
+    { name = "gunicorn", specifier = ">=25.3.0" },
+    { name = "html2text", specifier = ">=2025.4.15" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'dev'" },
     { name = "langchain", extras = ["openai"], marker = "extra == 'dev'" },
     { name = "langchain-mcp-adapters", marker = "extra == 'dev'" },
-    { name = "litellm", specifier = ">=1.82.0" },
-    { name = "minio", specifier = ">=7.2.0" },
-    { name = "openai", specifier = ">=1.30.0" },
-    { name = "pageindex", specifier = ">=0.1.0" },
+    { name = "litellm", specifier = ">=1.83.0" },
+    { name = "minio", specifier = ">=7.2.20" },
+    { name = "openai", specifier = ">=2.31.0" },
+    { name = "pageindex", git = "https://github.com/trehansalil/PageIndex-salil.git" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
-    { name = "pymupdf", specifier = ">=1.26.4" },
+    { name = "pymupdf", specifier = ">=1.27.2.2" },
     { name = "pypdf2", specifier = ">=3.0.1" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "python-docx", specifier = ">=1.2.0" },
-    { name = "python-dotenv", specifier = ">=1.1.0" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "python-pptx", specifier = ">=1.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "redis", extras = ["asyncio"], specifier = ">=5.0.0" },
-    { name = "uvicorn", specifier = ">=0.30.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "python-multipart", specifier = ">=0.0.24" },
+    { name = "python-pptx", specifier = ">=1.0.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "redis", extras = ["asyncio"], specifier = ">=5.3.1" },
+    { name = "uvicorn", specifier = ">=0.44.0" },
 ]
 provides-extras = ["dev"]
 
