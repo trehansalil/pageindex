@@ -18,6 +18,9 @@ RUN uv sync --frozen --no-dev
 # ─── Runtime ─────────────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
+# LibreOffice headless for DOCX/PPTX → PDF conversion
+RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-headless && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy the entire virtual environment from the builder
