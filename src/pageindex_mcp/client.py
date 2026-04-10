@@ -13,7 +13,7 @@ from pathlib import Path
 from pageindex import PageIndexClient
 
 from .config import settings
-from .converters import html_to_markdown_with_images, libreoffice_to_pdf
+from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pptx_to_markdown
 from .helpers import _build_node_map, _strip_text
 from .storage import (
     list_processed_docs,
@@ -42,12 +42,9 @@ class CustomPageIndexClient(PageIndexClient):
     """
 
     def __init__(self, api_key: str = None, model: str = None, retrieve_model: str = None):
-        super().__init__(
-            api_key=api_key,
-            model=model,
-            retrieve_model=retrieve_model,
-            workspace=None,
-        )
+        super().__init__(api_key=api_key or settings.openai_api_key)
+        self.model = model or settings.llm_model
+        self.retrieve_model = retrieve_model
         # Serialises hash-cache reads/writes across parallel index() calls on this instance.
         self._cache_lock = asyncio.Lock()
 
@@ -103,11 +100,28 @@ class CustomPageIndexClient(PageIndexClient):
                 result = await self._run_md_to_tree(file_path)
 
             elif ext in (".docx", ".pptx"):
-                logger.info("Converting %s to PDF via LibreOffice", filename)
-                pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
-                tmp_lo_dir = os.path.dirname(pdf_path)
-                logger.info("Running page_index on converted PDF: %s", pdf_path)
-                result = await asyncio.to_thread(self._run_page_index, pdf_path)
+                try:
+                    logger.info("Converting %s to PDF via LibreOffice", filename)
+                    pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
+                    tmp_lo_dir = os.path.dirname(pdf_path)
+                    logger.info("Running page_index on converted PDF: %s", pdf_path)
+                    result = await asyncio.to_thread(self._run_page_index, pdf_path)
+                except Exception as lo_exc:
+                    logger.warning(
+                        "LibreOffice/page_index failed for %s (%s), falling back to markdown conversion",
+                        filename, lo_exc,
+                    )
+                    if tmp_lo_dir:
+                        shutil.rmtree(tmp_lo_dir, ignore_errors=True)
+                        tmp_lo_dir = None
+                    converter = docx_to_markdown if ext == ".docx" else pptx_to_markdown
+                    md_content = await asyncio.to_thread(converter, file_path)
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(md_content)
+                        tmp_md_path = md_tmp.name
+                    result = await self._run_md_to_tree(tmp_md_path)
 
             else:  # .html
                 logger.info("Converting HTML to markdown: %s", filename)
