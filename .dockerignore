@@ -12,3 +12,6 @@ preprocess.log
 docs/
 tests/
 .github/
+stress_test.py
+test.py
+postman/
