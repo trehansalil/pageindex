@@ -52,9 +52,8 @@ uv run python upload.py /path/to/document.pdf
 uv run python upload.py https://example.com/report.pdf
 uv run python upload.py /path/to/folder/ --workers 4
 
-# Office/image files — converts to PDF via LibreOffice/Pillow first
-uv run python convert_and_upload.py /path/to/file.docx
-uv run python convert_and_upload.py /path/to/folder/ --convert-only
+# Office/image files are converted to PDF server-side (via LibreOffice/Pillow)
+# during processing — see `src/pageindex_mcp/converters.py`.
 
 # Process files from doc_store/ (with hash-based change detection)
 uv run python preprocess_client.py                # all files in doc_store/
@@ -81,7 +80,9 @@ uv run python preprocess_client.py --bg           # background, logs to preproce
 
 **`preprocess_client.py`** — idempotent batch processor: reads files from `doc_store/`, computes SHA-256, skips unchanged files (comparing against the MinIO hash cache), then calls `upload_and_process_document` via the FastMCP `Client`.
 
-**`upload.py`** / **`convert_and_upload.py`** — CLI helpers that call `process_document` via `langchain_mcp_adapters.MultiServerMCPClient`. `convert_and_upload.py` additionally runs LibreOffice headless for office formats and Pillow for images before uploading.
+**`upload.py`** — CLI helper that calls `process_document` via `langchain_mcp_adapters.MultiServerMCPClient` for PDFs / URLs / folders.
+
+**`src/pageindex_mcp/converters.py`** — server-side conversion library: runs LibreOffice headless for office formats (DOCX/PPTX) and Pillow for images, producing PDFs the indexer can consume.
 
 **`test.py`** — a LangChain ReAct agent example that connects to the running server and queries it with an LLM.
 
@@ -94,3 +95,4 @@ uv run python preprocess_client.py --bg           # background, logs to preproce
 - The upload endpoint (`POST /upload/files`) enqueues jobs; poll `GET /upload/status/{job_id}` for results.
 - The server path is hardcoded to port `8201` in all client scripts.
 - Production deployments should run gunicorn (multi-worker) + separate arq worker processes.
+- The Docker image only ships `mcp_server.py`, `gunicorn.conf.py`, and `src/`. Local-only assets (`test.py`, `postman/`, `docs/`, `tests/`, `stress_test.py`) are excluded via `.dockerignore`.

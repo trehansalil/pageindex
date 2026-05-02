@@ -34,7 +34,7 @@ async def main():
     llm = ChatOpenAI(**llm_kwargs)
     agent = create_agent(llm, tools)
 
-    query = "Give me a summary about Srividya"
+    query = "Compare and highlight the differences between Salil and Ravikumar's CV. Is Ravikumar better than Salil in any way?"
     print(f"Query: {query}")
     print(f"Sending at: {time.strftime('%H:%M:%S')}\n")
 
