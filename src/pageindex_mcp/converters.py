@@ -1,13 +1,16 @@
 """Document format conversion helpers and tree search utilities."""
 
 import asyncio
+import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-from typing import cast
+from typing import Callable, cast
 
+
+logger = logging.getLogger(__name__)
 
 _DASH_TRANSLATION = {0x2013: "-", 0x2014: "-", 0x2212: "-"}
 
@@ -41,6 +44,96 @@ def pdf_to_markdown(pdf_path: str) -> str:
     if not md or not md.strip():
         raise RuntimeError(f"pdf_to_markdown produced empty output for {pdf_path}")
     return normalize_dashes(_relevel_headings(md))
+
+
+def pdf_to_markdown_docling(pdf_path: str) -> str:
+    """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
+
+    Docling's Heron RT-DETRv2 layout model + TableFormer -> markdown -> relevel
+    headings -> normalize dashes. Validated head-to-head against pymupdf4llm on
+    the German insurance corpus (2026-05-31): Docling resolves the ``fl``-ligature
+    corruption pymupdf4llm leaves in legal terms (e.g. ``Haftpflicht`` rendered as
+    ``Haftpficht``), at ~2.5-6x the CPU runtime.
+
+    The accelerator is pinned to CPU unconditionally — no MPS, no CUDA. This is a
+    deliberate operational choice (everything runs on CPU for now) and also sidesteps
+    the Apple-MPS crash: transformers' ``rt_detr_v2`` hardcodes float64 in its sin/cos
+    position embedding, which MPS rejects (the same wall poc-insurance-chat's
+    ``_resolve_accelerator_device`` works around by coercing to CPU on darwin).
+
+    OCR, when enabled, runs through the installed Tesseract binary (CLI engine) so
+    the system ``deu``/``eng`` language data is used; point ``TESSDATA_PREFIX`` at the
+    directory holding ``deu.traineddata`` (e.g. the repo-local ``.tessdata/``).
+    Env knobs:
+      ``DOCLING_DO_OCR``   1|0 (default 0 — text-layer PDFs need no OCR)
+      ``DOCLING_OCR_LANG`` comma list (default ``deu,eng``) when OCR is on
+
+    Raises on empty extraction so the caller falls back to the next converter.
+    """
+    from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        TableFormerMode,
+        TesseractCliOcrOptions,
+    )
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    # CPU-only by design — nothing on GPU/MPS for now.
+    device = AcceleratorDevice.CPU
+    do_ocr = os.getenv("DOCLING_DO_OCR", "0").strip().lower() in ("1", "true", "yes")
+
+    opts = PdfPipelineOptions()
+    opts.do_ocr = do_ocr
+    opts.do_table_structure = True
+    opts.table_structure_options.mode = TableFormerMode.ACCURATE
+    if do_ocr:
+        langs = [
+            s.strip() for s in os.getenv("DOCLING_OCR_LANG", "deu,eng").split(",") if s.strip()
+        ]
+        # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
+        opts.ocr_options = TesseractCliOcrOptions(lang=langs)
+    opts.accelerator_options = AcceleratorOptions(device=device)
+
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
+    )
+    md = converter.convert(pdf_path).document.export_to_markdown()
+    if not md or not md.strip():
+        raise RuntimeError(f"docling produced empty output for {pdf_path}")
+    return normalize_dashes(_relevel_headings(md))
+
+
+def pdf_markdown_converters() -> list[tuple[str, Callable[[str], str]]]:
+    """Ordered ``(name, fn)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
+
+    INDEX-01: ``pymupdf4llm`` (AGPL, fast, default) and ``docling`` (MIT,
+    layout-aware, German-ligature-correct — the RFC-003 D3 / HR4 residency escape).
+    The caller tries them in order and only falls back to ``page_index`` when all
+    markdown converters fail. ``docling`` is listed only when importable, so a base
+    install without the ``docling`` extra degrades to ``pymupdf4llm`` cleanly.
+
+    ``docling`` is the **default** primary (it is ligature-correct on the German
+    vertical and MIT-licensed, lowering AGPL exposure); set
+    ``PDF_CONVERTER=pymupdf4llm`` to make the faster AGPL route primary instead, in
+    which case Docling becomes the secondary markdown attempt.
+    """
+    import importlib.util
+
+    primary = os.getenv("PDF_CONVERTER", "docling").strip().lower()
+    have_docling = importlib.util.find_spec("docling") is not None
+    chain: list[tuple[str, Callable[[str], str]]] = [("pymupdf4llm", pdf_to_markdown)]
+    if have_docling:
+        if primary == "docling":
+            chain.insert(0, ("docling", pdf_to_markdown_docling))
+        else:
+            chain.append(("docling", pdf_to_markdown_docling))
+    elif primary == "docling":
+        logger.warning(
+            "PDF_CONVERTER=docling but docling is not installed; install the "
+            "'docling' extra (uv sync --extra docling). Falling back to pymupdf4llm."
+        )
+    return chain
 
 
 def libreoffice_to_pdf(input_path: str) -> str:

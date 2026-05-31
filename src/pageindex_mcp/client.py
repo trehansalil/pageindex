@@ -14,7 +14,7 @@ from pageindex import PageIndexClient
 
 from .config import settings
 from .cache import get_doc
-from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_to_markdown, pptx_to_markdown
+from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_markdown_converters, pptx_to_markdown
 from .helpers import _build_node_map, _strip_text, validate_tree, LowQualityTreeError
 from .metrics import LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS
 from .storage import (
@@ -93,18 +93,28 @@ class CustomPageIndexClient(PageIndexClient):
 
         try:
             if ext == ".pdf":
-                try:
-                    logger.info("Extracting PDF to markdown via pymupdf4llm: %s", filename)
-                    md_content = await asyncio.to_thread(pdf_to_markdown, file_path)
+                # INDEX-01-C1/C2: try the config-ordered markdown converters
+                # (pymupdf4llm / docling, per PDF_CONVERTER), then fall back to
+                # the legacy page_index route only if every converter fails.
+                md_content = None
+                for conv_name, conv_fn in pdf_markdown_converters():
+                    try:
+                        logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
+                        md_content = await asyncio.to_thread(conv_fn, file_path)
+                        break
+                    except Exception as conv_exc:
+                        logger.warning("%s failed for %s (%s); trying next converter", conv_name, filename, conv_exc)
+                        PDF_EXTRACT_FALLBACKS.inc()
+                        md_content = None
+                if md_content is not None:
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
                         md_tmp.write(md_content)
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
-                except Exception as pdf_exc:
-                    logger.warning("pdf_to_markdown failed for %s (%s); falling back to page_index", filename, pdf_exc)
-                    PDF_EXTRACT_FALLBACKS.inc()
+                else:
+                    logger.warning("All markdown converters failed for %s; falling back to page_index", filename)
                     result = await asyncio.to_thread(self._run_page_index, file_path)
 
             elif ext in (".md", ".markdown", ".txt"):

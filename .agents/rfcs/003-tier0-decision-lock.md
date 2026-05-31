@@ -64,7 +64,7 @@ code, after the checkpoint.
 | `[AMENDMENT]` transport bypasses service layer (`RAG-01 module: client`) | **Refactor the CONTRACT to match the code** — `module: client` → `helpers`. See D2. **Done this session.** | Stage 1 — `rag-01.yaml` |
 | `[FIX]` HR2 — `delete_doc` cascade order reversed + hash-cache leak | **Rewrite `delete_doc` to the HR2 order** (`uploads/` → `processed/*.json` → `*.meta.json` → Redis), then clear `processed_hashes.json`; idempotent. `ERASE-01` is the contract. See D5. | Stage 2 code |
 | `[FIX]` HR5 — `validate_tree()` absent; trees persist unconditionally | **Add `validate_tree()` before `save_doc`; BLOCKS at runtime on failure** (`save_doc` not called; worker sets `status=error`, `reason=low_quality_tree`) + emit `pageindex_low_quality_trees_total{reason}`. "Warn-only" scopes only to the CI threshold posture (tunable). See D5. | **Stage 2 — done** |
-| `[FIX]` INDEX-01 markdown-first PDF route not implemented (open Tier-0) | Validation spike **returned NO-GO** (Docling crashes on Apple-Silicon MPS — zero output on all 4 `issue/data/` PDFs); per D3's validate-first escape clause, implemented **`pymupdf4llm`-primary + `page_index` fallback**. Docling deferred to a CPU-only server env. See D3 + Amendment 3. | **Stage 2 — done** |
+| `[FIX]` INDEX-01 markdown-first PDF route not implemented (open Tier-0) | Implemented **`pymupdf4llm`-primary + `page_index` fallback** (Stage 2). **Amendment 4 (re-validation):** the NO-GO was **MPS-only** — Docling-CPU works on Apple Silicon (force `cpu` on darwin) and is now a **config-gated converter** (`PDF_CONVERTER=docling`), validated to fix the `fl`-ligature corruption pymupdf4llm leaves in German legal terms. See D3 + Amendments 3 & 4. | **Stage 2 — done; Docling un-blocked (Amdt 4)** |
 | `[FIX]` WORKER-01 lifecycle gaps | **`status=processing` + bounded `max_tries` + `job_timeout` + `pageindex:dlq`** on final failure. See D4. | Stage 2 code |
 | `[FIX]` RAG-01-C3 empty-corpus shape | **Return the `query_error_shape` JSON envelope** (`available=[]`) + increment `pageindex_tool_errors_total{tool=find_relevant_documents}` on the no-docs branch. See D5. | Stage 2 code |
 | `[FIX]` CONV-01-C2 en-dash normalization absent | **Add a Unicode-dash normalizer** (U+2013/2014/2212 → `-`, NFKC) applied at extraction **and** query time. See D5. | Stage 2 code |
@@ -72,7 +72,7 @@ code, after the checkpoint.
 | `[FIX]` `eval.sh` break-before-summary | **REFUTED** — working-as-designed; resolved, no change. | Stage 1 — Resolved |
 | reference hygiene — dangling `issue/ANALYSIS.md` cites | **Redirected to RFC-000** across 4 files (12 cites); `issue/ANALYSIS.md` confirmed absent on disk. | Stage 1 — done |
 | `[DECISION]` promote `validate_tree` thresholds | **Deferred (unchanged)** — Phase-2 RFC after GHV-corpus calibration. | Standing |
-| `[DECISION]` AGPL §13 sign-off | **Standing (NOT narrowed — see Amendment 3)** — the Docling spike returned NO-GO, so AGPL-licensed `pymupdf4llm` is the **primary** PDF path, not a rarely-hit fallback. The §13 gate is fully open on the default path until an MIT extractor (Docling, on a CPU server) is validated. | Standing |
+| `[DECISION]` AGPL §13 sign-off | **Standing — narrowable on demand (Amendment 4).** Default path is still AGPL `pymupdf4llm`, so the gate is open by default; but Docling-CPU (MIT) is now validated and one env-flag away (`PDF_CONVERTER=docling`), so a deployment can **close the AGPL exposure on the PDF path** without a code change. Network-serving sign-off still owner-owned. | Standing |
 | `[DECISION]` ZDR / EU-residency LLM tier | **Deferred (unchanged)** — per-deployment via `OPENAI_BASE_URL`; self-hosted is the fallback. | Standing |
 
 ## Decisions
@@ -258,16 +258,60 @@ AGPL §13 gate is **fully open on the default PDF path**. The disposition row an
 Standing-gates entry are corrected accordingly. The `no_pypdf2_in_new_pdf_path` static gate
 still applies (PyPDF2 stays out of the new route).
 
+### Amendment 4 — `INDEX-01`/D3: Docling NO-GO was MPS-only; Docling-CPU validated and landed as a config-gated converter
+**Type**: amendment (supersedes Amendment 3's NO-GO scope)
+**Trigger**: motivated by the sibling repo `poc-insurance-chat`, which runs Docling on the
+**same** German insurance PDFs on Apple Silicon. Its `IngestionService._resolve_accelerator_device`
+(services/rag-backend/.../ingestion.service.py:561-575) names the identical crash cause —
+*"transformers' rt_detr_v2 hardcodes float64 in its sin/cos position embedding, which MPS
+rejects"* — and fixes it by coercing the accelerator `auto → cpu` on darwin.
+**Finding**: Amendment 3's NO-GO tested only the MPS/`auto` path. A re-validation spike
+(`scripts/docling_spike_compare.py`, 2026-05-31) with `AcceleratorDevice("cpu")` ran Docling
+**successfully** on all four `issue/data/` PDFs — the layout-heron weights load and inference
+completes, **no crash, zero garbling**. So the correct scope is **NO-GO on MPS only;
+Docling-CPU on Apple Silicon is viable.**
+**Quality evidence (head-to-head vs `pymupdf4llm`)**: both are clean on null-bytes/U+FFFD and
+the Docling `"..."` ordinal bug did **not** appear on this PHV corpus. The decisive
+difference: **`pymupdf4llm` systematically drops the `ﬂ` ligature** (8-14× per doc), corrupting
+core legal terms — `Haftpflicht`→`Haftpficht`, `Pflicht(en)`→`Pficht(en)`,
+`Verpflichtung`→`Verpfichtung` — including the product name *Privathaftpflichtversicherung*.
+**Docling resolves every one (0 corruptions).** HR5's `validate_tree` does **not** catch this
+(it checks null/U+FFFD, not dropped ligatures), so the corrupt trees persist silently — a
+correctness argument for Docling on the German vertical. Cost: Docling-CPU is ~2.5-6× slower
+and pulls `torch`.
+**Landed**: `converters.pdf_to_markdown_docling` (**CPU-only, unconditional** — `AcceleratorDevice.CPU`,
+no MPS/CUDA by operational policy, which also sidesteps the rt_detr_v2 float64/MPS crash; env knobs
+`DOCLING_DO_OCR`/`DOCLING_OCR_LANG`) + `converters.pdf_markdown_converters()`
+(ordered by `PDF_CONVERTER`). `client.index()` iterates the chain, `page_index` stays the
+last-resort fallback. **Docling is now the DEFAULT primary and a CORE dependency** (2026-05-31,
+user decision): `PDF_CONVERTER` defaults to `docling`, and `docling>=2.96.0` moved from an
+opt-in extra into core `dependencies` (locked in `uv.lock`) so the default runs out-of-the-box;
+set `PDF_CONVERTER=pymupdf4llm` to make the AGPL route primary instead. pymupdf4llm stays a core
+dep as the secondary/fallback. Trade-off accepted: base install + CI now pull `torch`. Tests
+green post-change (pytest 69 passed; same 2 pre-existing env failures). CPU-only conversion
+re-verified on `AKB.pdf.pdf` (184 K chars, 24 s, `Haftpflicht` intact).
+**Prereq gap RESOLVED (2026-05-31)**: German `deu` tesseract data installed at repo-local
+`.tessdata/` (point `TESSDATA_PREFIX` there; Homebrew's `tessdata` symlink + `~/.local` are both
+EPERM-locked on this Mac, so a project-local dir is the workaround — gitignored, ~30 MB).
+OCR (`DOCLING_DO_OCR=1`) now routes through the system tesseract binary via `TesseractCliOcrOptions`
+(`deu,eng`). Moot for this text-layer corpus (`do_ocr=False` default), wired for the future
+scanned-doc path.
+**HR4**: with Docling (MIT) now the **default** PDF route, the AGPL §13 exposure is no longer on
+the hot path by default — pymupdf4llm (AGPL) only runs when explicitly selected via
+`PDF_CONVERTER=pymupdf4llm` or as the rare fallback. Fully closing §13 now means *dropping*
+pymupdf4llm from `dependencies` (a future option), not adding Docling. See the corrected
+disposition and Standing-gate rows.
+
 ## Standing human-owned gates (not blocking this RFC)
 
-Unchanged from RFC-002 §Standing, except the AGPL gate, which Amendment 3 **widens back**
-(the D3 narrowing was contingent on a Docling GO that the spike refused):
+Unchanged from RFC-002 §Standing. The AGPL gate, which Amendment 3 widened back, is now
+**narrowable on demand** by Amendment 4 (Docling-CPU validated):
 
-- **AGPL §13 legal sign-off** (R10 / Hard Rule 4) — **NOT narrowed (Amendment 3 supersedes
-  the D3-narrowing)**: the Docling spike returned NO-GO, so AGPL-licensed `pymupdf4llm` is
-  the **primary** PDF extractor, not a rarely-hit fallback. The §13 gate is **fully open on
-  the default path**; the sign-off (or an Artifex commercial license, or validating an MIT
-  extractor like Docling on a CPU server) remains owner-owned before external network serving.
+- **AGPL §13 legal sign-off** (R10 / Hard Rule 4) — **open by default, narrowable on demand
+  (Amendment 4)**: the default PDF path is AGPL `pymupdf4llm`, so the §13 gate is open unless
+  a deployment sets `PDF_CONVERTER=docling` (MIT, now validated on CPU) — which removes
+  AGPL-licensed PyMuPDF from the PDF path without a code change. The network-serving sign-off
+  (or an Artifex commercial license) remains owner-owned before external network serving.
 - **LLM-provider residency** (R9 / Hard Rule 3) — pick a no-training + ZDR + EU-residency
   tier per deployment via `OPENAI_BASE_URL`; self-hosted is the ultimate fallback.
 - **Promote `validate_tree` thresholds** (R7 / Hard Rule 5) — after GHV-corpus + clean-

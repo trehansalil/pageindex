@@ -7,8 +7,13 @@ dependencies = [
     "fastmcp>=3.2.3",
     "litellm>=1.83.0",
     "pymupdf>=1.27.2.2",
-    # AGPL-3.0 (HR4); Docling (MIT) is the deferred residency escape per RFC-003 D3
+    # AGPL-3.0 (HR4); kept as the secondary/fallback PDF route behind Docling.
     "pymupdf4llm>=0.0.17",
+    # Default PDF->markdown route (PDF_CONVERTER=docling). MIT, layout-aware, runs
+    # CPU-only; resolves the fl-ligature corruption pymupdf4llm leaves in German
+    # legal terms ("Haftpflicht"). Promoted to core 2026-05-31 so the default works
+    # out-of-the-box. Heavy: pulls torch. Validated on the German insurance corpus.
+    "docling>=2.96.0",
     "PyPDF2>=3.0.1",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
