@@ -570,7 +570,7 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
 
     async def _describe(src: str) -> str:
         try:
-            from .config import get_openai_client
+            from .client import get_openai_client
             client = get_openai_client()
             response = await client.chat.completions.create(
                 model=model,

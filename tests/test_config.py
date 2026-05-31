@@ -16,6 +16,10 @@ def test_settings_has_redis_url(monkeypatch):
 def test_settings_redis_defaults(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.delenv("UPLOAD_API_KEY", raising=False)
+    # Neutralize dotenv at the SOURCE module so importlib.reload(cfg) — which
+    # re-executes `from dotenv import load_dotenv` — does not re-read the
+    # developer's local .env and re-inject REDIS_URL after delenv cleared it.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
     importlib.reload(cfg)
     assert cfg.settings.redis_url == "redis://neonatal-care-redis.neonatal-care:6379/1"

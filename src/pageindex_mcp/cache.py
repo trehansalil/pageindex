@@ -1,11 +1,18 @@
 # src/pageindex_mcp/cache.py
-"""Redis-backed document cache shared across gunicorn workers."""
+"""Redis-backed document cache shared across gunicorn workers.
 
+This module is also the allowed home for the upload transport's async
+job-status Redis access (aioredis), keeping direct redis usage confined to
+cache.py / worker.py per the no_redis_outside_cache_or_worker governance rule.
+"""
+
+import asyncio
 import json
 import logging
 from threading import Lock
 
 import redis
+import redis.asyncio as aioredis
 
 from .config import settings
 
@@ -15,6 +22,43 @@ _CACHE_PREFIX = "pageindex:doc:"
 
 _redis_sync: redis.Redis | None = None
 _redis_lock = Lock()
+
+# Job-status hash TTL + key (moved from upload_app.py to keep aioredis confined here).
+JOB_TTL = 86_400  # 24 hours in seconds
+_JOB_PREFIX = "pageindex:job:"
+
+_redis_async: aioredis.Redis | None = None
+_redis_async_lock = asyncio.Lock()
+
+
+def _job_key(job_id: str) -> str:
+    return f"{_JOB_PREFIX}{job_id}"
+
+
+async def get_async_redis() -> aioredis.Redis:
+    """Lazy singleton for the async Redis client (used by the upload transport
+    for job-status reads/writes)."""
+    global _redis_async
+    if _redis_async is None:
+        async with _redis_async_lock:
+            if _redis_async is None:
+                _redis_async = aioredis.from_url(
+                    settings.redis_url, decode_responses=True
+                )
+    return _redis_async
+
+
+async def job_status_set(job_id: str, mapping: dict) -> None:
+    """Write the job-status hash and (re)apply the 24h TTL."""
+    r = await get_async_redis()
+    await r.hset(_job_key(job_id), mapping=mapping)
+    await r.expire(_job_key(job_id), JOB_TTL)
+
+
+async def job_status_get(job_id: str) -> dict:
+    """Return the job-status hash as a dict (empty dict if absent/expired)."""
+    r = await get_async_redis()
+    return await r.hgetall(_job_key(job_id))
 
 
 def get_cache_redis() -> redis.Redis:

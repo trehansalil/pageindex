@@ -64,7 +64,7 @@ if [[ -z "$UPLOAD_API_KEY" ]]; then
     if [[ -f "$REPO_ROOT/.env" ]]; then
         # shellcheck disable=SC1090
         UPLOAD_API_KEY=$(grep '^UPLOAD_API_KEY=' "$REPO_ROOT/.env" \
-            | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+            | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)
     fi
 fi
 

@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
-from pageindex_mcp.upload_app import create_upload_app, get_redis
+from pageindex_mcp.upload_app import create_upload_app
 
 TEST_API_KEY = "contract-key-xyz"
 
@@ -49,7 +49,6 @@ def staging_calls():
 @pytest.fixture
 def app(fake_redis, mock_arq_pool, staging_calls):
     _app = create_upload_app()
-    _app.dependency_overrides[get_redis] = lambda: fake_redis
 
     async def _fake_get_arq_pool():
         return mock_arq_pool
@@ -59,9 +58,12 @@ def app(fake_redis, mock_arq_pool, staging_calls):
         staging_calls.append(key)
         return key
 
-    with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
-        with patch("pageindex_mcp.upload_app.upload_staging", side_effect=_record_staging):
-            yield _app
+    with patch(
+        "pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)
+    ):
+        with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
+            with patch("pageindex_mcp.upload_app.upload_staging", side_effect=_record_staging):
+                yield _app
 
 
 @pytest_asyncio.fixture

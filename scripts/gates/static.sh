@@ -142,7 +142,7 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
 
     # no_minio_outside_storage: minio client import outside storage.py
     MINIO_VIOLATIONS=$(grep -rn 'from minio\|import minio\|Minio(' src/pageindex_mcp/ \
-        | grep -v 'storage\.py' | grep -v '\.pyc' | wc -l | tr -d ' ')
+        | grep -v 'storage\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$MINIO_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_minio_outside_storage"
     else
@@ -151,7 +151,7 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
 
     # no_redis_outside_cache_or_worker: Redis imports outside cache.py and worker.py
     REDIS_VIOLATIONS=$(grep -rn 'import redis\|from redis\|aioredis\|fakeredis' src/pageindex_mcp/ \
-        | grep -vE '(cache|worker)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ')
+        | grep -vE '(cache|worker)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$REDIS_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_redis_outside_cache_or_worker"
     else
@@ -161,7 +161,7 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # no_llm_outside_provider: OpenAI/litellm/pageindex outside client.py and converters.py
     LLM_VIOLATIONS=$(grep -rn 'import openai\|from openai\|import litellm\|from litellm\|from pageindex\|import pageindex' \
         src/pageindex_mcp/ \
-        | grep -vE '(client|converters)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ')
+        | grep -vE '(client|converters)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$LLM_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_llm_outside_provider"
     else
@@ -170,7 +170,7 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
 
     # no_pypdf2_in_new_pdf_path: PyPDF2 import anywhere in src (per issue/ANALYSIS.md)
     PYPDF2_VIOLATIONS=$(grep -rn 'import PyPDF2\|from PyPDF2' src/pageindex_mcp/ \
-        | grep -v '\.pyc' | wc -l | tr -d ' ')
+        | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$PYPDF2_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_pypdf2_in_new_pdf_path"
     else

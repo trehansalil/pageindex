@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import openai
 from pageindex import PageIndexClient
 
 from .config import settings
@@ -29,6 +30,25 @@ from .storage import (
 logger = logging.getLogger(__name__)
 
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html"}
+
+
+def _is_azure_url(url: str | None) -> bool:
+    """Return True when the base URL points to Azure OpenAI."""
+    return bool(url and ".openai.azure.com" in url)
+
+
+def get_openai_client() -> openai.AsyncOpenAI:
+    """Return an AsyncOpenAI or AsyncAzureOpenAI client based on the configured base URL."""
+    if _is_azure_url(settings.openai_base_url):
+        return openai.AsyncAzureOpenAI(
+            api_key=settings.openai_api_key,
+            azure_endpoint=settings.openai_base_url,
+            api_version=settings.azure_api_version or "2024-08-01-preview",
+        )
+    return openai.AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+    )
 
 
 class CustomPageIndexClient(PageIndexClient):

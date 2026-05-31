@@ -10,7 +10,6 @@ from httpx import AsyncClient, ASGITransport
 
 from pageindex_mcp.upload_app import (
     create_upload_app,
-    get_redis,
 )
 
 TEST_API_KEY = "test-key-123"
@@ -40,17 +39,19 @@ def mock_arq_pool():
 @pytest.fixture
 def app(fake_redis, mock_arq_pool):
     _app = create_upload_app()
-    _app.dependency_overrides[get_redis] = lambda: fake_redis
 
     async def _fake_get_arq_pool():
         return mock_arq_pool
 
-    with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
-        with patch(
-            "pageindex_mcp.upload_app.upload_staging",
-            side_effect=lambda job_id, filename, data: f"uploads/staging/{job_id}/{filename}",
-        ):
-            yield _app
+    with patch(
+        "pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)
+    ):
+        with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
+            with patch(
+                "pageindex_mcp.upload_app.upload_staging",
+                side_effect=lambda job_id, filename, data: f"uploads/staging/{job_id}/{filename}",
+            ):
+                yield _app
 
 
 @pytest_asyncio.fixture

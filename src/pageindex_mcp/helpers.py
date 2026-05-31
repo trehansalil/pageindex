@@ -6,7 +6,7 @@ import logging
 import re
 import time
 
-from .config import get_openai_client, settings
+from .config import settings
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
@@ -30,6 +30,7 @@ async def _llm(prompt: str, model: str | None = None) -> str:
     LLM_CALLS.inc()
     start = time.monotonic()
     try:
+        from .client import get_openai_client
         client = get_openai_client()
         r = await client.chat.completions.create(
             model=model or _ANSWER_MODEL,

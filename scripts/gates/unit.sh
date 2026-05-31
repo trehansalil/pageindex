@@ -115,8 +115,8 @@ fi
 
 # ── 2c. Assertion density ─────────────────────────────────────────────────────
 # Count assert statements and test functions across tests/; compute mean.
-TEST_COUNT=$(grep -r '^def test_\|^    def test_' tests/ 2>/dev/null | wc -l | tr -d ' ')
-ASSERT_COUNT=$(grep -r '\bassert\b' tests/ 2>/dev/null | wc -l | tr -d ' ')
+TEST_COUNT=$(grep -r '^def test_\|^    def test_' tests/ 2>/dev/null | wc -l | tr -d ' ' || true)
+ASSERT_COUNT=$(grep -r '\bassert\b' tests/ 2>/dev/null | wc -l | tr -d ' ' || true)
 
 if [[ "$TEST_COUNT" -gt 0 ]]; then
     DENSITY=$(python3 -c "print(f'{${ASSERT_COUNT}/${TEST_COUNT}:.2f}')" 2>/dev/null || echo "0")
@@ -131,15 +131,18 @@ fi
 
 # ── 2d. Layer file existence ──────────────────────────────────────────────────
 # Every service/repository file must have a corresponding test file.
+# This repo uses contract-suffixed per-module tests (e.g. tests/test_storage_contract.py,
+# tests/test_converters_contract.py) alongside plain tests/test_<module>.py, so the
+# existence check accepts EITHER naming convention.
 if [[ "$LAYER_EXISTENCE" == "true" ]]; then
     LAYER_FILES=("client.py" "storage.py" "cache.py" "worker.py" "converters.py")
     for src_file in "${LAYER_FILES[@]}"; do
         module="${src_file%.py}"
         if [[ -f "src/pageindex_mcp/${src_file}" ]]; then
-            if [[ -f "tests/test_${module}.py" ]]; then
-                pass "layer test existence: test_${module}.py present"
+            if [[ -f "tests/test_${module}.py" || -f "tests/test_${module}_contract.py" ]]; then
+                pass "layer test existence: test_${module}.py or test_${module}_contract.py present"
             else
-                fail "layer test existence: src/pageindex_mcp/${src_file} exists but tests/test_${module}.py missing"
+                fail "layer test existence: src/pageindex_mcp/${src_file} exists but no tests/test_${module}.py or tests/test_${module}_contract.py"
             fi
         fi
     done

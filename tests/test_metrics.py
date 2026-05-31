@@ -1,5 +1,7 @@
 """Tests for the /metrics Prometheus endpoint."""
 
+import sys
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from starlette.applications import Starlette
@@ -34,6 +36,10 @@ async def test_metrics_content_type(client):
     assert "0.0.4" in response.headers["content-type"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="process_* metrics are Linux-only (prometheus_client reads /proc)",
+)
 async def test_metrics_contains_process_metrics(client):
     """prometheus_client includes process_* metrics by default."""
     response = await client.get("/metrics")
@@ -112,7 +118,7 @@ class TestLLMInstrumentation:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "test answer"
 
-        with patch("pageindex_mcp.helpers.get_openai_client") as MockFactory:
+        with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
             MockFactory.return_value.chat.completions.create = AsyncMock(
                 return_value=mock_response
             )
