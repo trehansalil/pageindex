@@ -24,7 +24,7 @@ async def test_find_relevant_documents_loads_each_doc_once():
     }
     with (
         patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=fake_meta),
-        patch("pageindex_mcp.helpers.load_doc", return_value=fake_doc) as mock_load,
+        patch("pageindex_mcp.helpers.get_doc", return_value=fake_doc) as mock_load,
         patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm,
     ):
         mock_llm.side_effect = [
@@ -33,5 +33,5 @@ async def test_find_relevant_documents_loads_each_doc_once():
         ]
         result = await find_relevant_documents("test query")
 
-    # load_doc called once per doc, not twice (once in list + once in rag)
+    # read-through get_doc called once per doc, not twice (once in list + once in rag)
     assert mock_load.call_count == 1

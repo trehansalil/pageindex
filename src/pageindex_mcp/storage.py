@@ -10,7 +10,6 @@ from threading import Lock
 from minio import Minio
 from minio.error import S3Error
 
-from .cache import doc_cache_delete, doc_cache_get, doc_cache_set
 from .config import settings
 from .metrics import MINIO_DURATION, MINIO_OPS
 
@@ -45,20 +44,16 @@ def get_minio() -> Minio:
 # ---------------------------------------------------------------------------
 
 def load_doc(doc_id: str) -> dict:
-    """Fetch processed/<doc_id>.json. Uses Redis cache when available."""
-    cached = doc_cache_get(doc_id)
-    if cached is not None:
-        logger.debug("Cache hit for doc %s", doc_id)
-        return cached
-
+    """Fetch processed/<doc_id>.json from MinIO (STORE-01-C3: returns exact persisted
+    bytes). Caching is handled by the read-through accessor cache.get_doc."""
     MINIO_OPS.labels(operation="get").inc()
     start = time.monotonic()
     mc = get_minio()
+    response = None
     try:
         response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.json")
         data = json.loads(response.read())
         logger.debug("Loaded doc %s from MinIO", doc_id)
-        doc_cache_set(doc_id, data)
         return data
     except S3Error as e:
         if e.code == "NoSuchKey":
@@ -68,11 +63,12 @@ def load_doc(doc_id: str) -> dict:
         raise
     finally:
         MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
-        try:
-            response.close()
-            response.release_conn()
-        except Exception:
-            pass
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
 
 
 def save_doc(doc_id: str, data: dict) -> None:
@@ -90,28 +86,84 @@ def save_doc(doc_id: str, data: dict) -> None:
             content_type="application/json",
         )
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
+        from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
         doc_cache_delete(doc_id)
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
 def delete_doc(doc_id: str) -> None:
-    """Remove processed/<doc_id>.json, .meta.json, and all uploads/<doc_id>/ objects."""
+    """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
+       1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
+       4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename.
+    Idempotent (C2: missing objects tolerated). Partial failure raises naming the
+    store(s) that failed, safe to retry (C3)."""
     MINIO_OPS.labels(operation="delete").inc()
     start = time.monotonic()
     mc = get_minio()
+    errors: list[str] = []
+
+    # Capture filename up-front (needed for step 5) before processed.json is removed.
+    doc_name = None
     try:
-        doc_cache_delete(doc_id)
-        mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
+        data = load_doc(doc_id)
+        doc_name = data.get("doc_name") or data.get("filename")
+    except ValueError:
+        pass  # already gone — still run the cascade idempotently
+    except Exception as e:
+        errors.append(f"read-doc-name: {e}")
+
+    try:
+        # 1. uploads/<doc_id>/*
+        removed = 0
+        try:
+            for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
+                mc.remove_object(settings.minio_bucket, obj.object_name)
+                removed += 1
+            logger.info("ERASE %s step1: removed %d uploads object(s)", doc_id, removed)
+        except S3Error as e:
+            errors.append(f"uploads/: {e}")
+
+        # 2. processed/<doc_id>.json
+        try:
+            mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
+            logger.info("ERASE %s step2: removed processed/%s.json", doc_id, doc_id)
+        except S3Error as e:
+            if getattr(e, "code", "") != "NoSuchKey":
+                errors.append(f"processed.json: {e}")
+
+        # 3. processed/<doc_id>.meta.json
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.meta.json")
-        except S3Error:
-            pass
-        removed = 0
-        for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
-            mc.remove_object(settings.minio_bucket, obj.object_name)
-            removed += 1
-        logger.info("Deleted doc %s from MinIO (processed + meta + %d uploads)", doc_id, removed)
+            logger.info("ERASE %s step3: removed processed/%s.meta.json", doc_id, doc_id)
+        except S3Error as e:
+            if getattr(e, "code", "") != "NoSuchKey":
+                errors.append(f"processed.meta.json: {e}")
+
+        # 4. Redis cache
+        try:
+            from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+            doc_cache_delete(doc_id)
+            logger.info("ERASE %s step4: invalidated Redis cache", doc_id)
+        except Exception as e:
+            errors.append(f"redis-cache: {e}")
+
+        # 5. hash-cache entry (filename -> sha256)
+        if doc_name:
+            try:
+                cache = load_hash_cache()
+                if doc_name in cache:
+                    del cache[doc_name]
+                    save_hash_cache(cache)
+                    logger.info("ERASE %s step5: cleared hash-cache entry for %s", doc_id, doc_name)
+            except Exception as e:
+                errors.append(f"hash-cache: {e}")
+        else:
+            logger.warning("ERASE %s step5: doc_name unknown; cannot clear hash-cache entry", doc_id)
+
+        if errors:
+            raise RuntimeError(f"delete_doc({doc_id}) partial failure across stores: {errors}")
+        logger.info("ERASE %s complete: full cascade succeeded", doc_id)
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 

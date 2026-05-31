@@ -1,0 +1,45 @@
+# known-advisories.yaml
+#
+# Purpose : Registry of accepted supply-chain advisories and lint exceptions
+#           for the PageIndex MCP Server.
+#
+# Starts empty. Populated only when the supply-chain gate (gate 6) fires and a
+# human decision is made to accept a finding rather than upgrade or patch it.
+#
+# Rules:
+#   - Every entry MUST carry a rationale and a reference to the RFC that
+#     accepted it (accepted_by: "rfc_XXX").
+#   - Every entry MUST carry an expires date for mandatory review; the gate
+#     treats an expired entry as an unmatched (new) advisory.
+#   - The supply-chain gate runs `pip-audit` over `uv.lock`; any CVE present
+#     in pip-audit output that is NOT listed here (or whose entry is expired)
+#     causes gate 6 to exit non-zero.
+#   - Lint exceptions follow the same lifecycle — rationale + RFC + expiry.
+#   - Values that contain `:`, `|`, `{`, `}`, `-`, or `"` must be quoted.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# advisories — accepted CVEs / pip-audit findings
+#
+# Schema (each entry):
+#   - id: "CVE-YYYY-NNNNN"          # CVE or GHSA identifier, quoted
+#     package: "somepackage"        # pip package name as it appears in uv.lock
+#     installed_version: "1.2.3"    # version present when accepted
+#     reason: "No fix available; exploit requires local access only."
+#     accepted_by: "rfc_042"        # RFC that approved this exception
+#     expires: "2026-12-31"         # mandatory review date (ISO-8601)
+# ---------------------------------------------------------------------------
+advisories: []
+
+# ---------------------------------------------------------------------------
+# lint_exceptions — accepted ruff / mypy rule suppressions
+#
+# Schema (each entry):
+#   - rule: "ANN201"                # ruff rule code or mypy error code
+#     path: "src/pageindex_mcp/worker.py"   # file or glob the exception applies to
+#     reason: "Return type inferred; adding annotation breaks arq worker protocol."
+#     accepted_by: "rfc_007"
+#     expires: "2026-09-30"
+# ---------------------------------------------------------------------------
+lint_exceptions: []

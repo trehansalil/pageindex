@@ -1,0 +1,38 @@
+feature: RAG-01
+name: find_relevant_documents Prefilter and Concurrent Tree Search
+# Re-scoped 2026-05-31 (RFC-003 §RAG-01): the prior `module: client` was
+# contract-vs-code drift. The live code routes
+#   transport (server: tools/documents.py:find_relevant_documents)
+#     -> helpers (_rag -> _rag_inner -> _prefilter_docs, semaphore-bounded search)
+#       -> storage.load_doc  (read-only repository dependency)
+# and never imports `client`. The substantive prefilter + concurrent-search
+# behavior (C1, C2) lives in the `helpers` cross-cutting leaf, so that is the
+# owning module token. The MCP entry point, tool instrumentation, and the
+# no-docs error envelope (C3) live in the `server` transport node; `server` is a
+# thin transport leaf that owns no behavioral contract (it is contract-exempt in
+# contracts.sh §3b alongside auth/config/metrics), so the substantive owner
+# `helpers` is declared here with the transport span documented above.
+# Decision: RAG-01 = refactor the contract to match the code (CACHE-01 took the
+# opposite path: refactor the code to match the contract). See RFC-003.
+module: helpers
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set; rfcs/003-tier0-decision-lock.md#rag-01-rescope
+
+contracts:
+  - id: RAG-01-C1
+    desc: "find_relevant_documents prefilters candidate docs before running the tree search"
+    trigger: "find_relevant_documents MCP tool called with a query string"
+    effect: "_prefilter_docs() is called first to produce a candidate doc list; only the candidate docs are passed to the concurrent tree-search stage; docs excluded by the prefilter are not searched UNLESS the prefilter selects no candidates, in which case the pipeline falls back to searching all loaded docs; no vector index is consulted at any stage"
+    boundary: "At least one document has been indexed and is present in MinIO"
+
+  - id: RAG-01-C2
+    desc: "Tree search runs concurrently across candidate docs bounded by PAGEINDEX_SEARCH_CONCURRENCY"
+    trigger: "find_relevant_documents MCP tool called after prefilter produces N candidate docs (N > 1)"
+    effect: "Up to N tree-search LLM calls are scheduled via asyncio.gather, with at most PAGEINDEX_SEARCH_CONCURRENCY running simultaneously (semaphore-bounded); matched nodes are collected and returned in the MCP response; a per-doc search that raises is caught (return_exceptions=True) and logged — it does NOT increment pageindex_tool_errors_total (that counter increments only at the tool boundary in documents.py when find_relevant_documents itself raises)"
+    boundary: "N candidate docs passed by prefilter; PAGEINDEX_SEARCH_CONCURRENCY is set"
+
+  - id: RAG-01-C3
+    desc: "find_relevant_documents returns an error envelope when no documents are indexed"
+    trigger: "find_relevant_documents MCP tool called when zero documents exist in storage"
+    effect: "Returns a JSON error envelope matching query_error_shape with available=[] and a descriptive error message; no LLM tree-search call is made; pageindex_tool_errors_total{tool=find_relevant_documents} is incremented"
+    boundary: "Storage contains zero indexed documents at query time"

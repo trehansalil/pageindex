@@ -1,0 +1,24 @@
+feature: STORE-01
+name: MinIO Tree, Meta, and Raw Layout with SHA-256 Dedup
+module: storage
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set
+
+contracts:
+  - id: STORE-01-C1
+    desc: "index() persists the tree, sidecar meta, and raw file to their canonical MinIO paths"
+    trigger: "storage.save_doc() called after a successful index() with a validated tree and doc_id"
+    effect: "Tree JSON written to MinIO processed/<doc_id>.json; sidecar written to MinIO processed/<doc_id>.meta.json; raw file written to MinIO uploads/<doc_id>/<filename>; filename-to-sha256 hash-cache entry updated"
+    boundary: "validate_tree() returned pass (hard error: a failing tree raises LowQualityTreeError and is never persisted); tree and meta are non-empty"
+
+  - id: STORE-01-C2
+    desc: "Re-uploading unchanged bytes for the same filename is idempotent via SHA-256 content-hash dedup"
+    trigger: "client.index() called with a file whose SHA-256 hash already exists in the hash-cache for that filename (the dedup check returns the existing doc_id before save_doc() is ever invoked)"
+    effect: "No new MinIO write for processed/<doc_id>.json or uploads/<doc_id>/; existing doc_id is returned to the caller; pageindex:job:<job_id> status set to done with the existing doc_id"
+    boundary: "SHA-256 hash of the incoming file matches the cached hash for the same filename"
+
+  - id: STORE-01-C3
+    desc: "Retrieving a stored tree returns the exact bytes previously persisted"
+    trigger: "storage.load_doc(doc_id) called for a doc_id present in MinIO"
+    effect: "Returns the tree JSON previously written to processed/<doc_id>.json, deserialized into a dict that is value-equivalent to the object persisted by save_doc (load_doc runs json.loads on the stored bytes; it does not return the raw persisted bytes)"
+    boundary: "processed/<doc_id>.json exists in MinIO and has not been deleted"

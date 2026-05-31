@@ -1,0 +1,24 @@
+feature: CACHE-01
+name: Redis Read-Through Tree Cache Load and Invalidation
+module: cache
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set
+
+contracts:
+  - id: CACHE-01-C1
+    desc: "A cache miss on get() loads the tree from MinIO, populates the cache, and returns the tree"
+    trigger: "cache.get(doc_id) called when pageindex:doc:<doc_id> is absent from Redis"
+    effect: "storage.load_doc(doc_id) is called; the returned tree is stored at Redis key pageindex:doc:<doc_id> with TTL=CACHE_TTL; the tree is returned to the caller; subsequent get() calls for the same doc_id are served from Redis without a MinIO read"
+    boundary: "pageindex:doc:<doc_id> key does not exist or has expired in Redis; doc exists in MinIO"
+
+  - id: CACHE-01-C2
+    desc: "save_doc invalidates the cache entry so the next read fetches fresh data"
+    trigger: "storage.save_doc(doc_id, ...) or storage.delete_doc(doc_id) is called"
+    effect: "Redis key pageindex:doc:<doc_id> is deleted (DEL or unlink); the next cache.get(doc_id) will trigger a MinIO read and re-populate the cache"
+    boundary: "null"
+
+  - id: CACHE-01-C3
+    desc: "A cache hit on get() returns the cached tree without a MinIO read"
+    trigger: "cache.get(doc_id) called when pageindex:doc:<doc_id> is present in Redis and has not expired"
+    effect: "The tree is returned directly from Redis; storage.load_doc is NOT called; TTL of the key is not reset"
+    boundary: "pageindex:doc:<doc_id> key exists in Redis within its CACHE_TTL window"

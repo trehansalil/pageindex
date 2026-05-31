@@ -13,11 +13,12 @@ from pathlib import Path
 from pageindex import PageIndexClient
 
 from .config import settings
-from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pptx_to_markdown
-from .helpers import _build_node_map, _strip_text
+from .cache import get_doc
+from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_markdown_converters, pptx_to_markdown
+from .helpers import _build_node_map, _strip_text, validate_tree, LowQualityTreeError
+from .metrics import LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS, PDF_PRIMARY_CONVERTER_FAILURES
 from .storage import (
     list_processed_docs,
-    load_doc,
     load_hash_cache,
     save_doc,
     save_doc_meta,
@@ -92,8 +93,68 @@ class CustomPageIndexClient(PageIndexClient):
 
         try:
             if ext == ".pdf":
-                logger.info("Running page_index on PDF: %s", filename)
-                result = await asyncio.to_thread(self._run_page_index, file_path)
+                # INDEX-01-C1/C2: try the config-ordered markdown converters
+                # (pymupdf4llm / docling, per PDF_CONVERTER), then fall back to
+                # the legacy page_index route only if every converter fails.
+                md_content = None
+                chain = pdf_markdown_converters()
+                primary_name = chain[0][0] if chain else None
+                used_converter = None
+                for idx, (conv_name, conv_fn) in enumerate(chain):
+                    try:
+                        logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
+                        md_content = await asyncio.to_thread(conv_fn, file_path)
+                        used_converter = conv_name
+                        break
+                    except Exception as conv_exc:
+                        md_content = None
+                        if idx == 0:
+                            # The CONFIGURED PRIMARY converter failed. Never let this be
+                            # masked downstream as a generic "depth<2": log it loudly with
+                            # the full traceback (import / model-weights / convert errors)
+                            # and a dedicated metric so it is alertable and unambiguous.
+                            PDF_PRIMARY_CONVERTER_FAILURES.labels(
+                                converter=conv_name, error=type(conv_exc).__name__
+                            ).inc()
+                            logger.error(
+                                "PRIMARY PDF converter '%s' FAILED for %s (%s: %s); falling "
+                                "back to the next converter — output quality will likely "
+                                "degrade. If this is docling, verify model artifacts are "
+                                "present (DOCLING_ARTIFACTS_PATH or network egress) and the "
+                                "docling-hierarchical-pdf add-on is installed in THIS image.",
+                                conv_name, filename, type(conv_exc).__name__, conv_exc,
+                                exc_info=True,
+                            )
+                        else:
+                            logger.warning(
+                                "%s failed for %s (%s); trying next converter",
+                                conv_name, filename, conv_exc,
+                            )
+                if md_content is not None:
+                    if primary_name is not None and used_converter != primary_name:
+                        # We produced markdown, but NOT with the configured primary. Any
+                        # resulting flat/garbled tree is a converter problem, not a generic
+                        # low-quality document — say so explicitly.
+                        logger.error(
+                            "PDF %s extracted by FALLBACK converter '%s' because primary "
+                            "'%s' failed; a flat 'depth<2' tree downstream is a CONVERTER "
+                            "failure, not a low-quality source. Fix the primary converter.",
+                            filename, used_converter, primary_name,
+                        )
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(md_content)
+                        tmp_md_path = md_tmp.name
+                    result = await self._run_md_to_tree(tmp_md_path)
+                else:
+                    PDF_EXTRACT_FALLBACKS.inc()
+                    logger.error(
+                        "ALL markdown converters failed for %s; falling back to legacy "
+                        "page_index. Investigate converter availability in this image.",
+                        filename,
+                    )
+                    result = await asyncio.to_thread(self._run_page_index, file_path)
 
             elif ext in (".md", ".markdown", ".txt"):
                 logger.info("Running md_to_tree on: %s", filename)
@@ -132,6 +193,13 @@ class CustomPageIndexClient(PageIndexClient):
                     md_tmp.write(md_content)
                     tmp_md_path = md_tmp.name
                 result = await self._run_md_to_tree(tmp_md_path)
+
+            # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
+            ok, reason = validate_tree(result.get("structure", []))
+            if not ok:
+                LOW_QUALITY_TREES.labels(reason=reason).inc()
+                logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
+                raise LowQualityTreeError(reason)
 
             # Persist raw file and processed result
             doc_id = str(uuid.uuid4())[:8]
@@ -184,7 +252,7 @@ class CustomPageIndexClient(PageIndexClient):
     async def get_document(self, doc_id: str) -> str:
         """Return document metadata as a JSON string."""
         import json
-        data = await asyncio.to_thread(load_doc, doc_id)
+        data = await asyncio.to_thread(get_doc, doc_id)
         structure = data.get("structure", [])
         return json.dumps({
             "doc_id":          doc_id,
@@ -200,7 +268,7 @@ class CustomPageIndexClient(PageIndexClient):
     async def get_document_structure(self, doc_id: str) -> str:
         """Return document tree structure (without text fields) as a JSON string."""
         import json
-        data = await asyncio.to_thread(load_doc, doc_id)
+        data = await asyncio.to_thread(get_doc, doc_id)
         return json.dumps({
             "doc_id":    doc_id,
             "structure": _strip_text(data.get("structure", [])),
@@ -212,7 +280,7 @@ class CustomPageIndexClient(PageIndexClient):
         pages: single page ('5'), range ('3-7'), or comma list ('3,5,7').
         """
         import json
-        data = await asyncio.to_thread(load_doc, doc_id)
+        data = await asyncio.to_thread(get_doc, doc_id)
         nm: dict = {}
         _build_node_map(data.get("structure", []), nm)
 

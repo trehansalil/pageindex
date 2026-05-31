@@ -1,0 +1,186 @@
+# .agents/governance/develop-guide.yaml
+#
+# Source: AGENT_DRIVEN_DEVELOPMENT.md §6.2 (develop-guide.yaml bullet list)
+# Read in `develop` mode — before writing any code or test in the TDD loop.
+# Layer names and import rules are canonical to vocabulary.yaml.
+#
+# Format: version: 1 + guide: mapping; one entry per §6.2 item.
+# YAML quoting rule: values containing  :  |  {  }  —  "  are wrapped in double quotes.
+
+version: 1
+
+guide:
+
+  # ── LANGUAGE STRICTNESS ────────────────────────────────────────────────────
+  language_strictness:
+    description: "Type discipline and defensive coding standards for every Python file in src/pageindex_mcp/."
+    rules:
+      - "Every public function and method carries full type annotations on parameters and return type."
+      - "mypy runs clean over src/pageindex_mcp/ with no ignored errors (no bare `# type: ignore` without a `# SAFETY: <reason>` comment)."
+      - "No bare `except:` — always catch a specific exception type or at minimum `except Exception as exc:`."
+      - "No implicit `Any` at external boundaries (OpenAI, pageindex, MinIO, Redis payloads must be validated/narrowed before use)."
+      - "Escape hatches (`# type: ignore`, `# noqa`, `# nosec`, unchecked casts of external payloads) require a `# SAFETY: <reason>` comment on the same line."
+      - "No hardcoded credentials; all secrets come from env via config.py."
+
+  # ── INTERFACES ─────────────────────────────────────────────────────────────
+  interfaces:
+    description: "Depend on abstractions, not concretes, for every external collaborator."
+    rules:
+      - "Define a Protocol or ABC for each external collaborator: object storage, Redis cache, the pageindex library, and the LLM client."
+      - "Service-layer files (client.py, worker.py) import the Protocol/ABC, never the concrete adapter class directly."
+      - "Repository files (storage.py, cache.py) implement the Protocol; they are wired to the interface in the composition root (config.py + server.py/worker.py startup)."
+      - "Mock implementations (MockStorage, MockCache, MockPageIndexClient) are the Phase-1 stand-ins; real adapters land in Phase 3."
+      - "A composition root (server.py or worker.py startup block) is the only place that instantiates concrete adapters and binds them to the interface."
+
+  # ── EXTERNAL BOUNDARIES ────────────────────────────────────────────────────
+  external_boundaries:
+    description: "Validate and normalise every payload that crosses a process boundary before trusting it."
+    rules:
+      - "All responses from OpenAI, the pageindex library, MinIO, and Redis are validated/normalised before use — never passed through raw."
+      - "If the external call returns an unexpected shape, raise a typed domain exception (not a bare RuntimeError)."
+      - "import_rules.no_llm_outside_provider and no_minio_outside_storage (vocabulary.yaml) are never violated; a transport handler may not call MinIO or an LLM directly."
+      - "import_rules.no_pypdf2_in_new_pdf_path: the new PDF extraction path never uses PyPDF2. Docling (MIT) is the configured default PDF->markdown converter — pdf_markdown_converters() reads PDF_CONVERTER (default 'docling') and puts Docling in the primary slot, with pymupdf4llm (AGPL) as the secondary/fallback; set PDF_CONVERTER=pymupdf4llm to invert. RFC-003 Amendment 4 promoted Docling-CPU to default, superseding RFC-000 R1's pymupdf4llm-primary stance."
+      - "Boundary validation logic lives in the provider or repository layer, never in the transport handler."
+
+  # ── ARCHITECTURE ───────────────────────────────────────────────────────────
+  architecture:
+    description: "Layer execution order and per-file structural caps."
+    module_layer_order: "schema → repository/provider → service → route → tests"
+    layer_definitions_source: vocabulary.yaml
+    rules:
+      - "File creation order during develop follows dag.yaml#phase_features.module_layer_order: schema types first, then repository (storage.py, cache.py) and provider (converters.py) in parallel, then service (client.py, worker.py), then transport (server.py, upload_app.py, tools/), then tests."
+      - "Files with no shared DAG ancestor may be created in the same turn (parallel tool calls)."
+      - "transport layer (server.py, upload_app.py, tools/*.py) — may import: service, schema, cross_cutting. Forbidden: minio/redis clients, LLM/pageindex calls, business logic."
+      - "service layer (client.py, worker.py) — may import: repository Protocol, provider Protocol, schema, other services. Forbidden: constructing minio/redis client inline, transport types."
+      - "repository layer (storage.py, cache.py) — may import: minio client, redis client, schema. Forbidden: business logic, external APIs, LLM."
+      - "provider layer (converters.py) — may import: libreoffice, pillow, pymupdf, pageindex, openai, litellm. Forbidden: persistence, business logic."
+      - "cross_cutting layer (config.py, auth.py, metrics.py, helpers.py) — may import: stdlib, own third-party dependency. Forbidden: service, transport."
+      - "Per-file caps (enforced by verify-gates.yaml#static): function ≤ 50 lines (max_function_lines), file ≤ 300 lines (max_file_lines) — extract anything larger into client.py. Transport handlers should stay thin (delegate to the service layer) as a convention; there is no separate handler line threshold in verify-gates.yaml."
+
+  # ── COMMITS ────────────────────────────────────────────────────────────────
+  commits:
+    description: "Exact commit message format — every commit landing from the develop mode must match."
+    format: "feat|fix|refactor|test|chore(<module>): <FEATURE-ID> <short description>"
+    module_values:
+      - client
+      - worker
+      - storage
+      - server
+      - converters
+      - cache
+      - upload_app
+    rules:
+      - "The <module> token is the exact pageindex_mcp file name (no .py suffix, no subdirectory prefix)."
+      - "The <FEATURE-ID> is the stable feature identifier from the contract YAML (e.g. UPLOAD-01, INDEX-01, RAG-01)."
+      - "The short description is imperative mood, ≤ 72 characters total on the first line."
+      - "Examples: `feat(upload_app): UPLOAD-01 stage file and enqueue arq job`, `fix(client): INDEX-01 guard against empty tree before save_doc`, `test(storage): STORE-01 assert put_object key path in integration test`."
+      - "Agent never commits without showing full eval.sh output first and receiving explicit human go-ahead."
+      - "Never push directly to master from the agent without human approval — master is the deploy branch."
+
+  # ── TEST_LAYERS ─────────────────────────────────────────────────────────────
+  test_layers:
+    description: "Per-layer mock level and required test cases for every feature."
+    layers:
+      transport:
+        mock_level: "httpx AsyncClient against the FastAPI/FastMCP ASGI app; mock service layer (client.py) with AsyncMock"
+        required_cases: ["happy path", "auth failure (401)", "malformed input", "service dependency failure → mapped HTTP error"]
+      service:
+        mock_level: "AsyncMock for repository Protocol and provider Protocol; fakeredis for Redis-backed operations"
+        required_cases: ["happy path", "domain error (e.g. low_quality_tree)", "dependency failure (storage raises)", "not-found", "dedup-hit (SHA-256 already indexed)"]
+      repository:
+        mock_level: "fakeredis in unit tests; real MinIO + Redis via testcontainers in integration tests"
+        required_cases: ["put → get roundtrip", "cache miss → load from MinIO", "cache invalidation", "key not found"]
+      provider:
+        mock_level: "spy / unittest.mock.patch asserting the converter or LLM was invoked with the right args"
+        required_cases: ["supported format happy path", "unsupported format → unsupported_format error", "extraction failure → extraction_failed error"]
+    global_requirements:
+      - "pytest-asyncio auto mode — `asyncio_mode = auto` in pyproject.toml; no `@pytest.mark.asyncio` needed."
+      - "AsyncMock for all arq/Redis async calls; assert awaited calls explicitly."
+      - "fakeredis replaces the real Redis client in every unit test (no live Redis required)."
+      - "testcontainers (MinIO + Redis) for integration tests only (gate 7)."
+      - "Unit tests mock the LLM client and the pageindex library — never call the real API in unit tests."
+
+  # ── TEST_BOUNDARIES ─────────────────────────────────────────────────────────
+  test_boundaries:
+    description: "File placement, naming conventions, and infra boundaries for tests."
+    rules:
+      - "Test files live under tests/test_<module>.py, mirroring the flat src/pageindex_mcp/ layout."
+      - "Unit tests (tests/test_<module>.py) use fakeredis and Protocols/mocks; they require no running infra."
+      - "Integration tests (tests/test_*_integration.py or tests/test_staging_e2e.py) may use testcontainers to spin real MinIO and Redis."
+      - "e2e tests (tests/test_*_e2e.py) exercise the full upload → worker → query path against a running server+worker."
+      - "tests/test_<module>.py must exist for every service/repository module with code on disk — the layer_file_existence gate enforces this."
+      - "No live OpenAI, pageindex, or LibreOffice calls in unit or integration tests — stub/mock at the Protocol boundary."
+
+  # ── ASYNC PATTERNS ──────────────────────────────────────────────────────────
+  async_patterns:
+    description: "Async correctness standards for the FastMCP + arq + asyncio stack."
+    rules:
+      - "pytest-asyncio auto mode is the project standard — `asyncio_mode = auto` in pyproject.toml; test functions that are `async def` run automatically."
+      - "Use `unittest.mock.AsyncMock` for every async collaborator (arq context, Redis client, MinIO async calls)."
+      - "Always assert that awaited coroutines were actually awaited — use `mock.assert_awaited_once_with(...)` not just `mock.assert_called_once_with(...)`."
+      - "Cancellation-safe: every arq job function handles `asyncio.CancelledError` without leaving MinIO/Redis in an inconsistent state."
+      - "Do not mix `asyncio.run()` inside async functions — use `await` throughout; `asyncio.run()` is only for top-level entry points."
+      - "No synchronous blocking calls (requests, time.sleep, subprocess with blocking I/O) inside async functions — use `asyncio.to_thread` or async equivalents."
+
+  # ── CROSS_CUTTING ───────────────────────────────────────────────────────────
+  cross_cutting:
+    description: "When dedup, ownership, idempotency, and async-cancellation contract tests are required."
+    rules:
+      - "SHA-256 dedup: any feature that reads or writes a document tree must include a dedup-hit test case (same hash → no re-index, existing result returned)."
+      - "Ownership / auth: any HTTP endpoint test must include an auth-failure case (missing or wrong X-API-Key → 401, no storage write, no job enqueued)."
+      - "Idempotency: any operation that enqueues an arq job must include a double-submit test (same job_id submitted twice → second is a no-op or deduplicated)."
+      - "Async cancellation: arq job functions tested to clean up staging MinIO objects if cancelled mid-flight."
+      - "validate_tree() must be called before save_doc in every code path that persists a document tree — Hard Rule 5. A missing validate_tree call is a behavioral contract violation."
+      - "Prometheus counters (pageindex_low_quality_trees_total, pageindex_tool_errors_total) must be incremented in the correct error paths — assert the counter value in tests."
+
+  # ── GUIDELINES ──────────────────────────────────────────────────────────────
+  guidelines:
+    description: "TDD discipline and behavioral correspondence rules for every develop loop."
+    rules:
+      - "TDD only: write the failing test first (RED), implement minimally to make it pass (GREEN), then refactor (REFACTOR). Never write implementation before the test."
+      - "Contract-ID naming: every test function name or marker comment must contain the contract ID — e.g. `def test_upload_01_c1_enqueues_job()` or `# UPLOAD-01-C1`."
+      - "Behavioral correspondence (§5.2): the assertion validates the contract's effect verb. If the effect says 'object written to MinIO', assert the object exists or `put_object` was called with the right key — not merely that the handler returned 202."
+      - "Failure correlation (§5.2): comment out the implementation and confirm the mapped test goes RED. If it stays green, the test is not verifying the effect."
+      - "Scope alignment (§5.2): verify effects at the layer where they occur — MinIO/Redis effects in integration tests, MCP/HTTP responses in transport tests, external-call invocation in spy/mock tests."
+      - "Run `contracts.sh` and `dag.sh` locally after every develop loop to confirm all planned contract IDs are greppable and DAG order was respected before emitting [checkpoint]."
+      - "PR size limit: ≥ 300 lines of agent-generated output → split into smaller units. Branch lifetime ≤ 2 days."
+      - "Module AGENTS.md: tactical (non-significant) decisions go there; significant decisions go to RFCs."
+
+  # ── FAILURE_TRIAGE ──────────────────────────────────────────────────────────
+  failure_triage:
+    description: "Three-way failure classification (AGENT_DRIVEN_DEVELOPMENT.md §4.1 verify stage). Classify every gate failure with exactly one label before making any edit."
+    classes:
+      behavioral:
+        label: behavioral
+        definition: "Code regressed against a contract effect — contracts.sh finds the contract ID in the test, but the asserted effect does not match the contract's `effect` field, or the implementation under test is wrong."
+        action: "Fix the implementation code. Do not relax the test or the contract."
+        signals:
+          - "contracts.sh reports a contract ID whose test assertion fails"
+          - "a service/repository function returns the wrong value, skips a side-effect, or does not call validate_tree before save_doc"
+          - "a Prometheus counter is not incremented when the contract requires it"
+      harness:
+        label: harness
+        definition: "Test-infrastructure issue — the contract effect is correct but the test setup is broken."
+        action: "Fix the test only (fixture, mock, fakeredis state, monkeypatch leak, async race). Do not change the implementation."
+        signals:
+          - "flaky async race (test passes in isolation, fails under concurrency)"
+          - "stale fakeredis state leaking between tests"
+          - "fixture drift (test uses an outdated Protocol method signature)"
+          - "monkeypatch not cleaned up — affecting a later test"
+          - "AsyncMock not properly awaited in assertion"
+      blocked:
+        label: blocked
+        definition: "External dependency unavailable — the failure is not caused by code or test logic."
+        action: "Append a `[FIX] YYYY-MM-DD | <description>` entry to .agents/state/PENDING_DECISIONS.md and halt the develop loop. Do not retry indefinitely."
+        signals:
+          - "MinIO unreachable or not running"
+          - "Redis down (non-fakeredis path)"
+          - "OpenAI API 5xx or OPENAI_API_KEY missing"
+          - "pageindex library unavailable or version mismatch"
+          - "testcontainers fails to start a container (Docker daemon issue)"
+    triage_protocol:
+      - "1. Read the failure output in full before classifying."
+      - "2. Assign exactly one class: behavioral | harness | blocked."
+      - "3. State the class and the signal that led to it before making any edit."
+      - "4. Apply only the action that corresponds to the class."
+      - "5. Re-run the failing gate after the fix to confirm the classification was correct."

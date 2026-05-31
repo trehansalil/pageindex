@@ -1,0 +1,24 @@
+feature: UPLOAD-01
+name: Document Upload Enqueues a Processing Job
+module: upload_app
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set
+
+contracts:
+  - id: UPLOAD-01-C1
+    desc: "A valid multipart upload with a correct X-API-Key stages the file and enqueues an arq job"
+    trigger: "POST /upload/files with a valid X-API-Key header and one multipart file part"
+    effect: "HTTP 202 returned with job_id; file written to MinIO uploads/staging/<job_id>/; arq job enqueued via JobEnqueuer; pageindex:job:<job_id> set to status=pending"
+    boundary: "UPLOAD_API_KEY is set on the server and the request supplies a matching X-API-Key"
+
+  - id: UPLOAD-01-C2
+    desc: "An upload with a missing or wrong API key is rejected before any storage write"
+    trigger: "POST /upload/files without a valid X-API-Key header (missing or incorrect value)"
+    effect: "HTTP 401 returned; no MinIO write; no arq job enqueued; no pageindex:job key created"
+    boundary: "UPLOAD_API_KEY is set on the server; request supplies no key or a wrong key"
+
+  - id: UPLOAD-01-C3
+    desc: "Polling a valid job_id returns the current job status from Redis"
+    trigger: "GET /upload/status/<job_id> where pageindex:job:<job_id> exists in Redis"
+    effect: "HTTP 200 returned with JSON body containing status field (one of pending, processing, done, error) and optional doc_id or reason fields"
+    boundary: "pageindex:job:<job_id> exists and has not expired (TTL 24h)"

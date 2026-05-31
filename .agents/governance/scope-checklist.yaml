@@ -1,0 +1,120 @@
+# .agents/governance/scope-checklist.yaml
+#
+# Source: AGENT_DRIVEN_DEVELOPMENT.md §6.1 (scope-checklist.yaml bullet list)
+#         and §6 (modes × YAML table).
+# Read by the agent in `scope` mode — BEFORE emitting a scope plan.
+# Every check below is grounded in this repo's stack:
+#   FastMCP + arq + MinIO + Redis, Python 3.12, `uv`, the five MCP query tools,
+#   the HTTP upload API, SHA-256 dedup, and the empty-tree-persist hazard.
+# Layer names match vocabulary.yaml#layers exactly.
+#
+# Quoting rule: any value containing  :  |  {  }  —  "  is wrapped in double quotes.
+
+version: 1
+
+checklist:
+
+  terminology:
+    purpose: "Verify that every domain term in the plan is used with its canonical meaning."
+    must:
+      - "Use 'RAG' only for retrieve-then-generate (prefilter + tree-search + LLM synthesis); do not conflate with pure retrieval."
+      - "Use 'MCP tool' only for the five registered query tools in tools/documents.py (recent_documents, find_relevant_documents, get_document, get_document_structure, get_page_content); do not call upload endpoints MCP tools."
+      - "Use 'arq job' for the async unit of work enqueued into Redis and consumed by the arq worker process (worker.py); do not call it a 'task' or 'celery job'."
+      - "Use 'object storage' for MinIO; do not say 'blob storage' or 'S3 bucket' unless specifically noting S3 compatibility."
+      - "Use 'tree' for the pageindex document tree produced by md_to_tree / index(); do not call it a 'vector', 'embedding', or 'index' generically."
+      - "Use 'SHA-256 dedup' when describing duplicate detection; confirm the hash covers raw bytes of the file, not metadata."
+      - "Use layer names verbatim from vocabulary.yaml: transport, service, repository, provider, cross_cutting, barrel."
+      - "Use 'validate_tree()' for the quality gate call that must precede save_doc; do not abbreviate or rename it."
+
+  api_contract:
+    purpose: "Confirm that every HTTP endpoint and MCP tool touched by the plan has a fully-specified request/response contract."
+    must:
+      - "For POST /upload/files: specify multipart field names, required header (X-API-Key), response shape {job_id}, and HTTP status codes 202 / 401 / 503 from vocabulary.yaml#http_status."
+      - "For GET /upload/status/{job_id}: specify response shape {status, result?, error?, reason?}, and status codes 200 / 404; job_status enum from vocabulary.yaml#job_status."
+      - "For each MCP query tool in scope: list the tool name, input parameters with types, and the JSON-serializable dict it returns (including the query_error_shape from vocabulary.yaml on error)."
+      - "Enumerate every non-200/non-202 status code the plan introduces and verify it matches vocabulary.yaml#http_status; adding a new code is a significant decision requiring an RFC."
+      - "Confirm error envelope shape '{\"error\": \"<message>\", \"available\": [...]}' is used uniformly across all MCP query tools."
+
+  input_validation:
+    purpose: "Enumerate invalid and boundary inputs before valid ones so tests cover the full input space."
+    must:
+      - "List invalid inputs first: empty PDF (0-byte file), 0-page document, non-PDF bytes uploaded as .pdf, file exceeding any size limit."
+      - "Explicitly state boundary values: minimum and maximum file sizes, minimum non-empty page count, minimum tree depth (2) and node count (3) from vocabulary.yaml#error_reason.low_quality_tree."
+      - "Cover auth boundary: missing X-API-Key header, header present but wrong value, UPLOAD_API_KEY env var unset on server (503 path)."
+      - "Cover concurrent-upload boundary: two uploads of the same file arriving simultaneously (SHA-256 dedup race)."
+      - "Cover format boundaries: non-PDF input types (docx, png, txt) that route through converters.py before reaching the PDF path."
+      - "State explicitly what happens when validate_tree() returns False: error_reason low_quality_tree is set, tree is NOT persisted to MinIO, pageindex_low_quality_trees_total counter is incremented."
+
+  test_coverage:
+    purpose: "Confirm every layer has the required test cases before coding begins."
+    must:
+      - "schema layer: validate the Pydantic/TypedDict models for upload request, job-status response, and MCP tool response; test both valid and invalid field combinations."
+      - "repository layer (storage.py, cache.py): integration tests with real MinIO/Redis (testcontainers) for happy path, cache-miss-then-load, invalidation, and round-trip correctness."
+      - "provider layer (converters.py): unit tests with spy/mock asserting LibreOffice/pymupdf/pageindex calls; happy path + extraction_failed error."
+      - "service layer (client.py, worker.py): unit tests with fakeredis and mocked storage; happy path, domain error (low_quality_tree), dependency failure (MinIO unreachable), not-found, dedup-hit (SHA-256 match returns cached result)."
+      - "transport layer (server.py, upload_app.py, tools/): HTTP/MCP response tests asserting correct status codes, response shapes, and that no MinIO/Redis client is constructed inline."
+      - "Every test function name or marker comment includes the contract ID (e.g. def test_upload_01_c1_enqueues_job or # UPLOAD-01-C1)."
+      - "e2e test required if the plan touches the full upload → worker → query path."
+
+  cross_cutting:
+    purpose: "Confirm idempotency, ownership, empty-state, async-cancellation, and infra-error-mapping are explicitly handled."
+    must:
+      - "SHA-256 dedup: confirm duplicate upload returns the existing job_id or cached result without a second arq job or MinIO write."
+      - "Ownership / right-to-erasure cascade: if the plan writes to MinIO uploads/, processed/*.json, or processed/*.meta.json, or to Redis cache, the plan must describe how delete cascades across all four stores (MinIO uploads/, processed/*.json, processed/*.meta.json, Redis cache)."
+      - "Empty-state handling: every query tool must return the query_error_shape (not crash) when no documents are indexed."
+      - "Async cancellation: arq jobs cancelled mid-flight must not leave partial MinIO objects or orphaned Redis keys; the plan must state whether cleanup is in-job or via a DLQ."
+      - "Infra-error mapping: MinIO connection errors and Redis connection errors must map to the error_reason extraction_failed or a specific documented reason; never swallowed silently."
+      - "Prometheus counters: every new error condition introduced must be reflected in an existing or new metric from vocabulary.yaml#error_metrics."
+
+  effect_verb_coverage:
+    purpose: "Ensure every effect verb in a contract maps to a concrete, falsifiable assertion in the test plan."
+    must:
+      - "'file written to MinIO' -> assert the MinIO object key exists (put_object called with correct bucket + key, or testcontainers round-trip confirms the object is retrievable)."
+      - "'arq job enqueued' -> assert the arq job ID appears in the Redis queue or that the mock enqueue function was called."
+      - "'202 with job_id returned' -> assert HTTP status == 202 and response JSON contains a non-empty job_id string."
+      - "'401 response; no MinIO write; no job enqueued' -> assert status == 401, assert put_object was NOT called, assert enqueue was NOT called."
+      - "'validate_tree() before save_doc' -> assert that when validate_tree returns False the test sees no MinIO write and the error_reason is low_quality_tree."
+      - "'pageindex_low_quality_trees_total incremented' -> assert the Prometheus counter value increased by 1 (or the metrics mock was called)."
+      - "For every effect verb in any new contract introduced by the plan, state the layer at which it is verified and the assertion form (exists / called-with / not-called / value-equals)."
+
+  architecture:
+    purpose: "Confirm that abstractions, layer boundaries, and file-size limits from vocabulary.yaml are respected."
+    must:
+      - "Every external collaborator (MinIO client, Redis client, pageindex library, LLM client, LibreOffice/pymupdf) is accessed through a Protocol or ABC interface, not a concrete import, in service-layer code."
+      - "No MinIO client instantiated outside storage.py (vocabulary.yaml#import_rules.no_minio_outside_storage)."
+      - "No Redis client instantiated outside cache.py or worker.py (vocabulary.yaml#import_rules.no_redis_outside_cache_or_worker)."
+      - "No OpenAI / litellm / pageindex calls outside client.py or converters.py (vocabulary.yaml#import_rules.no_llm_outside_provider)."
+      - "PyPDF2 must not appear in the new PDF ingestion path; pymupdf4llm / Docling is the markdown-first route (vocabulary.yaml#import_rules.no_pypdf2_in_new_pdf_path)."
+      - "Transport handlers (server.py, upload_app.py, tools/*.py) must be <= 30 lines per handler (vocabulary.yaml#layers.transport.max_handler_lines); longer logic extracted to client.py."
+      - "Functions <= 50 lines, files <= 300 lines (verify-gates.yaml static thresholds). Confirm plan does not require violating these without an RFC."
+      - "Any new abstraction introduced is a Protocol/ABC, never a bare type re-export or a class with no defined interface."
+
+  dag_alignment:
+    purpose: "Confirm every file the plan touches is a declared node in dag.yaml#phase_features and that parallel groups are made explicit."
+    must:
+      - "List every file the plan will create or modify; verify each maps to a node in dag.yaml#phase_features.modules."
+      - "Identify which nodes share no dependency edge (same parallel_group) and may be created in parallel (multiple tool calls in one turn)."
+      - "Identify which nodes have a depends_on edge and must be created sequentially; state the order."
+      - "If the plan touches a file not yet in dag.yaml#phase_features, flag it as a significant decision: adding a node requires an RFC before the plan is approved."
+      - "Confirm the plan's build order matches dag.yaml#phase_features.module_layer_order: schema -> repository/provider -> service -> route -> tests."
+      - "After develop, one line per created file must be appended to .agents/state/execution-log.jsonl in the format defined in AGENT_DRIVEN_DEVELOPMENT.md §14.6."
+
+  consistency:
+    purpose: "Verify that all file references, import names, and layer names in the plan are internally consistent and match what is on disk."
+    must:
+      - "Every module name in the plan (e.g. storage, cache, client, worker, converters, server, upload_app) matches the actual filename under src/pageindex_mcp/."
+      - "Every contract ID cited (e.g. UPLOAD-01-C1) exists in .agents/contracts/ or is explicitly declared as new in this plan."
+      - "Every import path referenced in the plan resolves under src/pageindex_mcp/ with no circular dependency (vocabulary.yaml#import_rules.no_circular_imports)."
+      - "Layer names used in the plan match vocabulary.yaml#layers keys exactly: transport, service, repository, provider, cross_cutting, barrel."
+      - "Error reason strings used in the plan match vocabulary.yaml#error_reason keys exactly: low_quality_tree, unsupported_format, extraction_failed."
+      - "HTTP status codes referenced match vocabulary.yaml#http_status keys exactly (202, 401, 404, 503); any new code is flagged as a significant decision."
+
+  adversarial:
+    purpose: "Force the plan through six hostile questions that expose silent failures, boundary exploits, and downstream breakage before a line is written."
+    must:
+      - "EMPTY INPUT: What happens when the uploaded file is 0 bytes or 0 pages? Does the system return a clear error_reason (extraction_failed or low_quality_tree) and skip MinIO write, or does it silently store a garbage tree?"
+      - "MAX VALUES: What happens at the maximum file size, maximum document page count, or a tree with thousands of nodes? Does any code path hit an OOM, a Redis value-size limit, or a MinIO timeout without surfacing a recoverable error?"
+      - "CONFLICTING CONCURRENT UPLOADS: Two requests upload the same file at the same instant. Does SHA-256 dedup prevent a double arq job and a double MinIO write, or does the race create two partially-written objects with the same key?"
+      - "DOUBLE-SUBMIT / DEDUP: A client re-submits the same file after a successful index. Does the system return the cached result without re-running the arq pipeline, and without overwriting the existing MinIO objects?"
+      - "DOWNSTREAM MCP CONSUMERS: An MCP client calls find_relevant_documents or get_document on a document that is still processing (job_status == processing). Does the tool return the query_error_shape gracefully, or does it crash or return partial data?"
+      - "HIDDEN SILENT BUGS — EMPTY-TREE PERSIST: Is there any code path where validate_tree() is NOT called before save_doc, allowing a low-quality or empty tree to be silently stored in MinIO? The plan must assert this path is closed and name the specific guard."

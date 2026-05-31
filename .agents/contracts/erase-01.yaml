@@ -1,0 +1,27 @@
+feature: ERASE-01
+name: Right-to-Erasure Cascade Across Every Derived Store
+module: storage
+phase: 2
+source: rfcs/001-initial-plan-review.md#amendment-1
+
+# Hard Rule 2: deleting the raw upload does NOT auto-remove derivatives. A DSR
+# delete must purge MinIO uploads/, processed/<id>.json, processed/<id>.meta.json,
+# the Redis cache key, and any documented backup — explicitly, in that order.
+contracts:
+  - id: ERASE-01-C1
+    desc: "A DSR delete for a doc_id cascades across all derived stores in the mandated order"
+    trigger: "delete_doc(doc_id) called for a doc_id that has been fully indexed"
+    effect: "MinIO objects are removed in order uploads/<doc_id>/ then processed/<doc_id>.json then processed/<doc_id>.meta.json; then the Redis cache key pageindex:doc:<doc_id> is deleted; the order is observable (logged or asserted) and the filename->sha256 hash-cache entry for the doc is cleared so a re-upload re-indexes"
+    boundary: "doc_id exists in MinIO processed/ at call time"
+
+  - id: ERASE-01-C2
+    desc: "Erasure is idempotent — deleting an already-deleted or never-existing doc_id is a no-op success"
+    trigger: "delete_doc(doc_id) called when some or all of the doc_id derivatives are already absent"
+    effect: "Each store delete tolerates a missing object (no S3Error/KeyError surfaced); the call returns success without re-creating any object; a second delete_doc(doc_id) produces the same end state as the first"
+    boundary: "null"
+
+  - id: ERASE-01-C3
+    desc: "A partial-failure mid-cascade does not leave an orphaned derivative silently"
+    trigger: "delete_doc(doc_id) where one store delete (e.g. the Redis cache key) raises after an earlier store delete succeeded"
+    effect: "The failure is surfaced (raised or returned with a reason), names which store was not purged, and the operation is safe to retry to completion; no derivative is reported as erased while still present"
+    boundary: "An infra error occurs on one of the cascade steps"

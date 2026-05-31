@@ -8,7 +8,31 @@ env:
   IMAGE_NAME: ghcr.io/trehansalil/pageindex-mcp
 
 jobs:
+  # Quality gate: the no-infra prefix (gates 1-6: static, unit, contracts, dag,
+  # build, supply-chain) must pass before any image is built or deployed.
+  # AGENT_DRIVEN_DEVELOPMENT.md §7/§10; wired by RFC-002. Gates 7-8 (integration,
+  # e2e) need MinIO+Redis and are not run here.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv (Python 3.12)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run quality gates (no-infra prefix)
+        run: bash scripts/eval.sh --no-infra
+
   build-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

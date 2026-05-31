@@ -11,7 +11,8 @@ from ..metrics import (
     TOOL_DURATION,
     TOOL_ERRORS,
 )
-from ..storage import list_processed_docs, load_doc
+from ..storage import list_processed_docs
+from ..cache import get_doc
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
         doc_id = d["doc_id"]
         node_count = 0
         try:
-            data = load_doc(doc_id)
+            data = get_doc(doc_id)
             nm: dict = {}
             _build_node_map(data.get("structure", []), nm)
             node_count = len(nm)
@@ -78,7 +79,8 @@ async def find_relevant_documents(query: str) -> str:
         logger.info("find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)", time.monotonic() - list_t0, len(documents))
         if not documents:
             logger.warning("find_relevant_documents: no documents indexed")
-            return "No documents are indexed. Process documents first."
+            TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
+            return json.dumps({"error": "No documents are indexed. Process documents first.", "available": []})
         return await _rag(query, [d["doc_id"] for d in documents])
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
@@ -97,7 +99,7 @@ def get_document(doc_id: str) -> str:
     start = time.monotonic()
     logger.info("get_document called (doc_id=%s)", doc_id)
     try:
-        data = load_doc(doc_id)
+        data = get_doc(doc_id)
     except Exception:
         TOOL_ERRORS.labels(tool="get_document").inc()
         logger.warning("get_document: doc %s not found", doc_id)
@@ -135,7 +137,7 @@ def get_document_structure(doc_id: str) -> str:
     start = time.monotonic()
     logger.info("get_document_structure called (doc_id=%s)", doc_id)
     try:
-        data = load_doc(doc_id)
+        data = get_doc(doc_id)
     except Exception:
         TOOL_ERRORS.labels(tool="get_document_structure").inc()
         logger.warning("get_document_structure: doc %s not found", doc_id)
@@ -159,7 +161,7 @@ def get_page_content(doc_id: str, pages: str) -> str:
     start = time.monotonic()
     logger.info("get_page_content called (doc_id=%s, pages=%s)", doc_id, pages)
     try:
-        data = load_doc(doc_id)
+        data = get_doc(doc_id)
     except Exception:
         TOOL_ERRORS.labels(tool="get_page_content").inc()
         logger.warning("get_page_content: doc %s not found", doc_id)

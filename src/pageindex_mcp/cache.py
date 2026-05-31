@@ -59,3 +59,18 @@ def doc_cache_delete(doc_id: str) -> None:
         r.delete(f"{_CACHE_PREFIX}{doc_id}")
     except Exception:
         logger.debug("Cache delete failed for %s", doc_id, exc_info=True)
+
+
+def get_doc(doc_id: str) -> dict:
+    """Read-through accessor (CACHE-01): return the cached doc, or load it from
+    storage on a miss, populate the cache, and return it. Lazily imports
+    storage.load_doc to keep the cache<-storage relationship acyclic at import
+    time. Propagates ValueError when the document does not exist."""
+    cached = doc_cache_get(doc_id)
+    if cached is not None:
+        logger.debug("Cache hit for doc %s", doc_id)
+        return cached
+    from .storage import load_doc  # lazy: cache -> storage read-through
+    data = load_doc(doc_id)
+    doc_cache_set(doc_id, data)
+    return data

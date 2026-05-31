@@ -1,0 +1,102 @@
+# .agents/governance/verify-gates.yaml
+#
+# Only edit thresholds here. Never relax a number to make a gate pass — fix the
+# code or amend via RFC (§6.3 discipline).
+#
+# Quote values containing : | { } — "
+#
+# Sources: AGENT_DRIVEN_DEVELOPMENT.md §6.3 (complete YAML example + rationales)
+#          and §7 (eight-gate table in fast → slow / no-infra → infra order).
+# Import-rule names mirror vocabulary.yaml#import_rules exactly.
+
+gates:
+
+  # ── 1. STATIC ────────────────────────────────────────────────────────────────
+  # ruff check + ruff format --check + mypy + secrets scan + layer-isolation rules
+  # Needs infra: no
+  static:
+    ruff_violations: 0          # rationale: ruff is the project linter+formatter; zero-violation policy
+    format: strict              # ruff format --check
+    type_check: pass            # mypy on src/pageindex_mcp
+    no_secrets: true            # detect-secrets / gitleaks scan
+    max_cyclomatic: 15          # rationale: McCabe "moderate risk"; ruff C901 max-complexity
+    max_function_lines: 50      # rationale: one screen at 14px
+    max_file_lines: 300         # rationale: aligns with PR-size cap (§11)
+    max_nesting_depth: 4        # rationale: beyond 4 levels signals hidden complexity and violates readability norm
+    max_params: 5               # rationale: Clean Code §3
+    # Layer-isolation rules (enforced via ruff flake8-tidy-imports / import-linter).
+    # Boolean names match vocabulary.yaml#import_rules exactly.
+    no_minio_outside_storage: true          # only storage.py imports the minio client
+    no_redis_outside_cache_or_worker: true  # redis client confined to cache.py / worker.py
+    no_llm_outside_provider: true           # OpenAI/litellm/pageindex calls live behind client/converters
+    no_pypdf2_in_new_pdf_path: true         # per RFC-000 — new PDF path uses pymupdf, not PyPDF2
+    no_circular_imports: true               # rationale: circular imports produce import-time errors and hidden coupling
+
+  # ── 2. UNIT ──────────────────────────────────────────────────────────────────
+  # pytest (asyncio auto, fakeredis/mocks) + coverage + assertion density + layer existence
+  # Needs infra: no
+  unit:
+    tests: pass
+    coverage_default: 70        # rationale: industry median
+    coverage_modules:
+      client: 90                # rationale: core indexing/RAG path — highest blast radius
+      storage: 90               # rationale: data-integrity critical
+      worker: 85                # rationale: job lifecycle / DLQ
+    assertion_density: 2.0      # rationale: mean assert()/test below 2.0 correlates with shallow tests
+    layer_file_existence: true  # client.py => test_client.py, storage.py => integration coverage
+
+  # ── 3. CONTRACTS ─────────────────────────────────────────────────────────────
+  # Every contract ID grep-found in tests/; feature completeness
+  # Needs infra: no
+  contracts:
+    all_features_have_contracts: true
+    all_contracts_in_tests: true
+    meta_contract_exempt: true   # rationale: meta contracts define patterns, not runtime behavior; audited by code review, not grep
+    storage_write_requires_integration: warn
+
+  # ── 4. DAG ───────────────────────────────────────────────────────────────────
+  # DAG acyclic, nodes resolve to real paths, execution-log.jsonl respects topology
+  # Needs infra: no
+  dag:
+    acyclic: true
+    nodes_resolve_to_artifacts: true
+    execution_order_matches_topology: true
+    derived_groups_consistent: true
+
+  # ── 5. BUILD ─────────────────────────────────────────────────────────────────
+  # uv build wheel + docker build succeed within time + image budget
+  # Needs infra: no (docker daemon, no running services)
+  build:
+    wheel_build: pass           # uv build
+    docker_build: pass          # docker build . (multi-stage)
+    max_time_seconds: 60        # rationale: fits the "fast" no-infra prefix (AGENT_DRIVEN_DEVELOPMENT.md §0)
+    max_image_mb: 1500          # rationale: base python:3.12-slim + LibreOffice budget
+
+  # ── 6. SUPPLY_CHAIN ──────────────────────────────────────────────────────────
+  # pip-audit over uv.lock clean (or matched against known-advisories)
+  # Needs infra: no
+  supply_chain:
+    vulnerabilities: 0          # pip-audit against the uv.lock graph; rationale: zero tolerance for known CVEs at ship time
+    audit_clean: true           # rationale: any unaudited advisory must be whitelisted in known-advisories.yaml by RFC
+
+  # ── 7. INTEGRATION ───────────────────────────────────────────────────────────
+  # MinIO round-trip, Redis cache validity, arq enqueue/dequeue (testcontainers)
+  # Needs infra: MinIO + Redis
+  integration:
+    minio_roundtrip: true       # put -> cache-invalidate -> load returns the same tree
+    redis_cache_valid: true
+    arq_enqueue_dequeue: true
+
+  # ── 8. E2E ───────────────────────────────────────────────────────────────────
+  # upload -> arq worker indexes -> find_relevant_documents returns the expected node
+  # Needs infra: MinIO + Redis + server + worker
+  e2e:
+    upload_to_query: pass       # "POST /upload/files -> worker indexes -> find_relevant_documents returns the node"
+
+# ── ON-DEMAND (not part of eval.sh) ─────────────────────────────────────────
+on_demand:
+  mutation:
+    enabled: true
+    default_score: 60           # rationale: mutmut/cosmic-ray "fair" tier
+    modules:
+      client: 70                # rationale: per-module RFC justification required

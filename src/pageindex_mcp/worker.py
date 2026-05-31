@@ -5,6 +5,7 @@ Start with:
 """
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -16,12 +17,16 @@ from arq.connections import RedisSettings
 
 from .client import CustomPageIndexClient
 from .config import settings
+from .helpers import LowQualityTreeError
 from .metrics import ACTIVE_UPLOADS, UPLOADS, UPLOAD_DURATION
 from .storage import delete_staging, download_staging
 
 logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400
+MAX_TRIES = 2
+JOB_TIMEOUT = 900
+DLQ_KEY = "pageindex:dlq"
 
 
 def _job_key(job_id: str) -> str:
@@ -43,8 +48,13 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     local_path = os.path.join(tmp_dir, filename)
     ACTIVE_UPLOADS.inc()
     start = time.monotonic()
+    # Default to keeping the staged file; only purge it on terminal outcomes so
+    # arq retries can re-download the original document from MinIO.
+    cleanup_staging = False
     logger.info("Worker processing: job=%s staging_key=%s", job_id, staging_key)
     try:
+        await redis.hset(_job_key(job_id), mapping={"status": "processing"})
+        await redis.expire(_job_key(job_id), JOB_TTL)
         # Download staged file from MinIO to local temp
         await asyncio.to_thread(download_staging, staging_key, local_path)
         logger.info("Downloaded staged file to %s", local_path)
@@ -55,19 +65,39 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="success").inc()
         logger.info("Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start)
+        cleanup_staging = True  # terminal success
         return doc_id
+    except LowQualityTreeError as exc:
+        await redis.hset(_job_key(job_id), mapping={"status": "error", "error": "low_quality_tree", "reason": exc.reason})
+        await redis.expire(_job_key(job_id), JOB_TTL)
+        UPLOADS.labels(status="error").inc()
+        logger.warning("Worker rejected low-quality tree: job=%s reason=%s", job_id, exc.reason)
+        cleanup_staging = True  # terminal, non-retryable
+        return ""  # terminal, non-retryable: no re-raise, no DLQ (WORKER-01-C2)
     except Exception as exc:
         await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="error").inc()
-        logger.error("Worker failed: job=%s error=%s", job_id, exc, exc_info=True)
-        raise
+        job_try = ctx.get("job_try", 1)
+        logger.error("Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True)
+        if job_try >= MAX_TRIES:
+            # Final attempt failed: staging will not be retried, safe to clean up.
+            cleanup_staging = True
+            try:
+                await redis.rpush(DLQ_KEY, json.dumps({"job_id": job_id, "staging_key": staging_key, "error": str(exc)}))
+                logger.error("Job %s exhausted %d tries -> pushed to DLQ %s", job_id, MAX_TRIES, DLQ_KEY)
+            except Exception:
+                logger.exception("Failed to push job %s to DLQ", job_id)
+        raise  # let arq retry until max_tries
     finally:
         UPLOAD_DURATION.observe(time.monotonic() - start)
         ACTIVE_UPLOADS.dec()
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        # Clean up staging object from MinIO
-        await asyncio.to_thread(delete_staging, staging_key)
+        # Only purge the staged object once the job is terminal (success, low-quality
+        # rejection, or max_tries exhausted). Pending retries must keep the original
+        # file so re-runs can re-download it from MinIO.
+        if cleanup_staging:
+            await asyncio.to_thread(delete_staging, staging_key)
 
 
 async def startup(ctx: dict) -> None:
@@ -85,3 +115,5 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
+    max_tries = MAX_TRIES
+    job_timeout = JOB_TIMEOUT

@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 preprocess.log
 .worktrees/
+# Tesseract language models (deu/eng/osd) for the Docling OCR path — point
+# TESSDATA_PREFIX at this dir. Model blobs (~30 MB), not source; never committed.
+.tessdata/
