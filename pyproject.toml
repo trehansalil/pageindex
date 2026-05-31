@@ -14,6 +14,20 @@ dependencies = [
     # legal terms ("Haftpflicht"). Promoted to core 2026-05-31 so the default works
     # out-of-the-box. Heavy: pulls torch. Validated on the German insurance corpus.
     "docling>=2.96.0",
+    # Heading-hierarchy recovery add-on for Docling (krrome, MIT). Rebuilds
+    # heading SELECTION from the PDF outline/numbering, removing font-size false
+    # positives so trees are clean enough to clear the depth>=2 quality gate (HR5).
+    # Single-maintainer/unofficial; the converter degrades to raw Docling headings
+    # if it is absent. Pulls scikit-learn. Validated on the German corpus 2026-05-31.
+    "docling-hierarchical-pdf>=0.1.8",
+    # torch/torchvision are Docling's heaviest transitive deps. We declare them
+    # DIRECTLY (not leave them transitive) for ONE reason: uv only honors the
+    # [tool.uv.sources] CPU-index routing below for *declared* dependencies — a
+    # purely-transitive torch silently keeps the default CUDA (cu13) build and its
+    # ~2 GB of nvidia-*/cuda-* wheels. Lower bounds track what Docling resolves; the
+    # CPU route turns 2.12.0 into 2.12.0+cpu on Linux while macOS keeps PyPI arm64.
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
     "PyPDF2>=3.0.1",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
@@ -52,3 +66,28 @@ asyncio_mode = "auto"
 
 [project.scripts]
 pageindex-mcp = "pageindex_mcp.server:main"
+
+# ── CPU-only PyTorch on Linux ────────────────────────────────────────────────
+# Docling pulls torch + torchvision transitively (via docling-ibm-models). The
+# default PyPI torch on Linux is the CUDA (cu13) build, which drags in ~2 GB of
+# nvidia-* / cuda-* wheels we never use — this stack runs Docling CPU-only. Route
+# torch/torchvision to PyTorch's CPU index to drop all of that from the image.
+#
+# Marker `sys_platform == 'linux'` is MANDATORY, not cosmetic: the /whl/cpu index
+# publishes NO macOS wheels, so macOS dev (`uv sync` on darwin/arm64) must fall
+# back to the default PyPI wheels (native arm64 CPU/MPS). `explicit = true` scopes
+# the index to ONLY the packages routed below — everything else stays on PyPI.
+# Regenerate uv.lock (`uv lock`) after any change here, or `uv sync --frozen` in
+# the Dockerfile will fail on a pyproject/lock mismatch.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]

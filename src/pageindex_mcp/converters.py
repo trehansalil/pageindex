@@ -12,11 +12,21 @@ from typing import Callable, cast
 
 logger = logging.getLogger(__name__)
 
-_DASH_TRANSLATION = {0x2013: "-", 0x2014: "-", 0x2212: "-"}
+_DASH_TRANSLATION = {
+    0x2010: "-",  # hyphen
+    0x2011: "-",  # non-breaking hyphen — used in PHV clause codes (e.g. A1‑6.1)
+    0x2013: "-",  # en-dash
+    0x2014: "-",  # em-dash
+    0x2212: "-",  # minus sign
+}
 
 
 def normalize_dashes(s: str) -> str:
-    """Replace en-dash (U+2013), em-dash (U+2014) and minus (U+2212) with ASCII '-' (CONV-01-C2)."""
+    """Map Unicode hyphen/dash variants to ASCII '-' (CONV-01-C2).
+
+    Includes the non-breaking hyphen (U+2011) the German PHV PDFs use inside
+    clause codes like ``A1‑6.1``; normalising it lets numbering-depth recovery
+    (``numbering_depth``) parse those codes."""
     return s.translate(_DASH_TRANSLATION)
 
 
@@ -32,6 +42,298 @@ def _relevel_headings(md: str) -> str:
     if shift <= 0:
         return md
     return _HEADING_RE.sub(lambda m: "#" * (len(m.group(1)) - shift), md)
+
+
+# --- Heading-depth recovery from German-insurance numbering schemes -----------
+# Docling's export_to_markdown() renders every section header at a single
+# '#'-level, so even when the docling-hierarchical-pdf add-on selects the right
+# headings the resulting tree is flat (depth 1) and fails the depth>=2 quality
+# gate (HR5 / validate_tree). We re-derive each heading's depth from its
+# numbering prefix. Two schemes appear in the validated German insurance corpus
+# (2026-05-31):
+#   dot notation   (e.g. AKB):  "A.1" -> 2, "A.1.1" -> 3   (bare "A" stays H1)
+#   hyphen clauses (e.g. PHV):  "Abschnitt A1" -> 2, "A1-6" -> 3, "A1-6.1" -> 4
+# numbering_depth() returns None when no scheme is recognised so generic /
+# non-numbered documents keep their existing heading levels untouched.
+_HLINE_RE = re.compile(r"^#{1,6}[ \t]+(.*\S)[ \t]*$", re.MULTILINE)
+_NUM_SECTION_WORD_RE = re.compile(r"^Abschnitt\s+[A-Z]?\d", re.IGNORECASE)
+_NUM_PART_RE = re.compile(r"^(?:Teil|Anhang|Kapitel|Abschnitt)\b", re.IGNORECASE)
+_NUM_HYPHEN_RE = re.compile(r"^[A-Z]\d+-\d+(\.\d+)?(?=[ \t]|$)")
+_NUM_DOT_RE = re.compile(r"^[A-Z](\.\d+)+(?=[ \t.:]|$)")
+_NUM_PARA_RE = re.compile(r"^(?:§\s*)?\d+(\.\d+)+(?=[ \t.:]|$)")
+
+
+def numbering_depth(title: str) -> int | None:
+    """Infer a 1-based heading depth from a German-insurance numbering prefix.
+
+    Returns None when no recognised numbering scheme is present, so the caller
+    leaves such headings at their existing level."""
+    t = title.strip()
+    # "Abschnitt A1" is a section nested one level under its "Teil".
+    if _NUM_SECTION_WORD_RE.match(t):
+        return 2
+    # Part / appendix words sit at the top.
+    if _NUM_PART_RE.match(t):
+        return 1
+    # Hyphen clauses: "A1-6" -> 3, "A1-6.1" -> 4.
+    if _NUM_HYPHEN_RE.match(t):
+        return 4 if "." in t.split()[0] else 3
+    # Dot notation: "A.1" -> 2, "A.1.1" -> 3.
+    m = _NUM_DOT_RE.match(t)
+    if m:
+        return 1 + m.group(0).count(".")
+    # Plain paragraph / numeric sub-sections: "3.1" -> 2, "§3.1.2" -> 3.
+    m = _NUM_PARA_RE.match(t)
+    if m:
+        return 1 + m.group(0).count(".")
+    return None
+
+
+def _relevel_by_numbering(md: str) -> str:
+    """Override each markdown heading's '#'-level from its numbering prefix.
+
+    Headings whose title has no recognised numbering prefix are left unchanged,
+    so this is safe to run after ``_relevel_headings`` on any corpus."""
+    def repl(m: "re.Match[str]") -> str:
+        title = m.group(1)
+        depth = numbering_depth(title)
+        if depth is None:
+            return m.group(0)
+        return "#" * depth + " " + title
+    return _HLINE_RE.sub(repl, md)
+
+
+# --- Heading-depth recovery by numbering-prefix CONTAINMENT (no per-scheme table) -
+# Every STRUCTURAL depth signal Docling exposes on this corpus is flat:
+# SectionHeaderItem.level, body-tree traversal depth, and the PDF outline are all
+# level 1 (verified 2026-05-31). So depth must be inferred from the heading TEXT.
+# We segment each heading's leading numbering LABEL into atomic components
+# ("A.1.1"->[A,1,1]; "Abschnitt A1"->[A,1]; bare prose title -> []) and set
+# depth = 1 + length of the longest OTHER present label that is a proper prefix.
+# This nests an unseen numbering style without a hardcoded regex table, so it is
+# the PRIMARY depth source; numbering_depth() above is kept only as a last-resort
+# fallback for the degenerate case where containment stays flat.
+
+# Structural words that introduce a numbering label. We collapse the spaced-out
+# Docling rendering ("T e i l   A") before matching, so the regex sees "TeilA".
+_WORD_RE = re.compile(
+    r"^(teil|anhang|abschnitt|kapitel)\b", re.IGNORECASE
+)
+
+
+def _collapse_spaced(text: str) -> str:
+    """Collapse Docling's letter-spaced headings: 'T e i l   A' -> 'Teil A'.
+
+    Docling renders these with SINGLE spaces between the letters of a word and a
+    WIDER gap (2+ spaces) between words. We split on runs of 2+ spaces to recover
+    word boundaries, then glue single-spaced letters inside each chunk. A '-'
+    surrounded by spaces is kept as a separator word. Ordinary headings (whose
+    tokens are multi-letter) are returned unchanged.
+    """
+    raw_toks = text.split()
+    if not (
+        len(raw_toks) >= 4
+        and sum(1 for t in raw_toks if len(t) == 1) >= len(raw_toks) * 0.6
+    ):
+        return text
+    # split on 2+ spaces -> word-level chunks; within a chunk, single chars glue.
+    chunks = re.split(r"\s{2,}", text.strip())
+    out = []
+    for chunk in chunks:
+        ctoks = chunk.split()
+        buf = []
+        for t in ctoks:
+            if t == "-":
+                if buf:
+                    out.append("".join(buf)); buf = []
+                out.append("-")
+            else:
+                buf.append(t)
+        if buf:
+            out.append("".join(buf))
+    return " ".join(out)
+
+
+def _split_alnum(tok: str) -> list[str]:
+    """Split an alnum label token at every letter<->digit boundary and (..) group.
+
+    "A1"   -> ["A","1"]      "A(GB)" -> ["A","GB"]      "B4" -> ["B","4"]
+    "A"    -> ["A"]          "A(GB)1"-> ["A","GB","1"]
+    """
+    # pull out a parenthesised group first
+    parts: list[str] = []
+    m = re.match(r"^([A-Za-z]+)(?:\(([A-Za-z0-9]+)\))?(\d+)?$", tok)
+    if m:
+        if m.group(1):
+            parts.append(m.group(1))
+        if m.group(2):
+            parts.append(m.group(2))
+        if m.group(3):
+            parts.append(m.group(3))
+        return parts
+    # fallback: generic letter/digit run split
+    return [p for p in re.findall(r"[A-Za-z]+|\d+", tok)]
+
+
+def _segment_label(title: str) -> list[str]:
+    """Segment a heading's leading numbering label into atomic components.
+
+    Returns [] when the heading carries no recognisable label (a bare title).
+    Word-prefix rule: a leading structural word (Teil/Anhang/Abschnitt/Kapitel)
+    is consumed; the label that follows it is what nests. "Teil A"->[A];
+    "Abschnitt A1"->[A,1]; "A1-6.1"->[A,1,6,1]; "A.1.1"->[A,1,1];
+    "A(GB)-1"->[A,GB,1]; "Versicherte Personen"->[].
+    """
+    t = _collapse_spaced(title.strip())
+    # consume an optional leading structural word
+    wm = _WORD_RE.match(t)
+    if wm:
+        t = t[wm.end():].lstrip(" -")
+    # the label is the leading run of [alnum . - ( )] up to the first space
+    # that starts the descriptive title. Grab the first whitespace-delimited tok.
+    head = t.split(maxsplit=1)[0] if t else ""
+    if not head:
+        return []
+    # The label may itself contain '.', '-' and '()' separators.
+    # Stop the label at a separator that is followed by a non-label char? Simpler:
+    # the head token IS the label candidate. Validate it starts with a letter
+    # and contains at least one alnum.
+    # Strip trailing punctuation like ':' or '.' used as a terminator? Keep dots
+    # that are internal (A.1.) — drop a single trailing '.'/':'.
+    head = head.rstrip(":")
+    # A label must begin with an uppercase letter to be a German clause code.
+    if not re.match(r"^[A-Za-z]", head):
+        return []
+    comps: list[str] = []
+    # split on the structural separators '.', '-'
+    for seg in re.split(r"[.\-]", head):
+        seg = seg.strip()
+        if not seg:
+            continue
+        sub = _split_alnum(seg)
+        if not sub:
+            return []  # contains a non-alnum chunk we don't understand -> no label
+        comps.extend(sub)
+    # Reject degenerate labels: a single letter that is actually a word start
+    # is fine ("A"), but require the whole head to be alnum/sep only — if the
+    # head had spaces stripped we already isolated one token, so this holds.
+    # Guard: a pure single-letter label is valid (top section).
+    if not comps:
+        return []
+    # Reject labels that are clearly prose (e.g. first word "Was", "Wer"): a real
+    # label is short and its first component is a single letter OR is all digits.
+    first = comps[0]
+    if not (re.fullmatch(r"[A-Za-z]", first) or first.isdigit()):
+        return []
+    # And the whole token must be short-ish (a clause code, not a sentence word).
+    if len(head) > 14:
+        return []
+    return comps
+
+
+def _containment_depths(titles: list[str]) -> list[int | None]:
+    """Depth of each heading via numbering-prefix containment (grammar inference).
+
+    depth(i) = 1 + length of the longest OTHER label that is a proper prefix of
+    label(i). Bare-title headings (label == []) return None so the caller leaves
+    that heading's existing level untouched."""
+    labels = [_segment_label(t) for t in titles]
+    label_set = [tuple(l) for l in labels]
+    present = set(l for l in label_set if l)
+    depths: list[int | None] = []
+    for lab in label_set:
+        if not lab:
+            depths.append(None)
+            continue
+        # longest proper prefix that is itself a present label
+        best = 0
+        for k in range(len(lab) - 1, 0, -1):
+            if lab[:k] in present:
+                best = k
+                break
+        depths.append(best + 1)
+    return depths
+
+
+def _relevel_by_containment(md: str) -> str:
+    """Override each markdown heading's '#'-level from numbering-prefix containment.
+
+    Headings whose title carries no label (containment depth None) are left
+    exactly as-is, so this is safe to run after ``_relevel_headings`` on any
+    corpus. Non-heading text and spacing are preserved verbatim."""
+    matches = list(_HLINE_RE.finditer(md))
+    if not matches:
+        return md
+    depths = _containment_depths([m.group(1) for m in matches])
+    out: list[str] = []
+    pos = 0
+    for m, depth in zip(matches, depths):
+        out.append(md[pos:m.start()])
+        if depth is None:
+            out.append(m.group(0))  # no label -> keep existing level
+        else:
+            out.append("#" * max(1, min(6, depth)) + " " + m.group(1))
+        pos = m.end()
+    out.append(md[pos:])
+    return "".join(out)
+
+
+def _max_heading_level(md: str) -> int:
+    """Largest markdown heading '#'-run length present, or 0 if none."""
+    levels = [len(m.group(1)) for m in _HEADING_RE.finditer(md)]
+    return max(levels) if levels else 0
+
+
+def _repromote_numbered_headings(doc) -> int:
+    """Re-promote demoted body TextItems back to headings (no hardcoding).
+
+    The docling-hierarchical-pdf add-on gives a clean heading SELECTION but
+    over-prunes: it demotes deep numbered clauses (AKB "A.1.1", "A.1.1.1") to
+    body TextItems alongside the font-size junk, capping the tree's depth. This
+    walks the post-add-on doc and converts a TextItem back to a SectionHeaderItem
+    IFF its numbering label is a proper NUMERIC EXTENSION of a kept-section label:
+    there is a non-empty kept-section label P that is a proper prefix of the
+    item's label and every component beyond P is a pure digit run ("A.1.1" =
+    kept "A.1" + ["1"] -> promote; list marker "a" or mis-segmented prose
+    "Fuehren"->[F,hren] -> NOT promoted). The anchors are the add-on's OWN kept
+    section labels — nothing is hardcoded. Mutates the doc model in place (so body
+    text is preserved for export) using the add-on's set_item_in_doc pattern, and
+    returns the number of promotions."""
+    from docling_core.types.doc.document import SectionHeaderItem, TextItem
+
+    def label_of(item) -> tuple:
+        return tuple(_segment_label(normalize_dashes((item.text or "").strip())))
+
+    # Pass 1: trusted anchors = the add-on's kept section labels (non-empty).
+    anchors: set[tuple] = set()
+    for item, _ in doc.iterate_items(with_groups=False):
+        if isinstance(item, SectionHeaderItem):
+            lab = label_of(item)
+            if lab:
+                anchors.add(lab)
+
+    # Pass 2: promote demoted TextItems whose label numerically extends an anchor.
+    n_promo = 0
+    for item, _ in list(doc.iterate_items(with_groups=False)):
+        if isinstance(item, SectionHeaderItem) or not isinstance(item, TextItem):
+            continue
+        lab = label_of(item)
+        if not lab:
+            continue
+        if any(
+            lab[:k] in anchors and all(c.isdigit() for c in lab[k:])
+            for k in range(len(lab) - 1, 0, -1)
+        ):
+            # TextItem -> SectionHeaderItem, then swap in at its self_ref index
+            # (the add-on's set_item_in_doc pattern).
+            header = SectionHeaderItem(**{
+                k: v for k, v in item.model_dump().items()
+                if k != "label" and k in SectionHeaderItem.model_fields
+            })
+            _, path, idx = item.self_ref.split("/")
+            getattr(doc, path)[int(idx)] = header
+            n_promo += 1
+    return n_promo
 
 
 def pdf_to_markdown(pdf_path: str) -> str:
@@ -67,6 +369,8 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     Env knobs:
       ``DOCLING_DO_OCR``   1|0 (default 0 — text-layer PDFs need no OCR)
       ``DOCLING_OCR_LANG`` comma list (default ``deu,eng``) when OCR is on
+      ``DOCLING_ARTIFACTS_PATH`` dir of pre-downloaded model weights for offline use
+        (set in the container image; unset locally -> weights fetched from HF on first use)
 
     Raises on empty extraction so the caller falls back to the next converter.
     """
@@ -94,14 +398,70 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
         # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
         opts.ocr_options = TesseractCliOcrOptions(lang=langs)
     opts.accelerator_options = AcceleratorOptions(device=device)
+    # Use pre-baked model artifacts when available (set in the container image so
+    # egress-limited workers never download weights at runtime — a download failure
+    # there would otherwise raise and silently fall back to pymupdf4llm -> flat tree
+    # -> depth<2). Unset (local dev) -> docling fetches from HF on first use.
+    artifacts_path = os.getenv("DOCLING_ARTIFACTS_PATH", "").strip()
+    if artifacts_path:
+        opts.artifacts_path = artifacts_path
 
     converter = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
     )
-    md = converter.convert(pdf_path).document.export_to_markdown()
+    result = converter.convert(pdf_path)
+
+    # docling-hierarchical-pdf (krrome) rebuilds heading SELECTION from the PDF
+    # outline/numbering, dropping the font-size false positives Docling otherwise
+    # emits as headings (page numbers, letter-spaced body text, clause fragments).
+    # Validated on the German corpus 2026-05-31: cuts noisy headings 34-94%.
+    # Optional + third-party (single-maintainer) — never let it break ingestion;
+    # degrade to raw Docling headings on any failure.
+    try:
+        from hierarchical.postprocessor import ResultPostprocessor
+
+        ResultPostprocessor(result, source=pdf_path).process()
+    except ImportError:
+        logger.warning(
+            "docling-hierarchical-pdf not installed; using raw docling headings. "
+            "Install it to recover clean heading selection."
+        )
+    except Exception as exc:  # noqa: BLE001 — add-on must never be fatal
+        logger.warning(
+            "hierarchical add-on postprocess failed for %s (%s); using raw docling headings",
+            pdf_path, exc,
+        )
+
+    # Re-promote the deep numbered clauses the add-on demoted to body text
+    # (e.g. AKB "A.1.1"/"A.1.1.1"), restoring the tree depth the add-on prunes.
+    # Same defensive contract as the add-on: re-promotion must NEVER be fatal —
+    # on any failure degrade to the add-on's selection.
+    try:
+        n_promo = _repromote_numbered_headings(result.document)
+        if n_promo > 0:
+            logger.info(
+                "re-promoted %d demoted numbered clause(s) to headings for %s",
+                n_promo, pdf_path,
+            )
+    except Exception as exc:  # noqa: BLE001 — re-promotion must never be fatal
+        logger.warning(
+            "heading re-promotion failed for %s (%s); using add-on selection",
+            pdf_path, exc,
+        )
+
+    md = result.document.export_to_markdown()
     if not md or not md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
-    return normalize_dashes(_relevel_headings(md))
+    # Normalise dashes BEFORE depth recovery so hyphen clause codes (A1-6.1) parse;
+    # _relevel_headings sets the baseline (shallowest -> H1), then
+    # _relevel_by_containment re-derives depth from each heading's numbering-prefix
+    # CONTAINMENT (the primary depth source — no per-scheme table) recovering the
+    # depth>=2 the HR5 gate needs. numbering_depth's per-scheme regex is the
+    # last-resort FALLBACK, applied only if containment stayed degenerately flat.
+    md = _relevel_by_containment(_relevel_headings(normalize_dashes(md)))
+    if _max_heading_level(md) < 2:
+        md = _relevel_by_numbering(md)  # last-resort fallback only if containment stayed flat
+    return md
 
 
 def pdf_markdown_converters() -> list[tuple[str, Callable[[str], str]]]:

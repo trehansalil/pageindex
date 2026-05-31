@@ -16,7 +16,7 @@ from .config import settings
 from .cache import get_doc
 from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_markdown_converters, pptx_to_markdown
 from .helpers import _build_node_map, _strip_text, validate_tree, LowQualityTreeError
-from .metrics import LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS
+from .metrics import LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS, PDF_PRIMARY_CONVERTER_FAILURES
 from .storage import (
     list_processed_docs,
     load_hash_cache,
@@ -97,16 +97,51 @@ class CustomPageIndexClient(PageIndexClient):
                 # (pymupdf4llm / docling, per PDF_CONVERTER), then fall back to
                 # the legacy page_index route only if every converter fails.
                 md_content = None
-                for conv_name, conv_fn in pdf_markdown_converters():
+                chain = pdf_markdown_converters()
+                primary_name = chain[0][0] if chain else None
+                used_converter = None
+                for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
                         md_content = await asyncio.to_thread(conv_fn, file_path)
+                        used_converter = conv_name
                         break
                     except Exception as conv_exc:
-                        logger.warning("%s failed for %s (%s); trying next converter", conv_name, filename, conv_exc)
                         PDF_EXTRACT_FALLBACKS.inc()
                         md_content = None
+                        if idx == 0:
+                            # The CONFIGURED PRIMARY converter failed. Never let this be
+                            # masked downstream as a generic "depth<2": log it loudly with
+                            # the full traceback (import / model-weights / convert errors)
+                            # and a dedicated metric so it is alertable and unambiguous.
+                            PDF_PRIMARY_CONVERTER_FAILURES.labels(
+                                converter=conv_name, error=type(conv_exc).__name__
+                            ).inc()
+                            logger.error(
+                                "PRIMARY PDF converter '%s' FAILED for %s (%s: %s); falling "
+                                "back to the next converter — output quality will likely "
+                                "degrade. If this is docling, verify model artifacts are "
+                                "present (DOCLING_ARTIFACTS_PATH or network egress) and the "
+                                "docling-hierarchical-pdf add-on is installed in THIS image.",
+                                conv_name, filename, type(conv_exc).__name__, conv_exc,
+                                exc_info=True,
+                            )
+                        else:
+                            logger.warning(
+                                "%s failed for %s (%s); trying next converter",
+                                conv_name, filename, conv_exc,
+                            )
                 if md_content is not None:
+                    if primary_name is not None and used_converter != primary_name:
+                        # We produced markdown, but NOT with the configured primary. Any
+                        # resulting flat/garbled tree is a converter problem, not a generic
+                        # low-quality document — say so explicitly.
+                        logger.error(
+                            "PDF %s extracted by FALLBACK converter '%s' because primary "
+                            "'%s' failed; a flat 'depth<2' tree downstream is a CONVERTER "
+                            "failure, not a low-quality source. Fix the primary converter.",
+                            filename, used_converter, primary_name,
+                        )
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
@@ -114,7 +149,11 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                 else:
-                    logger.warning("All markdown converters failed for %s; falling back to page_index", filename)
+                    logger.error(
+                        "ALL markdown converters failed for %s; falling back to legacy "
+                        "page_index. Investigate converter availability in this image.",
+                        filename,
+                    )
                     result = await asyncio.to_thread(self._run_page_index, file_path)
 
             elif ext in (".md", ".markdown", ".txt"):

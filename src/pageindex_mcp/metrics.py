@@ -101,6 +101,14 @@ PDF_EXTRACT_FALLBACKS = Counter(
     "pageindex_pdf_extract_fallbacks_total",
     "PDF extractions that fell back from pdf_to_markdown to page_index (INDEX-01-C2)",
 )
+PDF_PRIMARY_CONVERTER_FAILURES = Counter(
+    "pageindex_pdf_primary_converter_failures_total",
+    "Configured primary PDF converter (e.g. docling) failures that forced a fallback. "
+    "Surfaced as its own series so a broken docling install / missing model artifacts "
+    "is never masked as a generic low_quality_tree. Labels bounded: converter name and "
+    "exception class.",
+    ["converter", "error"],
+)
 
 
 # ---------------------------------------------------------------------------
