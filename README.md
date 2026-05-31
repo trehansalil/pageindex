@@ -42,6 +42,50 @@ uv run pageindex-mcp
 
 The server starts at `http://0.0.0.0:8201/mcp` using the `streamable-http` MCP transport.
 
+## Local Testing with Docker Compose
+
+`docker-compose.yml` stands up the runtime dependencies (Redis + MinIO) so you can
+test locally without the production cluster. Requires Docker Compose v2.24+.
+
+**Option 1 — infra only** (Redis + MinIO), run the Python app on your host:
+
+```bash
+docker compose up -d            # starts redis, minio, and creates the bucket
+
+export REDIS_URL=redis://localhost:6379/1
+export MINIO_ENDPOINT=localhost:9000
+uv run python mcp_server.py                       # server (shell 1)
+uv run arq pageindex_mcp.worker.WorkerSettings    # worker (shell 2)
+```
+
+**Option 2 — full stack** (Redis + MinIO + server + worker, all containerised):
+
+```bash
+cp .env.example .env            # set OPENAI_API_KEY (and UPLOAD_API_KEY)
+docker compose --profile app up -d --build
+```
+
+| Service | URL / port | Notes |
+|---|---|---|
+| MCP server | `http://localhost:8201/mcp` | `/upload` and `/metrics` mounted on the same port |
+| MinIO console | `http://localhost:9001` | login `minioadmin` / `minioadmin` |
+| Redis | `localhost:6379` | DB `1` (matches `REDIS_URL`) |
+
+`REDIS_URL`, `MINIO_ENDPOINT`, and `MCP_PORT` from `.env` are overridden inside
+compose so the containers reach the local `redis` / `minio` services; secrets such
+as `OPENAI_API_KEY` are still read from `.env`. Building the image needs access to
+the private `trehansalil/PageIndex-salil` dependency — to skip the build, set
+`image:` to the published `ghcr.io/trehansalil/pageindex-mcp:latest` instead.
+
+```bash
+# Smoke test once the full stack is up:
+curl -s localhost:8201/metrics | head            # public, no auth
+curl -s -X POST localhost:8201/upload/files \
+  -H "X-API-Key: $UPLOAD_API_KEY" -F files=@doc_store/HR_FAQ.docx
+
+docker compose --profile app down                # stop (add -v to wipe volumes)
+```
+
 ## MCP Tools
 
 | Tool | Type | Description |

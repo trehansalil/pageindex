@@ -1,0 +1,138 @@
+# docker-compose.yml — local testing stack for the PageIndex MCP server.
+#
+# The deployed app (see hetzner-deployment-service/apps/pageindex-mcp) depends on
+# three things: Redis (arq job queue + document cache), MinIO (object storage),
+# and an OpenAI-compatible API. This file stands up Redis + MinIO locally so you
+# can exercise the server and worker without the production cluster.
+#
+# ─── Two ways to use it ──────────────────────────────────────────────────────
+#
+#   1. Infra only (Redis + MinIO) — then run the Python app on your host:
+#        docker compose up -d
+#        export REDIS_URL=redis://localhost:6379/1
+#        export MINIO_ENDPOINT=localhost:9000
+#        uv run python mcp_server.py                       # server  (shell 1)
+#        uv run arq pageindex_mcp.worker.WorkerSettings    # worker  (shell 2)
+#
+#   2. Full deployment (Redis + MinIO + server + worker, all in containers):
+#        docker compose --profile app up -d --build
+#        # server  -> http://localhost:8201/mcp   (and /upload, /metrics)
+#        # MinIO   -> http://localhost:9001        (console: minioadmin/minioadmin)
+#
+# Secrets (OPENAI_API_KEY, UPLOAD_API_KEY, MCP_BEARER_TOKEN, …) are read from your
+# .env via `env_file`; the cluster-specific values in .env (REDIS_URL / MINIO_*)
+# are overridden below so the containers talk over the compose network instead.
+#
+# Requires Docker Compose v2.24+ (for `env_file: required: false` and
+# `service_completed_successfully`).
+
+name: pageindex-local
+
+# Shared config for the server + worker containers (same image, different command).
+x-app: &app
+  image: pageindex-mcp:local
+  build: .
+  # Pulls OPENAI_API_KEY / CHATGPT_API_KEY / UPLOAD_API_KEY / MCP_BEARER_TOKEN etc.
+  # from .env. Optional so `docker compose up` (infra only) works without a .env.
+  env_file:
+    - path: .env
+      required: false
+  # These override whatever is in .env so the containers reach the compose
+  # services rather than the production cluster IPs. `environment` wins over
+  # `env_file` in Compose, which is exactly what we want here.
+  environment:
+    REDIS_URL: redis://redis:6379/1
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    MINIO_BUCKET: ${MINIO_BUCKET}
+    MINIO_SECURE: "false"
+    MCP_HOST: "0.0.0.0"
+    MCP_PORT: "8201"
+    WEB_CONCURRENCY: "1"
+    CACHE_TTL: "300"
+  depends_on:
+    redis:
+      condition: service_healthy
+    minio-setup:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  # ─── Redis: arq job queue + Redis-backed document cache ──────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: pageindex-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── MinIO: S3-compatible object storage for processed trees + uploads ───────
+  minio:
+    image: minio/minio:latest
+    container_name: pageindex-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"   # S3 API   (app default endpoint: localhost:9000)
+      - "9001:9001"   # Web console -> http://localhost:9001
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  # ─── One-shot: wait for MinIO, then create the bucket the app expects ────────
+  # The app auto-creates the bucket on first use too, but pre-creating it gives a
+  # clean readiness gate (`service_completed_successfully`) for the app services.
+  minio-setup:
+    image: minio/mc:latest
+    container_name: pageindex-minio-setup
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin} >/dev/null 2>&1; do
+        echo 'waiting for minio...'; sleep 2;
+      done;
+      mc mb --ignore-existing local/${MINIO_BUCKET:-pageindex};
+      echo 'minio bucket ready: ${MINIO_BUCKET:-pageindex}';
+      "
+    restart: "no"
+
+  # ─── PageIndex MCP server (gunicorn + uvicorn workers) ───────────────────────
+  # Only starts with `--profile app`; otherwise this is infra-only.
+  pageindex-mcp:
+    <<: *app
+    container_name: pageindex-mcp
+    profiles: ["app"]
+    ports:
+      - "8201:8201"
+    # CMD defaults to gunicorn (see Dockerfile).
+    healthcheck:
+      # /metrics is public (no bearer auth) — a cheap liveness probe.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8201/metrics')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ─── arq worker: background document processing ──────────────────────────────
+  pageindex-mcp-worker:
+    <<: *app
+    container_name: pageindex-mcp-worker
+    profiles: ["app"]
+    command: ["arq", "pageindex_mcp.worker.WorkerSettings"]
+
+volumes:
+  redis_data:
+  minio_data:
