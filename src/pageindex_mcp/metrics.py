@@ -92,6 +92,16 @@ DOCUMENTS_TOTAL = Gauge(
     "Total indexed documents in MinIO",
 )
 
+LOW_QUALITY_TREES = Counter(
+    "pageindex_low_quality_trees_total",
+    "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",
+    ["reason"],
+)
+PDF_EXTRACT_FALLBACKS = Counter(
+    "pageindex_pdf_extract_fallbacks_total",
+    "PDF extractions that fell back from pdf_to_markdown to page_index (INDEX-01-C2)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers

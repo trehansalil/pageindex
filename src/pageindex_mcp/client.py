@@ -13,11 +13,12 @@ from pathlib import Path
 from pageindex import PageIndexClient
 
 from .config import settings
-from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pptx_to_markdown
-from .helpers import _build_node_map, _strip_text
+from .cache import get_doc
+from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_to_markdown, pptx_to_markdown
+from .helpers import _build_node_map, _strip_text, validate_tree, LowQualityTreeError
+from .metrics import LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS
 from .storage import (
     list_processed_docs,
-    load_doc,
     load_hash_cache,
     save_doc,
     save_doc_meta,
@@ -92,8 +93,19 @@ class CustomPageIndexClient(PageIndexClient):
 
         try:
             if ext == ".pdf":
-                logger.info("Running page_index on PDF: %s", filename)
-                result = await asyncio.to_thread(self._run_page_index, file_path)
+                try:
+                    logger.info("Extracting PDF to markdown via pymupdf4llm: %s", filename)
+                    md_content = await asyncio.to_thread(pdf_to_markdown, file_path)
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(md_content)
+                        tmp_md_path = md_tmp.name
+                    result = await self._run_md_to_tree(tmp_md_path)
+                except Exception as pdf_exc:
+                    logger.warning("pdf_to_markdown failed for %s (%s); falling back to page_index", filename, pdf_exc)
+                    PDF_EXTRACT_FALLBACKS.inc()
+                    result = await asyncio.to_thread(self._run_page_index, file_path)
 
             elif ext in (".md", ".markdown", ".txt"):
                 logger.info("Running md_to_tree on: %s", filename)
@@ -132,6 +144,13 @@ class CustomPageIndexClient(PageIndexClient):
                     md_tmp.write(md_content)
                     tmp_md_path = md_tmp.name
                 result = await self._run_md_to_tree(tmp_md_path)
+
+            # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
+            ok, reason = validate_tree(result.get("structure", []))
+            if not ok:
+                LOW_QUALITY_TREES.labels(reason=reason).inc()
+                logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
+                raise LowQualityTreeError(reason)
 
             # Persist raw file and processed result
             doc_id = str(uuid.uuid4())[:8]
@@ -184,7 +203,7 @@ class CustomPageIndexClient(PageIndexClient):
     async def get_document(self, doc_id: str) -> str:
         """Return document metadata as a JSON string."""
         import json
-        data = await asyncio.to_thread(load_doc, doc_id)
+        data = await asyncio.to_thread(get_doc, doc_id)
         structure = data.get("structure", [])
         return json.dumps({
             "doc_id":          doc_id,
@@ -200,7 +219,7 @@ class CustomPageIndexClient(PageIndexClient):
     async def get_document_structure(self, doc_id: str) -> str:
         """Return document tree structure (without text fields) as a JSON string."""
         import json
-        data = await asyncio.to_thread(load_doc, doc_id)
+        data = await asyncio.to_thread(get_doc, doc_id)
         return json.dumps({
             "doc_id":    doc_id,
             "structure": _strip_text(data.get("structure", [])),
@@ -212,7 +231,7 @@ class CustomPageIndexClient(PageIndexClient):
         pages: single page ('5'), range ('3-7'), or comma list ('3,5,7').
         """
         import json
-        data = await asyncio.to_thread(load_doc, doc_id)
+        data = await asyncio.to_thread(get_doc, doc_id)
         nm: dict = {}
         _build_node_map(data.get("structure", []), nm)
 

@@ -7,6 +7,8 @@ dependencies = [
     "fastmcp>=3.2.3",
     "litellm>=1.83.0",
     "pymupdf>=1.27.2.2",
+    # AGPL-3.0 (HR4); Docling (MIT) is the deferred residency escape per RFC-003 D3
+    "pymupdf4llm>=0.0.17",
     "PyPDF2>=3.0.1",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",

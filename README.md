@@ -1,4 +1,4 @@
-# PageIndex MCP Server
+# ePageIndex MCP Server
 
 A [FastMCP](https://github.com/jlowin/fastmcp)-based server that exposes document processing capabilities via the [Model Context Protocol](https://modelcontextprotocol.io/). Documents are parsed into a hierarchical index tree using vectorless, reasoning-based RAG and stored in MinIO object storage.
 
@@ -21,16 +21,16 @@ uv sync --extra dev
 
 Copy `.env.example` to `.env` (or export directly) and set:
 
-| Variable | Default | Description |
-|---|---|---|
-| `OPENAI_API_KEY` or `CHATGPT_API_KEY` | — | Required by the PageIndex library |
-| `MINIO_ENDPOINT` | `localhost:9000` | MinIO server address |
-| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
-| `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
-| `MINIO_BUCKET` | `pageindex` | Bucket name |
-| `MINIO_SECURE` | `false` | Use TLS for MinIO connection |
-| `MCP_HOST` | `0.0.0.0` | Server bind address |
-| `MCP_PORT` | `8201` | Server port |
+| Variable                                  | Default            | Description                       |
+| ----------------------------------------- | ------------------ | --------------------------------- |
+| `OPENAI_API_KEY` or `CHATGPT_API_KEY` | —                 | Required by the PageIndex library |
+| `MINIO_ENDPOINT`                        | `localhost:9000` | MinIO server address              |
+| `MINIO_ACCESS_KEY`                      | `minioadmin`     | MinIO access key                  |
+| `MINIO_SECRET_KEY`                      | `minioadmin`     | MinIO secret key                  |
+| `MINIO_BUCKET`                          | `pageindex`      | Bucket name                       |
+| `MINIO_SECURE`                          | `false`          | Use TLS for MinIO connection      |
+| `MCP_HOST`                              | `0.0.0.0`        | Server bind address               |
+| `MCP_PORT`                              | `8201`           | Server port                       |
 
 ## Running the Server
 
@@ -79,11 +79,11 @@ cp .env.example .env            # set OPENAI_API_KEY (and UPLOAD_API_KEY)
 docker compose --profile app up -d --build
 ```
 
-| Service | URL / port | Notes |
-|---|---|---|
-| MCP server | `http://localhost:8201/mcp` | `/upload` and `/metrics` mounted on the same port |
-| MinIO console | `http://localhost:9001` | login `minioadmin` / `minioadmin` |
-| Redis | `localhost:6379` | DB `1` (matches `REDIS_URL`) |
+| Service       | URL / port                    | Notes                                                 |
+| ------------- | ----------------------------- | ----------------------------------------------------- |
+| MCP server    | `http://localhost:8201/mcp` | `/upload` and `/metrics` mounted on the same port |
+| MinIO console | `http://localhost:9001`     | login `minioadmin` / `minioadmin`                 |
+| Redis         | `localhost:6379`            | DB `1` (matches `REDIS_URL`)                      |
 
 `REDIS_URL`, `MINIO_ENDPOINT`, and `MCP_PORT` from `.env` are overridden inside
 compose so the containers reach the local `redis` / `minio` services; secrets such
@@ -111,15 +111,15 @@ docker compose --profile app down                     # stop (add -v to wipe vol
 
 ## MCP Tools
 
-| Tool | Type | Description |
-|---|---|---|
-| `process_document(url)` | async task | Download a PDF from a URL or local path, build an index tree, store in MinIO |
-| `upload_and_process_document(filename, content_base64)` | async task | Same, but accepts base64-encoded content; supports PDF, DOCX, PPTX, MD, TXT |
-| `list_documents()` | sync | List all processed documents (doc_id, filename, timestamp) |
-| `get_document_summary(doc_id)` | sync | Get top-level sections and summaries for a document |
-| `search_document(doc_id, query)` | sync | Keyword search across section titles and summaries |
-| `delete_document(doc_id)` | async task | Delete a document and its raw upload from MinIO |
-| `sync_preloaded_documents()` | sync | Upload files from `doc_store/` to MinIO's `preloaded/` prefix |
+| Tool                                                      | Type       | Description                                                                  |
+| --------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `process_document(url)`                                 | async task | Download a PDF from a URL or local path, build an index tree, store in MinIO |
+| `upload_and_process_document(filename, content_base64)` | async task | Same, but accepts base64-encoded content; supports PDF, DOCX, PPTX, MD, TXT  |
+| `list_documents()`                                      | sync       | List all processed documents (doc_id, filename, timestamp)                   |
+| `get_document_summary(doc_id)`                          | sync       | Get top-level sections and summaries for a document                          |
+| `search_document(doc_id, query)`                        | sync       | Keyword search across section titles and summaries                           |
+| `delete_document(doc_id)`                               | async task | Delete a document and its raw upload from MinIO                              |
+| `sync_preloaded_documents()`                            | sync       | Upload files from `doc_store/` to MinIO's `preloaded/` prefix            |
 
 Long-running tools (`process_document`, `upload_and_process_document`, `delete_document`) run as background tasks with progress reporting via FastMCP's `task=True` decorator.
 

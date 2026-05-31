@@ -13,7 +13,8 @@ from .metrics import (
     RAG_DURATION,
     RAG_SEARCHES,
 )
-from .storage import load_doc
+from .cache import get_doc
+from .converters import normalize_dashes
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ async def _rag(query: str, doc_ids: list[str]) -> str:
     Run PageIndex tree-search + answer-generation pipeline.
     doc_ids: list of doc_id strings as stored in MinIO processed/ prefix.
     """
+    query = normalize_dashes(query)
     RAG_SEARCHES.inc()
     start = time.monotonic()
     try:
@@ -191,7 +193,7 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     for doc_id in doc_ids:
         t = time.monotonic()
         try:
-            data = load_doc(doc_id)
+            data = get_doc(doc_id)
         except ValueError:
             logger.warning("RAG: skipping missing doc %s", doc_id)
             continue
@@ -254,3 +256,66 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     })
     logger.info("RAG TIMING: Total _rag_inner = %.3fs", time.monotonic() - rag_t0)
     return result
+
+
+class LowQualityTreeError(Exception):
+    """Raised when validate_tree rejects a tree (HR5 / WORKER-01-C2).
+
+    Carries .reason ('node_count<3' | 'depth<2' | 'garbling') so the worker can
+    surface status=error reason=low_quality_tree without persisting anything."""
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"low_quality_tree: {reason}")
+
+
+def _tree_node_count(nodes: list) -> int:
+    total = 0
+    for n in nodes:
+        total += 1
+        total += _tree_node_count(n.get("nodes") or [])
+    return total
+
+
+def _tree_depth(nodes: list) -> int:
+    if not nodes:
+        return 0
+    best = 1
+    for n in nodes:
+        children = n.get("nodes") or []
+        if children:
+            best = max(best, 1 + _tree_depth(children))
+    return best
+
+
+def _tree_is_garbled(nodes: list) -> bool:
+    parts: list[str] = []
+
+    def _walk(ns: list) -> None:
+        for n in ns:
+            parts.append(str(n.get("title", "")))
+            parts.append(str(n.get("text", "")))
+            _walk(n.get("nodes") or [])
+
+    _walk(nodes)
+    blob = "".join(parts)
+    if not blob.strip():
+        return True
+    if "\x00" in blob or "\ufffd" in blob:
+        return True
+    bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
+    return (bad / len(blob)) > 0.05
+
+
+def validate_tree(structure: list) -> tuple[bool, str]:
+    """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
+
+    Returns (ok, reason); reason is '' when ok. Fails (priority order) on
+    node_count < 3, depth < 2, or garbling (null/replacement bytes or a high
+    ratio of control characters — the validated German-insurance failure mode)."""
+    if _tree_node_count(structure) < 3:
+        return False, "node_count<3"
+    if _tree_depth(structure) < 2:
+        return False, "depth<2"
+    if _tree_is_garbled(structure):
+        return False, "garbling"
+    return True, ""

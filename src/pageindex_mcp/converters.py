@@ -6,6 +6,41 @@ import re
 import shutil
 import subprocess
 import tempfile
+from typing import cast
+
+
+_DASH_TRANSLATION = {0x2013: "-", 0x2014: "-", 0x2212: "-"}
+
+
+def normalize_dashes(s: str) -> str:
+    """Replace en-dash (U+2013), em-dash (U+2014) and minus (U+2212) with ASCII '-' (CONV-01-C2)."""
+    return s.translate(_DASH_TRANSLATION)
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})(?=\s)", re.MULTILINE)
+
+
+def _relevel_headings(md: str) -> str:
+    """Promote markdown headings so the shallowest present level becomes H1 (#)."""
+    levels = [len(m.group(1)) for m in _HEADING_RE.finditer(md)]
+    if not levels:
+        return md
+    shift = min(levels) - 1
+    if shift <= 0:
+        return md
+    return _HEADING_RE.sub(lambda m: "#" * (len(m.group(1)) - shift), md)
+
+
+def pdf_to_markdown(pdf_path: str) -> str:
+    """Primary PDF route (INDEX-01-C1): pymupdf4llm -> relevel headings -> normalize dashes.
+    Raises on empty/failed extraction so the caller can fall back to page_index (INDEX-01-C2)."""
+    import pymupdf4llm
+    # to_markdown() returns a str with default args; it only returns list[dict]
+    # when page_chunks=True (which we do not pass). Cast to str for the type checker.
+    md = cast(str, pymupdf4llm.to_markdown(pdf_path))
+    if not md or not md.strip():
+        raise RuntimeError(f"pdf_to_markdown produced empty output for {pdf_path}")
+    return normalize_dashes(_relevel_headings(md))
 
 
 def libreoffice_to_pdf(input_path: str) -> str:
@@ -110,7 +145,7 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
     h.ignore_images = True
     h.ignore_links = False
     h.body_width = 0
-    return h.handle(modified_html)
+    return normalize_dashes(h.handle(modified_html))
 
 
 def flatten_nodes(nodes: list, results: list, query_lower: str) -> None:
@@ -148,7 +183,7 @@ def docx_to_markdown(path: str) -> str:
             continue
         prefix = next((v for k, v in heading_map.items() if para.style.name.startswith(k)), None)
         lines.append(f"{prefix} {text}" if prefix else text)
-    return "\n".join(lines)
+    return normalize_dashes("\n".join(lines))
 
 
 def pptx_to_markdown(path: str) -> str:
@@ -168,4 +203,4 @@ def pptx_to_markdown(path: str) -> str:
                 if text:
                     lines.append(text)
         lines.append("")
-    return "\n".join(lines)
+    return normalize_dashes("\n".join(lines))

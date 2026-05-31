@@ -1,98 +1,54 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Identity
 
-## Overview
+PageIndex MCP Server is a vectorless / tree-reasoning RAG document-ingestion platform exposed over the Model Context Protocol. The core stack is FastMCP + arq (async job queue) + MinIO (object storage) + Redis (cache + job bus) + Prometheus (metrics). It targets generic document corpora; German insurance T&C PDFs are the first validation vertical. Python 3.12, `uv` for dependency management. VCS: GitHub — CI via GitHub Actions (`.github/workflows/`).
 
-PageIndex MCP Server — a [FastMCP](https://github.com/jlowin/fastmcp)-based server that exposes document processing capabilities (vectorless reasoning-based RAG) via the Model Context Protocol. Documents are indexed into a hierarchical tree structure and stored in MinIO object storage.
+## Hard Rules
 
-## Environment Setup
+1. **Never claim vectorless/tree RAG beats vector RAG on accuracy.** Benchmark numbers were refuted in verification. Position only on architectural merits: no vector DB, inspectable trees, structural-query alignment.
+2. **Right-to-erasure must cascade across every derived store.** Deleting the raw upload does NOT auto-remove derivatives. Purge MinIO `uploads/`, `processed/*.json`, `processed/*.meta.json`, Redis cache, and any documented backup explicitly — in that order.
+3. **Route PII-bearing documents only through a no-training + zero-retention LLM tier** (OpenAI ZDR / Anthropic ZDR / Azure modified-abuse-monitoring); EU residency where the corpus warrants. `OPENAI_BASE_URL` is the routing lever; a self-hosted model is the ultimate residency fallback.
+4. **AGPL-3.0 awareness.** pymupdf4llm/PyMuPDF are AGPL-3.0 (transitive dep). Serving them over a network is a legal decision to clear, not a settled safe-harbor. The MIT escape is Docling.
+5. **Never silently persist a low-quality tree.** `validate_tree()` must run before `save_doc`; a failing tree must surface as an arq `low_quality_tree` error, not a stored artifact.
 
-Uses `uv` for dependency management (Python 3.12 required):
+## Document Map
 
-```bash
-uv sync                  # install all dependencies
-uv sync --extra dev      # include pytest/httpx for testing
-```
+| Artifact | Look there for |
+|---|---|
+| `PRD.md` | Product Overview & Vision · Positioning & Differentiation · Target Users & Use Cases · Functional Requirements · Quality Bar & Acceptance Criteria · Non-Functional Requirements · Success Metrics · Out of Scope / Non-Goals · Open Questions & Risks |
+| `ARCHITECTURE.md` | System Overview · Component Architecture · Ingestion Pipeline & Data Flow · PDF Extraction Strategy · Tree Quality Gate · Cross-Document Graph & Versioning · Data Model & Storage Layout (MinIO layout, env-var catalog) · Compliance & Data Residency · Observability · CI/CD · Architecture Decision Records · Risks & Thin-Evidence Flags |
+| `DESIGN.md` | Design Scope · MCP Tool Contracts (the 5 registered query tools) · Upload & Job-Status API (`POST /upload/files`, `GET /upload/status/{job_id}`) · Output Schema & Machine-Consumability · Erasure / DSR Operation · Observability Surface · Honesty Notes & Open Items |
 
-Environment variables (copy to `.env`):
-- `OPENAI_API_KEY` or `CHATGPT_API_KEY` — required by the PageIndex library
-- `OPENAI_BASE_URL` — optional base URL for OpenAI-compatible API providers (e.g. Azure, local models)
-- `PAGEINDEX_MODEL` — main LLM model (default: `gpt-4o-2024-11-20`)
-- `PAGEINDEX_FILTER_MODEL` — model for pre-filtering documents (default: `gpt-4o-mini`)
-- `PAGEINDEX_SEARCH_MODEL` — model for tree search (default: `gpt-4o-mini`)
-- `PAGEINDEX_SEARCH_CONCURRENCY` — parallel search concurrency (default: `3`)
-- `MINIO_ENDPOINT` — defaults to `10.43.246.106:9000`
-- `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` — defaults to `minioadmin`/`minioadmin`
-- `MINIO_BUCKET` — defaults to `pageindex`
-- `MINIO_SECURE` — defaults to `false`
-- `REDIS_URL` — Redis connection string (defaults to `redis://neonatal-care-redis.neonatal-care:6379/1`)
-- `UPLOAD_API_KEY` — required for the `/upload` endpoint
-- `WEB_CONCURRENCY` — number of gunicorn workers (default: `1`; must stay 1 because MCP sessions are in-memory per worker — scale via pod replicas + Traefik sticky sessions)
-- `CACHE_TTL` — Redis cache TTL in seconds for processed documents (default: `300`)
-
-## Running the Server
+## Commands
 
 ```bash
-# Development (single process)
+# Dependencies
+uv sync                              # install runtime deps
+uv sync --extra dev                  # add pytest + httpx
+
+# Development server (single process, port 8201)
 uv run python mcp_server.py
 
-# Production (gunicorn with uvicorn workers)
+# Production server (gunicorn + uvicorn workers)
 uv run gunicorn -c gunicorn.conf.py pageindex_mcp.server:app
 
-# Start arq workers (separate process for document processing)
+# Arq worker — run as a SEPARATE process from the server
 uv run arq pageindex_mcp.worker.WorkerSettings
+
+# Ingest documents (HTTP API; upload.py is NOT an active MCP tool)
+#   POST  /upload/files          — enqueue a processing job
+#   GET   /upload/status/{job_id} — poll for result
+
+# Batch-preprocess local doc_store/ with hash-based change detection
+uv run python preprocess_client.py
+uv run python preprocess_client.py <filename>   # single file
+uv run python preprocess_client.py --bg         # background, logs to preprocess.log
+
+# Tests
+uv run pytest
 ```
 
-## Uploading Documents
+## Current Phase
 
-```bash
-# PDFs — single file, URL, or folder
-uv run python upload.py /path/to/document.pdf
-uv run python upload.py https://example.com/report.pdf
-uv run python upload.py /path/to/folder/ --workers 4
-
-# Office/image files are converted to PDF server-side (via LibreOffice/Pillow)
-# during processing — see `src/pageindex_mcp/converters.py`.
-
-# Process files from doc_store/ (with hash-based change detection)
-uv run python preprocess_client.py                # all files in doc_store/
-uv run python preprocess_client.py HR_FAQ.docx    # single file
-uv run python preprocess_client.py --bg           # background, logs to preprocess.log
-```
-
-## Architecture
-
-**`mcp_server.py`** / **`server.py`** — the core server. Exposes a module-level ASGI `app` for gunicorn and registers these MCP query tools via `FastMCP`:
-- `recent_documents()` / `find_relevant_documents(query)` / `get_document(doc_id)` — query the stored index
-- `get_document_structure(doc_id)` / `get_page_content(doc_id, pages)` — retrieve document structure and content
-
-**`worker.py`** — arq worker process. Runs `process_document_job` tasks enqueued by the upload endpoint. Start separately from the MCP server so document processing doesn't compete with query serving.
-
-**`cache.py`** — Redis-backed document cache shared across gunicorn workers. `load_doc` checks Redis before hitting MinIO. Invalidated on `save_doc`/`delete_doc`.
-
-**Storage layout in MinIO:**
-- `processed/<doc_id>.json` — the indexed tree (title, summary, nodes hierarchy)
-- `processed/<doc_id>.meta.json` — lightweight metadata sidecar (doc_id, doc_name, source_url, processed_at) used by listing to avoid downloading full trees
-- `uploads/<doc_id>/<filename>` — the raw source file
-- `preloaded/<filename>` — source files synced from local `doc_store/`
-- `hashes/processed_hashes.json` — change-detection cache used by `preprocess_client.py`
-
-**`preprocess_client.py`** — idempotent batch processor: reads files from `doc_store/`, computes SHA-256, skips unchanged files (comparing against the MinIO hash cache), then calls `upload_and_process_document` via the FastMCP `Client`.
-
-**`upload.py`** — CLI helper that calls `process_document` via `langchain_mcp_adapters.MultiServerMCPClient` for PDFs / URLs / folders.
-
-**`src/pageindex_mcp/converters.py`** — server-side conversion library: runs LibreOffice headless for office formats (DOCX/PPTX) and Pillow for images, producing PDFs the indexer can consume.
-
-**`test.py`** — a LangChain ReAct agent example that connects to the running server and queries it with an LLM.
-
-**Key dependency:** `pageindex` is installed from a private GitHub repo (`trehansalil/PageIndex-salil`). The `page_index_main` function does the heavy lifting of PDF parsing and hierarchical indexing; `md_to_tree` handles markdown/text inputs.
-
-## Notes
-
-- `doc_id` values are 8-character UUID prefixes generated at processing time.
-- Document processing is offloaded to arq workers via Redis queue — the MCP server only handles queries.
-- The upload endpoint (`POST /upload/files`) enqueues jobs; poll `GET /upload/status/{job_id}` for results.
-- The server path is hardcoded to port `8201` in all client scripts.
-- Production deployments should run gunicorn (multi-worker) + separate arq worker processes.
-- The Docker image only ships `mcp_server.py`, `gunicorn.conf.py`, and `src/`. Local-only assets (`test.py`, `postman/`, `docs/`, `tests/`, `stress_test.py`) are excluded via `.dockerignore`.
+Bootstrap planning artifacts complete (PRD.md, ARCHITECTURE.md, DESIGN.md written). Now executing **Tier-0 remediation**: markdown-first PDF extraction route + tree quality gate, per `PRD.md` § Functional Requirements and `ARCHITECTURE.md` § Ingestion Pipeline & Data Flow / Tree Quality Gate.
