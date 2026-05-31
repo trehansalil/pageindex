@@ -8,7 +8,7 @@ contracts:
   - id: WORKER-01-C1
     desc: "process_document_job runs the full ingestion pipeline and writes done status on success"
     trigger: "arq process_document_job picked up from the queue with a staging_key pointing to a valid file in MinIO"
-    effect: "pageindex:job:<job_id> set to status=processing; staged file downloaded; client.index() called; on success pageindex:job:<job_id> set to status=done with doc_id; the staged file IS removed from uploads/staging/ (deleted unconditionally in the finally block once the job attempt completes)"
+    effect: "pageindex:job:<job_id> set to status=processing; staged file downloaded; client.index() called; on success pageindex:job:<job_id> set to status=done with doc_id; staging cleanup is CONDITIONAL -- a cleanup_staging flag (default False) is set True only on terminal outcomes (success, LowQualityTreeError, or job_try >= MAX_TRIES), and the finally block deletes the staged file from uploads/staging/ only when that flag is True; on a retryable failure the staged file is RETAINED so arq can re-download it on the next attempt"
     boundary: "Staged file exists in MinIO; client.index() and save_doc() both succeed"
 
   - id: WORKER-01-C2

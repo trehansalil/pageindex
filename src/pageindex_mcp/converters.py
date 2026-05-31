@@ -99,7 +99,10 @@ def _relevel_by_numbering(md: str) -> str:
         depth = numbering_depth(title)
         if depth is None:
             return m.group(0)
-        return "#" * depth + " " + title
+        # Clamp to the markdown heading range [1, 6]; deeply nested numbered
+        # sections (e.g. "A.1.1.1.1.1") would otherwise emit 7+ '#'s, which is
+        # not a valid heading. Mirrors the clamp in _relevel_by_containment.
+        return "#" * max(1, min(6, depth)) + " " + title
     return _HLINE_RE.sub(repl, md)
 
 
@@ -144,9 +147,12 @@ def _collapse_spaced(text: str) -> str:
         buf = []
         for t in ctoks:
             if t == "-":
-                if buf:
-                    out.append("".join(buf)); buf = []
-                out.append("-")
+                # A '-' inside a chunk is a label separator (e.g. clause code
+                # "A1-6.1" rendered spaced as "A 1 - 6 . 1"): glue it to the
+                # surrounding letters with NO spaces so the clause code stays
+                # intact. Surrounding it with spaces would break hyphenated
+                # clause-code detection ("A1-6.1" -> "A1- 6.1").
+                buf.append("-")
             else:
                 buf.append(t)
         if buf:
@@ -201,8 +207,11 @@ def _segment_label(title: str) -> list[str]:
     # Strip trailing punctuation like ':' or '.' used as a terminator? Keep dots
     # that are internal (A.1.) — drop a single trailing '.'/':'.
     head = head.rstrip(":")
-    # A label must begin with an uppercase letter to be a German clause code.
-    if not re.match(r"^[A-Za-z]", head):
+    # A label must begin with a letter (clause code "A1-6.1") OR a digit
+    # (numeric section "3.1") to be a recognisable numbering label. Rejecting
+    # digit-led heads here would drop numeric headings before the digit-aware
+    # validation below, leaving that part of the hierarchy flat.
+    if not re.match(r"^[A-Za-z0-9]", head):
         return []
     comps: list[str] = []
     # split on the structural separators '.', '-'

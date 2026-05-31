@@ -39,7 +39,7 @@ guide:
       - "All responses from OpenAI, the pageindex library, MinIO, and Redis are validated/normalised before use — never passed through raw."
       - "If the external call returns an unexpected shape, raise a typed domain exception (not a bare RuntimeError)."
       - "import_rules.no_llm_outside_provider and no_minio_outside_storage (vocabulary.yaml) are never violated; a transport handler may not call MinIO or an LLM directly."
-      - "import_rules.no_pypdf2_in_new_pdf_path: the new PDF extraction path (RFC-000) uses pymupdf4llm as the primary extractor, never PyPDF2. Docling is a Tier-1 alternative gated behind a footprint benchmark and is never auto-promoted to the Phase-1 hot path (RFC-000 R1)."
+      - "import_rules.no_pypdf2_in_new_pdf_path: the new PDF extraction path never uses PyPDF2. Docling (MIT) is the configured default PDF->markdown converter — pdf_markdown_converters() reads PDF_CONVERTER (default 'docling') and puts Docling in the primary slot, with pymupdf4llm (AGPL) as the secondary/fallback; set PDF_CONVERTER=pymupdf4llm to invert. RFC-003 Amendment 4 promoted Docling-CPU to default, superseding RFC-000 R1's pymupdf4llm-primary stance."
       - "Boundary validation logic lives in the provider or repository layer, never in the transport handler."
 
   # ── ARCHITECTURE ───────────────────────────────────────────────────────────
