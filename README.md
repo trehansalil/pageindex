@@ -24,7 +24,7 @@ Copy `.env.example` to `.env` (or export directly) and set:
 | Variable | Default | Description |
 |---|---|---|
 | `OPENAI_API_KEY` or `CHATGPT_API_KEY` | — | Required by the PageIndex library |
-| `MINIO_ENDPOINT` | `10.43.246.106:9000` | MinIO server address |
+| `MINIO_ENDPOINT` | `localhost:9000` | MinIO server address |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
 | `MINIO_BUCKET` | `pageindex` | Bucket name |
@@ -51,12 +51,26 @@ test locally without the production cluster. Requires Docker Compose v2.24+.
 
 ```bash
 docker compose up -d            # starts redis, minio, and creates the bucket
+```
 
-export REDIS_URL=redis://localhost:6379/1
-export MINIO_ENDPOINT=localhost:9000
+Point your `.env` at the local services, then set `OPENAI_API_KEY` (a fresh clone
+can `cp .env.example .env` — it already uses these values):
+
+```dotenv
+REDIS_URL=redis://localhost:6379/1
+MINIO_ENDPOINT=localhost:9000
+MCP_PORT=8201
+```
+
+```bash
 uv run python mcp_server.py                       # server (shell 1)
 uv run arq pageindex_mcp.worker.WorkerSettings    # worker (shell 2)
 ```
+
+> Both processes read `.env` via `load_dotenv`, so these values apply in every
+> shell. If your `.env` still carries the production cluster values
+> (`REDIS_URL=redis://10.43.…`, `MCP_PORT=8111`), the host server binds the wrong
+> port and the worker can't reach Redis — change them to the local values first.
 
 **Option 2 — full stack** (Redis + MinIO + server + worker, all containerised):
 
@@ -74,16 +88,25 @@ docker compose --profile app up -d --build
 `REDIS_URL`, `MINIO_ENDPOINT`, and `MCP_PORT` from `.env` are overridden inside
 compose so the containers reach the local `redis` / `minio` services; secrets such
 as `OPENAI_API_KEY` are still read from `.env`. Building the image needs access to
-the private `trehansalil/PageIndex-salil` dependency — to skip the build, set
-`image:` to the published `ghcr.io/trehansalil/pageindex-mcp:latest` instead.
+the private `trehansalil/PageIndex-salil` dependency — to skip the build, edit the
+`image:` line under the `x-app` anchor in `docker-compose.yml` to
+`ghcr.io/trehansalil/pageindex-mcp:latest` and run `docker compose --profile app up -d`
+(omit `--build`).
 
 ```bash
 # Smoke test once the full stack is up:
-curl -s localhost:8201/metrics | head            # public, no auth
-curl -s -X POST localhost:8201/upload/files \
-  -H "X-API-Key: $UPLOAD_API_KEY" -F files=@doc_store/HR_FAQ.docx
+curl -s localhost:8201/metrics | head                 # public, no auth
 
-docker compose --profile app down                # stop (add -v to wipe volumes)
+# Upload a document. X-API-Key must match UPLOAD_API_KEY in .env (.env.example uses
+# dev-api-key). doc_store/ is gitignored — point at any local PDF/DOCX you have:
+curl -s -X POST localhost:8201/upload/files \
+  -H "X-API-Key: dev-api-key" -F files=@/path/to/your-document.pdf
+# -> [{"job_id": "...", "filename": "..."}]   (202 Accepted; the LLM runs in the worker)
+
+# Poll until the worker finishes (status: pending -> done|error):
+curl -s -H "X-API-Key: dev-api-key" localhost:8201/upload/status/<job_id>
+
+docker compose --profile app down                     # stop (add -v to wipe volumes)
 ```
 
 ## MCP Tools
