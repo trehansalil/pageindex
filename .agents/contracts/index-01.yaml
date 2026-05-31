@@ -1,0 +1,24 @@
+feature: INDEX-01
+name: PDF Input Routes Through Markdown-First Extraction
+module: client
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set
+
+contracts:
+  - id: INDEX-01-C1
+    desc: "A .pdf input is routed through pdf_to_markdown then _run_md_to_tree, not through PyPDF2"
+    trigger: "client.index() called with a .pdf file path"
+    effect: "pdf_to_markdown (pymupdf4llm + _relevel_headings) is invoked first producing a temporary .md file; _run_md_to_tree is called on that .md; _run_page_index (PyPDF2) is NOT called in the primary path; the no_pypdf2_in_new_pdf_path static gate remains green"
+    boundary: "pdf_to_markdown succeeds without raising an exception"
+
+  - id: INDEX-01-C2
+    desc: "A .pdf input falls back to _run_page_index only when pdf_to_markdown raises an exception"
+    trigger: "client.index() called with a .pdf file path and pdf_to_markdown raises any exception"
+    effect: "_run_page_index is invoked as the try/except last-resort fallback; the fallback invocation is observable via a logged warning or metric"
+    boundary: "pdf_to_markdown raises an exception during the primary route"
+
+  - id: INDEX-01-C3
+    desc: "Non-.pdf inputs (.docx, .html) follow their existing converter routes unchanged"
+    trigger: "client.index() called with a .docx or .html file path"
+    effect: "The appropriate converter (docx_to_markdown or html_to_markdown_with_images) is invoked; pdf_to_markdown is NOT called; the resulting tree is passed to validate_tree before save_doc"
+    boundary: "File extension is not .pdf"

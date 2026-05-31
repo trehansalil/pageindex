@@ -1,0 +1,118 @@
+# .agents/governance/vocabulary.yaml
+#
+# The shared dictionary for the pageindex_mcp package: layers, import rules, and
+# error codes. Underpins every other governance YAML so the same word never means
+# two things (AGENT_DRIVEN_DEVELOPMENT.md §0). Read by scope-checklist.yaml,
+# develop-guide.yaml, verify-gates.yaml; the import rules are enforced by the
+# static gate (scripts/gates/static.sh — ruff flake8-tidy-imports / import-linter).
+#
+# Sources: AGENT_DRIVEN_DEVELOPMENT.md §0 (terms), §9 (layer roles + import matrix),
+#          §6.3 (layer-isolation flags); DESIGN.md (job-status + error-reason enums,
+#          HTTP status codes); ARCHITECTURE.md (tree quality gate → low_quality_tree).
+#
+# Edit discipline: adding/removing a layer or import rule is a *significant decision*
+# (RFC required). Error codes are extended by the RFC that introduces the behavior.
+
+version: 1
+package: pageindex_mcp
+
+# ── LAYERS ────────────────────────────────────────────────────────────────────
+# Functional roles mapped onto the flat src/pageindex_mcp/ package (§9). A "module"
+# here is a single .py file (or the tools/ subpackage); a "layer" is the role it plays.
+# The build order schema → repository/provider → service → route → tests
+# (dag.yaml#phase_features.module_layer_order) is expressed over these roles.
+layers:
+  transport:
+    role: "route — FastMCP/FastAPI entrypoints; thin handlers"
+    files: ["server.py", "upload_app.py", "tools/*.py"]
+    may_import: ["service", "schema", "cross_cutting"]
+    forbidden:
+      - "minio / redis clients directly"
+      - "LLM / pageindex calls"
+      - "business logic"
+    max_handler_lines: 30        # §9 — extract anything larger into a service (client.py)
+
+  service:
+    role: "business logic — index/route/RAG, arq job orchestration"
+    files: ["client.py", "worker.py"]
+    may_import: ["repository", "provider", "schema", "service"]
+    forbidden:
+      - "constructing the minio/redis client inline"
+      - "transport types"
+
+  repository:
+    role: "persistence access"
+    files: ["storage.py", "cache.py"]
+    may_import: ["minio client", "redis client", "schema"]
+    forbidden: ["business logic", "external APIs", "LLM"]
+
+  provider:
+    role: "external adapter"
+    files: ["converters.py"]
+    note: "the pageindex library + the LLM client are provider-role collaborators that sit behind client.py (service)"
+    may_import: ["libreoffice", "pillow", "pymupdf", "pageindex", "openai", "litellm"]
+    forbidden: ["persistence", "business logic"]
+
+  cross_cutting:
+    role: "leaf utilities"
+    files: ["config.py", "auth.py", "metrics.py", "helpers.py"]
+    may_import: ["stdlib", "own third-party dependency"]
+    forbidden: ["service", "transport"]
+
+  barrel:
+    role: "re-exports only"
+    files: ["__init__.py"]
+    forbidden: ["implementation"]
+
+# ── IMPORT RULES ───────────────────────────────────────────────────────────────
+# Layer-isolation flags enforced by the static gate (§6.3). Each is a boolean the
+# gate reads; flipping one off is a significant decision (RFC + rationale).
+import_rules:
+  no_minio_outside_storage: true          # only storage.py imports the minio client
+  no_redis_outside_cache_or_worker: true  # redis client confined to cache.py / worker.py
+  no_llm_outside_provider: true           # OpenAI/litellm/pageindex calls live behind client/converters
+  no_pypdf2_in_new_pdf_path: true         # RFC-000 — new PDF path uses pymupdf, not PyPDF2
+  no_circular_imports: true
+
+# ── ERROR CODES ──────────────────────────────────────────────────────────────
+# One registry; a code never means two things. Sourced from DESIGN.md.
+
+# HTTP status codes returned by the upload transport (upload_app.py).
+http_status:
+  "202": "Accepted — file staged to MinIO uploads/staging/<job_id>/ and arq job enqueued (UPLOAD-01-C1)"
+  "401": "Missing/invalid X-API-Key — rejected before any storage write (UPLOAD-01-C2)"
+  "404": "Job key expired (>24h TTL) or never existed"
+  "503": "UPLOAD_API_KEY unset on the server — returned before the auth comparison"
+
+# arq job lifecycle, persisted at Redis key pageindex:job:<job_id> (TTL 24h).
+job_status: ["pending", "processing", "done", "error"]
+
+# 'reason' field present only when job_status == "error". When set, the tree is
+# NOT persisted to MinIO (Hard Rule 5 — never silently persist a low-quality tree).
+error_reason:
+  low_quality_tree: "Quality gate failed: depth < 2, node_count < 3, or garbling detected (validate_tree before save_doc)"
+  unsupported_format: "Converter could not handle the input format"
+  extraction_failed: "Unhandled exception in the converter or indexer"
+
+# Error envelope returned by the MCP/HTTP query surface (documents query tools).
+query_error_shape: '{"error": "<message>", "available": [...]}'
+
+# Metrics that count error conditions (cross-cutting metrics.py) — see DESIGN.md observability.
+error_metrics:
+  - "pageindex_tool_errors_total{tool}        # MCP tool error count"
+  - "pageindex_low_quality_trees_total{reason}# trees rejected by the quality gate before persistence"
+
+# ── METHODOLOGY TERMS ──────────────────────────────────────────────────────────
+# Canonical definitions (AGENT_DRIVEN_DEVELOPMENT.md §0). Redefining a term is by RFC only.
+terms:
+  contract: "(trigger, effect, boundary) triple with stable ID <FEATURE>-C<n>, stored under .agents/contracts/"
+  rfc: "decision record in .agents/rfcs/; lifecycle proposed → accepted → closed; append-only once closed"
+  gate: "one executable shell script in scripts/gates/ exiting 0/non-zero against verify-gates.yaml thresholds"
+  mode: "one of scope | develop | verify; the agent is in exactly one at a time and names it each turn"
+  checkpoint: "the literal [checkpoint] string ending a mode; requires approve/reject before any transition"
+  significant_decision: "changes a public interface, a verify-gates threshold, a src/pageindex_mcp/ module, or needs >50 LOC"
+  fast: "a gate/hook ≤ 5s on a clean tree; the no-infra eval prefix (gates 1–6) ≤ 60s"
+  phase: "a number on every contract YAML and module declaration; exit is binary (all phase:N contracts greppable in a passing test AND eval.sh green)"
+  layer: "a functional slice of pageindex_mcp: transport | service | repository | provider | cross_cutting"
+  meta_contract: "a contract with meta: true defining a coding pattern, not a runtime behavior; exempt from grep verification, audited by review"
+  dag: ".agents/governance/dag.yaml — the bootstrap + tool_discovery + phase_features dependency graph"

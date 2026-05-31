@@ -1,0 +1,24 @@
+feature: CONV-01
+name: Format Converter Maps Each Supported Format to Its Converter
+module: converters
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set
+
+contracts:
+  - id: CONV-01-C1
+    desc: "Each supported input format is dispatched to its dedicated converter function"
+    trigger: "Converter.convert() called with a file of extension .pdf, .docx, .pptx, or .html"
+    effect: ".pdf invokes pdf_to_markdown (pymupdf4llm + _relevel_headings); .docx invokes docx_to_markdown; .pptx invokes pptx_to_markdown; .html invokes html_to_markdown_with_images; each returns a non-empty markdown string"
+    boundary: "File exists and the extension matches one of the four supported formats"
+
+  - id: CONV-01-C2
+    desc: "En-dash characters in converter output are normalized to ASCII hyphen for clause-code matching"
+    trigger: "Any converter function returns markdown output containing Unicode en-dash (U+2013) characters"
+    effect: "All en-dash characters in the returned string are replaced with ASCII hyphen (-) before the string is returned to the caller; clause-code matching downstream operates on normalized text"
+    boundary: "Converter output contains one or more en-dash characters"
+
+  - id: CONV-01-C3
+    desc: "An unsupported file format yields an unsupported_format error and no markdown output"
+    trigger: "Converter.convert() called with a file whose extension is not in (.pdf, .docx, .pptx, .html)"
+    effect: "Raises or returns an error with reason=unsupported_format; no markdown string is produced; no LLM call or subprocess is initiated"
+    boundary: "File extension is absent from the supported-format list"

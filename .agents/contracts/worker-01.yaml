@@ -1,0 +1,24 @@
+feature: WORKER-01
+name: Job Lifecycle, validate_tree Gate, and DLQ on Final Failure
+module: worker
+phase: 1
+source: rfcs/000-foundational-design.md#initial-contract-set
+
+contracts:
+  - id: WORKER-01-C1
+    desc: "process_document_job runs the full ingestion pipeline and writes done status on success"
+    trigger: "arq process_document_job picked up from the queue with a staging_key pointing to a valid file in MinIO"
+    effect: "pageindex:job:<job_id> set to status=processing; staged file downloaded; client.index() called; on success pageindex:job:<job_id> set to status=done with doc_id; staging file may be removed from uploads/staging/"
+    boundary: "Staged file exists in MinIO; client.index() and save_doc() both succeed"
+
+  - id: WORKER-01-C2
+    desc: "validate_tree failure surfaces as error reason=low_quality_tree and the tree is not persisted"
+    trigger: "validate_tree() called inside client.index() returns a failing result (depth < 2 or node_count < 3 or garbling detected)"
+    effect: "save_doc is NOT called; pageindex:job:<job_id> set to status=error with reason=low_quality_tree; pageindex_low_quality_trees_total counter incremented; tree is discarded and never written to MinIO processed/<doc_id>.json"
+    boundary: "Phase 1 warn-only mode -- the counter increments and status=error is set, but the depth/node_count thresholds are not yet enforced as a hard CI gate (pending calibration against GHV corpus)"
+
+  - id: WORKER-01-C3
+    desc: "On final failure after max_tries the job is pushed to the DLQ"
+    trigger: "process_document_job raises an unhandled exception on its final retry attempt (max_tries=2, job_timeout=900s)"
+    effect: "pageindex:job:<job_id> set to status=error with a reason field; staging_key and error details pushed to Redis list pageindex:dlq; the DLQ entry is observable for manual triage"
+    boundary: "Job has exhausted all retry attempts (max_tries=2); exception is not low_quality_tree (which is caught and handled in WORKER-01-C2)"
