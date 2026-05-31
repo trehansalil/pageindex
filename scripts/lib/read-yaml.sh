@@ -39,7 +39,10 @@ read_yaml() {
     fi
 
     # ── Strategy 1: yq ─────────────────────────────────────────────────────────
-    if command -v yq &>/dev/null; then
+    # Only use the mikefarah/yq (Go) implementation: it supports `yq e <expr>`.
+    # The kislyuk/python `yq` uses jq-style syntax and would fail with `yq e`,
+    # so we detect it and skip to the fallback rather than invoking it.
+    if command -v yq &>/dev/null && yq --version 2>&1 | grep -qi 'mikefarah'; then
         local yq_path=".${key_path}"
         local value
         value=$(yq e "${yq_path}" "$yaml_file" 2>/dev/null)

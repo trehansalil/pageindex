@@ -6,9 +6,15 @@ This is a throwaway investigation script — do NOT import from src/.
 Run with: /tmp/docling_venv/bin/python scripts/spikes/extract_docling.py
 """
 import os
+import sys
 import time
 
-DATA_DIR = "/Users/saliltrehan/Documents/Python_n_R/Personal/pageindex/issue/data"
+# Accept the data dir as the first CLI arg, then $DATA_DIR, else a repo-relative default.
+DATA_DIR = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else os.environ.get("DATA_DIR", "issue/data")
+)
 OUT_DIR = "/tmp/docling_spike/docling"
 
 os.makedirs(OUT_DIR, exist_ok=True)

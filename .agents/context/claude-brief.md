@@ -19,8 +19,9 @@
 3. **Route PII-bearing documents only through a no-training + zero-retention LLM tier** (OpenAI ZDR /
    Anthropic ZDR / Azure modified-abuse-monitoring), EU residency where the corpus warrants. `OPENAI_BASE_URL`
    is the routing lever; a self-hosted model is the ultimate residency fallback.
-4. **AGPL-3.0 awareness**: pymupdf4llm/PyMuPDF are AGPL-3.0 (already a transitive dep). The MIT escape is
-   Docling. Treat network-served AGPL exposure as a legal decision to clear, not a settled safe-harbor.
+4. **AGPL-3.0 awareness**: pymupdf4llm/PyMuPDF are AGPL-3.0 and are direct dependencies (declared in
+   `pyproject.toml`), kept as the secondary/fallback PDF route. The MIT escape is Docling. Treat
+   network-served AGPL exposure as a legal decision to clear, not a settled safe-harbor.
 5. **Never silently persist a low-quality tree** — `validate_tree()` runs before `save_doc`; a failing
    tree becomes an arq `low_quality_tree` error, not a stored artifact.
 

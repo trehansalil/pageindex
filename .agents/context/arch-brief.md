@@ -55,9 +55,9 @@ tree** (the current silent-empty-tree persistence is the key defect). Thresholds
 
 ## Worker hardening (arq defaults are wrong for indexing)
 
-Current `WorkerSettings` uses arq defaults (`max_jobs=10`, `job_timeout=300s`, `max_tries=5`, no DLQ).
-Set `job_timeout=900` (large-PDF indexing exceeds 300s), `max_tries=2` (don't retry deterministic
-indexing failures 5×), and push final failures to a Redis `pageindex:dlq` list. NOTE: arq/MinIO-notify/
+arq defaults (`job_timeout=300s`, `max_tries=5`, no DLQ) are wrong for indexing. `WorkerSettings` now
+sets `job_timeout=900` (large-PDF indexing exceeds 300s), `max_tries=2` (don't retry deterministic
+indexing failures 5×), and pushes final failures to a Redis `pageindex:dlq` list. NOTE: arq/MinIO-notify/
 networkx-persistence operational defaults were **NOT independently verified** — confirm against current docs in the ADRs.
 
 ## Cross-document graph + versioning (Tier 2 — additive, not a stack replacement)

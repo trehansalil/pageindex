@@ -345,5 +345,6 @@ normalizer; D5 add the 24 contract IDs to test names/markers (turn Gate 3 green)
   redirected to RFC-000; `rag-01.yaml` re-scoped.
 - [x] §Amendments — `CACHE-01` direction locked toward the contract (Amdt 1); `RAG-01`
   module re-scoped (Amdt 2).
-- [x] §Standing human-owned gates — AGPL (narrowed by D3), residency, threshold promotion.
+- [x] §Standing human-owned gates — AGPL (open by default, narrowable on demand via Amdt 4),
+  residency, threshold promotion.
 - [x] §Stage plan — Stage 1 (now, → checkpoint) vs Stage 2 (code, post-approval).

@@ -20,5 +20,5 @@ contracts:
   - id: INDEX-01-C3
     desc: "Non-.pdf inputs (.docx, .html) follow their existing converter routes unchanged"
     trigger: "client.index() called with a .docx or .html file path"
-    effect: "The appropriate converter (docx_to_markdown or html_to_markdown_with_images) is invoked; pdf_to_markdown is NOT called; the resulting tree is passed to validate_tree before save_doc"
+    effect: "For .docx the primary route is libreoffice_to_pdf then _run_page_index, with docx_to_markdown then _run_md_to_tree as the LibreOffice/page_index failure fallback; for .html, html_to_markdown_with_images is invoked; pdf_to_markdown is NOT called; the resulting tree is passed to validate_tree before save_doc"
     boundary: "File extension is not .pdf"

@@ -18,7 +18,7 @@ checklist:
     purpose: "Verify that every domain term in the plan is used with its canonical meaning."
     must:
       - "Use 'RAG' only for retrieve-then-generate (prefilter + tree-search + LLM synthesis); do not conflate with pure retrieval."
-      - "Use 'MCP tool' only for the five registered query tools in tools/documents.py (recent_documents, find_relevant_documents, get_document, document_structure, get_page_content); do not call upload endpoints MCP tools."
+      - "Use 'MCP tool' only for the five registered query tools in tools/documents.py (recent_documents, find_relevant_documents, get_document, get_document_structure, get_page_content); do not call upload endpoints MCP tools."
       - "Use 'arq job' for the async unit of work enqueued into Redis and consumed by the arq worker process (worker.py); do not call it a 'task' or 'celery job'."
       - "Use 'object storage' for MinIO; do not say 'blob storage' or 'S3 bucket' unless specifically noting S3 compatibility."
       - "Use 'tree' for the pageindex document tree produced by md_to_tree / index(); do not call it a 'vector', 'embedding', or 'index' generically."
@@ -96,7 +96,7 @@ checklist:
       - "Identify which nodes share no dependency edge (same parallel_group) and may be created in parallel (multiple tool calls in one turn)."
       - "Identify which nodes have a depends_on edge and must be created sequentially; state the order."
       - "If the plan touches a file not yet in dag.yaml#phase_features, flag it as a significant decision: adding a node requires an RFC before the plan is approved."
-      - "Confirm the plan's build order matches dag.yaml#phase_features.module_layer_order: schema -> repository/provider -> service -> transport -> tests."
+      - "Confirm the plan's build order matches dag.yaml#phase_features.module_layer_order: schema -> repository/provider -> service -> route -> tests."
       - "After develop, one line per created file must be appended to .agents/state/execution-log.jsonl in the format defined in AGENT_DRIVEN_DEVELOPMENT.md §14.6."
 
   consistency:

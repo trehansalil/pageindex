@@ -15,3 +15,5 @@
 {"ts":"2026-05-30T15:35:00Z","node":"phase_1_contracts","artifact":".agents/contracts/cache-01.yaml","feature":"CACHE-01"}
 {"ts":"2026-05-30T15:35:00Z","node":"phase_1_contracts","artifact":".agents/contracts/rag-01.yaml","feature":"RAG-01"}
 {"ts":"2026-05-30T15:35:00Z","node":"phase_1_contracts","artifact":".agents/contracts/worker-01.yaml","feature":"WORKER-01"}
+{"ts":"2026-05-31T06:30:33Z","node":"rfc_002","artifact":".agents/rfcs/002-pending-decisions-resolution.md","feature":null}
+{"ts":"2026-05-31T06:30:33Z","node":"rfc_003","artifact":".agents/rfcs/003-tier0-decision-lock.md","feature":null}

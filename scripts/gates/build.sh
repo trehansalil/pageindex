@@ -38,7 +38,7 @@ MAX_IMAGE_MB=$(gate_threshold "build.max_image_mb"    2>/dev/null || echo "1500"
 
 # ── 5a. uv build (wheel) ─────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
-    skip "uv build (uv not installed)"
+    fail "uv build: uv not installed (required build prerequisite — gate cannot verify the wheel)"
 else
     BUILD_START=$(date +%s)
     if uv build --out-dir /tmp/pageindex_build_output &>/tmp/uv_build.log; then
@@ -59,9 +59,9 @@ fi
 
 # ── 5b. docker build ─────────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
-    skip "docker build (docker not installed)"
+    fail "docker build: docker not installed (required prerequisite — gate cannot verify the image)"
 elif ! docker info &>/dev/null 2>&1; then
-    skip "docker build (Docker daemon not running)"
+    fail "docker build: Docker daemon not running (required prerequisite — gate cannot verify the image)"
 elif [[ ! -f "Dockerfile" ]]; then
     fail "docker build: Dockerfile not found in $REPO_ROOT"
 else

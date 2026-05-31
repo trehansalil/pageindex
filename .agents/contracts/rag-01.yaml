@@ -22,13 +22,13 @@ contracts:
   - id: RAG-01-C1
     desc: "find_relevant_documents prefilters candidate docs before running the tree search"
     trigger: "find_relevant_documents MCP tool called with a query string"
-    effect: "_prefilter_docs() is called first to produce a candidate doc list; only the candidate docs are passed to the concurrent tree-search stage; docs excluded by the prefilter are never searched; no vector index is consulted at any stage"
+    effect: "_prefilter_docs() is called first to produce a candidate doc list; only the candidate docs are passed to the concurrent tree-search stage; docs excluded by the prefilter are not searched UNLESS the prefilter selects no candidates, in which case the pipeline falls back to searching all loaded docs; no vector index is consulted at any stage"
     boundary: "At least one document has been indexed and is present in MinIO"
 
   - id: RAG-01-C2
     desc: "Tree search runs concurrently across candidate docs bounded by PAGEINDEX_SEARCH_CONCURRENCY"
     trigger: "find_relevant_documents MCP tool called after prefilter produces N candidate docs (N > 1)"
-    effect: "Exactly N concurrent tree-search LLM calls are issued, bounded by a semaphore of size PAGEINDEX_SEARCH_CONCURRENCY; matched nodes are collected and returned in the MCP response; pageindex_tool_errors_total is incremented if any search raises"
+    effect: "Up to N tree-search LLM calls are scheduled via asyncio.gather, with at most PAGEINDEX_SEARCH_CONCURRENCY running simultaneously (semaphore-bounded); matched nodes are collected and returned in the MCP response; a per-doc search that raises is caught (return_exceptions=True) and logged — it does NOT increment pageindex_tool_errors_total (that counter increments only at the tool boundary in documents.py when find_relevant_documents itself raises)"
     boundary: "N candidate docs passed by prefilter; PAGEINDEX_SEARCH_CONCURRENCY is set"
 
   - id: RAG-01-C3

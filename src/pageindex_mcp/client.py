@@ -107,7 +107,6 @@ class CustomPageIndexClient(PageIndexClient):
                         used_converter = conv_name
                         break
                     except Exception as conv_exc:
-                        PDF_EXTRACT_FALLBACKS.inc()
                         md_content = None
                         if idx == 0:
                             # The CONFIGURED PRIMARY converter failed. Never let this be
@@ -149,6 +148,7 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                 else:
+                    PDF_EXTRACT_FALLBACKS.inc()
                     logger.error(
                         "ALL markdown converters failed for %s; falling back to legacy "
                         "page_index. Investigate converter availability in this image.",
