@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PageIndex API",
-    "description": "Collection for the PageIndex MCP Server — document upload, job status polling, MCP query tools, and Prometheus metrics.\n\nBase URL: http://pageindex.aiwithsalil.work",
+    "description": "Collection for the PageIndex MCP Server — document upload, job status polling, MCP query tools, and Prometheus metrics.\n\n## Pick an environment first\nThis collection is environment-driven. Select one before running:\n- **PageIndex — Local** → http://localhost:8201 (docker-compose + `uv run python mcp_server.py` + `uv run arq pageindex_mcp.worker.WorkerSettings`). Ships with the dev keys `dev-api-key`.\n- **PageIndex — Production** → http://pageindex.aiwithsalil.work (fill in API_KEY / BEARER_TOKEN).\n\nWith no environment selected, BASE_URL falls back to the local default (http://localhost:8201).\n\n## Connection variables (from the environment)\n- `BASE_URL` — server origin.\n- `API_KEY` — `X-API-Key` header for /upload (= `UPLOAD_API_KEY`).\n- `BEARER_TOKEN` — `Authorization: Bearer` for /mcp (= `MCP_BEARER_TOKEN`).\n\n## Session variables (auto-populated by test scripts, collection-scoped)\n`JOB_ID`, `DOC_ID`, `MCP_SESSION_ID` — do NOT define these in an environment or they will shadow the script-written values.\n\n## Local happy path\n1. Upload › **Upload Files** (attach a .pdf/.md/…) → captures `JOB_ID`.\n2. Upload › **Get Job Status** (poll until `done`) → captures `DOC_ID`.\n3. MCP Tools › **Initialize Session** → **Send Initialized Notification** → then any tool.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -15,8 +15,9 @@
   "variable": [
     {
       "key": "BASE_URL",
-      "value": "http://pageindex.aiwithsalil.work",
-      "type": "string"
+      "value": "http://localhost:8201",
+      "type": "string",
+      "description": "Server origin. Overridden by the selected environment (Local / Production); falls back to local when none is selected."
     },
     {
       "key": "API_KEY",
