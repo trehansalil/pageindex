@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# scripts/gates/build.sh — Gate 5: Build (wheel + Docker image)
+# scripts/gates/build.sh — Gate 5: Build (wheel; Docker image is opt-in)
 #
-# Enforces:
-#   - uv build produces a wheel without error.
-#   - docker build . succeeds (requires Docker daemon; no running services needed).
-#   - Both complete within max_time_seconds.
+# Enforces (fast no-infra prefix — what eval.sh runs):
+#   - uv build produces a wheel without error, within max_time_seconds.
+#
+# Opt-in (--with-docker; NOT passed by eval.sh):
+#   - docker build . succeeds within max_time_seconds.
 #   - Final Docker image size does not exceed max_image_mb.
+#   The docker image build + push is OWNED by the build-push CI job
+#   (docker/build-push-action), which builds+pushes the real image and fails the
+#   workflow — blocking the deploy — on any Dockerfile breakage. The
+#   Docling-default image (torch-CPU + baked layout/TableFormer weights +
+#   LibreOffice, per RFC-003 Amend.4) is ~3GB and takes ~60-120s cold, which does
+#   not fit the "fast" no-infra prefix budget, so it is decoupled from this gate.
 #
-# Needs infra: no (Docker daemon, no running services)
+# Needs infra: no
 # Reads thresholds from .agents/governance/verify-gates.yaml via read-yaml.sh.
 
 set -euo pipefail
@@ -36,6 +43,16 @@ cd "$REPO_ROOT"
 MAX_TIME=$(gate_threshold    "build.max_time_seconds" 2>/dev/null || echo "60")
 MAX_IMAGE_MB=$(gate_threshold "build.max_image_mb"    2>/dev/null || echo "1500")
 
+# ── Parse arguments ────────────────────────────────────────────────────────────
+# Docker build is opt-in: the fast no-infra gate validates only the wheel; the
+# docker image build + push is owned by the build-push CI job (see 5b below).
+WITH_DOCKER=false
+for arg in "$@"; do
+    case "$arg" in
+        --with-docker) WITH_DOCKER=true ;;
+    esac
+done
+
 # ── 5a. uv build (wheel) ─────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
     fail "uv build: uv not installed (required build prerequisite — gate cannot verify the wheel)"
@@ -57,8 +74,11 @@ else
     fi
 fi
 
-# ── 5b. docker build ─────────────────────────────────────────────────────────
-if ! command -v docker &>/dev/null; then
+# ── 5b. docker build (opt-in; delegated to build-push CI job by default) ──────
+if [[ "$WITH_DOCKER" != "true" ]]; then
+    SKIP=$((SKIP+1))
+    MESSAGES+=("  [SKIP]  docker build + image size: delegated to the build-push CI job (not run in the fast no-infra gate; pass --with-docker to enable locally)")
+elif ! command -v docker &>/dev/null; then
     fail "docker build: docker not installed (required prerequisite — gate cannot verify the image)"
 elif ! docker info &>/dev/null 2>&1; then
     fail "docker build: Docker daemon not running (required prerequisite — gate cannot verify the image)"

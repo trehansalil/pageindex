@@ -8,7 +8,7 @@
 #   2. unit          pytest + coverage + assertion density     (no infra)
 #   3. contracts     contract-ID grep coverage                 (no infra)
 #   4. dag           topology + execution-log integrity        (no infra)
-#   5. build         uv build + docker build                   (no infra)
+#   5. build         uv build wheel (docker build → build-push job)  (no infra)
 #   6. supply-chain  pip-audit                                 (no infra)
 #   7. integration   MinIO + Redis + arq testcontainers        (infra)
 #   8. e2e           full upload → worker → query round-trip   (infra)
