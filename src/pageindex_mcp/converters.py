@@ -357,6 +357,55 @@ def pdf_to_markdown(pdf_path: str) -> str:
     return normalize_dashes(_relevel_headings(md))
 
 
+def _build_pdf_pipeline_options():
+    """Build the CPU-only Docling PDF pipeline options.
+
+    Capping intra-op threads (``DOCLING_NUM_THREADS``, default 1) is the one
+    code-level RSS reducer that costs NO extraction fidelity: Docling propagates
+    ``num_threads`` to ``torch.set_num_threads`` / onnxruntime internally, so peak
+    memory drops (fewer per-thread scratch arenas) without unloading any model or
+    changing output. TableFormer stays on at ``ACCURATE`` -- disabling it or using
+    ``FAST`` would cut memory further but degrade table reconstruction, which we do
+    NOT want. Docling imports stay function-local (they are heavy).
+    """
+    from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        TableFormerMode,
+        TesseractCliOcrOptions,
+    )
+
+    # CPU-only by design -- nothing on GPU/MPS for now.
+    device = AcceleratorDevice.CPU
+    do_ocr = os.getenv("DOCLING_DO_OCR", "0").strip().lower() in ("1", "true", "yes")
+    # Cap inference threads to bound peak RSS. Default 1 for the memory-tight worker;
+    # raise via DOCLING_NUM_THREADS only where the node has RAM headroom.
+    try:
+        num_threads = max(1, int(os.getenv("DOCLING_NUM_THREADS", "1")))
+    except ValueError:
+        num_threads = 1
+
+    opts = PdfPipelineOptions()
+    opts.do_ocr = do_ocr
+    opts.do_table_structure = True
+    opts.table_structure_options.mode = TableFormerMode.ACCURATE
+    if do_ocr:
+        langs = [
+            s.strip() for s in os.getenv("DOCLING_OCR_LANG", "deu,eng").split(",") if s.strip()
+        ]
+        # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
+        opts.ocr_options = TesseractCliOcrOptions(lang=langs)
+    opts.accelerator_options = AcceleratorOptions(device=device, num_threads=num_threads)
+    # Use pre-baked model artifacts when available (set in the container image so
+    # egress-limited workers never download weights at runtime -- a download failure
+    # there would otherwise raise and silently fall back to pymupdf4llm -> flat tree
+    # -> depth<2). Unset (local dev) -> docling fetches from HF on first use.
+    artifacts_path = os.getenv("DOCLING_ARTIFACTS_PATH", "").strip()
+    if artifacts_path:
+        opts.artifacts_path = artifacts_path
+    return opts
+
+
 def pdf_to_markdown_docling(pdf_path: str) -> str:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -383,37 +432,10 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
 
     Raises on empty extraction so the caller falls back to the next converter.
     """
-    from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import (
-        PdfPipelineOptions,
-        TableFormerMode,
-        TesseractCliOcrOptions,
-    )
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    # CPU-only by design — nothing on GPU/MPS for now.
-    device = AcceleratorDevice.CPU
-    do_ocr = os.getenv("DOCLING_DO_OCR", "0").strip().lower() in ("1", "true", "yes")
-
-    opts = PdfPipelineOptions()
-    opts.do_ocr = do_ocr
-    opts.do_table_structure = True
-    opts.table_structure_options.mode = TableFormerMode.ACCURATE
-    if do_ocr:
-        langs = [
-            s.strip() for s in os.getenv("DOCLING_OCR_LANG", "deu,eng").split(",") if s.strip()
-        ]
-        # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
-        opts.ocr_options = TesseractCliOcrOptions(lang=langs)
-    opts.accelerator_options = AcceleratorOptions(device=device)
-    # Use pre-baked model artifacts when available (set in the container image so
-    # egress-limited workers never download weights at runtime — a download failure
-    # there would otherwise raise and silently fall back to pymupdf4llm -> flat tree
-    # -> depth<2). Unset (local dev) -> docling fetches from HF on first use.
-    artifacts_path = os.getenv("DOCLING_ARTIFACTS_PATH", "").strip()
-    if artifacts_path:
-        opts.artifacts_path = artifacts_path
+    opts = _build_pdf_pipeline_options()
 
     converter = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}

@@ -13,6 +13,7 @@ import tempfile
 import time
 
 import redis.asyncio as aioredis
+from arq import cron
 from arq.connections import RedisSettings
 
 from .client import CustomPageIndexClient
@@ -27,6 +28,15 @@ JOB_TTL = 86_400
 MAX_TRIES = 2
 JOB_TIMEOUT = 900
 DLQ_KEY = "pageindex:dlq"
+# At most one job in flight per worker process. A single Docling index can peak
+# at multiple GiB; allowing arq's default (10) to stack two heavy jobs would
+# double peak RSS on an already memory-tight node and invite an OOM kill.
+MAX_JOBS = 1
+# A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
+# grace margin (clock skew + the gap before arq itself gives up) a hash still in
+# status=processing means the worker died mid-job (e.g. OOMKill/SIGKILL ran no
+# except/finally), so the reaper may safely mark it failed.
+REAP_GRACE = 120
 
 
 def _job_key(job_id: str) -> str:
@@ -53,7 +63,13 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     cleanup_staging = False
     logger.info("Worker processing: job=%s staging_key=%s", job_id, staging_key)
     try:
-        await redis.hset(_job_key(job_id), mapping={"status": "processing"})
+        # Stamp a wall-clock start time (epoch seconds, NOT time.monotonic which is
+        # process-relative and meaningless across the worker restart a crash causes)
+        # so reap_stale_jobs can later detect a job orphaned mid-processing.
+        await redis.hset(
+            _job_key(job_id),
+            mapping={"status": "processing", "processing_started_at": str(int(time.time()))},
+        )
         await redis.expire(_job_key(job_id), JOB_TTL)
         # Download staged file from MinIO to local temp
         await asyncio.to_thread(download_staging, staging_key, local_path)
@@ -100,6 +116,56 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             await asyncio.to_thread(delete_staging, staging_key)
 
 
+async def reap_stale_jobs(ctx: dict) -> None:
+    """Recover jobs orphaned mid-processing by a killed worker.
+
+    An OOMKill (SIGKILL) or node eviction terminates the worker without running
+    any except/finally, so a job's status hash is frozen at ``processing`` and the
+    client polls it forever. This periodic sweep flips any hash still in
+    ``processing`` whose ``processing_started_at`` is older than the maximum a job
+    could legitimately run (``JOB_TIMEOUT + REAP_GRACE``) to ``error``.
+
+    Safety: a job with a missing or unparseable ``processing_started_at`` is left
+    alone — we never reap a job we cannot *prove* is stale, so an in-flight job is
+    never wrongly failed.
+    """
+    redis: aioredis.Redis = ctx.get("redis") or aioredis.from_url(
+        settings.redis_url, decode_responses=True
+    )
+    cutoff = JOB_TIMEOUT + REAP_GRACE
+    now = int(time.time())
+    reaped = 0
+    async for key in redis.scan_iter(match=f"{_job_key('')}*"):
+        data = await redis.hgetall(key)
+        if data.get("status") != "processing":
+            continue
+        try:
+            started = int(data["processing_started_at"])
+        except (KeyError, ValueError, TypeError):
+            # Cannot determine age -> cannot prove staleness -> leave untouched.
+            continue
+        age = now - started
+        if age <= cutoff:
+            continue
+        await redis.hset(
+            key,
+            mapping={
+                "status": "error",
+                "error": "worker_terminated",
+                "reason": (
+                    "worker terminated before completion "
+                    f"(stale processing job reaped after {age}s)"
+                ),
+                "reaped_at": str(now),
+            },
+        )
+        await redis.expire(key, JOB_TTL)
+        reaped += 1
+        logger.warning("Reaped stale processing job %s (age %ds)", key, age)
+    if reaped:
+        logger.warning("reap_stale_jobs flipped %d stale processing job(s) to error", reaped)
+
+
 async def startup(ctx: dict) -> None:
     ctx["redis"] = aioredis.from_url(settings.redis_url, decode_responses=True)
 
@@ -117,3 +183,18 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_tries = MAX_TRIES
     job_timeout = JOB_TIMEOUT
+    max_jobs = MAX_JOBS
+    # Sweep for jobs orphaned mid-processing once a minute (second=0) and once at
+    # boot, so a worker restart immediately reconciles anything a prior crash left
+    # frozen in status=processing. unique=True -> only one worker runs each tick;
+    # max_tries=1 -> a transient reaper failure is not retried as a normal job.
+    cron_jobs = [
+        cron(
+            reap_stale_jobs,
+            second=0,
+            run_at_startup=True,
+            unique=True,
+            max_tries=1,
+            timeout=30,
+        ),
+    ]
