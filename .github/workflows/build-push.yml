@@ -42,6 +42,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # THE structural fix: switches the push off the built-in `docker` driver
+      # (Docker daemon pushes blobs SERIALLY via the Docker API with weak retry, so
+      # one stalled blob fails the whole step) onto the docker-container/BuildKit
+      # driver, which pushes blobs CONCURRENTLY and retries registry ops with
+      # backoff internally — so most transient ghcr.io blips self-heal within a
+      # single run. Also a prerequisite for the type=gha layer cache below.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Exposes ACTIONS_RUNTIME_TOKEN / ACTIONS_CACHE_URL(S) into $GITHUB_ENV so the
+      # raw `docker buildx build` below can read/write the type=gha cache.
+      # docker/build-push-action injects these automatically; the raw CLI does not,
+      # so without this step cache-from silently misses and cache-to errors (and is
+      # swallowed by ignore-error=true) — defeating the cache entirely.
+      - name: Expose GitHub Actions runtime for buildx gha cache
+        uses: crazy-max/ghaction-github-runtime@v3
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -49,14 +66,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v5
+      # The GET /v2/ "context deadline exceeded" failure is transient ghcr.io /
+      # runner network flakiness (server returns no headers), amplified by the
+      # ~3GB image. build-push-action has NO built-in push retry
+      # (docker/build-push-action#84), and a `uses:` action cannot sit inside
+      # nick-fields/retry's `command:`, so the push is invoked as raw buildx CLI
+      # here and retried: a single blip re-attempts instead of failing the job.
+      # On retry the layers are already in the local builder + gha cache, so only
+      # the failed push is re-sent (fast & cheap).
+      # NOTE: retry is a mitigation, not a cure — a full ghcr.io outage exhausts
+      # all attempts; watch attempt counts so chronic flakiness isn't masked.
+      - name: Build and push (retry on transient ghcr.io blips)
+        uses: nick-fields/retry@v3
         with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
-            ${{ env.IMAGE_NAME }}:latest
+          timeout_minutes: 40
+          max_attempts: 4
+          retry_wait_seconds: 30
+          retry_on: error
+          command: |
+            docker buildx build \
+              --push \
+              --provenance=false \
+              --sbom=false \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max,ignore-error=true \
+              -t ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
+              -t ${{ env.IMAGE_NAME }}:latest \
+              .
 
       - name: Trigger deploy
         uses: peter-evans/repository-dispatch@v3
