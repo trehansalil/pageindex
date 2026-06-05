@@ -1,0 +1,91 @@
+"""CLI entry point for subprocess-isolated document conversion.
+
+Usage:
+    python -m pageindex_mcp.converters_cli <input_pdf_path>
+
+Stdout: exactly one JSON line at exit.
+  success: {"ok": true, "doc_id": "...", "peak_rss_kib": <int>, "duration_ms": <int>}
+  failure: {"ok": false, "error": "<ExceptionClassName>", "message": "..."}
+
+Exit code: 0 on success, 1 on handled exception, signal-default on crash.
+
+All logging goes to stderr. Stdout is reserved exclusively for the final JSON line.
+Any stray print() calls from imported libraries are redirected to stderr so they
+cannot pollute the single-JSON-line stdout contract.
+"""
+
+import argparse
+import asyncio
+import json
+import logging
+import resource
+import sys
+import time
+
+# Redirect all logging to stderr immediately — before any other import.
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+
+# _stdout is the stream used for the final JSON output line.
+# It is a module-level variable so tests can monkeypatch it to a StringIO.
+_stdout = sys.stdout
+
+
+def _emit(payload: dict) -> None:
+    """Write exactly one JSON line to _stdout and flush."""
+    print(json.dumps(payload), file=_stdout, flush=True)
+
+
+def _peak_rss_kib() -> int:
+    """Return the peak RSS of this process in KiB (Linux: ru_maxrss is already KiB)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
+async def main() -> int:
+    """Run the CLI. Returns exit code (0 = success, 1 = failure)."""
+    parser = argparse.ArgumentParser(
+        prog="converters_cli",
+        description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
+    )
+    parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
+    args = parser.parse_args()
+
+    # Redirect sys.stdout to stderr so any stray print() calls from libraries
+    # (e.g. Docling progress bars, litellm debug output) cannot pollute the
+    # single-line JSON contract on stdout. The final _emit() call uses _stdout
+    # directly, bypassing this redirect.
+    sys.stdout = sys.stderr
+
+    start = time.monotonic()
+
+    try:
+        # Heavy import deferred to here so baseline RSS in the parent process
+        # (before any conversion) is not polluted by pageindex/litellm imports.
+        from pageindex_mcp.client import CustomPageIndexClient  # noqa: PLC0415
+
+        client = CustomPageIndexClient()
+        doc_id = await client.index(args.input_path)
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        payload = {
+            "ok": True,
+            "doc_id": doc_id,
+            "peak_rss_kib": _peak_rss_kib(),
+            "duration_ms": duration_ms,
+        }
+        _emit(payload)
+        return 0
+
+    except Exception as exc:  # noqa: BLE001
+        duration_ms = int((time.monotonic() - start) * 1000)
+        payload = {
+            "ok": False,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
+        _emit(payload)
+        logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
