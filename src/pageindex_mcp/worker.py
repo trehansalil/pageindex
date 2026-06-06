@@ -46,6 +46,17 @@ DLQ_KEY = "pageindex:dlq"
 # at multiple GiB; allowing arq's default (10) to stack two heavy jobs would
 # double peak RSS on an already memory-tight node and invite an OOM kill.
 MAX_JOBS = 1
+# Map child-reported exception class names (from converters_cli.py stdout JSON
+# "error" field) to the documented, stable Redis ``reason`` codes. Unknown
+# classes fall back to the generic ``converter_child_failed`` so the reason
+# field remains a finite, machine-consumable set rather than leaking
+# arbitrary Python class names.
+_CHILD_ERROR_REASON: dict[str, str] = {
+    "LowQualityTreeError": "low_quality_tree",
+    "FileNotFoundError": "input_missing",
+    "RuntimeError": "converter_child_failed",
+    "ArgparseExit": "converter_child_failed",
+}
 # A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
 # grace margin (clock skew + the gap before arq itself gives up) a hash still in
 # status=processing means the worker died mid-job (e.g. OOMKill/SIGKILL ran no
@@ -168,10 +179,24 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
             pass
         return result
 
+    # The CLI emits the failure JSON on stdout even when exiting non-zero,
+    # so try to extract the structured ``error`` class name and surface it to
+    # the worker handler. Best-effort: if stdout is empty or unparseable, fall
+    # back to the generic ConverterChildError without error_class.
+    child_error_class: str | None = None
+    stdout_text = stdout_bytes.decode(errors="replace").strip()
+    if stdout_text:
+        try:
+            payload = json.loads(stdout_text.splitlines()[-1])
+            if isinstance(payload, dict):
+                child_error_class = payload.get("error")
+        except json.JSONDecodeError:
+            pass
+
     if proc.returncode == -signal.SIGKILL:
         CONVERTER_CHILD_OOM_TOTAL.inc()
         raise ConverterOOMError(proc.returncode, stderr_tail)
-    raise ConverterChildError(proc.returncode, stderr_tail)
+    raise ConverterChildError(proc.returncode, stderr_tail, error_class=child_error_class)
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +262,9 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             logger.error("Converter child timed out: job=%s", job_id)
             raise
         except ConverterChildError as exc:
-            reason = exc.error_class or "converter_child_failed"
+            reason = _CHILD_ERROR_REASON.get(
+                exc.error_class or "", "converter_child_failed"
+            )
             await redis.hset(_job_key(job_id), mapping={
                 "status": "error",
                 "reason": reason,
@@ -246,8 +273,8 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             logger.error(
-                "Converter child failed: job=%s rc=%s reason=%s",
-                job_id, exc.returncode, reason,
+                "Converter child failed: job=%s rc=%s reason=%s error_class=%s",
+                job_id, exc.returncode, reason, exc.error_class,
             )
             raise
 
