@@ -168,6 +168,8 @@ python -m pageindex_mcp.converters_cli <input_pdf_path> <output_md_path>
 
 ## Phase 3 — Parent: replace in-process call with subprocess (TDD)
 
+**Contract reconciliation (Phase 3 pre-work):** The Phase 3 sketch below was written assuming B-narrow (it passes `out_path` and reads markdown from a file post-conversion). The chosen boundary is **B-wide** (see "Decision (Phase 1)" above) and the committed CLI contract from Phase 2 takes only `<input_pdf_path>` and returns `doc_id` in the stdout JSON — MinIO persistence happens inside the child. Therefore `_run_converter_subprocess(pdf_path)` takes only the input path; the parent extracts `doc_id` from the returned JSON dict and uses it directly (no markdown file read, no post-conversion PageIndex call). The Redis hash schema (`status`, `processing_started_at`, `doc_id` on success, `error`/`reason` on failure) is unchanged.
+
 **Goal:** `process_document_job` spawns the CLI as a child, awaits with `JOB_TIMEOUT`, handles every documented exit mode, and writes the same Redis hash fields the in-process version does. **Existing Redis schema is unchanged.**
 
 **Concrete shape (sketch — implementation phase must verify against Phase 0 facts):**
