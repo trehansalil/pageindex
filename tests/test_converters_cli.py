@@ -101,7 +101,7 @@ def test_happy_path_monkeypatched_subprocess(tmp_pdf: Path, tmp_path: Path):
         "fake_index = AsyncMock(return_value='abcd1234')\n"
         "with patch('pageindex_mcp.client.CustomPageIndexClient.index', fake_index):\n"
         "    from pageindex_mcp.converters_cli import main\n"
-        "    asyncio.run(main())\n"
+        "    sys.exit(asyncio.run(main()))\n"
     )
     import subprocess
     result = subprocess.run(
@@ -219,7 +219,7 @@ def test_no_stdout_pollution_from_logs(tmp_pdf: Path, tmp_path: Path):
         "\n"
         "with patch('pageindex_mcp.client.CustomPageIndexClient.index', noisy_index):\n"
         "    from pageindex_mcp.converters_cli import main\n"
-        "    asyncio.run(main())\n"
+        "    sys.exit(asyncio.run(main()))\n"
     )
     import subprocess
 

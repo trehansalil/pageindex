@@ -133,26 +133,25 @@ Phase 1 must read `CustomPageIndexClient.index()` and decide. Acceptance: pick w
 
 **Goal:** ship `src/pageindex_mcp/converters_cli.py`, callable as `python -m pageindex_mcp.converters_cli`, that runs the boundary chosen in Phase 1 and exits.
 
-**Contract (CLI):**
+**Contract (CLI):** *(reconciled to B-wide — see Phase 1 Decision)*
 
 ```
-python -m pageindex_mcp.converters_cli <input_pdf_path> <output_md_path>
+python -m pageindex_mcp.converters_cli <input_pdf_path>
 ```
 
 - Reads `<input_pdf_path>` (must exist).
-- Calls the chosen function (`pdf_to_markdown_docling` for B-narrow, the wider entry for B-wide).
-- Writes markdown to `<output_md_path>` atomically (`.tmp` + `os.replace`).
-- Emits **exactly one JSON line on stdout** at exit: `{"ok": true, "output_path": "...", "peak_rss_kib": N, "duration_ms": M}` (success) or `{"ok": false, "error": "<exception class>", "message": "..."}` (failure).
+- Runs `CustomPageIndexClient.index()` end-to-end inside the child: conversion, tree build, MinIO persistence. No output file is produced — the persisted artifact is the `doc_id` returned from `client.index()`.
+- Emits **exactly one JSON line on stdout** at exit: `{"ok": true, "doc_id": "...", "peak_rss_kib": N, "duration_ms": M}` (success) or `{"ok": false, "error": "<exception class>", "message": "..."}` (failure).
 - Exit code: `0` on success, `1` on any handled exception, signal-default on crash (so `-9` on OOM).
 - Reads `DOCLING_NUM_THREADS`, `DOCLING_DO_OCR`, `DOCLING_ARTIFACTS_PATH` from env (inherits from parent — no new env contract).
 - No imports from worker.py, cache.py, or redis (CLI must be runnable standalone for local debugging).
 
-**RED tests in `tests/test_converters_cli.py`:**
-1. Happy path: tiny PDF fixture → CLI writes markdown to output, prints JSON `{"ok": true, ...}`, exit 0. Use `subprocess.run([sys.executable, "-m", "pageindex_mcp.converters_cli", in_path, out_path], capture_output=True, timeout=120)`.
-2. Missing input: nonexistent input path → exit 1, stdout JSON `{"ok": false, "error": "FileNotFoundError", ...}`. Output file not created.
-3. Empty PDF / converter raises `RuntimeError("...empty...")` → exit 1, stdout JSON `{"ok": false, "error": "RuntimeError", ...}`.
-4. JSON structural test: stdout is exactly one line, parseable, contains `peak_rss_kib` (int ≥ 0) and `duration_ms` (int ≥ 0) on success.
-5. Output atomicity: on simulated failure mid-write, no partial `output_md_path` is left behind. (Inject failure via monkeypatching `pdf_to_markdown_docling` to raise after a tmp write.)
+**RED tests in `tests/test_converters_cli.py`:** *(B-wide — no output file)*
+1. Happy path: tiny PDF fixture → CLI prints `{"ok": true, "doc_id": ..., ...}` on stdout, exit 0. Use `subprocess.run([sys.executable, "-m", "pageindex_mcp.converters_cli", in_path], capture_output=True, timeout=120)` with `client.index` monkeypatched in a shim.
+2. Missing input: nonexistent input path → exit 1, stdout JSON `{"ok": false, "error": "FileNotFoundError", ...}`.
+3. `client.index` raises `RuntimeError("...empty...")` → exit 1, stdout JSON `{"ok": false, "error": "RuntimeError", ...}`.
+4. JSON structural test: stdout is exactly one line, parseable, contains `doc_id` (str), `peak_rss_kib` (int ≥ 0) and `duration_ms` (int ≥ 0) on success.
+5. Stdout-pollution guard: even when `client.index` emits stray `print()`/log noise, stdout must contain exactly one JSON line.
 
 **Anti-pattern guards:**
 - `grep -n "shell=True" tests/test_converters_cli.py src/pageindex_mcp/converters_cli.py` must return nothing.
@@ -175,10 +174,10 @@ python -m pageindex_mcp.converters_cli <input_pdf_path> <output_md_path>
 **Concrete shape (sketch — implementation phase must verify against Phase 0 facts):**
 
 ```python
-async def _run_converter_subprocess(pdf_path: str, out_path: str) -> dict:
+async def _run_converter_subprocess(pdf_path: str) -> dict:
     """Returns parsed stdout JSON; raises ConverterChildError on any failure."""
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "pageindex_mcp.converters_cli", pdf_path, out_path,
+        sys.executable, "-m", "pageindex_mcp.converters_cli", pdf_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,                     # NOT preexec_fn
@@ -190,11 +189,12 @@ async def _run_converter_subprocess(pdf_path: str, out_path: str) -> dict:
     except (TimeoutError, asyncio.CancelledError):
         await _kill_group(proc, grace=10)
         raise
-    finally:
-        peak_kib = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-        CONVERTER_PEAK_RSS_KIB.set(peak_kib)        # Prometheus gauge
     if proc.returncode == 0:
-        return json.loads(stdout.splitlines()[-1])
+        result = json.loads(stdout.splitlines()[-1])
+        # Per-job peak from the child's own RUSAGE_SELF (parent's RUSAGE_CHILDREN
+        # is a process-lifetime high-water mark and would report stale peaks).
+        CONVERTER_PEAK_RSS_KIB.set(int(result.get("peak_rss_kib") or 0))
+        return result  # caller pulls doc_id from result["doc_id"]
     if proc.returncode == -signal.SIGKILL:
         raise ConverterOOMError(stderr.decode(errors="replace")[-2000:])
     raise ConverterChildError(proc.returncode, stderr.decode(errors="replace")[-2000:])

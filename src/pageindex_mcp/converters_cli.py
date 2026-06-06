@@ -36,55 +36,78 @@ def _emit(payload: dict) -> None:
 
 
 def _peak_rss_kib() -> int:
-    """Return the peak RSS of this process in KiB (Linux: ru_maxrss is already KiB)."""
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    """Return the peak RSS of this process in KiB.
+
+    Linux ``ru_maxrss`` is reported in KiB; macOS reports it in bytes.
+    """
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        return raw // 1024
+    return raw
 
 
 async def main() -> int:
     """Run the CLI. Returns exit code (0 = success, 1 = failure)."""
-    parser = argparse.ArgumentParser(
-        prog="converters_cli",
-        description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
-    )
-    parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
-    args = parser.parse_args()
-
-    # Redirect sys.stdout to stderr so any stray print() calls from libraries
-    # (e.g. Docling progress bars, litellm debug output) cannot pollute the
-    # single-line JSON contract on stdout. The final _emit() call uses _stdout
-    # directly, bypassing this redirect.
+    # Redirect sys.stdout to stderr BEFORE argparse so any usage/help/error
+    # output from argparse (and any stray print() calls from libraries imported
+    # below — Docling progress bars, litellm debug output) cannot pollute the
+    # single-line JSON contract on stdout. _emit() writes to the saved
+    # ``_stdout`` reference, bypassing this redirect. Restored in finally so
+    # in-process callers (tests) don't leak the global stdout change.
+    orig_stdout = sys.stdout
     sys.stdout = sys.stderr
 
     start = time.monotonic()
 
     try:
-        # Heavy import deferred to here so baseline RSS in the parent process
-        # (before any conversion) is not polluted by pageindex/litellm imports.
-        from pageindex_mcp.client import CustomPageIndexClient  # noqa: PLC0415
+        parser = argparse.ArgumentParser(
+            prog="converters_cli",
+            description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
+        )
+        parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
+        try:
+            args = parser.parse_args()
+        except SystemExit as sysexit:
+            # argparse calls sys.exit() on --help or bad args. Emit a JSON line
+            # so the stdout contract holds even on misuse, then propagate the
+            # original exit code.
+            _emit({
+                "ok": False,
+                "error": "ArgparseExit",
+                "message": f"argparse exited with code {sysexit.code}",
+            })
+            return int(sysexit.code) if isinstance(sysexit.code, int) else 1
 
-        client = CustomPageIndexClient()
-        doc_id = await client.index(args.input_path)
+        try:
+            # Heavy import deferred to here so baseline RSS in the parent process
+            # (before any conversion) is not polluted by pageindex/litellm imports.
+            from pageindex_mcp.client import CustomPageIndexClient  # noqa: PLC0415
 
-        duration_ms = int((time.monotonic() - start) * 1000)
-        payload = {
-            "ok": True,
-            "doc_id": doc_id,
-            "peak_rss_kib": _peak_rss_kib(),
-            "duration_ms": duration_ms,
-        }
-        _emit(payload)
-        return 0
+            client = CustomPageIndexClient()
+            doc_id = await client.index(args.input_path)
 
-    except Exception as exc:  # noqa: BLE001
-        duration_ms = int((time.monotonic() - start) * 1000)
-        payload = {
-            "ok": False,
-            "error": type(exc).__name__,
-            "message": str(exc),
-        }
-        _emit(payload)
-        logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
-        return 1
+            duration_ms = int((time.monotonic() - start) * 1000)
+            payload = {
+                "ok": True,
+                "doc_id": doc_id,
+                "peak_rss_kib": _peak_rss_kib(),
+                "duration_ms": duration_ms,
+            }
+            _emit(payload)
+            return 0
+
+        except Exception as exc:  # noqa: BLE001
+            duration_ms = int((time.monotonic() - start) * 1000)
+            payload = {
+                "ok": False,
+                "error": type(exc).__name__,
+                "message": str(exc),
+            }
+            _emit(payload)
+            logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
+            return 1
+    finally:
+        sys.stdout = orig_stdout
 
 
 if __name__ == "__main__":

@@ -65,10 +65,14 @@ def _job_key(job_id: str) -> str:
 class ConverterChildError(RuntimeError):
     """The converter child process exited non-zero (or reported ok=False)."""
 
-    def __init__(self, returncode: int, stderr_tail: str):
+    def __init__(self, returncode: int, stderr_tail: str, error_class: str | None = None):
         super().__init__(f"converter child exited {returncode}: {stderr_tail[:200]}")
         self.returncode = returncode
         self.stderr_tail = stderr_tail
+        # ``error_class`` is the original exception class name reported by the
+        # child CLI (e.g. "LowQualityTreeError"). Worker uses it as the Redis
+        # ``reason`` so specific failure modes survive the subprocess boundary.
+        self.error_class = error_class
 
 
 class ConverterOOMError(ConverterChildError):
@@ -92,7 +96,9 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
         return
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        # CancelledError (BaseException since 3.8) must also fall through to
+        # SIGKILL so an arq cancel/shutdown doesn't leave a child orphaned.
         pass
     try:
         pgid = os.getpgid(proc.pid)
@@ -101,7 +107,7 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
@@ -137,15 +143,6 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
     except (asyncio.TimeoutError, asyncio.CancelledError):
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
-    finally:
-        # ru_maxrss is in KiB on Linux. Under MAX_JOBS=1 this is effectively
-        # the just-reaped child's peak; under intra-pod concurrency it would
-        # aggregate (see plans/02).
-        try:
-            peak_kib = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-            CONVERTER_PEAK_RSS_KIB.set(peak_kib)
-        except Exception:  # noqa: BLE001 — metrics are best-effort
-            pass
 
     stderr_tail = stderr_bytes.decode(errors="replace")[-2000:]
 
@@ -159,7 +156,16 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
             raise ConverterChildError(0, f"invalid JSON on stdout: {exc}") from exc
         if not result.get("ok"):
             msg = result.get("message") or result.get("error") or "converter reported ok=false"
-            raise ConverterChildError(0, msg)
+            raise ConverterChildError(0, msg, error_class=result.get("error"))
+        # Per-job peak RSS reported by the child (its own RUSAGE_SELF.ru_maxrss).
+        # Preferred over the parent's RUSAGE_CHILDREN which is a cumulative
+        # process-lifetime high-water mark and therefore monotonically stale.
+        try:
+            peak_kib = int(result.get("peak_rss_kib") or 0)
+            if peak_kib > 0:
+                CONVERTER_PEAK_RSS_KIB.set(peak_kib)
+        except (TypeError, ValueError):
+            pass
         return result
 
     if proc.returncode == -signal.SIGKILL:
@@ -215,7 +221,10 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             logger.error("Converter child OOM: job=%s", job_id)
-            cleanup_staging = True  # OOM is not transient — don't retry the same big file
+            # Do NOT cleanup staging here: the outer handler will set
+            # cleanup_staging=True only on the final retry. Deleting the
+            # staged object before then would make subsequent attempts fail
+            # at download_staging and overwrite the original OOM reason.
             raise
         except asyncio.TimeoutError:
             CONVERTER_CHILD_TIMEOUT_TOTAL.inc()
@@ -228,14 +237,18 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             logger.error("Converter child timed out: job=%s", job_id)
             raise
         except ConverterChildError as exc:
+            reason = exc.error_class or "converter_child_failed"
             await redis.hset(_job_key(job_id), mapping={
                 "status": "error",
-                "reason": "converter_child_failed",
+                "reason": reason,
                 "error": exc.stderr_tail,
             })
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
-            logger.error("Converter child failed: job=%s rc=%s", job_id, exc.returncode)
+            logger.error(
+                "Converter child failed: job=%s rc=%s reason=%s",
+                job_id, exc.returncode, reason,
+            )
             raise
 
         doc_id = result["doc_id"]
