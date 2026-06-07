@@ -158,10 +158,12 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
         fail "layer-isolation: redis imported outside cache.py/worker.py ($REDIS_VIOLATIONS file(s))"
     fi
 
-    # no_llm_outside_provider: OpenAI/litellm/pageindex outside client.py and converters.py
+    # no_llm_outside_provider: OpenAI/litellm/pageindex outside client.py, converters.py,
+    # and converters_cli.py (the subprocess-isolated CLI is the same layer as converters.py
+    # and re-uses CustomPageIndexClient — see plans/01-subprocess-isolated-converter.md).
     LLM_VIOLATIONS=$(grep -rn 'import openai\|from openai\|import litellm\|from litellm\|from pageindex\|import pageindex' \
         src/pageindex_mcp/ \
-        | grep -vE '(client|converters)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '(client|converters|converters_cli)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$LLM_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_llm_outside_provider"
     else
