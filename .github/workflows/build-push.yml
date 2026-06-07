@@ -83,6 +83,13 @@ jobs:
           max_attempts: 4
           retry_wait_seconds: 30
           retry_on: error
+          # HF_TOKEN is forwarded as a BuildKit secret (not an --build-arg) so the
+          # token never lands in an image layer or in `docker history`. Repo secret
+          # is optional: if unset, env stays empty, the Dockerfile's
+          # `required=false` mount accepts that, and the HF download falls back to
+          # anonymous rate-limited access (the warning we're suppressing).
+          env:
+            HF_TOKEN: ${{ secrets.HF_TOKEN }}
           command: |
             docker buildx build \
               --push \
@@ -90,6 +97,7 @@ jobs:
               --sbom=false \
               --cache-from type=gha \
               --cache-to type=gha,mode=max,ignore-error=true \
+              --secret id=hf_token,env=HF_TOKEN \
               -t ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
               -t ${{ env.IMAGE_NAME }}:latest \
               .
