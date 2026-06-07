@@ -69,12 +69,11 @@ _CHILD_ERROR_REASON: dict[str, str] = {
 # the same job on the same staged file will produce the same failure, so arq
 # retries / DLQ pushes only waste worker time. We treat these as terminal —
 # write the Redis status, purge staging, and swallow the exception so arq
-# does not requeue. NOTE: ``input_missing`` is borderline (a transient MinIO
-# read could in principle recover) but in practice indicates the upload path
-# never staged the file, which is also non-recoverable per retry.
+# does not requeue. ``input_missing`` is NOT in this set: a transient MinIO
+# read failure can in principle recover on retry, and the wasted retry on a
+# genuinely-missing file is cheap (one extra download attempt).
 _TERMINAL_CHILD_REASONS: frozenset[str] = frozenset({
     "low_quality_tree",
-    "input_missing",
 })
 # A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
 # grace margin (clock skew + the gap before arq itself gives up) a hash still in
