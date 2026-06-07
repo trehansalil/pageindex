@@ -161,12 +161,13 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # no_llm_outside_provider: OpenAI/litellm/pageindex outside client.py, converters.py,
     # and converters_cli.py (the subprocess-isolated CLI is the same layer as converters.py
     # and re-uses CustomPageIndexClient — see plans/01-subprocess-isolated-converter.md).
-    # The allowlist regex is anchored to the path-segment + `grep -n` ":" delimiter so it
-    # only matches the intended filenames — never substrings of other paths (e.g.
-    # `my_converters_cli.py`) or of the matched line content.
+    # The allowlist regex is anchored to the full `grep -rn` "path:lineno:" prefix
+    # (^[^:]+/<name>.py:[0-9]+:) so it only matches the path field — never a
+    # substring of the matched line content (e.g. a comment that mentions
+    # `/client.py:`) or of an unrelated file name like `my_converters_cli.py`.
     LLM_VIOLATIONS=$(grep -rn 'import openai\|from openai\|import litellm\|from litellm\|from pageindex\|import pageindex' \
         src/pageindex_mcp/ \
-        | grep -vE '/(client|converters|converters_cli)\.py:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '^[^:]+/(client|converters|converters_cli)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$LLM_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_llm_outside_provider"
     else

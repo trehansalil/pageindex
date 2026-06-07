@@ -78,18 +78,21 @@ jobs:
       # all attempts; watch attempt counts so chronic flakiness isn't masked.
       - name: Build and push (retry on transient ghcr.io blips)
         uses: nick-fields/retry@v3
+        # HF_TOKEN is forwarded as a BuildKit secret (not an --build-arg) so the
+        # token never lands in an image layer or in `docker history`. Repo secret
+        # is optional: if unset, env stays empty, the Dockerfile's
+        # `required=false` mount accepts that, and the HF download falls back to
+        # anonymous rate-limited access (the warning we're suppressing).
+        # `env` must sit at STEP scope (sibling of `with`), not nested inside
+        # `with` — nick-fields/retry inherits the step env into its shell, while
+        # anything under `with` is treated as an action input and dropped.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         with:
           timeout_minutes: 40
           max_attempts: 4
           retry_wait_seconds: 30
           retry_on: error
-          # HF_TOKEN is forwarded as a BuildKit secret (not an --build-arg) so the
-          # token never lands in an image layer or in `docker history`. Repo secret
-          # is optional: if unset, env stays empty, the Dockerfile's
-          # `required=false` mount accepts that, and the HF download falls back to
-          # anonymous rate-limited access (the warning we're suppressing).
-          env:
-            HF_TOKEN: ${{ secrets.HF_TOKEN }}
           command: |
             docker buildx build \
               --push \
