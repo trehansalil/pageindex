@@ -118,10 +118,10 @@ PDF_PRIMARY_CONVERTER_FAILURES = Counter(
 # series surface child-side health from the parent's perspective.
 CONVERTER_PEAK_RSS_KIB = Gauge(
     "pageindex_converter_child_peak_rss_kib",
-    "Peak RSS (KiB; Linux ru_maxrss units) of the most recently reaped converter "
-    "child, sampled via resource.getrusage(RUSAGE_CHILDREN) after proc.wait(). "
-    "Aggregates across all reaped children so the value is per-job only at "
-    "max_jobs=1; not safe to read per-job under intra-pod concurrency.",
+    "Peak RSS (KiB; Linux ru_maxrss units) of the most recently completed "
+    "converter child, reported by the child's own RUSAGE_SELF and parsed from "
+    "the terminal stdout JSON line. Per-job regardless of max_jobs (does NOT "
+    "use the parent's RUSAGE_CHILDREN cumulative high-water mark).",
 )
 CONVERTER_CHILD_OOM_TOTAL = Counter(
     "pageindex_converter_child_oom_total",

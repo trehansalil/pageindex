@@ -124,6 +124,34 @@ async def test_child_failure_writes_converter_child_failed_and_reraises(fake_red
     assert "boom" in state["error"]
 
 
+# ── 4b. LowQualityTreeError preserves the stable reason code ──────────────────
+async def test_low_quality_tree_error_propagates_stable_reason(fake_redis):
+    """A child-reported ``LowQualityTreeError`` must surface as the documented
+    stable reason ``low_quality_tree`` — not as ``converter_child_failed`` and
+    not as the raw Python class name. This pins the CLAUDE.md Hard Rule
+    (\"never silently persist a low-quality tree\") across the subprocess
+    boundary: a future rename of the exception class or a regression in the
+    ``_CHILD_ERROR_REASON`` map would silently downgrade the signal, and this
+    test catches it.
+    """
+    staging_key = "uploads/staging/job-lqt/doc.pdf"
+    ctx = {"redis": fake_redis}
+    err = ConverterChildError(1, "tree rejected", error_class="LowQualityTreeError")
+    with patch(
+        "pageindex_mcp.worker._run_converter_subprocess",
+        AsyncMock(side_effect=err),
+    ), patch("pageindex_mcp.worker.download_staging"), \
+       patch("pageindex_mcp.worker.delete_staging"), \
+       patch("pageindex_mcp.worker.shutil"):
+        with pytest.raises(ConverterChildError):
+            await process_document_job(ctx, staging_key, "job-lqt")
+
+    state = await fake_redis.hgetall("pageindex:job:job-lqt")
+    assert state["status"] == "error"
+    assert state["reason"] == "low_quality_tree"
+    assert "tree rejected" in state["error"]
+
+
 # ── 5. Reaper unchanged after the refactor ────────────────────────────────────
 async def test_reaper_still_flips_stale_processing_after_subprocess_refactor(fake_redis):
     """The reaper is the backstop for worker-death (OOMKill of the parent).
