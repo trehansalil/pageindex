@@ -58,14 +58,15 @@ async def test_worker_02_c2_stamps_processing_started_at(fake_redis):
 
     async def capture_then_return(_path):
         captured.update(await fake_redis.hgetall("pageindex:job:job-ts"))
-        return "doc-ts"
+        return {"ok": True, "doc_id": "doc-ts", "peak_rss_kib": 0, "duration_ms": 0}
 
     before = int(time.time())
-    with patch("pageindex_mcp.worker.CustomPageIndexClient") as MockClient, \
-         patch("pageindex_mcp.worker.download_staging"), \
-         patch("pageindex_mcp.worker.delete_staging"), \
-         patch("pageindex_mcp.worker.shutil"):
-        MockClient.return_value.index = AsyncMock(side_effect=capture_then_return)
+    with patch(
+        "pageindex_mcp.worker._run_converter_subprocess",
+        AsyncMock(side_effect=capture_then_return),
+    ), patch("pageindex_mcp.worker.download_staging"), \
+       patch("pageindex_mcp.worker.delete_staging"), \
+       patch("pageindex_mcp.worker.shutil"):
         await process_document_job(ctx, staging_key, "job-ts")
     after = int(time.time())
 

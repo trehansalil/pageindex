@@ -110,6 +110,30 @@ PDF_PRIMARY_CONVERTER_FAILURES = Counter(
     ["converter", "error"],
 )
 
+# ---------------------------------------------------------------------------
+# Subprocess-isolated converter metrics (Plan 01 / Phase 3)
+# ---------------------------------------------------------------------------
+# The parent worker spawns ``pageindex_mcp.converters_cli`` as a child for every
+# job so Docling model weights / glibc arenas are reclaimed at child exit. These
+# series surface child-side health from the parent's perspective.
+CONVERTER_PEAK_RSS_KIB = Gauge(
+    "pageindex_converter_child_peak_rss_kib",
+    "Peak RSS (KiB; Linux ru_maxrss units) of the most recently completed "
+    "converter child, reported by the child's own RUSAGE_SELF and parsed from "
+    "the terminal stdout JSON line. Per-job regardless of max_jobs (does NOT "
+    "use the parent's RUSAGE_CHILDREN cumulative high-water mark).",
+)
+CONVERTER_CHILD_OOM_TOTAL = Counter(
+    "pageindex_converter_child_oom_total",
+    "Converter child processes terminated by SIGKILL (returncode == -9), i.e. "
+    "presumed OOMKill of the child cgroup.",
+)
+CONVERTER_CHILD_TIMEOUT_TOTAL = Counter(
+    "pageindex_converter_child_timeout_total",
+    "Converter child processes killed by the parent because JOB_TIMEOUT elapsed "
+    "before the child emitted its terminal JSON line.",
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
