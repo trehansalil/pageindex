@@ -36,6 +36,10 @@ RUN uv sync --frozen --no-dev
 # so the token is never baked into an image layer. The download itself works
 # without it for public models (layout + TableFormer are public), so this is
 # warning-suppression + faster CI, not a hard requirement.
+#
+# NOTE: `RUN --mount=type=secret` is BuildKit-only syntax. Build this image with
+# `docker buildx build ...` (what CI does) or `DOCKER_BUILDKIT=1 docker build ...`.
+# The legacy builder will fail to parse this Dockerfile.
 RUN --mount=type=secret,id=hf_token,required=false \
     HF_TOKEN="$([ -f /run/secrets/hf_token ] && cat /run/secrets/hf_token || echo '')" \
     uv run python -c "from pathlib import Path; from docling.utils.model_downloader import download_models; download_models(output_dir=Path('/opt/docling-models'), progress=False, with_layout=True, with_tableformer=True, with_code_formula=False, with_picture_classifier=False, with_smolvlm=False, with_rapidocr=False, with_easyocr=False)"
