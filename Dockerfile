@@ -27,7 +27,18 @@ RUN uv sync --frozen --no-dev
 # network. An egress-limited k8s pod that tried to download at runtime would raise
 # inside pdf_to_markdown_docling and silently degrade to pymupdf4llm -> flat tree ->
 # low_quality_tree(depth<2). This step needs network AT BUILD TIME only.
-RUN uv run python -c "from pathlib import Path; from docling.utils.model_downloader import download_models; download_models(output_dir=Path('/opt/docling-models'), progress=False, with_layout=True, with_tableformer=True, with_code_formula=False, with_picture_classifier=False, with_smolvlm=False, with_rapidocr=False, with_easyocr=False)"
+#
+# HF_TOKEN: optional build-time secret. Without it, huggingface_hub prints
+#   "You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN
+#    to enable higher rate limits and faster downloads."
+# and is subject to the lower anonymous rate limit. Pass via BuildKit secret in CI
+# (e.g. `--secret id=hf_token,env=HF_TOKEN` or the `gh actions secrets` equivalent)
+# so the token is never baked into an image layer. The download itself works
+# without it for public models (layout + TableFormer are public), so this is
+# warning-suppression + faster CI, not a hard requirement.
+RUN --mount=type=secret,id=hf_token,required=false \
+    HF_TOKEN="$([ -f /run/secrets/hf_token ] && cat /run/secrets/hf_token || echo '')" \
+    uv run python -c "from pathlib import Path; from docling.utils.model_downloader import download_models; download_models(output_dir=Path('/opt/docling-models'), progress=False, with_layout=True, with_tableformer=True, with_code_formula=False, with_picture_classifier=False, with_smolvlm=False, with_rapidocr=False, with_easyocr=False)"
 
 # ─── Runtime ─────────────────────────────────────────────────────────────────
 FROM python:3.12-slim
