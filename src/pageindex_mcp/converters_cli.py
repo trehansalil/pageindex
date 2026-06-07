@@ -68,15 +68,17 @@ async def main() -> int:
         try:
             args = parser.parse_args()
         except SystemExit as sysexit:
-            # argparse calls sys.exit() on --help or bad args. Emit a JSON line
-            # so the stdout contract holds even on misuse, then propagate the
-            # original exit code.
+            # argparse calls sys.exit() on --help (code 0) or bad args (code 2).
+            # Both are "handled failure" from the worker's perspective: the
+            # documented CLI exit contract is 0 on success or 1 on handled
+            # failure, so we coerce any argparse exit to 1. Emit a JSON line
+            # first so the stdout-is-exactly-one-JSON-line contract holds.
             _emit({
                 "ok": False,
                 "error": "ArgparseExit",
                 "message": f"argparse exited with code {sysexit.code}",
             })
-            return int(sysexit.code) if isinstance(sysexit.code, int) else 1
+            return 1
 
         try:
             # Heavy import deferred to here so baseline RSS in the parent process

@@ -41,6 +41,14 @@ logger = logging.getLogger(__name__)
 JOB_TTL = 86_400
 MAX_TRIES = 2
 JOB_TIMEOUT = 900
+# The inner timeout we apply around the converter child must be strictly
+# *shorter* than arq's outer ``job_timeout`` (JOB_TIMEOUT). Otherwise the two
+# can race: arq cancels the task before our ``asyncio.timeout()`` fires and we
+# skip the ``converter_timeout`` Redis status + metric increment. ``CHILD_GRACE``
+# is the margin reserved for "child timed out → SIGTERM → SIGKILL → reap" plus
+# clock skew between the asyncio loop and arq's wall-clock timer.
+CHILD_GRACE_SECONDS = 30
+CHILD_TIMEOUT = JOB_TIMEOUT - CHILD_GRACE_SECONDS
 DLQ_KEY = "pageindex:dlq"
 # At most one job in flight per worker process. A single Docling index can peak
 # at multiple GiB; allowing arq's default (10) to stack two heavy jobs would
@@ -57,6 +65,17 @@ _CHILD_ERROR_REASON: dict[str, str] = {
     "RuntimeError": "converter_child_failed",
     "ArgparseExit": "converter_child_failed",
 }
+# Reasons that are deterministic with respect to the input document: retrying
+# the same job on the same staged file will produce the same failure, so arq
+# retries / DLQ pushes only waste worker time. We treat these as terminal —
+# write the Redis status, purge staging, and swallow the exception so arq
+# does not requeue. NOTE: ``input_missing`` is borderline (a transient MinIO
+# read could in principle recover) but in practice indicates the upload path
+# never staged the file, which is also non-recoverable per retry.
+_TERMINAL_CHILD_REASONS: frozenset[str] = frozenset({
+    "low_quality_tree",
+    "input_missing",
+})
 # A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
 # grace margin (clock skew + the gap before arq itself gives up) a hash still in
 # status=processing means the worker died mid-job (e.g. OOMKill/SIGKILL ran no
@@ -68,6 +87,36 @@ KILL_GRACE_SECONDS = 10.0
 
 def _job_key(job_id: str) -> str:
     return f"pageindex:job:{job_id}"
+
+
+async def _dlq_push_on_final_attempt(
+    redis: aioredis.Redis,
+    *,
+    job_try: int,
+    job_id: str,
+    staging_key: str,
+    exc: BaseException,
+) -> bool:
+    """On the final retry, push a job marker to the DLQ list.
+
+    Returns True if we are on the final attempt (caller should also flip
+    ``cleanup_staging = True``), False otherwise. DLQ-push failures are
+    logged but never re-raised — losing a DLQ marker is preferable to
+    masking the original error.
+    """
+    if job_try < MAX_TRIES:
+        return False
+    try:
+        await redis.rpush(DLQ_KEY, json.dumps({
+            "job_id": job_id, "staging_key": staging_key, "error": str(exc),
+        }))
+        logger.error(
+            "Job %s exhausted %d tries -> pushed to DLQ %s",
+            job_id, MAX_TRIES, DLQ_KEY,
+        )
+    except Exception:
+        logger.exception("Failed to push job %s to DLQ", job_id)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +184,7 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
         ConverterOOMError: child died from SIGKILL (presumed OOM).
         ConverterChildError: child exited non-zero for any other reason, or
             child exited 0 but reported ``ok=false``.
-        asyncio.TimeoutError: child did not finish within JOB_TIMEOUT.
+        asyncio.TimeoutError: child did not finish within CHILD_TIMEOUT.
     """
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "pageindex_mcp.converters_cli", pdf_path,
@@ -149,7 +198,7 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
     stdout_bytes = b""
     stderr_bytes = b""
     try:
-        async with asyncio.timeout(JOB_TIMEOUT):
+        async with asyncio.timeout(CHILD_TIMEOUT):
             stdout_bytes, stderr_bytes = await proc.communicate()
     except (asyncio.TimeoutError, asyncio.CancelledError):
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
@@ -276,6 +325,16 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                 "Converter child failed: job=%s rc=%s reason=%s error_class=%s",
                 job_id, exc.returncode, reason, exc.error_class,
             )
+            if reason in _TERMINAL_CHILD_REASONS:
+                # Deterministic failure: a retry on the same staged input
+                # produces the same outcome. Mark terminal, purge staging,
+                # and swallow so arq does not requeue / DLQ-push.
+                cleanup_staging = True
+                logger.warning(
+                    "Treating job=%s as terminal (reason=%s); not retrying.",
+                    job_id, reason,
+                )
+                return ""
             raise
 
         doc_id = result["doc_id"]
@@ -288,16 +347,14 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     except (ConverterOOMError, ConverterChildError, asyncio.TimeoutError) as exc:
         # Terminal-but-arq-aware error paths above already wrote Redis state.
         # Push to DLQ on final attempt and re-raise so arq retries / records it.
-        job_try = ctx.get("job_try", 1)
-        if job_try >= MAX_TRIES:
+        if await _dlq_push_on_final_attempt(
+            redis,
+            job_try=ctx.get("job_try", 1),
+            job_id=job_id,
+            staging_key=staging_key,
+            exc=exc,
+        ):
             cleanup_staging = True
-            try:
-                await redis.rpush(DLQ_KEY, json.dumps({
-                    "job_id": job_id, "staging_key": staging_key, "error": str(exc),
-                }))
-                logger.error("Job %s exhausted %d tries -> pushed to DLQ %s", job_id, MAX_TRIES, DLQ_KEY)
-            except Exception:
-                logger.exception("Failed to push job %s to DLQ", job_id)
         raise
     except Exception as exc:
         await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
@@ -305,14 +362,15 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         UPLOADS.labels(status="error").inc()
         job_try = ctx.get("job_try", 1)
         logger.error("Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True)
-        if job_try >= MAX_TRIES:
+        if await _dlq_push_on_final_attempt(
+            redis,
+            job_try=job_try,
+            job_id=job_id,
+            staging_key=staging_key,
+            exc=exc,
+        ):
             # Final attempt failed: staging will not be retried, safe to clean up.
             cleanup_staging = True
-            try:
-                await redis.rpush(DLQ_KEY, json.dumps({"job_id": job_id, "staging_key": staging_key, "error": str(exc)}))
-                logger.error("Job %s exhausted %d tries -> pushed to DLQ %s", job_id, MAX_TRIES, DLQ_KEY)
-            except Exception:
-                logger.exception("Failed to push job %s to DLQ", job_id)
         raise  # let arq retry until max_tries
     finally:
         UPLOAD_DURATION.observe(time.monotonic() - start)

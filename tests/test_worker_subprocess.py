@@ -20,7 +20,7 @@ These tests pin the contract between the parent handler and that helper:
 import asyncio
 import os
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -124,32 +124,43 @@ async def test_child_failure_writes_converter_child_failed_and_reraises(fake_red
     assert "boom" in state["error"]
 
 
-# ── 4b. LowQualityTreeError preserves the stable reason code ──────────────────
-async def test_low_quality_tree_error_propagates_stable_reason(fake_redis):
-    """A child-reported ``LowQualityTreeError`` must surface as the documented
-    stable reason ``low_quality_tree`` — not as ``converter_child_failed`` and
-    not as the raw Python class name. This pins the CLAUDE.md Hard Rule
-    (\"never silently persist a low-quality tree\") across the subprocess
-    boundary: a future rename of the exception class or a regression in the
-    ``_CHILD_ERROR_REASON`` map would silently downgrade the signal, and this
-    test catches it.
+# ── 4b. LowQualityTreeError is terminal: stable reason + no retry ─────────────
+async def test_low_quality_tree_error_is_terminal_with_stable_reason(fake_redis):
+    """A child-reported ``LowQualityTreeError`` must:
+    1. surface as the documented stable reason ``low_quality_tree`` (not the
+       raw Python class name, not the generic ``converter_child_failed``); and
+    2. be treated as terminal — the handler swallows the exception and purges
+       staging, because a retry on the same input produces the same outcome
+       and would just churn arq + DLQ.
+
+    This pins the CLAUDE.md Hard Rule (\"never silently persist a low-quality
+    tree\") across the subprocess boundary AND ensures we do not waste retries
+    on deterministic failures.
     """
     staging_key = "uploads/staging/job-lqt/doc.pdf"
-    ctx = {"redis": fake_redis}
+    ctx = {"redis": fake_redis, "job_try": 1}
     err = ConverterChildError(1, "tree rejected", error_class="LowQualityTreeError")
+    delete_mock = MagicMock()
     with patch(
         "pageindex_mcp.worker._run_converter_subprocess",
         AsyncMock(side_effect=err),
     ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
+       patch("pageindex_mcp.worker.delete_staging", delete_mock), \
        patch("pageindex_mcp.worker.shutil"):
-        with pytest.raises(ConverterChildError):
-            await process_document_job(ctx, staging_key, "job-lqt")
+        # Terminal: handler returns "" instead of re-raising. arq sees no
+        # exception and does NOT requeue or push to DLQ.
+        result = await process_document_job(ctx, staging_key, "job-lqt")
 
+    assert result == ""
     state = await fake_redis.hgetall("pageindex:job:job-lqt")
     assert state["status"] == "error"
     assert state["reason"] == "low_quality_tree"
     assert "tree rejected" in state["error"]
+    # Staging purged because the failure is terminal.
+    delete_mock.assert_called_once_with(staging_key)
+    # And no DLQ marker, since we did not exhaust retries.
+    dlq_len = await fake_redis.llen("pageindex:dlq")
+    assert dlq_len == 0
 
 
 # ── 5. Reaper unchanged after the refactor ────────────────────────────────────

@@ -190,7 +190,14 @@ async def _run_converter_subprocess(pdf_path: str) -> dict:
         await _kill_group(proc, grace=10)
         raise
     if proc.returncode == 0:
-        result = json.loads(stdout.splitlines()[-1])
+        stdout_lines = stdout.splitlines()
+        if not stdout_lines:
+            # Defensive: child exited 0 but emitted no JSON line — treat as a
+            # handled child failure rather than letting splitlines()[-1] raise
+            # IndexError, which would bypass the Redis status write and leave
+            # the job stuck at status=processing.
+            raise ConverterChildError(0, "child exited 0 but produced no stdout JSON")
+        result = json.loads(stdout_lines[-1])
         # Per-job peak from the child's own RUSAGE_SELF (parent's RUSAGE_CHILDREN
         # is a process-lifetime high-water mark and would report stale peaks).
         CONVERTER_PEAK_RSS_KIB.set(int(result.get("peak_rss_kib") or 0))
@@ -204,7 +211,7 @@ Where `_kill_group` sends SIGTERM to the process group, awaits up to `grace` sec
 
 **Handler integration in `process_document_job`:**
 - Before conversion: write `status=processing` + `processing_started_at` (already done — keep it).
-- Call `_run_converter_subprocess`; on success read markdown from out_path and proceed with the existing post-conversion path (PageIndex if B-narrow; nothing else if B-wide).
+- Call `_run_converter_subprocess(local_path)`; on success read `doc_id` directly from `result["doc_id"]`. No post-conversion read of an output file — the child has already persisted the document via `CustomPageIndexClient.index()` (B-wide).
 - On `ConverterOOMError`: set `status=error`, `reason="converter_oom"`, `error=<tail of stderr>`. Re-raise so arq's retry logic + DLQ still apply.
 - On `ConverterChildError`: set `status=error`, `reason="converter_child_failed"`, `error=<...>`.
 - On `TimeoutError/CancelledError`: set `status=error`, `reason="converter_timeout"`. Re-raise.
