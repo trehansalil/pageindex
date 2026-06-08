@@ -293,6 +293,274 @@ def _max_heading_level(md: str) -> int:
     return max(levels) if levels else 0
 
 
+# --- Heading-depth recovery from the PDF OUTLINE (last resort for flat prose) --
+# German IPID / FAQ insurance PDFs (Katzen-/Hunde-/Pferde-Kranken/-OP, Meuten,
+# Halterhaftpflicht) have headings that are ALL bare prose with no numbering
+# prefix, so _relevel_by_containment and _relevel_by_numbering both leave every
+# heading at H1 (max_heading_level == 1) -> a FALSE depth<2 rejection of a
+# legitimately-structured document. Their only author-declared structure is the
+# PDF outline (PyMuPDF get_toc). We map each rendered heading to the outline
+# section its PAGE falls in (text matching alone is insufficient: a TOC title such
+# as "Informationsblatt zu Versicherungsprodukten" is often NOT in Docling's
+# rendered heading set, so it must be located/injected by PAGE, never by text).
+# A rendered heading whose text matches its section title becomes that section's
+# anchor (H{toc_level}); every other heading in the section becomes a child
+# (H{deepest_covering_level + 1}); a covered section title Docling never rendered
+# is injected verbatim at its declared level. Cat A numbered docs never reach this
+# step (the guard requires max_heading_level < 2 after the numbering chain); Cat D
+# leaflets have no usable outline (<2 entries) and stay a legitimate depth<2
+# rejection (HR5 — the quality gate is never weakened).
+_OUTLINE_MIN_ANCHOR_ALNUM = 8  # min alnum chars for a substring title match (avoids short-title false positives)
+
+
+def _outline_norm(s: str) -> str:
+    """Normalise a title to lowercase alphanumerics for cross-source matching.
+
+    Unifies dashes, collapses embedded newlines, then strips to [a-z0-9] — the
+    same normalisation idiom the add-on's infer() / _patch_hierarchical_infer use,
+    so a PyMuPDF outline title reconciles with a Docling-rendered heading despite
+    whitespace, dash-variant and punctuation differences."""
+    return re.sub(r"[^a-z0-9]", "", normalize_dashes((s or "").replace("\n", " ")).lower())
+
+
+def _title_matches(norm_heading: str, norm_section: str) -> bool:
+    """True when a rendered heading IS its outline section's title.
+
+    Exact normalised equality, or a substring match when the shorter string is
+    substantial (>= _OUTLINE_MIN_ANCHOR_ALNUM alnum chars) — this tolerates
+    Docling rendering a longer heading than the TOC title (or vice versa) without
+    the short-title false positives a bare endswith/startswith would admit."""
+    if not norm_heading or not norm_section:
+        return False
+    if norm_heading == norm_section:
+        return True
+    shorter, longer = (
+        (norm_heading, norm_section)
+        if len(norm_heading) <= len(norm_section)
+        else (norm_section, norm_heading)
+    )
+    return len(shorter) >= _OUTLINE_MIN_ANCHOR_ALNUM and shorter in longer
+
+
+def _collect_heading_pages(doc) -> dict[str, list[int]]:
+    """Map normalised-heading-text -> [page_no, ...] from a Docling document.
+
+    Page numbers are 1-indexed (pypdfium2 backend: prov[0].page_no == page index
+    + 1), matching PyMuPDF get_toc's page field. Pages are appended in document
+    iteration order so repeated identical headings (e.g. the 3x "Besondere
+    Bedingungen ..." chapters in Hundehalterhaftpflicht) can be disambiguated by a
+    consumption pointer in _apply_outline_levels. Call this on the document state
+    matching the markdown the caller will relevel (the RAW pre-add-on document on
+    the over-prune raw_md fallback path; the post-add-on document otherwise) so the
+    page map and the heading set stay in sync."""
+    from collections import defaultdict
+
+    from docling_core.types.doc.document import SectionHeaderItem
+
+    pages: dict[str, list[int]] = defaultdict(list)
+    for item, _ in doc.iterate_items(with_groups=False):
+        if not isinstance(item, SectionHeaderItem) or not item.prov:
+            continue
+        key = _outline_norm(item.text or "")
+        if key:
+            pages[key].append(item.prov[0].page_no)
+    return dict(pages)
+
+
+def _read_pdf_outline(pdf_path: str) -> tuple[list[tuple[int, str, int]], int]:
+    """Read the PDF bookmark outline as [(level, title, page_1indexed), ...] in
+    document (outline-tree) order, plus the total page count.
+
+    Returns ([], 0) when the outline has fewer than 2 entries — no usable
+    structural signal, so the caller leaves the markdown flat and the quality gate
+    rejects it legitimately (Cat D leaflets). Document order is preserved (NOT
+    sorted by page): section extents are computed by outline NESTING (the next
+    entry whose level <= the current level), which requires reading order."""
+    import pymupdf
+
+    pdoc = pymupdf.open(pdf_path)
+    try:
+        raw_toc = pdoc.get_toc(simple=False)  # [(level, title, page_1based, dest), ...]
+        total_pages = pdoc.page_count
+    finally:
+        pdoc.close()
+    if len(raw_toc) < 2:
+        return [], 0
+    toc = [(int(e[0]), str(e[1]), int(e[2])) for e in raw_toc]
+    return toc, total_pages
+
+
+def _apply_outline_levels(
+    md: str,
+    heading_pages: dict[str, list[int]],
+    toc: list[tuple[int, str, int]],
+    total_pages: int,
+) -> str:
+    """PURE last-resort relevel: assign each markdown heading an H-level from the
+    PDF-outline section its page falls in, injecting any outline section title that
+    Docling never rendered. No Docling/PyMuPDF deps -> directly unit-testable.
+
+    Inputs:
+      heading_pages : {normalised_title -> [page_no, ...]} in document order
+      toc           : [(level, title, page_1indexed), ...] in outline order
+      total_pages   : page count (bounds the last section's extent)
+
+    Section extents follow outline NESTING: section i spans [page_i, next_start)
+    where next_start is the page of the next entry whose level <= level_i (or
+    total_pages + 1 for the last). A page may be covered by several nested sections
+    (a parent and its child); a heading is assigned its DEEPEST covering section's
+    level + 1 (a child), unless its text matches one of its covering section titles
+    (an anchor -> that section's level). A covered section whose title no rendered
+    heading matched has its title injected, verbatim, at its declared level before
+    the first rendered heading in its range.
+
+    Returns md unchanged when there is no usable outline / no headings, or when the
+    rewrite still yields depth<2 (so the gate rejects it rather than receiving a
+    worse tree — HR5)."""
+    if not toc:
+        return md
+    matches = list(_HLINE_RE.finditer(md))
+    if not matches:
+        return md
+
+    # 1. Sections as half-open page ranges [start, end) respecting outline nesting.
+    n = len(toc)
+    sections: list[dict] = []
+    for i, (level, title, start) in enumerate(toc):
+        end = total_pages + 1
+        for j in range(i + 1, n):
+            if toc[j][0] <= level:
+                end = toc[j][2]
+                break
+        sections.append({
+            "level": max(1, min(6, level)),
+            "norm": _outline_norm(title),
+            "raw": re.sub(r"\s+", " ", normalize_dashes(title)).strip(),
+            "start": start,
+            "end": end,            # exclusive
+            "matched": False,      # a rendered heading was this section's title
+        })
+
+    # 2. Consumption pointer for repeated identical headings (document order).
+    from collections import deque
+
+    page_q: dict[str, deque] = {k: deque(v) for k, v in heading_pages.items()}
+
+    def _pop_page(norm_title: str) -> int | None:
+        q = page_q.get(norm_title)
+        return q.popleft() if q else None
+
+    # 3. Assign a level to every rendered heading; record the first rendered
+    #    heading offset per covering section (the injection insertion point).
+    new_levels: list[int | None] = []
+    first_off: dict[int, int] = {}
+    for m in matches:
+        norm_h = _outline_norm(m.group(1))
+        page_no = _pop_page(norm_h)
+        if page_no is None:
+            new_levels.append(None)  # no provenance -> leave at current level
+            continue
+        covering = [
+            (idx, s) for idx, s in enumerate(sections)
+            if s["start"] <= page_no < s["end"]
+        ]
+        if not covering:
+            new_levels.append(None)  # cover/frontmatter before the first section
+            continue
+        for idx, _s in covering:
+            first_off.setdefault(idx, m.start())
+        # anchor = deepest covering section whose title this heading matches
+        anchor = None
+        for _idx, s in sorted(covering, key=lambda c: -c[1]["level"]):
+            if _title_matches(norm_h, s["norm"]):
+                anchor = s
+                break
+        if anchor is not None:
+            new_levels.append(anchor["level"])
+            anchor["matched"] = True
+        else:
+            deepest = max(covering, key=lambda c: c[1]["level"])[1]
+            new_levels.append(max(1, min(6, deepest["level"] + 1)))
+
+    # 4. Inject section titles Docling never rendered (e.g. the IPID overview).
+    injections: dict[int, list[tuple[int, str]]] = {}
+    for idx, s in enumerate(sections):
+        if s["matched"]:
+            continue
+        off = first_off.get(idx)
+        if off is None:
+            continue  # no rendered heading in range -> nothing to anchor to
+        line = "#" * s["level"] + " " + s["raw"] + "\n"
+        injections.setdefault(off, []).append((s["level"], line))
+
+    # 5. Splice: rewrite levels + emit injected titles (shallowest level first).
+    out: list[str] = []
+    pos = 0
+    for m, lvl in zip(matches, new_levels):
+        out.append(md[pos:m.start()])
+        if m.start() in injections:
+            for _lvl, line in sorted(injections[m.start()]):
+                out.append(line)
+        out.append(m.group(0) if lvl is None else "#" * lvl + " " + m.group(1))
+        pos = m.end()
+    out.append(md[pos:])
+    result_md = "".join(out)
+
+    if _max_heading_level(result_md) < 2:
+        return md  # outline gave no usable depth -> stay a legitimate rejection
+    return result_md
+
+
+def _relevel_by_outline(md: str, heading_pages: dict[str, list[int]], pdf_path: str) -> str:
+    """Thin I/O wrapper: read the PDF outline, then apply outline-derived levels.
+
+    Last-resort depth recovery for flat-prose docs after the numbering chain fails.
+    Never fatal (the caller also wraps it); returns md unchanged on any failure or
+    when the outline has <2 entries (Cat D leaflet)."""
+    toc, total_pages = _read_pdf_outline(pdf_path)
+    if not toc:
+        return md
+    result_md = _apply_outline_levels(md, heading_pages, toc, total_pages)
+    logger.info(
+        "_relevel_by_outline: applied outline page-spine to %s (%d sections, max_level %d)",
+        pdf_path, len(toc), _max_heading_level(result_md),
+    )
+    return result_md
+
+
+def _has_recoverable_structure(md: str) -> bool:
+    """Structural proxy for validate_tree's ``node_count>=3 AND depth>=2`` — used
+    only to SELECT the better markdown SOURCE; the real HR5 gate still runs in the
+    client. md_to_tree makes one tree node per heading and nests by '#'-level, so a
+    depth>=2 tree needs a heading at level>=2 and node_count>=3 needs >=3 headings.
+    Conservative by design: a false 'pass' here is still caught by the real gate."""
+    return _max_heading_level(md) >= 2 and len(_HEADING_RE.findall(md)) >= 3
+
+
+def _recover_heading_depth(
+    md: str, heading_pages: dict[str, list[int]], pdf_path: str
+) -> str:
+    """Run the full heading-depth recovery chain on ONE markdown source.
+
+    containment (PRIMARY numbering-prefix depth) -> numbering (per-scheme regex
+    FALLBACK) -> PDF outline (LAST RESORT for numberless flat prose). Each step
+    runs only if the prior left the tree degenerately flat (max_heading_level<2).
+    Dashes are normalised first so hyphen clause codes (A1-6.1) parse. The outline
+    step is wrapped so it is never fatal."""
+    md = _relevel_by_containment(_relevel_headings(normalize_dashes(md)))
+    if _max_heading_level(md) < 2:
+        md = _relevel_by_numbering(md)
+    if _max_heading_level(md) < 2:
+        try:
+            md = _relevel_by_outline(md, heading_pages, pdf_path)
+        except Exception as exc:  # noqa: BLE001 — outline relevel must never be fatal
+            logger.warning(
+                "_relevel_by_outline failed for %s (%s); leaving flat markdown",
+                pdf_path, exc,
+            )
+    return md
+
+
 def _repromote_numbered_headings(doc) -> int:
     """Re-promote demoted body TextItems back to headings (no hardcoding).
 
@@ -435,7 +703,7 @@ def _patch_hierarchical_infer() -> None:
     candidates it prefers the shortest item (least extra prefix) so a real heading
     "BHB 3 X" wins over a longer body sentence ending in "X". The patch is
     fingerprint-guarded against upstream version drift, and the caller wraps it so
-    it can NEVER be fatal — on any failure the Rank-1 over-prune guard in
+    it can NEVER be fatal — on any failure the gate-aware source selection in
     ``pdf_to_markdown_docling`` falls back to raw Docling markdown.
     """
     global _HIERARCHICAL_INFER_PATCHED
@@ -571,6 +839,17 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     # over-prune fallback below.
     raw_md = result.document.export_to_markdown()
 
+    # Snapshot heading -> [page_no, ...] from the RAW (pre-add-on) document: the
+    # add-on demotes unmatched headings to body text in place, so this is the only
+    # chance to retain page provenance for the over-prune raw_md fallback path. The
+    # outline depth-recovery step below (used only for numberless flat-prose docs)
+    # maps rendered headings to PDF-outline sections BY this page.
+    try:
+        heading_pages_raw = _collect_heading_pages(result.document)
+    except Exception as exc:  # noqa: BLE001 — page capture must never be fatal
+        logger.warning("could not collect raw heading pages for %s (%s)", pdf_path, exc)
+        heading_pages_raw = {}
+
     # docling-hierarchical-pdf (krrome) rebuilds heading SELECTION from the PDF
     # outline/numbering, dropping the font-size false positives Docling otherwise
     # emits as headings (page numbers, letter-spaced body text, clause fragments).
@@ -620,35 +899,44 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
             pdf_path, exc,
         )
 
-    md = result.document.export_to_markdown()
-    if not md or not md.strip():
+    post_md = result.document.export_to_markdown()
+    if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
-    # Rank-1 over-prune guard (HR5 / node_count<3): even with the suffix-match
-    # patch, the add-on can demote nearly every heading to body text when the PDF's
-    # TOC titles cannot be reconciled with the in-document headings (e.g. InDesign
-    # exports whose TOC omits the "BHB N" clause prefix), leaving a <3-heading
-    # markdown that md_to_tree rejects as node_count<3. When the add-on drops the
-    # heading count below the quality gate while raw Docling had >=3, fall back to
-    # the raw Docling markdown (ligature-correct + MIT) rather than emit an
-    # unusable tree. The relevel chain below recovers depth on either path.
-    post_headings = len(_HEADING_RE.findall(md))
+    post_headings = len(_HEADING_RE.findall(post_md))
     raw_headings = len(_HEADING_RE.findall(raw_md))
-    if post_headings < 3 <= raw_headings:
-        logger.warning(
-            "hierarchical add-on over-pruned headings %d->%d for %s; "
-            "using raw docling markdown",
-            raw_headings, post_headings, pdf_path,
-        )
-        md = raw_md
-    # Normalise dashes BEFORE depth recovery so hyphen clause codes (A1-6.1) parse;
-    # _relevel_headings sets the baseline (shallowest -> H1), then
-    # _relevel_by_containment re-derives depth from each heading's numbering-prefix
-    # CONTAINMENT (the primary depth source — no per-scheme table) recovering the
-    # depth>=2 the HR5 gate needs. numbering_depth's per-scheme regex is the
-    # last-resort FALLBACK, applied only if containment stayed degenerately flat.
-    md = _relevel_by_containment(_relevel_headings(normalize_dashes(md)))
-    if _max_heading_level(md) < 2:
-        md = _relevel_by_numbering(md)  # last-resort fallback only if containment stayed flat
+
+    # Page map for the post-add-on candidate's outline step (the RAW map captured
+    # before the add-on is used for the raw candidate, keeping each map in sync with
+    # the markdown it relevels — see _collect_heading_pages).
+    try:
+        heading_pages_post = _collect_heading_pages(result.document)
+    except Exception as exc:  # noqa: BLE001 — page capture must never be fatal
+        logger.warning("could not collect post-add-on heading pages for %s (%s)", pdf_path, exc)
+        heading_pages_post = {}
+
+    # Gate-aware source selection (HR5 / over-prune). Recover depth on the CLEANER
+    # post-add-on markdown first; if that tree would still fail the structural gate
+    # (node_count<3 or depth<2) but the RICHER raw Docling markdown recovers a valid
+    # tree, use raw. This subsumes the old `post<3<=raw` count guard AND catches
+    # PROPORTIONAL pruning the count guard missed: e.g. Hundehalter/Pferdehalter-
+    # haftpflicht, where the add-on demotes ~128 numbered headings to 4 flat ones —
+    # 4 is not <3 so the count guard never fired, yet raw_md's numbering chain
+    # recovers real depth. raw Docling is ligature-correct + MIT (HR4). The real
+    # gate (validate_tree) still runs downstream; this only picks the better source.
+    md = _recover_heading_depth(post_md, heading_pages_post, pdf_path)
+    if (
+        not _has_recoverable_structure(md)
+        and raw_headings >= 3
+        and raw_headings > post_headings
+    ):
+        md_raw = _recover_heading_depth(raw_md, heading_pages_raw, pdf_path)
+        if _has_recoverable_structure(md_raw):
+            logger.warning(
+                "post-add-on tree failed the structural gate (%d heading(s), max-level %d) "
+                "for %s; using raw docling markdown (%d headings)",
+                post_headings, _max_heading_level(md), pdf_path, raw_headings,
+            )
+            md = md_raw
     return md
 
 
