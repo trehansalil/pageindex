@@ -406,6 +406,129 @@ def _build_pdf_pipeline_options():
     return opts
 
 
+_HIERARCHICAL_INFER_PATCHED = False
+# Fingerprint of the upstream strict-equality match we replace. If the installed
+# docling-hierarchical-pdf version no longer contains this line, we skip the patch
+# rather than risk a stale override — the Rank-1 over-prune fallback covers us.
+_HBM_STRICT_MATCH_FINGERPRINT = 're.sub(r"[^A-Za-z0-9]", "", title) == re.sub('
+# A TOC title must have at least this many alphanumerics before we accept a
+# numbering-prefix suffix match, to avoid short-word false positives
+# (e.g. bare "Tierhaltung" suffix-matching an unrelated heading).
+_HBM_MIN_SUFFIX_LEN = 5
+
+
+def _patch_hierarchical_infer() -> None:
+    """Make the docling-hierarchical-pdf add-on tolerate publisher numbering prefixes.
+
+    The add-on's ``HierarchyBuilderMetadata.infer()`` matches PDF-outline (TOC)
+    titles to Docling document items by STRICT stripped-alphanumeric equality
+    (hierarchy_builder_metadata.py:189). German insurance PDFs (e.g. the BHB
+    Haftpflicht booklet) list bare titles in the TOC ("Land- und Forstwirtschaft")
+    while the in-document heading carries a clause prefix ("BHB 3 Land- und
+    Forstwirtschaft"), so the equality fails for ~32/33 entries and the add-on
+    demotes almost every heading to body text -> node_count<3 rejection (HR5).
+
+    This installs (once, idempotently) a patched ``infer()`` whose matching falls
+    back to a SUFFIX match (``item.orig`` ends with the TOC title) when no exact
+    match exists, guarded by ``_HBM_MIN_SUFFIX_LEN`` and constrained to the TOC
+    entry's target page (the loop already iterates ``page_no=page``); among suffix
+    candidates it prefers the shortest item (least extra prefix) so a real heading
+    "BHB 3 X" wins over a longer body sentence ending in "X". The patch is
+    fingerprint-guarded against upstream version drift, and the caller wraps it so
+    it can NEVER be fatal — on any failure the Rank-1 over-prune guard in
+    ``pdf_to_markdown_docling`` falls back to raw Docling markdown.
+    """
+    global _HIERARCHICAL_INFER_PATCHED
+    if _HIERARCHICAL_INFER_PATCHED:
+        return
+    import inspect
+
+    from docling_core.types.doc.document import ListItem, TextItem
+    from hierarchical import hierarchy_builder_metadata as _hbm
+    from hierarchical.hierarchy_builder_metadata import (
+        HeaderNotFoundException,
+        HierarchyBuilderMetadata,
+        ImplausibleHeadingStructureException,
+    )
+    from hierarchical.types.hierarchical_header import HierarchicalHeader
+
+    src = inspect.getsource(HierarchyBuilderMetadata.infer)
+    if _HBM_STRICT_MATCH_FINGERPRINT not in src:
+        logger.warning(
+            "hierarchical infer() match logic changed upstream; skipping "
+            "suffix-match patch (relying on raw-docling over-prune fallback)"
+        )
+        _HIERARCHICAL_INFER_PATCHED = True  # don't re-inspect on every conversion
+        return
+
+    def _patched_infer(self) -> HierarchicalHeader:
+        # Copy of HierarchyBuilderMetadata.infer with the item-matching loop made
+        # tolerant of a missing numbering prefix; the rest is upstream-verbatim.
+        heading_to_level = self._extract_toc()
+        root = HierarchicalHeader()
+        current = root
+        doc = self.conv_res.document
+
+        for level, title, page, add_info in heading_to_level:
+            new_parent = None
+            this_item = None
+            title_norm = re.sub(r"[^A-Za-z0-9]", "", title)
+            suffix_item = None
+            suffix_norm_len: int | None = None
+            for item, _ in doc.iterate_items(page_no=page):
+                if not isinstance(item, (TextItem, ListItem)):
+                    continue
+                item_norm = re.sub(r"[^A-Za-z0-9]", "", item.orig)
+                if item_norm == title_norm:
+                    this_item = item  # exact match always wins
+                    break
+                # numbering-prefix-tolerant fallback: keep the tightest suffix match
+                if (
+                    len(title_norm) >= _HBM_MIN_SUFFIX_LEN
+                    and item_norm.endswith(title_norm)
+                    and (suffix_norm_len is None or len(item_norm) < suffix_norm_len)
+                ):
+                    suffix_item = item
+                    suffix_norm_len = len(item_norm)
+            if this_item is None:
+                this_item = suffix_item
+            if this_item is None:
+                if self.raise_on_error:
+                    raise HeaderNotFoundException(add_info)
+                else:
+                    _hbm.logger.warning(HeaderNotFoundException(add_info))
+                    continue
+
+            if current.level_toc is None or level > current.level_toc:
+                new_parent = current
+            elif level == current.level_toc:
+                if current.parent is not None:
+                    new_parent = current.parent
+                else:
+                    raise ImplausibleHeadingStructureException()
+            else:
+                new_parent = current
+                while new_parent.parent is not None and (level <= new_parent.level_toc):
+                    new_parent = new_parent.parent
+            new_obj = HierarchicalHeader(
+                text=this_item.orig,
+                parent=new_parent,
+                level_toc=level,
+                doc_ref=this_item.self_ref,
+            )
+            new_parent.children.append(new_obj)
+            current = new_obj
+
+        return root
+
+    HierarchyBuilderMetadata.infer = _patched_infer
+    _HIERARCHICAL_INFER_PATCHED = True
+    logger.info(
+        "patched hierarchical infer() with numbering-prefix suffix matching "
+        "(min title len %d)", _HBM_MIN_SUFFIX_LEN,
+    )
+
+
 def pdf_to_markdown_docling(pdf_path: str) -> str:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -442,6 +565,12 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     )
     result = converter.convert(pdf_path)
 
+    # Capture the RAW Docling markdown BEFORE the add-on runs: ResultPostprocessor
+    # mutates result.document in place (it demotes unmatched headings to body text),
+    # so this is the only chance to retain the full heading set for the Rank-1
+    # over-prune fallback below.
+    raw_md = result.document.export_to_markdown()
+
     # docling-hierarchical-pdf (krrome) rebuilds heading SELECTION from the PDF
     # outline/numbering, dropping the font-size false positives Docling otherwise
     # emits as headings (page numbers, letter-spaced body text, clause fragments).
@@ -451,6 +580,17 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     try:
         from hierarchical.postprocessor import ResultPostprocessor
 
+        # Rank-2: teach the add-on to tolerate publisher numbering prefixes (the
+        # TOC title omits the in-document "BHB N"/"A."/"I." prefix) BEFORE it runs,
+        # so it keeps the real headings instead of demoting them. Guarded + never
+        # fatal — the Rank-1 fallback below covers any patch failure.
+        try:
+            _patch_hierarchical_infer()
+        except Exception as exc:  # noqa: BLE001 — patch must never be fatal
+            logger.warning(
+                "could not patch hierarchical infer() (%s); relying on raw-docling fallback",
+                exc,
+            )
         ResultPostprocessor(result, source=pdf_path).process()
     except ImportError:
         logger.warning(
@@ -483,6 +623,23 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     md = result.document.export_to_markdown()
     if not md or not md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
+    # Rank-1 over-prune guard (HR5 / node_count<3): even with the suffix-match
+    # patch, the add-on can demote nearly every heading to body text when the PDF's
+    # TOC titles cannot be reconciled with the in-document headings (e.g. InDesign
+    # exports whose TOC omits the "BHB N" clause prefix), leaving a <3-heading
+    # markdown that md_to_tree rejects as node_count<3. When the add-on drops the
+    # heading count below the quality gate while raw Docling had >=3, fall back to
+    # the raw Docling markdown (ligature-correct + MIT) rather than emit an
+    # unusable tree. The relevel chain below recovers depth on either path.
+    post_headings = len(_HEADING_RE.findall(md))
+    raw_headings = len(_HEADING_RE.findall(raw_md))
+    if post_headings < 3 <= raw_headings:
+        logger.warning(
+            "hierarchical add-on over-pruned headings %d->%d for %s; "
+            "using raw docling markdown",
+            raw_headings, post_headings, pdf_path,
+        )
+        md = raw_md
     # Normalise dashes BEFORE depth recovery so hyphen clause codes (A1-6.1) parse;
     # _relevel_headings sets the baseline (shallowest -> H1), then
     # _relevel_by_containment re-derives depth from each heading's numbering-prefix
