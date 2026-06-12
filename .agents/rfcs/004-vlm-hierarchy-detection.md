@@ -185,6 +185,12 @@ supersedes-decisions-in: []
 > **Three artifacts to correct before they are cited anywhere:** the fabricated Q1 arXiv:2604.01733
 > reference; the Q4 MCC-at-n=5 math; the Q5 "direct OpenAI has no EU option" claim. Status: Q2
 > **`accepted` + landed**; Q1-residual / Q5 / Q3–Q4 corrections **proposed**, awaiting the RFC session.
+>
+> **[APPLIED 2026-06-13]** All three citation corrections are now reflected in the body: the
+> fabricated `arXiv:2604.01733` cite is dropped (§Thin-Evidence Flags); the MCC "all 5 correct" /
+> "near-zero" framing and the κ "substantial" framing are fixed (§Evaluation Metrics); the Q5
+> EU-residency note already records OpenAI's Jan-2026 EU inference residency (§Thin-Evidence Flags),
+> so "direct OpenAI = HR3 violation (no EU)" is no longer categorical.
 
 > ## Amendment 5 (2026-06-12) — Phase 0 EXECUTED → VERDICT: ship FLAT only, VLM stays `disabled`; RFC ACCEPTED
 >
@@ -492,13 +498,17 @@ so the `not recov and not toc` trigger cannot fire) — and for the 4 Cat-D docs
 today (`Downloadbereich`, `Reitlehrer – Schäden`, `Hundehalter-Unfall-Leistung`,
 `Tarifblatt-Privat`). There is **no Cat A/B/C doc in a `recov=F and toc=0` edge state.**
 
-**Metrics:** MCC (primary; on the 5-doc set this reduces honestly to "all 5 correct");
+**Metrics:** MCC (primary; on the 5-doc set it is a **coarse 6-step signal** — one
+misclassification gives **MCC ≈ 0.61–0.67, not near-zero**, and the CI spans ~[0,1], so
+treat it as pass/fail until n≥30 rather than a calibrated score);
 per-node precision/recall + exact-match on the 2 Class-A reference trees (**TEDS dropped
 for the small corpus** — it collapses on 3–5-node trees; reserved for borrowed datasets
 only); **CER** (D7); escalation rate (**measured 18.5%, target ≤20% MET**); heading
 match-failure rate (must be ~0); **Cohen's κ ≥ 0.6** two-annotator STRUCTURED/FLAT labels
-— **mandatory** because the 2 Leistungsübersicht docs have **disputed labels** (FLAT per
-brief, possibly STRUCTURED).
+(a **conventional** bar — Landis-Koch "substantial" begins at 0.61, so κ≥0.6 sits on the
+moderate/substantial boundary; **report raw observed agreement alongside κ**, since skewed
+STRUCTURED/FLAT marginals deflate κ even at high agreement) — **mandatory** because the 2
+Leistungsübersicht docs have **disputed labels** (FLAT per brief, possibly STRUCTURED).
 
 **Go/no-go bar (before flipping `VLM_MODE` off `disabled` in prod):** Class-A 2/2 recover
 
@@ -575,6 +585,11 @@ brief, possibly STRUCTURED).
   provider ladder Bedrock-EU(ZDR) > Azure-OpenAI-MAM-EU > Vertex-EU(+ZDR amendment) > self-hosted;
   Fable 5/Mythos 5 ZDR-PROHIBITED everywhere; OpenAI added EU inference residency (Jan 2026). Still
   **[UNVERIFIED — vendor contract]**: per-account ZDR approval, MAM approval timelines, cloud pricing.
+- **[RESOLVED 2026-06-13 — Amendment 4 Q1]** The `arXiv:2604.01733` "unified beats separate"
+  citation was **fabricated** (quote absent; the paper actually finds BM25 > dense on financial
+  text) and is **dropped** — the unified-query-surface conclusion stands on vendor evidence alone
+  (Textract/Azure DI/DocAI/Docling/Unstructured/Reducto/LlamaParse), and per HR1 no
+  accuracy-superiority claim is made or needed.
 - **[UNVERIFIED]** Borrowed-dataset licenses / venues / arXiv IDs (incl. a future-dated
   `arXiv:2603.11044` the pass flagged as suspect).
 - **[DISPUTED LABELS]** The 2 Class-B Leistungsübersicht docs — reannotate (κ) before

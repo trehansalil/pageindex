@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
 
 logger = logging.getLogger(__name__)
 
@@ -692,6 +695,48 @@ def _build_pdf_pipeline_options():
     return opts
 
 
+# Process-lifetime DocumentConverter cache. Constructing a DocumentConverter
+# loads the Heron layout + TableFormer model weights (~700 MB-1.4 GB RSS) and
+# torch NEVER returns that to the OS. Building a NEW one per pdf_to_markdown_docling
+# call therefore leaks ~250 MB per document in any process that converts more than
+# once in-process (e.g. preprocess_client.py, which asyncio.gathers the whole
+# doc_store) — RSS climbs monotonically until OOM. Reusing one instance caps growth
+# to a few MB/doc (measured 2026-06-13: +237 MB/call rebuilt vs +5-7 MB/call reused).
+# The production worker is unaffected — each job runs in a fresh converters_cli child
+# that dies — but this keeps the in-process callers bounded. Keyed on the env knobs
+# _build_pdf_pipeline_options() reads so a mid-process env change rebuilds correctly.
+_DOCLING_CONVERTER_CACHE: dict[tuple[str, str, str, str], "DocumentConverter"] = {}
+
+
+def _docling_converter() -> "DocumentConverter":
+    """Return a cached CPU-only DocumentConverter, building it once per options key.
+
+    Docling's DocumentConverter is designed for reuse across .convert() calls: the
+    models load on first use and are reused, so a single instance is both correct
+    and the memory-bounded choice. See _DOCLING_CONVERTER_CACHE above for why a new
+    instance per call leaks.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    key = (
+        os.getenv("DOCLING_DO_OCR", "0").strip().lower(),
+        os.getenv("DOCLING_NUM_THREADS", "1").strip(),
+        os.getenv("DOCLING_OCR_LANG", "deu,eng").strip(),
+        os.getenv("DOCLING_ARTIFACTS_PATH", "").strip(),
+    )
+    converter = _DOCLING_CONVERTER_CACHE.get(key)
+    if converter is None:
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=_build_pdf_pipeline_options())
+            }
+        )
+        _DOCLING_CONVERTER_CACHE[key] = converter
+        logger.info("instantiated and cached Docling DocumentConverter (options key=%s)", key)
+    return converter
+
+
 _HIERARCHICAL_INFER_PATCHED = False
 # Fingerprint of the upstream strict-equality match we replace. If the installed
 # docling-hierarchical-pdf version no longer contains this line, we skip the patch
@@ -842,14 +887,9 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
 
     Raises on empty extraction so the caller falls back to the next converter.
     """
-    from docling.datamodel.base_models import InputFormat
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-
-    opts = _build_pdf_pipeline_options()
-
-    converter = DocumentConverter(
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
-    )
+    # Reuse the process-cached converter (see _docling_converter): a fresh
+    # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
+    converter = _docling_converter()
     result = converter.convert(pdf_path)
 
     # Capture the RAW Docling markdown BEFORE the add-on runs: ResultPostprocessor
