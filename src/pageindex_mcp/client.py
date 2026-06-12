@@ -141,6 +141,12 @@ class CustomPageIndexClient(PageIndexClient):
                         logger.info(
                             "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
                         )
+                        # FLAT-04 parity: the SHA-dedup early return must restore
+                        # last_content_class (reset to None at the top of index())
+                        # so an unchanged flat doc still surfaces content_class in
+                        # the converters_cli stdout payload, matching a non-deduped
+                        # flat index (cubic PR #9).
+                        self.last_content_class = d.get("content_class") or None
                         return d["doc_id"]
 
         # Convert / index
