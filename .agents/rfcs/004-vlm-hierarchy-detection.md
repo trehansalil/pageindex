@@ -222,6 +222,14 @@ supersedes-decisions-in: []
 >   mean the cascade cannot be flipped on safely; `flat_kv` ships and is sufficient.
 > - **If VLM is ever revisited** it requires **GPU + a ZDR/EU endpoint** (HR3) — never the inline
 >   CPU floor. That is a fresh RFC, not this one.
+> - **DECISION (2026-06-12, user-LOCKED) — Granite-Docling-258M is rejected for ALL future
+>   implementations.** Not the inline residency floor, not pre-baked into the image (**Q3 REVERSED**),
+>   not a fallback engine, not to be reconsidered without new model weights. The authenticated
+>   HF-token re-run **reproduced** the NO-GO (peak RSS **2,829 MB**, **2,198 s/page**, 6 headers all
+>   level-1, degenerate `<image>` DocTags) — operational death is a model property, not a doc
+>   artifact, so the reproduction is expected and confirmatory. Any future on-prem/residency VLM
+>   must be a *different*, GPU-class model selected in a fresh RFC; D2's "self-hosted residency
+>   floor" slot is now **empty**, not Granite.
 >
 > Repro + raw numbers: `issue/phase0_results.json`, `issue/phase0_granite.log`; durable notes in
 > memory `rfc004-phase0-vlm-probe.md` + `rfc004-flat-family-built.md`.
@@ -334,11 +342,13 @@ Docling's markdown already contains the body text for the firing pages. **Class 
   when `_is_azure_url()` matches). Chosen because German 7pt typography is exactly where a
   258M model is least proven, and because it adds **~0 worker RSS** on the 512 Mi–4 Gi
   worker ([[worker-deploy-rollout-failure]]). `response_format=json_schema`, `temperature=0`.
-- **Residency floor: self-hosted Granite-Docling-258M** (`VLM_MODE=inline`, Apache-2.0),
+- ~~**Residency floor: self-hosted Granite-Docling-258M** (`VLM_MODE=inline`, Apache-2.0),
   the *only* surveyed open model that emits real heading levels
   (`section_header_level_1..6` DocTags, **[VERIFIED in docling_core]**), for air-gapped /
-  no-ZDR deployments. **[UNVERIFIED — Phase 0]** its German 7 pt OCR fidelity and CPU
-  latency under `max_new_tokens=8192`.
+  no-ZDR deployments.~~ **REVERSED 2026-06-12 (Amendment 5, user-LOCKED): Granite-Docling-258M is
+  rejected for ALL future implementations** — Phase 0 measured it operationally dead on CPU
+  (2.8–2.9 GB RSS, ~38 min/page, level-1-only, degenerate output). The residency-floor slot is now
+  **empty**; any future on-prem VLM is a *different* GPU-class model chosen in a fresh RFC.
 - **Ruled out:** SmolDocling (no level attribute); Qwen2.5-VL-3B / InternVL3 (exceed
   4 Gi); Nougat (CC-BY-NC); Donut / LayoutLMv3 / GraphDoc (no hierarchy / weights /
   license). Claude (Bedrock-EU) and Gemini-2.5-Flash (Vertex-EU) are viable alternatives
@@ -535,10 +545,13 @@ brief, possibly STRUCTURED).
    `fix/rfc004-q2-agpl-outline-pypdfium2`; `pymupdf` dropped as a direct dep. Residual: `pymupdf4llm`
    fallback still pulls PyMuPDF transitively (follow-up: make it an optional extra).
 3. ~~Pre-bake the ~1 GB Granite weights into the image now (offline/air-gap) or defer until a
-   residency deployment needs the inline fallback?~~ **RESOLVED 2026-06-08 (Amendment 3):
+   residency deployment needs the inline fallback?~~ ~~**RESOLVED 2026-06-08 (Amendment 3):
    pre-bake NOW (`HF_HUB_OFFLINE=1`)** — air-gap-ready, behind multi-stage layer isolation, kept
    inert at boot (only instantiated when `VLM_MODE=inline`), with a worker memory-limit bump
-   sized to *measured* peak RSS (Phase 0).
+   sized to *measured* peak RSS (Phase 0).~~ **REVERSED 2026-06-12 (Amendment 5, user-LOCKED): do
+   NOT pre-bake — Granite-Docling-258M is rejected for ALL future implementations** (Phase 0
+   measured CPU RSS 2.8–2.9 GB / ~38 min per page / level-1-only). Nothing to bake; the inline
+   residency engine is unselected and is a fresh-RFC question.
 4. ~~Adopt the cost-weighted `3·FN + 1·FP` objective as a governance gate
    (`verify-gates.yaml`), alongside the RFC-003 deferred `validate_tree` threshold promotion?~~
    **RESOLVED 2026-06-08 (Amendment 3): adopt as the eval objective + a WARN-ONLY / deferred
