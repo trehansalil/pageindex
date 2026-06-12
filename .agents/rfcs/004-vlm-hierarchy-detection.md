@@ -119,6 +119,73 @@ supersedes-decisions-in: []
 > VLM is explicitly enabled. Recorded in `.agents/state/PENDING_DECISIONS.md` (RFC-004 block) and
 > memory [[vlm-hierarchy-detection-rfc004]].
 
+> ## Amendment 4 (2026-06-12) — Open-questions research: Q2 RESOLVED+LANDED; Q1-residual & Q5 resolved (pending ratification); Q3/Q4 validated with corrections
+>
+> Grounded in a 10-agent research + adversarial-verify workflow (run `wf_4d4df1f5-8d8`; 5 research
+> workers + 5 skeptics, ~501 K subagent tokens). The verify pass is load-bearing: it **refuted a
+> fabricated citation, a math error, and an outdated compliance claim** — those corrections are
+> folded in below and MUST be carried before any of this is cited as fact. Memory:
+> [[rfc004-open-questions-research]].
+>
+> - **Q2 — MIGRATE `_read_pdf_outline` off PyMuPDF (AGPL) to pypdfium2: RESOLVED + LANDED.**
+>   Implemented on branch `fix/rfc004-q2-agpl-outline-pypdfium2`: `pypdfium2.PdfDocument.get_toc()`
+>   replaces `pymupdf.get_toc` in converters.py `_read_pdf_outline`. Two **load-bearing** 0-based→
+>   1-based offsets (`bm.level + 1`, `dest.get_index() + 1`) preserve the pure-consumer contract; a
+>   dest-less bookmark → page-0 sentinel. `pymupdf` dropped as a **direct** dep, `pypdfium2>=5.8.0`
+>   added (pyproject + uv.lock regenerated); 4 new hermetic tests (PyPDF2-authored outline
+>   round-trip) — full suite green (128 passed, 6 skipped). **Zero first-party AGPL now touches the
+>   default / VLM-bound PDF path.** Residual (Q2 follow-up, NOT done): `pymupdf4llm` (the opt-in
+>   fallback converter) still pulls `pymupdf` **transitively**, so the venv is not yet AGPL-free —
+>   full elimination needs `pymupdf4llm` moved to an optional extra. Do **not** buy an Artifex
+>   commercial license: the permissive swap was ~25 lines. (HR4 line below updated.)
+> - **Q1 residual — flat-doc query surface: UNIFIED, no new MCP tool (pending ratification).**
+>   Industry standard across AWS Textract / Azure DI / Google DocAI / Docling / Unstructured /
+>   Reducto / LlamaParse is **one** retrieval surface with type tags at ingest, not a per-type query
+>   API. Adapt flat `blocks[]` into the existing tree-RAG via a flat-doc adapter in `_search_one_doc`
+>   (helpers.py) + a flat branch in `get_document`/`get_document_structure` (documents.py); the
+>   Amendment-1 `row_records` verbalization is already the retrieval optimum. A 6th MCP tool would
+>   force doc-type routing onto clients for no retrieval gain. **Verify correction:** the
+>   arXiv:2604.01733 "unified beats separate" citation is **fabricated** (quote absent; the paper
+>   actually finds BM25 > dense on financial text) — DROP it; the conclusion stands on the vendor
+>   evidence (HR1: no accuracy-superiority claim is made or needed).
+> - **Q5 — EU-residency + ZDR for vision (cross-cutting HR3, pending ratification).** No provider
+>   offers it out-of-the-box on a standard tier. Priority ladder via a new `VLM_PROVIDER`:
+>   (1) **AWS Bedrock EU inference profile**, non-Fable Claude, `data_retention_mode:none` (technical
+>   400-block, strongest); (2) **Azure OpenAI GPT-4o + Modified Abuse Monitoring + EU region**;
+>   (3) **Vertex AI Gemini EU + ZDR contract amendment** (24 h default logging ≠ ZDR);
+>   (4) **self-hosted** (only path clear of CLOUD-Act exposure; Granite-258M alone insufficient as a
+>   general VLM). **Hard constraints (confirmed):** Claude **Fable 5 / Mythos 5 are ZDR-PROHIBITED on
+>   every platform** (30-day retention, no carve-out) → never a VLM target for PII; the **Anthropic
+>   direct API has no EU geography** (us/global only). **Verify correction:** the research's "gpt-4.1
+>   via *direct* OpenAI violates HR3 (no EU)" is **outdated** — OpenAI added EU inference residency
+>   (Jan 2026, GPT-4o vision incl.), so it is no longer categorical; Azure-MAM is still preferred on
+>   assurance grounds (contractual ZDR > inference residency; CPU processing may leave region). Also:
+>   Bedrock EU region sets are **model-specific** and London (eu-west-2) is post-Brexit **UK** GDPR,
+>   not EU — resolve the ARN's regions at runtime, don't hardcode. (Supersedes the D2 bare-`gpt-4.1`
+>   default and the HR3 routing note for the EU corpus.)
+> - **Q3 — pre-bake + engine: VALIDATED, one blocking correction.** Pre-baking sub-2 GB weights via
+>   a dedicated multi-stage layer is industry-standard; Granite-Docling-258M is the right inline
+>   engine (only sub-500M emitting explicit `<section_header_level_N>` DocTags; Docling-native
+>   preset; Apache-2.0). **Correction:** the "~1.8–2.5 GB" estimate is the **ONNX** figure measured
+>   on a **GPU** box; the default **PyTorch/Transformers** path is **~4.2 GB**, and the current
+>   **512 Mi** worker loads **neither**. Phase 0 MUST measure real **CPU-only** peak RSS and size the
+>   limit to peak + 30 %. (Qwen2.5-VL *is* a Docling preset `qwen`, not "custom plumbing" — but
+>   7B/17 GB rules it out regardless.)
+> - **Q4 — cost-weighted eval: VALIDATED, two corrections.** Asymmetric `3·FN+1·FP`, MCC-primary,
+>   κ≥0.6 IAA, and dropping TEDS for 3–5-node trees are all industry-aligned. **Corrections:**
+>   (a) the claim "MCC on n=5 = 1.0 or near-zero for one error" is **mathematically wrong** — one
+>   error gives **MCC ≈ 0.61–0.67** (a coarse 6-step signal); rewrite the comment to "coarse 6-step,
+>   CIs span ~[0,1], treat pass/fail until n≥30"; (b) Landis-Koch "substantial" starts at **0.61**,
+>   so κ≥0.6 sits on the moderate/substantial boundary — cite as "conventional"; add a
+>   **prevalence-bias** caveat (skewed STRUCTURED/FLAT marginals deflate κ even at 90 % observed
+>   agreement — report raw agreement alongside κ). The **3:1 ratio needs a one-sentence domain
+>   justification** (operator backfill on a false-reject vs detectable query failure on a
+>   false-accept) or a self-documenting F-beta(β≈1.73).
+>
+> **Three artifacts to correct before they are cited anywhere:** the fabricated Q1 arXiv:2604.01733
+> reference; the Q4 MCC-at-n=5 math; the Q5 "direct OpenAI has no EU option" claim. Status: Q2
+> **`accepted` + landed**; Q1-residual / Q5 / Q3–Q4 corrections **proposed**, awaiting the RFC session.
+
 ## Context
 
 `validate_tree()` (`helpers.py`) correctly rejects genuinely-flat documents, but it
@@ -418,10 +485,15 @@ brief, possibly STRUCTURED).
    are processed into a non-tree `processed/<doc_id>.flat.json` artifact (`status=done` +
    `content_class`), routed by a deterministic table/KV/prose classifier with the VLM off. The
    `/upload/status` contract in `DESIGN.md` gains a `content_class` field on the `done` response.
-   Remaining sub-item for the RFC session: confirm whether `flat_document`/`content_class` should
-   ALSO be queryable via the existing RAG tools or needs a dedicated flat-doc query surface.
-2. Migrate `_read_pdf_outline` off PyMuPDF (AGPL) to pypdfium2 so zero AGPL touches a
-   VLM-bound doc? (Legal, owner-owned — relates to RFC-003 standing AGPL §13 gate.)
+   ~~Remaining sub-item for the RFC session: confirm whether `flat_document`/`content_class` should
+   ALSO be queryable via the existing RAG tools or needs a dedicated flat-doc query surface.~~
+   **RESOLVED 2026-06-12 (Amendment 4): UNIFIED surface** — adapt flat `blocks[]` into the existing
+   RAG via a flat-doc adapter in `_search_one_doc`; **no** dedicated/6th MCP tool.
+2. ~~Migrate `_read_pdf_outline` off PyMuPDF (AGPL) to pypdfium2 so zero AGPL touches a
+   VLM-bound doc? (Legal, owner-owned — relates to RFC-003 standing AGPL §13 gate.)~~ **RESOLVED +
+   LANDED 2026-06-12 (Amendment 4):** migrated to `pypdfium2.get_toc()` on branch
+   `fix/rfc004-q2-agpl-outline-pypdfium2`; `pymupdf` dropped as a direct dep. Residual: `pymupdf4llm`
+   fallback still pulls PyMuPDF transitively (follow-up: make it an optional extra).
 3. ~~Pre-bake the ~1 GB Granite weights into the image now (offline/air-gap) or defer until a
    residency deployment needs the inline fallback?~~ **RESOLVED 2026-06-08 (Amendment 3):
    pre-bake NOW (`HF_HUB_OFFLINE=1`)** — air-gap-ready, behind multi-stage layer isolation, kept
@@ -446,8 +518,10 @@ brief, possibly STRUCTURED).
   measured 0 Docling headings); and the docling-PDF-bytes-flatten rationale.
 - **[UNVERIFIED]** Inline CPU latency under `max_new_tokens=8192` vs `CHILD_TIMEOUT`; real
   peak RSS (~1.8–2.5 GB estimate, not measured on the target node).
-- **[UNVERIFIED — vendor]** All cloud pricing and EU-ZDR-for-vision availability (gpt-4.1,
-  Claude/Bedrock-EU, Gemini/Vertex-EU, Azure vision abuse-monitoring exemption).
+- **[PARTIALLY RESOLVED 2026-06-12 — Amendment 4 Q5]** EU-ZDR-for-vision availability surveyed:
+  provider ladder Bedrock-EU(ZDR) > Azure-OpenAI-MAM-EU > Vertex-EU(+ZDR amendment) > self-hosted;
+  Fable 5/Mythos 5 ZDR-PROHIBITED everywhere; OpenAI added EU inference residency (Jan 2026). Still
+  **[UNVERIFIED — vendor contract]**: per-account ZDR approval, MAM approval timelines, cloud pricing.
 - **[UNVERIFIED]** Borrowed-dataset licenses / venues / arXiv IDs (incl. a future-dated
   `arXiv:2603.11044` the pass flagged as suspect).
 - **[DISPUTED LABELS]** The 2 Class-B Leistungsübersicht docs — reannotate (κ) before
@@ -461,7 +535,10 @@ brief, possibly STRUCTURED).
 - **HR2** — three new derived stores named into the erasure cascade (D6) before prod.
 - **HR3** — single ZDR lever, default OFF, hard startup assertion, PII kept out of logs,
   second summary-hop egress covered (D6).
-- **HR4** — pypdfium2-only raster; pre-existing PyMuPDF TOC read flagged for migration (D6).
+- **HR4** — pypdfium2-only raster **and** outline/TOC read (PyMuPDF `get_toc` migrated to
+  `pypdfium2.get_toc()`, Amendment 4 — zero first-party AGPL on the default/VLM-bound path).
+  Residual: the opt-in `pymupdf4llm` fallback still pulls PyMuPDF transitively (follow-up: optional
+  extra).
 - **HR5** — `validate_tree()` unchanged and sole binding guard; `CONFIRMED_FLAT` persists
   nothing; tariff-grid FP risk has an empirical FP==0 release gate (D6).
 

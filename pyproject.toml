@@ -6,8 +6,15 @@ requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=3.2.3",
     "litellm>=1.83.0",
-    "pymupdf>=1.27.2.2",
-    # AGPL-3.0 (HR4); kept as the secondary/fallback PDF route behind Docling.
+    # pypdfium2 (BSD-3/Apache-2): PDF outline/bookmark reads in converters.py
+    # (_read_pdf_outline). Replaced the first-party PyMuPDF (AGPL-3.0) get_toc call
+    # (RFC-004 Q2, HR4) so zero first-party AGPL touches the default / VLM-bound PDF
+    # path. Already resolved transitively via Docling; declared directly because we
+    # import it directly.
+    "pypdfium2>=5.8.0",
+    # AGPL-3.0 (HR4); the secondary/fallback PDF route behind Docling. NOTE: still
+    # transitively pulls PyMuPDF, so the venv is not yet AGPL-free — full elimination
+    # needs this moved to an optional extra (RFC-004 Q2 follow-up).
     "pymupdf4llm>=0.0.17",
     # Default PDF->markdown route (PDF_CONVERTER=docling). MIT, layout-aware, runs
     # CPU-only; resolves the fl-ligature corruption pymupdf4llm leaves in German

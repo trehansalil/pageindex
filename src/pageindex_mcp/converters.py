@@ -371,22 +371,36 @@ def _read_pdf_outline(pdf_path: str) -> tuple[list[tuple[int, str, int]], int]:
     """Read the PDF bookmark outline as [(level, title, page_1indexed), ...] in
     document (outline-tree) order, plus the total page count.
 
+    Uses pypdfium2 (BSD-3/Apache-2), NOT PyMuPDF (AGPL-3.0, HR4): this is the only
+    first-party structural read on the default / VLM-bound PDF path, so keeping it
+    off AGPL means zero first-party AGPL code touches a document the gate may later
+    escalate (RFC-004 Q2). pypdfium2 reports level and page index 0-based; we add
+    +1 to each to preserve the PyMuPDF get_toc convention the pure consumer
+    (_apply_outline_levels) expects. The +1 on level is LOAD-BEARING: a 0-based
+    level would collapse depth-1 and depth-2 sections through max(1, min(6, level)).
+    A bookmark with no resolvable page destination maps to page 0 (a sentinel that
+    never falls inside a 1-indexed section's [start, end) range).
+
     Returns ([], 0) when the outline has fewer than 2 entries — no usable
     structural signal, so the caller leaves the markdown flat and the quality gate
     rejects it legitimately (Cat D leaflets). Document order is preserved (NOT
     sorted by page): section extents are computed by outline NESTING (the next
     entry whose level <= the current level), which requires reading order."""
-    import pymupdf
+    import pypdfium2 as pdfium
 
-    pdoc = pymupdf.open(pdf_path)
+    pdoc = pdfium.PdfDocument(pdf_path)
     try:
-        raw_toc = pdoc.get_toc(simple=False)  # [(level, title, page_1based, dest), ...]
-        total_pages = pdoc.page_count
+        toc: list[tuple[int, str, int]] = []
+        for bm in pdoc.get_toc():
+            dest = bm.get_dest()
+            page_index = dest.get_index() if dest is not None else None
+            page_1based = (page_index + 1) if page_index is not None else 0
+            toc.append((bm.level + 1, bm.get_title() or "", page_1based))
+        total_pages = len(pdoc)
     finally:
         pdoc.close()
-    if len(raw_toc) < 2:
+    if len(toc) < 2:
         return [], 0
-    toc = [(int(e[0]), str(e[1]), int(e[2])) for e in raw_toc]
     return toc, total_pages
 
 
