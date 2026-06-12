@@ -1,5 +1,5 @@
 """
-Preprocess files from the doc_store folder using CustomPageIndexClient directly.
+Preprocess files from the doc_store folder through the isolated converter subprocess.
 
 Usage:
     python preprocess_client.py [filename] [--bg]
@@ -10,13 +10,22 @@ Usage:
 
 Supported extensions: .pdf  .docx  .pptx  .md  .txt  .html
 
-Hash-based deduplication is handled inside CustomPageIndexClient.index() — unchanged
-files are skipped automatically. The cache is stored in MinIO at
+Each file is indexed in a FRESH child process (``pageindex_mcp.converters_cli``,
+the same isolation the arq worker uses via ``_run_converter_subprocess``). Docling
+model weights, PyTorch caches, and glibc arenas — ~1.4 GB that torch never returns
+to the OS — are reclaimed at child exit instead of accumulating in this long-lived
+parent. Processing is SEQUENTIAL by default (``PREPROCESS_CONCURRENCY=1``), mirroring
+the worker's ``MAX_JOBS=1`` so peak RSS stays bounded to a single child; raise the
+env var only where the machine has RAM headroom (each child can peak ~1.7 GB).
+
+Hash-based deduplication is handled inside CustomPageIndexClient.index() (run in the
+child) — unchanged files are skipped automatically. The cache is stored in MinIO at
 hashes/processed_hashes.json and is shared with the rest of the document store.
 """
 
 
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -117,20 +126,52 @@ def _files_to_process(arg: str | None) -> list[Path]:
     return sorted(p for p in DOC_STORE.iterdir() if p.suffix.lower() in SUPPORTED)
 
 
-async def _process_one(client, file: Path) -> None:
+def _concurrency() -> int:
+    """Max converter children in flight. Default 1 — mirrors the worker's
+    MAX_JOBS=1, bounding peak RSS to a single ~1.7 GB child. Raise via
+    PREPROCESS_CONCURRENCY only where the machine has RAM headroom."""
     try:
-        doc_id = await client.index(str(file))
-        print(f"  [{file.name}] doc_id: {doc_id}", flush=True)
-    except Exception as e:
-        print(f"  [{file.name}] ERROR: {e}", flush=True)
+        return max(1, int(os.getenv("PREPROCESS_CONCURRENCY", "1")))
+    except ValueError:
+        return 1
+
+
+async def _process_one(sem: asyncio.Semaphore, file: Path) -> None:
+    # Same isolation primitive the arq worker uses: a fresh converters_cli child
+    # per file that dies (and frees Docling/torch memory) when it returns. The
+    # child runs CustomPageIndexClient.index() in-process, then exits.
+    from pageindex_mcp.worker import ConverterOOMError, _run_converter_subprocess
+
+    async with sem:
+        try:
+            result = await _run_converter_subprocess(str(file))
+        except ConverterOOMError:
+            print(f"  [{file.name}] ERROR: converter child OOM-killed", flush=True)
+            return
+        except TimeoutError:
+            print(f"  [{file.name}] ERROR: converter child timed out", flush=True)
+            return
+        except Exception as e:
+            # Report and continue to the next file (matches prior behaviour).
+            print(f"  [{file.name}] ERROR: {e}", flush=True)
+            return
+
+    doc_id = result.get("doc_id")
+    content_class = result.get("content_class")
+    peak_mb = (result.get("peak_rss_kib") or 0) / 1024
+    cls = f" class={content_class}" if content_class else ""
+    print(f"  [{file.name}] doc_id: {doc_id}{cls} (child peak {peak_mb:.0f} MB)", flush=True)
 
 
 async def preprocess(files: list[Path]) -> None:
-    from pageindex_mcp.client import CustomPageIndexClient
-
-    print(f"Processing {len(files)} file(s) in parallel...", flush=True)
-    client = CustomPageIndexClient()
-    await asyncio.gather(*(_process_one(client, f) for f in files))
+    concurrency = _concurrency()
+    print(
+        f"Processing {len(files)} file(s) via isolated converter subprocesses "
+        f"(concurrency={concurrency})...",
+        flush=True,
+    )
+    sem = asyncio.Semaphore(concurrency)
+    await asyncio.gather(*(_process_one(sem, f) for f in files))
 
 
 if __name__ == "__main__":
