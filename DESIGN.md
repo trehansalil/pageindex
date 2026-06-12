@@ -316,14 +316,23 @@ no duplicate tree. The SHA-256 is the dedup key, not the filename.
 |---|---|
 | `pending` | Job enqueued; worker has not started |
 | `processing` | Worker is actively indexing |
-| `done` | Tree persisted successfully; `doc_id` present |
+| `done` | Persisted successfully; `doc_id` present. **A tree doc** carries the hierarchical structure; **a flat doc** (RFC-004 Amendment 1 — clean text layer with no recoverable hierarchy) carries a `content_class` field instead (see below) and is persisted as `processed/<doc_id>.flat.json`, not a tree. Both are successes. |
 | `error` | Processing failed; `reason` field present |
+
+**`content_class` values (only present on a flat `done` response, RFC-004 Amendment 1):**
+
+| `content_class` | Meaning |
+|---|---|
+| `flat_table` | Markdown-table-dominant page (e.g. tariff grid) |
+| `flat_kv` | Numbered/labelled clause → key-value structure |
+| `flat_prose` | Free-running paragraphs, no headings |
+| `flat_mixed` | A mix of the above |
 
 **Error `reason` values:**
 
 | `reason` | Trigger |
 |---|---|
-| `low_quality_tree` | Quality gate failed: depth < 2, node_count < 3, or garbling detected |
+| `low_quality_tree` | **Garbling only** (RFC-004 Amendment 1). A `depth < 2` / `node_count < 3` result is no longer an error — a clean-text doc with no hierarchy is routed to the flat success path above. This reason now fires *only* when the extracted text itself is corrupt (e.g. ligature/encoding garbling). Gated by the `FLAT_DOC_ROUTING` kill-switch (default on); with it off, the legacy reject-on-any-low-quality behaviour returns. |
 | `unsupported_format` | Converter could not handle the input |
 | `extraction_failed` | Unhandled exception in converter or indexer |
 
@@ -351,6 +360,22 @@ X-API-Key: <token>
   "completed_at": "2026-05-30T10:02:15+00:00"
 }
 ```
+
+**Flat-doc success response (200, `status: "done"` with `content_class`, RFC-004 Amendment 1):**
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "done",
+  "filename": "GHV-TKV-Tarif.pdf",
+  "doc_id": "e5f6a7b8",
+  "content_class": "flat_table",
+  "submitted_at": "2026-05-30T10:00:00+00:00",
+  "completed_at": "2026-05-30T10:01:40+00:00"
+}
+```
+A flat doc is queryable through the **same** RAG/document tools as a tree doc (unified surface,
+RFC-004 Amendment 4 — no separate flat-doc tool); the `content_class` field is the only
+machine-distinguishable marker on the status response.
 
 **Error response (200, `status: "error"`):**
 ```json

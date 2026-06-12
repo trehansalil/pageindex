@@ -73,17 +73,19 @@ async def main() -> int:
             # documented CLI exit contract is 0 on success or 1 on handled
             # failure, so we coerce any argparse exit to 1. Emit a JSON line
             # first so the stdout-is-exactly-one-JSON-line contract holds.
-            _emit({
-                "ok": False,
-                "error": "ArgparseExit",
-                "message": f"argparse exited with code {sysexit.code}",
-            })
+            _emit(
+                {
+                    "ok": False,
+                    "error": "ArgparseExit",
+                    "message": f"argparse exited with code {sysexit.code}",
+                }
+            )
             return 1
 
         try:
             # Heavy import deferred to here so baseline RSS in the parent process
             # (before any conversion) is not polluted by pageindex/litellm imports.
-            from pageindex_mcp.client import CustomPageIndexClient  # noqa: PLC0415
+            from pageindex_mcp.client import CustomPageIndexClient
 
             client = CustomPageIndexClient()
             doc_id = await client.index(args.input_path)
@@ -95,10 +97,17 @@ async def main() -> int:
                 "peak_rss_kib": _peak_rss_kib(),
                 "duration_ms": duration_ms,
             }
+            # RFC-004 Amendment 1 (Step 5 integration): when index() routed the
+            # doc to the flat success path it stamps last_content_class. Surface it
+            # in the stdout JSON so the worker hash carries content_class
+            # (FLAT-04-C1). Absent for a normal tree doc.
+            content_class = getattr(client, "last_content_class", None)
+            if content_class:
+                payload["content_class"] = content_class
             _emit(payload)
             return 0
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
             payload = {
                 "ok": False,

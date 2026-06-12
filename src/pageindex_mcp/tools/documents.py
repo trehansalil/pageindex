@@ -4,7 +4,8 @@ import json
 import logging
 import time
 
-from ..helpers import _rag, _strip_text, _build_node_map
+from ..cache import get_doc
+from ..helpers import _build_node_map, _rag, _strip_text, flat_doc_view
 from ..metrics import (
     DOCUMENTS_TOTAL,
     TOOL_CALLS,
@@ -12,7 +13,6 @@ from ..metrics import (
     TOOL_ERRORS,
 )
 from ..storage import list_processed_docs
-from ..cache import get_doc
 
 logger = logging.getLogger(__name__)
 
@@ -50,20 +50,25 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
             node_count = len(nm)
         except Exception:
             logger.warning("recent_documents: failed to load doc %s for enrichment", doc_id)
-        enriched.append({
-            "doc_id":     doc_id,
-            "doc_name":   d.get("doc_name", "unknown"),
-            "status":     "completed",
-            "node_count": node_count,
-        })
+        enriched.append(
+            {
+                "doc_id": doc_id,
+                "doc_name": d.get("doc_name", "unknown"),
+                "status": "completed",
+                "node_count": node_count,
+            }
+        )
 
     logger.info("recent_documents returning %d/%d documents", len(enriched), len(docs))
-    return json.dumps({
-        "total":     len(docs),
-        "page":      page,
-        "page_size": page_size,
-        "documents": enriched,
-    }, indent=2)
+    return json.dumps(
+        {
+            "total": len(docs),
+            "page": page,
+            "page_size": page_size,
+            "documents": enriched,
+        },
+        indent=2,
+    )
 
 
 async def find_relevant_documents(query: str) -> str:
@@ -76,11 +81,17 @@ async def find_relevant_documents(query: str) -> str:
     try:
         list_t0 = time.monotonic()
         documents = list_processed_docs()
-        logger.info("find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)", time.monotonic() - list_t0, len(documents))
+        logger.info(
+            "find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)",
+            time.monotonic() - list_t0,
+            len(documents),
+        )
         if not documents:
             logger.warning("find_relevant_documents: no documents indexed")
             TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
-            return json.dumps({"error": "No documents are indexed. Process documents first.", "available": []})
+            return json.dumps(
+                {"error": "No documents are indexed. Process documents first.", "available": []}
+            )
         return await _rag(query, [d["doc_id"] for d in documents])
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
@@ -110,25 +121,50 @@ def get_document(doc_id: str) -> str:
         TOOL_DURATION.labels(tool="get_document").observe(elapsed)
         logger.debug("get_document completed in %.3fs", elapsed)
 
+    # FLAT-05-C2 (Step 5 integration): a flat doc carries a content_class and no
+    # tree — return its verbalized blocks/row_records instead of an (empty) node
+    # map. flat_doc_view returns None for a tree doc, so the existing path below
+    # is unchanged for tree docs (boundary). HR1: retrieval surface, not accuracy.
+    flat = flat_doc_view(data)
+    if flat is not None:
+        logger.info(
+            "get_document: %s is a flat doc (content_class=%s)", doc_id, flat["content_class"]
+        )
+        return json.dumps(
+            {
+                "doc_id": doc_id,
+                "doc_name": flat["doc_name"],
+                "status": "completed",
+                "content_class": flat["content_class"],
+                "total_nodes": 0,
+                "blocks": flat["blocks"],
+                "row_records": flat["row_records"],
+            },
+            indent=2,
+        )
+
     structure = data.get("structure", [])
     nm: dict = {}
     _build_node_map(structure, nm)
 
     logger.info("get_document: %s has %d nodes", doc_id, len(nm))
-    return json.dumps({
-        "doc_id":             doc_id,
-        "doc_name":           data.get("doc_name", data.get("filename", "unknown")),
-        "status":             "completed",
-        "total_nodes":        len(nm),
-        "top_level_sections": [
-            {
-                "title":   n.get("title"),
-                "node_id": n.get("node_id"),
-                "pages":   f"{n.get('start_index')}-{n.get('end_index')}",
-            }
-            for n in structure
-        ],
-    }, indent=2)
+    return json.dumps(
+        {
+            "doc_id": doc_id,
+            "doc_name": data.get("doc_name", data.get("filename", "unknown")),
+            "status": "completed",
+            "total_nodes": len(nm),
+            "top_level_sections": [
+                {
+                    "title": n.get("title"),
+                    "node_id": n.get("node_id"),
+                    "pages": f"{n.get('start_index')}-{n.get('end_index')}",
+                }
+                for n in structure
+            ],
+        },
+        indent=2,
+    )
 
 
 def get_document_structure(doc_id: str) -> str:
@@ -148,10 +184,28 @@ def get_document_structure(doc_id: str) -> str:
         TOOL_DURATION.labels(tool="get_document_structure").observe(elapsed)
         logger.debug("get_document_structure completed in %.3fs", elapsed)
 
-    return json.dumps({
-        "doc_id":    doc_id,
-        "structure": _strip_text(data.get("structure", [])),
-    }, indent=2)
+    # FLAT-05-C2 (Step 5 integration): a flat doc exposes content_class +
+    # blocks/row_records in place of an empty structure tree; tree docs unchanged.
+    flat = flat_doc_view(data)
+    if flat is not None:
+        return json.dumps(
+            {
+                "doc_id": doc_id,
+                "content_class": flat["content_class"],
+                "structure": [],
+                "blocks": flat["blocks"],
+                "row_records": flat["row_records"],
+            },
+            indent=2,
+        )
+
+    return json.dumps(
+        {
+            "doc_id": doc_id,
+            "structure": _strip_text(data.get("structure", [])),
+        },
+        indent=2,
+    )
 
 
 def get_page_content(doc_id: str, pages: str) -> str:
@@ -187,13 +241,12 @@ def get_page_content(doc_id: str, pages: str) -> str:
     hits = [
         {
             "node_id": nid,
-            "title":   n.get("title"),
-            "pages":   f"{n.get('start_index')}-{n.get('end_index')}",
-            "text":    n["text"],
+            "title": n.get("title"),
+            "pages": f"{n.get('start_index')}-{n.get('end_index')}",
+            "text": n["text"],
         }
         for nid, n in nm.items()
-        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted
-        and "text" in n
+        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted and "text" in n
     ]
 
     if not hits:

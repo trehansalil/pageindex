@@ -4,13 +4,13 @@ import asyncio
 import logging
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from fastapi import Depends, FastAPI, HTTPException, Header, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 
 from .cache import job_status_get, job_status_set
 from .client import _SUPPORTED
@@ -34,15 +34,14 @@ async def _get_arq_pool():
     if _arq_pool is None:
         async with _arq_lock:
             if _arq_pool is None:
-                _arq_pool = await create_pool(
-                    RedisSettings.from_dsn(settings.redis_url)
-                )
+                _arq_pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     return _arq_pool
 
 
 # ---------------------------------------------------------------------------
 # Auth dependency
 # ---------------------------------------------------------------------------
+
 
 async def require_api_key(
     x_api_key: Annotated[str | None, Header()] = None,
@@ -57,6 +56,7 @@ async def require_api_key(
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+
 
 def create_upload_app() -> FastAPI:
     """Return a FastAPI app to be mounted at /upload on the parent Starlette app."""
@@ -79,8 +79,7 @@ def create_upload_app() -> FastAPI:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Unsupported file type '{ext}'. "
-                        f"Supported: {', '.join(sorted(_SUPPORTED))}"
+                        f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(_SUPPORTED))}"
                     ),
                 )
 
@@ -89,18 +88,23 @@ def create_upload_app() -> FastAPI:
             # Read file bytes and stage in MinIO (shared storage)
             file_bytes = await file.read()
             staging_key = await asyncio.to_thread(
-                upload_staging, job_id, filename, file_bytes,
+                upload_staging,
+                job_id,
+                filename,
+                file_bytes,
             )
             logger.debug("Staged upload in MinIO: %s", staging_key)
 
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             await job_status_set(
                 job_id,
                 {"status": "pending", "filename": filename, "submitted_at": now},
             )
 
             await arq_pool.enqueue_job(
-                "process_document_job", staging_key, job_id,
+                "process_document_job",
+                staging_key,
+                job_id,
             )
             results.append({"job_id": job_id, "filename": filename})
             logger.info("Enqueued job %s for file %s", job_id, filename)
@@ -124,5 +128,3 @@ def create_upload_app() -> FastAPI:
         return {"job_id": job_id, **data}
 
     return app
-
-

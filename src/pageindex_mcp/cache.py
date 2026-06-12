@@ -42,9 +42,7 @@ async def get_async_redis() -> aioredis.Redis:
     if _redis_async is None:
         async with _redis_async_lock:
             if _redis_async is None:
-                _redis_async = aioredis.from_url(
-                    settings.redis_url, decode_responses=True
-                )
+                _redis_async = aioredis.from_url(settings.redis_url, decode_responses=True)
     return _redis_async
 
 
@@ -115,6 +113,26 @@ def get_doc(doc_id: str) -> dict:
         logger.debug("Cache hit for doc %s", doc_id)
         return cached
     from .storage import load_doc  # lazy: cache -> storage read-through
-    data = load_doc(doc_id)
+
+    try:
+        data = load_doc(doc_id)
+    except json.JSONDecodeError:
+        # A corrupt tree artifact (processed/<doc_id>.json exists but holds
+        # invalid JSON) must SURFACE, never be masked as "missing". Because
+        # JSONDecodeError subclasses ValueError, catch it FIRST and re-raise so
+        # the flat fallback below cannot swallow real corruption (Copilot PR #9).
+        raise
+    except ValueError:
+        # RFC-004 Amendment 1 (Step 5 integration): a flat document has no tree
+        # artifact processed/<doc_id>.json — only processed/<doc_id>.flat.json.
+        # load_doc signals genuine not-found via ValueError("Document not
+        # found: ...") (storage.py NoSuchKey -> ValueError). Fall back to the
+        # flat loader so flat docs are retrievable through the SAME read-through
+        # accessor: this feeds _search_one_doc's FLAT-05-C1 adapter and the
+        # get_document / get_document_structure transport. get_flat_doc
+        # re-raises ValueError when neither artifact exists.
+        from .storage import get_flat_doc
+
+        data = get_flat_doc(doc_id)
     doc_cache_set(doc_id, data)
     return data

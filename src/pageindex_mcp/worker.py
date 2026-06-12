@@ -13,13 +13,12 @@ import asyncio
 import json
 import logging
 import os
-import resource
 import shutil
 import signal
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 import redis.asyncio as aioredis
 from arq import cron
@@ -72,9 +71,11 @@ _CHILD_ERROR_REASON: dict[str, str] = {
 # does not requeue. ``input_missing`` is NOT in this set: a transient MinIO
 # read failure can in principle recover on retry, and the wasted retry on a
 # genuinely-missing file is cheap (one extra download attempt).
-_TERMINAL_CHILD_REASONS: frozenset[str] = frozenset({
-    "low_quality_tree",
-})
+_TERMINAL_CHILD_REASONS: frozenset[str] = frozenset(
+    {
+        "low_quality_tree",
+    }
+)
 # A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
 # grace margin (clock skew + the gap before arq itself gives up) a hash still in
 # status=processing means the worker died mid-job (e.g. OOMKill/SIGKILL ran no
@@ -106,12 +107,21 @@ async def _dlq_push_on_final_attempt(
     if job_try < MAX_TRIES:
         return False
     try:
-        await redis.rpush(DLQ_KEY, json.dumps({
-            "job_id": job_id, "staging_key": staging_key, "error": str(exc),
-        }))
+        await redis.rpush(
+            DLQ_KEY,
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "staging_key": staging_key,
+                    "error": str(exc),
+                }
+            ),
+        )
         logger.error(
             "Job %s exhausted %d tries -> pushed to DLQ %s",
-            job_id, MAX_TRIES, DLQ_KEY,
+            job_id,
+            MAX_TRIES,
+            DLQ_KEY,
         )
     except Exception:
         logger.exception("Failed to push job %s to DLQ", job_id)
@@ -155,7 +165,7 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
         return
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         # CancelledError (BaseException since 3.8) must also fall through to
         # SIGKILL so an arq cancel/shutdown doesn't leave a child orphaned.
         pass
@@ -166,7 +176,7 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=grace)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
@@ -186,7 +196,10 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
         asyncio.TimeoutError: child did not finish within CHILD_TIMEOUT.
     """
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "pageindex_mcp.converters_cli", pdf_path,
+        sys.executable,
+        "-m",
+        "pageindex_mcp.converters_cli",
+        pdf_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         # start_new_session=True is the documented, thread-safe way to put the
@@ -199,7 +212,7 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
     try:
         async with asyncio.timeout(CHILD_TIMEOUT):
             stdout_bytes, stderr_bytes = await proc.communicate()
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
 
@@ -250,7 +263,8 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # arq handler
 # ---------------------------------------------------------------------------
-async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
+# Complexity grandfathered (arq job lifecycle handler); see pyproject [tool.ruff].
+async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:  # noqa: PLR0915
     """Index a document file. Called by arq in a worker process.
 
     The upload endpoint stages the file in MinIO; this worker downloads it
@@ -286,11 +300,14 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         try:
             result = await _run_converter_subprocess(local_path)
         except ConverterOOMError as exc:
-            await redis.hset(_job_key(job_id), mapping={
-                "status": "error",
-                "reason": "converter_oom",
-                "error": exc.stderr_tail,
-            })
+            await redis.hset(
+                _job_key(job_id),
+                mapping={
+                    "status": "error",
+                    "reason": "converter_oom",
+                    "error": exc.stderr_tail,
+                },
+            )
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             logger.error("Converter child OOM: job=%s", job_id)
@@ -299,30 +316,37 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             # staged object before then would make subsequent attempts fail
             # at download_staging and overwrite the original OOM reason.
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             CONVERTER_CHILD_TIMEOUT_TOTAL.inc()
-            await redis.hset(_job_key(job_id), mapping={
-                "status": "error",
-                "reason": "converter_timeout",
-            })
+            await redis.hset(
+                _job_key(job_id),
+                mapping={
+                    "status": "error",
+                    "reason": "converter_timeout",
+                },
+            )
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             logger.error("Converter child timed out: job=%s", job_id)
             raise
         except ConverterChildError as exc:
-            reason = _CHILD_ERROR_REASON.get(
-                exc.error_class or "", "converter_child_failed"
+            reason = _CHILD_ERROR_REASON.get(exc.error_class or "", "converter_child_failed")
+            await redis.hset(
+                _job_key(job_id),
+                mapping={
+                    "status": "error",
+                    "reason": reason,
+                    "error": exc.stderr_tail,
+                },
             )
-            await redis.hset(_job_key(job_id), mapping={
-                "status": "error",
-                "reason": reason,
-                "error": exc.stderr_tail,
-            })
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             logger.error(
                 "Converter child failed: job=%s rc=%s reason=%s error_class=%s",
-                job_id, exc.returncode, reason, exc.error_class,
+                job_id,
+                exc.returncode,
+                reason,
+                exc.error_class,
             )
             if reason in _TERMINAL_CHILD_REASONS:
                 # Deterministic failure: a retry on the same staged input
@@ -331,19 +355,31 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                 cleanup_staging = True
                 logger.warning(
                     "Treating job=%s as terminal (reason=%s); not retrying.",
-                    job_id, reason,
+                    job_id,
+                    reason,
                 )
                 return ""
             raise
 
         doc_id = result["doc_id"]
-        await redis.hset(_job_key(job_id), mapping={"status": "done", "doc_id": doc_id})
+        # A flat-document result (RFC-004 Amendment 1) carries a content_class:
+        # the job still completes as a SUCCESS (status=done), but surfaces the
+        # class so downstream consumers can read the flat artifact. A normal
+        # tree document has no content_class — the mapping is left unchanged so
+        # we never write an empty/None content_class for it.
+        done_mapping: dict[str, str] = {"status": "done", "doc_id": doc_id}
+        content_class = result.get("content_class")
+        if content_class:
+            done_mapping["content_class"] = content_class
+        await redis.hset(_job_key(job_id), mapping=done_mapping)
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="success").inc()
-        logger.info("Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start)
+        logger.info(
+            "Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start
+        )
         cleanup_staging = True  # terminal success
         return doc_id
-    except (ConverterOOMError, ConverterChildError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, ConverterOOMError, ConverterChildError) as exc:
         # Terminal-but-arq-aware error paths above already wrote Redis state.
         # Push to DLQ on final attempt and re-raise so arq retries / records it.
         if await _dlq_push_on_final_attempt(
@@ -443,7 +479,7 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions = [process_document_job]
+    functions: ClassVar = [process_document_job]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
@@ -454,7 +490,7 @@ class WorkerSettings:
     # boot, so a worker restart immediately reconciles anything a prior crash left
     # frozen in status=processing. unique=True -> only one worker runs each tick;
     # max_tries=1 -> a transient reaper failure is not retried as a normal job.
-    cron_jobs = [
+    cron_jobs: ClassVar = [
         cron(
             reap_stale_jobs,
             second=0,

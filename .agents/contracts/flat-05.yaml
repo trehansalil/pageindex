@@ -1,0 +1,28 @@
+feature: FLAT-05
+name: Unified Flat-Document Query Surface (no new MCP tool)
+module: helpers
+phase: 1
+source: rfcs/004-vlm-hierarchy-detection.md#amendment-4
+
+# RFC-004 Amendment 4 (Q1 residual, 2026-06-12): flat docs are queried through the
+# EXISTING retrieval surface with type tags — NOT a 6th MCP tool. Industry standard
+# (AWS Textract / Azure DI / Google DocAI / Docling / Unstructured / Reducto /
+# LlamaParse): one retrieval surface, type tags at ingest. The Amendment-1 verbalized
+# row_records are already the retrieval optimum. HR1: no accuracy-superiority claim.
+#
+# Module is HELPERS (not server): per contracts.sh §3b the MCP server is not a valid
+# contract module (cf. RAG-01). The get_document / get_document_structure transport in
+# tools/documents.py calls the helper built here; that wiring is transport-only.
+
+contracts:
+  - id: FLAT-05-C1
+    desc: "_search_one_doc retrieves flat documents through the existing find_relevant_documents tool via a flat-doc adapter"
+    trigger: "_search_one_doc is called with a doc whose loaded data carries a content_class (flat) and no usable structure[] tree"
+    effect: "The flat-doc adapter returns the document's verbalized flat content (row_records / role-typed block text) as the (doc_id, name, text) match, bypassing the LLM tree-node selection step; flat docs thus become searchable through the existing find_relevant_documents tool with NO new MCP tool registered"
+    boundary: "data.get('content_class') is set and data has no non-empty structure[]; a normal tree doc (structure[] present) takes the unchanged LLM node-selection path"
+
+  - id: FLAT-05-C2
+    desc: "A flat-doc view helper builds the get_document / get_document_structure response for flat docs"
+    trigger: "flat_doc_view(data) is called by the get_document / get_document_structure transport for a doc whose data carries a content_class (flat)"
+    effect: "Returns a response shape exposing the flat doc's content_class and its blocks / row_records (instead of an empty structure tree), so the existing MCP document tools return meaningful content for flat docs"
+    boundary: "data carries a content_class (flat); tree docs are unaffected and continue to return their node-map / structure shape"

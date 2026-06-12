@@ -19,6 +19,7 @@ if not os.environ.get("OPENAI_API_KEY") and os.environ.get("CHATGPT_API_KEY"):
 # Settings
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Settings:
     minio_endpoint: str
@@ -42,6 +43,8 @@ class Settings:
     llm_filter_model: str
     llm_search_model: str
     llm_search_concurrency: int
+    # FLAT-03: kill-switch for post-validate_tree flat-document routing (default true).
+    flat_doc_routing: bool
 
 
 def _load_settings() -> Settings:
@@ -55,9 +58,7 @@ def _load_settings() -> Settings:
         doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
-        redis_url=os.environ.get(
-            "REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"
-        ),
+        redis_url=os.environ.get("REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"),
         upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
         cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
         mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),
@@ -68,6 +69,8 @@ def _load_settings() -> Settings:
         llm_filter_model=os.environ.get("PAGEINDEX_FILTER_MODEL", "gpt-4o-mini"),
         llm_search_model=os.environ.get("PAGEINDEX_SEARCH_MODEL", "gpt-4o-mini"),
         llm_search_concurrency=int(os.environ.get("PAGEINDEX_SEARCH_CONCURRENCY", "3")),
+        flat_doc_routing=os.environ.get("FLAT_DOC_ROUTING", "true").strip().lower()
+        not in ("0", "false", "no"),
     )
 
 

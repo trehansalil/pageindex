@@ -1,13 +1,11 @@
 """Prometheus metrics definitions and /metrics response helper."""
 
-import time
-
 from prometheus_client import (
+    REGISTRY,
     Counter,
     Gauge,
     Histogram,
     generate_latest,
-    REGISTRY,
 )
 from starlette.requests import Request
 from starlette.responses import Response
@@ -96,6 +94,12 @@ LOW_QUALITY_TREES = Counter(
     "pageindex_low_quality_trees_total",
     "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",
     ["reason"],
+)
+FLAT_DOCS_TOTAL = Counter(
+    "pageindex_flat_docs_total",
+    "Documents routed to the flat success path after a non-garbling validate_tree "
+    "rejection (FLAT-03). Labelled by deterministic content_class.",
+    ["content_class"],
 )
 PDF_EXTRACT_FALLBACKS = Counter(
     "pageindex_pdf_extract_fallbacks_total",

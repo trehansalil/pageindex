@@ -1,0 +1,23 @@
+feature: FLAT-04
+name: Flat-Document Job Completion (non-error done plus content_class)
+module: worker
+phase: 1
+source: rfcs/004-vlm-hierarchy-detection.md#amendment-1
+
+# RFC-004 Amendment 1: flat_document is NO LONGER a terminal error. A flat doc
+# returns a non-error status=done carrying content_class. The garbling-only
+# low_quality_tree path stays terminal and unchanged. No new terminal reason is
+# added to _TERMINAL_CHILD_REASONS for the flat path (it is a success, not an error).
+
+contracts:
+  - id: FLAT-04-C1
+    desc: "A flat-document index result completes the job as a success carrying content_class"
+    trigger: "process_document_job receives an index result for a document routed to the flat path (the converter result/child carries a content_class)"
+    effect: "The pageindex:job:<job_id> hash is set to status=done with doc_id and content_class fields; no error reason is written; no DLQ push occurs; the job is not retried"
+    boundary: "The index result indicates a flat doc (content_class present); the job otherwise completed without exception"
+
+  - id: FLAT-04-C2
+    desc: "Garbling low_quality_tree remains a terminal error (unchanged)"
+    trigger: "process_document_job observes a LowQualityTreeError (reason=low_quality_tree, i.e. garbling) raised by index()"
+    effect: "The job hash is set to status=error with reason=low_quality_tree; the failure is terminal — no DLQ push and no arq retry; behavior is byte-for-byte unchanged from WORKER-01-C2"
+    boundary: "The raised reason maps to low_quality_tree (the only remaining terminal validate_tree reason after Amendment 1)"

@@ -25,7 +25,11 @@ def get_minio() -> Minio:
     if _minio_client is None:
         with _minio_lock:
             if _minio_client is None:
-                logger.info("Initialising MinIO client: endpoint=%s bucket=%s", settings.minio_endpoint, settings.minio_bucket)
+                logger.info(
+                    "Initialising MinIO client: endpoint=%s bucket=%s",
+                    settings.minio_endpoint,
+                    settings.minio_bucket,
+                )
                 client = Minio(
                     settings.minio_endpoint,
                     access_key=settings.minio_access_key,
@@ -43,6 +47,7 @@ def get_minio() -> Minio:
 # Processed document CRUD  (MinIO: processed/<doc_id>.json)
 # ---------------------------------------------------------------------------
 
+
 def load_doc(doc_id: str) -> dict:
     """Fetch processed/<doc_id>.json from MinIO (STORE-01-C3: returns exact persisted
     bytes). Caching is handled by the read-through accessor cache.get_doc."""
@@ -58,7 +63,7 @@ def load_doc(doc_id: str) -> dict:
     except S3Error as e:
         if e.code == "NoSuchKey":
             logger.warning("Document not found in MinIO: %s", doc_id)
-            raise ValueError(f"Document not found: {doc_id}")
+            raise ValueError(f"Document not found: {doc_id}") from e
         logger.error("MinIO error loading doc %s: %s", doc_id, e)
         raise
     finally:
@@ -87,12 +92,73 @@ def save_doc(doc_id: str, data: dict) -> None:
         )
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+
         doc_cache_delete(doc_id)
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
-def delete_doc(doc_id: str) -> None:
+# ---------------------------------------------------------------------------
+# Flat-document CRUD  (MinIO: processed/<doc_id>.flat.json)  — RFC-004 Amendment 1
+# ---------------------------------------------------------------------------
+
+
+def get_flat_doc(doc_id: str) -> dict:
+    """Fetch processed/<doc_id>.flat.json from MinIO (FLAT-02-C1: returns a dict
+    value-equivalent to the persisted bytes — json.loads of the stored JSON)."""
+    MINIO_OPS.labels(operation="get").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    response = None
+    try:
+        response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.flat.json")
+        data = json.loads(response.read())
+        logger.debug("Loaded flat doc %s from MinIO", doc_id)
+        return data
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            logger.warning("Flat document not found in MinIO: %s", doc_id)
+            raise ValueError(f"Flat document not found: {doc_id}") from e
+        logger.error("MinIO error loading flat doc %s: %s", doc_id, e)
+        raise
+    finally:
+        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+
+
+def save_flat_doc(doc_id: str, data: dict) -> None:
+    """Persist a flat document (no tree) to processed/<doc_id>.flat.json and write
+    the processed/<doc_id>.meta.json sidecar carrying content_class (FLAT-02-C1).
+    Mirrors save_doc; a flat doc never writes the tree artifact processed/<id>.json."""
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    try:
+        content = json.dumps(data, indent=2).encode()
+        mc.put_object(
+            settings.minio_bucket,
+            f"processed/{doc_id}.flat.json",
+            BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+        logger.debug("Saved flat doc %s to MinIO (%d bytes)", doc_id, len(content))
+        from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+
+        doc_cache_delete(doc_id)
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+    # Sidecar carries content_class for listing/routing (FLAT-02-C1/C3).
+    save_doc_meta(doc_id, data)
+
+
+# Complexity grandfathered (HR2 erasure cascade); see pyproject [tool.ruff].
+def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
     """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
        1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
        4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename.
@@ -117,8 +183,20 @@ def delete_doc(doc_id: str) -> None:
         # 1. uploads/<doc_id>/*
         removed = 0
         try:
-            for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
-                mc.remove_object(settings.minio_bucket, obj.object_name)
+            for obj in mc.list_objects(
+                settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True
+            ):
+                object_name = obj.object_name
+                if not object_name:
+                    continue
+                # Flat docs have no processed/<doc_id>.json, so load_doc above yields
+                # no doc_name. Recover it from the upload object basename (present for
+                # both flat and tree docs) so step 5 can still clear the hash-cache (HR2).
+                if doc_name is None:
+                    basename = object_name.rsplit("/", 1)[-1]
+                    if basename:
+                        doc_name = basename
+                mc.remove_object(settings.minio_bucket, object_name)
                 removed += 1
             logger.info("ERASE %s step1: removed %d uploads object(s)", doc_id, removed)
         except S3Error as e:
@@ -132,6 +210,14 @@ def delete_doc(doc_id: str) -> None:
             if getattr(e, "code", "") != "NoSuchKey":
                 errors.append(f"processed.json: {e}")
 
+        # 2b. processed/<doc_id>.flat.json  (FLAT-02-C2: derived store joins HR2 cascade)
+        try:
+            mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.flat.json")
+            logger.info("ERASE %s step2b: removed processed/%s.flat.json", doc_id, doc_id)
+        except S3Error as e:
+            if getattr(e, "code", "") != "NoSuchKey":
+                errors.append(f"processed.flat.json: {e}")
+
         # 3. processed/<doc_id>.meta.json
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.meta.json")
@@ -143,6 +229,7 @@ def delete_doc(doc_id: str) -> None:
         # 4. Redis cache
         try:
             from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+
             doc_cache_delete(doc_id)
             logger.info("ERASE %s step4: invalidated Redis cache", doc_id)
         except Exception as e:
@@ -159,7 +246,9 @@ def delete_doc(doc_id: str) -> None:
             except Exception as e:
                 errors.append(f"hash-cache: {e}")
         else:
-            logger.warning("ERASE %s step5: doc_name unknown; cannot clear hash-cache entry", doc_id)
+            logger.warning(
+                "ERASE %s step5: doc_name unknown; cannot clear hash-cache entry", doc_id
+            )
 
         if errors:
             raise RuntimeError(f"delete_doc({doc_id}) partial failure across stores: {errors}")
@@ -177,9 +266,12 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
     start = time.monotonic()
     mc = get_minio()
     try:
-        content = json.dumps(
-            {k: meta.get(k, "") for k in _META_FIELDS}, indent=2
-        ).encode()
+        sidecar = {k: meta.get(k, "") for k in _META_FIELDS}
+        # FLAT-02-C1/C3: carry content_class only when present (flat docs) so the
+        # tree-doc sidecar shape is unchanged.
+        if meta.get("content_class"):
+            sidecar["content_class"] = meta["content_class"]
+        content = json.dumps(sidecar, indent=2).encode()
         mc.put_object(
             settings.minio_bucket,
             f"processed/{doc_id}.meta.json",
@@ -199,12 +291,17 @@ def list_processed_docs() -> list[dict]:
     start = time.monotonic()
     mc = get_minio()
     try:
-        meta_keys: dict[str, str] = {}   # doc_id -> object_name (prefer .meta.json)
+        meta_keys: dict[str, str] = {}  # doc_id -> object_name (prefer .meta.json)
         for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
             name = obj.object_name
             if name.endswith(".meta.json"):
                 doc_id = Path(name).stem.removesuffix(".meta")
                 meta_keys[doc_id] = name
+            elif name.endswith(".flat.json"):
+                # Flat doc (FLAT-02-C3); prefer its .meta.json sidecar if present.
+                doc_id = Path(name).stem.removesuffix(".flat")
+                if doc_id not in meta_keys:
+                    meta_keys[doc_id] = name
             elif name.endswith(".json"):
                 doc_id = Path(name).stem
                 if doc_id not in meta_keys:
@@ -216,12 +313,15 @@ def list_processed_docs() -> list[dict]:
             try:
                 response = mc.get_object(settings.minio_bucket, obj_name)
                 data = json.loads(response.read())
-                docs.append({
-                    "doc_id":       data.get("doc_id", doc_id),
-                    "doc_name":     data.get("doc_name", data.get("filename", "unknown")),
-                    "source_url":   data.get("source_url", ""),
-                    "processed_at": data.get("processed_at", ""),
-                })
+                docs.append(
+                    {
+                        "doc_id": data.get("doc_id", doc_id),
+                        "doc_name": data.get("doc_name", data.get("filename", "unknown")),
+                        "source_url": data.get("source_url", ""),
+                        "processed_at": data.get("processed_at", ""),
+                        "content_class": data.get("content_class", ""),
+                    }
+                )
             except Exception as e:
                 logger.warning("Failed to read doc metadata %s: %s", obj_name, e)
                 continue
@@ -241,6 +341,7 @@ def list_processed_docs() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Raw upload storage  (MinIO: uploads/<doc_id>/<filename>)
 # ---------------------------------------------------------------------------
+
 
 def save_raw(doc_id: str, filename: str, data: bytes) -> None:
     """Store raw file bytes at uploads/<doc_id>/<filename>."""
@@ -313,6 +414,7 @@ def save_hash_cache(cache: dict[str, str]) -> None:
 # Upload staging  (MinIO: uploads/staging/<job_id>/<filename>)
 # ---------------------------------------------------------------------------
 
+
 def upload_staging(job_id: str, filename: str, data: bytes) -> str:
     """Stage raw upload bytes in MinIO. Returns the object key."""
     MINIO_OPS.labels(operation="put").inc()
@@ -362,6 +464,7 @@ def delete_staging(staging_key: str) -> None:
 # ---------------------------------------------------------------------------
 # Pre-loaded document sync  (MinIO: preloaded/<filename>)
 # ---------------------------------------------------------------------------
+
 
 def sync_preloaded_to_minio() -> list[str]:
     """Upload new files from doc_store/ to preloaded/ prefix. Returns synced filenames."""

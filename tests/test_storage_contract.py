@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from pageindex_mcp import storage
-from pageindex_mcp.storage import save_doc, load_doc, delete_doc
+from pageindex_mcp.storage import save_doc, load_doc, delete_doc, list_processed_docs
 
 
 @pytest.fixture
@@ -117,6 +117,7 @@ def test_erase_01_c1_cascade_order_across_stores(mock_minio):
     assert minio_names == [
         "uploads/abc12345/report.pdf",
         "processed/abc12345.json",
+        "processed/abc12345.flat.json",  # FLAT-02-C2: flat derived store joins cascade
         "processed/abc12345.meta.json",
     ]
     # MinIO purge precedes Redis purge precedes hash-cache clear.
@@ -169,3 +170,124 @@ def test_erase_01_c3_partial_failure_is_surfaced(mock_minio):
 
     # The surfaced error names which store was not purged (the Redis cache).
     assert "redis" in str(excinfo.value).lower()
+
+
+# ── FLAT-02-C1 — flat doc persists to / loads from .flat.json ────────────────
+def test_flat_02_c1_save_flat_doc_writes_flat_json_and_meta(mock_minio):
+    """FLAT-02-C1: save_flat_doc PUTs the flat blocks JSON to
+    processed/<doc_id>.flat.json AND writes the processed/<doc_id>.meta.json
+    sidecar carrying content_class; get_flat_doc returns a value-equivalent dict.
+    No processed/<doc_id>.json (tree) is written for a flat doc."""
+    from pageindex_mcp.storage import save_flat_doc, get_flat_doc
+
+    flat = {
+        "doc_id": "flat0001",
+        "doc_name": "katzen.pdf",
+        "content_class": "flat_prose",
+        "blocks": [{"text": "Clause 1"}, {"text": "Clause 2"}],
+    }
+    with patch("pageindex_mcp.cache.doc_cache_delete"):
+        save_flat_doc("flat0001", flat)
+
+    # Two PUTs: the .flat.json artifact and the .meta.json sidecar.
+    put_keys = [c.args[1] for c in mock_minio.put_object.call_args_list]
+    assert "processed/flat0001.flat.json" in put_keys
+    assert "processed/flat0001.meta.json" in put_keys
+    # FLAT-02-C1: a flat doc never writes the tree artifact.
+    assert "processed/flat0001.json" not in put_keys
+
+    # The .flat.json body is the persisted flat data.
+    flat_put = next(c for c in mock_minio.put_object.call_args_list
+                    if c.args[1] == "processed/flat0001.flat.json")
+    written = json.loads(flat_put.args[2].read())
+    assert written == flat
+
+    # The meta sidecar carries content_class.
+    meta_put = next(c for c in mock_minio.put_object.call_args_list
+                    if c.args[1] == "processed/flat0001.meta.json")
+    meta_written = json.loads(meta_put.args[2].read())
+    assert meta_written.get("content_class") == "flat_prose"
+
+    # get_flat_doc returns a value-equivalent dict (json.loads of stored bytes).
+    response = MagicMock()
+    response.read.return_value = json.dumps(flat, indent=2).encode()
+    mock_minio.get_object.return_value = response
+    loaded = get_flat_doc("flat0001")
+    assert loaded == flat
+    assert mock_minio.get_object.call_args[0][1] == "processed/flat0001.flat.json"
+
+
+# ── FLAT-02-C2 — erasure cascade purges the flat-doc derived store (HR2) ──────
+def test_flat_02_c2_delete_doc_purges_flat_json(mock_minio):
+    """FLAT-02-C2: delete_doc additionally removes processed/<doc_id>.flat.json,
+    ordered immediately AFTER processed/<doc_id>.json and BEFORE the .meta.json
+    step. HR2: the flat artifact is a derived store that MUST join the cascade."""
+    load_resp = MagicMock()
+    load_resp.read.return_value = json.dumps(
+        {"doc_id": "flat0001", "doc_name": "katzen.pdf"}
+    ).encode()
+    mock_minio.get_object.return_value = load_resp
+
+    upload_obj = MagicMock()
+    upload_obj.object_name = "uploads/flat0001/katzen.pdf"
+    mock_minio.list_objects.return_value = [upload_obj]
+
+    order = []
+    mock_minio.remove_object.side_effect = lambda bucket, name: order.append(name)
+
+    with patch("pageindex_mcp.cache.doc_cache_delete"), \
+         patch("pageindex_mcp.storage.load_hash_cache", return_value={}), \
+         patch("pageindex_mcp.storage.save_hash_cache"):
+        delete_doc("flat0001")
+
+    # The flat artifact is removed, ordered after .json and before .meta.json.
+    assert "processed/flat0001.flat.json" in order
+    assert order == [
+        "uploads/flat0001/katzen.pdf",
+        "processed/flat0001.json",
+        "processed/flat0001.flat.json",
+        "processed/flat0001.meta.json",
+    ]
+
+
+def test_flat_02_c2_flat_json_nosuchkey_tolerated(mock_minio):
+    """FLAT-02-C2: a missing processed/<doc_id>.flat.json (NoSuchKey) is tolerated
+    idempotently — deleting a tree-only doc does not raise on the flat step."""
+    from minio.error import S3Error
+
+    def _nosuchkey() -> S3Error:
+        return S3Error(MagicMock(), "NoSuchKey", "missing", "res", "req", "host")
+
+    mock_minio.get_object.side_effect = _nosuchkey()
+    mock_minio.list_objects.return_value = []
+    mock_minio.remove_object.side_effect = _nosuchkey()
+
+    with patch("pageindex_mcp.cache.doc_cache_delete"), \
+         patch("pageindex_mcp.storage.load_hash_cache", return_value={}), \
+         patch("pageindex_mcp.storage.save_hash_cache"):
+        delete_doc("ghostflat")  # must NOT raise
+
+
+# ── FLAT-02-C3 — list_processed_docs surfaces flat docs + content_class ───────
+def test_flat_02_c3_list_processed_docs_surfaces_flat_content_class(mock_minio):
+    """FLAT-02-C3: list_processed_docs includes the flat doc surfacing doc_id,
+    doc_name, and content_class so callers can route flat vs tree docs."""
+    meta_obj = MagicMock()
+    meta_obj.object_name = "processed/flat0001.meta.json"
+    mock_minio.list_objects.return_value = [meta_obj]
+
+    meta_resp = MagicMock()
+    meta_resp.read.return_value = json.dumps({
+        "doc_id": "flat0001",
+        "doc_name": "katzen.pdf",
+        "content_class": "flat_prose",
+    }).encode()
+    mock_minio.get_object.return_value = meta_resp
+
+    docs = list_processed_docs()
+
+    assert len(docs) == 1
+    entry = docs[0]
+    assert entry["doc_id"] == "flat0001"
+    assert entry["doc_name"] == "katzen.pdf"
+    assert entry["content_class"] == "flat_prose"

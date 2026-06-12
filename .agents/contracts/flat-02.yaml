@@ -1,0 +1,29 @@
+feature: FLAT-02
+name: Flat-Document Persistence and HR2 Erasure Cascade Extension
+module: storage
+phase: 1
+source: rfcs/004-vlm-hierarchy-detection.md#amendment-1
+
+# RFC-004 Amendment 1: flat docs persist to a NEW derived artifact
+# processed/<doc_id>.flat.json (NOT processed/<doc_id>.json — no tree is built).
+# Hard Rule 2: this new derived store carries PII clause/table text and MUST join
+# the erasure cascade (new step after processed/<doc_id>.json).
+
+contracts:
+  - id: FLAT-02-C1
+    desc: "A flat document is persisted to and retrieved from its canonical .flat.json path"
+    trigger: "storage.save_flat_doc(doc_id, data) is called after index() routes a document to the flat path"
+    effect: "Flat blocks JSON written to MinIO processed/<doc_id>.flat.json; the meta sidecar processed/<doc_id>.meta.json is written carrying content_class; get_flat_doc(doc_id) returns a dict value-equivalent to the persisted data (json.loads of the stored bytes)"
+    boundary: "doc_id is assigned; data carries a content_class and non-empty blocks; no processed/<doc_id>.json (tree) is written for a flat doc"
+
+  - id: FLAT-02-C2
+    desc: "delete_doc erasure cascade purges the flat-doc derived store (HR2)"
+    trigger: "storage.delete_doc(doc_id) is called for a doc that was persisted via the flat path"
+    effect: "The cascade additionally removes processed/<doc_id>.flat.json (ordered immediately after the processed/<doc_id>.json step), tolerating NoSuchKey idempotently; a partial failure accumulates and raises naming the failing store; uploads/, .json, .meta.json, Redis cache, and hash-cache steps are unchanged"
+    boundary: "delete_doc is invoked; the doc may or may not have a .flat.json (NoSuchKey is tolerated, not an error)"
+
+  - id: FLAT-02-C3
+    desc: "list_processed_docs surfaces flat documents with their content_class"
+    trigger: "storage.list_processed_docs() is called when at least one flat doc exists"
+    effect: "The returned list includes the flat doc with its doc_id, doc_name, and content_class so callers can route flat vs tree docs"
+    boundary: "At least one processed/<doc_id>.flat.json (or its meta sidecar) exists in MinIO"
