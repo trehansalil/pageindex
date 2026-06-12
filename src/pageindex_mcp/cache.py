@@ -115,6 +115,16 @@ def get_doc(doc_id: str) -> dict:
         logger.debug("Cache hit for doc %s", doc_id)
         return cached
     from .storage import load_doc  # lazy: cache -> storage read-through
-    data = load_doc(doc_id)
+    try:
+        data = load_doc(doc_id)
+    except ValueError:
+        # RFC-004 Amendment 1 (Step 5 integration): a flat document has no tree
+        # artifact processed/<doc_id>.json — only processed/<doc_id>.flat.json.
+        # Fall back to the flat loader so flat docs are retrievable through the
+        # SAME read-through accessor: this feeds _search_one_doc's FLAT-05-C1
+        # adapter and the get_document / get_document_structure transport.
+        # get_flat_doc re-raises ValueError when neither artifact exists.
+        from .storage import get_flat_doc
+        data = get_flat_doc(doc_id)
     doc_cache_set(doc_id, data)
     return data

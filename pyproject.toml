@@ -12,10 +12,6 @@ dependencies = [
     # path. Already resolved transitively via Docling; declared directly because we
     # import it directly.
     "pypdfium2>=5.8.0",
-    # AGPL-3.0 (HR4); the secondary/fallback PDF route behind Docling. NOTE: still
-    # transitively pulls PyMuPDF, so the venv is not yet AGPL-free — full elimination
-    # needs this moved to an optional extra (RFC-004 Q2 follow-up).
-    "pymupdf4llm>=0.0.17",
     # Default PDF->markdown route (PDF_CONVERTER=docling). MIT, layout-aware, runs
     # CPU-only; resolves the fl-ligature corruption pymupdf4llm leaves in German
     # legal terms ("Haftpflicht"). Promoted to core 2026-05-31 so the default works
@@ -57,6 +53,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "httpx", "fakeredis[aioredis]", "langchain-mcp-adapters", "langchain[openai]"]
+# AGPL-3.0 (HR4). pymupdf4llm is the secondary/fallback PDF->markdown route behind
+# Docling; it transitively pulls PyMuPDF (AGPL). Moved OUT of core deps (RFC-004 Q2
+# follow-up, Amendment 4) so the DEFAULT install carries no first-party AGPL converter.
+# Install with `uv sync --extra agpl-fallback` to restore the pymupdf4llm fallback.
+#
+# IMPORTANT — this does NOT make the venv AGPL-free: PyMuPDF is still pulled
+# TRANSITIVELY by two CORE deps — docling-hierarchical-pdf and the `pageindex` git
+# fork (see [[agpl-three-pullers-correction]]; uv.lock pymupdf reverse-deps). Full
+# HR4 elimination requires addressing those two pullers as well.
+agpl-fallback = ["pymupdf4llm>=0.0.17"]
 
 [build-system]
 requires = ["hatchling"]

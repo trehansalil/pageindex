@@ -337,7 +337,16 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             raise
 
         doc_id = result["doc_id"]
-        await redis.hset(_job_key(job_id), mapping={"status": "done", "doc_id": doc_id})
+        # A flat-document result (RFC-004 Amendment 1) carries a content_class:
+        # the job still completes as a SUCCESS (status=done), but surfaces the
+        # class so downstream consumers can read the flat artifact. A normal
+        # tree document has no content_class — the mapping is left unchanged so
+        # we never write an empty/None content_class for it.
+        done_mapping: dict[str, str] = {"status": "done", "doc_id": doc_id}
+        content_class = result.get("content_class")
+        if content_class:
+            done_mapping["content_class"] = content_class
+        await redis.hset(_job_key(job_id), mapping=done_mapping)
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="success").inc()
         logger.info("Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start)

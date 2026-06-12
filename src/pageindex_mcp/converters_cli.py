@@ -95,6 +95,13 @@ async def main() -> int:
                 "peak_rss_kib": _peak_rss_kib(),
                 "duration_ms": duration_ms,
             }
+            # RFC-004 Amendment 1 (Step 5 integration): when index() routed the
+            # doc to the flat success path it stamps last_content_class. Surface it
+            # in the stdout JSON so the worker hash carries content_class
+            # (FLAT-04-C1). Absent for a normal tree doc.
+            content_class = getattr(client, "last_content_class", None)
+            if content_class:
+                payload["content_class"] = content_class
             _emit(payload)
             return 0
 

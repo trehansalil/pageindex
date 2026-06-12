@@ -1,0 +1,17 @@
+[
+  {
+    "doc": "Reitlehrer - Bereiter.pdf",
+    "class": "A/B (0 nodes)",
+    "gate_reason": "node_count<3",
+    "page": 0,
+    "granite_200dpi": {
+      "latency_s": 2307.56,
+      "peak_rss_mb": 2938.1,
+      "doctags_excerpt": "<|start_of_role|>user<|end_of_role|><fake_token_around_image><row_1_col_1><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><fake_token_around_image><row_1_col_2><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><fake_token_around_image><row_1_col_3><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image><image>\n<fake",
+      "section_header_levels": [
+        1
+      ],
+      "n_headers": 6
+    }
+  }
+]

@@ -42,6 +42,8 @@ class Settings:
     llm_filter_model: str
     llm_search_model: str
     llm_search_concurrency: int
+    # FLAT-03: kill-switch for post-validate_tree flat-document routing (default true).
+    flat_doc_routing: bool
 
 
 def _load_settings() -> Settings:
@@ -68,6 +70,8 @@ def _load_settings() -> Settings:
         llm_filter_model=os.environ.get("PAGEINDEX_FILTER_MODEL", "gpt-4o-mini"),
         llm_search_model=os.environ.get("PAGEINDEX_SEARCH_MODEL", "gpt-4o-mini"),
         llm_search_concurrency=int(os.environ.get("PAGEINDEX_SEARCH_CONCURRENCY", "3")),
+        flat_doc_routing=os.environ.get("FLAT_DOC_ROUTING", "true").strip().lower()
+        not in ("0", "false", "no"),
     )
 
 

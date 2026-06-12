@@ -4,7 +4,7 @@ import json
 import logging
 import time
 
-from ..helpers import _rag, _strip_text, _build_node_map
+from ..helpers import _rag, _strip_text, _build_node_map, flat_doc_view
 from ..metrics import (
     DOCUMENTS_TOTAL,
     TOOL_CALLS,
@@ -110,6 +110,23 @@ def get_document(doc_id: str) -> str:
         TOOL_DURATION.labels(tool="get_document").observe(elapsed)
         logger.debug("get_document completed in %.3fs", elapsed)
 
+    # FLAT-05-C2 (Step 5 integration): a flat doc carries a content_class and no
+    # tree — return its verbalized blocks/row_records instead of an (empty) node
+    # map. flat_doc_view returns None for a tree doc, so the existing path below
+    # is unchanged for tree docs (boundary). HR1: retrieval surface, not accuracy.
+    flat = flat_doc_view(data)
+    if flat is not None:
+        logger.info("get_document: %s is a flat doc (content_class=%s)", doc_id, flat["content_class"])
+        return json.dumps({
+            "doc_id":        doc_id,
+            "doc_name":      flat["doc_name"],
+            "status":        "completed",
+            "content_class": flat["content_class"],
+            "total_nodes":   0,
+            "blocks":        flat["blocks"],
+            "row_records":   flat["row_records"],
+        }, indent=2)
+
     structure = data.get("structure", [])
     nm: dict = {}
     _build_node_map(structure, nm)
@@ -147,6 +164,18 @@ def get_document_structure(doc_id: str) -> str:
         elapsed = time.monotonic() - start
         TOOL_DURATION.labels(tool="get_document_structure").observe(elapsed)
         logger.debug("get_document_structure completed in %.3fs", elapsed)
+
+    # FLAT-05-C2 (Step 5 integration): a flat doc exposes content_class +
+    # blocks/row_records in place of an empty structure tree; tree docs unchanged.
+    flat = flat_doc_view(data)
+    if flat is not None:
+        return json.dumps({
+            "doc_id":        doc_id,
+            "content_class": flat["content_class"],
+            "structure":     [],
+            "blocks":        flat["blocks"],
+            "row_records":   flat["row_records"],
+        }, indent=2)
 
     return json.dumps({
         "doc_id":    doc_id,

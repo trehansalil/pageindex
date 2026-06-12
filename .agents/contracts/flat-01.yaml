@@ -1,0 +1,30 @@
+feature: FLAT-01
+name: Deterministic Flat-Document Classification and Block Extraction
+module: helpers
+phase: 1
+source: rfcs/004-vlm-hierarchy-detection.md#amendment-1
+
+# RFC-004 Amendment 1 (D1'/D2'/D3', user-LOCKED 2026-06-08): a clean-text-layer
+# document with no heading hierarchy is a SUCCESS, not a low_quality_tree error.
+# This contract owns the DETERMINISTIC classifier (VLM stays disabled). "flat" and
+# "garbled" are orthogonal — the classifier never sees garbling (that path raises
+# upstream; see FLAT-03-C2). Operates purely on the converter's markdown string.
+
+contracts:
+  - id: FLAT-01-C1
+    desc: "route_and_extract_flat classifies flat markdown into a content_class via deterministic signals"
+    trigger: "route_and_extract_flat(md) is called with a non-empty markdown string for a document that produced no usable tree"
+    effect: "Returns (content_class, blocks) where content_class is one of flat_table, flat_kv, flat_prose, flat_mixed: a markdown grid/table signal yields flat_table; a numbered-clause pattern (lines like '1', '1.1', '2', '2.1') yields flat_kv; running paragraphs yield flat_prose; more than one co-present signal yields flat_mixed"
+    boundary: "md is a non-empty string; the routing decision uses only the markdown text (no validate_tree call, no network, no VLM)"
+
+  - id: FLAT-01-C2
+    desc: "Tables are emitted both as a row matrix and as verbalized row_records"
+    trigger: "route_and_extract_flat extracts a table region from the markdown"
+    effect: "The returned blocks contain the table BOTH as a structured row matrix AND as verbalized row_records of the form 'Header: Value; Header2: Value2; ...' with the column headers repeated on every row (the retrieval-optimal form per Amendment 1 D2')"
+    boundary: "The markdown contains at least one table/grid region"
+
+  - id: FLAT-01-C3
+    desc: "Blocks are role-typed and the classifier is independent of the quality gate"
+    trigger: "route_and_extract_flat returns its blocks list"
+    effect: "Every block carries a role in {title, prose, kv, table}; the function does not import, call, or depend on validate_tree, and makes no MinIO/Redis/LLM/VLM call (pure, in-process classification)"
+    boundary: "Any markdown input accepted by C1"

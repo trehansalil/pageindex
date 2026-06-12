@@ -8,3 +8,7 @@ preprocess.log
 # Tesseract language models (deu/eng/osd) for the Docling OCR path — point
 # TESSDATA_PREFIX at this dir. Model blobs (~30 MB), not source; never committed.
 .tessdata/
+# Local agent/tool dirs and throwaway probe logs (RFC-004 Phase 0)
+.claude/
+.kiro/
+issue/phase0_*.log

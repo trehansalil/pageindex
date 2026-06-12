@@ -97,6 +97,12 @@ LOW_QUALITY_TREES = Counter(
     "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",
     ["reason"],
 )
+FLAT_DOCS_TOTAL = Counter(
+    "pageindex_flat_docs_total",
+    "Documents routed to the flat success path after a non-garbling validate_tree "
+    "rejection (FLAT-03). Labelled by deterministic content_class.",
+    ["content_class"],
+)
 PDF_EXTRACT_FALLBACKS = Counter(
     "pageindex_pdf_extract_fallbacks_total",
     "PDF extractions that fell back from pdf_to_markdown to page_index (INDEX-01-C2)",

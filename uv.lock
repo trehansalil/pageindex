@@ -2349,7 +2349,6 @@ dependencies = [
     { name = "openai" },
     { name = "pageindex" },
     { name = "prometheus-client" },
-    { name = "pymupdf4llm" },
     { name = "pypdf2" },
     { name = "pypdfium2" },
     { name = "python-docx" },
@@ -2366,6 +2365,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+agpl-fallback = [
+    { name = "pymupdf4llm" },
+]
 dev = [
     { name = "fakeredis" },
     { name = "httpx" },
@@ -2395,7 +2397,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.31.0" },
     { name = "pageindex", git = "https://github.com/trehansalil/PageIndex-salil.git" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
-    { name = "pymupdf4llm", specifier = ">=0.0.17" },
+    { name = "pymupdf4llm", marker = "extra == 'agpl-fallback'", specifier = ">=0.0.17" },
     { name = "pypdf2", specifier = ">=3.0.1" },
     { name = "pypdfium2", specifier = ">=5.8.0" },
     { name = "pytest", marker = "extra == 'dev'" },
@@ -2412,7 +2414,7 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform == 'linux'", specifier = ">=0.27.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "uvicorn", specifier = ">=0.44.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "agpl-fallback"]
 
 [[package]]
 name = "pandas"

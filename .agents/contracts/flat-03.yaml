@@ -1,0 +1,31 @@
+feature: FLAT-03
+name: Post-Validate Flat-Document Routing
+module: client
+phase: 1
+source: rfcs/004-vlm-hierarchy-detection.md#amendment-1
+
+# RFC-004 Amendment 1 (D4'): narrow terminal low_quality_tree to GARBLING ONLY.
+# validate_tree() (helpers.py) stays BYTE-FOR-BYTE UNCHANGED (HR5); the branch is on
+# the returned *reason*, AFTER the call. node_count<3 / depth<2 -> flat route;
+# garbling -> still raises. A new config flag flat_doc_routing (default true) is the
+# kill-switch. The classifier (route_and_extract_flat) and persistence (save_flat_doc)
+# are provided by FLAT-01 (helpers) and FLAT-02 (storage) respectively.
+
+contracts:
+  - id: FLAT-03-C1
+    desc: "A non-garbling quality-gate rejection routes the document to the flat success path instead of raising"
+    trigger: "validate_tree() returns (False, reason) inside index() with reason in {node_count<3, depth<2} and settings.flat_doc_routing is true"
+    effect: "index() calls route_and_extract_flat on the converter markdown, persists via save_flat_doc, returns the doc_id (job reaches status=done) with its content_class; FLAT_DOCS_TOTAL{content_class} is incremented; LowQualityTreeError is NOT raised and processed/<doc_id>.json (tree) is NOT written"
+    boundary: "flat_doc_routing enabled; reason is exactly node_count<3 or depth<2; converter markdown is available at the branch point"
+
+  - id: FLAT-03-C2
+    desc: "Garbling never routes to the flat path (HR5)"
+    trigger: "validate_tree() returns (False, 'garbling') inside index()"
+    effect: "index() raises LowQualityTreeError('garbling') regardless of flat_doc_routing; nothing is persisted (no .json, no .flat.json); LOW_QUALITY_TREES{reason=garbling} is incremented"
+    boundary: "reason is exactly 'garbling' — the only remaining terminal low_quality_tree reason"
+
+  - id: FLAT-03-C3
+    desc: "The flat-routing kill-switch reverts to legacy reject-on-any-failure behavior"
+    trigger: "validate_tree() returns (False, reason) with any reason and settings.flat_doc_routing is false"
+    effect: "index() raises LowQualityTreeError(reason) for every failure reason (including node_count<3 and depth<2); no flat doc is persisted"
+    boundary: "flat_doc_routing is false (a deploy-time kill-switch requiring no code change); config.Settings carries flat_doc_routing (default true)"

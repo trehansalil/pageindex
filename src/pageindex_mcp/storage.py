@@ -92,6 +92,63 @@ def save_doc(doc_id: str, data: dict) -> None:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
+# ---------------------------------------------------------------------------
+# Flat-document CRUD  (MinIO: processed/<doc_id>.flat.json)  — RFC-004 Amendment 1
+# ---------------------------------------------------------------------------
+
+def get_flat_doc(doc_id: str) -> dict:
+    """Fetch processed/<doc_id>.flat.json from MinIO (FLAT-02-C1: returns a dict
+    value-equivalent to the persisted bytes — json.loads of the stored JSON)."""
+    MINIO_OPS.labels(operation="get").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    response = None
+    try:
+        response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.flat.json")
+        data = json.loads(response.read())
+        logger.debug("Loaded flat doc %s from MinIO", doc_id)
+        return data
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            logger.warning("Flat document not found in MinIO: %s", doc_id)
+            raise ValueError(f"Flat document not found: {doc_id}")
+        logger.error("MinIO error loading flat doc %s: %s", doc_id, e)
+        raise
+    finally:
+        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+
+
+def save_flat_doc(doc_id: str, data: dict) -> None:
+    """Persist a flat document (no tree) to processed/<doc_id>.flat.json and write
+    the processed/<doc_id>.meta.json sidecar carrying content_class (FLAT-02-C1).
+    Mirrors save_doc; a flat doc never writes the tree artifact processed/<id>.json."""
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    try:
+        content = json.dumps(data, indent=2).encode()
+        mc.put_object(
+            settings.minio_bucket,
+            f"processed/{doc_id}.flat.json",
+            BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+        logger.debug("Saved flat doc %s to MinIO (%d bytes)", doc_id, len(content))
+        from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+        doc_cache_delete(doc_id)
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+    # Sidecar carries content_class for listing/routing (FLAT-02-C1/C3).
+    save_doc_meta(doc_id, data)
+
+
 def delete_doc(doc_id: str) -> None:
     """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
        1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
@@ -131,6 +188,14 @@ def delete_doc(doc_id: str) -> None:
         except S3Error as e:
             if getattr(e, "code", "") != "NoSuchKey":
                 errors.append(f"processed.json: {e}")
+
+        # 2b. processed/<doc_id>.flat.json  (FLAT-02-C2: derived store joins HR2 cascade)
+        try:
+            mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.flat.json")
+            logger.info("ERASE %s step2b: removed processed/%s.flat.json", doc_id, doc_id)
+        except S3Error as e:
+            if getattr(e, "code", "") != "NoSuchKey":
+                errors.append(f"processed.flat.json: {e}")
 
         # 3. processed/<doc_id>.meta.json
         try:
@@ -177,9 +242,12 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
     start = time.monotonic()
     mc = get_minio()
     try:
-        content = json.dumps(
-            {k: meta.get(k, "") for k in _META_FIELDS}, indent=2
-        ).encode()
+        sidecar = {k: meta.get(k, "") for k in _META_FIELDS}
+        # FLAT-02-C1/C3: carry content_class only when present (flat docs) so the
+        # tree-doc sidecar shape is unchanged.
+        if meta.get("content_class"):
+            sidecar["content_class"] = meta["content_class"]
+        content = json.dumps(sidecar, indent=2).encode()
         mc.put_object(
             settings.minio_bucket,
             f"processed/{doc_id}.meta.json",
@@ -205,6 +273,11 @@ def list_processed_docs() -> list[dict]:
             if name.endswith(".meta.json"):
                 doc_id = Path(name).stem.removesuffix(".meta")
                 meta_keys[doc_id] = name
+            elif name.endswith(".flat.json"):
+                # Flat doc (FLAT-02-C3); prefer its .meta.json sidecar if present.
+                doc_id = Path(name).stem.removesuffix(".flat")
+                if doc_id not in meta_keys:
+                    meta_keys[doc_id] = name
             elif name.endswith(".json"):
                 doc_id = Path(name).stem
                 if doc_id not in meta_keys:
@@ -221,6 +294,7 @@ def list_processed_docs() -> list[dict]:
                     "doc_name":     data.get("doc_name", data.get("filename", "unknown")),
                     "source_url":   data.get("source_url", ""),
                     "processed_at": data.get("processed_at", ""),
+                    "content_class": data.get("content_class", ""),
                 })
             except Exception as e:
                 logger.warning("Failed to read doc metadata %s: %s", obj_name, e)

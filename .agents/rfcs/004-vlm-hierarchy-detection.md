@@ -1,9 +1,9 @@
 ---
 id: RFC-004
 title: VLM-Based Document-Hierarchy Detection (research → design recommendation)
-status: proposed
+status: accepted
 date: 2026-06-08
-amended: 2026-06-08
+amended: 2026-06-12
 plan-impact: yes
 supersedes-decisions-in: []
 ---
@@ -186,6 +186,46 @@ supersedes-decisions-in: []
 > reference; the Q4 MCC-at-n=5 math; the Q5 "direct OpenAI has no EU option" claim. Status: Q2
 > **`accepted` + landed**; Q1-residual / Q5 / Q3–Q4 corrections **proposed**, awaiting the RFC session.
 
+> ## Amendment 5 (2026-06-12) — Phase 0 EXECUTED → VERDICT: ship FLAT only, VLM stays `disabled`; RFC ACCEPTED
+>
+> The Phase 0 throwaway experiment (`issue/phase0_vlm_probe.py`, renders the firing pages with
+> pypdfium2, probes both engines) has **run on both engines**. The go/no-go bar is **NOT met**;
+> the deterministic FLAT route (FLAT-01..05, built + gates-green 2026-06-12) is the whole shippable
+> outcome. This Amendment **resolves the last open gate** and flips the RFC `proposed → accepted`.
+> The `[UNVERIFIED — Phase 0]` thin-evidence flags below are now **MEASURED**.
+>
+> **Engine A — `gpt-4.1` vision (frontier, D2 default):** Reitlehrer recovers a clean depth-2 tree
+> at BOTH 144/200 DPI with correct German text (no ﬂ-ligature corruption) — the one *positive*
+> signal. **BUT `GHV-TKV-Tarif` FAILS the FP==0 bar:** at 144 DPI gpt-4.1 hallucinates a depth-2
+> "hierarchy" from tariff-**grid cells** (the D6 false-positive risk), and the "table cells are not
+> hierarchy" prompt rule held only at 200 DPI. **DPI-unstable for 3/5 docs** → not reliably flat;
+> the cost-weighted `3·FN + 1·FP == 0` bar fails on the false-accept.
+>
+> **Engine B — Granite-Docling-258M, inline CPU (D2 residency floor):** measured on the target
+> CPU path (transformers, fp32, 200 DPI). **NO-GO on all three axes** — and the two operational
+> axes are model properties, not doc-specific, so one doc settles them:
+> - **CPU peak RSS = 2,938 MB (~2.9 GB)** — the **512 Mi** worker cannot load it; even a generous
+>   bump is infeasible. **This is the Q3 answer:** the inherited "~1.8 GB" figure was **ONNX-on-GPU,
+>   not CPU**; CPU transformers is ~2.9 GB resident. The "pre-bake + bump to measured RSS" plan
+>   (Amendment 3) is therefore moot — there is no acceptable inline-CPU memory envelope.
+> - **Latency = 2,307 s (~38 min) / single page** on CPU — impossible under any `CHILD_TIMEOUT`.
+> - **Quality:** 6 headers all at **level 1** (no depth-2) + **degenerate DocTags** (runaway
+>   `<image>` tokens) — does not even recover the hierarchy the depth<2 class needs.
+>
+> **Verdict (locks D1's default and the Rollout gate):**
+> - **`VLM_MODE` stays `disabled` in prod.** D1/D2 are **accepted as design-on-the-books**, not a
+>   build: the `VLM-01` cascade contract family is **NOT to be built** — Phase 0 did not pass.
+> - **FLAT-01..05 is the shipped outcome** and covers all 5 firing docs as flat successes.
+> - **Garbling is the sole terminal `low_quality_tree` reason** (Amendment 1, now load-bearing).
+> - The **Reitlehrer recovered-hierarchy-vs-`flat_kv` A/B** (Amendment 3 carve) is **not pursued**:
+>   even where gpt-4.1 recovers a tree, the grid-cell FP risk + the all-engines-fail Granite floor
+>   mean the cascade cannot be flipped on safely; `flat_kv` ships and is sufficient.
+> - **If VLM is ever revisited** it requires **GPU + a ZDR/EU endpoint** (HR3) — never the inline
+>   CPU floor. That is a fresh RFC, not this one.
+>
+> Repro + raw numbers: `issue/phase0_results.json`, `issue/phase0_granite.log`; durable notes in
+> memory `rfc004-phase0-vlm-probe.md` + `rfc004-flat-family-built.md`.
+
 ## Context
 
 `validate_tree()` (`helpers.py`) correctly rejects genuinely-flat documents, but it
@@ -253,7 +293,7 @@ draft's central error):
   but all at one heading level. The VLM only needs to **re-tag levels** on existing lines
   — no OCR, no fidelity risk. **Low risk; ships independently.**
 
-## Decisions (proposed — to be locked in a future RFC session)
+## Decisions (LOCKED 2026-06-12, Amendment 5 — D1/D2 accepted as design-on-the-books; VLM stays `disabled`, cascade not built; FLAT-01..05 shipped)
 
 ### D1 — Architecture: deterministic-first, VLM-escalation cascade, **default OFF**
 
@@ -478,7 +518,7 @@ brief, possibly STRUCTURED).
   incl. `vlm_hierarchy:{sha}:*`) → re-ingest with VLM off. The cache is **model-slug-keyed**,
   so a *model* rollback cleanly misses the old cache and recomputes.
 
-## Open questions (for the RFC session that locks this)
+## Open questions (ALL RESOLVED — Q1/Q2 landed, Q3/Q4 measured, Phase 0 locked by Amendment 5)
 
 1. ~~Should `flat_document` be a terminal **error** or a **success-ish** status routed to
    table/key-value extraction?~~ **RESOLVED 2026-06-08 (Amendment 1): success-ish.** Flat docs

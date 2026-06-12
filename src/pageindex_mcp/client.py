@@ -16,13 +16,14 @@ from pageindex import PageIndexClient
 from .config import settings
 from .cache import get_doc
 from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_markdown_converters, pptx_to_markdown
-from .helpers import _build_node_map, _strip_text, validate_tree, LowQualityTreeError
-from .metrics import LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS, PDF_PRIMARY_CONVERTER_FAILURES
+from .helpers import _build_node_map, _strip_text, route_and_extract_flat, validate_tree, LowQualityTreeError
+from .metrics import FLAT_DOCS_TOTAL, LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS, PDF_PRIMARY_CONVERTER_FAILURES
 from .storage import (
     list_processed_docs,
     load_hash_cache,
     save_doc,
     save_doc_meta,
+    save_flat_doc,
     save_hash_cache,
     save_raw,
 )
@@ -68,6 +69,11 @@ class CustomPageIndexClient(PageIndexClient):
         self.retrieve_model = retrieve_model
         # Serialises hash-cache reads/writes across parallel index() calls on this instance.
         self._cache_lock = asyncio.Lock()
+        # RFC-004 Amendment 1 (Step 5 integration): set to the deterministic
+        # content_class when index() routes a doc to the flat success path; stays
+        # None for a normal tree doc. converters_cli reads this after index()
+        # returns so the worker job hash can carry content_class (FLAT-04-C1).
+        self.last_content_class: str | None = None
 
     # ------------------------------------------------------------------
     # Indexing
@@ -110,6 +116,7 @@ class CustomPageIndexClient(PageIndexClient):
         # Convert / index
         tmp_lo_dir = None   # LibreOffice temp dir
         tmp_md_path = None  # HTML → markdown temp file
+        md_content = None   # FLAT-03: converter markdown for the flat-routing branch
 
         try:
             if ext == ".pdf":
@@ -217,6 +224,82 @@ class CustomPageIndexClient(PageIndexClient):
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
             ok, reason = validate_tree(result.get("structure", []))
             if not ok:
+                # FLAT-03-C1: a non-garbling rejection (node_count<3 / depth<2) is a
+                # *flat* document, not a defective one — route it to the flat success
+                # path instead of raising. FLAT-03-C2: 'garbling' is the only remaining
+                # terminal low_quality_tree reason and always raises. FLAT-03-C3: the
+                # flat_doc_routing kill-switch reverts to legacy reject-on-any-failure.
+                if settings.flat_doc_routing and reason in ("node_count<3", "depth<2"):
+                    flat_md = md_content
+                    if flat_md is None and tmp_md_path is not None:
+                        flat_md = await asyncio.to_thread(
+                            lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
+                            tmp_md_path,
+                        )
+                    if flat_md is None and ext in (".md", ".markdown", ".txt"):
+                        # The input itself is plain text/markdown (the md_to_tree route
+                        # writes no tmp_md_path) — reading it directly is safe.
+                        flat_md = await asyncio.to_thread(
+                            lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
+                            file_path,
+                        )
+                    # FLAT-03 follow-up guard (QA-flagged): route to the flat success
+                    # path ONLY with genuine extracted text. When flat_md is still None the
+                    # doc is a BINARY input (PDF/docx) that fell to the legacy page_index
+                    # route with no markdown produced; the only remaining source would be
+                    # the raw input file, and reading its raw bytes as text (errors=
+                    # "replace") would feed binary garbling into route_and_extract_flat and
+                    # fabricate a bogus flat doc. Fall through to the HR5 low_quality_tree
+                    # reject below instead — a binary doc with no extractable text layer is
+                    # genuinely low-quality, not flat.
+                    if flat_md is not None:
+                        content_class, blocks = await asyncio.to_thread(
+                            route_and_extract_flat, flat_md
+                        )
+                        logger.info(
+                            "Routing %s to flat success path: reason=%s content_class=%s",
+                            filename, reason, content_class,
+                        )
+
+                        doc_id = str(uuid.uuid4())[:8]
+                        await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+
+                        protocol = "https" if settings.minio_secure else "http"
+                        source_url = (
+                            f"{protocol}://{settings.minio_endpoint}"
+                            f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
+                        )
+                        processed_at = datetime.now(timezone.utc).isoformat()
+
+                        # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
+                        # no tree artifact processed/<doc_id>.json is written (HR2: no
+                        # un-cascaded derivative).
+                        await asyncio.to_thread(save_flat_doc, doc_id, {
+                            "doc_id":        doc_id,
+                            "doc_name":      filename,
+                            "source_url":    source_url,
+                            "processed_at":  processed_at,
+                            "sha256":        sha256,
+                            "content_class": content_class,
+                            "blocks":        blocks,
+                        })
+                        FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
+
+                        # Reload before writing so we don't overwrite parallel tasks' entries.
+                        async with self._cache_lock:
+                            cache = await asyncio.to_thread(load_hash_cache)
+                            cache[filename] = sha256
+                            await asyncio.to_thread(save_hash_cache, cache)
+
+                        logger.info(
+                            "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
+                            filename, doc_id, content_class, len(blocks),
+                        )
+                        # Step 5 integration: surface content_class to converters_cli
+                        # (subprocess reads this after index() returns → worker hash).
+                        self.last_content_class = content_class
+                        return doc_id
+
                 LOW_QUALITY_TREES.labels(reason=reason).inc()
                 logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
                 raise LowQualityTreeError(reason)
