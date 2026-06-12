@@ -7,17 +7,34 @@ import os
 import shutil
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import openai
 from pageindex import PageIndexClient
 
-from .config import settings
 from .cache import get_doc
-from .converters import docx_to_markdown, html_to_markdown_with_images, libreoffice_to_pdf, pdf_markdown_converters, pptx_to_markdown
-from .helpers import _build_node_map, _strip_text, route_and_extract_flat, validate_tree, LowQualityTreeError
-from .metrics import FLAT_DOCS_TOTAL, LOW_QUALITY_TREES, PDF_EXTRACT_FALLBACKS, PDF_PRIMARY_CONVERTER_FAILURES
+from .config import settings
+from .converters import (
+    docx_to_markdown,
+    html_to_markdown_with_images,
+    libreoffice_to_pdf,
+    pdf_markdown_converters,
+    pptx_to_markdown,
+)
+from .helpers import (
+    LowQualityTreeError,
+    _build_node_map,
+    _strip_text,
+    route_and_extract_flat,
+    validate_tree,
+)
+from .metrics import (
+    FLAT_DOCS_TOTAL,
+    LOW_QUALITY_TREES,
+    PDF_EXTRACT_FALLBACKS,
+    PDF_PRIMARY_CONVERTER_FAILURES,
+)
 from .storage import (
     list_processed_docs,
     load_hash_cache,
@@ -63,7 +80,12 @@ class CustomPageIndexClient(PageIndexClient):
         structure = await client.get_document_structure(doc_id)
     """
 
-    def __init__(self, api_key: str = None, model: str = None, retrieve_model: str = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        retrieve_model: str | None = None,
+    ):
         super().__init__(api_key=api_key or settings.openai_api_key)
         self.model = model or settings.llm_model
         self.retrieve_model = retrieve_model
@@ -79,12 +101,18 @@ class CustomPageIndexClient(PageIndexClient):
     # Indexing
     # ------------------------------------------------------------------
 
-    async def index(self, file_path: str, mode: str = "auto") -> str:
+    # Complexity grandfathered (core indexing pipeline); see pyproject [tool.ruff].
+    async def index(self, file_path: str, mode: str = "auto") -> str:  # noqa: C901, PLR0915
         """Index a document and persist it to MinIO. Returns the 8-char doc_id.
 
         Skips reprocessing if the file content is unchanged (SHA-256 dedup).
         Supported extensions: .pdf, .md, .markdown, .txt, .docx, .pptx, .html
         """
+        # Reset per call so a prior flat doc's content_class can't leak into a
+        # subsequent tree doc when this client instance is reused. The flat
+        # routing path re-sets it below when (and only when) it applies.
+        self.last_content_class = None
+
         file_path = os.path.abspath(file_path)
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -110,13 +138,15 @@ class CustomPageIndexClient(PageIndexClient):
                 docs = await asyncio.to_thread(list_processed_docs)
                 for d in docs:
                     if d.get("doc_name") == filename:
-                        logger.info("Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"])
+                        logger.info(
+                            "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
+                        )
                         return d["doc_id"]
 
         # Convert / index
-        tmp_lo_dir = None   # LibreOffice temp dir
+        tmp_lo_dir = None  # LibreOffice temp dir
         tmp_md_path = None  # HTML → markdown temp file
-        md_content = None   # FLAT-03: converter markdown for the flat-routing branch
+        md_content = None  # FLAT-03: converter markdown for the flat-routing branch
 
         try:
             if ext == ".pdf":
@@ -149,13 +179,18 @@ class CustomPageIndexClient(PageIndexClient):
                                 "degrade. If this is docling, verify model artifacts are "
                                 "present (DOCLING_ARTIFACTS_PATH or network egress) and the "
                                 "docling-hierarchical-pdf add-on is installed in THIS image.",
-                                conv_name, filename, type(conv_exc).__name__, conv_exc,
+                                conv_name,
+                                filename,
+                                type(conv_exc).__name__,
+                                conv_exc,
                                 exc_info=True,
                             )
                         else:
                             logger.warning(
                                 "%s failed for %s (%s); trying next converter",
-                                conv_name, filename, conv_exc,
+                                conv_name,
+                                filename,
+                                conv_exc,
                             )
                 if md_content is not None:
                     if primary_name is not None and used_converter != primary_name:
@@ -166,7 +201,9 @@ class CustomPageIndexClient(PageIndexClient):
                             "PDF %s extracted by FALLBACK converter '%s' because primary "
                             "'%s' failed; a flat 'depth<2' tree downstream is a CONVERTER "
                             "failure, not a low-quality source. Fix the primary converter.",
-                            filename, used_converter, primary_name,
+                            filename,
+                            used_converter,
+                            primary_name,
                         )
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
@@ -196,8 +233,10 @@ class CustomPageIndexClient(PageIndexClient):
                     result = await asyncio.to_thread(self._run_page_index, pdf_path)
                 except Exception as lo_exc:
                     logger.warning(
-                        "LibreOffice/page_index failed for %s (%s), falling back to markdown conversion",
-                        filename, lo_exc,
+                        "LibreOffice/page_index failed for %s (%s), falling back to "
+                        "markdown conversion",
+                        filename,
+                        lo_exc,
                     )
                     if tmp_lo_dir:
                         shutil.rmtree(tmp_lo_dir, ignore_errors=True)
@@ -258,7 +297,9 @@ class CustomPageIndexClient(PageIndexClient):
                         )
                         logger.info(
                             "Routing %s to flat success path: reason=%s content_class=%s",
-                            filename, reason, content_class,
+                            filename,
+                            reason,
+                            content_class,
                         )
 
                         doc_id = str(uuid.uuid4())[:8]
@@ -269,20 +310,24 @@ class CustomPageIndexClient(PageIndexClient):
                             f"{protocol}://{settings.minio_endpoint}"
                             f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
                         )
-                        processed_at = datetime.now(timezone.utc).isoformat()
+                        processed_at = datetime.now(UTC).isoformat()
 
                         # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                         # no tree artifact processed/<doc_id>.json is written (HR2: no
                         # un-cascaded derivative).
-                        await asyncio.to_thread(save_flat_doc, doc_id, {
-                            "doc_id":        doc_id,
-                            "doc_name":      filename,
-                            "source_url":    source_url,
-                            "processed_at":  processed_at,
-                            "sha256":        sha256,
-                            "content_class": content_class,
-                            "blocks":        blocks,
-                        })
+                        await asyncio.to_thread(
+                            save_flat_doc,
+                            doc_id,
+                            {
+                                "doc_id": doc_id,
+                                "doc_name": filename,
+                                "source_url": source_url,
+                                "processed_at": processed_at,
+                                "sha256": sha256,
+                                "content_class": content_class,
+                                "blocks": blocks,
+                            },
+                        )
                         FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
 
                         # Reload before writing so we don't overwrite parallel tasks' entries.
@@ -293,7 +338,10 @@ class CustomPageIndexClient(PageIndexClient):
 
                         logger.info(
                             "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
-                            filename, doc_id, content_class, len(blocks),
+                            filename,
+                            doc_id,
+                            content_class,
+                            len(blocks),
                         )
                         # Step 5 integration: surface content_class to converters_cli
                         # (subprocess reads this after index() returns → worker hash).
@@ -314,21 +362,25 @@ class CustomPageIndexClient(PageIndexClient):
                 f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
             )
 
-            processed_at = datetime.now(timezone.utc).isoformat()
-            await asyncio.to_thread(save_doc, doc_id, {
-                "doc_id":          doc_id,
-                "doc_name":        filename,
-                "source_url":      source_url,
-                "processed_at":    processed_at,
-                "sha256":          sha256,
-                "doc_description": result.get("doc_description", ""),
-                "structure":       result.get("structure", []),
-            })
+            processed_at = datetime.now(UTC).isoformat()
+            await asyncio.to_thread(
+                save_doc,
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "doc_name": filename,
+                    "source_url": source_url,
+                    "processed_at": processed_at,
+                    "sha256": sha256,
+                    "doc_description": result.get("doc_description", ""),
+                    "structure": result.get("structure", []),
+                },
+            )
 
             meta = {
-                "doc_id":       doc_id,
-                "doc_name":     filename,
-                "source_url":   source_url,
+                "doc_id": doc_id,
+                "doc_name": filename,
+                "source_url": source_url,
                 "processed_at": processed_at,
             }
             await asyncio.to_thread(save_doc_meta, doc_id, meta)
@@ -339,7 +391,12 @@ class CustomPageIndexClient(PageIndexClient):
                 cache[filename] = sha256
                 await asyncio.to_thread(save_hash_cache, cache)
 
-            logger.info("Indexed %s → doc_id=%s (%d sections)", filename, doc_id, len(result.get("structure", [])))
+            logger.info(
+                "Indexed %s → doc_id=%s (%d sections)",
+                filename,
+                doc_id,
+                len(result.get("structure", [])),
+            )
             return doc_id
 
         finally:
@@ -355,27 +412,34 @@ class CustomPageIndexClient(PageIndexClient):
     async def get_document(self, doc_id: str) -> str:
         """Return document metadata as a JSON string."""
         import json
+
         data = await asyncio.to_thread(get_doc, doc_id)
         structure = data.get("structure", [])
-        return json.dumps({
-            "doc_id":          doc_id,
-            "doc_name":        data.get("doc_name", data.get("filename", "unknown")),
-            "doc_description": data.get("doc_description", ""),
-            "section_count":   len(structure),
-            "sections": [
-                {"title": n.get("title"), "node_id": n.get("node_id")}
-                for n in structure
-            ],
-        }, indent=2)
+        return json.dumps(
+            {
+                "doc_id": doc_id,
+                "doc_name": data.get("doc_name", data.get("filename", "unknown")),
+                "doc_description": data.get("doc_description", ""),
+                "section_count": len(structure),
+                "sections": [
+                    {"title": n.get("title"), "node_id": n.get("node_id")} for n in structure
+                ],
+            },
+            indent=2,
+        )
 
     async def get_document_structure(self, doc_id: str) -> str:
         """Return document tree structure (without text fields) as a JSON string."""
         import json
+
         data = await asyncio.to_thread(get_doc, doc_id)
-        return json.dumps({
-            "doc_id":    doc_id,
-            "structure": _strip_text(data.get("structure", [])),
-        }, indent=2)
+        return json.dumps(
+            {
+                "doc_id": doc_id,
+                "structure": _strip_text(data.get("structure", [])),
+            },
+            indent=2,
+        )
 
     async def get_page_content(self, doc_id: str, pages: str) -> str:
         """Return node text for the specified pages as a JSON string.
@@ -383,6 +447,7 @@ class CustomPageIndexClient(PageIndexClient):
         pages: single page ('5'), range ('3-7'), or comma list ('3,5,7').
         """
         import json
+
         data = await asyncio.to_thread(get_doc, doc_id)
         nm: dict = {}
         _build_node_map(data.get("structure", []), nm)
@@ -399,9 +464,9 @@ class CustomPageIndexClient(PageIndexClient):
         hits = [
             {
                 "node_id": nid,
-                "title":   n.get("title"),
-                "pages":   f"{n.get('start_index')}-{n.get('end_index')}",
-                "text":    n["text"],
+                "title": n.get("title"),
+                "pages": f"{n.get('start_index')}-{n.get('end_index')}",
+                "text": n["text"],
             }
             for nid, n in nm.items()
             if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted
@@ -418,6 +483,7 @@ class CustomPageIndexClient(PageIndexClient):
 
     def _run_page_index(self, pdf_path: str) -> dict:
         from pageindex import page_index
+
         return page_index(
             doc=pdf_path,
             model=self.model,

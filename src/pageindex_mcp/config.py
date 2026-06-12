@@ -19,6 +19,7 @@ if not os.environ.get("OPENAI_API_KEY") and os.environ.get("CHATGPT_API_KEY"):
 # Settings
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Settings:
     minio_endpoint: str
@@ -57,9 +58,7 @@ def _load_settings() -> Settings:
         doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
-        redis_url=os.environ.get(
-            "REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"
-        ),
+        redis_url=os.environ.get("REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"),
         upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
         cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
         mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),

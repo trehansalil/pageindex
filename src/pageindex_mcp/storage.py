@@ -25,7 +25,11 @@ def get_minio() -> Minio:
     if _minio_client is None:
         with _minio_lock:
             if _minio_client is None:
-                logger.info("Initialising MinIO client: endpoint=%s bucket=%s", settings.minio_endpoint, settings.minio_bucket)
+                logger.info(
+                    "Initialising MinIO client: endpoint=%s bucket=%s",
+                    settings.minio_endpoint,
+                    settings.minio_bucket,
+                )
                 client = Minio(
                     settings.minio_endpoint,
                     access_key=settings.minio_access_key,
@@ -43,6 +47,7 @@ def get_minio() -> Minio:
 # Processed document CRUD  (MinIO: processed/<doc_id>.json)
 # ---------------------------------------------------------------------------
 
+
 def load_doc(doc_id: str) -> dict:
     """Fetch processed/<doc_id>.json from MinIO (STORE-01-C3: returns exact persisted
     bytes). Caching is handled by the read-through accessor cache.get_doc."""
@@ -58,7 +63,7 @@ def load_doc(doc_id: str) -> dict:
     except S3Error as e:
         if e.code == "NoSuchKey":
             logger.warning("Document not found in MinIO: %s", doc_id)
-            raise ValueError(f"Document not found: {doc_id}")
+            raise ValueError(f"Document not found: {doc_id}") from e
         logger.error("MinIO error loading doc %s: %s", doc_id, e)
         raise
     finally:
@@ -87,6 +92,7 @@ def save_doc(doc_id: str, data: dict) -> None:
         )
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+
         doc_cache_delete(doc_id)
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
@@ -95,6 +101,7 @@ def save_doc(doc_id: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 # Flat-document CRUD  (MinIO: processed/<doc_id>.flat.json)  — RFC-004 Amendment 1
 # ---------------------------------------------------------------------------
+
 
 def get_flat_doc(doc_id: str) -> dict:
     """Fetch processed/<doc_id>.flat.json from MinIO (FLAT-02-C1: returns a dict
@@ -111,7 +118,7 @@ def get_flat_doc(doc_id: str) -> dict:
     except S3Error as e:
         if e.code == "NoSuchKey":
             logger.warning("Flat document not found in MinIO: %s", doc_id)
-            raise ValueError(f"Flat document not found: {doc_id}")
+            raise ValueError(f"Flat document not found: {doc_id}") from e
         logger.error("MinIO error loading flat doc %s: %s", doc_id, e)
         raise
     finally:
@@ -142,6 +149,7 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
         )
         logger.debug("Saved flat doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+
         doc_cache_delete(doc_id)
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
@@ -149,7 +157,8 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
     save_doc_meta(doc_id, data)
 
 
-def delete_doc(doc_id: str) -> None:
+# Complexity grandfathered (HR2 erasure cascade); see pyproject [tool.ruff].
+def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
     """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
        1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
        4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename.
@@ -174,8 +183,20 @@ def delete_doc(doc_id: str) -> None:
         # 1. uploads/<doc_id>/*
         removed = 0
         try:
-            for obj in mc.list_objects(settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True):
-                mc.remove_object(settings.minio_bucket, obj.object_name)
+            for obj in mc.list_objects(
+                settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True
+            ):
+                object_name = obj.object_name
+                if not object_name:
+                    continue
+                # Flat docs have no processed/<doc_id>.json, so load_doc above yields
+                # no doc_name. Recover it from the upload object basename (present for
+                # both flat and tree docs) so step 5 can still clear the hash-cache (HR2).
+                if doc_name is None:
+                    basename = object_name.rsplit("/", 1)[-1]
+                    if basename:
+                        doc_name = basename
+                mc.remove_object(settings.minio_bucket, object_name)
                 removed += 1
             logger.info("ERASE %s step1: removed %d uploads object(s)", doc_id, removed)
         except S3Error as e:
@@ -208,6 +229,7 @@ def delete_doc(doc_id: str) -> None:
         # 4. Redis cache
         try:
             from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
+
             doc_cache_delete(doc_id)
             logger.info("ERASE %s step4: invalidated Redis cache", doc_id)
         except Exception as e:
@@ -224,7 +246,9 @@ def delete_doc(doc_id: str) -> None:
             except Exception as e:
                 errors.append(f"hash-cache: {e}")
         else:
-            logger.warning("ERASE %s step5: doc_name unknown; cannot clear hash-cache entry", doc_id)
+            logger.warning(
+                "ERASE %s step5: doc_name unknown; cannot clear hash-cache entry", doc_id
+            )
 
         if errors:
             raise RuntimeError(f"delete_doc({doc_id}) partial failure across stores: {errors}")
@@ -267,7 +291,7 @@ def list_processed_docs() -> list[dict]:
     start = time.monotonic()
     mc = get_minio()
     try:
-        meta_keys: dict[str, str] = {}   # doc_id -> object_name (prefer .meta.json)
+        meta_keys: dict[str, str] = {}  # doc_id -> object_name (prefer .meta.json)
         for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
             name = obj.object_name
             if name.endswith(".meta.json"):
@@ -289,13 +313,15 @@ def list_processed_docs() -> list[dict]:
             try:
                 response = mc.get_object(settings.minio_bucket, obj_name)
                 data = json.loads(response.read())
-                docs.append({
-                    "doc_id":       data.get("doc_id", doc_id),
-                    "doc_name":     data.get("doc_name", data.get("filename", "unknown")),
-                    "source_url":   data.get("source_url", ""),
-                    "processed_at": data.get("processed_at", ""),
-                    "content_class": data.get("content_class", ""),
-                })
+                docs.append(
+                    {
+                        "doc_id": data.get("doc_id", doc_id),
+                        "doc_name": data.get("doc_name", data.get("filename", "unknown")),
+                        "source_url": data.get("source_url", ""),
+                        "processed_at": data.get("processed_at", ""),
+                        "content_class": data.get("content_class", ""),
+                    }
+                )
             except Exception as e:
                 logger.warning("Failed to read doc metadata %s: %s", obj_name, e)
                 continue
@@ -315,6 +341,7 @@ def list_processed_docs() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Raw upload storage  (MinIO: uploads/<doc_id>/<filename>)
 # ---------------------------------------------------------------------------
+
 
 def save_raw(doc_id: str, filename: str, data: bytes) -> None:
     """Store raw file bytes at uploads/<doc_id>/<filename>."""
@@ -387,6 +414,7 @@ def save_hash_cache(cache: dict[str, str]) -> None:
 # Upload staging  (MinIO: uploads/staging/<job_id>/<filename>)
 # ---------------------------------------------------------------------------
 
+
 def upload_staging(job_id: str, filename: str, data: bytes) -> str:
     """Stage raw upload bytes in MinIO. Returns the object key."""
     MINIO_OPS.labels(operation="put").inc()
@@ -436,6 +464,7 @@ def delete_staging(staging_key: str) -> None:
 # ---------------------------------------------------------------------------
 # Pre-loaded document sync  (MinIO: preloaded/<filename>)
 # ---------------------------------------------------------------------------
+
 
 def sync_preloaded_to_minio() -> list[str]:
     """Upload new files from doc_store/ to preloaded/ prefix. Returns synced filenames."""

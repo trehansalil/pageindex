@@ -73,17 +73,19 @@ async def main() -> int:
             # documented CLI exit contract is 0 on success or 1 on handled
             # failure, so we coerce any argparse exit to 1. Emit a JSON line
             # first so the stdout-is-exactly-one-JSON-line contract holds.
-            _emit({
-                "ok": False,
-                "error": "ArgparseExit",
-                "message": f"argparse exited with code {sysexit.code}",
-            })
+            _emit(
+                {
+                    "ok": False,
+                    "error": "ArgparseExit",
+                    "message": f"argparse exited with code {sysexit.code}",
+                }
+            )
             return 1
 
         try:
             # Heavy import deferred to here so baseline RSS in the parent process
             # (before any conversion) is not polluted by pageindex/litellm imports.
-            from pageindex_mcp.client import CustomPageIndexClient  # noqa: PLC0415
+            from pageindex_mcp.client import CustomPageIndexClient
 
             client = CustomPageIndexClient()
             doc_id = await client.index(args.input_path)
@@ -105,7 +107,7 @@ async def main() -> int:
             _emit(payload)
             return 0
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
             payload = {
                 "ok": False,

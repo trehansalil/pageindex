@@ -1,6 +1,7 @@
 """FastMCP server composition root and entry point."""
 
 import logging
+
 from fastmcp import FastMCP
 from starlette.routing import Route
 
@@ -44,7 +45,9 @@ def main() -> None:
     import anyio
     import uvicorn
 
-    print(f"Starting PageIndex MCP server at http://{settings.server_host}:{settings.server_port}/mcp")
+    print(
+        f"Starting PageIndex MCP server at http://{settings.server_host}:{settings.server_port}/mcp"
+    )
     print(f"Upload service at http://{settings.server_host}:{settings.server_port}/upload")
     print(f"Metrics at http://{settings.server_host}:{settings.server_port}/metrics")
     print(f"MinIO endpoint: {settings.minio_endpoint}  bucket: {settings.minio_bucket}")

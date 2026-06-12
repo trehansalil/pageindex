@@ -1,13 +1,11 @@
 """Prometheus metrics definitions and /metrics response helper."""
 
-import time
-
 from prometheus_client import (
+    REGISTRY,
     Counter,
     Gauge,
     Histogram,
     generate_latest,
-    REGISTRY,
 )
 from starlette.requests import Request
 from starlette.responses import Response

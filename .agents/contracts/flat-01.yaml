@@ -14,8 +14,8 @@ contracts:
   - id: FLAT-01-C1
     desc: "route_and_extract_flat classifies flat markdown into a content_class via deterministic signals"
     trigger: "route_and_extract_flat(md) is called with a non-empty markdown string for a document that produced no usable tree"
-    effect: "Returns (content_class, blocks) where content_class is one of flat_table, flat_kv, flat_prose, flat_mixed: a markdown grid/table signal yields flat_table; a numbered-clause pattern (lines like '1', '1.1', '2', '2.1') yields flat_kv; running paragraphs yield flat_prose; more than one co-present signal yields flat_mixed"
-    boundary: "md is a non-empty string; the routing decision uses only the markdown text (no validate_tree call, no network, no VLM)"
+    effect: "Returns (content_class, blocks) where content_class is one of flat_table, flat_kv, flat_prose, flat_mixed: a markdown grid/table signal yields flat_table; a numbered-clause pattern (lines like '1', '1.1', '2', '2.1') yields flat_kv; running paragraphs yield flat_prose; more than one co-present signal yields flat_mixed. flat_prose is also the default fallback: when NONE of the three content signals (table/kv/prose) fire — e.g. bullet-only, single-title-only, image-only, or any markdown that fits none of table/numbered-clause/running-paragraph — content_class is flat_prose (never None)"
+    boundary: "md is a non-empty string; the routing decision uses only the markdown text (no validate_tree call, no network, no VLM). The function always returns a content_class string from the four-value set; flat_prose is the catch-all when no signal matches"
 
   - id: FLAT-01-C2
     desc: "Tables are emitted both as a row matrix and as verbalized row_records"

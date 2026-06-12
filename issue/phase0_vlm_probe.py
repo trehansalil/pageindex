@@ -49,8 +49,8 @@ DPIS = [144, 200]
 PROMPT = (
     "You are a document-structure analyzer for German insurance T&C PDFs. "
     "Look at this page image and extract its VISUAL heading hierarchy. "
-    "Return ONLY JSON: {\"headings\":[{\"text\":\"...\",\"level\":1},...], "
-    "\"is_flat\":bool, \"max_depth\":int, \"note\":\"...\"}. "
+    'Return ONLY JSON: {"headings":[{"text":"...","level":1},...], '
+    '"is_flat":bool, "max_depth":int, "note":"..."}. '
     "Rules: level 1 = top section, 2 = subsection, etc. Numbered clauses like "
     "'1', '1.1', '2', '2.1' ARE a 2-level hierarchy. Table/grid COLUMN LABELS and "
     "navigation links are NOT hierarchy -> set is_flat=true. Transcribe heading "
@@ -118,7 +118,15 @@ def probe_granite(png: bytes) -> dict:
     model = _VlmModel.from_pretrained(model_id, torch_dtype=torch.float32)
     model.eval()
     img = Image.open(io.BytesIO(png)).convert("RGB")
-    msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Convert this page to docling."}]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": "Convert this page to docling."},
+            ],
+        }
+    ]
     prompt = proc.apply_chat_template(msgs, add_generation_prompt=True)
     inputs = proc(text=prompt, images=[img], return_tensors="pt")
     with torch.no_grad():
@@ -129,7 +137,9 @@ def probe_granite(png: bytes) -> dict:
     import re
 
     levels = re.findall(r"section_header_level_(\d+)", text)
-    peak_rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024), 1)
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # macOS ru_maxrss is bytes; Linux is kilobytes.
+    peak_rss_mb = round((rss / (1024 * 1024)) if sys.platform == "darwin" else (rss / 1024), 1)
     return {
         "latency_s": dt,
         "peak_rss_mb": peak_rss_mb,  # macOS ru_maxrss is bytes; Q3 CPU-RSS data point
@@ -141,7 +151,10 @@ def probe_granite(png: bytes) -> dict:
 
 def main() -> None:
     do_granite = "--granite" in sys.argv
-    if not os.environ.get("OPENAI_API_KEY"):
+    # GPT runs whenever PHASE0_GRANITE_ONLY is unset (the same flag that gates the
+    # DPI loop below); --granite only ADDS Granite, it does NOT disable GPT. So only
+    # require the OpenAI key when this run will actually call GPT.
+    if not os.environ.get("PHASE0_GRANITE_ONLY") and not os.environ.get("OPENAI_API_KEY"):
         print("FATAL: OPENAI_API_KEY not set", file=sys.stderr)
         sys.exit(1)
 
@@ -154,14 +167,16 @@ def main() -> None:
             results.append(entry)
             print(f"[SKIP] {fname}: not found")
             continue
-        for dpi in (DPIS if not os.environ.get("PHASE0_GRANITE_ONLY") else []):
+        for dpi in DPIS if not os.environ.get("PHASE0_GRANITE_ONLY") else []:
             tag = f"gpt_{dpi}dpi"
             try:
                 png = render_page(path, page_idx, dpi)
                 entry[tag] = probe_gpt(png)
                 r = entry[tag]["result"]
-                print(f"[OK] {fname} @ {dpi}dpi: is_flat={r.get('is_flat')} "
-                      f"max_depth={r.get('max_depth')} headings={len(r.get('headings', []))}")
+                print(
+                    f"[OK] {fname} @ {dpi}dpi: is_flat={r.get('is_flat')} "
+                    f"max_depth={r.get('max_depth')} headings={len(r.get('headings', []))}"
+                )
             except Exception as e:  # throwaway probe — capture and continue
                 entry[tag] = {"error": repr(e), "tb": traceback.format_exc()[-800:]}
                 print(f"[ERR] {fname} @ {dpi}dpi: {e!r}")
@@ -170,7 +185,9 @@ def main() -> None:
                 png = render_page(path, page_idx, 200)
                 entry["granite_200dpi"] = probe_granite(png)
                 g = entry["granite_200dpi"]
-                print(f"[OK] {fname} granite: levels={g['section_header_levels']} n={g['n_headers']}")
+                print(
+                    f"[OK] {fname} granite: levels={g['section_header_levels']} n={g['n_headers']}"
+                )
             except Exception as e:
                 entry["granite_200dpi"] = {"error": repr(e), "tb": traceback.format_exc()[-800:]}
                 print(f"[ERR] {fname} granite: {e!r}")

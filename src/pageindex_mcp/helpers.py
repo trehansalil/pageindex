@@ -6,15 +6,15 @@ import logging
 import re
 import time
 
+from .cache import get_doc
 from .config import settings
+from .converters import normalize_dashes
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
     RAG_DURATION,
     RAG_SEARCHES,
 )
-from .cache import get_doc
-from .converters import normalize_dashes
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ async def _llm(prompt: str, model: str | None = None) -> str:
     start = time.monotonic()
     try:
         from .client import get_openai_client
+
         client = get_openai_client()
         r = await client.chat.completions.create(
             model=model or _ANSWER_MODEL,
@@ -43,7 +44,8 @@ async def _llm(prompt: str, model: str | None = None) -> str:
 
 
 async def _prefilter_docs(
-    query: str, doc_summaries: list[dict],
+    query: str,
+    doc_summaries: list[dict],
 ) -> list[str]:
     """Use a fast LLM call to select which documents are worth searching.
 
@@ -53,8 +55,8 @@ async def _prefilter_docs(
         return [d["doc_id"] for d in doc_summaries]
 
     doc_lines = "\n".join(
-        f'- doc_id: {d["doc_id"]} | name: {d["doc_name"]}'
-        + (f' | description: {d["doc_description"]}' if d.get("doc_description") else "")
+        f"- doc_id: {d['doc_id']} | name: {d['doc_name']}"
+        + (f" | description: {d['doc_description']}" if d.get("doc_description") else "")
         for d in doc_summaries
     )
 
@@ -123,7 +125,10 @@ async def _rag(query: str, doc_ids: list[str]) -> str:
 
 
 async def _search_one_doc(
-    query: str, doc_id: str, data: dict, semaphore: asyncio.Semaphore,
+    query: str,
+    doc_id: str,
+    data: dict,
+    semaphore: asyncio.Semaphore,
 ) -> tuple[str, str, str] | None:
     """Search a single document for relevant nodes. Returns (doc_id, name, text) or None."""
     async with semaphore:
@@ -139,8 +144,9 @@ async def _search_one_doc(
         if data.get("content_class") and not tree:
             text = _flat_search_text(data)
             if text:
-                logger.info("RAG: doc %s (%s) served via flat adapter — %d chars",
-                            doc_id, name, len(text))
+                logger.info(
+                    "RAG: doc %s (%s) served via flat adapter — %d chars", doc_id, name, len(text)
+                )
                 return (doc_id, name, text)
             logger.warning("RAG: flat doc %s — no verbalized content to serve", doc_id)
             return None
@@ -183,18 +189,30 @@ async def _search_one_doc(
             logger.info("RAG: doc %s — LLM reasoning: %s", doc_id, thinking[:300])
         except Exception as e:
             ids = []
-            logger.error("RAG: failed to parse LLM response for doc %s: %s — raw: %s", doc_id, e, clean[:300])
+            logger.error(
+                "RAG: failed to parse LLM response for doc %s: %s — raw: %s", doc_id, e, clean[:300]
+            )
 
         matched = [i for i in ids if i in nm and "text" in nm[i]]
         missed = [i for i in ids if i not in nm]
         if missed:
-            logger.warning("RAG: doc %s — %d node_id(s) from LLM not found in tree: %s", doc_id, len(missed), missed)
+            logger.warning(
+                "RAG: doc %s — %d node_id(s) from LLM not found in tree: %s",
+                doc_id,
+                len(missed),
+                missed,
+            )
 
         text = "\n\n".join(nm[i]["text"] for i in matched)
         if text:
             logger.info("RAG: doc %s — collected %d chars of context", doc_id, len(text))
             return (doc_id, name, text)
-        logger.warning("RAG: doc %s — no text extracted (matched=%d, missed=%d)", doc_id, len(matched), len(missed))
+        logger.warning(
+            "RAG: doc %s — no text extracted (matched=%d, missed=%d)",
+            doc_id,
+            len(matched),
+            len(missed),
+        )
         return None
 
 
@@ -216,7 +234,9 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
             continue
         logger.info("RAG TIMING: load_doc(%s) = %.3fs", doc_id, time.monotonic() - t)
         doc_data[doc_id] = data
-    logger.info("RAG TIMING: Phase 1 (load %d docs) = %.3fs", len(doc_data), time.monotonic() - phase1_t0)
+    logger.info(
+        "RAG TIMING: Phase 1 (load %d docs) = %.3fs", len(doc_data), time.monotonic() - phase1_t0
+    )
 
     # --- Phase 1.5: Pre-filter — pick only relevant docs ---
     prefilter_t0 = time.monotonic()
@@ -232,20 +252,21 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     # Only keep docs the pre-filter selected (fall back to all if none matched)
     filtered = {did: doc_data[did] for did in relevant_ids if did in doc_data}
     if not filtered:
-        logger.warning("RAG pre-filter returned no matches, falling back to all %d docs", len(doc_data))
+        logger.warning(
+            "RAG pre-filter returned no matches, falling back to all %d docs", len(doc_data)
+        )
         filtered = doc_data
     logger.info(
         "RAG TIMING: Phase 1.5 (pre-filter %d -> %d docs) = %.3fs",
-        len(doc_data), len(filtered), time.monotonic() - prefilter_t0,
+        len(doc_data),
+        len(filtered),
+        time.monotonic() - prefilter_t0,
     )
 
     # --- Phase 2: Parallel LLM search across filtered docs ---
     phase2_t0 = time.monotonic()
     semaphore = asyncio.Semaphore(_SEARCH_CONCURRENCY)
-    tasks = [
-        _search_one_doc(query, did, data, semaphore)
-        for did, data in filtered.items()
-    ]
+    tasks = [_search_one_doc(query, did, data, semaphore) for did, data in filtered.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     for result in results:
@@ -256,21 +277,37 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
             doc_id, name, text = result
             context_parts.append(f"=== {name} ===\n{text}")
             matched_docs.append((doc_id, name))
-    logger.info("RAG TIMING: Phase 2 (parallel LLM search across %d docs) = %.3fs", len(filtered), time.monotonic() - phase2_t0)
+    logger.info(
+        "RAG TIMING: Phase 2 (parallel LLM search across %d docs) = %.3fs",
+        len(filtered),
+        time.monotonic() - phase2_t0,
+    )
 
     if not context_parts:
-        logger.warning("RAG: no relevant content found across %d doc(s) for query=%r", len(doc_ids), query[:100])
-        return json.dumps({"query": query, "sources": [], "content": "No relevant content found for the query."})
+        logger.warning(
+            "RAG: no relevant content found across %d doc(s) for query=%r",
+            len(doc_ids),
+            query[:100],
+        )
+        return json.dumps(
+            {"query": query, "sources": [], "content": "No relevant content found for the query."}
+        )
 
-    logger.info("RAG: returning %d context part(s) (%d total chars) from %d source(s)",
-                len(context_parts), sum(len(p) for p in context_parts), len(matched_docs))
+    logger.info(
+        "RAG: returning %d context part(s) (%d total chars) from %d source(s)",
+        len(context_parts),
+        sum(len(p) for p in context_parts),
+        len(matched_docs),
+    )
 
     # Return raw context + source metadata — let the calling agent synthesize the answer
-    result = json.dumps({
-        "query": query,
-        "sources": [{"doc_id": did, "doc_name": name} for did, name in matched_docs],
-        "content": "\n\n".join(context_parts),
-    })
+    result = json.dumps(
+        {
+            "query": query,
+            "sources": [{"doc_id": did, "doc_name": name} for did, name in matched_docs],
+            "content": "\n\n".join(context_parts),
+        }
+    )
     logger.info("RAG TIMING: Total _rag_inner = %.3fs", time.monotonic() - rag_t0)
     return result
 
@@ -280,6 +317,7 @@ class LowQualityTreeError(Exception):
 
     Carries .reason ('node_count<3' | 'depth<2' | 'garbling') so the worker can
     surface status=error reason=low_quality_tree without persisting anything."""
+
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"low_quality_tree: {reason}")
@@ -370,7 +408,10 @@ def _flat_is_separator_row(line: str) -> bool:
     cells = _flat_split_pipe_row(line)
     if not cells:
         return False
-    return all(c != "" and set(c) <= set("-: ") and "-" in c for c in cells)
+    # Require an actual pipe: a pipe-less thematic break like '---' splits into a
+    # single cell that would otherwise pass the dash/colon check and be misread as
+    # a table separator (spurious flat_table classification).
+    return "|" in line and all(c != "" and set(c) <= set("-: ") and "-" in c for c in cells)
 
 
 def _flat_verbalize_rows(headers: list[str], data_rows: list[list[str]]) -> list[str]:
@@ -399,13 +440,14 @@ def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
     block = {
         "role": "table",
         "headers": header,
-        "rows": [header, *data_rows],          # structured row matrix
+        "rows": [header, *data_rows],  # structured row matrix
         "row_records": _flat_verbalize_rows(header, data_rows),  # verbalized form
     }
     return block, i
 
 
-def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:
+# Complexity grandfathered (flat-doc router, FLAT-01); see pyproject [tool.ruff].
+def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
     """FLAT-01-C1/C2/C3: classify a flat (no-hierarchy) markdown document and
     extract role-typed blocks.
 
@@ -446,11 +488,7 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:
             continue
 
         # Table region: a pipe row immediately followed by a separator row.
-        if (
-            _flat_is_pipe_row(line)
-            and i + 1 < n
-            and _flat_is_separator_row(lines[i + 1])
-        ):
+        if _flat_is_pipe_row(line) and i + 1 < n and _flat_is_separator_row(lines[i + 1]):
             flush_prose()
             block, i = _flat_parse_table(lines, i)
             blocks.append(block)

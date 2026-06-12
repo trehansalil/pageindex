@@ -7,8 +7,8 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Callable, cast
-
+from collections.abc import Callable
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ def _relevel_by_numbering(md: str) -> str:
 
     Headings whose title has no recognised numbering prefix are left unchanged,
     so this is safe to run after ``_relevel_headings`` on any corpus."""
+
     def repl(m: "re.Match[str]") -> str:
         title = m.group(1)
         depth = numbering_depth(title)
@@ -103,6 +104,7 @@ def _relevel_by_numbering(md: str) -> str:
         # sections (e.g. "A.1.1.1.1.1") would otherwise emit 7+ '#'s, which is
         # not a valid heading. Mirrors the clamp in _relevel_by_containment.
         return "#" * max(1, min(6, depth)) + " " + title
+
     return _HLINE_RE.sub(repl, md)
 
 
@@ -119,9 +121,7 @@ def _relevel_by_numbering(md: str) -> str:
 
 # Structural words that introduce a numbering label. We collapse the spaced-out
 # Docling rendering ("T e i l   A") before matching, so the regex sees "TeilA".
-_WORD_RE = re.compile(
-    r"^(teil|anhang|abschnitt|kapitel)\b", re.IGNORECASE
-)
+_WORD_RE = re.compile(r"^(teil|anhang|abschnitt|kapitel)\b", re.IGNORECASE)
 
 
 def _collapse_spaced(text: str) -> str:
@@ -134,10 +134,7 @@ def _collapse_spaced(text: str) -> str:
     tokens are multi-letter) are returned unchanged.
     """
     raw_toks = text.split()
-    if not (
-        len(raw_toks) >= 4
-        and sum(1 for t in raw_toks if len(t) == 1) >= len(raw_toks) * 0.6
-    ):
+    if not (len(raw_toks) >= 4 and sum(1 for t in raw_toks if len(t) == 1) >= len(raw_toks) * 0.6):
         return text
     # split on 2+ spaces -> word-level chunks; within a chunk, single chars glue.
     chunks = re.split(r"\s{2,}", text.strip())
@@ -178,7 +175,7 @@ def _split_alnum(tok: str) -> list[str]:
             parts.append(m.group(3))
         return parts
     # fallback: generic letter/digit run split
-    return [p for p in re.findall(r"[A-Za-z]+|\d+", tok)]
+    return list(re.findall(r"[A-Za-z]+|\d+", tok))
 
 
 def _segment_label(title: str) -> list[str]:
@@ -194,7 +191,7 @@ def _segment_label(title: str) -> list[str]:
     # consume an optional leading structural word
     wm = _WORD_RE.match(t)
     if wm:
-        t = t[wm.end():].lstrip(" -")
+        t = t[wm.end() :].lstrip(" -")
     # the label is the leading run of [alnum . - ( )] up to the first space
     # that starts the descriptive title. Grab the first whitespace-delimited tok.
     head = t.split(maxsplit=1)[0] if t else ""
@@ -247,8 +244,8 @@ def _containment_depths(titles: list[str]) -> list[int | None]:
     label(i). Bare-title headings (label == []) return None so the caller leaves
     that heading's existing level untouched."""
     labels = [_segment_label(t) for t in titles]
-    label_set = [tuple(l) for l in labels]
-    present = set(l for l in label_set if l)
+    label_set = [tuple(lbl) for lbl in labels]
+    present = {lbl for lbl in label_set if lbl}
     depths: list[int | None] = []
     for lab in label_set:
         if not lab:
@@ -276,8 +273,8 @@ def _relevel_by_containment(md: str) -> str:
     depths = _containment_depths([m.group(1) for m in matches])
     out: list[str] = []
     pos = 0
-    for m, depth in zip(matches, depths):
-        out.append(md[pos:m.start()])
+    for m, depth in zip(matches, depths, strict=False):
+        out.append(md[pos : m.start()])
         if depth is None:
             out.append(m.group(0))  # no label -> keep existing level
         else:
@@ -310,7 +307,9 @@ def _max_heading_level(md: str) -> int:
 # step (the guard requires max_heading_level < 2 after the numbering chain); Cat D
 # leaflets have no usable outline (<2 entries) and stay a legitimate depth<2
 # rejection (HR5 — the quality gate is never weakened).
-_OUTLINE_MIN_ANCHOR_ALNUM = 8  # min alnum chars for a substring title match (avoids short-title false positives)
+_OUTLINE_MIN_ANCHOR_ALNUM = (
+    8  # min alnum chars for a substring title match (avoids short-title false positives)
+)
 
 
 def _outline_norm(s: str) -> str:
@@ -404,7 +403,8 @@ def _read_pdf_outline(pdf_path: str) -> tuple[list[tuple[int, str, int]], int]:
     return toc, total_pages
 
 
-def _apply_outline_levels(
+# Complexity grandfathered (outline relevel, depth<2 fix); see pyproject [tool.ruff].
+def _apply_outline_levels(  # noqa: C901, PLR0915
     md: str,
     heading_pages: dict[str, list[int]],
     toc: list[tuple[int, str, int]],
@@ -446,14 +446,16 @@ def _apply_outline_levels(
             if toc[j][0] <= level:
                 end = toc[j][2]
                 break
-        sections.append({
-            "level": max(1, min(6, level)),
-            "norm": _outline_norm(title),
-            "raw": re.sub(r"\s+", " ", normalize_dashes(title)).strip(),
-            "start": start,
-            "end": end,            # exclusive
-            "matched": False,      # a rendered heading was this section's title
-        })
+        sections.append(
+            {
+                "level": max(1, min(6, level)),
+                "norm": _outline_norm(title),
+                "raw": re.sub(r"\s+", " ", normalize_dashes(title)).strip(),
+                "start": start,
+                "end": end,  # exclusive
+                "matched": False,  # a rendered heading was this section's title
+            }
+        )
 
     # 2. Consumption pointer for repeated identical headings (document order).
     from collections import deque
@@ -474,10 +476,7 @@ def _apply_outline_levels(
         if page_no is None:
             new_levels.append(None)  # no provenance -> leave at current level
             continue
-        covering = [
-            (idx, s) for idx, s in enumerate(sections)
-            if s["start"] <= page_no < s["end"]
-        ]
+        covering = [(idx, s) for idx, s in enumerate(sections) if s["start"] <= page_no < s["end"]]
         if not covering:
             new_levels.append(None)  # cover/frontmatter before the first section
             continue
@@ -510,8 +509,8 @@ def _apply_outline_levels(
     # 5. Splice: rewrite levels + emit injected titles (shallowest level first).
     out: list[str] = []
     pos = 0
-    for m, lvl in zip(matches, new_levels):
-        out.append(md[pos:m.start()])
+    for m, lvl in zip(matches, new_levels, strict=False):
+        out.append(md[pos : m.start()])
         if m.start() in injections:
             for _lvl, line in sorted(injections[m.start()]):
                 out.append(line)
@@ -537,7 +536,9 @@ def _relevel_by_outline(md: str, heading_pages: dict[str, list[int]], pdf_path: 
     result_md = _apply_outline_levels(md, heading_pages, toc, total_pages)
     logger.info(
         "_relevel_by_outline: applied outline page-spine to %s (%d sections, max_level %d)",
-        pdf_path, len(toc), _max_heading_level(result_md),
+        pdf_path,
+        len(toc),
+        _max_heading_level(result_md),
     )
     return result_md
 
@@ -551,9 +552,7 @@ def _has_recoverable_structure(md: str) -> bool:
     return _max_heading_level(md) >= 2 and len(_HEADING_RE.findall(md)) >= 3
 
 
-def _recover_heading_depth(
-    md: str, heading_pages: dict[str, list[int]], pdf_path: str
-) -> str:
+def _recover_heading_depth(md: str, heading_pages: dict[str, list[int]], pdf_path: str) -> str:
     """Run the full heading-depth recovery chain on ONE markdown source.
 
     containment (PRIMARY numbering-prefix depth) -> numbering (per-scheme regex
@@ -567,10 +566,11 @@ def _recover_heading_depth(
     if _max_heading_level(md) < 2:
         try:
             md = _relevel_by_outline(md, heading_pages, pdf_path)
-        except Exception as exc:  # noqa: BLE001 — outline relevel must never be fatal
+        except Exception as exc:
             logger.warning(
                 "_relevel_by_outline failed for %s (%s); leaving flat markdown",
-                pdf_path, exc,
+                pdf_path,
+                exc,
             )
     return md
 
@@ -617,10 +617,13 @@ def _repromote_numbered_headings(doc) -> int:
         ):
             # TextItem -> SectionHeaderItem, then swap in at its self_ref index
             # (the add-on's set_item_in_doc pattern).
-            header = SectionHeaderItem(**{
-                k: v for k, v in item.model_dump().items()
-                if k != "label" and k in SectionHeaderItem.model_fields
-            })
+            header = SectionHeaderItem(
+                **{
+                    k: v
+                    for k, v in item.model_dump().items()
+                    if k != "label" and k in SectionHeaderItem.model_fields
+                }
+            )
             _, path, idx = item.self_ref.split("/")
             getattr(doc, path)[int(idx)] = header
             n_promo += 1
@@ -631,6 +634,7 @@ def pdf_to_markdown(pdf_path: str) -> str:
     """Primary PDF route (INDEX-01-C1): pymupdf4llm -> relevel headings -> normalize dashes.
     Raises on empty/failed extraction so the caller can fall back to page_index (INDEX-01-C2)."""
     import pymupdf4llm
+
     # to_markdown() returns a str with default args; it only returns list[dict]
     # when page_chunks=True (which we do not pass). Cast to str for the type checker.
     md = cast(str, pymupdf4llm.to_markdown(pdf_path))
@@ -699,7 +703,8 @@ _HBM_STRICT_MATCH_FINGERPRINT = 're.sub(r"[^A-Za-z0-9]", "", title) == re.sub('
 _HBM_MIN_SUFFIX_LEN = 5
 
 
-def _patch_hierarchical_infer() -> None:
+# Complexity grandfathered (hierarchical add-on patch); see pyproject [tool.ruff].
+def _patch_hierarchical_infer() -> None:  # noqa: C901, PLR0915
     """Make the docling-hierarchical-pdf add-on tolerate publisher numbering prefixes.
 
     The add-on's ``HierarchyBuilderMetadata.infer()`` matches PDF-outline (TOC)
@@ -806,8 +811,8 @@ def _patch_hierarchical_infer() -> None:
     HierarchyBuilderMetadata.infer = _patched_infer
     _HIERARCHICAL_INFER_PATCHED = True
     logger.info(
-        "patched hierarchical infer() with numbering-prefix suffix matching "
-        "(min title len %d)", _HBM_MIN_SUFFIX_LEN,
+        "patched hierarchical infer() with numbering-prefix suffix matching (min title len %d)",
+        _HBM_MIN_SUFFIX_LEN,
     )
 
 
@@ -860,7 +865,7 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     # maps rendered headings to PDF-outline sections BY this page.
     try:
         heading_pages_raw = _collect_heading_pages(result.document)
-    except Exception as exc:  # noqa: BLE001 — page capture must never be fatal
+    except Exception as exc:
         logger.warning("could not collect raw heading pages for %s (%s)", pdf_path, exc)
         heading_pages_raw = {}
 
@@ -879,7 +884,7 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
         # fatal — the Rank-1 fallback below covers any patch failure.
         try:
             _patch_hierarchical_infer()
-        except Exception as exc:  # noqa: BLE001 — patch must never be fatal
+        except Exception as exc:
             logger.warning(
                 "could not patch hierarchical infer() (%s); relying on raw-docling fallback",
                 exc,
@@ -890,10 +895,11 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
             "docling-hierarchical-pdf not installed; using raw docling headings. "
             "Install it to recover clean heading selection."
         )
-    except Exception as exc:  # noqa: BLE001 — add-on must never be fatal
+    except Exception as exc:
         logger.warning(
             "hierarchical add-on postprocess failed for %s (%s); using raw docling headings",
-            pdf_path, exc,
+            pdf_path,
+            exc,
         )
 
     # Re-promote the deep numbered clauses the add-on demoted to body text
@@ -905,12 +911,14 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
         if n_promo > 0:
             logger.info(
                 "re-promoted %d demoted numbered clause(s) to headings for %s",
-                n_promo, pdf_path,
+                n_promo,
+                pdf_path,
             )
-    except Exception as exc:  # noqa: BLE001 — re-promotion must never be fatal
+    except Exception as exc:
         logger.warning(
             "heading re-promotion failed for %s (%s); using add-on selection",
-            pdf_path, exc,
+            pdf_path,
+            exc,
         )
 
     post_md = result.document.export_to_markdown()
@@ -924,7 +932,7 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     # the markdown it relevels — see _collect_heading_pages).
     try:
         heading_pages_post = _collect_heading_pages(result.document)
-    except Exception as exc:  # noqa: BLE001 — page capture must never be fatal
+    except Exception as exc:
         logger.warning("could not collect post-add-on heading pages for %s (%s)", pdf_path, exc)
         heading_pages_post = {}
 
@@ -938,17 +946,16 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     # recovers real depth. raw Docling is ligature-correct + MIT (HR4). The real
     # gate (validate_tree) still runs downstream; this only picks the better source.
     md = _recover_heading_depth(post_md, heading_pages_post, pdf_path)
-    if (
-        not _has_recoverable_structure(md)
-        and raw_headings >= 3
-        and raw_headings > post_headings
-    ):
+    if not _has_recoverable_structure(md) and raw_headings >= 3 and raw_headings > post_headings:
         md_raw = _recover_heading_depth(raw_md, heading_pages_raw, pdf_path)
         if _has_recoverable_structure(md_raw):
             logger.warning(
                 "post-add-on tree failed the structural gate (%d heading(s), max-level %d) "
                 "for %s; using raw docling markdown (%d headings)",
-                post_headings, _max_heading_level(md), pdf_path, raw_headings,
+                post_headings,
+                _max_heading_level(md),
+                pdf_path,
+                raw_headings,
             )
             md = md_raw
     return md
@@ -1008,8 +1015,10 @@ def libreoffice_to_pdf(input_path: str) -> str:
                 lo,
                 f"-env:UserInstallation=file://{profile_dir}",
                 "--headless",
-                "--convert-to", "pdf",
-                "--outdir", outdir,
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                outdir,
                 input_path,
             ],
             capture_output=True,
@@ -1025,7 +1034,8 @@ def libreoffice_to_pdf(input_path: str) -> str:
                 pdf_path = os.path.join(outdir, pdfs[0])
             elif result.returncode != 0:
                 raise RuntimeError(
-                    f"LibreOffice conversion failed (exit {result.returncode}): {result.stderr.strip()}"
+                    f"LibreOffice conversion failed (exit {result.returncode}): "
+                    f"{result.stderr.strip()}"
                 )
             else:
                 raise RuntimeError("LibreOffice did not produce a PDF file.")
@@ -1043,7 +1053,7 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
     """
     import html2text
 
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         html_content = f.read()
 
     img_pattern = re.compile(r"<img[^>]+src=[\"']([^\"']+)[\"'][^>]*/?>", re.IGNORECASE)
@@ -1052,6 +1062,7 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
     async def _describe(src: str) -> str:
         try:
             from .client import get_openai_client
+
             client = get_openai_client()
             response = await client.chat.completions.create(
                 model=model,
@@ -1062,7 +1073,10 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
                             {"type": "image_url", "image_url": {"url": src}},
                             {
                                 "type": "text",
-                                "text": "Describe this image concisely in 1-2 sentences for document context.",
+                                "text": (
+                                    "Describe this image concisely in 1-2 "
+                                    "sentences for document context."
+                                ),
                             },
                         ],
                     }
@@ -1094,17 +1108,23 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
 def flatten_nodes(nodes: list, results: list, query_lower: str) -> None:
     """Recursively walk PageIndex tree nodes and collect keyword matches in-place."""
     for node in nodes:
-        title   = node.get("title", "")
+        title = node.get("title", "")
         summary = node.get("summary", "")
-        text    = node.get("text", "")
-        if query_lower in title.lower() or query_lower in summary.lower() or query_lower in text.lower():
-            results.append({
-                "node_id":     node.get("node_id"),
-                "title":       title,
-                "summary":     summary,
-                "start_index": node.get("start_index"),
-                "end_index":   node.get("end_index"),
-            })
+        text = node.get("text", "")
+        if (
+            query_lower in title.lower()
+            or query_lower in summary.lower()
+            or query_lower in text.lower()
+        ):
+            results.append(
+                {
+                    "node_id": node.get("node_id"),
+                    "title": title,
+                    "summary": summary,
+                    "start_index": node.get("start_index"),
+                    "end_index": node.get("end_index"),
+                }
+            )
         child_nodes = node.get("nodes", [])
         if child_nodes:
             flatten_nodes(child_nodes, results, query_lower)
@@ -1113,11 +1133,16 @@ def flatten_nodes(nodes: list, results: list, query_lower: str) -> None:
 def docx_to_markdown(path: str) -> str:
     """Convert a DOCX file to a markdown string preserving heading hierarchy."""
     from docx import Document
+
     doc = Document(path)
     lines = []
     heading_map = {
-        "Heading 1": "#", "Heading 2": "##", "Heading 3": "###",
-        "Heading 4": "####", "Heading 5": "#####", "Heading 6": "######",
+        "Heading 1": "#",
+        "Heading 2": "##",
+        "Heading 3": "###",
+        "Heading 4": "####",
+        "Heading 5": "#####",
+        "Heading 6": "######",
     }
     for para in doc.paragraphs:
         text = para.text.strip()
@@ -1132,11 +1157,14 @@ def docx_to_markdown(path: str) -> str:
 def pptx_to_markdown(path: str) -> str:
     """Convert a PPTX file to markdown, one H1 section per slide."""
     from pptx import Presentation
+
     prs = Presentation(path)
     lines = []
     for i, slide in enumerate(prs.slides, 1):
         title_shape = slide.shapes.title
-        title = title_shape.text.strip() if title_shape and title_shape.text.strip() else f"Slide {i}"
+        title = (
+            title_shape.text.strip() if title_shape and title_shape.text.strip() else f"Slide {i}"
+        )
         lines.append(f"# {title}")
         for shape in slide.shapes:
             if shape == title_shape or not shape.has_text_frame:
