@@ -25,6 +25,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from .config import settings
+from .memory_admission import wait_for_memory
 from .metrics import (
     ACTIVE_UPLOADS,
     CONVERTER_CHILD_OOM_TOTAL,
@@ -297,6 +298,10 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         await asyncio.to_thread(download_staging, staging_key, local_path)
         logger.info("Downloaded staged file to %s", local_path)
 
+        # Memory-admission gate: with up to 2 worker pods, wait until the node
+        # has headroom for one ~1.9Gi conversion before spawning the child.
+        # Fails open (proceeds) on any error or after the wait cap.
+        await wait_for_memory(redis)
         try:
             result = await _run_converter_subprocess(local_path)
         except ConverterOOMError as exc:
