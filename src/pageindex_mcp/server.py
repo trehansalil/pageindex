@@ -1,10 +1,14 @@
 """FastMCP server composition root and entry point."""
 
+import asyncio
+import contextlib
 import logging
 
 from fastmcp import FastMCP
+from redis.asyncio import from_url as redis_from_url
 from starlette.routing import Route
 
+from . import queue_metrics
 from . import tools as _tools
 from .auth import BearerAuthMiddleware
 from .config import settings
@@ -35,6 +39,30 @@ starlette_app = mcp.http_app(transport="streamable-http")
 starlette_app.add_middleware(BearerAuthMiddleware)
 starlette_app.routes.insert(0, Route("/metrics", metrics_response))
 starlette_app.mount("/upload", create_upload_app())
+
+# Preserve FastMCP's own lifespan (session manager) and additionally run the
+# arq queue-depth scrape loop for the lifetime of the server process.
+_inner_lifespan = starlette_app.router.lifespan_context
+
+
+@contextlib.asynccontextmanager
+async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
+    redis = redis_from_url(settings.redis_url, decode_responses=True)
+    scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))
+    try:
+        if _inner is None:
+            yield
+        else:
+            async with _inner(app):
+                yield
+    finally:
+        scrape_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scrape_task
+        await redis.aclose()
+
+
+starlette_app.router.lifespan_context = _lifespan_with_scrape
 
 # This is what gunicorn imports:
 app = starlette_app
