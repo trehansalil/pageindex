@@ -34,6 +34,6 @@ async def queue_depth_scrape_loop(redis: Redis, interval: float = SCRAPE_INTERVA
             ARQ_QUEUE_DEPTH.set(await read_queue_depth(redis))
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 — a scrape blip must not kill the loop
+        except Exception:  # a scrape blip must not kill the loop
             logger.warning("queue-depth scrape failed; will retry", exc_info=True)
         await asyncio.sleep(interval)

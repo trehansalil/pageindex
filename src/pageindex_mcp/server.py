@@ -5,12 +5,12 @@ import contextlib
 import logging
 
 from fastmcp import FastMCP
-from redis.asyncio import from_url as redis_from_url
 from starlette.routing import Route
 
 from . import queue_metrics
 from . import tools as _tools
 from .auth import BearerAuthMiddleware
+from .cache import get_async_redis
 from .config import settings
 from .metrics import metrics_response
 from .upload_app import create_upload_app
@@ -47,7 +47,7 @@ _inner_lifespan = starlette_app.router.lifespan_context
 
 @contextlib.asynccontextmanager
 async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
-    redis = redis_from_url(settings.redis_url, decode_responses=True)
+    redis = await get_async_redis()
     scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))
     try:
         if _inner is None:
@@ -59,7 +59,6 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
         scrape_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await scrape_task
-        await redis.aclose()
 
 
 starlette_app.router.lifespan_context = _lifespan_with_scrape

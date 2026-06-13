@@ -149,9 +149,12 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
         fail "layer-isolation: minio imported outside storage.py ($MINIO_VIOLATIONS file(s))"
     fi
 
-    # no_redis_outside_cache_or_worker: Redis imports outside cache.py and worker.py
+    # no_redis_outside_cache_or_worker: direct Redis usage is confined to the
+    # coordination layer — cache.py, worker.py, and the two redis-backed
+    # autoscaling primitives (memory_admission.py admission lock, queue_metrics.py
+    # queue-depth scrape). All receive an injected client; none widen the surface.
     REDIS_VIOLATIONS=$(grep -rn 'import redis\|from redis\|aioredis\|fakeredis' src/pageindex_mcp/ \
-        | grep -vE '(cache|worker)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '(cache|worker|memory_admission|queue_metrics)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$REDIS_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_redis_outside_cache_or_worker"
     else

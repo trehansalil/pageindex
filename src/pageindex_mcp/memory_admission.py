@@ -57,7 +57,7 @@ async def _try_acquire_lock(redis: Redis) -> bool:
     """Best-effort short lock. Any error -> treat as acquired (fail open)."""
     try:
         return bool(await redis.set(_ADMISSION_LOCK_KEY, "1", nx=True, ex=_ADMISSION_LOCK_TTL_S))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("admission lock acquire failed; proceeding", exc_info=True)
         return True
 
@@ -65,7 +65,7 @@ async def _try_acquire_lock(redis: Redis) -> bool:
 async def _release_lock(redis: Redis) -> None:
     try:
         await redis.delete(_ADMISSION_LOCK_KEY)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("admission lock release failed (TTL will reclaim)", exc_info=True)
 
 
