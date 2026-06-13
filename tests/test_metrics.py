@@ -156,3 +156,17 @@ class TestStorageInstrumentation:
             load_doc("abc123")
         after = _counter_value(MINIO_OPS, {"operation": "get"})
         assert after == before + 1
+
+
+def test_arq_queue_depth_gauge_exposed():
+    # Arrange
+    from pageindex_mcp.metrics import ARQ_QUEUE_DEPTH, REGISTRY
+    from prometheus_client import generate_latest
+
+    # Act
+    ARQ_QUEUE_DEPTH.set(3)
+    text = generate_latest(REGISTRY).decode()
+
+    # Assert
+    assert "pageindex_arq_queue_depth" in text
+    assert "pageindex_arq_queue_depth 3.0" in text

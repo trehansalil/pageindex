@@ -47,6 +47,10 @@ ACTIVE_UPLOADS = Gauge(
     "pageindex_active_uploads",
     "Number of in-flight upload jobs",
 )
+ARQ_QUEUE_DEPTH = Gauge(
+    "pageindex_arq_queue_depth",
+    "Number of jobs waiting in the arq queue (ZCARD arq:queue); drives KEDA autoscaling",
+)
 
 # ---------------------------------------------------------------------------
 # RAG / LLM metrics
