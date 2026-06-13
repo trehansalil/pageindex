@@ -51,3 +51,49 @@ def _has_headroom(available_bytes: int | None, floor: int = MEM_ADMISSION_FLOOR_
     if available_bytes is None:
         return True
     return available_bytes >= floor
+
+
+async def _try_acquire_lock(redis: Redis) -> bool:
+    """Best-effort short lock. Any error -> treat as acquired (fail open)."""
+    try:
+        return bool(await redis.set(_ADMISSION_LOCK_KEY, "1", nx=True, ex=_ADMISSION_LOCK_TTL_S))
+    except Exception:  # noqa: BLE001
+        logger.warning("admission lock acquire failed; proceeding", exc_info=True)
+        return True
+
+
+async def _release_lock(redis: Redis) -> None:
+    try:
+        await redis.delete(_ADMISSION_LOCK_KEY)
+    except Exception:  # noqa: BLE001
+        logger.debug("admission lock release failed (TTL will reclaim)", exc_info=True)
+
+
+async def wait_for_memory(redis: Redis) -> bool:
+    """Block until the node has headroom for one conversion, or the wait cap elapses.
+
+    Returns True if it proceeded because headroom was available, False if it
+    proceeded because the wait cap was hit (fail-open). Never raises for an
+    expected operational error — the caller always proceeds afterwards.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + MEM_ADMISSION_MAX_WAIT_S
+
+    while True:
+        got_lock = await _try_acquire_lock(redis)
+        try:
+            available = read_meminfo_available_bytes()
+            if _has_headroom(available):
+                return True
+        finally:
+            if got_lock:
+                await _release_lock(redis)
+
+        if loop.time() >= deadline:
+            logger.warning(
+                "admission wait cap (%.0fs) hit; proceeding without confirmed headroom",
+                MEM_ADMISSION_MAX_WAIT_S,
+            )
+            return False
+
+        await asyncio.sleep(MEM_ADMISSION_POLL_S)
