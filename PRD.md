@@ -139,7 +139,7 @@ Machine-consumability of outputs is the accessibility axis for this product. A g
 | ID | Requirement |
 |---|---|
 | **NFR-DR1** | Default deployment: all document content remains in self-hosted MinIO. No document content leaves the deployment unless an external OCR cloud path is explicitly configured (NFR-C3). |
-| **NFR-DR2** | LLM calls (filter + search) go to the configured `OPENAI_BASE_URL`; if that is an external provider (e.g., Azure, OpenAI), that counts as data egress and must be cleared for insurance content. |
+| **NFR-DR2** | LLM calls (filter + search) go to the configured `OPENAI_BASE_URL` (set via `LLM_PROVIDER` and `OPENAI_BASE_URL` env vars). Supports self-hosted / OpenAI-compatible endpoints (vLLM, Together, Groq, OpenRouter, local) for zero data egress, or external providers (Azure, OpenAI) for managed residency — configuration choice. PII-bearing content must route through a provider with no-training default + zero-retention + EU residency guarantees. |
 
 ### Performance & Concurrency
 

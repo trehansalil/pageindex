@@ -1,7 +1,5 @@
 # tests/test_config.py
-import os
 import importlib
-import pytest
 
 
 def test_settings_has_redis_url(monkeypatch):
@@ -24,3 +22,20 @@ def test_settings_redis_defaults(monkeypatch):
     importlib.reload(cfg)
     assert cfg.settings.redis_url == "redis://neonatal-care-redis.neonatal-care:6379/1"
     assert cfg.settings.upload_api_key == ""
+
+
+def test_settings_llm_provider_default_auto(monkeypatch):
+    """LLM_PROVIDER defaults to 'auto' when unset."""
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    import pageindex_mcp.config as cfg
+    importlib.reload(cfg)
+    assert cfg.settings.llm_provider == "auto"
+
+
+def test_settings_llm_provider_normalized(monkeypatch):
+    """LLM_PROVIDER is lower-cased and stripped from the environment."""
+    monkeypatch.setenv("LLM_PROVIDER", "  Compatible ")
+    import pageindex_mcp.config as cfg
+    importlib.reload(cfg)
+    assert cfg.settings.llm_provider == "compatible"

@@ -1,0 +1,36 @@
+feature: LLM-01
+name: OpenAI-Compatible Endpoint Provider Abstraction
+module: client
+phase: 1
+source: plans/openai-compatible-endpoints.md
+
+contracts:
+  - id: LLM-01-C1
+    desc: "resolve_llm_provider normalizes the configured provider to openai | compatible | azure"
+    trigger: "resolve_llm_provider() is called"
+    effect: "Returns the explicit LLM_PROVIDER value when it is one of openai/compatible/azure; when it is 'auto' (or unknown) it returns 'azure' if the base URL is an *.openai.azure.com endpoint, else 'openai'"
+    boundary: "settings.llm_provider and settings.openai_base_url are read from the Settings singleton"
+
+  - id: LLM-01-C2
+    desc: "openai/compatible providers yield an AsyncOpenAI client carrying the configured OPENAI_BASE_URL"
+    trigger: "get_openai_client() is called with a resolved provider of openai or compatible"
+    effect: "Returns an openai.AsyncOpenAI (not AsyncAzureOpenAI) constructed with base_url=settings.openai_base_url and api_key=settings.openai_api_key, so any OpenAI-compatible endpoint is used by the query path"
+    boundary: "resolve_llm_provider() != 'azure'"
+
+  - id: LLM-01-C3
+    desc: "azure provider yields an AsyncAzureOpenAI client"
+    trigger: "get_openai_client() is called with a resolved provider of azure"
+    effect: "Returns an openai.AsyncAzureOpenAI built with azure_endpoint=settings.openai_base_url and api_version=settings.azure_api_version or the default"
+    boundary: "resolve_llm_provider() == 'azure'"
+
+  - id: LLM-01-C4
+    desc: "configure_litellm makes the ingestion path target the configured endpoint deterministically"
+    trigger: "configure_litellm() is called (at the converters_cli subprocess entry)"
+    effect: "Sets litellm.api_base to settings.openai_base_url; for openai/compatible also sets litellm.api_key; for azure sets the AZURE_API_BASE/AZURE_API_KEY/AZURE_API_VERSION env vars litellm requires — so the fork's bare litellm.completion(model=...) no longer relies on env auto-detection alone"
+    boundary: "Called once before client.index() in the ingestion subprocess"
+
+  - id: LLM-01-C5
+    desc: "validate_llm_config fails fast on an inconsistent LLM configuration"
+    trigger: "validate_llm_config() is called"
+    effect: "Raises ValueError when openai_api_key is empty, or when openai_base_url is empty, so a misconfiguration surfaces at startup rather than as an opaque mid-ingestion litellm/SDK error"
+    boundary: "Reads the Settings singleton; raises before any LLM call is attempted"

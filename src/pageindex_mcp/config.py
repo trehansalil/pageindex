@@ -39,6 +39,9 @@ class Settings:
     openai_api_key: str
     openai_base_url: str | None
     azure_api_version: str | None
+    # Provider selector: auto | openai | compatible | azure (default auto).
+    # 'compatible' targets any OpenAI-compatible endpoint via OPENAI_BASE_URL.
+    llm_provider: str
     llm_model: str
     llm_filter_model: str
     llm_search_model: str
@@ -65,6 +68,7 @@ def _load_settings() -> Settings:
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         azure_api_version=os.environ.get("AZURE_API_VERSION"),
+        llm_provider=os.environ.get("LLM_PROVIDER", "auto").strip().lower(),
         llm_model=os.environ.get("PAGEINDEX_MODEL", "gpt-4o-2024-11-20"),
         llm_filter_model=os.environ.get("PAGEINDEX_FILTER_MODEL", "gpt-4o-mini"),
         llm_search_model=os.environ.get("PAGEINDEX_SEARCH_MODEL", "gpt-4o-mini"),

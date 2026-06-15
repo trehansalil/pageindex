@@ -1,0 +1,73 @@
+{
+  // PageIndex MCP debug configs. All load env from .env (envFile), so the
+  // LLM-01 levers (LLM_PROVIDER / OPENAI_BASE_URL / PAGEINDEX_*_MODEL) are
+  // exactly what the running code sees. Interpreter is pinned to the uv venv.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // PRIMARY for testing the OpenAI-compatible / provider work end-to-end.
+      // Runs the real ingestion entry point the worker spawns:
+      //   python -m pageindex_mcp.converters_cli <doc>
+      // Hits validate_llm_config() -> configure_litellm() -> CustomPageIndexClient.index()
+      //   -> pageindex fork -> litellm.completion(...).
+      // Set breakpoints in client.py: configure_litellm / get_openai_client / resolve_llm_provider.
+      // Needs MinIO up for the final persistence step (docker compose up -d minio).
+      "name": "PageIndex: Ingestion E2E (converters_cli)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pageindex_mcp.converters_cli",
+      "args": ["${input:inputDoc}"],
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Query path: the MCP/HTTP server. Exercises helpers._llm -> get_openai_client
+      // (the OpenAI-SDK side of the provider abstraction) when you call a query tool.
+      "name": "PageIndex: MCP dev server",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/mcp_server.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // The arq worker. "subProcess": true makes debugpy follow the converters_cli
+      // CHILD process it spawns, so breakpoints in the ingestion path hit on the
+      // real worker -> subprocess flow. Needs Redis + MinIO up.
+      "name": "PageIndex: arq worker",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "arq",
+      "args": ["pageindex_mcp.worker.WorkerSettings"],
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "subProcess": true,
+      "justMyCode": false
+    }
+  ],
+  "compounds": [
+    {
+      // Full E2E: upload via POST /upload/files against the server, the worker
+      // picks up the job and ingests. Bring up infra first: docker compose up -d redis minio
+      "name": "PageIndex: Server + Worker (full E2E)",
+      "configurations": ["PageIndex: MCP dev server", "PageIndex: arq worker"],
+      "stopAll": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "inputDoc",
+      "type": "promptString",
+      "description": "Path to the document to ingest",
+      "default": "issue/data/AVB-PHV-Basis.pdf.pdf"
+    }
+  ]
+}
