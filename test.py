@@ -34,7 +34,7 @@ async def main():
     llm = ChatOpenAI(**llm_kwargs)
     agent = create_agent(llm, tools)
 
-    query = "Compare and highlight the differences between Salil and Ravikumar's CV. Is Ravikumar better than Salil in any way?"
+    query = "Bis zu welcher Versicherungssumme sind in der Privat-Haftpflichtversicherung Premium Mietsachschäden an gemieteten Wohnräumen versichert, und kann sich diese Summe durch eine Besondere Bedingung erhöhen?"
     print(f"Query: {query}")
     print(f"Sending at: {time.strftime('%H:%M:%S')}\n")
 
