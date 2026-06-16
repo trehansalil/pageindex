@@ -269,6 +269,58 @@ async def test_llm_02_c5_opens_single_span_when_enabled(monkeypatch):
     assert entered["count"] == 1
 
 
+async def test_llm_02_c5_body_exception_propagates_when_enabled(monkeypatch):
+    """LLM-02-C5: a tool-body exception is NOT swallowed by trace_tool.
+
+    Regression for the double-yield bug: the body is yielded outside the
+    span-setup try, so its exception must propagate to the caller (which records
+    TOOL_ERRORS and re-raises) rather than being caught and re-yielded.
+    """
+
+    class _FakeSpanCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False  # do not suppress
+
+    class _FakeClient:
+        def start_as_current_span(self, name):
+            return _FakeSpanCM()
+
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = True
+    monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+    with pytest.raises(ValueError, match="boom"):
+        async with tracing.trace_tool("find_relevant_documents"):
+            raise ValueError("boom")
+
+
+async def test_llm_02_c5_runs_untraced_when_span_setup_fails(monkeypatch):
+    """LLM-02-C5: if span setup raises, the body still runs (untraced), once."""
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = True
+
+    def _boom():
+        raise RuntimeError("no client")
+
+    monkeypatch.setattr("langfuse.get_client", _boom)
+
+    ran = False
+    async with tracing.trace_tool("find_relevant_documents"):
+        ran = True
+    assert ran is True
+
+
 # ---------------------------------------------------------------------------
 # LLM-02-C3: flushing both providers before a short-lived subprocess exits
 # ---------------------------------------------------------------------------

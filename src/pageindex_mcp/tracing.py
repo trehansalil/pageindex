@@ -157,14 +157,22 @@ async def trace_tool(name: str):
         yield
         return
     init_langfuse()
+    # Guard ONLY the span setup: if Langfuse can't open a span we run the tool
+    # untraced. The body is yielded OUTSIDE this try so an exception raised by the
+    # tool body is never caught here — it must propagate to the caller's own
+    # handler (which records TOOL_ERRORS and re-raises). Catching it here would
+    # both swallow the real error and yield a second time, which an
+    # @asynccontextmanager forbids.
     try:
         from langfuse import get_client
 
-        client = get_client()
-        with client.start_as_current_span(name=name):
-            yield
+        span_cm = get_client().start_as_current_span(name=name)
     except Exception as exc:  # pragma: no cover - defensive; never break the tool
-        logger.warning("trace_tool(%s) span failed; running untraced: %s", name, exc)
+        logger.warning("trace_tool(%s) span setup failed; running untraced: %s", name, exc)
+        yield
+        return
+    # __exit__ records any body exception on the span and re-raises it.
+    with span_cm:
         yield
 
 
