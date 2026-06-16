@@ -48,6 +48,14 @@ class Settings:
     llm_search_concurrency: int
     # FLAT-03: kill-switch for post-validate_tree flat-document routing (default true).
     flat_doc_routing: bool
+    # LLM-02: Langfuse tracing / cost monitoring. Tracing activates only when both
+    # public+secret keys are set; otherwise the LLM-01 path is fully unchanged.
+    langfuse_public_key: str
+    langfuse_secret_key: str
+    langfuse_host: str
+    # When false (default) prompt/completion bodies are masked before leaving the
+    # process (HR3 — potential-PII corpus); usage/model/cost are still recorded.
+    langfuse_trace_content: bool
 
 
 def _load_settings() -> Settings:
@@ -75,6 +83,11 @@ def _load_settings() -> Settings:
         llm_search_concurrency=int(os.environ.get("PAGEINDEX_SEARCH_CONCURRENCY", "3")),
         flat_doc_routing=os.environ.get("FLAT_DOC_ROUTING", "true").strip().lower()
         not in ("0", "false", "no"),
+        langfuse_public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
+        langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
+        langfuse_host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        langfuse_trace_content=os.environ.get("LANGFUSE_TRACE_CONTENT", "false").strip().lower()
+        in ("1", "true", "yes"),
     )
 
 

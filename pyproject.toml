@@ -49,6 +49,7 @@ dependencies = [
     "prometheus_client>=0.20.0",
     "gunicorn>=25.3.0",
     "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
+    "langfuse>=3.0.0",
 ]
 
 [project.optional-dependencies]

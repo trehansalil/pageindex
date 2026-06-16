@@ -85,14 +85,29 @@ def get_openai_client() -> openai.AsyncOpenAI:
     Used by the query path (helpers._llm). For openai/compatible providers the
     configured OPENAI_BASE_URL is passed verbatim, so any OpenAI-compatible
     endpoint (vLLM, Together, Groq, OpenRouter, local) works unchanged.
+
+    LLM-02-C2: when Langfuse tracing is enabled, the client classes come from the
+    ``langfuse.openai`` wrapper instead of plain ``openai`` — same constructor
+    signature, but each chat completion auto-emits a traced generation (usage +
+    cost). When disabled, the plain ``openai`` classes are used and LLM-01
+    behavior is byte-for-byte unchanged.
     """
-    if resolve_llm_provider() == "azure":
-        return openai.AsyncAzureOpenAI(
+    from .tracing import init_langfuse, langfuse_enabled
+
+    provider = resolve_llm_provider()
+    if langfuse_enabled():
+        init_langfuse()
+        from langfuse.openai import AsyncAzureOpenAI, AsyncOpenAI
+    else:
+        from openai import AsyncAzureOpenAI, AsyncOpenAI
+
+    if provider == "azure":
+        return AsyncAzureOpenAI(
             api_key=settings.openai_api_key,
             azure_endpoint=settings.openai_base_url,
             api_version=settings.azure_api_version or "2024-08-01-preview",
         )
-    return openai.AsyncOpenAI(
+    return AsyncOpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
@@ -119,9 +134,63 @@ def configure_litellm() -> None:
         if settings.openai_api_key:
             os.environ["AZURE_API_KEY"] = settings.openai_api_key
         os.environ["AZURE_API_VERSION"] = settings.azure_api_version or "2024-08-01-preview"
+        _instrument_litellm_tracing()
         return
     litellm.api_base = settings.openai_base_url
     litellm.api_key = settings.openai_api_key
+    _instrument_litellm_tracing()
+
+
+def _instrument_litellm_tracing() -> None:
+    """LLM-02-C3: register the litellm Langfuse callback after endpoint setup.
+
+    tracing.py owns the policy (enabled? which callback? mask?); the actual
+    litellm mutation lives here in the provider layer (no_llm_outside_provider).
+    Idempotent: the callback is appended only once.
+    """
+    import litellm
+
+    from .tracing import litellm_tracing_config
+
+    cfg = litellm_tracing_config()
+    if cfg is None:
+        return
+    if cfg["callback"] not in (litellm.callbacks or []):
+        litellm.callbacks = [*(litellm.callbacks or []), cfg["callback"]]
+    litellm.turn_off_message_logging = cfg["turn_off_message_logging"]
+
+
+def flush_litellm_tracing() -> None:
+    """LLM-02-C3: force-flush litellm's langfuse_otel spans before process exit.
+
+    The ingestion path is traced via litellm's ``langfuse_otel`` callback, which
+    exports through its OWN OpenTelemetry TracerProvider created with
+    ``skip_set_global=True`` (litellm does this so it cannot clobber the
+    langfuse-python provider). Because that provider is neither the global one nor
+    the langfuse-python client's, ``tracing.flush_langfuse()`` does not reach it,
+    and in the short-lived converters_cli subprocess its BatchSpanProcessor would
+    drop buffered spans — and their cost data — on exit. We reach the logger
+    instance litellm instantiated for the callback and force-flush its span
+    processor explicitly (the OTel SDK's atexit shutdown is only a best-effort
+    backstop on a *clean* interpreter exit). Best-effort; never raises into the
+    ingestion path.
+    """
+    from .tracing import langfuse_enabled
+
+    if not langfuse_enabled():
+        return
+    try:
+        from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
+
+        for cb in _in_memory_loggers:
+            if type(cb).__name__ != "LangfuseOtelLogger":
+                continue
+            tracer = getattr(cb, "tracer", None)
+            processor = getattr(tracer, "span_processor", None)
+            if processor is not None and hasattr(processor, "force_flush"):
+                processor.force_flush()
+    except Exception:  # pragma: no cover - never let flush break ingestion
+        logger.debug("litellm langfuse_otel flush skipped", exc_info=True)
 
 
 def validate_llm_config() -> None:

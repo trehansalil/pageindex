@@ -13,6 +13,7 @@ from ..metrics import (
     TOOL_ERRORS,
 )
 from ..storage import list_processed_docs
+from ..tracing import trace_tool
 
 logger = logging.getLogger(__name__)
 
@@ -79,20 +80,27 @@ async def find_relevant_documents(query: str) -> str:
     start = time.monotonic()
     logger.info("find_relevant_documents called (query=%r)", query[:100])
     try:
-        list_t0 = time.monotonic()
-        documents = list_processed_docs()
-        logger.info(
-            "find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)",
-            time.monotonic() - list_t0,
-            len(documents),
-        )
-        if not documents:
-            logger.warning("find_relevant_documents: no documents indexed")
-            TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
-            return json.dumps(
-                {"error": "No documents are indexed. Process documents first.", "available": []}
+        # LLM-02-C5: nest this request's prefilter + N concurrent search
+        # generations under one Langfuse trace named for the tool. No-op when
+        # tracing is disabled.
+        async with trace_tool("find_relevant_documents"):
+            list_t0 = time.monotonic()
+            documents = list_processed_docs()
+            logger.info(
+                "find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)",
+                time.monotonic() - list_t0,
+                len(documents),
             )
-        return await _rag(query, [d["doc_id"] for d in documents])
+            if not documents:
+                logger.warning("find_relevant_documents: no documents indexed")
+                TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
+                return json.dumps(
+                    {
+                        "error": "No documents are indexed. Process documents first.",
+                        "available": [],
+                    }
+                )
+            return await _rag(query, [d["doc_id"] for d in documents])
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents failed: %s", e, exc_info=True)
