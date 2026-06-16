@@ -112,11 +112,10 @@ will enforce that the dependency arrows below never reverse.
   `PageIndexClient`). `index()` (`client.py:55`) does SHA-256 dedup, format dispatch, persistence, and
   hash-cache update. Retrieval helpers (`get_document_structure`, `get_page_content`) lazy-load from
   MinIO. Two private extractors: `_run_page_index` (PDF → PyPDF2 + LLM-TOC, `client.py:248`) and
-  `_run_md_to_tree` (markdown → pure-Python `#`-header tree, `client.py:259`).
+  `_run_md_to_tree` (markdown → pure-Python `#`-header tree, `client.py:259`). Also exports
+  `get_openai_client()`, `configure_litellm()`, and `resolve_llm_provider()` for cross-plane routing.
 - **`helpers.py`** — `_rag` (prefilter + concurrent tree search), `_build_node_map`, `_strip_text`.
-- **`config.py`** — frozen `Settings` dataclass from env; `get_openai_client()` returns
-  `AsyncOpenAI` or `AsyncAzureOpenAI` keyed on `OPENAI_BASE_URL` (`config.py:84-95`) — the
-  data-residency lever (ADR-005).
+- **`config.py`** — frozen `Settings` dataclass from env.
 
 ### Worker layer  [current]
 - **`worker.py`** — `process_document_job` (`worker.py:31`) downloads the staged file from MinIO to a
@@ -459,6 +458,39 @@ per deployment jurisdiction. **[assumption on sector minimums.]**
 
 ---
 
+## Environment Variable Catalog
+
+Configuration is entirely env-var driven; `.env` is gitignored and loaded via `dotenv` at startup.
+
+### LLM provider routing
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` or `CHATGPT_API_KEY` | — | API key for the configured LLM provider (required) |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | LLM endpoint: OpenAI, Azure, or OpenAI-compatible (vLLM/Together/Groq/OpenRouter/local) |
+| `LLM_PROVIDER` | `auto` | Provider selector: `auto` (detects Azure from base URL), `openai`, `compatible`, `azure` |
+| `AZURE_API_VERSION` | — | Azure API version (required only for Azure, e.g., `2024-08-01-preview`) |
+| `PAGEINDEX_MODEL` | `gpt-4o-2024-11-20` | Model for ingestion; use `azure/<deployment>` form for Azure deployments |
+| `PAGEINDEX_FILTER_MODEL` | `gpt-4o-mini` | Model for document pre-filtering |
+| `PAGEINDEX_SEARCH_MODEL` | `gpt-4o-mini` | Model for tree search |
+
+Both query plane (`get_openai_client()` in `client.py`) and ingestion plane (litellm in the pageindex fork)
+are configured to the same endpoint; no separate configuration exists per plane.
+
+### Concurrency & performance
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PAGEINDEX_SEARCH_CONCURRENCY` | `3` | Concurrent tree-search tasks per document (bounded by `asyncio.Semaphore`) |
+| `WEB_CONCURRENCY` | `1` | Gunicorn workers per pod (must remain 1; MCP sessions are in-memory per worker) |
+| `CACHE_TTL` | `300` | Redis cache TTL in seconds for processed trees |
+
+### Storage & infrastructure
+
+MinIO, Redis, and server binding variables are documented in `.env.example` and the *Data Model & Storage Layout* section above.
+
+---
+
 ## Observability
 
 Prometheus is the only telemetry backend (`metrics.py`, exposed at `/metrics` via
@@ -581,17 +613,19 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   GraphRAG's index-time LLM cost, stack replacement, and single-hop underperformance. networkx-JSON
   persistence and the "networkx-suffices threshold" are operating assumptions to validate.
 
-### ADR-005 — LLM-provider data-residency routing via `OPENAI_BASE_URL`
+### ADR-005 — LLM-provider data-residency routing via `OPENAI_BASE_URL` + `LLM_PROVIDER`
 - **Context.** Indexing and RAG send document text to a third-party LLM. Insurance content is
   PII/regulatory-sensitive and may require EU residency + no-training + zero-retention.
-- **Decision.** Route all LLM traffic through `get_openai_client()` keyed on `OPENAI_BASE_URL`
-  (`config.py:84-95`), choosing a provider with no-training-by-default + ZDR/modified-abuse-monitoring
-  + EU residency for PII-bearing corpora; a self-hosted model is the ultimate escape hatch via the same
-  knob.
+- **Decision.** Route all LLM traffic through `get_openai_client()` (`client.py`) keyed on
+  `OPENAI_BASE_URL` + `LLM_PROVIDER`. Supports OpenAI, OpenAI-compatible endpoints (vLLM, Together,
+  Groq, OpenRouter, local), and Azure. The ingestion path (pageindex fork → litellm) is explicitly
+  configured via `configure_litellm()` (`client.py`) rather than relying on litellm env auto-detection.
+  Choose a provider with no-training-by-default + ZDR/modified-abuse-monitoring + EU residency for
+  PII-bearing corpora; self-hosted models are the ultimate escape hatch.
 - **Status.** Accepted. Sector-regulatory minimums not verified — confirm per jurisdiction.
-- **Consequences.** Residency is a config/ops decision, not a code change. Azure is already
-  special-cased (`_is_azure_url`). Provider zero-retention claims must be re-validated against current
-  provider docs at deployment time.
+- **Consequences.** Residency is a config/ops decision, not a code change. Both query and ingestion
+  paths target the same configured endpoint. Provider zero-retention claims must be re-validated against
+  current provider docs at deployment time.
 
 ---
 

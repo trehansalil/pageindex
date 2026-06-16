@@ -55,9 +55,38 @@ def _is_azure_url(url: str | None) -> bool:
     return bool(url and ".openai.azure.com" in url)
 
 
+def resolve_llm_provider() -> str:
+    """LLM-01-C1: Resolve the effective provider: 'openai' | 'compatible' | 'azure'.
+
+    LLM_PROVIDER=auto (default) infers 'azure' from the base URL else 'openai'.
+    An explicit openai/compatible/azure value is honored verbatim. 'compatible'
+    shares the OpenAI code path (AsyncOpenAI / litellm openai provider + a custom
+    base_url); the distinct name exists for validation and documentation when the
+    base URL is not the canonical api.openai.com endpoint.
+
+    Any other explicit value is rejected with ValueError so an operator typo
+    fails fast at startup instead of being silently auto-routed to the wrong
+    backend.
+    """
+    provider = (settings.llm_provider or "auto").strip().lower()
+    if provider in ("openai", "compatible", "azure"):
+        return provider
+    if provider not in ("", "auto"):
+        raise ValueError(
+            f"Invalid LLM_PROVIDER={settings.llm_provider!r}; "
+            "expected one of: auto, openai, compatible, azure."
+        )
+    return "azure" if _is_azure_url(settings.openai_base_url) else "openai"
+
+
 def get_openai_client() -> openai.AsyncOpenAI:
-    """Return an AsyncOpenAI or AsyncAzureOpenAI client based on the configured base URL."""
-    if _is_azure_url(settings.openai_base_url):
+    """LLM-01-C2/C3: Return an AsyncOpenAI/AsyncAzureOpenAI client for the provider.
+
+    Used by the query path (helpers._llm). For openai/compatible providers the
+    configured OPENAI_BASE_URL is passed verbatim, so any OpenAI-compatible
+    endpoint (vLLM, Together, Groq, OpenRouter, local) works unchanged.
+    """
+    if resolve_llm_provider() == "azure":
         return openai.AsyncAzureOpenAI(
             api_key=settings.openai_api_key,
             azure_endpoint=settings.openai_base_url,
@@ -67,6 +96,46 @@ def get_openai_client() -> openai.AsyncOpenAI:
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
+
+
+def configure_litellm() -> None:
+    """LLM-01-C4: Point the fork's bare litellm calls at the configured endpoint.
+
+    The pageindex fork calls ``litellm.completion(model=...)`` with no ``api_base``
+    (utils.llm_completion / llm_acompletion), so litellm would otherwise resolve the
+    base from the environment alone. We set ``litellm.api_base``/``api_key`` (and the
+    Azure env litellm requires) explicitly, so the ingestion path deterministically
+    targets the same endpoint as the query path. Call once at the converters_cli
+    subprocess entry, before client.index().
+    """
+    import litellm
+
+    if resolve_llm_provider() == "azure":
+        # litellm routes Azure only when the model name is ``azure/<deployment>``
+        # (operator sets PAGEINDEX_MODEL accordingly); it reads these env vars.
+        litellm.api_base = settings.openai_base_url
+        if settings.openai_base_url:
+            os.environ["AZURE_API_BASE"] = settings.openai_base_url
+        if settings.openai_api_key:
+            os.environ["AZURE_API_KEY"] = settings.openai_api_key
+        os.environ["AZURE_API_VERSION"] = settings.azure_api_version or "2024-08-01-preview"
+        return
+    litellm.api_base = settings.openai_base_url
+    litellm.api_key = settings.openai_api_key
+
+
+def validate_llm_config() -> None:
+    """LLM-01-C5: Fail fast on an inconsistent LLM provider configuration.
+
+    Raises ValueError so a misconfiguration surfaces at startup rather than as an
+    opaque litellm/SDK error mid-ingestion.
+    """
+    if not settings.openai_api_key:
+        raise ValueError("OPENAI_API_KEY (or CHATGPT_API_KEY) is required for LLM calls.")
+    if not settings.openai_base_url:
+        raise ValueError(
+            f"LLM_PROVIDER={resolve_llm_provider()} requires OPENAI_BASE_URL to be set."
+        )
 
 
 class CustomPageIndexClient(PageIndexClient):

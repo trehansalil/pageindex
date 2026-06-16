@@ -24,6 +24,13 @@ Copy `.env.example` to `.env` (or export directly) and set:
 | Variable                                  | Default            | Description                       |
 | ----------------------------------------- | ------------------ | --------------------------------- |
 | `OPENAI_API_KEY` or `CHATGPT_API_KEY` | —                 | Required by the PageIndex library |
+| `OPENAI_BASE_URL`                       | `https://api.openai.com/v1` | OpenAI API or OpenAI-compatible endpoint (vLLM/Together/Groq/OpenRouter/local) |
+| `LLM_PROVIDER`                          | `auto`             | Provider selector: `auto` \| `openai` \| `compatible` \| `azure` |
+| `AZURE_API_VERSION`                     | —                 | Required only for Azure (e.g., `2024-08-01-preview`) |
+| `PAGEINDEX_MODEL`                       | `gpt-4o-2024-11-20` | Model for ingestion; use `azure/<deployment>` for Azure |
+| `PAGEINDEX_FILTER_MODEL`                | `gpt-4o-mini`    | Model for document pre-filtering   |
+| `PAGEINDEX_SEARCH_MODEL`                | `gpt-4o-mini`    | Model for tree search             |
+| `PAGEINDEX_SEARCH_CONCURRENCY`          | `3`               | Concurrent tree-search tasks      |
 | `MINIO_ENDPOINT`                        | `localhost:9000` | MinIO server address              |
 | `MINIO_ACCESS_KEY`                      | `minioadmin`     | MinIO access key                  |
 | `MINIO_SECRET_KEY`                      | `minioadmin`     | MinIO secret key                  |

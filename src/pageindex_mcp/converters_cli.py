@@ -85,7 +85,18 @@ async def main() -> int:
         try:
             # Heavy import deferred to here so baseline RSS in the parent process
             # (before any conversion) is not polluted by pageindex/litellm imports.
-            from pageindex_mcp.client import CustomPageIndexClient
+            from pageindex_mcp.client import (
+                CustomPageIndexClient,
+                configure_litellm,
+                validate_llm_config,
+            )
+
+            # Provider abstraction: validate the LLM config and point the fork's
+            # litellm calls at the configured (OpenAI-compatible / Azure) endpoint
+            # before indexing — the ingestion path no longer relies on litellm
+            # reading OPENAI_BASE_URL from the environment by chance.
+            validate_llm_config()
+            configure_litellm()
 
             client = CustomPageIndexClient()
             doc_id = await client.index(args.input_path)

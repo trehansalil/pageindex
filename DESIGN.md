@@ -595,6 +595,11 @@ subsequent agent queries.
 
 ### Honesty notes
 
+- **LLM endpoint is fully configurable.** Both the query plane (OpenAI SDK) and ingestion
+  plane (pageindex fork → litellm) route all LLM calls through a single configured endpoint
+  set via `OPENAI_BASE_URL` + `LLM_PROVIDER` env vars. Supports OpenAI, Azure, and
+  OpenAI-compatible endpoints (vLLM, Together, Groq, OpenRouter, local); self-hosted/local
+  deployments can provide zero data egress, while residency depends on the selected provider.
 - **No accuracy-superiority claims.** The vectorless reasoning-based approach is not
   benchmarked against vector-RAG or other retrieval systems. Do not assert superiority.
 - **Quality-gate thresholds are uncalibrated.** `depth >= 2`, `node_count >= 3`, and the
