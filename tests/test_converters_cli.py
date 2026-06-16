@@ -149,6 +149,12 @@ async def test_runtime_error_from_index_exits_1_in_process(tmp_pdf: Path, monkey
     fake_stdout = io.StringIO()
     monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
 
+    # The CLI now validates/configures the LLM provider (LLM-01) before indexing.
+    # This test exercises index() error handling, not provider config, so neutralize
+    # the gate to stay independent of ambient OPENAI_API_KEY in the runner env.
+    monkeypatch.setattr("pageindex_mcp.client.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.configure_litellm", lambda: None)
+
     with patch(
         "pageindex_mcp.client.CustomPageIndexClient.index",
         new_callable=AsyncMock,
@@ -179,6 +185,12 @@ async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
 
     fake_stdout = io.StringIO()
     monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+
+    # See note in test_runtime_error_from_index_exits_1_in_process: this is a
+    # JSON-shape test, so neutralize the LLM-01 provider gate to stay independent
+    # of whether the runner has OPENAI_API_KEY set.
+    monkeypatch.setattr("pageindex_mcp.client.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.configure_litellm", lambda: None)
 
     with patch(
         "pageindex_mcp.client.CustomPageIndexClient.index",
