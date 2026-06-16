@@ -5,6 +5,9 @@ import importlib
 def test_settings_has_redis_url(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://myredis:6379/1")
     monkeypatch.setenv("UPLOAD_API_KEY", "secret123")
+    # Neutralize dotenv at the source module so importlib.reload(cfg) does not
+    # let a developer's local .env override the env vars set above.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
     importlib.reload(cfg)
     assert cfg.settings.redis_url == "redis://myredis:6379/1"
@@ -36,6 +39,9 @@ def test_settings_llm_provider_default_auto(monkeypatch):
 def test_settings_llm_provider_normalized(monkeypatch):
     """LLM_PROVIDER is lower-cased and stripped from the environment."""
     monkeypatch.setenv("LLM_PROVIDER", "  Compatible ")
+    # Neutralize dotenv so importlib.reload(cfg) cannot let a developer's local
+    # .env override LLM_PROVIDER and make this assertion non-deterministic.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
     importlib.reload(cfg)
     assert cfg.settings.llm_provider == "compatible"

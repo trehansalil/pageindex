@@ -107,12 +107,20 @@ def test_resolve_llm_provider_explicit_is_honored(monkeypatch):
         _fake_settings(llm_provider="compatible", openai_base_url="https://openrouter.ai/api/v1"),
     )
     assert resolve_llm_provider() == "compatible"
-    # An unknown value falls back to auto-inference (here: openai).
+
+
+def test_resolve_llm_provider_rejects_invalid(monkeypatch):
+    """LLM-01-C1: an invalid LLM_PROVIDER fails fast instead of being auto-routed.
+
+    A typo must surface as a ValueError at startup rather than silently routing
+    traffic to a base-URL-inferred backend.
+    """
     monkeypatch.setattr(
         "pageindex_mcp.client.settings",
         _fake_settings(llm_provider="bogus", openai_base_url="https://api.openai.com/v1"),
     )
-    assert resolve_llm_provider() == "openai"
+    with pytest.raises(ValueError, match="Invalid LLM_PROVIDER"):
+        resolve_llm_provider()
 
 
 def test_get_openai_client_compatible_uses_base_url(monkeypatch):

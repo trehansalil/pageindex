@@ -63,10 +63,19 @@ def resolve_llm_provider() -> str:
     shares the OpenAI code path (AsyncOpenAI / litellm openai provider + a custom
     base_url); the distinct name exists for validation and documentation when the
     base URL is not the canonical api.openai.com endpoint.
+
+    Any other explicit value is rejected with ValueError so an operator typo
+    fails fast at startup instead of being silently auto-routed to the wrong
+    backend.
     """
     provider = (settings.llm_provider or "auto").strip().lower()
     if provider in ("openai", "compatible", "azure"):
         return provider
+    if provider not in ("", "auto"):
+        raise ValueError(
+            f"Invalid LLM_PROVIDER={settings.llm_provider!r}; "
+            "expected one of: auto, openai, compatible, azure."
+        )
     return "azure" if _is_azure_url(settings.openai_base_url) else "openai"
 
 
