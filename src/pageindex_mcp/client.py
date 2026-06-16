@@ -85,14 +85,29 @@ def get_openai_client() -> openai.AsyncOpenAI:
     Used by the query path (helpers._llm). For openai/compatible providers the
     configured OPENAI_BASE_URL is passed verbatim, so any OpenAI-compatible
     endpoint (vLLM, Together, Groq, OpenRouter, local) works unchanged.
+
+    LLM-02-C2: when Langfuse tracing is enabled, the client classes come from the
+    ``langfuse.openai`` wrapper instead of plain ``openai`` — same constructor
+    signature, but each chat completion auto-emits a traced generation (usage +
+    cost). When disabled, the plain ``openai`` classes are used and LLM-01
+    behavior is byte-for-byte unchanged.
     """
-    if resolve_llm_provider() == "azure":
-        return openai.AsyncAzureOpenAI(
+    from .tracing import init_langfuse, langfuse_enabled
+
+    provider = resolve_llm_provider()
+    if langfuse_enabled():
+        init_langfuse()
+        from langfuse.openai import AsyncAzureOpenAI, AsyncOpenAI
+    else:
+        from openai import AsyncAzureOpenAI, AsyncOpenAI
+
+    if provider == "azure":
+        return AsyncAzureOpenAI(
             api_key=settings.openai_api_key,
             azure_endpoint=settings.openai_base_url,
             api_version=settings.azure_api_version or "2024-08-01-preview",
         )
-    return openai.AsyncOpenAI(
+    return AsyncOpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
@@ -119,9 +134,30 @@ def configure_litellm() -> None:
         if settings.openai_api_key:
             os.environ["AZURE_API_KEY"] = settings.openai_api_key
         os.environ["AZURE_API_VERSION"] = settings.azure_api_version or "2024-08-01-preview"
+        _instrument_litellm_tracing()
         return
     litellm.api_base = settings.openai_base_url
     litellm.api_key = settings.openai_api_key
+    _instrument_litellm_tracing()
+
+
+def _instrument_litellm_tracing() -> None:
+    """LLM-02-C3: register the litellm Langfuse callback after endpoint setup.
+
+    tracing.py owns the policy (enabled? which callback? mask?); the actual
+    litellm mutation lives here in the provider layer (no_llm_outside_provider).
+    Idempotent: the callback is appended only once.
+    """
+    import litellm
+
+    from .tracing import litellm_tracing_config
+
+    cfg = litellm_tracing_config()
+    if cfg is None:
+        return
+    if cfg["callback"] not in (litellm.callbacks or []):
+        litellm.callbacks = [*(litellm.callbacks or []), cfg["callback"]]
+    litellm.turn_off_message_logging = cfg["turn_off_message_logging"]
 
 
 def validate_llm_config() -> None:

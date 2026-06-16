@@ -129,6 +129,15 @@ async def main() -> int:
             logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
             return 1
     finally:
+        # LLM-02: this is a short-lived subprocess — flush buffered Langfuse spans
+        # for the ingestion litellm calls before exit, or they are lost. No-op when
+        # tracing is disabled. Deferred import so the parent baseline RSS is clean.
+        try:
+            from pageindex_mcp.tracing import flush_langfuse
+
+            flush_langfuse()
+        except Exception:  # pragma: no cover - never let flush break the CLI contract
+            logging.getLogger(__name__).debug("Langfuse flush skipped", exc_info=True)
         sys.stdout = orig_stdout
 
 

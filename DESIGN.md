@@ -555,6 +555,25 @@ and tracked as an open item. Until implemented, use Prometheus scrape success as
 | Upload backlog | `pageindex_active_uploads > 10` for > 5 min |
 | Slow RAG | `histogram_quantile(0.95, pageindex_rag_duration_seconds) > 30` |
 
+### Langfuse tracing & cost monitoring (LLM-02)
+
+Both LLM planes export traces to a single Langfuse Cloud project:
+
+- **Query / MCP plane.** The `find_relevant_documents` tool body is wrapped in a
+  `trace_tool("find_relevant_documents")` async context manager, so the prefilter plus the
+  N concurrent search generations nest under **one** Langfuse trace per tool call. The OpenAI
+  client is a `langfuse.openai` wrapper that emits a generation with usage + cost per chat
+  completion.
+- **Ingestion plane.** The `converters_cli` subprocess `litellm.completion` calls are traced
+  via litellm's `langfuse_otel` callback; the subprocess **flushes pending spans before exit**
+  so no generation is lost when the child terminates.
+
+**Enable rule:** active only when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are
+set; otherwise tracing is inert (no-op).
+
+**Masked by default.** `LANGFUSE_TRACE_CONTENT=false` (the default) masks prompt/completion
+content per Hard Rule #3; usage, model, and cost are always recorded.
+
 ---
 
 ## Accessibility (Machine-Consumability)
@@ -617,6 +636,11 @@ subsequent agent queries.
 - **German accuracy of PageIndex OCR cloud** is undocumented. GDPR/data-residency for
   insurance content sent to a third-party SaaS is unresolved. Do not adopt without clearing
   both.
+- **Langfuse content capture exports potential PII.** Setting `LANGFUSE_TRACE_CONTENT=true`
+  exports document text — potentially PII-bearing — to Langfuse Cloud, which retains it.
+  Masked-by-default (`LANGFUSE_TRACE_CONTENT=false`) is the chosen Hard Rule #3 mitigation;
+  no self-hosted / EU-ZDR Langfuse deployment is in scope yet, so full content capture is
+  inappropriate for PII corpora.
 
 ### Open items
 

@@ -473,6 +473,10 @@ Configuration is entirely env-var driven; `.env` is gitignored and loaded via `d
 | `PAGEINDEX_MODEL` | `gpt-4o-2024-11-20` | Model for ingestion; use `azure/<deployment>` form for Azure deployments |
 | `PAGEINDEX_FILTER_MODEL` | `gpt-4o-mini` | Model for document pre-filtering |
 | `PAGEINDEX_SEARCH_MODEL` | `gpt-4o-mini` | Model for tree search |
+| `LANGFUSE_PUBLIC_KEY` | — | Langfuse public key; tracing activates only when set alongside the secret key |
+| `LANGFUSE_SECRET_KEY` | — | Langfuse secret key; tracing activates only when set alongside the public key |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Langfuse endpoint for trace ingestion |
+| `LANGFUSE_TRACE_CONTENT` | `false` | When `false`, masks prompt/completion content in traces (token usage and cost are always recorded) |
 
 Both query plane (`get_openai_client()` in `client.py`) and ingestion plane (litellm in the pageindex fork)
 are configured to the same endpoint; no separate configuration exists per plane.
@@ -509,6 +513,16 @@ Prometheus is the only telemetry backend (`metrics.py`, exposed at `/metrics` vi
 Job state is observable per-document via the Redis job hash (`GET /upload/status/{job_id}`); a
 `low_quality_tree` rejection surfaces there *and* increments the counter — so a bad tree is loudly
 visible in both planes and never silently persisted.
+
+**Langfuse tracing & cost monitoring [LLM-02].** Both LLM paths feed one Langfuse Cloud project: the
+query/MCP path (`helpers._llm` → `client.get_openai_client`, optionally a `langfuse.openai`-wrapped
+`AsyncOpenAI`/`AsyncAzureOpenAI`) and the ingestion path (`converters_cli` subprocess → `litellm.completion`,
+traced via litellm's `langfuse_otel` callback registered in `client.configure_litellm`); the wiring lives
+in `tracing.py`. Tracing activates only when both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set and
+is otherwise fully inert. Content is masked by default (`LANGFUSE_TRACE_CONTENT=false`) — query path via the
+Langfuse client `mask` callable, ingestion path via litellm `turn_off_message_logging` — to honour Hard Rule #3
+(PII routing); token usage and cost are always recorded. This layer is additive: it sits alongside the
+Prometheus `LLM_*` metrics above and does not replace them. (langfuse is MIT-licensed — no AGPL/HR4 concern.)
 
 ---
 

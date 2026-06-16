@@ -1,0 +1,36 @@
+feature: LLM-02
+name: Langfuse Tracing & Cost Monitoring
+module: tracing
+phase: 1
+source: plans/unified-knitting-volcano.md
+
+contracts:
+  - id: LLM-02-C1
+    desc: "Langfuse tracing activates only when both keys are set; otherwise fully inert"
+    trigger: "langfuse_enabled() / init_langfuse() is called"
+    effect: "Returns True / constructs the Langfuse singleton only when settings.langfuse_public_key AND settings.langfuse_secret_key are non-empty; with either empty every tracing entry point is a no-op and the LLM-01 path is unchanged"
+    boundary: "Reads settings.langfuse_public_key and settings.langfuse_secret_key from the Settings singleton"
+
+  - id: LLM-02-C2
+    desc: "Query path returns a langfuse.openai-wrapped client when tracing is enabled"
+    trigger: "get_openai_client() is called (helpers._llm query path) with tracing enabled"
+    effect: "Returns a langfuse.openai AsyncOpenAI/AsyncAzureOpenAI (carrying OPENAI_BASE_URL / azure_endpoint) so each chat.completions.create emits a traced generation with usage and cost; when tracing is disabled get_traced_openai_client returns None and the plain openai.AsyncOpenAI/AsyncAzureOpenAI is returned"
+    boundary: "Delegates provider selection to resolve_llm_provider(); falls back to the LLM-01 client when get_traced_openai_client returns None"
+
+  - id: LLM-02-C3
+    desc: "Ingestion path registers the litellm Langfuse callback when tracing is enabled"
+    trigger: "configure_litellm() is called at the converters_cli subprocess entry with tracing enabled"
+    effect: "instrument_litellm() appends 'langfuse_otel' to litellm.callbacks (idempotent) so every fork litellm.completion emits a traced generation; when tracing is disabled no callback is registered"
+    boundary: "Runs after the LLM-01 endpoint setup in configure_litellm(); no-op when langfuse_enabled() is False"
+
+  - id: LLM-02-C4
+    desc: "Content masking is on by default and preserves usage/cost"
+    trigger: "An LLM generation is exported while settings.langfuse_trace_content is False"
+    effect: "Query-path prompt/completion bodies are replaced by a sentinel via the langfuse mask (_mask), and ingestion-path messages are redacted via litellm.turn_off_message_logging=True; token usage, model, and cost are still recorded. With langfuse_trace_content True the content is captured verbatim"
+    boundary: "Reads settings.langfuse_trace_content; mask is applied inside the SDK/exporter before any network egress"
+
+  - id: LLM-02-C5
+    desc: "An MCP tool call groups its LLM generations under a single Langfuse trace"
+    trigger: "find_relevant_documents() runs its body inside trace_tool('find_relevant_documents') with tracing enabled"
+    effect: "Opens one Langfuse span named for the tool so the prefilter + concurrent search generations nest under a single trace; trace_tool is a plain no-op async context manager when tracing is disabled"
+    boundary: "Wraps the tool body in tools/documents.py; never raises into the tool path"
