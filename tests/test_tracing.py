@@ -321,6 +321,65 @@ async def test_llm_02_c5_runs_untraced_when_span_setup_fails(monkeypatch):
     assert ran is True
 
 
+async def test_llm_02_c5_runs_untraced_when_span_enter_fails(monkeypatch):
+    """LLM-02-C5: a span __enter__ failure must NOT break the tool (cubic P2).
+
+    Tracing errors at context entry fall back to running the body untraced.
+    """
+
+    class _BadSpanCM:
+        def __enter__(self):
+            raise RuntimeError("enter failed")
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeClient:
+        def start_as_current_span(self, name):
+            return _BadSpanCM()
+
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = True
+    monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+    ran = False
+    async with tracing.trace_tool("find_relevant_documents"):
+        ran = True
+    assert ran is True  # body still ran, untraced
+
+
+async def test_llm_02_c5_span_close_failure_does_not_break_tool(monkeypatch):
+    """LLM-02-C5: a failure inside span __exit__ must not break the tool either."""
+
+    class _SpanCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            raise RuntimeError("exit failed")
+
+    class _FakeClient:
+        def start_as_current_span(self, name):
+            return _SpanCM()
+
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = True
+    monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+    ran = False
+    async with tracing.trace_tool("find_relevant_documents"):
+        ran = True
+    assert ran is True
+
+
 # ---------------------------------------------------------------------------
 # LLM-02-C3: flushing both providers before a short-lived subprocess exits
 # ---------------------------------------------------------------------------

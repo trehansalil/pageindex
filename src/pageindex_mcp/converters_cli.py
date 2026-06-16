@@ -133,16 +133,22 @@ async def main() -> int:
         # exit or they are lost. Two distinct providers must be flushed: the
         # langfuse-python client (any query-path spans) AND litellm's private
         # langfuse_otel OTel provider (the ingestion-path generations + cost).
-        # Both are no-ops when tracing is disabled. Deferred imports so the parent
-        # baseline RSS is clean.
+        # Flush each INDEPENDENTLY so a failure in one does not suppress the
+        # other. Both are no-ops when tracing is disabled. Deferred imports so the
+        # parent baseline RSS is clean.
+        _log = logging.getLogger(__name__)
         try:
-            from pageindex_mcp.client import flush_litellm_tracing
             from pageindex_mcp.tracing import flush_langfuse
 
             flush_langfuse()
+        except Exception:  # pragma: no cover - never let flush break the CLI contract
+            _log.debug("Langfuse client flush skipped", exc_info=True)
+        try:
+            from pageindex_mcp.client import flush_litellm_tracing
+
             flush_litellm_tracing()
         except Exception:  # pragma: no cover - never let flush break the CLI contract
-            logging.getLogger(__name__).debug("Langfuse flush skipped", exc_info=True)
+            _log.debug("litellm langfuse_otel flush skipped", exc_info=True)
         sys.stdout = orig_stdout
 
 

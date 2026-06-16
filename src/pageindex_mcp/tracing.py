@@ -157,23 +157,44 @@ async def trace_tool(name: str):
         yield
         return
     init_langfuse()
-    # Guard ONLY the span setup: if Langfuse can't open a span we run the tool
-    # untraced. The body is yielded OUTSIDE this try so an exception raised by the
-    # tool body is never caught here — it must propagate to the caller's own
-    # handler (which records TOOL_ERRORS and re-raises). Catching it here would
-    # both swallow the real error and yield a second time, which an
-    # @asynccontextmanager forbids.
+    # Guard ALL tracing-side setup — client lookup, span creation, AND context
+    # entry (__enter__): any failure here must fall back to running the tool
+    # untraced, because tracing must never break tool execution.
     try:
         from langfuse import get_client
 
         span_cm = get_client().start_as_current_span(name=name)
+        span_cm.__enter__()
     except Exception as exc:  # pragma: no cover - defensive; never break the tool
         logger.warning("trace_tool(%s) span setup failed; running untraced: %s", name, exc)
         yield
         return
-    # __exit__ records any body exception on the span and re-raises it.
-    with span_cm:
+    # The span is open. The body runs OUTSIDE the setup guard so its exceptions
+    # are never swallowed: record them on the span via __exit__ and re-raise to
+    # the caller's own handler (which increments TOOL_ERRORS and re-raises).
+    # Catching the body error here would also yield a second time, which an
+    # @asynccontextmanager forbids. A failure inside __exit__ is itself contained
+    # so closing the span can't break the tool either.
+    try:
         yield
+    except BaseException as exc:
+        if not _close_span(span_cm, name, exc):
+            raise
+    else:
+        _close_span(span_cm, name, None)
+
+
+def _close_span(span_cm, name: str, exc: BaseException | None) -> bool:
+    """Close a manually-entered span; never raise. Returns True iff the span's
+    __exit__ suppressed ``exc`` (Langfuse spans do not, so callers re-raise)."""
+    try:
+        if exc is None:
+            span_cm.__exit__(None, None, None)
+            return False
+        return bool(span_cm.__exit__(type(exc), exc, exc.__traceback__))
+    except Exception:  # pragma: no cover - span close must not break the tool
+        logger.debug("trace_tool(%s) span close failed", name, exc_info=True)
+        return False
 
 
 def flush_langfuse() -> None:
