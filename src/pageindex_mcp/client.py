@@ -160,6 +160,39 @@ def _instrument_litellm_tracing() -> None:
     litellm.turn_off_message_logging = cfg["turn_off_message_logging"]
 
 
+def flush_litellm_tracing() -> None:
+    """LLM-02-C3: force-flush litellm's langfuse_otel spans before process exit.
+
+    The ingestion path is traced via litellm's ``langfuse_otel`` callback, which
+    exports through its OWN OpenTelemetry TracerProvider created with
+    ``skip_set_global=True`` (litellm does this so it cannot clobber the
+    langfuse-python provider). Because that provider is neither the global one nor
+    the langfuse-python client's, ``tracing.flush_langfuse()`` does not reach it,
+    and in the short-lived converters_cli subprocess its BatchSpanProcessor would
+    drop buffered spans — and their cost data — on exit. We reach the logger
+    instance litellm instantiated for the callback and force-flush its span
+    processor explicitly (the OTel SDK's atexit shutdown is only a best-effort
+    backstop on a *clean* interpreter exit). Best-effort; never raises into the
+    ingestion path.
+    """
+    from .tracing import langfuse_enabled
+
+    if not langfuse_enabled():
+        return
+    try:
+        from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
+
+        for cb in _in_memory_loggers:
+            if type(cb).__name__ != "LangfuseOtelLogger":
+                continue
+            tracer = getattr(cb, "tracer", None)
+            processor = getattr(tracer, "span_processor", None)
+            if processor is not None and hasattr(processor, "force_flush"):
+                processor.force_flush()
+    except Exception:  # pragma: no cover - never let flush break ingestion
+        logger.debug("litellm langfuse_otel flush skipped", exc_info=True)
+
+
 def validate_llm_config() -> None:
     """LLM-01-C5: Fail fast on an inconsistent LLM provider configuration.
 

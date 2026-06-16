@@ -189,6 +189,34 @@ def test_llm_02_c4_masks_by_default(monkeypatch):
     assert masked == {"messages": [tracing._MASK_SENTINEL, {"content": tracing._MASK_SENTINEL}]}
 
 
+def test_llm_02_c4_mask_preserves_non_string_scalars(monkeypatch):
+    """LLM-02-C4: numeric/bool/None fields keep their type — only strings redact.
+
+    Guards against the mask coercing structured fields (temperature, max_tokens,
+    token counts, timestamps, flags) into the string sentinel, which would change
+    their type and risk breaking downstream parsing or dropping usage signals.
+    """
+    monkeypatch.setattr(tracing, "settings", _fake_settings(langfuse_trace_content=False))
+    assert tracing._mask(42) == 42
+    assert tracing._mask(0.7) == 0.7
+    assert tracing._mask(True) is True
+    assert tracing._mask(None) is None
+    payload = {
+        "model": "gpt-4.1",  # string -> masked
+        "temperature": 0.7,  # float -> kept
+        "max_tokens": 256,  # int -> kept
+        "stream": False,  # bool -> kept
+        "usage": {"total_tokens": 123},  # nested numeric -> kept
+    }
+    assert tracing._mask(payload) == {
+        "model": tracing._MASK_SENTINEL,
+        "temperature": 0.7,
+        "max_tokens": 256,
+        "stream": False,
+        "usage": {"total_tokens": 123},
+    }
+
+
 def test_llm_02_c4_passthrough_when_content_enabled(monkeypatch):
     """LLM-02-C4: with trace_content True, _mask returns data verbatim."""
     monkeypatch.setattr(tracing, "settings", _fake_settings(langfuse_trace_content=True))
@@ -239,3 +267,87 @@ async def test_llm_02_c5_opens_single_span_when_enabled(monkeypatch):
 
     assert entered["name"] == "find_relevant_documents"
     assert entered["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# LLM-02-C3: flushing both providers before a short-lived subprocess exits
+# ---------------------------------------------------------------------------
+def test_llm_02_c3_flush_langfuse_not_gated_on_init(monkeypatch):
+    """LLM-02-C3: flush_langfuse runs whenever enabled, even if _initialized False.
+
+    The converters_cli subprocess may flush before the singleton was eagerly
+    constructed; get_client() lazily returns it, so the flush must not be skipped.
+    """
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = False  # singleton NOT eagerly constructed
+
+    flushed = {"count": 0}
+
+    class _FakeClient:
+        def flush(self):
+            flushed["count"] += 1
+
+    monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+    tracing.flush_langfuse()
+    assert flushed["count"] == 1  # flushed despite _initialized False
+
+
+def test_llm_02_c3_flush_langfuse_noop_when_disabled(monkeypatch):
+    """LLM-02-C3: flush_langfuse is a no-op (no client touched) when disabled."""
+    monkeypatch.setattr(tracing, "settings", _fake_settings())
+
+    def _boom():
+        raise AssertionError("get_client must not be called when disabled")
+
+    monkeypatch.setattr("langfuse.get_client", _boom)
+    tracing.flush_langfuse()  # must not raise
+
+
+def test_llm_02_c3_flush_litellm_tracing_noop_when_disabled(monkeypatch):
+    """LLM-02-C3: client.flush_litellm_tracing is a safe no-op when disabled."""
+    from pageindex_mcp import client as client_mod
+
+    monkeypatch.setattr(tracing, "settings", _fake_settings())
+    client_mod.flush_litellm_tracing()  # disabled -> returns without touching litellm
+
+
+def test_llm_02_c3_flush_litellm_tracing_force_flushes_otel_processor(monkeypatch):
+    """LLM-02-C3: enabled ⇒ the langfuse_otel logger's OTel span processor is flushed.
+
+    litellm's langfuse_otel exports through a private OTel TracerProvider, so the
+    flush must reach the logger instance's tracer.span_processor.force_flush().
+    """
+    from pageindex_mcp import client as client_mod
+
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+
+    forced = {"count": 0}
+
+    class _FakeProcessor:
+        def force_flush(self, *a, **k):
+            forced["count"] += 1
+
+    class _FakeTracer:
+        span_processor = _FakeProcessor()
+
+    class LangfuseOtelLogger:  # name matched by the flush helper
+        tracer = _FakeTracer()
+
+    class _Other:  # must be ignored
+        tracer = _FakeTracer()
+
+    monkeypatch.setattr(
+        "litellm.litellm_core_utils.litellm_logging._in_memory_loggers",
+        [_Other(), LangfuseOtelLogger()],
+        raising=False,
+    )
+    client_mod.flush_litellm_tracing()
+    assert forced["count"] == 1  # only the langfuse_otel logger was flushed

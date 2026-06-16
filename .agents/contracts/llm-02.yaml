@@ -14,14 +14,14 @@ contracts:
   - id: LLM-02-C2
     desc: "Query path returns a langfuse.openai-wrapped client when tracing is enabled"
     trigger: "get_openai_client() is called (helpers._llm query path) with tracing enabled"
-    effect: "Returns a langfuse.openai AsyncOpenAI/AsyncAzureOpenAI (carrying OPENAI_BASE_URL / azure_endpoint) so each chat.completions.create emits a traced generation with usage and cost; when tracing is disabled get_traced_openai_client returns None and the plain openai.AsyncOpenAI/AsyncAzureOpenAI is returned"
-    boundary: "Delegates provider selection to resolve_llm_provider(); falls back to the LLM-01 client when get_traced_openai_client returns None"
+    effect: "When langfuse_enabled() is True, get_openai_client() takes its instrumented branch — it calls init_langfuse() and constructs the client from the langfuse.openai AsyncOpenAI/AsyncAzureOpenAI wrapper (carrying OPENAI_BASE_URL / azure_endpoint) so each chat.completions.create emits a traced generation with usage and cost; when tracing is disabled it constructs the plain openai.AsyncOpenAI/AsyncAzureOpenAI and LLM-01 behavior is byte-for-byte unchanged"
+    boundary: "Delegates provider selection to resolve_llm_provider(); the enabled/disabled branch is an inline langfuse_enabled() check in get_openai_client() (the langfuse.openai wrapper patches openai globally at import, so the wrapped class is openai's own class)"
 
   - id: LLM-02-C3
-    desc: "Ingestion path registers the litellm Langfuse callback when tracing is enabled"
+    desc: "Ingestion path registers the litellm Langfuse callback when tracing is enabled, and flushes it on exit"
     trigger: "configure_litellm() is called at the converters_cli subprocess entry with tracing enabled"
-    effect: "instrument_litellm() appends 'langfuse_otel' to litellm.callbacks (idempotent) so every fork litellm.completion emits a traced generation; when tracing is disabled no callback is registered"
-    boundary: "Runs after the LLM-01 endpoint setup in configure_litellm(); no-op when langfuse_enabled() is False"
+    effect: "_instrument_litellm_tracing() appends 'langfuse_otel' to litellm.callbacks (idempotent) so every fork litellm.completion emits a traced generation; flush_litellm_tracing() force-flushes that callback's private OTel span processor before the subprocess exits so buffered ingestion spans + cost are not lost; when tracing is disabled no callback is registered and the flush is a no-op"
+    boundary: "_instrument_litellm_tracing() runs after the LLM-01 endpoint setup in configure_litellm(); flush_litellm_tracing() is called from converters_cli.main()'s finally; both no-op when langfuse_enabled() is False"
 
   - id: LLM-02-C4
     desc: "Content masking is on by default and preserves usage/cost"

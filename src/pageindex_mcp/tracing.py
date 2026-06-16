@@ -54,11 +54,16 @@ def langfuse_enabled() -> bool:
 def _mask(data, **kwargs):
     """LLM-02-C4: redact content for the query path unless content capture is on.
 
-    Recursively replaces string/dict/list payloads (prompt + completion bodies)
-    with a constant sentinel. Token usage / model / cost live in separate
-    generation fields and are NOT routed through this mask, so spend monitoring
-    is unaffected. With ``langfuse_trace_content=true`` data passes through
-    verbatim.
+    Redacts only the free-text *content* — strings — replacing each with a
+    constant sentinel, recursing through dicts/lists/tuples. Non-string scalars
+    (int/float/bool/None) are returned UNCHANGED: they carry no prompt/completion
+    text, and coercing them to the string sentinel would corrupt structured
+    fields the wrapper may route through the mask (e.g. ``temperature``,
+    ``max_tokens``, numeric ids, timestamps) — changing their type and risking
+    downstream parse errors. Token usage / model / cost live in separate
+    generation fields and are not routed through this mask either, so spend
+    monitoring is unaffected. With ``langfuse_trace_content=true`` data passes
+    through verbatim.
     """
     if settings.langfuse_trace_content:
         return data
@@ -66,9 +71,10 @@ def _mask(data, **kwargs):
         return _MASK_SENTINEL
     if isinstance(data, dict):
         return {k: _mask(v) for k, v in data.items()}
-    if isinstance(data, list):
+    if isinstance(data, (list, tuple)):
         return [_mask(item) for item in data]
-    return _MASK_SENTINEL
+    # int / float / bool / None and other non-text scalars: leave intact.
+    return data
 
 
 def init_langfuse() -> None:
@@ -85,9 +91,13 @@ def init_langfuse() -> None:
         return
 
     # Ensure both the langfuse-python client and litellm's otel exporter read a
-    # consistent project + region from the environment.
-    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
-    os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
+    # consistent project + region from the environment. Hard-assign (not
+    # setdefault): settings is the single source of truth, so a value left over
+    # in os.environ from a prior init / wrapper process must NOT win — otherwise
+    # litellm's langfuse_otel exporter (which reads keys from the env) could
+    # silently ship traces and cost to the wrong Langfuse project.
+    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
+    os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
     os.environ["LANGFUSE_HOST"] = settings.langfuse_host
 
     try:
@@ -159,8 +169,19 @@ async def trace_tool(name: str):
 
 
 def flush_langfuse() -> None:
-    """Flush buffered spans — required before a short-lived subprocess exits."""
-    if not _initialized:
+    """Flush the langfuse-python client's buffered spans (the query path).
+
+    Required before a short-lived subprocess exits or buffered spans are lost.
+    Gated on ``langfuse_enabled()`` rather than the ``_initialized`` construction
+    guard: ``get_client()`` lazily returns the singleton, so the flush must still
+    run even when the singleton was not eagerly constructed in this process.
+
+    This flushes ONLY the langfuse-python provider. The ingestion path's litellm
+    ``langfuse_otel`` spans live on a separate, private OTel provider and are
+    flushed by ``client.flush_litellm_tracing()`` — the provider layer, which is
+    the only module permitted to depend on the litellm SDK.
+    """
+    if not langfuse_enabled():
         return
     try:
         from langfuse import get_client

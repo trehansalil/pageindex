@@ -129,13 +129,18 @@ async def main() -> int:
             logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
             return 1
     finally:
-        # LLM-02: this is a short-lived subprocess — flush buffered Langfuse spans
-        # for the ingestion litellm calls before exit, or they are lost. No-op when
-        # tracing is disabled. Deferred import so the parent baseline RSS is clean.
+        # LLM-02: this is a short-lived subprocess — flush buffered spans before
+        # exit or they are lost. Two distinct providers must be flushed: the
+        # langfuse-python client (any query-path spans) AND litellm's private
+        # langfuse_otel OTel provider (the ingestion-path generations + cost).
+        # Both are no-ops when tracing is disabled. Deferred imports so the parent
+        # baseline RSS is clean.
         try:
+            from pageindex_mcp.client import flush_litellm_tracing
             from pageindex_mcp.tracing import flush_langfuse
 
             flush_langfuse()
+            flush_litellm_tracing()
         except Exception:  # pragma: no cover - never let flush break the CLI contract
             logging.getLogger(__name__).debug("Langfuse flush skipped", exc_info=True)
         sys.stdout = orig_stdout
