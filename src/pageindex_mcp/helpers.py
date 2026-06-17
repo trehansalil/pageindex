@@ -33,8 +33,17 @@ async def _llm(prompt: str, model: str | None = None) -> str:
         from .client import get_openai_client
 
         client = get_openai_client()
+        # The litellm ingestion path requires an ``azure/<deployment>`` prefix on
+        # model names, but the OpenAI/Azure SDK used here treats ``model`` as the
+        # bare Azure deployment name (it becomes the .../deployments/<model>/...
+        # URL segment). A leftover ``azure/`` prefix yields a bogus path segment
+        # and a 404 "Resource not found". Strip it so a single PAGEINDEX_*_MODEL
+        # value works for both paths.
+        resolved_model = model or _ANSWER_MODEL
+        if resolved_model.startswith("azure/"):
+            resolved_model = resolved_model[len("azure/") :]
         r = await client.chat.completions.create(
-            model=model or _ANSWER_MODEL,
+            model=resolved_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
