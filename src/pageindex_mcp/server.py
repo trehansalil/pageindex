@@ -59,6 +59,17 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
         scrape_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await scrape_task
+        # Flush the langfuse-python client before the process exits. The query
+        # path (find_relevant_documents -> OpenAI SDK via the langfuse.openai
+        # wrapper) buffers spans on the SDK's background sender; a short-lived
+        # server (e.g. a debug session: start -> one request -> stop) can be
+        # killed before that thread flushes, dropping the trace. converters_cli
+        # already does this for the ingestion subprocess; the server needs it
+        # too. (litellm's private-OTel spans are an ingestion-only concern, so
+        # flush_litellm_tracing() is not needed here.)
+        from .tracing import flush_langfuse
+
+        flush_langfuse()
 
 
 starlette_app.router.lifespan_context = _lifespan_with_scrape
