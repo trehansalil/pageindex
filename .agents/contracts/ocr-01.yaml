@@ -1,0 +1,31 @@
+feature: OCR-01
+name: Force-Full-Page-OCR Escalation on Garbling Rejection
+module: client
+phase: 1
+source: rfcs/005-hard-corpus-ingestion-fixes.md#fix-3
+
+# RFC-005 Fix 3. validate_tree() is the only point that knows a tree garbled, so the
+# retry lives inside CustomPageIndexClient.index() (client-level, not converter-level,
+# not a worker re-enqueue). HR5 binding: the retry re-runs split_oversized_leaf_nodes
+# AND validate_tree and is still terminally rejected if the tree stays garbled --
+# escalation never bypasses the quality gate. Kill-switch: OCR_ESCALATION env var
+# (default "1"/on).
+
+contracts:
+  - id: OCR-01-C1
+    desc: "A PDF rejected for garbling gets exactly one force_full_page_ocr retry before terminal rejection"
+    trigger: "index() computes validate_tree(result['structure']) == (False, 'garbling') for a .pdf input, no retry has occurred yet for this call, and _OCR_ESCALATION (OCR_ESCALATION env, default on) is true"
+    effect: "index() re-converts the source PDF via pdf_to_markdown_docling(file_path, force_full_page_ocr=True, langs), re-runs _run_md_to_tree and split_oversized_leaf_nodes on the result, and re-evaluates validate_tree; OCR_ESCALATION_TOTAL{result='recovered'} is incremented if the retry now validates ok, OCR_ESCALATION_TOTAL{result='still_garbled'} if it validates and still garbles"
+    boundary: "ext == '.pdf'; original reason is exactly 'garbling'; escalation has not already run for this index() call (single-retry guard)"
+
+  - id: OCR-01-C2
+    desc: "The retry's OCR language selection prefers the filename over the garbled text layer"
+    trigger: "OCR-01-C1 fires and escalation_langs is computed"
+    effect: "escalation_langs is built by detect_ocr_langs(filename) first, then detect_ocr_langs(md_content) is unioned in (de-duplicated, order-preserving) rather than the garbled markdown being the sole signal; ensure_tessdata(escalation_langs) provisions the resulting language set before the OCR retry runs"
+    boundary: "The pre-escalation md_content is the (possibly mojibake/garbled) output of the initial conversion attempt, not a trusted language signal on its own"
+
+  - id: OCR-01-C3
+    desc: "A tree that is still garbled after the OCR retry is terminally rejected, never persisted (HR5)"
+    trigger: "OCR-01-C1's re-evaluated validate_tree still returns (False, 'garbling') after the force_full_page_ocr retry, OR OCR_ESCALATION is disabled, OR an exception is raised during the retry itself"
+    effect: "index() raises LowQualityTreeError('garbling') (or routes through the normal non-garbling rejection path if the retry's failure reason changed); no processed/<doc_id>.json is written; on an exception during the retry, OCR_ESCALATION_TOTAL{result='error'} is incremented and the original (pre-retry) validation failure still applies"
+    boundary: "Retry either did not recover the tree, was disabled by the kill-switch, or the retry itself raised"

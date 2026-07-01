@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 
 from .cache import get_doc
 from .config import settings
@@ -455,6 +456,429 @@ def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
     return block, i
 
 
+# --- Fix 1: oversized-leaf tail-blob splitter -------------------------------
+# Ordinal heading markers (Latin §/Article/Section + Arabic (ال)مادة). REDESIGN:
+# markers are matched INLINE (no line anchor) because Docling routinely demotes
+# articles after the first to inline prose, so the real "Article (9)…(N)" markers
+# in a tail-blob sit mid-line, not at column 0. To stay safe against the inline
+# false-positive class (cross-references like "the preceding Article 5"), we (a)
+# capture each marker's ordinal NUMBER and (b) keep only the longest STRICTLY
+# INCREASING run of those numbers in document order — a real heading sequence is
+# monotone 1,2,3,…, while back/forward cross-refs break monotonicity and are
+# dropped. Matching runs on an NFKC-folded copy (presentation-form Arabic ﺍﳌـﺎﺩﺓ
+# and Latin ligatures normalise to base letters) with an index map back to the
+# ORIGINAL text, so every slice is byte-exact on the original (RTL-safe, never
+# reordered, never mutated).
+# Each digit capture allows an optional decimal suffix ("Article 3.1", "المادة
+# ٣.١") so sub-numbered sequences don't all truncate to the same integer ordinal
+# and collapse the strictly-increasing-run guard below (_ordinal_value parses the
+# capture as a float).
+_OVERSIZED_ORDINAL_RE = re.compile(
+    r"(?:"
+    r"§\s*\(?\s*(?P<sec>\d+(?:\.\d+)?)"  # § 12 / § (12) / § 12.1
+    r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+(?:\.\d+)?)"  # Article 9 / Art. 9 / Article (9) / Article 3.1
+    r"|Section\s+\(?\s*(?P<s>\d+(?:\.\d+)?)"  # Section 4 / Section (4) / Section 4.2
+    r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥ / المادة ٥.١
+    r")"
+)
+# Characters dropped before NFKC matching: tatweel/kashida (U+0640) which splits
+# Arabic presentation-form glyphs, plus zero-width and bidi control marks that the
+# regex must see through. Slicing still uses ORIGINAL indices, so these survive
+# untouched in the stored text.
+_FOLD_DROP_CHARS = frozenset(
+    "ـ"  # ARABIC TATWEEL
+    "​‌‍‎‏"  # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "‪‫‬‭‮"  # bidi embeddings/overrides
+    "﻿"  # BOM / ZWNBSP
+)
+_ARABIC_INDIC = {ord(d): ord(a) for d, a in zip("٠١٢٣٤٥٦٧٨٩", "0123456789")}
+
+# Fallback marker for leaves the ordinal path abandons (too few / non-monotonic
+# مادة markers — e.g. an RTL reading-order scramble from Docling). فقرة
+# ("paragraph") is an un-numbered noun, so there is no ordinal to guard
+# monotonicity with; _split_on_paragraph_markers compensates with a minimum
+# inter-segment gap and an all-segments-must-shrink acceptance check instead.
+_PARAGRAPH_FALLBACK_RE = re.compile(r"(?:ال)?فقرة\b")
+
+# Dotted-leader ToC entries ("Title ......... 12"), used by
+# _looks_like_frontmatter_toc to recognise cover/bibliography/table-of-contents
+# blocks that should be accepted as-is rather than force-split.
+_DOTTED_LEADER_RE = re.compile(r"[.․…]{4,}")
+
+
+def _fold_with_index_map(text: str) -> tuple[str, list[int]]:
+    """NFKC-fold ``text`` for marker matching, returning the folded string and a
+    parallel list mapping each folded-char position back to its ORIGINAL index.
+
+    Folding is per-character (compatibility decomposition is per-codepoint for the
+    presentation forms and ligatures we care about), so a 1→N expansion maps every
+    output char to the single source index. Tatweel/zero-width/bidi marks are
+    dropped. Callers slice the original text at the mapped indices — never the
+    folded copy — so stored content is byte-identical to the input."""
+    folded: list[str] = []
+    idx_map: list[int] = []
+    for i, ch in enumerate(text):
+        if ch in _FOLD_DROP_CHARS:
+            continue
+        nf = unicodedata.normalize("NFKC", ch)
+        for c in nf:
+            folded.append(c)
+            idx_map.append(i)
+    return "".join(folded), idx_map
+
+
+def _ordinal_value(m: "re.Match[str]") -> tuple[int, ...]:
+    """The ordinal captured by whichever marker alternative matched, as a tuple of
+    dotted components compared lexicographically (NOT a float — ``3.10`` must
+    stay distinct from ``3.1``, whereas ``float("3.10") == float("3.1")`` would
+    silently collapse them and eject a genuine heading from the increasing run)."""
+    digits = m.group("art") or m.group("sec") or m.group("s") or m.group("mada") or ""
+    digits = digits.translate(_ARABIC_INDIC).replace("٫", ".")
+    return tuple(int(part) for part in digits.split("."))
+
+
+def _longest_increasing_run(values: list[tuple[int, ...]]) -> list[int]:
+    """Indices (into ``values``) of a longest STRICTLY-increasing subsequence,
+    preserving document order. O(n²) — n is the marker count per blob (≲ a few
+    hundred). Ties pick the earliest extension, so heading occurrences (which come
+    before their later cross-references) win over duplicates."""
+    n = len(values)
+    if n == 0:
+        return []
+    best_len = [1] * n
+    prev = [-1] * n
+    for i in range(n):
+        for j in range(i):
+            if values[j] < values[i] and best_len[j] + 1 > best_len[i]:
+                best_len[i] = best_len[j] + 1
+                prev[i] = j
+    end = max(range(n), key=lambda k: best_len[k])
+    seq: list[int] = []
+    while end != -1:
+        seq.append(end)
+        end = prev[end]
+    seq.reverse()
+    return seq
+
+
+def _looks_like_frontmatter_toc(text: str, ordinal_matches: list) -> bool:
+    """Conservative all-three-AND gate for cover/bibliography/table-of-contents
+    blocks (dotted-leader ToC entries, near-zero ordinal density, a bibliographic
+    Latin-script run) that should be accepted as-is rather than force-split.
+    Fragmenting a bibliography on paragraph/article markers produces meaningless
+    node boundaries. Deliberately narrow: a genuine article-dense Arabic ToC still
+    has high ordinal density and is NOT flagged."""
+    length = len(text)
+    if length == 0:
+        return False
+    per_1k = length / 1000
+    if len(_DOTTED_LEADER_RE.findall(text)) / per_1k < 1.0:
+        return False
+    if len(ordinal_matches) / per_1k >= 0.1:
+        return False
+    return re.search(r"[A-Za-z]{20,}", text) is not None
+
+
+def _apply_split(node: dict, text: str, starts: list[int]) -> None:
+    """Rebuild ``node`` into a parent (preamble text) + ordered leaf children,
+    one per entry in ``starts`` (original-text offsets). Shared by the ordinal
+    split path and the فقرة fallback path."""
+    parent_id = node.get("node_id") or "x"
+    new_children: list[dict] = []
+    for idx, seg_start in enumerate(starts):
+        seg_end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+        seg = text[seg_start:seg_end]
+        seg_lines = seg.splitlines()
+        title = (seg_lines[0].strip() if seg_lines else seg.strip())[:120]
+        child: dict = {
+            "title": title,
+            "text": seg,
+            "nodes": [],
+            "node_id": f"{parent_id}-s{idx}",
+        }
+        if "start_index" in node:
+            child["start_index"] = node["start_index"]
+        if "end_index" in node:
+            child["end_index"] = node["end_index"]
+        new_children.append(child)
+    node["text"] = text[: starts[0]]
+    node["nodes"] = new_children
+
+
+def _split_on_paragraph_markers(
+    node: dict,
+    text: str,
+    max_chars: int,
+    min_segments: int,
+    min_seg_chars: int = 5000,
+) -> bool:
+    """Fallback for leaves the ordinal path gave up on. Splits on the un-numbered
+    noun (ال)?فقرة instead of مادة/Article — there is no ordinal, so no LIS guard
+    applies. Dense inline references ("فقرة ٢ من المادة …") are collapsed by a
+    minimum inter-segment-chars floor, and the split is accepted only if it
+    actually resolves the oversize (every resulting segment < max_chars);
+    otherwise the leaf is left untouched rather than half-split."""
+    folded, idx_map = _fold_with_index_map(text)
+    matches = list(_PARAGRAPH_FALLBACK_RE.finditer(folded))
+    if len(matches) < min_segments:
+        return False
+
+    starts: list[int] = []
+    for m in matches:
+        orig = idx_map[m.start()]
+        if starts and orig - starts[-1] < min_seg_chars:
+            continue
+        starts.append(orig)
+    if len(starts) < 2:
+        return False
+
+    for idx, seg_start in enumerate(starts):
+        seg_end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+        if seg_end - seg_start >= max_chars:
+            return False
+
+    _apply_split(node, text, starts)
+    return True
+
+
+def split_oversized_leaf_nodes(
+    structure: list, max_chars: int = 50000, min_segments: int = 3
+) -> list:
+    """Fix 1: bounded, deterministic, no-LLM splitter for tail-blob hierarchy
+    collapse (REDESIGNED for inline + presentation-form markers).
+
+    The vendored tree builder slices each heading node's ``text`` from one heading
+    to the next regardless of depth, so when (e.g. Arabic legal) headings fail to
+    level, the last surviving heading swallows the whole document tail into a
+    single oversized leaf (Penal Code Art.(9)=236k, Human-Rights=320k, مرسوم
+    33=114k). This walks an already-built ``structure`` and, for any LEAF whose
+    ``text`` exceeds ``max_chars``, splits it on internal ordinal markers.
+
+    Robustness over the prior line-anchored version: markers are matched inline on
+    an NFKC-folded copy (so Latin paren forms ``Article (9)`` and presentation-form
+    Arabic both match), and only the longest strictly-increasing ordinal run is
+    used as split points — rejecting cross-reference false positives. A blob is
+    split only when that run has ≥ ``min_segments`` headings.
+
+    Slicing is byte-exact on the ORIGINAL text via the fold index map (RTL-safe,
+    order-preserving). Structure/retrieval fix, never an accuracy claim (HR1); runs
+    before ``validate_tree`` and persists nothing itself (HR5); stdlib only (HR4).
+    Mutates in place and returns ``structure``. Idempotent: child segments fall
+    under ``max_chars`` so a second pass is a no-op."""
+    for node in structure or []:
+        if not isinstance(node, dict):
+            continue
+        children = node.get("nodes")
+        if children:
+            # Parent node: recurse, leave its own text untouched.
+            split_oversized_leaf_nodes(children, max_chars, min_segments)
+            continue
+
+        text = node.get("text") or ""
+        if len(text) <= max_chars:
+            continue
+
+        folded, idx_map = _fold_with_index_map(text)
+        all_matches = list(_OVERSIZED_ORDINAL_RE.finditer(folded))
+
+        # Cover/bibliography/ToC blocks (dotted leaders, ~no ordinal markers):
+        # accept as-is rather than force-splitting a bibliography on فقرة.
+        if _looks_like_frontmatter_toc(text, all_matches):
+            continue
+
+        if len(all_matches) < min_segments:
+            if _split_on_paragraph_markers(node, text, max_chars, min_segments):
+                split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments)
+            continue
+
+        # Keep only the longest strictly-increasing ordinal run (drops cross-refs).
+        values = [_ordinal_value(m) for m in all_matches]
+        keep_idx = _longest_increasing_run(values)
+        if len(keep_idx) < min_segments:
+            # مادة/Article markers exist but don't form a long enough increasing
+            # run (e.g. RTL reading-order scramble) — fall back to فقرة.
+            if _split_on_paragraph_markers(node, text, max_chars, min_segments):
+                split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments)
+            continue
+        # Map kept markers back to ORIGINAL text start offsets, in order.
+        starts = [idx_map[all_matches[k].start()] for k in keep_idx]
+
+        _apply_split(node, text, starts)
+        # Recurse into the new children: a single article that is itself oversized
+        # (sub-clauses, or a gap whose inner markers were not part of the top-level
+        # increasing run) gets a second split pass. Terminates because each pass
+        # strictly shrinks segments.
+        split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments)
+
+    return structure
+
+
+# --- Fix 2: table fidelity in the flat path ---------------------------------
+# Arabic-script ranges (incl. presentation forms) for the RTL ratio heuristic.
+_ARABIC_SCRIPT_RE = re.compile(
+    r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]"
+)
+# A header/cell that is date/numeric-like: starts with a (Western or Arabic-Indic)
+# digit and contains only digits + common date/number separators (no text label).
+_NUMERIC_DATE_RE = re.compile(r"^[\d٠-٩][\d٠-٩\s/\-.:,]*$")
+
+
+def _is_numeric_or_date(cell: object) -> bool:
+    s = str(cell).strip()
+    if s == "":
+        return False
+    return bool(_NUMERIC_DATE_RE.match(s))
+
+
+def table_is_rtl(block: dict) -> bool:
+    """Fix 2b: True when the table block is right-to-left.
+
+    Docling cell-bbox metadata is NOT available on these flat blocks, so this
+    uses a script-ratio heuristic: Arabic-script character ratio across the
+    block's headers + cells > 0.3 ⇒ RTL. Pure, no external dep.
+    """
+    texts: list[object] = list(block.get("headers") or [])
+    for row in block.get("rows") or []:
+        texts.extend(row)
+    arabic = 0
+    total = 0
+    for t in texts:
+        for ch in str(t):
+            if ch.isspace():
+                continue
+            total += 1
+            if _ARABIC_SCRIPT_RE.match(ch):
+                arabic += 1
+    if total == 0:
+        return False
+    return (arabic / total) > 0.3
+
+
+def _is_continuation_table(anchor: dict, cont: dict) -> bool:
+    """A later table block continues `anchor` when it has the same number of data
+    rows, `anchor` itself is a keyed table (at least one non-numeric row-label
+    header), AND all of `cont`'s headers are date/numeric-like (no row-label
+    column). The anchor check prevents two consecutive numeric-header tables
+    (neither of which has a label column) from being merged as if one continued
+    the other."""
+    a_data = (anchor.get("rows") or [])[1:]
+    c_data = (cont.get("rows") or [])[1:]
+    if len(a_data) != len(c_data) or not c_data:
+        return False
+    a_headers = anchor.get("headers") or []
+    if not a_headers or not any(not _is_numeric_or_date(h) for h in a_headers):
+        return False
+    c_headers = cont.get("headers") or []
+    if not c_headers:
+        return False
+    return all(_is_numeric_or_date(h) for h in c_headers)
+
+
+def _merge_continuation_table(anchor: dict, cont: dict) -> dict:
+    """Left-key on the anchor's row-label column and concatenate the
+    continuation's data columns onto each row. For an RTL anchor the continuation
+    columns are inserted right after the label column (prepended ahead of the
+    anchor's own series) so the series reads right-to-left consistently while the
+    row label still keys the join. Regenerates row_records via the existing
+    verbalizer. Pure, no LLM, no AGPL."""
+    a_headers = list(anchor.get("headers") or [])
+    c_headers = list(cont.get("headers") or [])
+    a_data = (anchor.get("rows") or [])[1:]
+    c_data = (cont.get("rows") or [])[1:]
+
+    if table_is_rtl(anchor):
+        label_idx = [k for k, h in enumerate(a_headers) if not _is_numeric_or_date(h)]
+        date_idx = [k for k, h in enumerate(a_headers) if _is_numeric_or_date(h)]
+        merged_headers = (
+            [a_headers[k] for k in label_idx]
+            + c_headers
+            + [a_headers[k] for k in date_idx]
+        )
+        merged_data: list[list[str]] = []
+        for ar, cr in zip(a_data, c_data, strict=False):
+            labels = [ar[k] if k < len(ar) else "" for k in label_idx]
+            dates = [ar[k] if k < len(ar) else "" for k in date_idx]
+            merged_data.append([*labels, *cr, *dates])
+    else:
+        merged_headers = [*a_headers, *c_headers]
+        merged_data = [[*ar, *cr] for ar, cr in zip(a_data, c_data, strict=False)]
+
+    return {
+        "role": "table",
+        "headers": merged_headers,
+        "rows": [merged_headers, *merged_data],
+        "row_records": _flat_verbalize_rows(merged_headers, merged_data),
+    }
+
+
+def stitch_continuation_tables(blocks: list[dict]) -> list[dict]:
+    """Fix 2a: merge wide tables paginated across pages back together.
+
+    A wide table split across PDF pages arrives as several consecutive
+    ``role:'table'`` blocks; slices 2..N carry date/numeric-only headers and have
+    lost the row-label column. This walks the blocks and, for each table that is
+    followed by one or more continuation slices, left-keys on the anchor's
+    row-label column and concatenates the continuation data columns (RTL-aware via
+    `table_is_rtl`). Non-continuation tables pass through untouched. Pure, no LLM,
+    no AGPL."""
+    result: list[dict] = []
+    i = 0
+    n = len(blocks)
+    while i < n:
+        block = blocks[i]
+        if block.get("role") != "table":
+            result.append(block)
+            i += 1
+            continue
+        anchor = block
+        j = i + 1
+        while (
+            j < n
+            and blocks[j].get("role") == "table"
+            and _is_continuation_table(anchor, blocks[j])
+        ):
+            anchor = _merge_continuation_table(anchor, blocks[j])
+            j += 1
+        result.append(anchor)
+        i = j
+    return result
+
+
+def flag_empty_cells(block: dict) -> dict:
+    """Fix 2c: annotate (never drop) a table block with an empty-cell quality
+    signal: ``block['quality'] = {'empty_cell_ratio': float, 'suspected_miss':
+    bool}`` where suspected_miss is True when an entire data row or column is
+    empty (a TableFormer miss signal). Returns the block."""
+    data_rows = (block.get("rows") or [])[1:]
+    total = 0
+    empty = 0
+    for row in data_rows:
+        for cell in row:
+            total += 1
+            if str(cell).strip() == "":
+                empty += 1
+    empty_cell_ratio = (empty / total) if total else 0.0
+
+    suspected_miss = False
+    for row in data_rows:
+        if row and all(str(c).strip() == "" for c in row):
+            suspected_miss = True
+            break
+    if data_rows and not suspected_miss:
+        ncol = max(len(r) for r in data_rows)
+        for c in range(ncol):
+            col = [row[c] for row in data_rows if c < len(row)]
+            if col and all(str(x).strip() == "" for x in col):
+                suspected_miss = True
+                break
+
+    block["quality"] = {
+        "empty_cell_ratio": empty_cell_ratio,
+        "suspected_miss": suspected_miss,
+    }
+    return block
+
+
 # Complexity grandfathered (flat-doc router, FLAT-01); see pyproject [tool.ruff].
 def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
     """FLAT-01-C1/C2/C3: classify a flat (no-hierarchy) markdown document and
@@ -525,6 +949,14 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
         i += 1
 
     flush_prose()
+
+    # Fix 2a/2c post-pass: stitch wide paginated tables back into one and annotate
+    # empty-cell quality. Pure / in-process; the "table" signal stays in `signals`
+    # so the content_class decision below is unaffected (HR5; not an HR1 claim).
+    blocks = stitch_continuation_tables(blocks)
+    for block in blocks:
+        if block.get("role") == "table":
+            flag_empty_cells(block)
 
     content_signals = signals & {"table", "kv", "prose"}
     if len(content_signals) > 1:

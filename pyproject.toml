@@ -50,6 +50,8 @@ dependencies = [
     "gunicorn>=25.3.0",
     "pageindex @ git+https://github.com/trehansalil/PageIndex-salil.git",
     "langfuse>=3.0.0",
+    # openpyxl (MIT, HR4-clean): .xlsx -> markdown table adapter (Fix 4).
+    "openpyxl>=3.1.0",
 ]
 
 [project.optional-dependencies]

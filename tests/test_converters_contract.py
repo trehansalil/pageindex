@@ -13,12 +13,12 @@ INDEX-01-C3 .docx/.html keep their own converter routes; pdf_to_markdown unused
 import pytest
 
 from pageindex_mcp.converters import (
-    normalize_dashes,
     _relevel_headings,
-    pdf_to_markdown,
     docx_to_markdown,
-    pptx_to_markdown,
     html_to_markdown_with_images,
+    normalize_dashes,
+    pdf_to_markdown,
+    pptx_to_markdown,
 )
 
 
@@ -148,3 +148,155 @@ def test_index_01_c3_non_pdf_uses_own_converter_not_pdf_route():
     assert dispatch[".html"] is not pdf_to_markdown
     assert dispatch[".docx"] is docx_to_markdown
     assert dispatch[".html"] is html_to_markdown_with_images
+
+
+# ── detect_ocr_langs (Fix 5) ─────────────────────────────────────────────────
+from pageindex_mcp.converters import detect_ocr_langs, ensure_tessdata  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "sample,expected",
+    [
+        # Pure Arabic -> ['ara']
+        ("المادة التاسعة من القانون الاتحادي", ["ara"]),
+        # Arabic + English bilingual -> ['ara', 'eng']
+        (
+            "المادة 9 Federal Penal Code of the United Arab Emirates jurisdiction applies",
+            ["ara", "eng"],
+        ),
+        # German with umlauts/ß -> ['deu', 'eng']
+        ("Versicherungsbedingungen für die Haftpflichtversicherung", ["deu", "eng"]),
+        # Plain English -> ['eng']
+        ("The insurance policy covers liability and property damage.", ["eng"]),
+        # Empty string -> fallback ['deu', 'eng']
+        ("", ["deu", "eng"]),
+    ],
+)
+def test_detect_ocr_langs(sample, expected):  # LANG-01-C1
+    """Fix 5: detect_ocr_langs returns correct Tesseract lang list by Unicode-script ratio."""
+    assert detect_ocr_langs(sample) == expected
+
+
+# ── ensure_tessdata (Fix 5) ───────────────────────────────────────────────────
+def test_ensure_tessdata_no_prefix_returns_input_unchanged(monkeypatch):
+    """Without TESSDATA_PREFIX, ensure_tessdata trusts system install and
+    returns the requested langs as-is (no filesystem access, no network)."""
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
+    result = ensure_tessdata(["ara", "eng"])
+    assert result == ["ara", "eng"]
+
+
+def test_ensure_tessdata_missing_files_fallback(monkeypatch, tmp_path):  # LANG-01-C2
+    """With TESSDATA_PREFIX set to an empty dir and download disabled,
+    all missing langs are dropped and the fallback ['deu','eng'] is returned."""
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
+    result = ensure_tessdata(["ara", "eng"])
+    # No .traineddata files exist in tmp_path -> all dropped -> fallback
+    assert result == ["deu", "eng"]
+
+
+def test_ensure_tessdata_prebaked_is_noop(monkeypatch, tmp_path):  # LANG-01-C3
+    """LANG-01-C3: when every requested <lang>.traineddata already exists
+    under TESSDATA_PREFIX (pre-baked), no download is attempted and the full
+    requested language list is returned unchanged."""
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
+    (tmp_path / "ara.traineddata").write_bytes(b"stub")
+    (tmp_path / "eng.traineddata").write_bytes(b"stub")
+
+    download_calls = []
+    import pageindex_mcp.converters as converters_mod
+
+    monkeypatch.setattr(
+        converters_mod,
+        "_try_download_tessdata",
+        lambda lang, prefix: download_calls.append(lang) or True,
+    )
+
+    result = ensure_tessdata(["ara", "eng"])
+
+    assert result == ["ara", "eng"]
+    assert download_calls == []
+
+
+# ── xlsx_to_markdown (Fix 4) ──────────────────────────────────────────────────
+import openpyxl  # noqa: E402
+
+from pageindex_mcp.converters import xlsx_to_markdown  # noqa: E402
+from pageindex_mcp.helpers import route_and_extract_flat  # noqa: E402
+
+
+def _build_arabic_workbook(path):
+    """Helper: creates an xlsx with one Arabic-header sheet."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "إحصاءات"
+    ws.append(["النشاط", "2019", "2020"])
+    ws.append(["الزراعة", 100, 110])
+    ws.append(["الصناعة", 200, 220])
+    wb.save(str(path))
+    wb.close()
+    return path
+
+
+def test_xlsx_to_markdown_arabic_table(tmp_path):
+    """Fix 4: xlsx_to_markdown produces a pipe-table with Arabic headers and numeric cells."""
+    path = _build_arabic_workbook(tmp_path / "test.xlsx")
+    md = xlsx_to_markdown(str(path))
+
+    assert "## إحصاءات" in md
+    # Header row present
+    assert "النشاط" in md
+    assert "2019" in md
+    assert "2020" in md
+    # Data rows present
+    assert "الزراعة" in md
+    assert "100" in md
+    assert "الصناعة" in md
+    assert "220" in md
+    # It is a proper pipe table
+    assert "|" in md
+    assert "---" in md
+
+
+def test_xlsx_to_markdown_routes_flat_table(tmp_path):
+    """Fix 4 + FLAT-01: xlsx markdown routes to content_class='flat_table' and
+    row_records join each Arabic row label to numeric cells."""
+    path = _build_arabic_workbook(tmp_path / "test2.xlsx")
+    md = xlsx_to_markdown(str(path))
+    content_class, blocks = route_and_extract_flat(md)
+
+    assert content_class == "flat_table"
+
+    # Gather all row_records from table blocks
+    all_records: list[str] = []
+    for block in blocks:
+        all_records.extend(block.get("row_records", []))
+
+    # Each data row should appear as a verbalized record
+    ag_record = next((r for r in all_records if "الزراعة" in r), None)
+    assert ag_record is not None, f"No الزراعة record found in {all_records}"
+    assert "النشاط: الزراعة" in ag_record
+    assert "2019: 100" in ag_record
+    assert "2020: 110" in ag_record
+
+    ind_record = next((r for r in all_records if "الصناعة" in r), None)
+    assert ind_record is not None
+    assert "النشاط: الصناعة" in ind_record
+    assert "2019: 200" in ind_record
+    assert "2020: 220" in ind_record
+
+
+def test_xlsx_to_markdown_empty_workbook_raises(tmp_path):
+    """Fix 4: an xlsx workbook with no data raises RuntimeError."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Empty"
+    # Write no rows
+    p = tmp_path / "empty.xlsx"
+    wb.save(str(p))
+    wb.close()
+    with pytest.raises(RuntimeError):
+        xlsx_to_markdown(str(p))

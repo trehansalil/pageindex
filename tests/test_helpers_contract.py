@@ -6,17 +6,16 @@ FLAT-01  deterministic flat-document classifier + block extractor (pure, in-proc
     FLAT-01-C2  table regions are emitted BOTH as a row matrix AND as verbalized row_records
     FLAT-01-C3  every block is role-typed; the classifier never touches validate_tree / IO / LLM
 FLAT-05  unified flat-document query surface (no new MCP tool)
-    FLAT-05-C1  _search_one_doc adapts flat docs (content_class set, empty structure[]) and bypasses the LLM
-    FLAT-05-C2  flat_doc_view(data) exposes content_class + blocks/row_records for the document tools
+    FLAT-05-C1  _search_one_doc adapts flat docs (content_class set, empty structure[]);
+                bypasses the LLM
+    FLAT-05-C2  flat_doc_view(data) exposes content_class + blocks/row_records for the
+                document tools
 """
 
-from unittest.mock import AsyncMock, Mock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from pageindex_mcp import helpers
-from pageindex_mcp.helpers import route_and_extract_flat, flat_doc_view
-
+from pageindex_mcp.helpers import flat_doc_view, route_and_extract_flat
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 _TABLE_MD = (
@@ -114,7 +113,7 @@ def test_flat_01_c3_classifier_never_calls_quality_gate_or_io():
     with patch.object(helpers, "validate_tree") as mock_validate, \
          patch.object(helpers, "_llm", new_callable=AsyncMock) as mock_llm, \
          patch.object(helpers, "get_doc") as mock_get_doc:
-        cls, blocks = route_and_extract_flat(_TABLE_MD + "\n" + _PROSE_MD)
+        cls, _blocks = route_and_extract_flat(_TABLE_MD + "\n" + _PROSE_MD)
     assert cls == "flat_mixed"
     mock_validate.assert_not_called()
     mock_llm.assert_not_called()
@@ -215,3 +214,223 @@ def test_flat_05_c2_tree_doc_is_unaffected():
         "structure": [{"node_id": "n1", "title": "A", "text": "t"}],
     }
     assert flat_doc_view(tree_data) is None
+
+
+# =============================================================================
+# Fix 2 — broad table fidelity: stitch_continuation_tables, table_is_rtl,
+#          flag_empty_cells  (pure / in-process / no LLM / no IO)
+# =============================================================================
+
+def _tbl(headers: list, data_rows: list) -> dict:
+    """Build a minimal table block matching the shape _flat_parse_table emits."""
+    rows = [list(headers)] + [list(r) for r in data_rows]
+    records = [
+        "; ".join(f"{h}: {v}" for h, v in zip(headers, row, strict=False))
+        for row in data_rows
+    ]
+    return {"role": "table", "headers": list(headers), "rows": rows, "row_records": records}
+
+
+# ── Fix2-C1 — EN stitch: Economic-Activities / ISIC wide table ───────────────
+def test_fix2_c1_en_stitch_isic_wide_table():  # TABLE-01-C1
+    """stitch_continuation_tables merges an anchor [Activity,2019,2020] table
+    with a date-only continuation [2021,2022] (same row count) into one block
+    whose headers span all five columns and whose row_records join each Activity
+    label to all four year values."""
+    from pageindex_mcp.helpers import stitch_continuation_tables
+
+    anchor = _tbl(
+        ["Activity", "2019", "2020"],
+        [["Manufacturing", "1200", "1350"], ["Retail", "900", "980"]],
+    )
+    cont = _tbl(
+        ["2021", "2022"],
+        [["1500", "1620"], ["1050", "1100"]],
+    )
+
+    result = stitch_continuation_tables([anchor, cont])
+
+    assert len(result) == 1, "two pages of one wide table must merge to one block"
+    merged = result[0]
+    assert merged["role"] == "table"
+
+    # all five columns present in merged headers
+    for col in ("Activity", "2019", "2020", "2021", "2022"):
+        assert col in merged["headers"], f"expected column {col!r} in merged headers"
+
+    # row_records join label to all four year values
+    records = merged["row_records"]
+    assert len(records) == 2
+    assert any("Activity: Manufacturing" in r and "2021: 1500" in r for r in records)
+    assert any("Activity: Retail" in r and "2022: 1100" in r for r in records)
+
+
+# ── Fix2-C2 — DE LTR paginated numeric table ─────────────────────────────────
+def test_fix2_c2_de_ltr_paginated_numeric_table():
+    """German-label anchor [Tarif,2022,2023] + date-only continuation [2024,2025]
+    stitches in LTR order preserving the Tarif label as the leftmost column."""
+    from pageindex_mcp.helpers import stitch_continuation_tables
+
+    anchor = _tbl(
+        ["Tarif", "2022", "2023"],
+        [["Basis", "100", "110"], ["Komfort", "200", "220"]],
+    )
+    cont = _tbl(
+        ["2024", "2025"],
+        [["115", "120"], ["230", "240"]],
+    )
+
+    result = stitch_continuation_tables([anchor, cont])
+
+    assert len(result) == 1
+    merged = result[0]
+    hdrs = merged["headers"]
+
+    # label column is still present
+    assert "Tarif" in hdrs
+    # year columns follow in LTR ascending order
+    assert hdrs.index("2022") < hdrs.index("2023")
+    assert hdrs.index("2023") < hdrs.index("2024")
+    assert hdrs.index("2024") < hdrs.index("2025")
+
+    records = merged["row_records"]
+    assert any("Tarif: Basis" in r and "2024: 115" in r for r in records)
+    assert any("Tarif: Komfort" in r and "2025: 240" in r for r in records)
+
+
+# ── Fix2-C3 — Arabic RTL: stitch preserves Arabic row-label join key ──────────
+def test_fix2_c3_arabic_rtl_stitch_and_table_is_rtl():  # TABLE-01-C2
+    """Arabic anchor passes table_is_rtl=True; stitch keeps the Arabic label
+    column as join key; Arabic-Indic year continuation columns are merged;
+    an LTR (English) table returns table_is_rtl=False and is not altered."""
+    from pageindex_mcp.helpers import stitch_continuation_tables, table_is_rtl
+
+    # Arabic label 'نشاط' + Arabic-Indic year columns ٢٠١٩ / ٢٠٢٠
+    ar_anchor = _tbl(
+        ["نشاط", "٢٠١٩", "٢٠٢٠"],
+        [["التصنيع", "١٢٠٠", "١٣٥٠"], ["التجزئة", "٩٠٠", "٩٨٠"]],
+    )
+    assert table_is_rtl(ar_anchor) is True
+
+    ar_cont = _tbl(
+        ["٢٠٢١", "٢٠٢٢"],
+        [["١٥٠٠", "١٦٢٠"], ["١٠٥٠", "١١٠٠"]],
+    )
+
+    result = stitch_continuation_tables([ar_anchor, ar_cont])
+    assert len(result) == 1
+    merged = result[0]
+
+    # Arabic label column preserved as join key
+    assert "نشاط" in merged["headers"]
+    # all year columns merged in
+    for yr in ("٢٠١٩", "٢٠٢٠", "٢٠٢١", "٢٠٢٢"):
+        assert yr in merged["headers"], f"expected year column {yr!r} in merged headers"
+
+    # row_records carry the Arabic label linked to year values
+    records = merged["row_records"]
+    assert len(records) == 2
+    assert any("نشاط: التصنيع" in r for r in records)
+    assert any("نشاط: التجزئة" in r for r in records)
+
+    # LTR (English) table: table_is_rtl is False; single-block list unchanged
+    en_table = _tbl(["Activity", "2019"], [["Manufacturing", "100"]])
+    assert table_is_rtl(en_table) is False
+    en_result = stitch_continuation_tables([en_table])
+    assert len(en_result) == 1
+    assert en_result[0] == en_table
+
+
+# ── Fix2-C4 — non-continuation tables pass through unchanged ──────────────────
+def test_fix2_c4_non_continuation_tables_pass_through_unchanged():  # TABLE-01-C1
+    """Two unrelated tables (different data-row counts) are NOT merged;
+    both pass through stitch_continuation_tables with identical content."""
+    from pageindex_mcp.helpers import stitch_continuation_tables
+
+    t1 = _tbl(["A", "2019"], [["x", "1"], ["y", "2"]])   # 2 data rows
+    t2 = _tbl(["2020", "2021"], [["10", "20"]])            # 1 data row → different count
+
+    result = stitch_continuation_tables([t1, t2])
+
+    assert len(result) == 2, "different row counts must NOT trigger a merge"
+    assert result[0] == t1
+    assert result[1] == t2
+
+
+# ── Fix2-C5 — flag_empty_cells annotates quality ─────────────────────────────
+def test_fix2_c5_flag_empty_cells_whole_column_empty():  # TABLE-01-C3
+    """flag_empty_cells sets block['quality']['suspected_miss']=True and
+    empty_cell_ratio>0 when an entire column is empty; it does NOT drop data."""
+    from pageindex_mcp.helpers import flag_empty_cells
+
+    block = _tbl(
+        ["Name", "Score", "Grade"],
+        [["Alice", "95", ""], ["Bob", "87", ""]],  # 'Grade' column all empty
+    )
+    flag_empty_cells(block)
+
+    q = block.get("quality")
+    assert q is not None, "flag_empty_cells must set block['quality']"
+    assert q["empty_cell_ratio"] > 0.0
+    assert q["suspected_miss"] is True
+    # data is preserved — no rows dropped
+    assert len(block["rows"]) == 3  # header row + 2 data rows
+
+
+def test_fix2_c5_flag_empty_cells_full_block_no_suspected_miss():  # TABLE-01-C3
+    """A fully-populated table block gets suspected_miss=False and
+    empty_cell_ratio=0.0 from flag_empty_cells."""
+    from pageindex_mcp.helpers import flag_empty_cells
+
+    block = _tbl(
+        ["Name", "Score"],
+        [["Alice", "95"], ["Bob", "87"]],
+    )
+    flag_empty_cells(block)
+
+    q = block.get("quality")
+    assert q is not None
+    assert q["empty_cell_ratio"] == 0.0
+    assert q["suspected_miss"] is False
+
+
+# ── Fix2-C6 — end-to-end: route_and_extract_flat stitches + annotates ────────
+def test_fix2_c6_route_and_extract_flat_stitches_paginated_table():  # TABLE-01-C1
+    """route_and_extract_flat's post-pass stitches two consecutive pipe tables
+    (second carries only date headers = a continuation slice) into one merged
+    table block that already carries the 'quality' annotation from
+    flag_empty_cells. The content_class is flat_table (single signal)."""
+    from pageindex_mcp.helpers import route_and_extract_flat
+
+    # Anchor table followed immediately by a date-only continuation table.
+    paginated_md = (
+        "| Activity | 2019 | 2020 |\n"
+        "| --- | --- | --- |\n"
+        "| Manufacturing | 1200 | 1350 |\n"
+        "| Retail | 900 | 980 |\n"
+        "\n"
+        "| 2021 | 2022 |\n"
+        "| --- | --- |\n"
+        "| 1500 | 1620 |\n"
+        "| 1050 | 1100 |\n"
+    )
+
+    content_class, blocks = route_and_extract_flat(paginated_md)
+    assert content_class == "flat_table"
+
+    table_blocks = [b for b in blocks if b["role"] == "table"]
+
+    # Must be ONE merged block, not two separate ones.
+    assert len(table_blocks) == 1, (
+        "route_and_extract_flat must stitch paginated continuation tables into one block"
+    )
+    merged = table_blocks[0]
+
+    # All five columns present in the merged headers.
+    for col in ("Activity", "2019", "2020", "2021", "2022"):
+        assert col in merged["headers"], f"expected column {col!r} in merged headers"
+
+    # flag_empty_cells post-pass annotates 'quality' on every table block.
+    assert "quality" in merged, "flag_empty_cells post-pass must annotate 'quality'"
+    assert "empty_cell_ratio" in merged["quality"]
+    assert "suspected_miss" in merged["quality"]

@@ -1,0 +1,32 @@
+feature: TABLE-01
+name: Flat-Table Continuation Stitching, RTL Ordering, and Empty-Cell Flagging
+module: helpers
+phase: 1
+source: rfcs/005-hard-corpus-ingestion-fixes.md#fix-2
+
+# RFC-005 Fix 2. Wide tables paginated across pages arrive from route_and_extract_flat
+# as separate role:'table' blocks; slices after the first lose the row-label column.
+# stitch_continuation_tables merges them back into one table pre-verbalization;
+# table_is_rtl feeds direction-aware column concatenation; flag_empty_cells is a
+# non-mutating quality signal. THIN EVIDENCE (RFC-005): 2b/2c ship behind synthetic
+# RTL fixtures only -- no reproduced real-world Arabic paginated table exists in the
+# corpus as of this contract's authoring.
+
+contracts:
+  - id: TABLE-01-C1
+    desc: "Adjacent paginated table blocks with matching row counts and no row-label column are stitched into one table"
+    trigger: "stitch_continuation_tables(blocks) is called on a blocks list where block N has role:'table' with a row-label column and block N+1 has role:'table' with the same len(data_rows), all-numeric/date headers, and no row-label column (per _is_continuation_table)"
+    effect: "Blocks N and N+1 are merged via _merge_continuation_table into a single block: block N's row-label column is kept, block N+1's data columns are concatenated onto block N's rows (direction per TABLE-01-C2), and row_records is regenerated via _flat_verbalize_rows over the merged columns; the output blocks list has one fewer table block than the input"
+    boundary: "Both blocks have role:'table'; row counts match exactly; continuation block's headers all parse as _is_numeric_or_date; continuation block has no row-label column"
+
+  - id: TABLE-01-C2
+    desc: "RTL-classified table stitching concatenates and orders columns right-to-left instead of left-to-right"
+    trigger: "stitch_continuation_tables merges an anchor block where table_is_rtl(anchor) is true (Arabic-script character ratio > 0.3 across header/label cells)"
+    effect: "_merge_continuation_table concatenates the continuation block's columns in RTL order (newest/rightmost-authored column first) rather than the default LTR append order used for non-RTL tables"
+    boundary: "table_is_rtl(anchor) returns true; an LTR table (table_is_rtl false) is stitched via the default left-to-right column order and is unaffected by this branch"
+
+  - id: TABLE-01-C3
+    desc: "A table block with a wholly empty row or column is flagged without mutating its data"
+    trigger: "flag_empty_cells(block) is called on a role:'table' block where at least one full row or full column across data_rows consists entirely of empty/null cell values"
+    effect: "The block gains a non-mutating quality: {empty_cell_ratio: float, suspected_miss: bool} annotation; block['data_rows'] / block['row_records'] are returned byte-for-byte unchanged from the input"
+    boundary: "block['role'] == 'table'; empty_cell_ratio is computed over all cells in data_rows; suspected_miss is true only when a full row or column is empty (not merely sparse)"

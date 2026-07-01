@@ -1,0 +1,32 @@
+feature: SPLIT-01
+name: Tail-Blob Leaf Splitting on Un-Leveled Ordinal Markers
+module: helpers
+phase: 1
+source: rfcs/005-hard-corpus-ingestion-fixes.md#fix-1
+
+# RFC-005 Fix 1. A leaf whose text swallowed the document tail (because upstream
+# heading-depth recovery left in-line ordinal markers such as "Article 9" /
+# "المادة ٩" un-leveled) is split into per-ordinal sibling nodes as a bounded
+# post-split safety net -- run AFTER _run_md_to_tree, BEFORE validate_tree (HR5).
+# This is a defense-in-depth pass, not a depth-recovery rewrite: it never grows a
+# node, is order-preserving, and is RTL-agnostic via NFKC-fold + index-map matching
+# rather than line-anchoring.
+
+contracts:
+  - id: SPLIT-01-C1
+    desc: "An oversized leaf containing multiple in-line ordinal markers is split into one sibling node per ordinal"
+    trigger: "split_oversized_leaf_nodes(structure) is called on a tree where a leaf node's text exceeds the size threshold and contains 2+ in-line ordinal markers (Latin 'Article N' / Arabic 'المادة ٩' family) whose extracted values form a strictly increasing run"
+    effect: "The oversized leaf is replaced by N sibling leaf nodes, each starting at its ordinal marker and ending at the next marker (or end of text for the last); node order and original text content are preserved byte-for-byte across the split boundaries; no node's text is grown or duplicated"
+    boundary: "Leaf text length > threshold (~50k chars); ordinal matches, after NFKC-fold via _fold_with_index_map, form a longest-increasing run per _longest_increasing_run; the node is not classified as front-matter/TOC by _looks_like_frontmatter_toc"
+
+  - id: SPLIT-01-C2
+    desc: "A front-matter or table-of-contents block is not shredded by the ordinal-run guard"
+    trigger: "split_oversized_leaf_nodes(structure) is called on a leaf whose text contains a run of increasing ordinal-like tokens that _looks_like_frontmatter_toc identifies as a ToC/front-matter listing rather than real article bodies"
+    effect: "The leaf is left unsplit; the front-matter block itself is not partitioned into spurious per-ordinal siblings"
+    boundary: "_looks_like_frontmatter_toc(text, ordinal_matches) returns true for the candidate span"
+
+  - id: SPLIT-01-C3
+    desc: "Splitting is idempotent and never invoked on trees whose leaves are already within threshold"
+    trigger: "split_oversized_leaf_nodes(structure) is called on a tree where every leaf's text length is already <= threshold, or is called a second time on an already-split tree"
+    effect: "The returned structure is unchanged (same node count, same text per node) from the input; no further splitting occurs on the second call"
+    boundary: "All leaf texts <= threshold at call time, or the tree was already produced by a prior split_oversized_leaf_nodes call"

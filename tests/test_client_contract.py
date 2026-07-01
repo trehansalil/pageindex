@@ -190,6 +190,190 @@ async def test_FLAT_03_binary_no_markdown_falls_through_to_reject(monkeypatch, p
 
 
 # ---------------------------------------------------------------------------
+# OCR-01: force_full_page_ocr escalation on a garbling rejection (RFC-005 Fix 3)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def pdf_file_with_content():
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n real-looking pdf bytes")
+    yield path
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=False):
+    """Wire index() up to the .pdf branch with a controllable md->tree pipeline,
+    so the garbling-retry branch (OCR-01) can be exercised without any real
+    Docling/Tesseract/network/LLM dependency."""
+    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing=True))
+    monkeypatch.setattr(client_mod, "load_hash_cache", lambda: {})
+    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(client_mod, "save_hash_cache", MagicMock())
+    monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
+    monkeypatch.setattr(
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# initial md")]
+    )
+    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    detect_calls = []
+
+    def _fake_detect(sample):
+        detect_calls.append(sample)
+        return ["ara"] if "pdf_file_with_content" not in sample and sample.endswith(".pdf") else ["eng"]
+
+    monkeypatch.setattr(client_mod, "detect_ocr_langs", _fake_detect)
+    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+
+    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs):
+        if retry_raises:
+            raise RuntimeError("boom")
+        return "# ocr-recovered md"
+
+    monkeypatch.setattr(client_mod, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
+    mocks = {
+        "save_doc": MagicMock(),
+        "save_flat_doc": MagicMock(),
+        "route_and_extract_flat": MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+        "OCR_ESCALATION_TOTAL": MagicMock(),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(client_mod, name, m)
+    return mocks, detect_calls
+
+
+async def test_OCR_01_C1_garbling_retries_once_and_recovers(monkeypatch, pdf_file_with_content):
+    """OCR-01-C1: a .pdf rejected as 'garbling' gets exactly one
+    force_full_page_ocr retry; when the retry validates ok, the doc is
+    persisted as a tree (save_doc) and OCR_ESCALATION_TOTAL{result=recovered}
+    is incremented — never a second retry."""
+    mocks, _ = _wire_ocr_escalation(
+        monkeypatch, validate_side_effect=[(False, "garbling"), (True, None)]
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    doc_id = await c.index(pdf_file_with_content)
+
+    assert isinstance(doc_id, str) and len(doc_id) == 8
+    mocks["save_doc"].assert_called_once()
+    mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="recovered")
+    mocks["OCR_ESCALATION_TOTAL"].labels.return_value.inc.assert_called_once()
+
+
+async def test_OCR_01_C2_escalation_prefers_filename_lang_signal(monkeypatch, pdf_file_with_content):
+    """OCR-01-C2: the retry's language detection is called with the filename
+    FIRST, then the (garbled) md_content — the garbled text layer is never the
+    sole signal."""
+    mocks, detect_calls = _wire_ocr_escalation(
+        monkeypatch, validate_side_effect=[(False, "garbling"), (True, None)]
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    assert len(detect_calls) == 2
+    assert detect_calls[0].endswith(".pdf")  # filename sampled first
+    assert detect_calls[1] == "# initial md"  # then the converter markdown
+
+
+async def test_OCR_01_C3_still_garbled_after_retry_is_terminal(monkeypatch, pdf_file_with_content):
+    """OCR-01-C3: if the retry's tree is still garbled, index() terminally
+    rejects (LowQualityTreeError) — the retry never bypasses HR5 — and
+    OCR_ESCALATION_TOTAL{result=still_garbled} is incremented."""
+    mocks, _ = _wire_ocr_escalation(
+        monkeypatch, validate_side_effect=[(False, "garbling"), (False, "garbling")]
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    with pytest.raises(LowQualityTreeError) as exc:
+        await c.index(pdf_file_with_content)
+
+    assert exc.value.reason == "garbling"
+    mocks["save_doc"].assert_not_called()
+    mocks["save_flat_doc"].assert_not_called()
+    mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="still_garbled")
+
+
+async def test_OCR_01_C3_retry_exception_is_terminal_not_swallowed_as_success(
+    monkeypatch, pdf_file_with_content
+):
+    """OCR-01-C3: an exception raised during the retry itself (e.g. OCR engine
+    failure) increments OCR_ESCALATION_TOTAL{result=error} and the ORIGINAL
+    garbling rejection still applies — it is never silently treated as ok."""
+    mocks, _ = _wire_ocr_escalation(
+        monkeypatch, validate_side_effect=[(False, "garbling")], retry_raises=True
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    with pytest.raises(LowQualityTreeError) as exc:
+        await c.index(pdf_file_with_content)
+
+    assert exc.value.reason == "garbling"
+    mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="error")
+    mocks["save_doc"].assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# CONV-01-C4 / CONV-01-C5: .xlsx and image dispatch through index() (RFC-005 Fix 4)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def xlsx_file():
+    fd, path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    yield path
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+@pytest.fixture
+def image_file():
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    yield path
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+async def test_CONV_01_C4_xlsx_dispatches_to_xlsx_to_markdown(monkeypatch, xlsx_file):
+    """CONV-01-C4: a .xlsx input is converted via xlsx_to_markdown (openpyxl),
+    not any PDF/DOCX path, and the resulting markdown is run through
+    _run_md_to_tree."""
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(False, "depth<2"))
+    xlsx_mock = MagicMock(return_value="| a | b |\n|---|---|\n| 1 | 2 |")
+    monkeypatch.setattr(client_mod, "xlsx_to_markdown", xlsx_mock)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(xlsx_file)
+
+    xlsx_mock.assert_called_once_with(xlsx_file)
+    mocks["route_and_extract_flat"].assert_called_once()
+
+
+async def test_CONV_01_C5_image_dispatches_to_ocr_only_no_llm_vision(monkeypatch, image_file):
+    """CONV-01-C5: an image input is OCR'd locally via image_to_markdown with a
+    superset language set — no VLM/LLM vision call occurs on this path (HR3)."""
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(False, "depth<2"))
+    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+    image_mock = MagicMock(return_value="ocr'd text")
+    monkeypatch.setattr(client_mod, "image_to_markdown", image_mock)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(image_file)
+
+    image_mock.assert_called_once()
+    called_langs = image_mock.call_args[0][1]
+    assert set(called_langs) == {"ara", "deu", "eng"}
+    mocks["route_and_extract_flat"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 async def _coro_result():
@@ -199,3 +383,12 @@ async def _coro_result():
 def _async_result():
     """Return a fresh coroutine each call so `await self._run_md_to_tree(...)` works."""
     return _coro_result()
+
+
+async def _tree_coro():
+    return {"structure": [{"node_id": "n1", "text": "x", "nodes": []}], "doc_description": ""}
+
+
+def _tree_result():
+    return _tree_coro()
+

@@ -16,22 +16,29 @@ from pageindex import PageIndexClient
 from .cache import get_doc
 from .config import settings
 from .converters import (
+    detect_ocr_langs,
     docx_to_markdown,
+    ensure_tessdata,
     html_to_markdown_with_images,
+    image_to_markdown,
     libreoffice_to_pdf,
     pdf_markdown_converters,
+    pdf_to_markdown_docling,
     pptx_to_markdown,
+    xlsx_to_markdown,
 )
 from .helpers import (
     LowQualityTreeError,
     _build_node_map,
     _strip_text,
     route_and_extract_flat,
+    split_oversized_leaf_nodes,
     validate_tree,
 )
 from .metrics import (
     FLAT_DOCS_TOTAL,
     LOW_QUALITY_TREES,
+    OCR_ESCALATION_TOTAL,
     PDF_EXTRACT_FALLBACKS,
     PDF_PRIMARY_CONVERTER_FAILURES,
 )
@@ -47,7 +54,11 @@ from .storage import (
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html"}
+# Image inputs route through OCR (Fix 4); .xlsx routes through openpyxl -> flat tables.
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+_SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
+# Fix 3 kill-switch (default on): one force_full_page_ocr retry when a PDF garbles.
+_OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
 
 
 def _is_azure_url(url: str | None) -> bool:
@@ -394,6 +405,33 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
 
+            elif ext == ".xlsx":
+                # Fix 4: spreadsheets carry no heading hierarchy -> openpyxl emits
+                # markdown tables that the flat-table router serializes cell-by-cell.
+                # The depth<2 result naturally routes to the flat success path below.
+                logger.info("Converting XLSX to markdown tables: %s", filename)
+                md_content = await asyncio.to_thread(xlsx_to_markdown, file_path)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".md", delete=False, mode="w", encoding="utf-8"
+                ) as md_tmp:
+                    md_tmp.write(md_content)
+                    tmp_md_path = md_tmp.name
+                result = await self._run_md_to_tree(tmp_md_path)
+
+            elif ext in _IMAGE_EXTS:
+                # Fix 4: an image has no text layer -> local Tesseract OCR (force full
+                # page) with a superset language set (we cannot pre-sample text to detect
+                # script). VLM stays OFF (RFC-004); no LLM egress (HR3).
+                logger.info("OCR image to markdown: %s", filename)
+                img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
+                md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".md", delete=False, mode="w", encoding="utf-8"
+                ) as md_tmp:
+                    md_tmp.write(md_content)
+                    tmp_md_path = md_tmp.name
+                result = await self._run_md_to_tree(tmp_md_path)
+
             else:  # .html
                 logger.info("Converting HTML to markdown: %s", filename)
                 md_content = await html_to_markdown_with_images(file_path, self.model)
@@ -404,8 +442,64 @@ class CustomPageIndexClient(PageIndexClient):
                     tmp_md_path = md_tmp.name
                 result = await self._run_md_to_tree(tmp_md_path)
 
+            # Fix 1: split a tail-blob leaf (an un-leveled Arabic Article node that
+            # swallowed the document tail) into per-ordinal sibling nodes BEFORE the HR5
+            # gate, so the recovered hierarchy is what gets validated and saved.
+            result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
+
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
             ok, reason = validate_tree(result.get("structure", []))
+
+            # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
+            # the Fix-5 detected language before any rejection — rescues the corrupt
+            # text-layer class (مرسوم). HR5: the retry re-runs the splitter AND the quality
+            # gate and is still rejected if it stays garbled; it never bypasses validation.
+            if not ok and reason == "garbling" and ext == ".pdf" and _OCR_ESCALATION:
+                try:
+                    # The existing text layer garbled, so it is an UNRELIABLE language
+                    # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
+                    # Latin mojibake, which would mis-detect as 'eng' and OCR Arabic with
+                    # the English model). Detect from the filename FIRST (Arabic gazette
+                    # names carry real Arabic), then union the md-derived langs so the
+                    # script is never dropped — without forcing 'ara' onto Latin docs.
+                    escalation_langs: list[str] = []
+                    for src in (
+                        detect_ocr_langs(filename),
+                        detect_ocr_langs(md_content or ""),
+                    ):
+                        for lg in src:
+                            if lg not in escalation_langs:
+                                escalation_langs.append(lg)
+                    langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
+                    logger.warning(
+                        "Garbling on %s; escalating to force_full_page_ocr (lang=%s)",
+                        filename,
+                        langs,
+                    )
+                    md_content = await asyncio.to_thread(
+                        pdf_to_markdown_docling, file_path, True, langs
+                    )
+                    if tmp_md_path and os.path.exists(tmp_md_path):
+                        os.unlink(tmp_md_path)
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(md_content)
+                        tmp_md_path = md_tmp.name
+                    result = await self._run_md_to_tree(tmp_md_path)
+                    result["structure"] = split_oversized_leaf_nodes(
+                        result.get("structure", [])
+                    )
+                    ok, reason = validate_tree(result.get("structure", []))
+                    OCR_ESCALATION_TOTAL.labels(
+                        result="recovered" if ok else "still_garbled"
+                    ).inc()
+                except Exception as ocr_exc:
+                    OCR_ESCALATION_TOTAL.labels(result="error").inc()
+                    logger.error(
+                        "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
+                    )
+
             if not ok:
                 # FLAT-03-C1: a non-garbling rejection (node_count<3 / depth<2) is a
                 # *flat* document, not a defective one — route it to the flat success

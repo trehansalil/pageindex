@@ -1,0 +1,29 @@
+feature: LANG-01
+name: Deterministic OCR Language Detection and On-Demand Tessdata Provisioning
+module: converters
+phase: 1
+source: rfcs/005-hard-corpus-ingestion-fixes.md#fix-5
+
+# RFC-005 Fix 5. Pure Unicode-block-ratio classification -- no model, no network, no
+# LLM call (HR4: hand-rolled, not a heavy detector dependency). Feeds Fix-3's OCR
+# escalation and Fix-4's image route. ensure_tessdata NEVER fails hard: a missing
+# language degrades gracefully to deu,eng rather than raising.
+
+contracts:
+  - id: LANG-01-C1
+    desc: "detect_ocr_langs classifies a text sample by Arabic/Latin/German-diacritic ratio into a ranked Tesseract language list via a 3-tier decision"
+    trigger: "detect_ocr_langs(sample) is called with a text sample whose Arabic-script ratio (across four disjoint Unicode blocks: U+0600-06FF, U+0750-077F, U+08A0-08FF, and the presentation-form ranges U+FB50-FDFF/U+FE70-FEFF) and Latin-letter ratio fall into one of: dominant-Arabic (ar_ratio >= 0.15), bilingual-gazette (0.03 <= ar_ratio < 0.15), German-hint (Latin script with diacritics/ß above threshold, ar_ratio < 0.03), or empty/letterless input"
+    effect: "Dominant-Arabic returns ['ara'], or ['ara','eng'] when the Latin ratio is also >=0.10; bilingual-gazette ALWAYS returns ['ara','eng'] regardless of which script numerically dominates in that band; German-hint returns ['deu','eng'] (not just 'deu' appended); empty or letterless input falls back to ['deu','eng']; plain Latin text with no German signal and no Arabic returns ['eng']; no network call or model inference occurs"
+    boundary: "sample is a string (may be empty); classification is a pure function of Unicode code-point ratios in the sample, filename, or fallback text passed in; the bilingual-gazette band is intentionally biased toward including 'ara' even at low Arabic ratios because mixed-script legal gazettes are the primary target case"
+
+  - id: LANG-01-C2
+    desc: "ensure_tessdata provisions requested languages without raising when a language cannot be provisioned"
+    trigger: "ensure_tessdata(langs) is called with one or more language codes not currently present as <lang>.traineddata under TESSDATA_PREFIX"
+    effect: "For each missing language, _try_download_tessdata attempts to fetch it only when TESSDATA_ALLOW_DOWNLOAD permits network egress; on download failure or when downloads are disallowed, the language is dropped from the returned set rather than raising, and the function logs the degradation; the returned language list always falls back to at least deu,eng rather than being empty"
+    boundary: "TESSDATA_PREFIX is set (or the default path is used); network egress may or may not be available; the function must return control to the caller without an exception in all cases"
+
+  - id: LANG-01-C3
+    desc: "Pre-baked tessdata is a no-op provisioning path"
+    trigger: "ensure_tessdata(langs) is called and every requested <lang>.traineddata already exists under TESSDATA_PREFIX (pre-baked into the container image per scripts/prebake_tessdata.sh)"
+    effect: "No download is attempted for any requested language; the full requested language list is returned unchanged"
+    boundary: "All requested languages' .traineddata files are already present on disk at call time"

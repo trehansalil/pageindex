@@ -19,6 +19,21 @@ contracts:
 
   - id: CONV-01-C3
     desc: "An unsupported file format yields an unsupported_format error and no markdown output"
-    trigger: "DocumentClient.index() called with a file whose extension is not in (.pdf, .docx, .pptx, .html, .md, .markdown, .txt)"
+    trigger: "DocumentClient.index() called with a file whose extension is not in (.pdf, .docx, .pptx, .html, .md, .markdown, .txt, .xlsx, .png, .jpg, .jpeg, .tiff, .tif)"
     effect: "Raises or returns an error with reason=unsupported_format; no markdown string is produced; no LLM call or subprocess is initiated"
-    boundary: "File extension is absent from the supported-format list"
+    boundary: "File extension is absent from the supported-format list (_SUPPORTED | _IMAGE_EXTS in client.py)"
+
+  # RFC-005 Fix 4 additions (2026-07-01): _SUPPORTED extended with .xlsx and
+  # _IMAGE_EXTS = {.png, .jpg, .jpeg, .tiff, .tif}. C1/C3 boundary text above updated
+  # to match; C4/C5 below cover the two new dispatch branches specifically.
+  - id: CONV-01-C4
+    desc: ".xlsx input is dispatched through openpyxl to the flat-table path, not the tree path"
+    trigger: "DocumentClient.index() dispatches on a file extension of .xlsx"
+    effect: "xlsx_to_markdown(file_path) (openpyxl, MIT-licensed, no AGPL/HR4 violation) converts each non-empty worksheet to a markdown pipe-table (fully empty worksheets are skipped; a workbook where every worksheet is empty raises); the combined markdown is run through _run_md_to_tree; spreadsheets carry no heading hierarchy so the result naturally satisfies depth<2 and is routed to the flat success path (FLAT-03), reusing TABLE-01 stitching on the resulting flat table blocks"
+    boundary: "File exists, extension is exactly .xlsx; no .xls (legacy binary format) support is provided"
+
+  - id: CONV-01-C5
+    desc: "Image input is dispatched through local Tesseract OCR only; VLM stays disabled (HR3)"
+    trigger: "DocumentClient.index() dispatches on a file extension in {.png, .jpg, .jpeg, .tiff, .tif}"
+    effect: "ensure_tessdata(['ara','deu','eng']) provisions a superset language set (no pre-existing text layer exists to sample for language detection) but may return a degraded subset when a language's traineddata is unavailable under TESSDATA_PREFIX and downloads are disabled (never raises; falls back to ['deu','eng'] if nothing is available), then image_to_markdown(file_path, langs) OCRs the image locally via Tesseract with whichever languages ensure_tessdata returned; the resulting markdown is run through _run_md_to_tree; no VLM/LLM vision call is made at any point in this path (HR3 — no LLM egress on the image OCR route)"
+    boundary: "File exists, extension matches one of the five supported image extensions; VLM_MODE remains 'disabled' by default per RFC-004 — this contract does not re-enable it"

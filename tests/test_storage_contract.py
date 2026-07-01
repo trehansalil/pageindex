@@ -12,13 +12,11 @@ ERASE-01-C3  a mid-cascade failure is surfaced and names the unpurged store
 
 import hashlib
 import json
-from io import BytesIO
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pageindex_mcp import storage
-from pageindex_mcp.storage import save_doc, load_doc, delete_doc, list_processed_docs
+from pageindex_mcp.storage import delete_doc, list_processed_docs, load_doc, save_doc
 
 
 @pytest.fixture
@@ -34,14 +32,14 @@ def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
     """STORE-01-C1: save_doc PUTs the serialized tree to processed/<doc_id>.json."""
     tree = {"doc_id": "abc12345", "doc_name": "t.pdf",
             "structure": [{"title": "Root", "nodes": [{"title": "C"}]}]}
-    with patch("pageindex_mcp.storage.doc_cache_delete", create=True):
-        # save_doc lazily imports doc_cache_delete; patch the source so no Redis
-        # is touched while we assert the MinIO write.
-        with patch("pageindex_mcp.cache.doc_cache_delete"):
-            save_doc("abc12345", tree)
+    # save_doc lazily imports doc_cache_delete; patch the source so no Redis
+    # is touched while we assert the MinIO write.
+    with patch("pageindex_mcp.storage.doc_cache_delete", create=True), \
+         patch("pageindex_mcp.cache.doc_cache_delete"):
+        save_doc("abc12345", tree)
 
     mock_minio.put_object.assert_called_once()
-    bucket, key = mock_minio.put_object.call_args[0][0], mock_minio.put_object.call_args[0][1]
+    key = mock_minio.put_object.call_args[0][1]
     assert key == "processed/abc12345.json"
     written = mock_minio.put_object.call_args[0][2].read()
     assert json.loads(written) == tree
@@ -164,9 +162,8 @@ def test_erase_01_c3_partial_failure_is_surfaced(mock_minio):
     with patch("pageindex_mcp.cache.doc_cache_delete",
                side_effect=RuntimeError("redis down")), \
          patch("pageindex_mcp.storage.load_hash_cache", return_value={}), \
-         patch("pageindex_mcp.storage.save_hash_cache"):
-        with pytest.raises(RuntimeError) as excinfo:
-            delete_doc("abc12345")
+         patch("pageindex_mcp.storage.save_hash_cache"), pytest.raises(RuntimeError) as excinfo:
+        delete_doc("abc12345")
 
     # The surfaced error names which store was not purged (the Redis cache).
     assert "redis" in str(excinfo.value).lower()
@@ -178,7 +175,7 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_and_meta(mock_minio):
     processed/<doc_id>.flat.json AND writes the processed/<doc_id>.meta.json
     sidecar carrying content_class; get_flat_doc returns a value-equivalent dict.
     No processed/<doc_id>.json (tree) is written for a flat doc."""
-    from pageindex_mcp.storage import save_flat_doc, get_flat_doc
+    from pageindex_mcp.storage import get_flat_doc, save_flat_doc
 
     flat = {
         "doc_id": "flat0001",
@@ -291,3 +288,55 @@ def test_flat_02_c3_list_processed_docs_surfaces_flat_content_class(mock_minio):
     assert entry["doc_id"] == "flat0001"
     assert entry["doc_name"] == "katzen.pdf"
     assert entry["content_class"] == "flat_prose"
+
+
+# ── Fix-4 / HR2 audit: xlsx and image flat docs leave no undiscovered stores ──
+#
+# The deletion cascade in delete_doc is doc-type-agnostic: it globs by doc_id
+# prefix and always removes the same four keys regardless of whether the
+# original upload was a PDF, XLSX, or image.  FLAT-02-C2 (above) proves the
+# cascade order for a PDF-sourced flat doc.  The parametrized cases below are
+# the explicit audit proof that xlsx (content_class=flat_table) and image
+# (content_class=flat_prose) add NO new un-purgeable derived store beyond the
+# four standard keys already covered by the cascade.
+
+@pytest.mark.parametrize("doc_id,doc_name,content_class", [
+    ("xlsx0001", "NAS_network_September_2024.xlsx", "flat_table"),
+    ("img0001",  "scan_page_001.png",               "flat_prose"),
+])
+def test_fix4_hr2_xlsx_and_image_flat_doc_cascade_is_complete(
+    mock_minio, doc_id, doc_name, content_class
+):
+    """Fix-4 / HR2: delete_doc purges every derived artifact for xlsx and image
+    flat docs. Both input types produce exactly the same four derived keys as a
+    PDF flat doc (uploads/<id>/…, processed/<id>.json, processed/<id>.flat.json,
+    processed/<id>.meta.json). No additional store exists for these types."""
+    load_resp = MagicMock()
+    load_resp.read.return_value = json.dumps(
+        {"doc_id": doc_id, "doc_name": doc_name, "content_class": content_class}
+    ).encode()
+    mock_minio.get_object.return_value = load_resp
+
+    upload_obj = MagicMock()
+    upload_obj.object_name = f"uploads/{doc_id}/{doc_name}"
+    mock_minio.list_objects.return_value = [upload_obj]
+
+    removed = []
+    mock_minio.remove_object.side_effect = lambda bucket, name: removed.append(name)
+
+    with patch("pageindex_mcp.cache.doc_cache_delete"), \
+         patch("pageindex_mcp.storage.load_hash_cache", return_value={}), \
+         patch("pageindex_mcp.storage.save_hash_cache"):
+        delete_doc(doc_id)
+
+    # Exactly the four standard derived stores are removed — cascade is complete.
+    expected = [
+        f"uploads/{doc_id}/{doc_name}",
+        f"processed/{doc_id}.json",
+        f"processed/{doc_id}.flat.json",
+        f"processed/{doc_id}.meta.json",
+    ]
+    assert removed == expected, (
+        f"delete_doc for a {content_class} ({doc_name}) must purge exactly the "
+        f"four standard derived stores in cascade order; got {removed}"
+    )
