@@ -13,13 +13,14 @@
 #
 # Usage:
 #   scripts/prebake_tessdata.sh                 # bake ara,eng,deu,osd into .tessdata/
+#   scripts/prebake_tessdata.sh /srv/tessdata    # CLI arg takes precedence over env
 #   TESSDATA_DEST=/srv/tessdata scripts/prebake_tessdata.sh
 #   TESSDATA_LANGS="ara eng" scripts/prebake_tessdata.sh
 #
 # Then point the app at it:   export TESSDATA_PREFIX="$PWD/.tessdata"
 set -euo pipefail
 
-DEST="${TESSDATA_DEST:-$PWD/.tessdata}"
+DEST="${1:-${TESSDATA_DEST:-$PWD/.tessdata}}"
 LANGS="${TESSDATA_LANGS:-ara eng deu osd}"
 BEST_BASE="https://github.com/tesseract-ocr/tessdata_best/raw/main"
 MAIN_BASE="https://github.com/tesseract-ocr/tessdata/raw/main"

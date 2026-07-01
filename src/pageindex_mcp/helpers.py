@@ -469,12 +469,16 @@ def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
 # and Latin ligatures normalise to base letters) with an index map back to the
 # ORIGINAL text, so every slice is byte-exact on the original (RTL-safe, never
 # reordered, never mutated).
+# Each digit capture allows an optional decimal suffix ("Article 3.1", "المادة
+# ٣.١") so sub-numbered sequences don't all truncate to the same integer ordinal
+# and collapse the strictly-increasing-run guard below (_ordinal_value parses the
+# capture as a float).
 _OVERSIZED_ORDINAL_RE = re.compile(
     r"(?:"
-    r"§\s*\(?\s*(?P<sec>\d+)"  # § 12 / § (12)
-    r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+)"  # Article 9 / Art. 9 / Article (9)
-    r"|Section\s+\(?\s*(?P<s>\d+)"  # Section 4 / Section (4)
-    r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+)"  # (ال)مادة (5) / المادة ٥
+    r"§\s*\(?\s*(?P<sec>\d+(?:\.\d+)?)"  # § 12 / § (12) / § 12.1
+    r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+(?:\.\d+)?)"  # Article 9 / Art. 9 / Article (9) / Article 3.1
+    r"|Section\s+\(?\s*(?P<s>\d+(?:\.\d+)?)"  # Section 4 / Section (4) / Section 4.2
+    r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥ / المادة ٥.١
     r")"
 )
 # Characters dropped before NFKC matching: tatweel/kashida (U+0640) which splits
@@ -523,13 +527,16 @@ def _fold_with_index_map(text: str) -> tuple[str, list[int]]:
     return "".join(folded), idx_map
 
 
-def _ordinal_value(m: "re.Match[str]") -> int:
-    """The integer ordinal captured by whichever marker alternative matched."""
+def _ordinal_value(m: "re.Match[str]") -> float:
+    """The ordinal captured by whichever marker alternative matched, as a float so
+    decimal sub-numbering (``3.1``, ``3.2``, ...) compares distinctly instead of
+    truncating to a shared integer."""
     digits = m.group("art") or m.group("sec") or m.group("s") or m.group("mada") or ""
-    return int(digits.translate(_ARABIC_INDIC))
+    digits = digits.translate(_ARABIC_INDIC).replace("٫", ".")
+    return float(digits)
 
 
-def _longest_increasing_run(values: list[int]) -> list[int]:
+def _longest_increasing_run(values: list[float]) -> list[int]:
     """Indices (into ``values``) of a longest STRICTLY-increasing subsequence,
     preserving document order. O(n²) — n is the marker count per blob (≲ a few
     hundred). Ties pick the earliest extension, so heading occurrences (which come
@@ -748,10 +755,17 @@ def table_is_rtl(block: dict) -> bool:
 
 def _is_continuation_table(anchor: dict, cont: dict) -> bool:
     """A later table block continues `anchor` when it has the same number of data
-    rows AND all of its headers are date/numeric-like (no row-label column)."""
+    rows, `anchor` itself is a keyed table (at least one non-numeric row-label
+    header), AND all of `cont`'s headers are date/numeric-like (no row-label
+    column). The anchor check prevents two consecutive numeric-header tables
+    (neither of which has a label column) from being merged as if one continued
+    the other."""
     a_data = (anchor.get("rows") or [])[1:]
     c_data = (cont.get("rows") or [])[1:]
     if len(a_data) != len(c_data) or not c_data:
+        return False
+    a_headers = anchor.get("headers") or []
+    if not a_headers or not any(not _is_numeric_or_date(h) for h in a_headers):
         return False
     c_headers = cont.get("headers") or []
     if not c_headers:

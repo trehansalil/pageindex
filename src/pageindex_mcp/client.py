@@ -479,6 +479,8 @@ class CustomPageIndexClient(PageIndexClient):
                     md_content = await asyncio.to_thread(
                         pdf_to_markdown_docling, file_path, True, langs
                     )
+                    if tmp_md_path and os.path.exists(tmp_md_path):
+                        os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
