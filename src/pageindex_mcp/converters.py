@@ -849,6 +849,7 @@ _DOCLING_CONVERTER_CACHE: dict[tuple[str, ...], "DocumentConverter"] = {}
 def _docling_converter(
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
+    for_image: bool = False,
 ) -> "DocumentConverter":
     """Return a cached CPU-only DocumentConverter, building it once per options key.
 
@@ -860,6 +861,10 @@ def _docling_converter(
     Fix 3: the optional force-OCR / language-override flags are part of the cache key
     so an escalation converter is a distinct, separately-cached instance and the normal
     (no-arg) path keeps its existing key and cached object untouched.
+
+    Fix 5: ``for_image`` routes InputFormat.IMAGE instead of InputFormat.PDF through the
+    same StandardPdfPipeline options and is part of the cache key, so image_to_markdown()
+    shares this process-lifetime cache instead of building a fresh (leaking) converter.
     """
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -871,18 +876,17 @@ def _docling_converter(
         os.getenv("DOCLING_ARTIFACTS_PATH", "").strip(),
         "force" if force_full_page_ocr else "",
         ",".join(ocr_lang_override) if ocr_lang_override else "",
+        "image" if for_image else "pdf",
     )
     converter = _DOCLING_CONVERTER_CACHE.get(key)
     if converter is None:
+        pipeline_options = _build_pdf_pipeline_options(
+            force_full_page_ocr=force_full_page_ocr,
+            ocr_lang_override=ocr_lang_override,
+        )
+        input_format = InputFormat.IMAGE if for_image else InputFormat.PDF
         converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(
-                    pipeline_options=_build_pdf_pipeline_options(
-                        force_full_page_ocr=force_full_page_ocr,
-                        ocr_lang_override=ocr_lang_override,
-                    )
-                )
-            }
+            format_options={input_format: PdfFormatOption(pipeline_options=pipeline_options)}
         )
         _DOCLING_CONVERTER_CACHE[key] = converter
         logger.info("instantiated and cached Docling DocumentConverter (options key=%s)", key)
@@ -1373,16 +1377,11 @@ def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> 
     Docling's PDF/image pipeline with the same CPU-only Tesseract options as the PDF
     path (force_full_page_ocr + Fix-5 detected language). No VLM, no LLM egress -- local
     Tesseract only (HR3). VLM stays disabled by design (RFC-004)."""
-    from docling.datamodel.base_models import InputFormat
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-
-    pipeline = _build_pdf_pipeline_options(
-        force_full_page_ocr=True, ocr_lang_override=ocr_lang_override
-    )
-    # Docling routes InputFormat.IMAGE through the same StandardPdfPipeline, so a
-    # PdfFormatOption configures image OCR identically to the PDF path.
-    converter = DocumentConverter(
-        format_options={InputFormat.IMAGE: PdfFormatOption(pipeline_options=pipeline)}
+    # Docling routes InputFormat.IMAGE through the same StandardPdfPipeline as PDF, so
+    # this reuses the process-lifetime _docling_converter cache (see its docstring) --
+    # a fresh DocumentConverter per call leaks ~237 MB RSS (torch/models never returned).
+    converter = _docling_converter(
+        force_full_page_ocr=True, ocr_lang_override=ocr_lang_override, for_image=True
     )
     result = converter.convert(path)
     md = result.document.export_to_markdown()
