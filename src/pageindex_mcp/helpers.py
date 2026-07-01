@@ -527,16 +527,17 @@ def _fold_with_index_map(text: str) -> tuple[str, list[int]]:
     return "".join(folded), idx_map
 
 
-def _ordinal_value(m: "re.Match[str]") -> float:
-    """The ordinal captured by whichever marker alternative matched, as a float so
-    decimal sub-numbering (``3.1``, ``3.2``, ...) compares distinctly instead of
-    truncating to a shared integer."""
+def _ordinal_value(m: "re.Match[str]") -> tuple[int, ...]:
+    """The ordinal captured by whichever marker alternative matched, as a tuple of
+    dotted components compared lexicographically (NOT a float — ``3.10`` must
+    stay distinct from ``3.1``, whereas ``float("3.10") == float("3.1")`` would
+    silently collapse them and eject a genuine heading from the increasing run)."""
     digits = m.group("art") or m.group("sec") or m.group("s") or m.group("mada") or ""
     digits = digits.translate(_ARABIC_INDIC).replace("٫", ".")
-    return float(digits)
+    return tuple(int(part) for part in digits.split("."))
 
 
-def _longest_increasing_run(values: list[float]) -> list[int]:
+def _longest_increasing_run(values: list[tuple[int, ...]]) -> list[int]:
     """Indices (into ``values``) of a longest STRICTLY-increasing subsequence,
     preserving document order. O(n²) — n is the marker count per blob (≲ a few
     hundred). Ties pick the earliest extension, so heading occurrences (which come
