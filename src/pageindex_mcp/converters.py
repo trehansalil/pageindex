@@ -65,6 +65,16 @@ _NUM_HYPHEN_RE = re.compile(r"^[A-Z]\d+-\d+(\.\d+)?(?=[ \t]|$)")
 _NUM_DOT_RE = re.compile(r"^[A-Z](\.\d+)+(?=[ \t.:]|$)")
 _NUM_PARA_RE = re.compile(r"^(?:§\s*)?\d+(\.\d+)+(?=[ \t.:]|$)")
 
+# Arabic legal-gazette numbering (Fix 1 / RFC fizzy-forging-pearl). Arabic laws label
+# structure with words, not Latin numbering: الباب/الفصل/القسم/الجزء (chapter/part/
+# section) sit at the top; المادة ("Article", optionally bare مادة) is the per-article
+# unit one level under. Matched on the Arabic stem (ال- prefix optional) so the depth
+# signal is script-native — German/English titles never match these, so this tier is
+# additive with zero regression risk on the existing corpus.
+_AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+_AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b")
+_AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b")
+
 
 def numbering_depth(title: str) -> int | None:
     """Infer a 1-based heading depth from a German-insurance numbering prefix.
@@ -72,6 +82,11 @@ def numbering_depth(title: str) -> int | None:
     Returns None when no recognised numbering scheme is present, so the caller
     leaves such headings at their existing level."""
     t = title.strip()
+    # Arabic structural words (Fix 1): chapter/part -> top, Article -> one level under.
+    if _AR_PART_RE.match(t):
+        return 1
+    if _AR_ARTICLE_RE.match(t):
+        return 2
     # "Abschnitt A1" is a section nested one level under its "Teil".
     if _NUM_SECTION_WORD_RE.match(t):
         return 2
@@ -125,6 +140,9 @@ def _relevel_by_numbering(md: str) -> str:
 # Structural words that introduce a numbering label. We collapse the spaced-out
 # Docling rendering ("T e i l   A") before matching, so the regex sees "TeilA".
 _WORD_RE = re.compile(r"^(teil|anhang|abschnitt|kapitel)\b", re.IGNORECASE)
+# Arabic structural words consumed the same way as the Latin _WORD_RE (Fix 1): the
+# label that NESTS is the number/letter that follows المادة/الباب/الفصل/القسم/الجزء/مرسوم.
+_AR_WORD_RE = re.compile(r"^(?:ال)?(?:مادة|باب|فصل|قسم|جزء|مرسوم)\b")
 
 
 def _collapse_spaced(text: str) -> str:
@@ -191,10 +209,18 @@ def _segment_label(title: str) -> list[str]:
     "A(GB)-1"->[A,GB,1]; "Versicherte Personen"->[].
     """
     t = _collapse_spaced(title.strip())
-    # consume an optional leading structural word
+    # consume an optional leading structural word (Latin or Arabic, Fix 1)
     wm = _WORD_RE.match(t)
     if wm:
         t = t[wm.end() :].lstrip(" -")
+    else:
+        awm = _AR_WORD_RE.match(t)
+        if awm:
+            t = t[awm.end() :].lstrip(" -:()")
+    # Normalise Arabic-Indic digits so an Arabic article number ("المادة ٩") is
+    # recognised by the same digit-aware label logic as Latin numbering. No-op on
+    # ASCII, so German/English labels are byte-for-byte unaffected.
+    t = t.translate(_AR_DIGITS)
     # the label is the leading run of [alnum . - ( )] up to the first space
     # that starts the descriptive title. Grab the first whitespace-delimited tok.
     head = t.split(maxsplit=1)[0] if t else ""
@@ -207,6 +233,10 @@ def _segment_label(title: str) -> list[str]:
     # Strip trailing punctuation like ':' or '.' used as a terminator? Keep dots
     # that are internal (A.1.) — drop a single trailing '.'/':'.
     head = head.rstrip(":")
+    # Strip wrapping parentheses on the whole token ("(9)" -> "9") so a parenthesised
+    # Arabic article number survives the leading-char gate. Internal parens of a Latin
+    # label like "A(GB)1" are untouched (no leading/trailing paren on the token).
+    head = head.strip("()")
     # A label must begin with a letter (clause code "A1-6.1") OR a digit
     # (numeric section "3.1") to be a recognisable numbering label. Rejecting
     # digit-led heads here would drop numeric headings before the digit-aware
@@ -646,8 +676,110 @@ def pdf_to_markdown(pdf_path: str) -> str:
     return normalize_dashes(_relevel_headings(md))
 
 
-def _build_pdf_pipeline_options():
+# --- Fix 5: OCR language auto-detection + on-demand tessdata (RFC fizzy-forging-pearl) ---
+# Deterministic, no model, no network for detection: classify by Unicode-script ratio.
+_AR_SCRIPT_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
+_LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ɏ]")
+_DE_HINT_RE = re.compile(r"[äöüÄÖÜß]")
+_AR_SCRIPT_MIN_RATIO = 0.15  # Arabic letters / all letters above which the doc is Arabic
+_MIXED_SCRIPT_MIN_RATIO = 0.10  # Latin letters / all letters above which to add 'eng'
+_AR_PRESENT_MIN_RATIO = 0.03  # any material Arabic -> include 'ara' (false-negative is costly)
+
+
+def detect_ocr_langs(sample: str) -> list[str]:
+    """Pick a Tesseract ``lang`` list from a text sample by Unicode-script ratio (Fix 5).
+
+    Pure-Python, no dependency, no network (HR4). Returns Tesseract codes:
+      * Arabic-dominant -> ['ara'] (or ['ara','eng'] when Latin is also materially
+        present -- bilingual UAE gazettes);
+      * German diacritics/ß present -> ['deu','eng'];
+      * otherwise -> ['eng'].
+    Empty / letterless input falls back to ['deu','eng'] to preserve the prior default.
+    """
+    text = sample or ""
+    if not text.strip():
+        return ["deu", "eng"]
+    ar = len(_AR_SCRIPT_RE.findall(text))
+    latin = len(_LATIN_LETTER_RE.findall(text))
+    total = ar + latin
+    if total == 0:
+        return ["deu", "eng"]
+    ar_ratio = ar / total
+    if ar_ratio >= _AR_SCRIPT_MIN_RATIO:
+        # Arabic-dominant: add 'eng' only when Latin is also materially present.
+        return ["ara", "eng"] if latin / total >= _MIXED_SCRIPT_MIN_RATIO else ["ara"]
+    if ar_ratio >= _AR_PRESENT_MIN_RATIO:
+        # Latin-dominant but Arabic materially present (bilingual gazette) -> OCR both.
+        return ["ara", "eng"]
+    if _DE_HINT_RE.search(text):
+        return ["deu", "eng"]
+    return ["eng"]
+
+
+def ensure_tessdata(langs: list[str]) -> list[str]:
+    """Ensure ``<lang>.traineddata`` is available; return the usable subset (Fix 5).
+
+    For each requested language, check ``TESSDATA_PREFIX`` for the traineddata file.
+    Missing files are fetched from the official tessdata repo ONLY when
+    ``TESSDATA_ALLOW_DOWNLOAD=1`` (egress-limited workers instead rely on PRE-BAKED
+    traineddata in the image, mirroring the DOCLING_ARTIFACTS_PATH pre-bake). NEVER
+    raises: an unavailable language is dropped; if nothing remains we fall back to
+    ['deu','eng'] so OCR still runs. tessdata is data, not AGPL code (HR4)."""
+    prefix = os.getenv("TESSDATA_PREFIX", "").strip()
+    allow_dl = os.getenv("TESSDATA_ALLOW_DOWNLOAD", "0").strip().lower() in ("1", "true", "yes")
+    available: list[str] = []
+    for lang in langs:
+        if not prefix:
+            # No prefix configured -> trust the system tesseract install; assume present.
+            available.append(lang)
+            continue
+        path = os.path.join(prefix, f"{lang}.traineddata")
+        if os.path.exists(path):
+            available.append(lang)
+            continue
+        if allow_dl and _try_download_tessdata(lang, prefix):
+            available.append(lang)
+        else:
+            logger.warning(
+                "tessdata for '%s' missing under %s (download=%s); dropping language",
+                lang,
+                prefix,
+                allow_dl,
+            )
+    if not available:
+        logger.warning("no requested OCR languages available; falling back to deu,eng")
+        return ["deu", "eng"]
+    return available
+
+
+def _try_download_tessdata(lang: str, prefix: str) -> bool:
+    """Best-effort fetch of one traineddata file from the official repo. Never raises."""
+    import urllib.request
+
+    url = f"https://github.com/tesseract-ocr/tessdata/raw/main/{lang}.traineddata"
+    dest = os.path.join(prefix, f"{lang}.traineddata")
+    try:
+        os.makedirs(prefix, exist_ok=True)
+        urllib.request.urlretrieve(url, dest)
+        logger.info("fetched tessdata for '%s' into %s", lang, prefix)
+        return True
+    except Exception as exc:
+        logger.warning("tessdata fetch failed for '%s' (%s)", lang, exc)
+        return False
+
+
+def _build_pdf_pipeline_options(
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+):
     """Build the CPU-only Docling PDF pipeline options.
+
+    Fix 3 (RFC fizzy-forging-pearl): ``force_full_page_ocr`` re-OCRs the WHOLE page
+    even when a (corrupt) text layer is present -- the only way Docling will overwrite
+    a broken CMap/font text layer (the مرسوم class). ``ocr_lang_override`` pins the
+    Tesseract language list (from Fix-5 detection) instead of the static env default.
+    Both default to the prior behaviour, so the normal converter path is unchanged.
+    ``DOCLING_FORCE_FULL_PAGE_OCR=1`` is honoured as a manual override.
 
     Capping intra-op threads (``DOCLING_NUM_THREADS``, default 1) is the one
     code-level RSS reducer that costs NO extraction fidelity: Docling propagates
@@ -666,7 +798,12 @@ def _build_pdf_pipeline_options():
 
     # CPU-only by design -- nothing on GPU/MPS for now.
     device = AcceleratorDevice.CPU
-    do_ocr = os.getenv("DOCLING_DO_OCR", "0").strip().lower() in ("1", "true", "yes")
+    # Fix 3: full-page OCR (param or DOCLING_FORCE_FULL_PAGE_OCR=1) forces do_ocr on so a
+    # corrupt existing text layer can be overwritten; it implies do_ocr regardless of env.
+    force_ocr = force_full_page_ocr or os.getenv(
+        "DOCLING_FORCE_FULL_PAGE_OCR", "0"
+    ).strip().lower() in ("1", "true", "yes")
+    do_ocr = force_ocr or os.getenv("DOCLING_DO_OCR", "0").strip().lower() in ("1", "true", "yes")
     # Cap inference threads to bound peak RSS. Default 1 for the memory-tight worker;
     # raise via DOCLING_NUM_THREADS only where the node has RAM headroom.
     try:
@@ -679,11 +816,12 @@ def _build_pdf_pipeline_options():
     opts.do_table_structure = True
     opts.table_structure_options.mode = TableFormerMode.ACCURATE
     if do_ocr:
-        langs = [
+        # Fix 5: an explicit detected-language override beats the static env list.
+        langs = ocr_lang_override or [
             s.strip() for s in os.getenv("DOCLING_OCR_LANG", "deu,eng").split(",") if s.strip()
         ]
         # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
-        opts.ocr_options = TesseractCliOcrOptions(lang=langs)
+        opts.ocr_options = TesseractCliOcrOptions(lang=langs, force_full_page_ocr=force_ocr)
     opts.accelerator_options = AcceleratorOptions(device=device, num_threads=num_threads)
     # Use pre-baked model artifacts when available (set in the container image so
     # egress-limited workers never download weights at runtime -- a download failure
@@ -705,16 +843,23 @@ def _build_pdf_pipeline_options():
 # The production worker is unaffected — each job runs in a fresh converters_cli child
 # that dies — but this keeps the in-process callers bounded. Keyed on the env knobs
 # _build_pdf_pipeline_options() reads so a mid-process env change rebuilds correctly.
-_DOCLING_CONVERTER_CACHE: dict[tuple[str, str, str, str], "DocumentConverter"] = {}
+_DOCLING_CONVERTER_CACHE: dict[tuple[str, ...], "DocumentConverter"] = {}
 
 
-def _docling_converter() -> "DocumentConverter":
+def _docling_converter(
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+) -> "DocumentConverter":
     """Return a cached CPU-only DocumentConverter, building it once per options key.
 
     Docling's DocumentConverter is designed for reuse across .convert() calls: the
     models load on first use and are reused, so a single instance is both correct
     and the memory-bounded choice. See _DOCLING_CONVERTER_CACHE above for why a new
     instance per call leaks.
+
+    Fix 3: the optional force-OCR / language-override flags are part of the cache key
+    so an escalation converter is a distinct, separately-cached instance and the normal
+    (no-arg) path keeps its existing key and cached object untouched.
     """
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -724,12 +869,19 @@ def _docling_converter() -> "DocumentConverter":
         os.getenv("DOCLING_NUM_THREADS", "1").strip(),
         os.getenv("DOCLING_OCR_LANG", "deu,eng").strip(),
         os.getenv("DOCLING_ARTIFACTS_PATH", "").strip(),
+        "force" if force_full_page_ocr else "",
+        ",".join(ocr_lang_override) if ocr_lang_override else "",
     )
     converter = _DOCLING_CONVERTER_CACHE.get(key)
     if converter is None:
         converter = DocumentConverter(
             format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=_build_pdf_pipeline_options())
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=_build_pdf_pipeline_options(
+                        force_full_page_ocr=force_full_page_ocr,
+                        ocr_lang_override=ocr_lang_override,
+                    )
+                )
             }
         )
         _DOCLING_CONVERTER_CACHE[key] = converter
@@ -861,7 +1013,11 @@ def _patch_hierarchical_infer() -> None:  # noqa: C901, PLR0915
     )
 
 
-def pdf_to_markdown_docling(pdf_path: str) -> str:
+def pdf_to_markdown_docling(
+    pdf_path: str,
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+) -> str:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
     Docling's Heron RT-DETRv2 layout model + TableFormer -> markdown -> relevel
@@ -889,7 +1045,9 @@ def pdf_to_markdown_docling(pdf_path: str) -> str:
     """
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
-    converter = _docling_converter()
+    converter = _docling_converter(
+        force_full_page_ocr=force_full_page_ocr, ocr_lang_override=ocr_lang_override
+    )
     result = converter.convert(pdf_path)
 
     # Capture the RAW Docling markdown BEFORE the add-on runs: ResultPostprocessor
@@ -1168,6 +1326,69 @@ def flatten_nodes(nodes: list, results: list, query_lower: str) -> None:
         child_nodes = node.get("nodes", [])
         if child_nodes:
             flatten_nodes(child_nodes, results, query_lower)
+
+
+def xlsx_to_markdown(path: str) -> str:
+    """Convert an .xlsx workbook to markdown tables (Fix 4; openpyxl is MIT, HR4).
+
+    Each sheet becomes a `## <sheet>` title plus one markdown table (header row +
+    separator + data rows), so the existing flat-table path (route_and_extract_flat ->
+    _flat_parse_table) captures every cell into row_records and Fix-2 column-stitching
+    is reused. Spreadsheets carry no heading hierarchy, so the document routes flat by
+    design. read_only + data_only keeps memory bounded on large books."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    out: list[str] = []
+    try:
+        for ws in wb.worksheets:
+            rows = [
+                ["" if c is None else str(c) for c in row]
+                for row in ws.iter_rows(values_only=True)
+            ]
+            rows = [r for r in rows if any(cell.strip() for cell in r)]
+            if not rows:
+                continue
+            width = max(len(r) for r in rows)
+            out.append(f"## {ws.title}")
+            header = rows[0] + [""] * (width - len(rows[0]))
+            out.append("| " + " | ".join(c.replace("|", r"\|") for c in header) + " |")
+            out.append("| " + " | ".join(["---"] * width) + " |")
+            for r in rows[1:]:
+                padded = r + [""] * (width - len(r))
+                out.append("| " + " | ".join(c.replace("|", r"\|") for c in padded) + " |")
+            out.append("")
+    finally:
+        wb.close()
+    md = "\n".join(out).strip()
+    if not md:
+        raise RuntimeError(f"xlsx_to_markdown produced empty output for {path}")
+    return md
+
+
+def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> str:
+    """OCR a scanned image (.png/.jpg/.jpeg/.tiff) to markdown (Fix 4; OCR-only, HR3).
+
+    An image has no text layer, so full-page OCR is always on. Routes the image through
+    Docling's PDF/image pipeline with the same CPU-only Tesseract options as the PDF
+    path (force_full_page_ocr + Fix-5 detected language). No VLM, no LLM egress -- local
+    Tesseract only (HR3). VLM stays disabled by design (RFC-004)."""
+    from docling.datamodel.base_models import InputFormat
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    pipeline = _build_pdf_pipeline_options(
+        force_full_page_ocr=True, ocr_lang_override=ocr_lang_override
+    )
+    # Docling routes InputFormat.IMAGE through the same StandardPdfPipeline, so a
+    # PdfFormatOption configures image OCR identically to the PDF path.
+    converter = DocumentConverter(
+        format_options={InputFormat.IMAGE: PdfFormatOption(pipeline_options=pipeline)}
+    )
+    result = converter.convert(path)
+    md = result.document.export_to_markdown()
+    if not md or not md.strip():
+        raise RuntimeError(f"image_to_markdown produced empty output for {path}")
+    return normalize_dashes(md)
 
 
 def docx_to_markdown(path: str) -> str:
