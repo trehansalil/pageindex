@@ -476,9 +476,9 @@ def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
 _OVERSIZED_ORDINAL_RE = re.compile(
     r"(?:"
     r"§\s*\(?\s*(?P<sec>\d+(?:\.\d+)?)"  # § 12 / § (12) / § 12.1
-    r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+(?:\.\d+)?)"  # Article 9 / Art. 9 / Article (9) / Article 3.1
+    r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+(?:\.\d+)?)"  # Article 9 / Art. 9 / Article (9)
     r"|Section\s+\(?\s*(?P<s>\d+(?:\.\d+)?)"  # Section 4 / Section (4) / Section 4.2
-    r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥ / المادة ٥.١
+    r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥
     r")"
 )
 # Characters dropped before NFKC matching: tatweel/kashida (U+0640) which splits
@@ -491,7 +491,7 @@ _FOLD_DROP_CHARS = frozenset(
     "‪‫‬‭‮"  # bidi embeddings/overrides
     "﻿"  # BOM / ZWNBSP
 )
-_ARABIC_INDIC = {ord(d): ord(a) for d, a in zip("٠١٢٣٤٥٦٧٨٩", "0123456789")}
+_ARABIC_INDIC = {ord(d): ord(a) for d, a in zip("٠١٢٣٤٥٦٧٨٩", "0123456789", strict=True)}
 
 # Fallback marker for leaves the ordinal path abandons (too few / non-monotonic
 # مادة markers — e.g. an RTL reading-order scramble from Docling). فقرة
@@ -715,9 +715,7 @@ def split_oversized_leaf_nodes(
 
 # --- Fix 2: table fidelity in the flat path ---------------------------------
 # Arabic-script ranges (incl. presentation forms) for the RTL ratio heuristic.
-_ARABIC_SCRIPT_RE = re.compile(
-    r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]"
-)
+_ARABIC_SCRIPT_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
 # A header/cell that is date/numeric-like: starts with a (Western or Arabic-Indic)
 # digit and contains only digits + common date/number separators (no text label).
 _NUMERIC_DATE_RE = re.compile(r"^[\d٠-٩][\d٠-٩\s/\-.:,]*$")
@@ -790,9 +788,7 @@ def _merge_continuation_table(anchor: dict, cont: dict) -> dict:
         label_idx = [k for k, h in enumerate(a_headers) if not _is_numeric_or_date(h)]
         date_idx = [k for k, h in enumerate(a_headers) if _is_numeric_or_date(h)]
         merged_headers = (
-            [a_headers[k] for k in label_idx]
-            + c_headers
-            + [a_headers[k] for k in date_idx]
+            [a_headers[k] for k in label_idx] + c_headers + [a_headers[k] for k in date_idx]
         )
         merged_data: list[list[str]] = []
         for ar, cr in zip(a_data, c_data, strict=False):
@@ -833,9 +829,7 @@ def stitch_continuation_tables(blocks: list[dict]) -> list[dict]:
         anchor = block
         j = i + 1
         while (
-            j < n
-            and blocks[j].get("role") == "table"
-            and _is_continuation_table(anchor, blocks[j])
+            j < n and blocks[j].get("role") == "table" and _is_continuation_table(anchor, blocks[j])
         ):
             anchor = _merge_continuation_table(anchor, blocks[j])
             j += 1

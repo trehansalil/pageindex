@@ -1347,8 +1347,7 @@ def xlsx_to_markdown(path: str) -> str:
     try:
         for ws in wb.worksheets:
             rows = [
-                ["" if c is None else str(c) for c in row]
-                for row in ws.iter_rows(values_only=True)
+                ["" if c is None else str(c) for c in row] for row in ws.iter_rows(values_only=True)
             ]
             rows = [r for r in rows if any(cell.strip() for cell in r)]
             if not rows:

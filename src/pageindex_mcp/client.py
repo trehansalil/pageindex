@@ -487,13 +487,9 @@ class CustomPageIndexClient(PageIndexClient):
                         md_tmp.write(md_content)
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
-                    result["structure"] = split_oversized_leaf_nodes(
-                        result.get("structure", [])
-                    )
+                    result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
                     ok, reason = validate_tree(result.get("structure", []))
-                    OCR_ESCALATION_TOTAL.labels(
-                        result="recovered" if ok else "still_garbled"
-                    ).inc()
+                    OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
                     logger.error(
