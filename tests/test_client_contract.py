@@ -234,6 +234,7 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
+        "save_doc_meta": MagicMock(),
         "route_and_extract_flat": MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
