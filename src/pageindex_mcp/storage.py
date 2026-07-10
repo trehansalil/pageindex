@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
 
+# RFC-006: keep strong references to fire-and-forget asyncio tasks so they
+# are not garbage-collected before completion (RUF006).
+_background_tasks: set = set()
+
+
+def _fire_and_forget(coro: object) -> None:
+    """Schedule a coroutine as a background task and retain a reference."""
+    import asyncio
+
+    task = asyncio.ensure_future(coro)  # type: ignore[arg-type]
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
 
 def get_minio() -> Minio:
     """Lazy singleton: create client and ensure bucket exists on first call."""
@@ -250,6 +263,34 @@ def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
                 "ERASE %s step5: doc_name unknown; cannot clear hash-cache entry", doc_id
             )
 
+        # 6. Postgres registry row (RFC-006 D3 / HR2 — new derived store).
+        # Idempotent under the same retry contract as the existing steps:
+        # registry.delete_doc is a no-op when the row is absent or the pool is None.
+        if settings.registry_enabled and settings.postgres_dsn:
+            import asyncio
+
+            from .registry import delete_doc as _registry_delete_doc
+            from .registry import get_pool
+
+            if get_pool() is not None:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Async context: schedule without blocking.
+                        # The step is still logged so under-erasure is observable.
+                        _fire_and_forget(_registry_delete_doc(doc_id))
+                        logger.info(
+                            "ERASE %s step6: registry delete scheduled (async context)",
+                            doc_id,
+                        )
+                    else:
+                        loop.run_until_complete(_registry_delete_doc(doc_id))
+                        logger.info("ERASE %s step6: removed from Postgres registry", doc_id)
+                except Exception as e:
+                    errors.append(f"registry: {e}")
+            else:
+                logger.info("ERASE %s step6: registry pool not ready, skipping (non-fatal)", doc_id)
+
         if errors:
             raise RuntimeError(f"delete_doc({doc_id}) partial failure across stores: {errors}")
         logger.info("ERASE %s complete: full cascade succeeded", doc_id)
@@ -261,7 +302,16 @@ _META_FIELDS = ("doc_id", "doc_name", "source_url", "processed_at")
 
 
 def save_doc_meta(doc_id: str, meta: dict) -> None:
-    """Write a lightweight sidecar with only listing-relevant fields."""
+    """Write a lightweight sidecar with only listing-relevant fields.
+
+    NOTE (RFC-006): the Postgres registry dual-write is NOT done here. This
+    function is invoked from the ``pageindex`` fork inside the isolated
+    ``converters_cli`` child subprocess, which never opens a registry pool — so
+    a dual-write here would always no-op. The registry upsert is instead done in
+    the long-lived worker parent (``worker._upsert_registry_row``) after the
+    child returns, where ``startup()`` has opened the pool. See
+    ``read_registry_fields`` below for the field source.
+    """
     MINIO_OPS.labels(operation="put").inc()
     start = time.monotonic()
     mc = get_minio()
@@ -282,6 +332,61 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+
+
+# RFC-006: the registry needs richer fields (sha256, doc_description) than the
+# lean .meta.json sidecar carries. Those live in the full processed-doc JSON, so
+# the parent-side dual-write reads them from there.
+_REGISTRY_FIELDS = (
+    "doc_id",
+    "doc_name",
+    "source_url",
+    "processed_at",
+    "sha256",
+    "doc_description",
+    "product",
+    "tier",
+    "doc_family",
+    "effective_date",
+)
+
+
+def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict | None:
+    """Return only the registry-relevant fields from a persisted processed doc.
+
+    Reads ``processed/<id>.flat.json`` for flat docs (``content_class`` set) or
+    ``processed/<id>.json`` for tree docs, and projects out just the columns the
+    Postgres registry stores — the (potentially large) ``structure`` is parsed
+    but discarded. Returns ``None`` if the object is missing or unreadable so
+    the worker can skip the dual-write without failing the job.
+    """
+    key = f"processed/{doc_id}.flat.json" if content_class else f"processed/{doc_id}.json"
+    MINIO_OPS.labels(operation="get").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    response = None
+    try:
+        response = mc.get_object(settings.minio_bucket, key)
+        data = json.loads(response.read())
+        fields = {k: data.get(k, "") for k in _REGISTRY_FIELDS}
+        fields["doc_id"] = doc_id
+        if content_class:
+            fields["content_class"] = content_class
+        return fields
+    except S3Error as e:
+        logger.warning("read_registry_fields: %s not readable (%s)", key, e.code)
+        return None
+    except Exception as e:
+        logger.warning("read_registry_fields: failed for %s: %s", doc_id, e)
+        return None
+    finally:
+        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
 
 
 def list_processed_docs() -> list[dict]:

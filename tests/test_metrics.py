@@ -66,20 +66,20 @@ def _gauge_value(gauge):
 
 
 class TestToolInstrumentation:
-    def test_recent_documents_increments_counter(self):
+    async def test_recent_documents_increments_counter(self):
         before = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
         with patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=[]):
             from pageindex_mcp.tools.documents import recent_documents
-            recent_documents()
+            await recent_documents()
         after = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
         assert after == before + 1
 
-    def test_recent_documents_updates_documents_gauge(self):
+    async def test_recent_documents_updates_documents_gauge(self):
         fake_docs = [{"doc_id": "a"}, {"doc_id": "b"}]
         with patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=fake_docs), \
              patch("pageindex_mcp.tools.documents.get_doc", side_effect=Exception("skip")):
             from pageindex_mcp.tools.documents import recent_documents
-            recent_documents()
+            await recent_documents()
         assert _gauge_value(DOCUMENTS_TOTAL) == 2
 
     def test_get_document_increments_error_counter_on_failure(self):

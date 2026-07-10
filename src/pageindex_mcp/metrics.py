@@ -94,6 +94,18 @@ DOCUMENTS_TOTAL = Gauge(
     "Total indexed documents in MinIO",
 )
 
+# ---------------------------------------------------------------------------
+# Registry metrics (RFC-006)
+# ---------------------------------------------------------------------------
+REGISTRY_FALLBACK_TOTAL = Counter(
+    "pageindex_registry_fallback_total",
+    "Times the read path fell back from the Postgres registry to the MinIO "
+    "list_processed_docs() scan — either because registry_enabled=False, "
+    "POSTGRES_DSN is unset, the registry is not yet backfill-complete, or a "
+    "transient Postgres error occurred. Observable, never silent (RFC-006 F4).",
+    ["reason"],
+)
+
 LOW_QUALITY_TREES = Counter(
     "pageindex_low_quality_trees_total",
     "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",

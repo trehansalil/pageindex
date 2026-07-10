@@ -5,9 +5,11 @@ import logging
 import time
 
 from ..cache import get_doc
+from ..config import settings
 from ..helpers import _build_node_map, _rag, _strip_text, flat_doc_view
 from ..metrics import (
     DOCUMENTS_TOTAL,
+    REGISTRY_FALLBACK_TOTAL,
     TOOL_CALLS,
     TOOL_DURATION,
     TOOL_ERRORS,
@@ -18,14 +20,76 @@ from ..tracing import trace_tool
 logger = logging.getLogger(__name__)
 
 
-def recent_documents(page: int = 1, page_size: int = 10) -> str:
+async def _list_docs_with_fallback() -> tuple[list[dict], bool]:
+    """Return (docs, used_registry).
+
+    RFC-006 F4/F5: attempt to read from the Postgres registry; fall back to the
+    MinIO listing path when:
+      - REGISTRY_ENABLED=False or POSTGRES_DSN not set
+      - the Postgres pool is not initialised
+      - the registry backfill is not yet complete (registry_complete flag absent)
+      - any Postgres error occurs
+
+    Each fallback path increments REGISTRY_FALLBACK_TOTAL with a 'reason' label
+    so under-coverage is never silent (RFC-006 F4).
+    """
+    if not settings.registry_enabled or not settings.postgres_dsn:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="disabled").inc()
+        logger.debug("_list_docs_with_fallback: registry disabled — using MinIO listing")
+        return list_processed_docs(), False
+
+    from ..registry import get_pool, is_registry_complete, list_docs
+
+    pool = get_pool()
+    if pool is None:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="pool_not_ready").inc()
+        logger.warning(
+            "_list_docs_with_fallback: registry pool not ready — falling back to MinIO listing"
+        )
+        return list_processed_docs(), False
+
+    # Check the backfill-complete flag from Redis before trusting the registry.
+    # Importing cache lazily avoids a circular import (cache → storage → tools).
+    try:
+        import redis.asyncio as aioredis
+
+        r = aioredis.from_url(settings.redis_url, decode_responses=False)
+        complete = await is_registry_complete(r)
+        await r.aclose()
+    except Exception as exc:
+        logger.warning("_list_docs_with_fallback: Redis error checking registry flag: %s", exc)
+        complete = False
+
+    if not complete:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="backfill_incomplete").inc()
+        logger.warning(
+            "_list_docs_with_fallback: registry backfill not complete — "
+            "falling back to MinIO listing (set pageindex:registry:complete in Redis "
+            "via registry_backfill.py to switch over)"
+        )
+        return list_processed_docs(), False
+
+    # Registry is ready — fetch all rows (no server-side pagination at this level;
+    # the tool layer does its own page slicing after receiving the full list).
+    docs = await list_docs(limit=100_000, offset=0)
+    if docs is None:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="postgres_error").inc()
+        logger.warning(
+            "_list_docs_with_fallback: registry query failed — falling back to MinIO listing"
+        )
+        return list_processed_docs(), False
+
+    return docs, True
+
+
+async def recent_documents(page: int = 1, page_size: int = 10) -> str:
     """Browse your document collection with pagination. Returns documents sorted
     by upload date (newest first) with processing status."""
     TOOL_CALLS.labels(tool="recent_documents").inc()
     start = time.monotonic()
     logger.info("recent_documents called (page=%d, page_size=%d)", page, page_size)
     try:
-        docs = list_processed_docs()
+        docs, used_registry = await _list_docs_with_fallback()
     except Exception as e:
         TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents failed to list docs: %s", e)
@@ -36,6 +100,11 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
         logger.debug("recent_documents completed in %.3fs", elapsed)
 
     DOCUMENTS_TOTAL.set(len(docs))
+    logger.info(
+        "recent_documents: %d total docs (source=%s)",
+        len(docs),
+        "registry" if used_registry else "minio",
+    )
 
     begin = (page - 1) * page_size
     page_docs = docs[begin : begin + page_size]
@@ -85,9 +154,10 @@ async def find_relevant_documents(query: str) -> str:
         # tracing is disabled.
         async with trace_tool("find_relevant_documents"):
             list_t0 = time.monotonic()
-            documents = list_processed_docs()
+            documents, used_registry = await _list_docs_with_fallback()
             logger.info(
-                "find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)",
+                "find_relevant_documents TIMING: list_docs (source=%s) = %.3fs (%d docs)",
+                "registry" if used_registry else "minio",
                 time.monotonic() - list_t0,
                 len(documents),
             )

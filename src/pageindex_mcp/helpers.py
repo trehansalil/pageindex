@@ -232,6 +232,22 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     logger.info("RAG search starting: query=%r across %d doc(s)", query[:100], len(doc_ids))
     rag_t0 = time.monotonic()
 
+    # --- Phase 1.4: Registry narrowing (RFC-006 Stage A + Stage B) ---
+    # Runs BEFORE Phase 1 (doc load) to avoid loading docs that won't survive the
+    # LLM prefilter.  Only activates when the registry pool is ready and the
+    # registry_complete flag is set (same conditions as _list_docs_with_fallback).
+    # Falls through silently when unavailable — doc_ids is unchanged.
+    narrowing_t0 = time.monotonic()
+    narrowed_ids = await _registry_narrow(query, doc_ids)
+    if narrowed_ids is not doc_ids:  # narrowing actually happened
+        logger.info(
+            "RAG TIMING: Phase 1.4 narrowing %d -> %d doc(s) = %.3fs",
+            len(doc_ids),
+            len(narrowed_ids),
+            time.monotonic() - narrowing_t0,
+        )
+        doc_ids = narrowed_ids
+
     # --- Phase 1: Load all documents ---
     phase1_t0 = time.monotonic()
     doc_data: dict[str, dict] = {}  # doc_id -> data
@@ -320,6 +336,89 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     )
     logger.info("RAG TIMING: Total _rag_inner = %.3fs", time.monotonic() - rag_t0)
     return result
+
+
+async def _registry_narrow(query: str, doc_ids: list[str]) -> list[str]:
+    """RFC-006 Phase 1.4: narrow ``doc_ids`` via Stage A (facet) then Stage B (BM25).
+
+    Returns the original ``doc_ids`` list (same object) when narrowing is
+    unavailable (pool not ready, registry not complete, Postgres error, or
+    registry_enabled=False) so the caller falls through to loading all docs —
+    the existing behaviour.
+
+    Stage A is a no-op until Tier-1 node-metadata fields land (all
+    _KNOWN_FACETS sets are empty → stage_a_filter returns None).
+
+    Stage B cuts to PAGEINDEX_CATALOG_TOPK via ts_rank/GIN.  The result is
+    intersected with ``doc_ids`` so only docs the caller already knows about
+    are returned — prevents the registry from introducing docs the caller
+    hasn't listed (e.g. after a partial backfill).
+    """
+    if not settings.registry_enabled or not settings.postgres_dsn:
+        return doc_ids
+
+    from .registry import get_pool, is_registry_complete, stage_a_filter, stage_b_candidates
+
+    pool = get_pool()
+    if pool is None:
+        return doc_ids
+
+    # Honour the same backfill-complete gate as the listing path.
+    try:
+        import redis.asyncio as aioredis
+
+        r = aioredis.from_url(settings.redis_url, decode_responses=False)
+        complete = await is_registry_complete(r)
+        await r.aclose()
+    except Exception as exc:
+        logger.warning("_registry_narrow: Redis error checking registry flag: %s", exc)
+        return doc_ids
+
+    if not complete:
+        return doc_ids
+
+    doc_id_set = set(doc_ids)
+
+    # Stage A — exact facet filter (no-op pre-Tier-1).
+    stage_a = await stage_a_filter(query)
+    if stage_a is not None:
+        stage_a_ids = [r["doc_id"] for r in stage_a if r["doc_id"] in doc_id_set]
+        if stage_a_ids:
+            logger.info(
+                "_registry_narrow: Stage A hit — %d/%d docs match facets",
+                len(stage_a_ids),
+                len(doc_ids),
+            )
+            # Still run Stage B on the facet-filtered set to apply topK rank ordering.
+            doc_id_set = set(stage_a_ids)
+
+    # Stage B — BM25 lexical ranking.
+    topk = settings.catalog_topk
+    stage_b = await stage_b_candidates(query, topk)
+    if stage_b is None:
+        # Postgres error in Stage B — fall through to full load.
+        logger.warning("_registry_narrow: Stage B failed — using full doc_ids list")
+        return doc_ids
+
+    # Intersect with the caller's doc_id_set (post Stage A filter if it fired).
+    narrowed = [r["doc_id"] for r in stage_b if r["doc_id"] in doc_id_set]
+    if not narrowed:
+        # No overlap — stage B returned docs the caller doesn't know about yet
+        # (pre-backfill gap) or the query is very unusual.  Fall back to full set.
+        logger.warning(
+            "_registry_narrow: Stage B returned no overlap with caller's doc set — "
+            "falling back to full %d-doc list",
+            len(doc_ids),
+        )
+        return doc_ids
+
+    logger.info(
+        "_registry_narrow: narrowed %d -> %d doc(s) via registry (topk=%d)",
+        len(doc_ids),
+        len(narrowed),
+        topk,
+    )
+    return narrowed
 
 
 class LowQualityTreeError(Exception):

@@ -48,6 +48,15 @@ class Settings:
     llm_search_concurrency: int
     # FLAT-03: kill-switch for post-validate_tree flat-document routing (default true).
     flat_doc_routing: bool
+    # RFC-006: Postgres document registry.
+    # postgres_dsn: asyncpg DSN, e.g. postgresql://user:pass@host:5432/dbname.
+    # registry_enabled: master switch; when False all registry code is bypassed and
+    #   the system behaves exactly as before RFC-006 (MinIO-listing-as-catalog).
+    # catalog_topk: Stage B BM25 cut-off — top-K docs returned by ts_rank before the
+    #   existing LLM prefilter step. Default 200; tune by recall measurement per RFC-006 F8.
+    postgres_dsn: str | None
+    registry_enabled: bool
+    catalog_topk: int
     # LLM-02: Langfuse tracing / cost monitoring. Tracing activates only when both
     # public+secret keys are set; otherwise the LLM-01 path is fully unchanged.
     langfuse_public_key: str
@@ -83,6 +92,10 @@ def _load_settings() -> Settings:
         llm_search_concurrency=int(os.environ.get("PAGEINDEX_SEARCH_CONCURRENCY", "3")),
         flat_doc_routing=os.environ.get("FLAT_DOC_ROUTING", "true").strip().lower()
         not in ("0", "false", "no"),
+        postgres_dsn=os.environ.get("POSTGRES_DSN") or None,
+        registry_enabled=os.environ.get("REGISTRY_ENABLED", "true").strip().lower()
+        not in ("0", "false", "no"),
+        catalog_topk=int(os.environ.get("PAGEINDEX_CATALOG_TOPK", "200")),
         langfuse_public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
         langfuse_host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),

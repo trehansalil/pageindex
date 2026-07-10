@@ -476,6 +476,7 @@ fan-out operation, not a single API call.
 | MinIO `hashes/` | Entry in `hashes/processed_hashes.json` — dedup record |
 | Redis | `pageindex:doc:<doc_id>` cache entry — call `DEL` or `cache.delete_doc(doc_id)` |
 | Redis | `pageindex:job:<job_id>` job record — call `DEL` (if job_id known) |
+| **Postgres** | **`doc_registry` row: `DELETE FROM doc_registry WHERE doc_id = $1` — RFC-006 D3. Carries `doc_name`, `doc_description`, and (once Tier-1 lands) facet values that may be client/product-identifying. Step 6 of `delete_doc()` in `storage.py`. Idempotent — no-op if row absent.** |
 
 ### Fan-out sequence
 
@@ -486,7 +487,8 @@ fan-out operation, not a single API call.
    c. Remove the doc's entry from `hashes/processed_hashes.json` (read-modify-write).
    d. Call `cache.delete_doc(doc_id)` to evict the Redis cache entry.
 3. If the document was ingested via `preloaded/`, also remove `preloaded/<filename>`.
-4. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
+4. **Delete the `doc_registry` row from Postgres: `DELETE FROM doc_registry WHERE doc_id = $1` (RFC-006 D3 / HR2). This is step 6 of `delete_doc()` in `storage.py` and runs automatically when `REGISTRY_ENABLED=true` and `POSTGRES_DSN` is set. Verify completion if `REGISTRY_ENABLED=false` — the row must still be purged manually.**
+5. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
 
 ### Manual backup-purge step (required)
 
