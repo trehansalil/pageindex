@@ -1,0 +1,496 @@
+<title>PageIndex E2E Corpus Report — 62 Documents</title>
+<style>
+  :root {
+    --bg: #F7F8FA;
+    --surface: #FFFFFF;
+    --surface-alt: #F0F2F5;
+    --border: #D8DCE3;
+    --text: #1A1D24;
+    --text-secondary: #5A6170;
+    --text-muted: #8B919E;
+    --accent: #3B6FCF;
+    --pass: #1B8553;
+    --pass-bg: #E8F5EE;
+    --marginal: #A67B1A;
+    --marginal-bg: #FBF3E0;
+    --fail: #C43E3E;
+    --fail-bg: #FCEAEA;
+    --mono: "SF Mono", "Menlo", "Consolas", "Liberation Mono", monospace;
+    --body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --display: Georgia, "Times New Roman", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418;
+      --surface: #1A1E25;
+      --surface-alt: #22272F;
+      --border: #2E3440;
+      --text: #E0E3E8;
+      --text-secondary: #9CA3AF;
+      --text-muted: #6B7280;
+      --accent: #6B9FE8;
+      --pass: #3CC77A;
+      --pass-bg: #162B1F;
+      --marginal: #D4A843;
+      --marginal-bg: #2A2310;
+      --fail: #E86060;
+      --fail-bg: #2B1515;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111418;
+    --surface: #1A1E25;
+    --surface-alt: #22272F;
+    --border: #2E3440;
+    --text: #E0E3E8;
+    --text-secondary: #9CA3AF;
+    --text-muted: #6B7280;
+    --accent: #6B9FE8;
+    --pass: #3CC77A;
+    --pass-bg: #162B1F;
+    --marginal: #D4A843;
+    --marginal-bg: #2A2310;
+    --fail: #E86060;
+    --fail-bg: #2B1515;
+  }
+  :root[data-theme="light"] {
+    --bg: #F7F8FA;
+    --surface: #FFFFFF;
+    --surface-alt: #F0F2F5;
+    --border: #D8DCE3;
+    --text: #1A1D24;
+    --text-secondary: #5A6170;
+    --text-muted: #8B919E;
+    --accent: #3B6FCF;
+    --pass: #1B8553;
+    --pass-bg: #E8F5EE;
+    --marginal: #A67B1A;
+    --marginal-bg: #FBF3E0;
+    --fail: #C43E3E;
+    --fail-bg: #FCEAEA;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--body);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 4rem;
+  }
+
+  /* Header */
+  .report-header {
+    margin-bottom: 2.5rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+  }
+  .report-header h1 {
+    font-family: var(--display);
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin-bottom: 0.35rem;
+  }
+  .report-header .meta {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+
+  /* Summary cards */
+  .summary-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 2rem;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    text-align: center;
+  }
+  .stat-card .number {
+    font-family: var(--mono);
+    font-size: 2rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .stat-card .label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+  }
+  .stat-card.pass .number { color: var(--pass); }
+  .stat-card.marginal .number { color: var(--marginal); }
+  .stat-card.fail .number { color: var(--fail); }
+  .stat-card.total .number { color: var(--accent); }
+
+  /* Rate bar */
+  .rate-bar-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 2.5rem;
+  }
+  .rate-bar-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+  }
+  .rate-bar {
+    display: flex;
+    height: 20px;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .rate-bar .seg { transition: width 0.3s; }
+  .rate-bar .seg.pass { background: var(--pass); }
+  .rate-bar .seg.marginal { background: var(--marginal); }
+  .rate-bar .seg.fail { background: var(--fail); }
+  .rate-bar-legend {
+    display: flex;
+    gap: 1.25rem;
+    margin-top: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .rate-bar-legend span::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 0.35rem;
+    vertical-align: middle;
+  }
+  .rate-bar-legend .lp::before { background: var(--pass); }
+  .rate-bar-legend .lm::before { background: var(--marginal); }
+  .rate-bar-legend .lf::before { background: var(--fail); }
+
+  /* Section headers */
+  .section-header {
+    font-family: var(--display);
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin: 2rem 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+    text-wrap: balance;
+  }
+  .section-header .count {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+  }
+
+  /* Document table */
+  .doc-table-wrap {
+    overflow-x: auto;
+    margin-bottom: 2rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+  }
+  .doc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .doc-table th {
+    text-align: left;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-alt);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+  }
+  .doc-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .doc-table tr:last-child td { border-bottom: none; }
+  .doc-table .fname {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .doc-table .notes {
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    max-width: 320px;
+  }
+
+  /* Verdict pills */
+  .v {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .v.pass { color: var(--pass); background: var(--pass-bg); }
+  .v.marginal { color: var(--marginal); background: var(--marginal-bg); }
+  .v.fail { color: var(--fail); background: var(--fail-bg); }
+
+  /* Type pill */
+  .tp {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  /* Issues section */
+  .issues-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .issue-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    border-left: 3px solid var(--fail);
+  }
+  .issue-card.warning {
+    border-left-color: var(--marginal);
+  }
+  .issue-card h3 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+  }
+  .issue-card p {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .issue-card .affected {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+  }
+
+  /* Footer */
+  .report-footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+  }
+</style>
+
+<div class="page">
+  <header class="report-header">
+    <h1>PageIndex E2E Corpus Report</h1>
+    <div class="meta">62 documents &middot; 2 corpora &middot; 2026-07-10 &middot; pageindex-mcp @ localhost:8201</div>
+  </header>
+
+  <!-- Summary -->
+  <div class="summary-row">
+    <div class="stat-card total"><div class="number">62</div><div class="label">Documents</div></div>
+    <div class="stat-card pass"><div class="number">35</div><div class="label">Pass</div></div>
+    <div class="stat-card marginal"><div class="number">14</div><div class="label">Marginal</div></div>
+    <div class="stat-card fail"><div class="number">13</div><div class="label">Fail</div></div>
+    <div class="stat-card total"><div class="number">0</div><div class="label">Errors</div></div>
+  </div>
+
+  <div class="rate-bar-container">
+    <div class="rate-bar-label">Verdict distribution</div>
+    <div class="rate-bar">
+      <div class="seg pass" style="width:56.5%"></div>
+      <div class="seg marginal" style="width:22.6%"></div>
+      <div class="seg fail" style="width:21.0%"></div>
+    </div>
+    <div class="rate-bar-legend">
+      <span class="lp">Pass 56.5%</span>
+      <span class="lm">Marginal 22.6%</span>
+      <span class="lf">Fail 21.0%</span>
+    </div>
+  </div>
+
+  <!-- German corpus -->
+  <div class="section-header">German Insurance Corpus <span class="count">27/27 &mdash; 22 pass, 5 marginal, 0 fail</span></div>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>File</th><th>Verdict</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="fname">AKB.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/405/d4</td><td class="notes">Clean, well-structured</td></tr>
+        <tr><td class="fname">AVB-PHV-Basis.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/287/d4</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">AVB-PHV-Komfort.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/301/d4</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">AVB-PHV-Premium.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/320/d4</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">GHV Downloadbereich.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/20/d2</td><td class="notes">Catalog page</td></tr>
+        <tr><td class="fname">GHV-TKV-Tarif.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">flat</td><td class="notes">Table extraction gap</td></tr>
+        <tr><td class="fname">Haftpflicht-Allgemeine.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/129/d1</td><td class="notes">Flat hierarchy, depth 1</td></tr>
+        <tr><td class="fname">Haftpflicht-Besondere.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/33/d1</td><td class="notes">Flat hierarchy</td></tr>
+        <tr><td class="fname">Hunde-Kranken.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/21blk</td><td class="notes">IPID, clean</td></tr>
+        <tr><td class="fname">Hunde-OP.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/22blk</td><td class="notes">IPID, clean</td></tr>
+        <tr><td class="fname">Hundehalter-Unfall.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/3/d1</td><td class="notes">Benefits sheet</td></tr>
+        <tr><td class="fname">Hundehalterhaftpflicht.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/128/d1</td><td class="notes">Minor title truncation</td></tr>
+        <tr><td class="fname">Hundeleben.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/68/d1</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">Katzen-Kranken.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/21blk</td><td class="notes">IPID, clean</td></tr>
+        <tr><td class="fname">Katzen-OP.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/22blk</td><td class="notes">IPID, clean</td></tr>
+        <tr><td class="fname">Kundeninformation.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/8/d1</td><td class="notes">Info sheet</td></tr>
+        <tr><td class="fname">Meutenversicherung.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/21blk</td><td class="notes">IPID, clean</td></tr>
+        <tr><td class="fname">Pferde-Kranken.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/26blk</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">Pferde-OP.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/23blk</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">Pferdehalterhaftpflicht-Besondere.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/134/d1</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">Reitlehrer-Bereiter-Kutschfahrlehrer.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/12blk</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">Reitlehrer-Bereiter.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/8blk</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">Reitlehrer-Sch&auml;den am Berittpferd.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/7/d1</td><td class="notes">Fragment, limited content</td></tr>
+        <tr><td class="fname">Reiter-Unfallversicherung.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/56blk</td><td class="notes">Benefits sheet</td></tr>
+        <tr><td class="fname">Tarifblatt-Privat.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/4/d1</td><td class="notes">Tables clean</td></tr>
+        <tr><td class="fname">Tier-OP-Kranken-Allgemeine.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/82/d1</td><td class="notes">Medical terms clean</td></tr>
+        <tr><td class="fname">Unfallversicherung.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">flat/70blk</td><td class="notes">Table extraction gap</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Data2 corpus -->
+  <div class="section-header">Mixed Corpus (Arabic / English / German) <span class="count">35/35 &mdash; 13 pass, 9 marginal, 13 fail</span></div>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>File</th><th>Verdict</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="fname">Antrag Internationaler F&uuml;hrerschein.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/10/d1</td><td class="notes">German form, clean</td></tr>
+        <tr><td class="fname">Amendment Service Fees.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/12/d1</td><td class="notes">English legal, clean</td></tr>
+        <tr><td class="fname">Cabinet Resolution Decree-Law 33.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/78/d2</td><td class="notes">English, clean</td></tr>
+        <tr><td class="fname">Economic Activities (ISIC).pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat</td><td class="notes">Table labels restored</td></tr>
+        <tr><td class="fname">Decree-Law 13 (English, 3 copies)</td><td><span class="v pass">Pass</span></td><td class="tp">tree/28/d1</td><td class="notes">Consistent across copies</td></tr>
+        <tr><td class="fname">General Terms of Services.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/22/d1</td><td class="notes">Long articles legitimate</td></tr>
+        <tr><td class="fname">Ministerial Resolution 620.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/38/d2</td><td class="notes">Clean</td></tr>
+        <tr><td class="fname">NAS GN Network.xlsx</td><td><span class="v pass">Pass</span></td><td class="tp">flat/145blk</td><td class="notes">1.47MB spreadsheet, clean</td></tr>
+        <tr><td class="fname">PDF Texture background.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">flat/3blk</td><td class="notes">Minimal, correct</td></tr>
+        <tr><td class="fname">Cabinet Resolution 37.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/12/d1</td><td class="notes">Amendment, clean</td></tr>
+        <tr><td class="fname">wcms_660002.pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/27/d1</td><td class="notes">ILO document, clean</td></tr>
+        <tr><td class="fname">&#x627;&#x62A;&#x641;&#x627;&#x642;&#x64A;&#x629; &#x627;&#x644;&#x627;&#x645;&#x645; &#x627;&#x644;&#x645;&#x62A;&#x62D;&#x62F;&#x629; (CISG).pdf</td><td><span class="v pass">Pass</span></td><td class="tp">tree/153/d3</td><td class="notes">100/101 articles split, clean Arabic</td></tr>
+        <tr><td class="fname">Cabinet Resolution 21 (copy 1).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">tree/22/d1</td><td class="notes">42k tail-blob, Arts 5-9 merged</td></tr>
+        <tr><td class="fname">Cabinet Resolution 21 (copy 2).pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/22/d1</td><td class="notes">Same doc, disputed verdict</td></tr>
+
+        <tr><td class="fname">PENAL CODE.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/20/d1</td><td class="notes">236k tail-blob, 429 articles trapped</td></tr>
+        <tr><td class="fname">Decree-Law 47.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/13/d1</td><td class="notes">11k tail-blob</td></tr>
+        <tr><td class="fname">Ministerial Resolution 279.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/18/d1</td><td class="notes">Tab artifacts in text</td></tr>
+        <tr><td class="fname">Cabinet Resolution 96.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/23/d1</td><td class="notes">Arts 5-16 merged (21k)</td></tr>
+        <tr><td class="fname">Decree-Law 33 (Employment, EN).pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/93/d2</td><td class="notes">17k tail-blob, 3 articles merged</td></tr>
+        <tr><td class="fname">World Stats Pocketbook.pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">flat/2602blk</td><td class="notes">207 countries, column structure degraded</td></tr>
+        <tr><td class="fname">&#x633;&#x64A;&#x627;&#x633;&#x629; &#x62D;&#x648;&#x643;&#x645;&#x629; &#x627;&#x644;&#x628;&#x64A;&#x627;&#x646;&#x627;&#x62A; (Data Governance).pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/23/d3</td><td class="notes">Clean structure, Arabic diacritics artifacts</td></tr>
+        <tr><td class="fname">&#x645;&#x631;&#x633;&#x648;&#x645; 33 (Arabic labor law).pdf</td><td><span class="v marginal">Marginal</span></td><td class="tp">tree/125/d4</td><td class="notes">Tail-blob FIXED (114k&rarr;6.4k), OCR corruption (&#x641;&#x64A;&rarr;#)</td></tr>
+
+        <tr><td class="fname">MOU MOHRE (Arabic).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">100% image placeholders, zero text</td></tr>
+        <tr><td class="fname">Pie chart JPG</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">Zero chart data, only title</td></tr>
+        <tr><td class="fname">UAE Numbers (landscape).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">7/9 image placeholders</td></tr>
+        <tr><td class="fname">UAE Numbers (portrait).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">Image-heavy, minimal text</td></tr>
+        <tr><td class="fname">&#x627;&#x62A;&#x641;&#x627;&#x642;&#x64A;&#x629; &#x645;&#x633;&#x62A;&#x648;&#x649; &#x627;&#x644;&#x62E;&#x62F;&#x645;&#x629; (SLA).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">100% image placeholders, scanned doc</td></tr>
+        <tr><td class="fname">&#x627;&#x644;&#x642;&#x631;&#x627;&#x631; &#x627;&#x644;&#x62A;&#x646;&#x638;&#x64A;&#x645;&#x64A; (Org Resolution).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">tree/99/d3</td><td class="notes">Systemic mojibake, embedded font &mdash; no ToUnicode</td></tr>
+        <tr><td class="fname">&#x642;&#x631;&#x627;&#x631; &#x645;&#x62C;&#x644;&#x633; &#x627;&#x644;&#x648;&#x632;&#x631;&#x627;&#x621; &#x631;&#x642;&#x645; 1 (Cabinet Res 1).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">100% image placeholders, zero text</td></tr>
+        <tr><td class="fname">&#x642;&#x631;&#x627;&#x631; &#x645;&#x62C;&#x644;&#x633; &#x627;&#x644;&#x648;&#x632;&#x631;&#x627;&#x621; &#x631;&#x642;&#x645; 106 (Cabinet Res 106).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat</td><td class="notes">100% image placeholders, zero text</td></tr>
+        <tr><td class="fname">&#x645;&#x631;&#x633;&#x648;&#x645; 13 (Arabic unemployment).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">tree/14/d2</td><td class="notes">Mojibake persists, 19/22 articles missing</td></tr>
+        <tr><td class="fname">&#x648;&#x627;&#x631;&#x62F; 597 (garble-gate).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">flat/2235blk</td><td class="notes">91% digits, numeric-junk not flagged</td></tr>
+        <tr><td class="fname">&#xFEA3;&#xFEE4;&#xFEEE;&#xFE9D; &#xFE8D;&#xFEFB;&#xFEE8;&#xFEB4;&#xFE8E;&#xFEE6; (Human Rights).pdf</td><td><span class="v fail">Fail</span></td><td class="tp">tree/34/d4</td><td class="notes">319k tail-blob, presentation-form Arabic (U+FExx)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Systemic Issues -->
+  <div class="section-header">Systemic Issues</div>
+  <div class="issues-grid">
+    <div class="issue-card">
+      <h3>OCR Escalation Never Fires</h3>
+      <p>Scanned/image-only documents produce <code>&lt;!-- image --&gt;</code> placeholders but <code>escalated_ocr</code> stays <code>False</code>. Zero text recovery on image-heavy PDFs. The pipeline silently persists hollow artifacts.</p>
+      <div class="affected">Affects 7 docs: MOU MOHRE, SLA, Cabinet Res 1, Cabinet Res 106, pie chart, UAE Numbers &times;2</div>
+    </div>
+    <div class="issue-card">
+      <h3>Tail-Blob Splitter (Fix-1)</h3>
+      <p>Inline <code>Article (N)</code> markers not split by the line-anchored Latin regex. Largest blob: 319k chars (&#xFEA3;&#xFEE4;&#xFEEE;&#xFE9D; &#xFE8D;&#xFEFB;&#xFEE8;&#xFEB4;&#xFE8E;&#xFEE6;), 236k (Penal Code). Presentation-form Arabic (U+FExx) breaks the Arabic regex entirely.</p>
+      <div class="affected">Affects 6 docs: Penal Code (236k), &#xFEA3;&#xFEE4;&#xFEEE;&#xFE9D; &#xFE8D;&#xFEFB;&#xFEE8;&#xFEB4;&#xFE8E;&#xFEE6; (319k), Decree-Law 47 (11k), Decree-Law 33 EN (17k), Cabinet Res 21 (42k), Cabinet Res 96 (21k)</div>
+    </div>
+    <div class="issue-card">
+      <h3>Garble-Gate Hole</h3>
+      <p>validate_tree only checks structure (depth, node_count), not text integrity. Documents with corrupt text layers &mdash; numeric junk, mojibake from missing ToUnicode CMaps &mdash; pass validation and persist as "success".</p>
+      <div class="affected">Affects 3 docs: &#x648;&#x627;&#x631;&#x62F; 597 (91% digits), &#x627;&#x644;&#x642;&#x631;&#x627;&#x631; &#x627;&#x644;&#x62A;&#x646;&#x638;&#x64A;&#x645;&#x64A; (embedded font mojibake), &#x645;&#x631;&#x633;&#x648;&#x645; 13 (Latin mojibake)</div>
+    </div>
+    <div class="issue-card warning">
+      <h3>Arabic OCR Text Corruption</h3>
+      <p>Even when OCR fires (&#x645;&#x631;&#x633;&#x648;&#x645; 33), Arabic text shows character-level corruption: &#x641;&#x64A;&rarr;#, garbled article titles. Tessdata language selection or model quality issue.</p>
+      <div class="affected">Affects 2 docs: &#x645;&#x631;&#x633;&#x648;&#x645; 33 (&#x641;&#x64A;&rarr;# &times;166), &#x645;&#x631;&#x633;&#x648;&#x645; 13 ("Oleg", "Nest" artifacts)</div>
+    </div>
+    <div class="issue-card warning">
+      <h3>Table Column Structure</h3>
+      <p>Complex table extraction degrades column-level structure: headers and values concatenated into single strings instead of separate cells. Data is present but requires string parsing.</p>
+      <div class="affected">Affects 3 docs: World Stats Pocketbook, GHV-TKV-Tarif, Unfallversicherung</div>
+    </div>
+  </div>
+
+  <!-- Key Findings -->
+  <div class="section-header">Key Findings</div>
+  <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1.25rem 1.5rem; font-size: 0.85rem; line-height: 1.7; margin-bottom: 2rem;">
+    <p style="margin-bottom: 0.8rem;"><strong>German corpus is regression-free.</strong> All 27 documents pass or are marginal with only hierarchy-depth concerns &mdash; zero text quality issues, zero garbling. The flat-doc success route (RFC-004) correctly handles IPID/catalog documents.</p>
+    <p style="margin-bottom: 0.8rem;"><strong>English legal documents work well.</strong> Text-layer PDFs with standard encoding extract cleanly. Decree-Law copies produce consistent results. Tail-blobs only appear in very long documents with inline article markers.</p>
+    <p style="margin-bottom: 0.8rem;"><strong>Arabic is the primary failure domain.</strong> 11/13 FAILs are Arabic documents. Root causes: scanned-without-OCR (5), garble-gate bypass (3), presentation-form encoding (1), mojibake (2).</p>
+    <p style="margin-bottom: 0.8rem;"><strong>&#x645;&#x631;&#x633;&#x648;&#x645; 33 tail-blob fix validated.</strong> The most significant improvement: max_leaf dropped from 114k to 6.4k chars, with 72/74 articles individually split. Arabic article markers <em>do</em> work when text is in logical-form Unicode.</p>
+    <p><strong>Pipeline never errors.</strong> All 62 documents completed with status "done" &mdash; zero timeouts, zero crashes. The issue is quality, not stability. Hollow artifacts are silently persisted as successes.</p>
+  </div>
+
+  <!-- Corpus comparison -->
+  <div class="section-header">Corpus Comparison</div>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2rem;">
+    <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem;">
+      <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 0.5rem;">German (issue/data)</div>
+      <div style="display: flex; gap: 1.5rem; font-variant-numeric: tabular-nums; font-size: 0.88rem;">
+        <span style="color: var(--pass);"><strong>22</strong> pass</span>
+        <span style="color: var(--marginal);"><strong>5</strong> marginal</span>
+        <span style="color: var(--fail);"><strong>0</strong> fail</span>
+      </div>
+      <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.35rem;">Pass rate: 81.5% &middot; Fail rate: 0%</div>
+    </div>
+    <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem;">
+      <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 0.5rem;">Mixed Arabic/English/German (issue/data2)</div>
+      <div style="display: flex; gap: 1.5rem; font-variant-numeric: tabular-nums; font-size: 0.88rem;">
+        <span style="color: var(--pass);"><strong>13</strong> pass</span>
+        <span style="color: var(--marginal);"><strong>9</strong> marginal</span>
+        <span style="color: var(--fail);"><strong>13</strong> fail</span>
+      </div>
+      <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.35rem;">Pass rate: 37.1% &middot; Fail rate: 37.1%</div>
+    </div>
+  </div>
+
+  <footer class="report-footer">
+    PageIndex MCP Server E2E Test &middot; 62 documents across 2 corpora &middot; Agents: Opus (critical), Sonnet (medium), Haiku (routine)
+  </footer>
+</div>
