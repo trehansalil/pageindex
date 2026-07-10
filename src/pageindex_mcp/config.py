@@ -31,6 +31,7 @@ class Settings:
     server_host: str
     server_port: int
     redis_url: str
+    registry_delete_timeout_s: float
     upload_api_key: str
     cache_ttl: int
     # Auth
@@ -78,7 +79,8 @@ def _load_settings() -> Settings:
         doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
-        redis_url=os.environ.get("REDIS_URL", "redis://neonatal-care-redis.neonatal-care:6379/1"),
+        redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        registry_delete_timeout_s=float(os.environ.get("REGISTRY_DELETE_TIMEOUT_S", "5.0")),
         upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
         cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
         mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),

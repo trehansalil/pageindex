@@ -41,14 +41,15 @@ from .metrics import (
     OCR_ESCALATION_TOTAL,
     PDF_EXTRACT_FALLBACKS,
     PDF_PRIMARY_CONVERTER_FAILURES,
+    RAW_UPLOAD_FAILURES,
 )
 from .storage import (
+    hash_cache_get,
+    hash_cache_set,
     list_processed_docs,
-    load_hash_cache,
     save_doc,
     save_doc_meta,
     save_flat_doc,
-    save_hash_cache,
     save_raw,
 )
 
@@ -238,8 +239,6 @@ class CustomPageIndexClient(PageIndexClient):
         super().__init__(api_key=api_key or settings.openai_api_key)
         self.model = model or settings.llm_model
         self.retrieve_model = retrieve_model
-        # Serialises hash-cache reads/writes across parallel index() calls on this instance.
-        self._cache_lock = asyncio.Lock()
         # RFC-004 Amendment 1 (Step 5 integration): set to the deterministic
         # content_class when index() routes a doc to the flat success path; stays
         # None for a normal tree doc. converters_cli reads this after index()
@@ -279,24 +278,23 @@ class CustomPageIndexClient(PageIndexClient):
         sha256 = hashlib.sha256(file_bytes).hexdigest()
         logger.debug("File %s: size=%d bytes, sha256=%s", filename, len(file_bytes), sha256[:12])
 
-        # Hash-based dedup: skip if content unchanged.
-        # Lock prevents parallel calls from all seeing a cache-miss simultaneously.
-        async with self._cache_lock:
-            cache = await asyncio.to_thread(load_hash_cache)
-            if cache.get(filename) == sha256:
-                docs = await asyncio.to_thread(list_processed_docs)
-                for d in docs:
-                    if d.get("doc_name") == filename:
-                        logger.info(
-                            "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
-                        )
-                        # FLAT-04 parity: the SHA-dedup early return must restore
-                        # last_content_class (reset to None at the top of index())
-                        # so an unchanged flat doc still surfaces content_class in
-                        # the converters_cli stdout payload, matching a non-deduped
-                        # flat index (cubic PR #9).
-                        self.last_content_class = d.get("content_class") or None
-                        return d["doc_id"]
+        # Hash-based dedup: skip if content unchanged. D6: HGET is a single
+        # atomic Redis op, so no lock is needed to avoid a cache-miss race.
+        cached_sha256 = await asyncio.to_thread(hash_cache_get, filename)
+        if cached_sha256 == sha256:
+            docs = await asyncio.to_thread(list_processed_docs)
+            for d in docs:
+                if d.get("doc_name") == filename:
+                    logger.info(
+                        "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
+                    )
+                    # FLAT-04 parity: the SHA-dedup early return must restore
+                    # last_content_class (reset to None at the top of index())
+                    # so an unchanged flat doc still surfaces content_class in
+                    # the converters_cli stdout payload, matching a non-deduped
+                    # flat index (cubic PR #9).
+                    self.last_content_class = d.get("content_class") or None
+                    return d["doc_id"]
 
         # Convert / index
         tmp_lo_dir = None  # LibreOffice temp dir
@@ -536,8 +534,7 @@ class CustomPageIndexClient(PageIndexClient):
                             content_class,
                         )
 
-                        doc_id = str(uuid.uuid4())[:8]
-                        await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+                        doc_id = str(uuid.uuid4())
 
                         protocol = "https" if settings.minio_secure else "http"
                         source_url = (
@@ -564,11 +561,22 @@ class CustomPageIndexClient(PageIndexClient):
                         )
                         FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
 
-                        # Reload before writing so we don't overwrite parallel tasks' entries.
-                        async with self._cache_lock:
-                            cache = await asyncio.to_thread(load_hash_cache)
-                            cache[filename] = sha256
-                            await asyncio.to_thread(save_hash_cache, cache)
+                        # D7: raw upload persisted only after the processed artifact
+                        # succeeds, so a save_raw failure never orphans an unreferenced
+                        # tree. The flat doc is already valid/queryable at this point, so
+                        # log + count rather than raising.
+                        try:
+                            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+                        except Exception:
+                            RAW_UPLOAD_FAILURES.inc()
+                            logger.exception(
+                                "save_raw failed after save_flat_doc succeeded for doc_id=%s",
+                                doc_id,
+                            )
+
+                        # D6: HSET is atomic per-field — no read-modify-write, so no
+                        # lock is needed to avoid clobbering a parallel task's entry.
+                        await asyncio.to_thread(hash_cache_set, filename, sha256)
 
                         logger.info(
                             "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
@@ -586,9 +594,10 @@ class CustomPageIndexClient(PageIndexClient):
                 logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
                 raise LowQualityTreeError(reason)
 
-            # Persist raw file and processed result
-            doc_id = str(uuid.uuid4())[:8]
-            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+            # Persist processed result first (D7): the tree must succeed validation
+            # and persist before the raw upload is committed, so a save_doc failure
+            # never leaves an orphaned raw upload with no referencing artifact.
+            doc_id = str(uuid.uuid4())
 
             protocol = "https" if settings.minio_secure else "http"
             source_url = (
@@ -619,11 +628,20 @@ class CustomPageIndexClient(PageIndexClient):
             }
             await asyncio.to_thread(save_doc_meta, doc_id, meta)
 
-            # Reload before writing so we don't overwrite other parallel tasks' entries.
-            async with self._cache_lock:
-                cache = await asyncio.to_thread(load_hash_cache)
-                cache[filename] = sha256
-                await asyncio.to_thread(save_hash_cache, cache)
+            # D7: raw upload persisted only after the processed artifact succeeds.
+            # The tree is already valid/queryable, so log + count rather than raising
+            # on a save_raw failure — the raw upload can be re-staged.
+            try:
+                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+            except Exception:
+                RAW_UPLOAD_FAILURES.inc()
+                logger.exception(
+                    "save_raw failed after save_doc succeeded for doc_id=%s", doc_id
+                )
+
+            # D6: HSET is atomic per-field — no read-modify-write, so no lock is
+            # needed to avoid clobbering a parallel task's entry.
+            await asyncio.to_thread(hash_cache_set, filename, sha256)
 
             logger.info(
                 "Indexed %s → doc_id=%s (%d sections)",

@@ -13,6 +13,7 @@ Contracts covered: FLAT-03-C1, FLAT-03-C2, FLAT-03-C3.
 
 import os
 import tempfile
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -51,10 +52,10 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return):
     """Patch every collaborator client.index() touches and return the mocks dict."""
     monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing))
 
-    # Dedup short-circuits are disabled: empty cache + no existing docs.
-    monkeypatch.setattr(client_mod, "load_hash_cache", lambda: {})
+    # Dedup short-circuits are disabled: cache miss + no existing docs.
+    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "save_hash_cache", MagicMock())
+    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
 
     # validate_tree is HR5-frozen in helpers; we only stub its RETURN at the branch.
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
@@ -91,7 +92,7 @@ async def test_FLAT_03_C1_routes_to_flat_path(monkeypatch, md_file, reason):
 
     doc_id = await c.index(md_file)
 
-    assert isinstance(doc_id, str) and len(doc_id) == 8
+    assert isinstance(doc_id, str) and len(doc_id) == 36
     mocks["route_and_extract_flat"].assert_called_once()
     mocks["save_flat_doc"].assert_called_once()
     # No tree artifact written on the flat path (HR2: no un-cascaded derivative).
@@ -101,6 +102,38 @@ async def test_FLAT_03_C1_routes_to_flat_path(monkeypatch, md_file, reason):
     mocks["FLAT_DOCS_TOTAL"].labels.return_value.inc.assert_called_once()
     # Flat path never touches the LOW_QUALITY_TREES terminal-reject counter.
     mocks["LOW_QUALITY_TREES"].labels.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# RFC-007 D7 / Property 3: no orphaned raw uploads
+# ---------------------------------------------------------------------------
+async def test_save_doc_failure_no_raw_orphan(monkeypatch, md_file):
+    """Property 3: if save_doc raises, save_raw is never called — the raw
+    upload is never committed for a tree that failed to persist."""
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    mocks["save_doc"].side_effect = RuntimeError("minio down")
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    with pytest.raises(RuntimeError):
+        await c.index(md_file)
+
+    mocks["save_doc"].assert_called_once()
+    mocks["save_raw"].assert_not_called()
+
+
+async def test_doc_id_full_uuid(monkeypatch, md_file):
+    """Property 5 (D5): doc_id is a full 128-bit UUID (36 chars w/ hyphens),
+    not the old 8-char truncation (32 bits, ~1% collision by 6,500 docs)."""
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(md_file)
+
+    doc_id = mocks["save_doc"].call_args.args[0]
+    assert isinstance(doc_id, str) and len(doc_id) == 36
+    uuid.UUID(doc_id)  # raises ValueError if not a valid UUID
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +240,9 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
     so the garbling-retry branch (OCR-01) can be exercised without any real
     Docling/Tesseract/network/LLM dependency."""
     monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing=True))
-    monkeypatch.setattr(client_mod, "load_hash_cache", lambda: {})
+    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "save_hash_cache", MagicMock())
+    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# initial md")]
@@ -258,7 +291,7 @@ async def test_OCR_01_C1_garbling_retries_once_and_recovers(monkeypatch, pdf_fil
 
     doc_id = await c.index(pdf_file_with_content)
 
-    assert isinstance(doc_id, str) and len(doc_id) == 8
+    assert isinstance(doc_id, str) and len(doc_id) == 36
     mocks["save_doc"].assert_called_once()
     mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="recovered")
     mocks["OCR_ESCALATION_TOTAL"].labels.return_value.inc.assert_called_once()

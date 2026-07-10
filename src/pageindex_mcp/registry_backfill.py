@@ -186,9 +186,12 @@ async def _backfill(dry_run: bool, force: bool) -> None:
     logger.info("Found %d .meta.json sidecar(s).", len(meta_keys))
 
     if not meta_keys:
-        logger.warning("No .meta.json sidecars found — nothing to backfill.")
-        if not dry_run:
-            await set_registry_complete(redis_client)
+        # D3 / Property 7: zero keys means either an empty corpus or a
+        # transient listing failure — never mark the registry complete on a
+        # signal we can't distinguish from "backfill didn't actually run".
+        logger.warning(
+            "No .meta.json sidecars found — skipping backfill without marking complete."
+        )
         await redis_client.aclose()
         if not dry_run:
             await close_registry()

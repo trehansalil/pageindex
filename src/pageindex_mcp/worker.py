@@ -425,7 +425,9 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # rejection, or max_tries exhausted). Pending retries must keep the original
         # file so re-runs can re-download it from MinIO.
         if cleanup_staging:
-            await asyncio.to_thread(delete_staging, staging_key)
+            staging_deleted = await asyncio.to_thread(delete_staging, staging_key)
+            if not staging_deleted:
+                logger.warning("Staging object left behind after delete failure: %s", staging_key)
 
 
 async def reap_stale_jobs(ctx: dict) -> None:

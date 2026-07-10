@@ -83,7 +83,7 @@ def test_list_processed_docs_falls_back_to_full_json(mock_minio):
     assert docs[0]["doc_id"] == "old12345"
 
 
-def test_delete_doc_removes_meta_sidecar(mock_minio):
+async def test_delete_doc_removes_meta_sidecar(mock_minio):
     mock_minio.list_objects.return_value = []
     # delete_doc reads the doc first (to capture doc_name for the hash-cache step
     # of the HR2/ERASE-01 cascade), so get_object must return valid JSON bytes.
@@ -94,6 +94,6 @@ def test_delete_doc_removes_meta_sidecar(mock_minio):
     response.read.return_value = doc_json
     mock_minio.get_object.return_value = response
 
-    delete_doc("abcd1234")
+    await delete_doc("abcd1234")
     calls = [c[0][1] for c in mock_minio.remove_object.call_args_list]
     assert "processed/abcd1234.meta.json" in calls

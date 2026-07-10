@@ -11,25 +11,12 @@ from minio import Minio
 from minio.error import S3Error
 
 from .config import settings
-from .metrics import MINIO_DURATION, MINIO_OPS
+from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES
 
 logger = logging.getLogger(__name__)
 
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
-
-# RFC-006: keep strong references to fire-and-forget asyncio tasks so they
-# are not garbage-collected before completion (RUF006).
-_background_tasks: set = set()
-
-
-def _fire_and_forget(coro: object) -> None:
-    """Schedule a coroutine as a background task and retain a reference."""
-    import asyncio
-
-    task = asyncio.ensure_future(coro)  # type: ignore[arg-type]
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
 
 
 def get_minio() -> Minio:
@@ -171,12 +158,13 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
 
 
 # Complexity grandfathered (HR2 erasure cascade); see pyproject [tool.ruff].
-def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
+async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
     """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
        1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
-       4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename.
-    Idempotent (C2: missing objects tolerated). Partial failure raises naming the
-    store(s) that failed, safe to retry (C3)."""
+       4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename
+       6. Postgres registry row (D2: awaited with a timeout, never fire-and-forget).
+    Idempotent (C2: missing objects tolerated). Returns {"errors": [...]} — every
+    individual store failure is reported to the caller, never raised (Property 4)."""
     MINIO_OPS.labels(operation="delete").inc()
     start = time.monotonic()
     mc = get_minio()
@@ -251,11 +239,8 @@ def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
         # 5. hash-cache entry (filename -> sha256)
         if doc_name:
             try:
-                cache = load_hash_cache()
-                if doc_name in cache:
-                    del cache[doc_name]
-                    save_hash_cache(cache)
-                    logger.info("ERASE %s step5: cleared hash-cache entry for %s", doc_id, doc_name)
+                hash_cache_delete(doc_name)
+                logger.info("ERASE %s step5: cleared hash-cache entry for %s", doc_id, doc_name)
             except Exception as e:
                 errors.append(f"hash-cache: {e}")
         else:
@@ -264,8 +249,8 @@ def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
             )
 
         # 6. Postgres registry row (RFC-006 D3 / HR2 — new derived store).
-        # Idempotent under the same retry contract as the existing steps:
-        # registry.delete_doc is a no-op when the row is absent or the pool is None.
+        # D2: awaited with a bounded timeout — never fire-and-forget. A hung or
+        # failing registry delete is reported in `errors`, not silently lost.
         if settings.registry_enabled and settings.postgres_dsn:
             import asyncio
 
@@ -274,26 +259,25 @@ def delete_doc(doc_id: str) -> None:  # noqa: C901, PLR0915
 
             if get_pool() is not None:
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Async context: schedule without blocking.
-                        # The step is still logged so under-erasure is observable.
-                        _fire_and_forget(_registry_delete_doc(doc_id))
-                        logger.info(
-                            "ERASE %s step6: registry delete scheduled (async context)",
-                            doc_id,
-                        )
-                    else:
-                        loop.run_until_complete(_registry_delete_doc(doc_id))
-                        logger.info("ERASE %s step6: removed from Postgres registry", doc_id)
+                    await asyncio.wait_for(
+                        _registry_delete_doc(doc_id),
+                        timeout=settings.registry_delete_timeout_s,
+                    )
+                    logger.info("ERASE %s step6: removed from Postgres registry", doc_id)
+                except TimeoutError:
+                    errors.append(
+                        f"registry: delete timed out after {settings.registry_delete_timeout_s}s"
+                    )
                 except Exception as e:
                     errors.append(f"registry: {e}")
             else:
                 logger.info("ERASE %s step6: registry pool not ready, skipping (non-fatal)", doc_id)
 
         if errors:
-            raise RuntimeError(f"delete_doc({doc_id}) partial failure across stores: {errors}")
-        logger.info("ERASE %s complete: full cascade succeeded", doc_id)
+            logger.error("ERASE %s partial failure across stores: %s", doc_id, errors)
+        else:
+            logger.info("ERASE %s complete: full cascade succeeded", doc_id)
+        return {"errors": errors}
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
@@ -471,13 +455,17 @@ def save_raw(doc_id: str, filename: str, data: bytes) -> None:
 # Hash cache  (MinIO: hashes/processed_hashes.json)
 # ---------------------------------------------------------------------------
 
-HASH_OBJECT = "hashes/processed_hashes.json"
+# RFC-007 D6: hash cache moved from a monolithic MinIO JSON blob (guarded by a
+# per-process asyncio.Lock, which loses entries across concurrent arq worker
+# processes via last-writer-wins) to a Redis HSET — HSET/HGET/HDEL are atomic
+# per-field, so two workers hashing different filenames never race.
+HASH_OBJECT = "hashes/processed_hashes.json"  # legacy MinIO blob (D6 migration fallback only)
+HASH_CACHE_KEY = "pageindex:hashes"
 
 
-def load_hash_cache() -> dict[str, str]:
-    """Load {filename: sha256} dedup cache from MinIO. Returns empty dict if absent."""
-    MINIO_OPS.labels(operation="get").inc()
-    start = time.monotonic()
+def _load_legacy_minio_hash_cache() -> dict[str, str]:
+    """Read the pre-D6 MinIO JSON blob. Fallback path only, used while a
+    filename hasn't yet been migrated to Redis; never written to again."""
     mc = get_minio()
     response = None
     try:
@@ -488,7 +476,6 @@ def load_hash_cache() -> dict[str, str]:
             return {}
         raise
     finally:
-        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
         if response is not None:
             try:
                 response.close()
@@ -497,22 +484,35 @@ def load_hash_cache() -> dict[str, str]:
                 pass
 
 
-def save_hash_cache(cache: dict[str, str]) -> None:
-    """Write {filename: sha256} dedup cache to MinIO."""
-    MINIO_OPS.labels(operation="put").inc()
-    start = time.monotonic()
-    mc = get_minio()
+def hash_cache_get(filename: str) -> str | None:
+    """Return the cached sha256 for filename, or None if never indexed.
+    Checks Redis first; falls back to the legacy MinIO blob for entries not
+    yet migrated (belt-and-suspenders per RFC-007 D6 migration window)."""
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    r = get_cache_redis()
+    cached = r.hget(HASH_CACHE_KEY, filename)
+    if cached is not None:
+        return cached
     try:
-        content = json.dumps(cache, indent=2).encode()
-        mc.put_object(
-            settings.minio_bucket,
-            HASH_OBJECT,
-            BytesIO(content),
-            len(content),
-            content_type="application/json",
-        )
-    finally:
-        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+        return _load_legacy_minio_hash_cache().get(filename)
+    except Exception:
+        logger.debug("Legacy MinIO hash-cache fallback failed for %s", filename, exc_info=True)
+        return None
+
+
+def hash_cache_set(filename: str, sha256: str) -> None:
+    """Atomically record filename's sha256 (RFC-007 D6: HSET, no read-modify-write)."""
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    get_cache_redis().hset(HASH_CACHE_KEY, filename, sha256)
+
+
+def hash_cache_delete(filename: str) -> None:
+    """Remove filename's hash-cache entry (HR2 erasure cascade step 5)."""
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    get_cache_redis().hdel(HASH_CACHE_KEY, filename)
 
 
 # ---------------------------------------------------------------------------
@@ -552,16 +552,20 @@ def download_staging(staging_key: str, dest_path: str) -> None:
         MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
 
 
-def delete_staging(staging_key: str) -> None:
-    """Remove a staging object from MinIO."""
+def delete_staging(staging_key: str) -> bool:
+    """Remove a staging object from MinIO. Returns True on success, False on
+    S3Error (RFC-007 D9: observable instead of silently swallowed)."""
     MINIO_OPS.labels(operation="delete").inc()
     start = time.monotonic()
     mc = get_minio()
     try:
         mc.remove_object(settings.minio_bucket, staging_key)
         logger.debug("Deleted staging object: %s", staging_key)
+        return True
     except S3Error:
         logger.warning("Failed to delete staging object: %s", staging_key)
+        STAGING_DELETE_FAILURES.inc()
+        return False
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 

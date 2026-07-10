@@ -69,8 +69,10 @@ def create_upload_app() -> FastAPI:
     ) -> list[dict]:
         """Accept one or more files, enqueue async indexing, return job IDs."""
         logger.info("Upload request received: %d file(s)", len(files))
-        arq_pool = await _get_arq_pool()
-        results = []
+
+        # Pass 1 (D4): validate every file before any side effect. On any
+        # failure, reject the whole batch with zero MinIO/Redis/arq writes.
+        prepared = []
         for file in files:
             filename = Path(file.filename or "upload").name
             ext = Path(filename).suffix.lower()
@@ -82,11 +84,17 @@ def create_upload_app() -> FastAPI:
                         f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(_SUPPORTED))}"
                     ),
                 )
+            file_bytes = await file.read()
+            prepared.append((filename, file_bytes))
 
+        # Pass 2: only reached once every file passed validation. Stage to
+        # MinIO, then enqueue before setting status (D8) so a failed enqueue
+        # leaves no phantom "pending" entry.
+        arq_pool = await _get_arq_pool()
+        results = []
+        for filename, file_bytes in prepared:
             job_id = str(uuid.uuid4())
 
-            # Read file bytes and stage in MinIO (shared storage)
-            file_bytes = await file.read()
             staging_key = await asyncio.to_thread(
                 upload_staging,
                 job_id,
@@ -95,17 +103,18 @@ def create_upload_app() -> FastAPI:
             )
             logger.debug("Staged upload in MinIO: %s", staging_key)
 
+            await arq_pool.enqueue_job(
+                "process_document_job",
+                staging_key,
+                job_id,
+            )
+
             now = datetime.now(UTC).isoformat()
             await job_status_set(
                 job_id,
                 {"status": "pending", "filename": filename, "submitted_at": now},
             )
 
-            await arq_pool.enqueue_job(
-                "process_document_job",
-                staging_key,
-                job_id,
-            )
             results.append({"job_id": job_id, "filename": filename})
             logger.info("Enqueued job %s for file %s", job_id, filename)
 

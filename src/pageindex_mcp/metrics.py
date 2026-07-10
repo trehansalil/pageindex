@@ -135,6 +135,16 @@ PDF_PRIMARY_CONVERTER_FAILURES = Counter(
     "exception class.",
     ["converter", "error"],
 )
+RAW_UPLOAD_FAILURES = Counter(
+    "pageindex_raw_upload_failures_total",
+    "save_raw failures after save_doc/save_flat_doc already succeeded (RFC-007 D7). "
+    "The processed tree remains valid and queryable; the raw upload can be re-staged.",
+)
+STAGING_DELETE_FAILURES = Counter(
+    "pageindex_staging_delete_failures_total",
+    "delete_staging S3Error failures (RFC-007 D9). Previously swallowed silently; "
+    "now an observable signal alongside the bool return value.",
+)
 
 # ---------------------------------------------------------------------------
 # Subprocess-isolated converter metrics (Plan 01 / Phase 3)
