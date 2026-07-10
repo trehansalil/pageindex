@@ -1262,9 +1262,12 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
     srcs = img_pattern.findall(html_content)
 
     async def _describe(src: str) -> str:
-        try:
-            from .client import get_openai_client
+        import openai
 
+        from .client import get_openai_client
+        from .metrics import IMAGE_DESCRIBE_FAILURES
+
+        async def _call() -> str:
             client = get_openai_client()
             response = await client.chat.completions.create(
                 model=model,
@@ -1286,7 +1289,32 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
                 max_tokens=150,
             )
             return response.choices[0].message.content.strip()
-        except Exception:
+
+        try:
+            return await _call()
+        except (openai.RateLimitError, openai.APIConnectionError):
+            # Transient failure — retry once after a short backoff.
+            await asyncio.sleep(2)
+            try:
+                return await _call()
+            except openai.APIError as retry_exc:
+                logger.error(
+                    "Image description failed after retry (%s): %s",
+                    type(retry_exc).__name__,
+                    str(retry_exc)[:200],
+                )
+                IMAGE_DESCRIBE_FAILURES.labels(error_type=type(retry_exc).__name__).inc()
+                return "image"
+            except Exception:
+                # Non-OpenAI error on retry (e.g. code bug) — do not swallow it.
+                raise
+        except openai.APIError as exc:
+            logger.error(
+                "Image description failed (%s): %s",
+                type(exc).__name__,
+                str(exc)[:200],
+            )
+            IMAGE_DESCRIBE_FAILURES.labels(error_type=type(exc).__name__).inc()
             return "image"
 
     descriptions = await asyncio.gather(*(_describe(src) for src in srcs))

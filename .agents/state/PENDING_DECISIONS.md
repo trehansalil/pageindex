@@ -11,6 +11,7 @@ Move to Resolved with date + integration target when handled.
 > (see the "Stage-2 implementation" block). Only the 3 human-owned `[DECISION]`s remain standing.
 
 ## Tag Format
+
 - [FIX]       Bug or defect — no spec change
 - [GAP]       Spec was silent; implementation chose
 - [AMENDMENT] Existing spec decision must change
@@ -25,16 +26,19 @@ moved to **Resolved** (see the "Stage-2 implementation" block). What remains is 
 human-owned standing work below; no code decision is open.
 
 ### Deferred / standing (human-owned; not blocking)
+
 - [DECISION] 2026-05-31 | Promote validate_tree thresholds: after calibration vs the GHV corpus + a clean control set, add node_count/depth/garbling thresholds to verify-gates.yaml and flip the gate warn-only→error via a Phase-2 RFC (Hard Rule 5; re-seed of RFC-001 action item E).
 - [DECISION] 2026-05-31 | (deploy-time) AGPL §13 legal sign-off before serving PyMuPDF/pymupdf4llm over a network externally — or an Artifex license. **Open by default, narrowable on demand (RFC-003 Amendment 4 supersedes Amendment 3):** the NO-GO was MPS-only — Docling-CPU (MIT) is now validated on Apple Silicon and is one env-flag away (`PDF_CONVERTER=docling`), so a deployment can remove AGPL `pymupdf4llm` from the PDF path without a code change. The default path is still AGPL, so the §13 gate is open unless that flag is set; network-serving sign-off stays owner-owned (R10 / Hard Rule 4 / RFC-000).
 - [DECISION] 2026-05-31 | (deploy-time) Pick a no-training + ZDR + EU-residency LLM tier per deployment via OPENAI_BASE_URL; self-hosted is the ultimate fallback (R9 / Hard Rule 3 / RFC-000).
 
 ### VLM hierarchy detection (RFC-004 `proposed` 2026-06-08 — awaiting RFC session to lock)
+
 RFC-004 records a deep-research design recommendation for a deterministic-first,
 VLM-escalation cascade that disambiguates genuinely-flat documents from documents whose
 hierarchy the extractor flattened (the `low_quality_tree` false-reject). It is **proposed**,
 not accepted: the items below are adjudicated into `accepted` decisions (and seed the
 `VLM-01` contract) at the next RFC session. **No code moves until Phase 0 passes.**
+
 - [RESOLVED] 2026-06-08 | **RFC-004 D1/D2 — ADOPTED, build scheduled behind Phase 0 (Amendment 3).** The deterministic-first VLM-escalation cascade (D1, default `VLM_MODE=disabled`) + hybrid engine (D2 — frontier `gpt-4.1` vision default via `OPENAI_BASE_URL` ZDR lever; self-hosted Granite-Docling-258M Apache-2.0 residency floor; no separate `VLM_API_URL`/`VLM_API_KEY`) are accepted as a **scheduled build**, not just a deferred design — still **gated on Phase 0**. **Honest scope (load-bearing):** after Amendment 1, FLAT-01 already resolves all 5 firing docs as flat successes, so the cascade's `HIERARCHY_RECOVERED` path has **no proven demand in today's corpus** — it's insurance for a future *flattened-hierarchy* class. One in-corpus candidate: the **Reitlehrer numbered clauses** (1/1.1/2/2.1…) → **new Phase-0 A/B carve** (recovered-hierarchy vs `flat_kv`, pick retrieval-better). If Phase 0 finds zero recoverable hierarchy across the set, the build narrows to "design on the books, default-off, ship nothing." → RFC-004 §Decisions + Amendment 3.
 - [RESOLVED] 2026-06-08 | **RFC-004 Open Question #1 — LOCKED (user decision, grounded in 11-agent research workflow `wf_f4d8007e-0a6`).** A clean-text-layer doc with no heading hierarchy is **processed as a SUCCESS, not rejected** — matches all 8 surveyed peers (Textract/Azure DI/Google Doc AI/Docling/Unstructured/LlamaParse/Reducto); PageIndex was architecturally unique in erroring. Key reframe: **"flat" and "garbled" are orthogonal** — split them.
   - **D1 Outcome:** flat doc → job `status=done` + `content_class ∈ {flat_table,flat_kv,flat_prose,flat_mixed}`, persisted to a NEW artifact `processed/<doc_id>.flat.json`; `validate_tree()` is **never called** for it (no `structure[]` built → cannot fake a tree past the gate; HR5 holds).
@@ -54,6 +58,7 @@ not accepted: the items below are adjudicated into `accepted` decisions (and see
 ## Resolved
 
 ### Stage-2 implementation (2026-05-31, RFC-003 D1–D5 — verified: contracts PASS=35/0, dag PASS=19/0, pytest 69 passed, 3 adversarial reviews compliant)
+
 - **CACHE-01 read-through (D1)**: read-through moved to `cache.get_doc` (cache.py:64, lazy `from .storage import load_doc` on miss); `storage.load_doc` made cache-unaware pure-MinIO read (storage.py:46, response-unbound bug fixed); invalidation kept via lazy import in `save_doc`/`delete_doc` (storage.py:89,145); dag edge flipped to `cache:[storage]` / `storage:[]` (dag.yaml via `dag.sh --write`); read callers repointed to `get_doc` (client.py:199/215/227; tools/documents.py:15,47/102/140/164). Tests: CACHE-01-C1/C2/C3.
   → src/pageindex_mcp/{cache,storage,client}.py, tools/documents.py, .agents/governance/dag.yaml, tests/test_cache_contract.py
 - **HR2 delete_doc (D5 / ERASE-01)**: rewritten to the mandated cascade (storage.py:95) — uploads/<id>/* → processed/<id>.json → .meta.json → Redis → hash-cache (doc_name captured up-front for step 5); idempotent (NoSuchKey tolerated); partial failure raises naming the failing store. Tests: ERASE-01-C1/C2/C3.
@@ -72,6 +77,7 @@ not accepted: the items below are adjudicated into `accepted` decisions (and see
   → tests/test_{cache,storage,validate_tree,converters,rag,upload,worker}_contract.py
 
 ### Stage-1 governance / earlier
+
 - **2026-05-31 | RAG-01 transport-bypass [AMENDMENT] (RFC-002 Amdt 1)**: decision locked (RFC-003 D2) = **refactor the contract**, and **applied**. rag-01.yaml `module: client` → `helpers`, with the transport(server: tools/documents.py) → helpers → storage(repo dep) span documented in-file; never imports client (verified tools/documents.py:7,14, find_relevant_documents :68-90). `server` can't be a contract module (contracts.sh §3b). Contract effects C1/C2/C3 unchanged (C3 stays a code target → Stage 2).
   → Integrated into: .agents/contracts/rag-01.yaml, RFC-003 §D2 / Amendment 2 (2026-05-31)
 - **2026-05-31 | CACHE-01 storage↔cache read-through direction [AMENDMENT] (RFC-002 Amdt 1)**: decision locked (RFC-003 D1) = **refactor the code** (read-through moves into cache.get; structural edge becomes cache→storage; invalidation back-edge lazy-imported to stay acyclic; dag flip + repoint happen in Stage 2 with the code). CACHE-01.yaml unchanged (already the target). Decision closed; **implementation done** (Stage 2 — see the Stage-2 implementation block).

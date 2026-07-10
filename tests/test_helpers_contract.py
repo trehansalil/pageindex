@@ -434,3 +434,326 @@ def test_fix2_c6_route_and_extract_flat_stitches_paginated_table():  # TABLE-01-
     assert "quality" in merged, "flag_empty_cells post-pass must annotate 'quality'"
     assert "empty_cell_ratio" in merged["quality"]
     assert "suspected_miss" in merged["quality"]
+
+
+# ── D5 (ISS-17): _llm() guards against None content ───────────────────────────
+
+
+async def test_llm_none_content_returns_empty_string(caplog):
+    """D5-ISS-17: when the OpenAI response content is None, _llm logs a WARNING
+    and returns "" instead of raising AttributeError on .strip()."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = None
+
+    with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
+        MockFactory.return_value.chat.completions.create = AsyncMock(
+            return_value=mock_response
+        )
+        with caplog.at_level("WARNING"):
+            result = await helpers._llm("some prompt")
+
+    assert result == ""
+    assert any(
+        "LLM returned None content" in record.message for record in caplog.records
+    )
+
+
+async def test_llm_valid_content_strips():
+    """D5-ISS-17: existing behavior unchanged — valid content is stripped."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = "  result  "
+
+    with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
+        MockFactory.return_value.chat.completions.create = AsyncMock(
+            return_value=mock_response
+        )
+        result = await helpers._llm("some prompt")
+
+    assert result == "result"
+
+
+# ── RFC-008 D1 (ISS-07): shared registry-complete check uses the cache.py
+#    singleton + a 60s TTL cache on a positive result ────────────────────────
+
+
+def _reset_registry_complete_cache():
+    helpers._registry_complete_cache = False
+    helpers._registry_complete_cache_ts = 0.0
+
+
+async def test_d1_check_registry_complete_uses_redis_singleton_not_adhoc_connection():
+    """The check must go through cache.get_async_redis() (the shared singleton)
+    rather than opening a fresh ``aioredis.from_url`` connection per call, and
+    must NOT call ``aclose()`` on the returned client (singleton lifecycle is
+    owned by cache.py, not the caller)."""
+    _reset_registry_complete_cache()
+
+    fake_client = AsyncMock()
+    fake_client.aclose = AsyncMock()
+
+    with (
+        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=fake_client)) as mock_get_redis,
+        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)) as mock_is_complete,
+    ):
+        result = await helpers._check_registry_complete_cached()
+
+    assert result is True
+    mock_get_redis.assert_awaited_once()
+    mock_is_complete.assert_awaited_once_with(fake_client)
+    fake_client.aclose.assert_not_awaited()
+
+    _reset_registry_complete_cache()
+
+
+async def test_d1_registry_complete_true_is_served_from_cache_within_ttl():
+    """Once the flag is observed True, a second call within the 60s TTL must
+    be served from the module-level cache without a further Redis round-trip
+    (the flag is monotonic: False -> True exactly once)."""
+    _reset_registry_complete_cache()
+
+    with (
+        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())) as mock_get_redis,
+        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)) as mock_is_complete,
+    ):
+        first = await helpers._check_registry_complete_cached()
+        second = await helpers._check_registry_complete_cached()
+
+    assert first is True
+    assert second is True
+    mock_get_redis.assert_awaited_once()
+    mock_is_complete.assert_awaited_once()
+
+    _reset_registry_complete_cache()
+
+
+async def test_d1_registry_complete_false_is_not_cached_and_rechecks_redis():
+    """A False result must never be trusted/cached — the flag may flip to
+    True at any moment, so every call re-checks Redis until it observes
+    True."""
+    _reset_registry_complete_cache()
+
+    with (
+        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())) as mock_get_redis,
+        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=False)) as mock_is_complete,
+    ):
+        first = await helpers._check_registry_complete_cached()
+        second = await helpers._check_registry_complete_cached()
+
+    assert first is False
+    assert second is False
+    assert mock_get_redis.await_count == 2
+    assert mock_is_complete.await_count == 2
+
+    _reset_registry_complete_cache()
+
+
+async def test_d1_registry_complete_cache_expires_after_ttl(monkeypatch):
+    """After the 60s TTL elapses, a cached True is re-verified against Redis
+    (defence-in-depth; the flag is monotonic so this should still return
+    True, but the cache must not be trusted forever without the TTL logic
+    being exercised)."""
+    _reset_registry_complete_cache()
+
+    times = [1000.0, 1061.0]
+
+    def _fake_monotonic():
+        return times.pop(0) if times else 1061.0
+
+    monkeypatch.setattr(helpers.time, "monotonic", _fake_monotonic)
+
+    with (
+        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())) as mock_get_redis,
+        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)) as mock_is_complete,
+    ):
+        first = await helpers._check_registry_complete_cached()
+        second = await helpers._check_registry_complete_cached()
+
+    assert first is True
+    assert second is True
+    # First call misses cache (fresh module state) and hits Redis; second call
+    # is issued after the TTL window (1061 - 1000 = 61s > 60s), so it also
+    # hits Redis rather than trusting the stale cache entry.
+    assert mock_get_redis.await_count == 2
+
+    _reset_registry_complete_cache()
+
+
+async def test_d1_tools_documents_list_docs_uses_shared_cached_check(monkeypatch):
+    """tools.documents._list_docs_with_fallback must call the shared
+    helpers._check_registry_complete_cached() rather than opening its own
+    ad-hoc Redis connection."""
+    import dataclasses
+
+    from pageindex_mcp.tools import documents as documents_mod
+
+    monkeypatch.setattr(
+        documents_mod,
+        "settings",
+        dataclasses.replace(
+            documents_mod.settings,
+            registry_enabled=True,
+            postgres_dsn="postgresql://user:pass@localhost:5432/pageindex",
+        ),
+    )
+    monkeypatch.setattr("pageindex_mcp.registry.get_pool", lambda: object())
+
+    with patch(
+        "pageindex_mcp.tools.documents._check_registry_complete_cached",
+        new=AsyncMock(return_value=False),
+    ) as mock_check:
+        docs, used_registry = await documents_mod._list_docs_with_fallback()
+
+    mock_check.assert_awaited_once()
+    assert used_registry is False
+
+
+# ── RFC-008 D6 (ISS-18): _prefilter_docs JSON extraction + narrowed catch ─────
+#    Regex-extract the JSON object (tolerate ```json fences / prose), narrow the
+#    catch to (JSONDecodeError, KeyError, TypeError), log at WARNING, and keep the
+#    fail-OPEN fallback (return every doc_id) on parse failure.
+
+
+def _two_doc_summaries():
+    return [
+        {"doc_id": "a", "doc_name": "Alpha"},
+        {"doc_id": "b", "doc_name": "Beta"},
+    ]
+
+
+async def test_d6_prefilter_parses_json_wrapped_in_markdown_fences():
+    """D6-ISS-18: an LLM response wrapping the JSON in ```json fences (plus a
+    prose preamble) is extracted and parsed — no fallback to the all-docs path."""
+    summaries = _two_doc_summaries()
+    fenced = 'Here is the result:\n```json\n{"relevant_doc_ids": ["a"]}\n```\n'
+
+    with patch.object(helpers, "_llm", new_callable=AsyncMock, return_value=fenced):
+        result = await helpers._prefilter_docs("q", summaries)
+
+    assert result == ["a"]
+
+
+async def test_d6_prefilter_malformed_json_falls_back_to_all_docs_with_warning(caplog):
+    """D6-ISS-18: unparseable (brace-less) response fails open — every doc_id is
+    returned as a candidate and the failure logs at WARNING, not ERROR."""
+    summaries = _two_doc_summaries()
+
+    with patch.object(
+        helpers, "_llm", new_callable=AsyncMock, return_value="no json here at all"
+    ):
+        with caplog.at_level("WARNING"):
+            result = await helpers._prefilter_docs("q", summaries)
+
+    assert result == ["a", "b"]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("failed to parse" in r.message for r in warnings)
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+
+async def test_d6_prefilter_typeerror_shaped_json_falls_back_to_all_docs(caplog):
+    """D6-ISS-18: valid JSON whose relevant_doc_ids is a non-list (len() raises
+    TypeError) is caught by the narrowed handler and fails open to all docs."""
+    summaries = _two_doc_summaries()
+
+    with patch.object(
+        helpers, "_llm", new_callable=AsyncMock, return_value='{"relevant_doc_ids": 5}'
+    ):
+        with caplog.at_level("WARNING"):
+            result = await helpers._prefilter_docs("q", summaries)
+
+    assert result == ["a", "b"]
+    assert any(
+        r.levelname == "WARNING" and "failed to parse" in r.message
+        for r in caplog.records
+    )
+
+
+# ── RFC-008 D7 (ISS-19): _search_one_doc JSON extraction + catch + counter ────
+#    Same regex extraction + narrowed catch + WARNING as D6, plus a
+#    RAG_PARSE_FAILURES.labels(doc_id=...) increment on the ids=[] fallback.
+
+
+def _tree_doc():
+    return {
+        "doc_name": "tree.pdf",
+        "structure": [
+            {"node_id": "n1", "title": "A", "summary": "a", "text": "alpha text"},
+        ],
+    }
+
+
+async def test_d7_search_one_doc_parses_json_after_prose_preamble():
+    """D7-ISS-19: a response with a prose preamble before the JSON object is
+    extracted and parsed — the selected node's text is returned."""
+    import asyncio
+
+    data = _tree_doc()
+    sem = asyncio.Semaphore(1)
+    raw = 'Sure! Here you go: {"thinking": "t", "node_list": ["n1"]}'
+
+    with patch.object(helpers, "_llm", new_callable=AsyncMock, return_value=raw):
+        result = await helpers._search_one_doc("q", "doc7ok", data, sem)
+
+    assert result is not None
+    assert result[2] == "alpha text"
+
+
+async def test_d7_search_one_doc_malformed_falls_back_ids_empty_warns_and_counts(caplog):
+    """D7-ISS-19: an unparseable response fails open to ids=[] (returns None,
+    no context), logs at WARNING (not ERROR), and increments RAG_PARSE_FAILURES
+    labelled with the doc_id in scope."""
+    import asyncio
+
+    from pageindex_mcp.metrics import RAG_PARSE_FAILURES
+
+    data = _tree_doc()
+    sem = asyncio.Semaphore(1)
+    doc_id = "doc7_malformed"
+
+    before = RAG_PARSE_FAILURES.labels(doc_id=doc_id)._value.get()
+
+    with patch.object(
+        helpers, "_llm", new_callable=AsyncMock, return_value="not json, no braces"
+    ):
+        with caplog.at_level("WARNING"):
+            result = await helpers._search_one_doc("q", doc_id, data, sem)
+
+    after = RAG_PARSE_FAILURES.labels(doc_id=doc_id)._value.get()
+
+    # ids=[] → no nodes matched → no context extracted → None
+    assert result is None
+    assert after - before == 1
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("failed to parse LLM response" in r.message for r in warnings)
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+
+async def test_d7_search_one_doc_typeerror_shaped_json_fails_open_and_counts():
+    """D7-ISS-19: valid JSON whose node_list is a non-list (len() raises
+    TypeError) is caught by the narrowed handler — no raise, counter increments,
+    and the function returns None (fail-open holds)."""
+    import asyncio
+
+    from pageindex_mcp.metrics import RAG_PARSE_FAILURES
+
+    data = _tree_doc()
+    sem = asyncio.Semaphore(1)
+    doc_id = "doc7_typeerror"
+
+    before = RAG_PARSE_FAILURES.labels(doc_id=doc_id)._value.get()
+
+    with patch.object(
+        helpers,
+        "_llm",
+        new_callable=AsyncMock,
+        return_value='{"thinking": "t", "node_list": 3}',
+    ):
+        # Must not raise — the narrowed catch handles TypeError from len().
+        result = await helpers._search_one_doc("q", doc_id, data, sem)
+
+    after = RAG_PARSE_FAILURES.labels(doc_id=doc_id)._value.get()
+    assert result is None
+    assert after - before == 1

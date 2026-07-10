@@ -170,6 +170,34 @@ CONVERTER_CHILD_TIMEOUT_TOTAL = Counter(
     "before the child emitted its terminal JSON line.",
 )
 
+# ---------------------------------------------------------------------------
+# Observability & error-handling metrics (RFC-008)
+# ---------------------------------------------------------------------------
+MCP_AUTH_DISABLED = Gauge(
+    "pageindex_mcp_auth_disabled",
+    "1 when MCP_BEARER_TOKEN is empty (bearer-token auth disabled), 0 when set "
+    "(RFC-008 D3/ISS-13).",
+)
+CACHE_ERRORS = Counter(
+    "pageindex_cache_errors_total",
+    "Redis cache errors caught in cache.py (RFC-008 D4/ISS-16). Cache stays "
+    "fail-open; this counter makes the previously debug-logged failures visible.",
+    ["operation"],
+)
+IMAGE_DESCRIBE_FAILURES = Counter(
+    "pageindex_image_describe_failures_total",
+    "OpenAI vision image-describe calls that fell back to the \"image\" "
+    "placeholder (RFC-008 D2/ISS-08). Labelled by exception type.",
+    ["error_type"],
+)
+RAG_PARSE_FAILURES = Counter(
+    "pageindex_rag_parse_failures_total",
+    "_search_one_doc LLM responses that failed JSON extraction/parsing "
+    "(RFC-008 D7/ISS-19); falls back to ids=[]. doc_id cardinality is bounded "
+    "by the prefilter's top-K candidate set (RFC-006 D2), not the full corpus.",
+    ["doc_id"],
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers

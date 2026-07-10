@@ -6,7 +6,7 @@ import time
 
 from ..cache import get_doc
 from ..config import settings
-from ..helpers import _build_node_map, _rag, _strip_text, flat_doc_view
+from ..helpers import _build_node_map, _check_registry_complete_cached, _rag, _strip_text, flat_doc_view
 from ..metrics import (
     DOCUMENTS_TOTAL,
     REGISTRY_FALLBACK_TOTAL,
@@ -38,7 +38,7 @@ async def _list_docs_with_fallback() -> tuple[list[dict], bool]:
         logger.debug("_list_docs_with_fallback: registry disabled — using MinIO listing")
         return list_processed_docs(), False
 
-    from ..registry import get_pool, is_registry_complete, list_docs
+    from ..registry import get_pool, list_docs
 
     pool = get_pool()
     if pool is None:
@@ -48,17 +48,10 @@ async def _list_docs_with_fallback() -> tuple[list[dict], bool]:
         )
         return list_processed_docs(), False
 
-    # Check the backfill-complete flag from Redis before trusting the registry.
-    # Importing cache lazily avoids a circular import (cache → storage → tools).
-    try:
-        import redis.asyncio as aioredis
-
-        r = aioredis.from_url(settings.redis_url, decode_responses=False)
-        complete = await is_registry_complete(r)
-        await r.aclose()
-    except Exception as exc:
-        logger.warning("_list_docs_with_fallback: Redis error checking registry flag: %s", exc)
-        complete = False
+    # Check the backfill-complete flag (RFC-008 D1: shared cached check in
+    # helpers.py, uses the cache.py Redis singleton instead of an ad-hoc
+    # connection, and a 60s TTL cache on a positive result).
+    complete = await _check_registry_complete_cached()
 
     if not complete:
         REGISTRY_FALLBACK_TOTAL.labels(reason="backfill_incomplete").inc()

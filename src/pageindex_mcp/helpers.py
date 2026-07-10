@@ -14,6 +14,7 @@ from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
     RAG_DURATION,
+    RAG_PARSE_FAILURES,
     RAG_SEARCHES,
 )
 
@@ -48,9 +49,30 @@ async def _llm(prompt: str, model: str | None = None) -> str:
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
-        return r.choices[0].message.content.strip()
+        content = r.choices[0].message.content
+        if content is None:
+            logger.warning("LLM returned None content for prompt %s", prompt[:80])
+            return ""
+        return content.strip()
     finally:
         LLM_DURATION.observe(time.monotonic() - start)
+
+
+def _extract_json_object(raw: str) -> str:
+    """Extract the outermost JSON object from an LLM response.
+
+    LLMs frequently wrap JSON in markdown ```json fences or surround it with
+    prose ("Here is the result: {...}"). Grab the ``{...}`` span so the
+    downstream ``json.loads`` sees clean JSON. Falls back to the stripped input
+    when no braces are present (``json.loads`` then raises and the caller handles
+    the failure). Shared by ``_prefilter_docs`` (RFC-008 D6) and
+    ``_search_one_doc`` (RFC-008 D7) — both need identical fence/prose-tolerant
+    extraction.
+    """
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        return match.group(0)
+    return raw.strip()
 
 
 async def _prefilter_docs(
@@ -87,16 +109,15 @@ async def _prefilter_docs(
     raw = await _llm(prompt, model=_FILTER_MODEL)
     logger.info("RAG TIMING: pre-filter LLM call = %.3fs", time.monotonic() - t0)
 
-    clean = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-    clean = re.sub(r"\n?```$", "", clean).strip()
+    clean = _extract_json_object(raw)
 
     try:
         parsed = json.loads(clean)
         ids = parsed.get("relevant_doc_ids", [])
         logger.info("RAG pre-filter: %d/%d docs selected: %s", len(ids), len(doc_summaries), ids)
         return ids
-    except Exception as e:
-        logger.error("RAG pre-filter: failed to parse response, using all docs: %s", e)
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning("RAG pre-filter: failed to parse response, using all docs: %s", e)
         return [d["doc_id"] for d in doc_summaries]
 
 
@@ -188,8 +209,7 @@ async def _search_one_doc(
         logger.info("RAG TIMING: LLM search(%s) = %.3fs", doc_id, time.monotonic() - llm_t0)
         logger.debug("RAG: LLM raw response for doc %s: %s", doc_id, raw[:500])
 
-        clean = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-        clean = re.sub(r"\n?```$", "", clean).strip()
+        clean = _extract_json_object(raw)
 
         try:
             parsed = json.loads(clean)
@@ -197,9 +217,10 @@ async def _search_one_doc(
             thinking = parsed.get("thinking", "")
             logger.info("RAG: doc %s — LLM selected %d node(s): %s", doc_id, len(ids), ids)
             logger.info("RAG: doc %s — LLM reasoning: %s", doc_id, thinking[:300])
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
             ids = []
-            logger.error(
+            RAG_PARSE_FAILURES.labels(doc_id=doc_id).inc()
+            logger.warning(
                 "RAG: failed to parse LLM response for doc %s: %s — raw: %s", doc_id, e, clean[:300]
             )
 
@@ -338,6 +359,49 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     return result
 
 
+_REGISTRY_COMPLETE_TTL_S = 60.0
+_registry_complete_cache: bool = False
+_registry_complete_cache_ts: float = 0.0
+
+
+async def _check_registry_complete_cached() -> bool:
+    """RFC-008 D1 (ISS-07): shared registry-complete check with a 60s cache.
+
+    Uses the ``cache.py`` singleton (``get_async_redis``) instead of opening
+    an ad-hoc connection per call, and caches a positive result for
+    ``_REGISTRY_COMPLETE_TTL_S`` seconds. The flag is monotonic — it flips
+    ``False`` -> ``True`` exactly once, when the initial registry backfill
+    finishes — so caching ``True`` is safe and avoids a Redis round-trip in
+    the steady-state case. A cached ``False`` is never trusted (it may flip
+    to ``True`` at any time), so every call re-checks Redis until the flag is
+    observed ``True``.
+
+    Shared by ``_registry_narrow`` (this module) and
+    ``tools.documents._list_docs_with_fallback``.
+    """
+    global _registry_complete_cache, _registry_complete_cache_ts
+
+    now = time.monotonic()
+    if _registry_complete_cache and (now - _registry_complete_cache_ts) < _REGISTRY_COMPLETE_TTL_S:
+        return True
+
+    from .cache import get_async_redis
+    from .registry import is_registry_complete
+
+    try:
+        r = await get_async_redis()
+        complete = await is_registry_complete(r)
+    except Exception as exc:
+        logger.warning("_check_registry_complete_cached: Redis error checking registry flag: %s", exc)
+        return False
+
+    if complete:
+        _registry_complete_cache = True
+        _registry_complete_cache_ts = now
+
+    return complete
+
+
 async def _registry_narrow(query: str, doc_ids: list[str]) -> list[str]:
     """RFC-006 Phase 1.4: narrow ``doc_ids`` via Stage A (facet) then Stage B (BM25).
 
@@ -357,23 +421,14 @@ async def _registry_narrow(query: str, doc_ids: list[str]) -> list[str]:
     if not settings.registry_enabled or not settings.postgres_dsn:
         return doc_ids
 
-    from .registry import get_pool, is_registry_complete, stage_a_filter, stage_b_candidates
+    from .registry import get_pool, stage_a_filter, stage_b_candidates
 
     pool = get_pool()
     if pool is None:
         return doc_ids
 
     # Honour the same backfill-complete gate as the listing path.
-    try:
-        import redis.asyncio as aioredis
-
-        r = aioredis.from_url(settings.redis_url, decode_responses=False)
-        complete = await is_registry_complete(r)
-        await r.aclose()
-    except Exception as exc:
-        logger.warning("_registry_narrow: Redis error checking registry flag: %s", exc)
-        return doc_ids
-
+    complete = await _check_registry_complete_cached()
     if not complete:
         return doc_ids
 
