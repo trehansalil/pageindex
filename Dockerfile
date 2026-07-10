@@ -59,7 +59,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libreoffice \
         libgl1 \
         libglib2.0-0 \
+        tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
+
+# Pre-bake tessdata files for production OCR (deu, eng, ara).
+# D5b (ISS-14): Remove the runtime download path entirely in production.
+# The runtime download hardened in D5 (converters.py) remains as a dev/local fallback.
+RUN mkdir -p /opt/tessdata && \
+    curl -fsSL -o /opt/tessdata/deu.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/deu.traineddata && \
+    curl -fsSL -o /opt/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
+    curl -fsSL -o /opt/tessdata/ara.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/ara.traineddata
 
 WORKDIR /app
 
@@ -75,6 +84,8 @@ COPY --from=builder /opt/docling-models /opt/docling-models
 ENV PATH="/app/.venv/bin:$PATH"
 # Point docling at the baked-in artifacts so workers never need network egress.
 ENV DOCLING_ARTIFACTS_PATH=/opt/docling-models
+# Point tesseract at pre-baked tessdata files so workers never need network egress (D5b, ISS-14).
+ENV TESSDATA_PREFIX=/opt/tessdata
 
 EXPOSE 8201
 

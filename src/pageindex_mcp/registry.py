@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS doc_registry (
     doc_family      TEXT        NOT NULL DEFAULT '',
     effective_date  TEXT        NOT NULL DEFAULT '',
     doc_description TEXT        NOT NULL DEFAULT '',
+    node_count      INTEGER,
     search_text     tsvector    GENERATED ALWAYS AS (
         to_tsvector('simple',
             coalesce(doc_name, '') || ' ' ||
@@ -84,6 +85,15 @@ CREATE INDEX IF NOT EXISTS doc_registry_search_gin
 _CREATE_TIME_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS doc_registry_processed_at_idx
     ON doc_registry (processed_at DESC);
+"""
+
+# D2 (RFC-009 / ISS-05): additive column for node_count. Follows this repo's
+# raw-DDL bootstrap convention (no Alembic) — an idempotent ADD COLUMN IF NOT
+# EXISTS run at init so pre-existing deployments migrate in place. Nullable:
+# rows written before this change stay NULL until the RFC-006 D3 backfill
+# re-generates them.
+_MIGRATE_NODE_COUNT_SQL = """
+ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS node_count INTEGER;
 """
 
 # ---------------------------------------------------------------------------
@@ -108,6 +118,7 @@ async def init_registry(dsn: str) -> None:
     _pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
     async with _pool.acquire() as conn:
         await conn.execute(_CREATE_TABLE_SQL)
+        await conn.execute(_MIGRATE_NODE_COUNT_SQL)
         await conn.execute(_CREATE_GIN_INDEX_SQL)
         await conn.execute(_CREATE_TIME_INDEX_SQL)
     logger.info("registry: schema ready (doc_registry)")
@@ -135,8 +146,8 @@ _UPSERT_SQL = """
 INSERT INTO doc_registry (
     doc_id, doc_name, source_url, processed_at,
     content_class, sha256, product, tier, doc_family,
-    effective_date, doc_description
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    effective_date, doc_description, node_count
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (doc_id) DO UPDATE SET
     doc_name        = EXCLUDED.doc_name,
     source_url      = EXCLUDED.source_url,
@@ -147,7 +158,8 @@ ON CONFLICT (doc_id) DO UPDATE SET
     tier            = EXCLUDED.tier,
     doc_family      = EXCLUDED.doc_family,
     effective_date  = EXCLUDED.effective_date,
-    doc_description = EXCLUDED.doc_description;
+    doc_description = EXCLUDED.doc_description,
+    node_count      = EXCLUDED.node_count;
 """
 
 
@@ -178,6 +190,10 @@ async def upsert_doc(meta: dict) -> None:
         meta.get("doc_family", ""),
         meta.get("effective_date", ""),
         meta.get("doc_description", ""),
+        # D2 (RFC-009): nullable node_count column. None when the caller has no
+        # count (e.g. a raw legacy .meta.json) — read_registry_fields always
+        # supplies it for freshly ingested docs.
+        meta.get("node_count"),
     )
     logger.debug("registry: upserted doc_id=%s", doc_id)
 
@@ -205,7 +221,7 @@ async def delete_doc(doc_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 _LIST_SQL = """
-SELECT doc_id, doc_name, source_url, processed_at, content_class
+SELECT doc_id, doc_name, source_url, processed_at, content_class, node_count
 FROM   doc_registry
 ORDER  BY processed_at DESC
 LIMIT  $1 OFFSET $2;
@@ -233,6 +249,10 @@ async def list_docs(limit: int = 100, offset: int = 0) -> list[dict] | None:
                 "source_url": r["source_url"],
                 "processed_at": r["processed_at"],
                 "content_class": r["content_class"],
+                # D2 (RFC-009): node_count surfaced so recent_documents (D3) can
+                # paginate without deserializing trees. NULL for rows written
+                # before the migration/backfill.
+                "node_count": r["node_count"],
             }
             for r in rows
         ]

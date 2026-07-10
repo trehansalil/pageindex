@@ -601,14 +601,21 @@ async def test_d1_tools_documents_list_docs_uses_shared_cached_check(monkeypatch
     )
     monkeypatch.setattr("pageindex_mcp.registry.get_pool", lambda: object())
 
+    # RFC-009 D6: backfill-incomplete no longer falls back to MinIO; it raises
+    # RegistryUnavailableError. The RFC-008 D1 contract still holds — the shared
+    # helpers._check_registry_complete_cached() is what decides readiness (no
+    # ad-hoc Redis connection).
+    import pytest
+
     with patch(
         "pageindex_mcp.tools.documents._check_registry_complete_cached",
         new=AsyncMock(return_value=False),
     ) as mock_check:
-        docs, used_registry = await documents_mod._list_docs_with_fallback()
+        with pytest.raises(documents_mod.RegistryUnavailableError) as excinfo:
+            await documents_mod._list_docs_with_fallback()
 
     mock_check.assert_awaited_once()
-    assert used_registry is False
+    assert excinfo.value.reason == "backfill_incomplete"
 
 
 # ── RFC-008 D6 (ISS-18): _prefilter_docs JSON extraction + narrowed catch ─────

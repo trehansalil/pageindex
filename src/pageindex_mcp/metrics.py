@@ -99,10 +99,12 @@ DOCUMENTS_TOTAL = Gauge(
 # ---------------------------------------------------------------------------
 REGISTRY_FALLBACK_TOTAL = Counter(
     "pageindex_registry_fallback_total",
-    "Times the read path fell back from the Postgres registry to the MinIO "
-    "list_processed_docs() scan — either because registry_enabled=False, "
-    "POSTGRES_DSN is unset, the registry is not yet backfill-complete, or a "
-    "transient Postgres error occurred. Observable, never silent (RFC-006 F4).",
+    "Times the Postgres registry could not serve the read path, by 'reason' — "
+    "registry_enabled=False / POSTGRES_DSN unset (disabled), pool_not_ready, "
+    "backfill_incomplete, or a transient postgres_error. Pre-RFC-009-D6 each of "
+    "these drove a MinIO list_processed_docs() fallback; from D6 the read path is "
+    "registry-only and these instead surface an explicit error. Observable, never "
+    "silent (RFC-006 F4).",
     ["reason"],
 )
 

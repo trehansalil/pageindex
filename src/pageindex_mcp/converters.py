@@ -752,19 +752,47 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
     return available
 
 
+_TESSDATA_MAX_BYTES = 100 * 1024 * 1024  # 100 MB cap (RFC-009 D5 / Property 5)
+_TESSDATA_CHUNK_BYTES = 1024 * 1024  # 1 MB chunked read
+_TESSDATA_TIMEOUT_S = 30
+
+
 def _try_download_tessdata(lang: str, prefix: str) -> bool:
-    """Best-effort fetch of one traineddata file from the official repo. Never raises."""
+    """Best-effort fetch of one traineddata file from the official repo. Never raises.
+
+    Hardened per RFC-009 D5 (ISS-14): bounded by a 30s connection timeout and a
+    100 MB total-size cap, both enforced via a chunked read loop. Any failure
+    (timeout, oversize, network/HTTP error) cleans up the partial file at
+    ``dest`` before returning False (Design Property 5: Tessdata download bounded).
+    """
     import urllib.request
 
     url = f"https://github.com/tesseract-ocr/tessdata/raw/main/{lang}.traineddata"
     dest = os.path.join(prefix, f"{lang}.traineddata")
     try:
         os.makedirs(prefix, exist_ok=True)
-        urllib.request.urlretrieve(url, dest)
-        logger.info("fetched tessdata for '%s' into %s", lang, prefix)
+        total = 0
+        with urllib.request.urlopen(url, timeout=_TESSDATA_TIMEOUT_S) as resp:
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = resp.read(_TESSDATA_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _TESSDATA_MAX_BYTES:
+                        raise RuntimeError(
+                            f"tessdata download for '{lang}' exceeded {_TESSDATA_MAX_BYTES} byte cap"
+                        )
+                    f.write(chunk)
+        logger.info("fetched tessdata for '%s' into %s (%d bytes)", lang, prefix, total)
         return True
     except Exception as exc:
         logger.warning("tessdata fetch failed for '%s' (%s)", lang, exc)
+        if os.path.exists(dest):
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
         return False
 
 

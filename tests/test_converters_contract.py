@@ -221,6 +221,85 @@ def test_ensure_tessdata_prebaked_is_noop(monkeypatch, tmp_path):  # LANG-01-C3
     assert download_calls == []
 
 
+# ── _try_download_tessdata hardening (RFC-009 D5, Property 5) ────────────────
+from pageindex_mcp.converters import _try_download_tessdata  # noqa: E402
+
+
+class _FakeResponse:
+    """Minimal stand-in for the context-managed object urlopen() returns."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self, _size):
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+
+def test_tessdata_oversize_cleanup(monkeypatch, tmp_path):
+    """Property 5: a download exceeding the 100 MB cap is aborted, returns
+    False, and leaves no partial file behind."""
+    import pageindex_mcp.converters as converters_mod
+
+    over_cap_chunk = b"x" * (converters_mod._TESSDATA_MAX_BYTES + 1)
+
+    def fake_urlopen(url, timeout=None):
+        assert timeout == converters_mod._TESSDATA_TIMEOUT_S
+        return _FakeResponse([over_cap_chunk])
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = converters_mod._try_download_tessdata("ara", str(tmp_path))
+
+    assert result is False
+    assert not (tmp_path / "ara.traineddata").exists()
+
+
+def test_tessdata_timeout(monkeypatch, tmp_path):
+    """Property 5: a socket timeout during download is handled (not raised),
+    returns False, and leaves no partial file behind."""
+    import socket
+
+    import pageindex_mcp.converters as converters_mod
+
+    def fake_urlopen(url, timeout=None):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = converters_mod._try_download_tessdata("eng", str(tmp_path))
+
+    assert result is False
+    assert not (tmp_path / "eng.traineddata").exists()
+
+
+def test_tessdata_valid_download(monkeypatch, tmp_path):
+    """Property 5: a valid download under the cap is written to dest with
+    the correct content and returns True."""
+    import pageindex_mcp.converters as converters_mod
+
+    payload = b"traineddata-bytes" * 100
+
+    def fake_urlopen(url, timeout=None):
+        return _FakeResponse([payload])
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = converters_mod._try_download_tessdata("deu", str(tmp_path))
+
+    assert result is True
+    dest = tmp_path / "deu.traineddata"
+    assert dest.exists()
+    assert dest.read_bytes() == payload
+
+
 # ── xlsx_to_markdown (Fix 4) ──────────────────────────────────────────────────
 import openpyxl  # noqa: E402
 

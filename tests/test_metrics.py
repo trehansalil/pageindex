@@ -68,24 +68,28 @@ def _gauge_value(gauge):
 class TestToolInstrumentation:
     async def test_recent_documents_increments_counter(self):
         before = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
-        with patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=[]):
+        with patch("pageindex_mcp.storage.list_processed_docs", return_value=[]):
             from pageindex_mcp.tools.documents import recent_documents
             await recent_documents()
         after = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
         assert after == before + 1
 
     async def test_recent_documents_updates_documents_gauge(self):
-        fake_docs = [{"doc_id": "a"}, {"doc_id": "b"}]
-        with patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=fake_docs), \
-             patch("pageindex_mcp.tools.documents.get_doc", side_effect=Exception("skip")):
-            from pageindex_mcp.tools.documents import recent_documents
-            await recent_documents()
+        # RFC-009 D6: registry-only read path — DOCUMENTS_TOTAL reflects
+        # registry.count_docs(), not a MinIO listing length.
+        fake_docs = [{"doc_id": "a", "doc_name": "a"}, {"doc_id": "b", "doc_name": "b"}]
+        from pageindex_mcp.tools import documents
+
+        with patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)), \
+             patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=fake_docs)), \
+             patch("pageindex_mcp.registry.count_docs", new=AsyncMock(return_value=2)):
+            await documents.recent_documents()
         assert _gauge_value(DOCUMENTS_TOTAL) == 2
 
     def test_get_document_increments_error_counter_on_failure(self):
         before = _counter_value(TOOL_ERRORS, {"tool": "get_document"})
         with patch("pageindex_mcp.tools.documents.get_doc", side_effect=Exception("boom")), \
-             patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=[]):
+             patch("pageindex_mcp.storage.list_processed_docs", return_value=[]):
             from pageindex_mcp.tools.documents import get_document
             get_document("nonexistent")
         after = _counter_value(TOOL_ERRORS, {"tool": "get_document"})

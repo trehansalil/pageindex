@@ -34,6 +34,10 @@ class Settings:
     registry_delete_timeout_s: float
     upload_api_key: str
     cache_ttl: int
+    # RFC-009 D4: chunked upload with size limit (ISS-15). Requests exceeding
+    # this bound are rejected with HTTP 413 before the whole file is buffered
+    # into memory.
+    max_upload_size_mb: int
     # Auth
     mcp_bearer_token: str
     # LLM configuration
@@ -83,6 +87,7 @@ def _load_settings() -> Settings:
         registry_delete_timeout_s=float(os.environ.get("REGISTRY_DELETE_TIMEOUT_S", "5.0")),
         upload_api_key=os.environ.get("UPLOAD_API_KEY", ""),
         cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
+        max_upload_size_mb=int(os.environ.get("MAX_UPLOAD_SIZE_MB", "100")),
         mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),

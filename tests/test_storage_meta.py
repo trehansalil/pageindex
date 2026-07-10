@@ -83,6 +83,60 @@ def test_list_processed_docs_falls_back_to_full_json(mock_minio):
     assert docs[0]["doc_id"] == "old12345"
 
 
+def test_save_doc_meta_produces_node_count(mock_minio):
+    """D2 / RFC-009 Property 2: save_doc_meta persists node_count computed from
+    the tree structure into the .meta.json sidecar."""
+    # 4 nodes total: Ch1 + its two children (1.1, 1.2) + Ch2.
+    structure = [
+        {
+            "title": "Chapter 1",
+            "nodes": [
+                {"title": "1.1", "nodes": []},
+                {"title": "1.2", "nodes": []},
+            ],
+        },
+        {"title": "Chapter 2", "nodes": []},
+    ]
+    meta = {
+        "doc_id": "tree0001",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-04-08T00:00:00+00:00",
+        "structure": structure,
+    }
+    save_doc_meta("tree0001", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar["node_count"] == 4
+    # The (potentially large) structure itself is NOT persisted in the lean sidecar.
+    assert "structure" not in sidecar
+
+
+def test_backward_compat_missing_node_count(mock_minio):
+    """D2 / RFC-009 Property 2 backward compat: a legacy .meta.json that predates
+    node_count must not break list_processed_docs — the field defaults to None."""
+    meta_obj = MagicMock()
+    meta_obj.object_name = "processed/legacy01.meta.json"
+    mock_minio.list_objects.return_value = [meta_obj]
+
+    # Legacy sidecar: no node_count key at all.
+    legacy_meta = json.dumps({
+        "doc_id": "legacy01",
+        "doc_name": "old.pdf",
+        "source_url": "",
+        "processed_at": "2026-01-01T00:00:00+00:00",
+    }).encode()
+    response = MagicMock()
+    response.read.return_value = legacy_meta
+    mock_minio.get_object.return_value = response
+
+    docs = list_processed_docs()  # must not KeyError
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "legacy01"
+    assert docs[0]["node_count"] is None
+
+
 async def test_delete_doc_removes_meta_sidecar(mock_minio):
     mock_minio.list_objects.return_value = []
     # delete_doc reads the doc first (to capture doc_name for the hash-cache step

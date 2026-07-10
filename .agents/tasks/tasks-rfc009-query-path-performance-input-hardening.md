@@ -1,23 +1,27 @@
 <!-- Space: CITRA -->
+
 <!-- Title: Implementation Plan: Query-Path Performance & Input Hardening -->
+
 <!-- Parent: Tasks -->
+
 <!-- Confluence-Page-ID: 5093720065 -->
+
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5093720065/Implementation+Plan+Query-Path+Performance+Input+Hardening -->
 
 # Implementation Plan: Query-Path Performance & Input Hardening
 
 ## Traceability
 
-| Artifact | Reference |
-|---|---|
-| Governing RFC(s) | [RFC-009: Query-Path Performance & Input Hardening](../rfcs/009-query-path-performance-input-hardening.md) |
-| Design Document | [Design: Query-Path Performance & Input Hardening](../designs/design-rfc009-query-path-performance-input-hardening.md) |
-| PRD / Requirements | `PRD.md` |
-| Hard Rules | [CLAUDE.md HR1 + HR2 + HR5](../rfcs/009-query-path-performance-input-hardening.md#hard-rule-constraints-claudemd--binding) |
-| RFC Implementation Order | [RFC-009 Implementation Plan](../rfcs/009-query-path-performance-input-hardening.md#implementation-plan) |
-| RFC Test Strategy | [RFC-009 Test Strategy](../rfcs/009-query-path-performance-input-hardening.md#test-strategy) |
+| Artifact                      | Reference                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Governing RFC(s)              | [RFC-009: Query-Path Performance &amp; Input Hardening](../rfcs/009-query-path-performance-input-hardening.md)             |
+| Design Document               | [Design: Query-Path Performance &amp; Input Hardening](../designs/design-rfc009-query-path-performance-input-hardening.md) |
+| PRD / Requirements            | `PRD.md`                                                                                                                |
+| Hard Rules                    | [CLAUDE.md HR1 + HR2 + HR5](../rfcs/009-query-path-performance-input-hardening.md#hard-rule-constraints-claudemd--binding) |
+| RFC Implementation Order      | [RFC-009 Implementation Plan](../rfcs/009-query-path-performance-input-hardening.md#implementation-plan)                   |
+| RFC Test Strategy             | [RFC-009 Test Strategy](../rfcs/009-query-path-performance-input-hardening.md#test-strategy)                               |
 | Design Correctness Properties | [Design Correctness Properties](../designs/design-rfc009-query-path-performance-input-hardening.md#correctness-properties) |
-| Design Testing Strategy | [Design Testing Strategy](../designs/design-rfc009-query-path-performance-input-hardening.md#testing-strategy) |
+| Design Testing Strategy       | [Design Testing Strategy](../designs/design-rfc009-query-path-performance-input-hardening.md#testing-strategy)             |
 
 ## Overview
 
@@ -37,7 +41,6 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
       - `get_page_content` (`documents.py:300`) — remove `available` array construction from not-found response
     - Return simple error JSON: `{"error": "Document not found: {doc_id}"}` without the `available` key
     - _Requirements:_ [RFC-009 D1 (ISS-21)](../rfcs/009-query-path-performance-input-hardening.md#d1--remove-on-listing-from-error-paths-iss-21--immediate) | [Design Property 1](../designs/design-rfc009-query-path-performance-input-hardening.md#property-1-no-on-listing-on-error-paths) | [Design Service: tools/documents.py](../designs/design-rfc009-query-path-performance-input-hardening.md#1-toolsdocumentspy) | [Design Sequence: Error Path Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#error-path-flow--d1)
-
   - [ ] <a id="12-error-path-regression-tests-d1"></a>1.2 Write error-path regression tests ([D1](../rfcs/009-query-path-performance-input-hardening.md#d1--remove-on-listing-from-error-paths-iss-21--immediate))
 
     - **[Property 1](../designs/design-rfc009-query-path-performance-input-hardening.md#property-1-no-on-listing-on-error-paths) — No O(N) listing on error paths**: Test each of the three MCP tools with an invalid `doc_id`:
@@ -46,14 +49,12 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
       - Test: `test_get_page_content_not_found_no_listing` — same for `get_page_content`
       - Mock `list_processed_docs` and assert zero calls across all three tests
     - **Validates:** [Design Property 1](../designs/design-rfc009-query-path-performance-input-hardening.md#property-1-no-on-listing-on-error-paths) | [RFC-009 D1 (ISS-21)](../rfcs/009-query-path-performance-input-hardening.md#d1--remove-on-listing-from-error-paths-iss-21--immediate) | [RFC Test Strategy: ISS-21 D1](../rfcs/009-query-path-performance-input-hardening.md#iss-21-d1--error-path-regression)
-
   - [ ] <a id="13-checkpoint--batch-0"></a>1.3 Checkpoint — Batch 0
 
     - Run `uv run pytest` — all existing tests + new Batch 0 tests pass
     - Verify [Property 1](../designs/design-rfc009-query-path-performance-input-hardening.md#property-1-no-on-listing-on-error-paths) green
     - Confirm no behavioral change for well-behaved clients (error response format simplified, not changed in breaking ways)
     - Ask user if questions arise before proceeding
-
 - [ ] <a id="2-batch-1--input-hardening-d4-d5"></a>2. Batch 1 — Input Hardening ([D4](../rfcs/009-query-path-performance-input-hardening.md#d4--chunked-upload-with-size-limit-iss-15), [D5](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate))
 
   *[RFC-009 Batch 1](../rfcs/009-query-path-performance-input-hardening.md#batch-1--short-term-no-cross-rfc-dependencies): "No cross-RFC dependencies — upload size limit and tessdata download hardening"*
@@ -65,14 +66,12 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
     - Abort with HTTP 413 if total bytes exceed `MAX_UPLOAD_SIZE_MB` limit
     - Reassemble chunks with `b"".join(chunks)` after successful size check
     - _Requirements:_ [RFC-009 D4 (ISS-15)](../rfcs/009-query-path-performance-input-hardening.md#d4--chunked-upload-with-size-limit-iss-15) | [Design Property 4](../designs/design-rfc009-query-path-performance-input-hardening.md#property-4-upload-size-bounded) | [Design Service: upload_app.py](../designs/design-rfc009-query-path-performance-input-hardening.md#3-upload_apppy) | [Design Service: settings.py](../designs/design-rfc009-query-path-performance-input-hardening.md#5-settingspy) | [Design Sequence: Upload Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#upload-flow--d4)
-
   - [ ] <a id="22-tessdata-download-hardening-d5"></a>2.2 Harden tessdata download ([D5](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate))
 
     - Replace `urllib.request.urlretrieve` in `converters.py:755-768` with `urllib.request.urlopen(url, timeout=30)` plus chunked read (1 MB chunks)
     - Add 100 MB size cap — abort and clean up partial file (`os.unlink(dest)`) if exceeded
     - On any failure (timeout, size exceeded, network error), ensure partial file is cleaned up
     - _Requirements:_ [RFC-009 D5 (ISS-14)](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate) | [Design Property 5](../designs/design-rfc009-query-path-performance-input-hardening.md#property-5-tessdata-download-bounded) | [Design Service: converters.py](../designs/design-rfc009-query-path-performance-input-hardening.md#4-converterspy) | [Design Sequence: Tessdata Download Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#tessdata-download-flow--d5)
-
   - [ ] <a id="23-input-hardening-tests-d4-d5"></a>2.3 Write input hardening tests ([D4](../rfcs/009-query-path-performance-input-hardening.md#d4--chunked-upload-with-size-limit-iss-15), [D5](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate))
 
     - **[Property 4](../designs/design-rfc009-query-path-performance-input-hardening.md#property-4-upload-size-bounded) — Upload size bounded**:
@@ -85,13 +84,11 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
       - Test: `test_tessdata_timeout` — mock `urlopen` to hang, assert timeout fires within 30s
       - Test: `test_tessdata_valid_download` — mock `urlopen` to return valid data under cap, assert file is written correctly
     - **Validates:** [Design Property 5](../designs/design-rfc009-query-path-performance-input-hardening.md#property-5-tessdata-download-bounded) | [RFC-009 D5 (ISS-14)](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate) | [RFC Test Strategy: ISS-14 D5](../rfcs/009-query-path-performance-input-hardening.md#iss-14-d5--tessdata-hardening)
-
   - [ ] <a id="24-checkpoint--batch-1"></a>2.4 Checkpoint — Batch 1
 
     - Run `uv run pytest` — all tests pass including [Batch 0](#1-batch-0--immediate-d1) + Batch 1
     - Verify [Property 4](../designs/design-rfc009-query-path-performance-input-hardening.md#property-4-upload-size-bounded), [Property 5](../designs/design-rfc009-query-path-performance-input-hardening.md#property-5-tessdata-download-bounded) green
     - Ask user if questions arise before proceeding
-
 - [ ] <a id="3-batch-2--pagination-and-sidecar-d2-d3"></a>3. Batch 2 — Pagination & Sidecar ([D2](../rfcs/009-query-path-performance-input-hardening.md#d2--store-node_count-in-metajson-sidecar-at-save-time-iss-05-short-term), [D3](../rfcs/009-query-path-performance-input-hardening.md#d3--server-side-pagination-for-recent_documents-iss-06))
 
   *[RFC-009 Batch 2](../rfcs/009-query-path-performance-input-hardening.md#batch-2--pagination-fix-depends-on-batch-1--iss-07rfc-008): "Pagination fix — depends on D2 sidecar enrichment + ISS-07/RFC-008 Redis singleton"*
@@ -104,7 +101,6 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
     - Populate `node_count` via dual-write in the registry write path
     - Ensure backward compatibility: existing `.meta.json` sidecars without `node_count` must not break `list_processed_docs` (field defaults to `None`/`0`)
     - _Requirements:_ [RFC-009 D2 (ISS-05)](../rfcs/009-query-path-performance-input-hardening.md#d2--store-node_count-in-metajson-sidecar-at-save-time-iss-05-short-term) | [Design Property 2](../designs/design-rfc009-query-path-performance-input-hardening.md#property-2-node-count-persisted-at-save-time) | [Design Service: storage.py](../designs/design-rfc009-query-path-performance-input-hardening.md#2-storagepy) | [Design Service: registry.py](../designs/design-rfc009-query-path-performance-input-hardening.md#6-registrypy) | [Design Data Model: Meta Sidecar](../designs/design-rfc009-query-path-performance-input-hardening.md#meta-sidecar--d2) | [Design Data Model: Registry Documents Table](../designs/design-rfc009-query-path-performance-input-hardening.md#registry-documents-table--d2) | [Design Sequence: Recent Documents Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#recent-documents-flow--d2--d3) | [CLAUDE.md HR5](../rfcs/009-query-path-performance-input-hardening.md#hard-rule-constraints-claudemd--binding)
-
   - [ ] <a id="32-server-side-pagination-d3"></a>3.2 Implement server-side pagination ([D3](../rfcs/009-query-path-performance-input-hardening.md#d3--server-side-pagination-for-recent_documents-iss-06))
 
     - Pass `limit=page_size, offset=(page-1)*page_size` directly to `list_docs()` on the registry path instead of `limit=100_000, offset=0`
@@ -112,7 +108,6 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
     - On MinIO fallback path, retain existing fetch-all-then-slice behavior (fallback is already degraded; it goes away entirely with [D6](#51-remove-minio-fallback-d6))
     - Add a `count()` query or use the registry's existing count mechanism to preserve `DOCUMENTS_TOTAL` gauge accuracy (currently uses `len(docs)` which would become `page_size` with pagination)
     - _Requirements:_ [RFC-009 D3 (ISS-06)](../rfcs/009-query-path-performance-input-hardening.md#d3--server-side-pagination-for-recent_documents-iss-06) | [Design Property 3](../designs/design-rfc009-query-path-performance-input-hardening.md#property-3-server-side-pagination) | [Design Service: tools/documents.py](../designs/design-rfc009-query-path-performance-input-hardening.md#1-toolsdocumentspy) | [Design Sequence: Recent Documents Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#recent-documents-flow--d2--d3)
-
   - [ ] <a id="33-pagination-and-sidecar-tests-d2-d3"></a>3.3 Write pagination and sidecar tests ([D2](../rfcs/009-query-path-performance-input-hardening.md#d2--store-node_count-in-metajson-sidecar-at-save-time-iss-05-short-term), [D3](../rfcs/009-query-path-performance-input-hardening.md#d3--server-side-pagination-for-recent_documents-iss-06))
 
     - **[Property 2](../designs/design-rfc009-query-path-performance-input-hardening.md#property-2-node-count-persisted-at-save-time) — Node count persisted at save time**:
@@ -124,14 +119,12 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
       - Test: `test_get_doc_not_called_for_node_count` — assert `get_doc` is NOT called for node count enrichment (reads from metadata)
       - Test: `test_pagination_integration_20_docs` — integration test with registry: insert 20 docs, request page 2 size 5, verify exactly 5 results with correct offset
     - **Validates:** [Design Property 3](../designs/design-rfc009-query-path-performance-input-hardening.md#property-3-server-side-pagination) | [RFC-009 D3 (ISS-06)](../rfcs/009-query-path-performance-input-hardening.md#d3--server-side-pagination-for-recent_documents-iss-06) | [RFC Test Strategy: ISS-06 D3](../rfcs/009-query-path-performance-input-hardening.md#iss-06-d3--server-side-pagination)
-
   - [ ] <a id="34-checkpoint--batch-2"></a>3.4 Checkpoint — Batch 2
 
     - Run `uv run pytest` — all tests pass including [Batch 0](#1-batch-0--immediate-d1) + [Batch 1](#2-batch-1--input-hardening-d4-d5) + Batch 2
     - Verify [Property 2](../designs/design-rfc009-query-path-performance-input-hardening.md#property-2-node-count-persisted-at-save-time), [Property 3](../designs/design-rfc009-query-path-performance-input-hardening.md#property-3-server-side-pagination) green
     - Confirm `DOCUMENTS_TOTAL` gauge still reports accurate corpus count with pagination
     - Ask user if questions arise before proceeding
-
 - [ ] <a id="4-batch-3--docker-pre-bake-d5b"></a>4. Batch 3 — Docker Pre-bake ([D5b](../rfcs/009-query-path-performance-input-hardening.md#d5b--pre-bake-tessdata-in-docker-image-iss-14-production))
 
   *[RFC-009 Batch 3](../rfcs/009-query-path-performance-input-hardening.md#batch-3--docker-pre-bake-ops-change): "Ops change only — pre-bake tessdata in Docker image to eliminate runtime downloads"*
@@ -145,14 +138,12 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
     - Formalizes `.tessdata/` as the production-only path; runtime download ([D5](#22-tessdata-download-hardening-d5)) remains as dev/local fallback
     - No code changes required — this is purely an ops/Dockerfile change
     - _Requirements:_ [RFC-009 D5b (ISS-14)](../rfcs/009-query-path-performance-input-hardening.md#d5b--pre-bake-tessdata-in-docker-image-iss-14-production) | [Design Property 6](../designs/design-rfc009-query-path-performance-input-hardening.md#property-6-tessdata-pre-baked-in-production)
-
   - [ ] <a id="42-checkpoint--batch-3"></a>4.2 Checkpoint — Batch 3
 
     - Run `docker build` — image builds successfully
     - Verify tessdata files are present in the image at expected paths (`deu.traineddata`, `eng.traineddata`, `ara.traineddata`)
     - Verify [Property 6](../designs/design-rfc009-query-path-performance-input-hardening.md#property-6-tessdata-pre-baked-in-production) green
     - Ask user if questions arise before proceeding
-
 - [ ] <a id="5-batch-4--registry-only-listing-d6"></a>5. Batch 4 — Registry-Only Listing ([D6](../rfcs/009-query-path-performance-input-hardening.md#d6--remove-minio-fallback-from-_list_docs_with_fallback-iss-05-long-term))
 
   *[RFC-009 Batch 4](../rfcs/009-query-path-performance-input-hardening.md#batch-4--registry-only-listing-depends-on-rfc-007-iss-03--rfc-006-d3-backfill): "Registry-only listing — depends on RFC-007 ISS-03 + RFC-006 D3 backfill completion"*
@@ -167,7 +158,6 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
     - Return error on Postgres failure instead of degraded O(N) MinIO listing
     - Gate deployment on `pageindex:registry:complete` Redis flag being set (confirms RFC-006 D3 backfill is complete)
     - _Requirements:_ [RFC-009 D6 (ISS-05)](../rfcs/009-query-path-performance-input-hardening.md#d6--remove-minio-fallback-from-_list_docs_with_fallback-iss-05-long-term) | [Design Property 7](../designs/design-rfc009-query-path-performance-input-hardening.md#property-7-no-minio-fallback-on-registry-path) | [Design Service: tools/documents.py](../designs/design-rfc009-query-path-performance-input-hardening.md#1-toolsdocumentspy)
-
   - [ ] <a id="52-registry-only-tests-d6"></a>5.2 Write registry-only listing tests ([D6](../rfcs/009-query-path-performance-input-hardening.md#d6--remove-minio-fallback-from-_list_docs_with_fallback-iss-05-long-term))
 
     - **[Property 7](../designs/design-rfc009-query-path-performance-input-hardening.md#property-7-no-minio-fallback-on-registry-path) — No MinIO fallback on registry path**:
@@ -175,14 +165,12 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
       - Test: `test_registry_path_returns_correct_results` — registry path returns correct document listing via single SQL query
       - Test: `test_no_list_processed_docs_calls` — mock `list_processed_docs` and assert zero calls across all listing paths
     - **Validates:** [Design Property 7](../designs/design-rfc009-query-path-performance-input-hardening.md#property-7-no-minio-fallback-on-registry-path) | [RFC-009 D6 (ISS-05)](../rfcs/009-query-path-performance-input-hardening.md#d6--remove-minio-fallback-from-_list_docs_with_fallback-iss-05-long-term) | [RFC Test Strategy: ISS-21 + ISS-05 combined](../rfcs/009-query-path-performance-input-hardening.md#iss-21--iss-05-combined--dos-resistance)
-
   - [ ] <a id="53-checkpoint--batch-4"></a>5.3 Checkpoint — Batch 4
 
     - Run `uv run pytest` — all tests pass including [Batch 0](#1-batch-0--immediate-d1) + [Batch 1](#2-batch-1--input-hardening-d4-d5) + [Batch 2](#3-batch-2--pagination-and-sidecar-d2-d3) + [Batch 3](#4-batch-3--docker-pre-bake-d5b) + Batch 4
     - Verify [Property 7](../designs/design-rfc009-query-path-performance-input-hardening.md#property-7-no-minio-fallback-on-registry-path) green
     - Confirm no `list_processed_docs` calls remain in any listing or error path
     - Ask user if questions arise before proceeding
-
 - [ ] <a id="6-final-checkpoint"></a>6. Final Checkpoint
 
   - Run `uv run pytest` — full test suite passes

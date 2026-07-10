@@ -54,6 +54,42 @@ async def require_api_key(
 
 
 # ---------------------------------------------------------------------------
+# RFC-009 D4 (ISS-15): bounded chunked read
+# ---------------------------------------------------------------------------
+
+_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+
+async def _read_bounded(file: UploadFile, filename: str) -> bytes:
+    """Read an UploadFile in 1 MB chunks, aborting with 413 once the total
+    exceeds settings.max_upload_size_mb. Avoids buffering unbounded uploads
+    into memory in a single file.read() call."""
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            logger.warning(
+                "Rejected oversized upload: %s exceeds %d MB limit",
+                filename,
+                settings.max_upload_size_mb,
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File '{filename}' exceeds maximum upload size of "
+                    f"{settings.max_upload_size_mb} MB"
+                ),
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -84,7 +120,7 @@ def create_upload_app() -> FastAPI:
                         f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(_SUPPORTED))}"
                     ),
                 )
-            file_bytes = await file.read()
+            file_bytes = await _read_bounded(file, filename)
             prepared.append((filename, file_bytes))
 
         # Pass 2: only reached once every file passed validation. Stage to

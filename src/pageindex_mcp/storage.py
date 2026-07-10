@@ -305,6 +305,20 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         # tree-doc sidecar shape is unchanged.
         if meta.get("content_class"):
             sidecar["content_class"] = meta["content_class"]
+        # D2 (RFC-009 / ISS-05): persist node_count at save time so
+        # recent_documents can paginate without deserializing each tree. Prefer an
+        # explicit node_count; otherwise derive it from the tree structure when the
+        # caller supplies one. Computed only for trees that already passed
+        # validate_tree() (HR5) — this adds no new store path. Omitted when no
+        # structure/node_count is available so legacy-shaped callers stay
+        # byte-identical and reads default to None (backward compatible).
+        node_count = meta.get("node_count")
+        if node_count is None and "structure" in meta:
+            from .helpers import _tree_node_count  # lazy: avoid import cycle
+
+            node_count = _tree_node_count(meta.get("structure") or [])
+        if node_count is not None:
+            sidecar["node_count"] = int(node_count)
         content = json.dumps(sidecar, indent=2).encode()
         mc.put_object(
             settings.minio_bucket,
@@ -356,6 +370,12 @@ def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict 
         fields["doc_id"] = doc_id
         if content_class:
             fields["content_class"] = content_class
+        # D2 (RFC-009 / ISS-05): compute node_count from the tree structure here —
+        # the processed doc is already loaded, so this is free — and dual-write it
+        # into the registry's node_count column. Flat docs have no tree → 0.
+        from .helpers import _tree_node_count  # lazy: avoid import cycle
+
+        fields["node_count"] = _tree_node_count(data.get("structure") or [])
         return fields
     except S3Error as e:
         logger.warning("read_registry_fields: %s not readable (%s)", key, e.code)
@@ -409,6 +429,10 @@ def list_processed_docs() -> list[dict]:
                         "source_url": data.get("source_url", ""),
                         "processed_at": data.get("processed_at", ""),
                         "content_class": data.get("content_class", ""),
+                        # D2 (RFC-009): node_count persisted at save time. Legacy
+                        # sidecars predate this field — default to None (never
+                        # KeyError) so recent_documents degrades gracefully.
+                        "node_count": data.get("node_count"),
                     }
                 )
             except Exception as e:

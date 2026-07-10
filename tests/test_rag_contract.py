@@ -21,9 +21,13 @@ async def test_rag_01_c3_no_documents_returns_error_envelope():
     """RAG-01-C3: find_relevant_documents() with zero indexed docs returns the
     query_error_shape envelope (available=[] + error key) and never runs a
     tree-search LLM call. Exercises the real tool entry point."""
+    from pageindex_mcp.tools import documents
     from pageindex_mcp.tools.documents import find_relevant_documents
 
-    with patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=[]), \
+    # RFC-009 D6: registry-only read path — the empty corpus is an empty registry
+    # listing (registry.list_docs -> []), not an empty MinIO scan.
+    with patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)), \
+         patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=[])), \
          patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm:
         raw = await find_relevant_documents("any query")
 

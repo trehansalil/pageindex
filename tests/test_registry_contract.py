@@ -102,6 +102,7 @@ async def test_upsert_maps_all_fields_in_order():
         "doc_family": "phv",
         "effective_date": "2026-01-01",
         "doc_description": "liability terms",
+        "node_count": 42,  # D2 (RFC-009)
     }
     with patch.object(registry, "get_pool", return_value=pool):
         await registry.upsert_doc(meta)
@@ -112,6 +113,7 @@ async def test_upsert_maps_all_fields_in_order():
     assert args[1:] == (
         "abc123", "AKB.pdf", "s3://x", "2026-07-10T00:00:00", "flat_table",
         "deadbeef", "huk", "komfort", "phv", "2026-01-01", "liability terms",
+        42,  # D2 (RFC-009): node_count is the trailing positional param
     )
 
 
@@ -123,8 +125,10 @@ async def test_upsert_defaults_missing_keys_to_empty_string():
     args = pool.execute.await_args.args
     assert args[1] == "abc123"
     assert args[2] == "only-name.pdf"
-    # Everything else defaults to "".
-    assert all(a == "" for a in args[3:])
+    # Text columns default to ""; the trailing node_count (D2) defaults to None
+    # since the caller supplied no count.
+    assert args[-1] is None
+    assert all(a == "" for a in args[3:-1])
 
 
 async def test_upsert_skips_row_with_empty_doc_id():
@@ -143,14 +147,14 @@ async def test_list_docs_maps_rows_to_legacy_shape():
     pool = _mock_pool()
     pool.fetch.return_value = [
         {"doc_id": "d1", "doc_name": "a.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": ""},
+         "processed_at": "2026-07-10", "content_class": "", "node_count": 7},
     ]
     with patch.object(registry, "get_pool", return_value=pool):
         rows = await registry.list_docs(limit=5, offset=0)
 
     assert rows == [
         {"doc_id": "d1", "doc_name": "a.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": ""},
+         "processed_at": "2026-07-10", "content_class": "", "node_count": 7},
     ]
     pool.fetch.assert_awaited_once_with(registry._LIST_SQL, 5, 0)
 
