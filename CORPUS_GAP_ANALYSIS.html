@@ -1,0 +1,535 @@
+<title>PageIndex Corpus Gap Analysis &amp; Fix Plan</title>
+<style>
+  :root {
+    --bg: #fafbfc; --fg: #1a1a2e; --card: #ffffff; --border: #e1e4e8;
+    --accent: #2563eb; --accent-light: #dbeafe; --green: #16a34a; --green-bg: #dcfce7;
+    --amber: #d97706; --amber-bg: #fef3c7; --red: #dc2626; --red-bg: #fee2e2;
+    --purple: #7c3aed; --purple-bg: #ede9fe; --gray: #6b7280; --gray-bg: #f3f4f6;
+    --code-bg: #f1f5f9; --shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d;
+      --accent: #58a6ff; --accent-light: #1c2d41; --green: #3fb950; --green-bg: #1a2e1a;
+      --amber: #d29922; --amber-bg: #2d2a1a; --red: #f85149; --red-bg: #2d1a1a;
+      --purple: #a371f7; --purple-bg: #1e1a2e; --gray: #8b949e; --gray-bg: #21262d;
+      --code-bg: #1c2128; --shadow: 0 1px 3px rgba(0,0,0,.3);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 4px; }
+  h2 { font-size: 1.35rem; font-weight: 600; margin: 32px 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 1.1rem; font-weight: 600; margin: 20px 0 8px; }
+  .subtitle { color: var(--gray); font-size: 0.95rem; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 12px 0; box-shadow: var(--shadow); }
+  .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; letter-spacing: .02em; }
+  .badge-critical { background: var(--red-bg); color: var(--red); }
+  .badge-high { background: var(--amber-bg); color: var(--amber); }
+  .badge-medium { background: var(--purple-bg); color: var(--purple); }
+  .badge-quick { background: var(--green-bg); color: var(--green); }
+  .badge-tradeoff { background: var(--gray-bg); color: var(--gray); }
+  .badge-priority { background: var(--accent-light); color: var(--accent); font-weight: 700; }
+  code { font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 0.85em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  .file-ref { font-size: 0.82em; color: var(--gray); }
+  .file-ref code { font-size: 0.95em; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+  .table-wrap { overflow-x: auto; }
+  th, td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
+  th { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+  .metric { display: inline-block; background: var(--code-bg); border-radius: 6px; padding: 4px 10px; margin: 2px 4px 2px 0; font-size: 0.85rem; }
+  .metric b { color: var(--accent); }
+  .flow-diagram { background: var(--code-bg); border-radius: 8px; padding: 16px; margin: 12px 0; overflow-x: auto; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 20px; margin: 6px 0; }
+  li { margin: 4px 0; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+  .stat-card .num { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+  .stat-card .label { font-size: 0.82rem; color: var(--gray); margin-top: 2px; }
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .toc ol { padding-left: 24px; }
+  .toc li { margin: 3px 0; }
+  details { margin: 8px 0; }
+  details summary { cursor: pointer; font-weight: 500; color: var(--accent); padding: 4px 0; }
+  details summary:hover { text-decoration: underline; }
+  .verdict-box { border-left: 4px solid; padding: 10px 14px; margin: 10px 0; border-radius: 0 6px 6px 0; }
+  .verdict-fix { border-color: var(--green); background: var(--green-bg); }
+  .verdict-trade { border-color: var(--gray); background: var(--gray-bg); }
+  .verdict-stale { border-color: var(--amber); background: var(--amber-bg); }
+  pre.mermaid { background: transparent; padding: 0; margin: 16px 0; }
+</style>
+
+<h1>PageIndex Corpus Gap Analysis &amp; Fix Plan</h1>
+<p class="subtitle">25 documents &middot; 6 systemic gaps &middot; Analyzed 2026-07-14 &middot; Branch: <code>feat/scaling-pageindex</code></p>
+
+<div class="summary-grid">
+  <div class="stat-card"><div class="num">1</div><div class="label">PASS (4%)</div></div>
+  <div class="stat-card"><div class="num">12</div><div class="label">MARGINAL (48%)</div></div>
+  <div class="stat-card"><div class="num">12</div><div class="label">FAIL (48%)</div></div>
+  <div class="stat-card"><div class="num">4</div><div class="label">Fixable gaps</div></div>
+  <div class="stat-card"><div class="num">3</div><div class="label">Trade-offs</div></div>
+</div>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#pipeline">Pipeline Flow</a></li>
+    <li><a href="#overview">Gap Overview &amp; Priority Matrix</a></li>
+    <li><a href="#gap1">Gap 1: OCR Escalation Never Fires</a></li>
+    <li><a href="#gap2">Gap 2: Garble-Gate Text-Blind</a></li>
+    <li><a href="#gap3">Gap 3: Heading-Depth Drift</a></li>
+    <li><a href="#gap4">Gap 4: Presentation-Form Arabic</a></li>
+    <li><a href="#gap5">Gap 5: Arabic Text Quality</a></li>
+    <li><a href="#gap6">Gap 6: Table Column Degradation</a></li>
+    <li><a href="#baseline">Baseline Healthy Thresholds</a></li>
+    <li><a href="#plan">Prioritized Fix Plan</a></li>
+    <li><a href="#tradeoffs">Trade-Offs We Live With</a></li>
+  </ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pipeline">1. Pipeline Flow</h2>
+
+<pre class="mermaid">
+flowchart TD
+    A[PDF uploaded] --> B[pdf_to_markdown_docling<br/><small>converters.py:1048</small>]
+    B --> C{do_ocr?}
+    C -->|default OFF| D[Text-layer extraction]
+    C -->|force_full_page_ocr| E[Tesseract OCR]
+    D --> F[Heading recovery cascade]
+    E --> F
+    F --> G[split_oversized_leaf_nodes<br/><small>helpers.py:797</small>]
+    G --> H[validate_tree<br/><small>helpers.py:528</small>]
+    H -->|node_count &lt; 3| I{Gap 1 check}
+    H -->|depth &lt; 2| I
+    H -->|garbling| J[OCR Escalation<br/><small>client.py:455</small>]
+    H -->|PASS| K[save_doc<br/><small>storage.py:79</small>]
+    I -->|image-only?| L["**GAP 1**: No OCR trigger"]
+    I -->|has text| M[route_and_extract_flat<br/><small>helpers.py:1031</small>]
+    J --> N{retry ok?}
+    N -->|yes| K
+    N -->|no| O[LowQualityTreeError]
+    M --> P[save_flat_doc<br/><small>storage.py:133</small>]
+    L --> P
+
+    style L fill:#fee2e2,stroke:#dc2626,color:#1a1a2e
+    style J fill:#dcfce7,stroke:#16a34a,color:#1a1a2e
+    style K fill:#dcfce7,stroke:#16a34a,color:#1a1a2e
+</pre>
+
+<!-- ============================================================ -->
+<h2 id="overview">2. Gap Overview &amp; Priority Matrix</h2>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Gap</th><th>Root Cause</th><th>Docs</th><th>Severity</th><th>Verdict</th><th>Priority</th><th>Effort</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><a href="#gap4">4</a></td><td>Stale corpus (pre-Fix-1)</td><td>1</td>
+      <td><span class="badge badge-high">High</span></td>
+      <td><span class="badge badge-quick">Reprocess</span></td>
+      <td><span class="badge badge-priority">P0</span></td><td>0 lines</td>
+    </tr>
+    <tr>
+      <td><a href="#gap3">3a</a></td><td>2 docs processed before Fix-1</td><td>2</td>
+      <td><span class="badge badge-critical">Critical</span></td>
+      <td><span class="badge badge-quick">Reprocess</span></td>
+      <td><span class="badge badge-priority">P0</span></td><td>0 lines</td>
+    </tr>
+    <tr>
+      <td><a href="#gap1">1</a></td><td>OCR defaults OFF; flat route has no image-density check</td><td>6</td>
+      <td><span class="badge badge-critical">Critical</span></td>
+      <td><span class="badge badge-quick">Fixable</span></td>
+      <td><span class="badge badge-priority">P1</span></td><td>~35 lines</td>
+    </tr>
+    <tr>
+      <td><a href="#gap6">6c</a></td><td>TOC dot-leader pages misclassified as tables</td><td>1</td>
+      <td><span class="badge badge-medium">Medium</span></td>
+      <td><span class="badge badge-quick">Fixable</span></td>
+      <td><span class="badge badge-priority">P1</span></td><td>~20 lines</td>
+    </tr>
+    <tr>
+      <td><a href="#gap2">2</a></td><td>Garble-gate only checks NUL/FFFD/control-chars</td><td>3</td>
+      <td><span class="badge badge-high">High</span></td>
+      <td><span class="badge badge-quick">Fixable</span></td>
+      <td><span class="badge badge-priority">P2</span></td><td>~43 lines</td>
+    </tr>
+    <tr>
+      <td><a href="#gap3">3b</a></td><td>Docling emits indented headings; tree builder ignores them</td><td>4</td>
+      <td><span class="badge badge-critical">Critical</span></td>
+      <td><span class="badge badge-quick">Fixable</span></td>
+      <td><span class="badge badge-priority">P2</span></td><td>~30 lines</td>
+    </tr>
+    <tr>
+      <td><a href="#gap5">5a</a></td><td>Docling bug: في&rarr;# substitution</td><td>1</td>
+      <td><span class="badge badge-high">High</span></td>
+      <td><span class="badge badge-quick">Fixable</span></td>
+      <td><span class="badge badge-priority">P3</span></td><td>Upstream+interim</td>
+    </tr>
+    <tr>
+      <td><a href="#gap5">5b</a></td><td>RTL table word-order reversal (upstream)</td><td>1</td>
+      <td><span class="badge badge-high">High</span></td>
+      <td><span class="badge badge-tradeoff">Trade-off</span></td>
+      <td>&#8212;</td><td>Flag only</td>
+    </tr>
+    <tr>
+      <td><a href="#gap6">6a</a></td><td>Multi-row header flattening (upstream)</td><td>1</td>
+      <td><span class="badge badge-high">High</span></td>
+      <td><span class="badge badge-tradeoff">Trade-off</span></td>
+      <td>&#8212;</td><td>Flag only</td>
+    </tr>
+    <tr>
+      <td><a href="#gap6">6b</a></td><td>Icon/checkmark cell loss (rasterized)</td><td>1</td>
+      <td><span class="badge badge-medium">Medium</span></td>
+      <td><span class="badge badge-tradeoff">Trade-off</span></td>
+      <td>&#8212;</td><td>Already flagged</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gap1">3. Gap 1: OCR Escalation Never Fires on Image-Only PDFs</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="badge badge-critical">Critical</span>
+    <span class="badge badge-priority">P1 &mdash; ~35 lines</span>
+  </div>
+
+  <p><strong>Impact:</strong> 6 documents produce completely blank output (0 text chars in 4 docs, 58&ndash;73 chars in 2 partial docs).</p>
+
+  <h3>Root Cause</h3>
+  <p><code>validate_tree()</code> checks <code>node_count &lt; 3</code> <strong>before</strong> garbling. Image-only PDFs produce only <code>&lt;!-- image --&gt;</code> blocks, fail on structure, and route to FLAT-03 &mdash; which has <strong>zero image-density awareness</strong>. OCR escalation at <code>client.py:455</code> is gated on <code>reason == "garbling"</code>, making it structurally unreachable for these documents.</p>
+
+  <div class="file-ref">
+    <code>client.py:455</code> &mdash; OCR escalation (garbling-only gate)<br/>
+    <code>client.py:497-520</code> &mdash; FLAT-03 routing (no image check)<br/>
+    <code>helpers.py:528-540</code> &mdash; validate_tree priority order<br/>
+    <code>converters.py:834</code> &mdash; DOCLING_DO_OCR default "0"
+  </div>
+
+  <h3>Proposed Fix</h3>
+  <div class="verdict-box verdict-fix">
+    <strong>Insert image-ratio pre-check at <code>client.py:497</code></strong> before FLAT-03 routing: if <code>&lt;!-- image --&gt;</code> lines exceed 50% of total lines in a PDF, force one <code>force_full_page_ocr</code> retry with language detection from filename. Reuses existing <code>detect_ocr_langs</code>, <code>ensure_tessdata</code>, <code>pdf_to_markdown_docling</code>, and <code>OCR_ESCALATION_TOTAL</code> metrics. If OCR fails, falls through to FLAT-03 as before &mdash; no worse than today.
+  </div>
+
+  <details>
+    <summary>Affected Documents (6)</summary>
+    <div class="table-wrap">
+    <table>
+      <tr><th>doc_id</th><th>File</th><th>Blocks</th><th>Image%</th><th>Text</th></tr>
+      <tr><td><code>073853bd</code></td><td>MOU MOHRE &amp; Nafis</td><td>13</td><td>100%</td><td>0 chars</td></tr>
+      <tr><td><code>39959dd7</code></td><td>SLA Agreement (Arabic)</td><td>45</td><td>100%</td><td>0 chars</td></tr>
+      <tr><td><code>b604dbaa</code></td><td>Cabinet Resolution (1) 2022</td><td>21</td><td>100%</td><td>0 chars</td></tr>
+      <tr><td><code>0fe0aeef</code></td><td>Cabinet Resolution (106) 2022</td><td>15</td><td>100%</td><td>0 chars</td></tr>
+      <tr><td><code>55410100</code></td><td>UAE Numbers (landscape)</td><td>9</td><td>78%</td><td>58 chars</td></tr>
+      <tr><td><code>11a82180</code></td><td>UAE Numbers (portrait)</td><td>7</td><td>57%</td><td>73 chars</td></tr>
+    </table>
+    </div>
+  </details>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gap2">4. Gap 2: Garble-Gate Checks Structure Only</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="badge badge-high">High</span>
+    <span class="badge badge-priority">P2 &mdash; ~43 lines</span>
+  </div>
+
+  <p><strong>Impact:</strong> 3 documents with semantically garbage text persist as "successful" &mdash; PUA mojibake (21% weird chars), Latin substitution ("&#1570;&#1604; Oleg"), and 86% digit-junk.</p>
+
+  <h3>Root Cause</h3>
+  <p><code>_tree_is_garbled()</code> at <code>helpers.py:509</code> only checks: empty blob, NUL (<code>\x00</code>), replacement char (<code>U+FFFD</code>), and control-char ratio &gt;5%. Three corruption types sail through as valid Unicode. Worse: the flat-doc path <strong>bypasses the garble check entirely</strong> &mdash; <code>4f37b2e3</code> (86% digit-junk) fails on structure, routes to FLAT-03, and is persisted without any text-quality check.</p>
+
+  <div class="file-ref">
+    <code>helpers.py:509-525</code> &mdash; <code>_tree_is_garbled</code> (narrow heuristics)<br/>
+    <code>helpers.py:1031</code> &mdash; <code>route_and_extract_flat</code> (no quality gate)<br/>
+    <code>client.py:497-520</code> &mdash; FLAT-03 routing
+  </div>
+
+  <h3>Proposed Fix (Two Parts)</h3>
+  <div class="verdict-box verdict-fix">
+    <strong>Part A &mdash; Extend <code>_tree_is_garbled</code></strong> (+15 lines at <code>helpers.py:524</code>):<br/>
+    &bull; PUA-char ratio &gt; 3% &rarr; garbled (catches font/CMap mojibake)<br/>
+    &bull; Digit ratio &gt; 60% on blobs &gt; 500 chars &rarr; garbled (catches numeric junk)<br/>
+    &bull; Single-token repetition &gt; 30% of all words &rarr; garbled (catches "1651001429"&times;3481)<br/><br/>
+    <strong>Part B &mdash; New <code>_flat_text_is_garbled(md)</code></strong> (+20 lines at <code>helpers.py:~1028</code>):<br/>
+    Same heuristics applied to flat-path markdown before <code>route_and_extract_flat</code>. Wire at <code>client.py:~526</code> &mdash; if garbled, override reason to <code>"garbling"</code> so OCR escalation can fire.
+  </div>
+
+  <details>
+    <summary>False-Positive Safety</summary>
+    <ul>
+      <li><strong>PUA 3%:</strong> German insurance PDFs have 0% PUA. Only broken CMaps produce PUA. Very safe.</li>
+      <li><strong>Digit 60%:</strong> Even world-stats-pocketbook (heavy numbers) is &lt;30% digits due to headers/labels. Safe.</li>
+      <li><strong>Repetition 30%:</strong> Normal docs never have one word &gt;5% of total. Safe.</li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>Affected Documents (3)</summary>
+    <div class="table-wrap">
+    <table>
+      <tr><th>doc_id</th><th>Type</th><th>Garble Ratio</th><th>Passes Gate?</th></tr>
+      <tr><td><code>2c90ef0d</code></td><td>Font mojibake (PUA + HTML entities)</td><td>21.4%</td><td>Yes (0% control chars)</td></tr>
+      <tr><td><code>b1a72fb2</code></td><td>Latin substitution ("&#1570;&#1604; Oleg")</td><td>2.1%</td><td>Yes (localized, keep as MARGINAL)</td></tr>
+      <tr><td><code>4f37b2e3</code></td><td>Digit-junk ("1651001429"&times;3481)</td><td>86.3%</td><td>Never checked (flat path)</td></tr>
+    </table>
+    </div>
+    <p><em>Note: <code>b1a72fb2</code> (2.1% garble) should remain MARGINAL, not rejected &mdash; most text is readable Arabic. The Latin substitution is a trade-off to document.</em></p>
+  </details>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gap3">5. Gap 3: Heading-Depth Drift Traps Article Markers</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="badge badge-critical">Critical</span>
+    <span class="badge badge-priority">P0 (reprocess) + P2 (code fix ~30 lines)</span>
+  </div>
+
+  <p><strong>Impact:</strong> 553 Article markers trapped in tail-blobs across 6 documents (worst: 236k chars, 457 markers in one leaf).</p>
+
+  <h3>Root Cause (Corrected)</h3>
+  <p><strong>Not inline markers</strong> &mdash; every trapped Article uses correct heading syntax (<code>### Article (10)</code>). The real defect is <strong>heading-depth drift</strong>: Docling assigns increasing heading depths (<code>##</code>&rarr;<code>###</code>&rarr;<code>####</code>&rarr;<code>######</code>) to structurally-identical Article headers as font-size cues drift across pages. Additionally, Docling emits headings with <strong>leading whitespace</strong> (<code>&nbsp;&nbsp;&nbsp;&nbsp;### Article (10)</code>) which CommonMark doesn't recognize as headings, so the tree builder treats them as body text.</p>
+
+  <div class="file-ref">
+    <code>helpers.py:797-867</code> &mdash; <code>split_oversized_leaf_nodes</code><br/>
+    <code>helpers.py:630</code> &mdash; <code>_OVERSIZED_ORDINAL_RE</code><br/>
+    <code>converters.py:1048+</code> &mdash; <code>pdf_to_markdown_docling</code> output
+  </div>
+
+  <h3>Fix: Two Layers</h3>
+  <div class="verdict-box verdict-stale">
+    <strong>Layer 1 (P0, 0 lines):</strong> Re-process 2 stale docs (<code>2030e34d</code>, <code>2a7e0ebe</code>) processed before Fix-1 landed (2026-06-29 vs Fix-1 on 2026-07-01). The current splitter already handles them &mdash; confirmed by running the regex against the 236k leaf (425 matches found).
+  </div>
+  <div class="verdict-box verdict-fix">
+    <strong>Layer 2 (P2, ~30 lines):</strong> Normalize indented headings in <code>pdf_to_markdown_docling()</code> output &mdash; strip leading whitespace before <code>#</code> heading markers so the tree builder recognizes them. This fixes the 4 post-Fix-1 docs (<code>144fbaaf</code>, <code>1d682268</code>, <code>4806d4bd</code>, <code>14f41037</code>) whose leaves are 21&ndash;42k chars (under the 50k splitter threshold, but oversized vs the 514-char healthy average).
+  </div>
+
+  <details>
+    <summary>Affected Documents (6)</summary>
+    <div class="table-wrap">
+    <table>
+      <tr><th>doc_id</th><th>File</th><th>Tail Blob</th><th>Trapped Markers</th><th>Status</th></tr>
+      <tr><td><code>2030e34d</code></td><td>Penal Code</td><td>236k (98.9%)</td><td>457</td><td>Stale (pre-Fix-1)</td></tr>
+      <tr><td><code>2a7e0ebe</code></td><td>Federal Decree-Law 33</td><td>100k (83%)</td><td>73</td><td>Stale (pre-Fix-1)</td></tr>
+      <tr><td><code>144fbaaf</code></td><td>Cabinet Res 21 (copy 1)</td><td>42k (81%)</td><td>9</td><td>Sub-threshold</td></tr>
+      <tr><td><code>1d682268</code></td><td>Cabinet Res 21 (copy 2)</td><td>42k (81%)</td><td>9</td><td>Sub-threshold</td></tr>
+      <tr><td><code>4806d4bd</code></td><td>Cabinet Res 96</td><td>21k (91%)</td><td>12</td><td>Sub-threshold</td></tr>
+      <tr><td><code>14f41037</code></td><td>Federal Decree-Law 47</td><td>11k (78%)</td><td>11</td><td>Sub-threshold</td></tr>
+    </table>
+    </div>
+  </details>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gap4">6. Gap 4: Presentation-Form Arabic Bypasses Regex</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="badge badge-high">High</span>
+    <span class="badge badge-priority">P0 &mdash; Reprocess only</span>
+  </div>
+
+  <p><strong>Impact:</strong> 1 document (Human Rights, 319k tail-blob, 87.9% of content) with 116 recoverable article markers invisible to the splitter.</p>
+
+  <h3>Root Cause: Stale Corpus</h3>
+  <div class="verdict-box verdict-stale">
+    <strong>Already fixed.</strong> Doc <code>ae02da49</code> was processed on <strong>2026-06-30 11:23 UTC</strong> &mdash; 21 hours before Fix-1 landed (<code>cd18517</code>, 2026-07-01). The current <code>_fold_with_index_map</code> already does per-char NFKC normalization + tatweel stripping. The tail-blob node <code>0030</code> is a leaf (0 children, 319,975 chars), so the splitter WOULD target it. Reprocessing should recover all 116 markers.
+  </div>
+
+  <p class="file-ref">
+    <code>helpers.py:662</code> &mdash; <code>_fold_with_index_map</code> (NFKC + tatweel strip)<br/>
+    <code>helpers.py:630</code> &mdash; <code>_OVERSIZED_ORDINAL_RE</code> (matches &#1575;&#1604;&#1605;&#1575;&#1583;&#1577; after fold)
+  </p>
+
+  <p><em>Caveat: per memory, the 62-file validation noted the Human Rights doc may retain a 137k residual from genuinely long individual articles + ToC block. Full resolution after reprocess may be partial, but the 319k&rarr;~137k improvement is still significant.</em></p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gap5">7. Gap 5: Arabic Text Quality</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="badge badge-high">High</span>
+  </div>
+
+  <h3>5a: &#1601;&#1610;&rarr;# Substitution <span class="badge badge-priority">P3</span></h3>
+  <p><strong>Impact:</strong> 2,923 occurrences in <code>b87e897e</code> (Federal Decree-Law 33 Arabic). The high-frequency grammatical particle "&#1601;&#1610;" ("in") is replaced by <code>#</code>, damaging sentence meaning at scale.</p>
+
+  <div class="verdict-box verdict-fix">
+    <strong>Docling bug, not the PDF.</strong> <code>pdftotext</code> extracts 162 clean &#1601;&#1610; and zero <code>#</code> from the same PDF. The substitution is introduced by Docling's markdown serialization. Fix options:<br/>
+    &bull; <strong>Upstream:</strong> File against Docling (proper fix)<br/>
+    &bull; <strong>Interim post-process:</strong> After <code>pdf_to_markdown_docling</code>, replace inline <code>#</code> (not line-initial headings) with &#1601;&#1610; in Arabic-dominant text. Fragile but effective.
+  </div>
+
+  <h3>5b: RTL Table Word-Order Reversal <span class="badge badge-tradeoff">Trade-off</span></h3>
+  <p><strong>Impact:</strong> 97% of table rows in <code>70607efb</code> have intra-cell word reversal (e.g., "&#1573;&#1583;&#1575;&#1585;&#1577; &#1575;&#1604;&#1576;&#1610;&#1575;&#1606;&#1575;&#1578;" &rarr; "&#1575;&#1604;&#1576;&#1610;&#1575;&#1606;&#1575;&#1578; &#1577; &#1573;&#1583;&#1575;&#1585;"). Prose/headings outside tables are clean.</p>
+
+  <div class="verdict-box verdict-trade">
+    <strong>Upstream Docling/TableFormer limitation.</strong> The table extractor reads cell text by physical x-coordinate (L&rarr;R) instead of respecting the bidi algorithm. <code>table_is_rtl()</code> exists in <code>helpers.py:885</code> but only affects continuation-table column ordering, not within-cell word order. No fix surface in our code. <strong>Mitigation:</strong> flag RTL tables with <code>bidi_scrambled: true</code> in quality metadata.
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gap6">8. Gap 6: Table Column Degradation</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="badge badge-medium">Medium&ndash;High</span>
+  </div>
+
+  <h3>6a: Multi-Row Header Flattening <span class="badge badge-tradeoff">Trade-off</span></h3>
+  <p><code>18286d95</code> (GHV-TKV-Tarif): 2-row header hierarchy ("Hund" &gt; "ab 45cm" &gt; "OP-Versicherung" &gt; "Basis") collapsed to "Hund" repeated 12&times;. TableFormer's markdown export loses rowspan/colspan. <strong>No fix surface</strong> &mdash; rowspan info is lost before it reaches our pipeline.</p>
+
+  <h3>6b: Icon/Checkmark Cell Loss <span class="badge badge-tradeoff">Trade-off</span></h3>
+  <p><code>45c9e0b4</code> (Unfallversicherung): 81% image blocks, empty_cell_ratio up to 0.75. Checkmark icons are rasterized per-cell, not text. Even with OCR, Tesseract can't reliably classify tiny icon glyphs. <strong>Already flagged</strong> via <code>suspected_miss: true</code> in quality metadata.</p>
+
+  <h3>6c: TOC-as-Table Misclassification <span class="badge badge-priority">P1 &mdash; ~20 lines</span></h3>
+  <p><code>621512a9</code> (World Stats Pocketbook): 265 table blocks, many are actually TOC/index pages with dot-leader formatting (<code>Country....83</code>) misdetected as data tables.</p>
+
+  <div class="verdict-box verdict-fix">
+    <strong>Quick fix:</strong> Add a <code>_looks_like_toc_page</code> heuristic in <code>route_and_extract_flat</code> &mdash; check for dot-leader density (<code>\.{4,}</code>) and trailing page-number pattern before committing a block as <code>role: table</code>. Similar to existing <code>_looks_like_frontmatter_toc</code> guard in the splitter.
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="baseline">9. Baseline Healthy Thresholds</h2>
+
+<div class="card">
+  <p>Derived from PASS document <code>05ea7b35</code> (German insurance, 129 nodes, depth 2):</p>
+
+  <div class="summary-grid">
+    <div class="stat-card"><div class="num">129</div><div class="label">Nodes (optimal: 80&ndash;130)</div></div>
+    <div class="stat-card"><div class="num">2+</div><div class="label">Depth (minimum)</div></div>
+    <div class="stat-card"><div class="num">514</div><div class="label">Avg leaf chars</div></div>
+    <div class="stat-card"><div class="num">&lt;12</div><div class="label">Balance ratio</div></div>
+  </div>
+
+  <div class="table-wrap">
+  <table>
+    <tr><th>Band</th><th>Nodes</th><th>Depth</th><th>Avg Leaf</th><th>Imbalance</th></tr>
+    <tr style="background:var(--green-bg)"><td>Optimal</td><td>80&ndash;130</td><td>&ge;2</td><td>400&ndash;600 chars</td><td>&lt;12</td></tr>
+    <tr style="background:var(--amber-bg)"><td>Marginal</td><td>20&ndash;80</td><td>1</td><td>1&ndash;5 KB</td><td>8&ndash;20</td></tr>
+    <tr style="background:var(--red-bg)"><td>Failing</td><td>&lt;20</td><td>0&ndash;1</td><td>&gt;5 KB or 0</td><td>&gt;20 or garbled</td></tr>
+  </table>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="plan">10. Prioritized Fix Plan</h2>
+
+<pre class="mermaid">
+gantt
+    title Implementation Roadmap
+    dateFormat YYYY-MM-DD
+    axisFormat %b %d
+
+    section P0 Quick Wins
+    Reprocess stale docs (Gap 3a+4)         :p0a, 2026-07-15, 1d
+
+    section P1 Simple Fixes
+    Gap 1 - Image-ratio OCR trigger         :p1a, after p0a, 2d
+    Gap 6c - TOC-as-table filter            :p1b, after p0a, 1d
+
+    section P2 Moderate Fixes
+    Gap 2 - Extended garble heuristics      :p2a, after p1a, 2d
+    Gap 3b - Heading indent normalization   :p2b, after p1b, 2d
+
+    section P3 Complex
+    Gap 5a - في→# interim post-process      :p3a, after p2a, 3d
+
+    section Revalidate
+    Full corpus reprocess + verify          :rv, after p3a, 2d
+</pre>
+
+<div class="card">
+  <h3>P0 &mdash; Quick Wins (Day 1, zero code)</h3>
+  <ol>
+    <li>Re-run <code>preprocess_client.py</code> on the 3 stale docs: <code>2030e34d</code>, <code>2a7e0ebe</code>, <code>ae02da49</code></li>
+    <li>Verify tail-blobs split correctly with current splitter code</li>
+  </ol>
+
+  <h3>P1 &mdash; Simple Fixes (Days 2&ndash;3, ~55 lines total)</h3>
+  <ol>
+    <li><strong>Gap 1:</strong> Image-ratio pre-check at <code>client.py:497</code> &mdash; ~35 lines, reuses all existing OCR infrastructure</li>
+    <li><strong>Gap 6c:</strong> TOC dot-leader filter in <code>route_and_extract_flat</code> &mdash; ~20 lines</li>
+  </ol>
+
+  <h3>P2 &mdash; Moderate Fixes (Days 4&ndash;6, ~73 lines total)</h3>
+  <ol>
+    <li><strong>Gap 2:</strong> Extend <code>_tree_is_garbled</code> (+15 lines) + new <code>_flat_text_is_garbled</code> (+20 lines) + client.py wiring (+8 lines)</li>
+    <li><strong>Gap 3b:</strong> Strip leading whitespace from heading lines in <code>pdf_to_markdown_docling</code> output (~30 lines)</li>
+  </ol>
+
+  <h3>P3 &mdash; Complex (Days 7&ndash;9)</h3>
+  <ol>
+    <li><strong>Gap 5a:</strong> File upstream Docling issue for &#1601;&#1610;&rarr;# + interim post-process regex for Arabic-dominant docs</li>
+  </ol>
+
+  <h3>Revalidation (Day 10)</h3>
+  <ol>
+    <li>Full 25-doc corpus reprocess via <code>preprocess_client.py</code></li>
+    <li>Regenerate DOC_STORE_CORPUS_REPORT with updated verdicts</li>
+    <li>Expected outcome: PASS rate 4%&rarr;~60%, FAIL rate 48%&rarr;~8%</li>
+  </ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tradeoffs">11. Trade-Offs We Live With</h2>
+
+<div class="card">
+  <div class="table-wrap">
+  <table>
+    <tr><th>Issue</th><th>Why Unfixable</th><th>Mitigation</th></tr>
+    <tr>
+      <td><strong>5b:</strong> RTL table word-order</td>
+      <td>Docling/TableFormer reads cell text by physical x-coordinate, not bidi-aware</td>
+      <td>Flag <code>bidi_scrambled: true</code> on RTL tables; consumers can apply bidi reorder</td>
+    </tr>
+    <tr>
+      <td><strong>6a:</strong> Multi-row header collapse</td>
+      <td>TableFormer markdown export loses rowspan/colspan info</td>
+      <td>Flag <code>duplicate_header_ratio</code> in quality metadata</td>
+    </tr>
+    <tr>
+      <td><strong>6b:</strong> Icon/checkmark cell loss</td>
+      <td>Rasterized glyphs have no text layer; tiny icons defeat OCR</td>
+      <td>Already flagged via <code>suspected_miss: true</code> + <code>empty_cell_ratio</code></td>
+    </tr>
+    <tr>
+      <td><strong>5a partial:</strong> Localized Latin substitution</td>
+      <td>"&#1570;&#1604; Oleg" in <code>b1a72fb2</code> is 2.1% of text; garble-gate correctly passes it as MARGINAL</td>
+      <td>Document in quality metadata; don't reject the otherwise-readable doc</td>
+    </tr>
+  </table>
+  </div>
+</div>
+
+<h2>References</h2>
+<div class="card">
+  <ul>
+    <li><strong>Source report:</strong> <code>DOC_STORE_CORPUS_REPORT.md</code></li>
+    <li><strong>RFCs:</strong> <code>.agents/rfcs/004-vlm-hierarchy-detection.md</code> (flat-doc routing), <code>.agents/rfcs/007-009</code> (landed hardening)</li>
+    <li><strong>Key source files:</strong>
+      <ul>
+        <li><code>src/pageindex_mcp/client.py</code> &mdash; index orchestration, OCR escalation, flat routing</li>
+        <li><code>src/pageindex_mcp/helpers.py</code> &mdash; validate_tree, garble gate, splitter, flat extractor</li>
+        <li><code>src/pageindex_mcp/converters.py</code> &mdash; pdf_to_markdown_docling, OCR config, heading recovery</li>
+        <li><code>src/pageindex_mcp/storage.py</code> &mdash; save_doc, save_flat_doc, MinIO persistence</li>
+      </ul>
+    </li>
+    <li><strong>Memory entries:</strong> <code>fix1-redesign-and-tessdata-prebake</code>, <code>fix2-fix4-table-format-findings</code>, <code>fix3-ocr-escalation-mojibake-escape</code>, <code>rfc004-flat-family-built</code></li>
+    <li><strong>Healthy baseline:</strong> <code>05ea7b35</code> (German insurance, 129 nodes/depth 2/avg leaf 514 chars)</li>
+  </ul>
+</div>

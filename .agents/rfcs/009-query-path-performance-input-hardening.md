@@ -1,17 +1,22 @@
 <!-- Space: CITRA -->
+
 <!-- Title: RFC-009: Query-Path Performance & Input Hardening -->
+
 <!-- Parent: Data-AI Refactoring Experiments -->
+
 <!-- Confluence-Page-ID: 5091819550 -->
+
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5091819550/RFC-009+Query-Path+Performance+Input+Hardening -->
 
 ---
+
 id: RFC-009
 title: Query-Path Performance & Input Hardening
 status: landed
 date: 2026-07-10
 plan-impact: yes
 supersedes-decisions-in: []
----
+---------------------------
 
 ## Context
 
@@ -28,13 +33,13 @@ never closed.
 
 ### What this RFC covers
 
-| Issue | Severity | File:Line | One-liner |
-|-------|----------|-----------|-----------|
-| ISS-05 | DEGRADED | `storage.py:392-429` | `list_processed_docs` O(N) serial MinIO GETs |
-| ISS-06 | DEGRADED | `tools/documents.py:74,109-122` | `recent_documents` fetches all docs then slices client-side |
-| ISS-14 | LATENT | `converters.py:755-768` | Tessdata download with no integrity verification |
-| ISS-15 | LATENT | `upload_app.py:89` | Upload endpoint has no file size limit |
-| ISS-21 | LATENT | `tools/documents.py:195,258,300` | Error paths trigger O(N) MinIO listing — DoS vector |
+| Issue  | Severity | File:Line                          | One-liner                                                     |
+| ------ | -------- | ---------------------------------- | ------------------------------------------------------------- |
+| ISS-05 | DEGRADED | `storage.py:392-429`             | `list_processed_docs` O(N) serial MinIO GETs                |
+| ISS-06 | DEGRADED | `tools/documents.py:74,109-122`  | `recent_documents` fetches all docs then slices client-side |
+| ISS-14 | LATENT   | `converters.py:755-768`          | Tessdata download with no integrity verification              |
+| ISS-15 | LATENT   | `upload_app.py:89`               | Upload endpoint has no file size limit                        |
+| ISS-21 | LATENT   | `tools/documents.py:195,258,300` | Error paths trigger O(N) MinIO listing — DoS vector          |
 
 ### What this RFC does NOT cover
 
@@ -216,35 +221,35 @@ have not completed backfill.
 
 ### Batch 0 — Immediate (no dependencies)
 
-| Step | Issue | Change | Files |
-|------|-------|--------|-------|
-| 0.1 | ISS-21 | Remove `list_processed_docs()` from error paths in `get_document`, `get_document_structure`, `get_page_content` | `tools/documents.py` |
+| Step | Issue  | Change                                                                                                                 | Files                  |
+| ---- | ------ | ---------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| 0.1  | ISS-21 | Remove`list_processed_docs()` from error paths in `get_document`, `get_document_structure`, `get_page_content` | `tools/documents.py` |
 
 ### Batch 1 — Short-term (no cross-RFC dependencies)
 
-| Step | Issue | Change | Files |
-|------|-------|--------|-------|
-| 1.1 | ISS-15 | Chunked upload read + `MAX_UPLOAD_SIZE_MB` env var | `upload_app.py`, `settings.py` |
-| 1.2 | ISS-14 | Replace `urlretrieve` with `urlopen` + timeout + size cap | `converters.py` |
+| Step | Issue  | Change                                                       | Files                              |
+| ---- | ------ | ------------------------------------------------------------ | ---------------------------------- |
+| 1.1  | ISS-15 | Chunked upload read +`MAX_UPLOAD_SIZE_MB` env var          | `upload_app.py`, `settings.py` |
+| 1.2  | ISS-14 | Replace`urlretrieve` with `urlopen` + timeout + size cap | `converters.py`                  |
 
 ### Batch 2 — Pagination fix (depends on Batch 1 + ISS-07/RFC-008)
 
-| Step | Issue | Change | Files |
-|------|-------|--------|-------|
-| 2.1 | ISS-05A | Compute and store `node_count` in `.meta.json` sidecar at save time; add `node_count` column to registry | `storage.py`, `registry.py`, migration SQL |
-| 2.2 | ISS-06 | Pass `limit`/`offset` to `list_docs()` on registry path; read `node_count` from metadata instead of deserializing trees | `tools/documents.py` |
+| Step | Issue   | Change                                                                                                                         | Files                                          |
+| ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| 2.1  | ISS-05A | Compute and store`node_count` in `.meta.json` sidecar at save time; add `node_count` column to registry                  | `storage.py`, `registry.py`, migration SQL |
+| 2.2  | ISS-06  | Pass`limit`/`offset` to `list_docs()` on registry path; read `node_count` from metadata instead of deserializing trees | `tools/documents.py`                         |
 
 ### Batch 3 — Docker pre-bake (ops change)
 
-| Step | Issue | Change | Files |
-|------|-------|--------|-------|
-| 3.1 | ISS-14 | Pre-bake `deu.traineddata`, `eng.traineddata`, `ara.traineddata` in Dockerfile | `Dockerfile` |
+| Step | Issue  | Change                                                                              | Files          |
+| ---- | ------ | ----------------------------------------------------------------------------------- | -------------- |
+| 3.1  | ISS-14 | Pre-bake`deu.traineddata`, `eng.traineddata`, `ara.traineddata` in Dockerfile | `Dockerfile` |
 
 ### Batch 4 — Registry-only listing (depends on RFC-007 ISS-03 + RFC-006 D3 backfill)
 
-| Step | Issue | Change | Files |
-|------|-------|--------|-------|
-| 4.1 | ISS-05B/D6 | Remove MinIO fallback from `_list_docs_with_fallback`; return error on Postgres failure | `tools/documents.py` |
+| Step | Issue      | Change                                                                                   | Files                  |
+| ---- | ---------- | ---------------------------------------------------------------------------------------- | ---------------------- |
+| 4.1  | ISS-05B/D6 | Remove MinIO fallback from`_list_docs_with_fallback`; return error on Postgres failure | `tools/documents.py` |
 
 ## Test Strategy
 
@@ -295,28 +300,23 @@ have not completed backfill.
    responses is undocumented and the MCP tool description already directs clients to
    `recent_documents()`. Risk is low; mitigated by checking whether any known client
    parses this field (none identified in the codebase).
-
 2. **D2 sidecar format change.** Adding `node_count` to `.meta.json` is additive (not
    breaking). Existing sidecars without `node_count` must be handled gracefully — the
    enrichment loop in `recent_documents` should fall back to `0` or `None` when the field
    is absent. The one-time backfill (RFC-006 D3) will re-generate sidecars.
-
 3. **D3 registry pagination changes total-count behavior.** Current code uses
    `len(docs)` to set `DOCUMENTS_TOTAL` gauge (`documents.py:102`). With server-side
    pagination, `len(docs)` is `page_size`, not the corpus count. Must add a `count()`
    query or use the registry's existing count mechanism to preserve the gauge accuracy.
-
 4. **D4 `MAX_UPLOAD_SIZE_MB` default may be too low for some corpora.** 100 MB covers
    all documents in the current 62-file validation corpus (largest is ~2 MB). If a user
    has legitimately large documents they can raise the env var. The default is
    conservative-safe.
-
 5. **D5 timeout of 30s may be too short on slow networks.** The tessdata files for `deu`
    and `eng` are ~4 MB each; 30s is generous for a 4 MB download. The `ara` fast
    traineddata is ~2 MB. If a network is slower than ~130 KB/s this will fail — but the
    fallback behavior (log warning, return False) is unchanged. D5b (Docker pre-bake)
    eliminates the runtime download in production entirely.
-
 6. **D6 is a breaking change for environments without backfill.** Removing the MinIO
    fallback means environments that have not completed the RFC-006 D3 backfill will get
    errors instead of degraded-but-working listings. This is intentional — the fallback
