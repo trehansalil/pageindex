@@ -1045,6 +1045,28 @@ def _patch_hierarchical_infer() -> None:  # noqa: C901, PLR0915
     )
 
 
+_INDENTED_HEADING_RE = re.compile(r"^[ \t]+(#{1,6}\s)", re.MULTILINE)
+
+
+def _normalize_indented_headings(md: str) -> str:
+    """Strip leading whitespace before markdown heading markers."""
+    return _INDENTED_HEADING_RE.sub(r"\1", md)
+
+
+_INLINE_HASH_RE = re.compile(r"(?<=\S)#(?=\S)")
+
+
+def _fix_fi_hash_substitution(md: str) -> str:
+    """Interim fix: restore في from Docling's # substitution in Arabic text."""
+    alpha = [c for c in md if c.isalpha()]
+    if not alpha:
+        return md
+    arabic = sum(1 for c in alpha if "؀" <= c <= "ۿ")
+    if arabic / len(alpha) <= 0.30:
+        return md
+    return _INLINE_HASH_RE.sub("في", md)
+
+
 def pdf_to_markdown_docling(
     pdf_path: str,
     force_full_page_ocr: bool = False,
@@ -1188,6 +1210,8 @@ def pdf_to_markdown_docling(
                 raw_headings,
             )
             md = md_raw
+    md = _normalize_indented_headings(md)
+    md = _fix_fi_hash_substitution(md)
     return md
 
 

@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections import Counter
 
 from .cache import get_doc
 from .config import settings
@@ -522,7 +523,27 @@ def _tree_is_garbled(nodes: list) -> bool:
     if "\x00" in blob or "\ufffd" in blob:
         return True
     bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
-    return (bad / len(blob)) > 0.05
+    if (bad / len(blob)) > 0.05:
+        return True
+    # PUA-char ratio > 3% — font/CMap mojibake
+    pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
+    if (pua / len(blob)) > 0.03:
+        return True
+    # Digit ratio > 60% on blobs > 500 chars — numeric junk
+    if len(blob) > 500:
+        digits = sum(1 for c in blob if c.isdigit())
+        if (digits / len(blob)) > 0.60:
+            return True
+    # Single-token repetition > 30% on blobs with enough tokens. Purely
+    # symbolic tokens ('|' table delimiters, '€'/currency signs) are excluded:
+    # a wide price table legitimately produces dozens of these per row, which
+    # is not garbling.
+    tokens = [t for t in blob.split() if any(c.isalnum() for c in t)]
+    if len(tokens) > 20:
+        most_common_count = Counter(tokens).most_common(1)[0][1]
+        if (most_common_count / len(tokens)) > 0.30:
+            return True
+    return False
 
 
 def validate_tree(structure: list) -> tuple[bool, str]:
@@ -1027,6 +1048,47 @@ def flag_empty_cells(block: dict) -> dict:
     return block
 
 
+_TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
+
+
+def _flat_text_is_garbled(md: str) -> bool:
+    """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
+    blob = md or ""
+    if not blob.strip():
+        return True
+    if "\x00" in blob or "�" in blob:
+        return True
+    length = len(blob)
+    bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
+    if (bad / length) > 0.05:
+        return True
+    pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
+    if (pua / length) > 0.03:
+        return True
+    if length > 500:
+        digits = sum(1 for c in blob if c.isdigit())
+        if (digits / length) > 0.60:
+            return True
+    # Purely symbolic tokens ('|' table delimiters, '€'/currency signs) are
+    # excluded: a wide price table legitimately produces dozens of these per
+    # row, which is not garbling.
+    tokens = [t for t in blob.split() if any(c.isalnum() for c in t)]
+    if len(tokens) > 20:
+        most_common_count = Counter(tokens).most_common(1)[0][1]
+        if (most_common_count / len(tokens)) > 0.30:
+            return True
+    return False
+
+
+def _looks_like_toc_page(block_text: str) -> bool:
+    """Return True if text looks like a table-of-contents page (dot-leader lines)."""
+    text_lines = block_text.splitlines()
+    if len(text_lines) < 3:
+        return False
+    matches = sum(1 for ln in text_lines if _TOC_DOT_LEADER_RE.search(ln))
+    return (matches / len(text_lines)) > 0.40
+
+
 # Complexity grandfathered (flat-doc router, FLAT-01); see pyproject [tool.ruff].
 def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
     """FLAT-01-C1/C2/C3: classify a flat (no-hierarchy) markdown document and
@@ -1071,9 +1133,15 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
         # Table region: a pipe row immediately followed by a separator row.
         if _flat_is_pipe_row(line) and i + 1 < n and _flat_is_separator_row(lines[i + 1]):
             flush_prose()
-            block, i = _flat_parse_table(lines, i)
-            blocks.append(block)
-            signals.add("table")
+            table_start = i
+            block, i = _flat_parse_table(lines, table_start)
+            raw_table_text = "\n".join(lines[table_start:i])
+            if _looks_like_toc_page(raw_table_text):
+                blocks.append({"role": "prose", "text": raw_table_text})
+                signals.add("prose")
+            else:
+                blocks.append(block)
+                signals.add("table")
             continue
 
         # Heading -> title block (does not by itself decide the content class).
