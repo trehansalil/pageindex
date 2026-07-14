@@ -7,7 +7,7 @@
 ---
 id: RFC-008
 title: Observability & Error-Handling Overhaul
-status: proposed
+status: landed
 date: 2026-07-10
 plan-impact: yes
 supersedes-decisions-in: []

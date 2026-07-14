@@ -7,7 +7,7 @@
 ---
 id: RFC-009
 title: Query-Path Performance & Input Hardening
-status: proposed
+status: landed
 date: 2026-07-10
 plan-impact: yes
 supersedes-decisions-in: []

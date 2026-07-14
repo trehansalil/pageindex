@@ -7,7 +7,7 @@
 ---
 id: RFC-007
 title: Docstore Data-Integrity & Compliance Hardening
-status: proposed
+status: landed
 date: 2026-07-10
 plan-impact: yes
 supersedes-decisions-in: []
