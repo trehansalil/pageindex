@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 
-<!-- Title: PageIndex doc_store/ Corpus Report — 2026-07-14 -->
+<!-- Title: PageIndex doc_store Report -->
 
 <!-- Parent: Data-AI Refactoring Experiments -->
 
