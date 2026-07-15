@@ -1,3 +1,9 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-005: Five Fixes for Hard-Corpus Ingestion (Arabic / English / German) -->
+<!-- Parent: RFCs -->
+<!-- Confluence-Page-ID: 5105745940 -->
+<!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5105745940/RFC-005+Five+Fixes+for+Hard-Corpus+Ingestion+Arabic+English+German -->
+
 ---
 id: RFC-005
 title: Five Fixes for Hard-Corpus Ingestion (Arabic / English / German)

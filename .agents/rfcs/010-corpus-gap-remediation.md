@@ -1,6 +1,7 @@
 <!-- Space: CITRA -->
 <!-- Title: RFC-010: Corpus Gap Remediation — Ingestion Pipeline Hardening -->
-<!-- Parent: Data-AI Refactoring Experiments -->
+<!-- Parent: RFCs -->
+<!-- Parent: RFCs -->
 <!-- Confluence-Page-Id: 5102862339 -->
 
 ---

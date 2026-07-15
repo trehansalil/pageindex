@@ -1,3 +1,9 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-000: Foundational Design -->
+<!-- Parent: RFCs -->
+<!-- Confluence-Page-ID: 5105844228 -->
+<!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5105844228/RFC-000+Foundational+Design -->
+
 ---
 id: RFC-000
 title: Foundational Design

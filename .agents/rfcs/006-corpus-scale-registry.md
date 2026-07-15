@@ -1,3 +1,8 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-006: Corpus-Scale Document Registry & Candidate Narrowing (millions of documents) -->
+<!-- Parent: RFCs -->
+<!-- Confluence-Page-ID: 5104402452 -->
+<!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5104402452/RFC-006+Corpus-Scale+Document+Registry+Candidate+Narrowing+millions+of+documents -->
 
 ---
 id: RFC-006
