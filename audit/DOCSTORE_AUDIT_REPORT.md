@@ -1,31 +1,28 @@
 <!-- Space: CITRA -->
-
 <!-- Title: PageIndex Docstore Audit -->
-
 <!-- Parent: Data-AI Refactoring Experiments -->
-
 <!-- Confluence-Page-ID: 5092212742 -->
-
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5092212742/PageIndex+Docstore+Audit -->
 
 # Docstore Audit Report — Executive Summary
 
-**Date:** 2026-07-15 (updated; original audit 2026-07-10)
-**Scope:** 23 docstore-related files + 25-document corpus quality analysis
+**Date:** 2026-07-15 (re-run: fresh 5-wave audit adds 15 issues from parallel subagent exploration of auth/PII/AGPL/garble-gate/observability/dead-code surfaces not covered in the prior pass)
+**Scope:** 23+ docstore-related files (this re-run additionally covers `auth.py`, `memory_admission.py`, `metrics.py`, `tracing.py`, `gunicorn.conf.py`, `config.py`, and root-level `upload.py`/`stress_test.py`/`test.py`) + 25-document corpus quality analysis
 **Branch:** `feat/scaling-pageindex`
 
 ---
 
 ## 1. Audit Overview
 
-This audit combines two passes:
+This audit combines three passes:
 
 1. **Code audit (2026-07-10)** — 5-wave systematic examination of the docstore subsystem (ingestion, storage, retrieval, deletion) across 23 files, yielding 25 verified issues.
 2. **Corpus quality audit (2026-07-15)** — MARGINAL-verdict deep analysis comparing the 17 MARGINAL documents from the DOC_STORE_CORPUS_REPORT (2026-07-14) against both the E2E baseline (2026-07-10) and original source PDFs to verify extraction correctness and identify residual gaps.
+3. **Re-run code audit (2026-07-15, this pass)** — fresh 5-wave audit dispatched across 4 parallel exploration/verification agents (storage/cache/registry; converters/helpers/quality-gate; server/worker/upload/query; observability/config/misc) plus 5 parallel fix-research agents, surfacing 15 additional issues: an HR2 erasure-cascade gap (raw upload object never deleted), an HR3 gap (no query-time PII/ZDR routing assertion), an HR4 gap (AGPL fallback with no hard gate), an OCR script-substitution defect, a garble-gate length-floor gap, an auth fail-open inconsistency, a memory-admission race, and several observability/dead-code items.
 
 **Context:** Between the baseline E2E run and the corpus report, RFC-010 D1-D5 fixes landed: splitter redesign, garble-gate hardening, OCR-escalation wiring, flat-doc routing, heading indent normalization, TOC dot-leader filter, and interim في→# post-processing. The corpus improved from 4% PASS / 48% FAIL to 24% PASS / 8% FAIL.
 
-**Resolution status (2026-07-15):** 18 of 31 issues verified fixed in codebase. 13 remain open (11 code + 2 corpus).
+**Resolution status (2026-07-15):** 18 of 31 originally-flagged issues verified fixed in codebase. 28 remain open (26 code + 2 corpus) after this session's re-run added 15 newly-verified issues (ISS-32–ISS-46).
 
 ---
 
@@ -33,16 +30,20 @@ This audit combines two passes:
 
 | Classification     | Count | Description                                                       |
 | ------------------ | ----- | ----------------------------------------------------------------- |
-| 🟠 DEGRADED        | 5     | Working but with compliance, performance, or consistency gaps     |
-| 🟡 LATENT          | 2     | Could fail under specific conditions (scale, concurrency, attack) |
-| 🟢 STYLE/TECH DEBT | 4     | Verified as non-issues or intentional design                      |
+| 🟠 DEGRADED        | 9     | Working but with compliance, performance, or consistency gaps     |
+| 🟡 LATENT          | 8     | Could fail under specific conditions (scale, concurrency, attack) |
+| 🟢 STYLE/TECH DEBT | 9     | Verified as non-issues, intentional design, or low-risk cleanup    |
 
 ### Top Remaining Issues
 
 | #      | Issue                                            | Why It Matters                                              |
 | ------ | ------------------------------------------------ | ----------------------------------------------------------- |
+| ISS-41 | Erasure cascade never deletes `preloaded/<filename>` raw object | Right-to-erasure gap (Hard Rule #2) — new this pass |
 | ISS-02 | Erasure cascade fire-and-forgets registry delete  | Right-to-erasure compliance gap (CLAUDE.md Hard Rule #2)    |
 | ISS-03 | Backfill marks registry complete on 0 docs       | Transient MinIO outage hides entire corpus from query tools |
+| ISS-34 | `ensure_tessdata` silently drops non-Latin script requests | False-clean OCR mojibake — new this pass |
+| ISS-35 | AGPL fallback reachable with no hard gate/alert  | Hard Rule #4 legal-exposure gap — new this pass |
+| ISS-32 | Bearer auth fails OPEN when token unset          | Inconsistent with upload API's fail-closed default — new this pass |
 | ISS-07 | Redis conn storm (partially fixed)               | worker.py still has ad-hoc connections                      |
 | ISS-05 | `list_processed_docs` O(N) serial MinIO GETs     | Performance degradation at scale                            |
 | ISS-08 | `_describe` drops all OpenAI errors              | Image description failures invisible                       |
@@ -183,8 +184,17 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 
 | Issue  | Fix                                                                     | Lines Changed |
 | ------ | ----------------------------------------------------------------------- | ------------- |
+| ISS-41 | Add 7th cascade step to delete `preloaded/<filename>`                   | ~10           |
 | ISS-07 | Fix remaining worker.py ad-hoc connections                              | ~10           |
 | ISS-03 | Skip `set_registry_complete` when 0 keys found                         | ~3            |
+| ISS-32 | Fail-closed bearer auth (opt-in insecure-dev flag)                      | ~10           |
+| ISS-35 | `AGPL_FALLBACK_TOTAL` metric (docling_missing vs operator_configured)   | ~10           |
+| ISS-37 | Lock/semaphore around `wait_for_memory` check-then-admit                | ~10           |
+| ISS-39 | Raise gunicorn `graceful_timeout` + add `max_requests`/jitter           | ~5            |
+| ISS-42 | Delete dead `upload.py`                                                 | (deletion)    |
+| ISS-45 | Delete dead `tools/processing.py`                                       | (deletion)    |
+| ISS-43 | Env-var-only / localhost-default for `stress_test.py`/`test.py`         | ~10           |
+| ISS-46 | Semaphore-bounded concurrent upserts in `registry_backfill.py`          | ~15           |
 
 ### Batch 2 — Structural Fixes (1-2 days)
 
@@ -194,6 +204,11 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | ISS-19 | Same pattern as ISS-18 + `RAG_PARSE_FAILURES` counter                       | ~15           |
 | ISS-05 | Store `node_count` in `.meta.json` sidecar                                  | ~10           |
 | ISS-02 | Await registry delete with 5s timeout                                       | ~20           |
+| ISS-40 | Add explicit statement timeout to `registry.py` `delete_doc`                | ~5            |
+| ISS-34 | Hard-fail `ensure_tessdata` on non-Latin script mismatch                    | ~20           |
+| ISS-36 | Extend token-repetition check to short blobs; dedup garble-gate functions   | ~20           |
+| ISS-33 | Startup assertion: PII corpus requires ZDR-tier endpoint                    | ~15           |
+| ISS-44 | Extract shared `_extract_page_hits` helper into `helpers.py`                | ~20           |
 | ISS-08 | Retry transient OpenAI errors + `IMAGE_DESCRIBE_FAILURES` counter           | ~15           |
 
 ### Batch 3 — Long-Term
@@ -220,7 +235,11 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 
 | Risk                             | Current State            | After Batch 1+2                 |
 | -------------------------------- | ------------------------ | ------------------------------- |
-| Right-to-erasure incomplete      | 🟠 Medium (ISS-02)       | 🟢 Resolved (Batch 2)           |
+| Right-to-erasure incomplete (registry) | 🟠 Medium (ISS-02) | 🟢 Resolved (Batch 2)           |
+| Right-to-erasure incomplete (raw upload never deleted) | 🟠 Medium (ISS-41, new) | 🟢 Resolved (Batch 1) |
+| AGPL fallback with no observability (HR4) | 🟡 Low-Medium (ISS-35, new) | 🟢 Metric shipped (Batch 1); strict gate pending legal sign-off |
+| OCR false-clean Latin mojibake (ISS-34, new) | 🟠 Medium | 🟢 Resolved (Batch 2) |
+| Auth fails open on missing token (ISS-32, new) | 🟡 Low-Medium | 🟢 Resolved (Batch 1) |
 | Corpus invisibility on backfill  | 🟠 Medium (ISS-03)       | 🟢 Resolved (Batch 1)           |
 | Redis connection churn (worker)  | 🟡 Low (ISS-07 partial)  | 🟢 Resolved (Batch 1)           |
 | Silent performance degradation   | 🟠 Medium (ISS-05)       | 🟢 Resolved (Batch 2)           |
@@ -236,7 +255,7 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | ------------------------------------------------------------- | ------------------------------------------------------------------ |
 | [`audit/SCOPE.md`](SCOPE.md)                                 | System boundaries, file inventory, audit goals                     |
 | [`audit/EXPLORATION.md`](EXPLORATION.md)                     | Per-file summaries with ~80 red flags                              |
-| [`audit/ISSUES.md`](ISSUES.md)                               | 13 open issues with classifications and evidence                   |
+| [`audit/ISSUES.md`](ISSUES.md)                               | 28 open issues with classifications and evidence                   |
 | [`audit/FIXES.md`](FIXES.md)                                 | Fix approaches for remaining issues with recommendations           |
 | [`audit/DOCSTORE_AUDIT_REPORT.md`](DOCSTORE_AUDIT_REPORT.md) | This executive summary (code audit + corpus quality analysis)      |
 | [`DOC_STORE_CORPUS_REPORT.md`](../DOC_STORE_CORPUS_REPORT.md)| Full 25-document corpus report with per-doc verdicts and metrics   |

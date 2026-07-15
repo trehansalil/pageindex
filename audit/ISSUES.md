@@ -1,16 +1,12 @@
 <!-- Space: CITRA -->
-
 <!-- Title: Audit: Verified Issues -->
-
 <!-- Parent: PageIndex Docstore Audit -->
-
 <!-- Confluence-Page-ID: 5092376603 -->
-
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5092376603/Audit+Verified+Issues -->
 
 # Docstore Audit — Verified Issues (Wave 3)
 
-**Last updated:** 2026-07-15 (18 resolved issues removed after codebase verification)
+**Last updated:** 2026-07-15 (re-run: fresh 5-wave audit added ISS-32–ISS-46 from parallel subagent exploration of auth, PII/HR3 routing, OCR/tessdata, AGPL fallback, garble-gate, memory admission, observability, and dead-code surfaces not covered by the prior pass)
 
 Legend: 🟠 DEGRADED (works but with gaps) · 🟡 LATENT (could fail under specific conditions) · 🟢 STYLE/TECH DEBT
 
@@ -22,10 +18,10 @@ Each issue was traced end-to-end against actual source code by independent verif
 
 | Classification     | Code | Corpus | Total |
 | ------------------ | ---- | ------ | ----- |
-| 🟠 DEGRADED        | 5    | 0      | 5     |
-| 🟡 LATENT          | 2    | 2      | 4     |
-| 🟢 STYLE/TECH DEBT | 4    | 0      | 4     |
-| **Total**          | **11** | **2** | **13** |
+| 🟠 DEGRADED        | 9    | 0      | 9     |
+| 🟡 LATENT          | 8    | 2      | 10    |
+| 🟢 STYLE/TECH DEBT | 9    | 0      | 9     |
+| **Total**          | **26** | **2** | **28** |
 
 **Resolved issues (removed from this document):** ISS-01, 04, 06, 09, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 26, 27, 28, 29 (18 issues verified fixed in codebase as of 2026-07-15).
 
@@ -139,6 +135,48 @@ except Exception:
 
 ---
 
+### ISS-41: `delete_doc` erasure cascade never removes the raw `preloaded/<filename>` object
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `storage.py` (`delete_doc` cascade) |
+| **Severity** | 🟠 DEGRADED                 |
+| **Category** | Compliance (Hard Rule #2)   |
+
+**Issue:** The 6-step erasure cascade removes `uploads/`, `processed/*.json`, `processed/*.meta.json`, hash-cache entries, and (fire-and-forget) the registry row — but never issues a delete against the `preloaded/<filename>` object that some ingestion paths write. DESIGN.md documents the raw-upload fan-out as part of the cascade; this bucket prefix is not touched by any step.
+
+**Impact:** A right-to-erasure request can complete "successfully" while a copy of the original raw document remains in MinIO indefinitely. Directly violates CLAUDE.md Hard Rule #2 ("cascade across every derived store... in that order").
+
+---
+
+### ISS-34: `ensure_tessdata` silently substitutes `deu`/`eng` when a non-Latin script (e.g. `ara`) is requested but unavailable
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `converters.py:719-752` |
+| **Severity** | 🟠 DEGRADED                 |
+| **Category** | Extraction quality / OCR    |
+
+**Issue:** If `TESSDATA_ALLOW_DOWNLOAD` is off (the intentional egress-limited production default) and a requested traineddata file is missing, the language is dropped with only a `logger.warning`. If the resulting `available` set ends up empty, `ensure_tessdata` hardcodes a fallback to `['deu','eng']` regardless of what was actually requested (e.g. an Arabic document). The caller (`client.py:472`) feeds this straight into Tesseract with no signal that the script changed.
+
+**Impact:** An Arabic OCR-escalation request can silently run as Latin-only OCR, producing garbled Latin mojibake that still passes `validate_tree`'s garble gate (the exact failure mode already recorded for مرسوم 13). Defeats the purpose of the OCR-escalation path it's wired into.
+
+---
+
+### ISS-36: Garble-gate digit-ratio check never runs on blobs ≤ 500 characters
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `helpers.py:534-538` (`_tree_is_garbled`), `helpers.py:1072-1075` (`_flat_text_is_garbled`) |
+| **Severity** | 🟠 DEGRADED                 |
+| **Category** | Extraction quality / garble-gate |
+
+**Issue:** Both functions gate the digit-ratio check behind `len(blob) > 500`. Below that floor, a blob that is 100% numeric junk passes uninspected. Both functions duplicate the identical floor and threshold — a fix landed in one is not guaranteed to land in the other.
+
+**Impact:** Short numeric-junk documents (or the tail end of a document after a longer clean prefix has been split off) can pass both the tree-gate and the flat-doc gate.
+
+---
+
 ## 🟡 LATENT
 
 ### ISS-18: `_prefilter_docs` broad catch silently degrades precision
@@ -182,6 +220,104 @@ except Exception as e:
 ```
 
 **Impact:** If the LLM returns valid JSON wrapped in extra text, valid node IDs are silently lost.
+
+---
+
+### ISS-32: `BearerAuthMiddleware` fails OPEN when `MCP_BEARER_TOKEN` is unset
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `auth.py:40-47`             |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Security                    |
+
+**Issue:** When `MCP_BEARER_TOKEN` is not configured, `BearerAuthMiddleware` allows all requests through unauthenticated instead of rejecting them. `upload_app.py`'s `require_api_key` does the opposite — it fails CLOSED on a missing key. The two entry points to the same server enforce opposite defaults.
+
+**Impact:** A deployment that forgets to set `MCP_BEARER_TOKEN` silently exposes the MCP query tools with no auth, while the upload API on the same server correctly locks itself down. Inconsistent fail-safe posture across the two surfaces.
+
+---
+
+### ISS-33: No PII/ZDR routing gate on query-time MCP tools
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `tools/documents.py` (`find_relevant_documents` and others) |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Compliance (Hard Rule #3)   |
+
+**Issue:** CLAUDE.md Hard Rule #3 requires PII-bearing documents to be routed only through a no-training/zero-retention LLM tier. Ingestion-time enforcement exists (`resolve_llm_provider`/`get_openai_client` in `client.py` are gated correctly), but no code path checks — at query time — whether a document is PII-bearing before it's summarized/searched by an LLM call. The routing is global (one `settings.openai_base_url`/`llm_provider` for the whole process), not document-scoped.
+
+**Impact:** If a single deployment ever mixes a ZDR-tier config for ingestion with a non-ZDR query-time config (or vice versa), there is no code-level assertion to catch the mismatch — the Hard Rule is currently satisfied by operational convention (one global setting), not by an enforced per-document gate.
+
+---
+
+### ISS-35: AGPL fallback (`pymupdf4llm`) reachable with no hard gate or alert
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `converters.py:1218-1247` (`pdf_markdown_converters`) |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Legal (Hard Rule #4)        |
+
+**Issue:** When `docling` is unimportable or fails at runtime (e.g. missing HF weights, `DOCLING_ARTIFACTS_PATH` unset), the converter chain silently falls through to `pymupdf4llm` (AGPL) with only a `logger.warning`. There is no counter, alert, or hard gate distinguishing an intentional `PDF_CONVERTER=pymupdf4llm` operator choice from an unplanned docling outage.
+
+**Impact:** A build or ops regression (e.g. docling extra dropped from an image) could route the entire corpus through AGPL-licensed code indefinitely without anyone noticing — directly relevant to Hard Rule #4's framing that serving pymupdf4llm over a network is "a legal decision to clear, not a settled safe-harbor."
+
+---
+
+### ISS-37: `wait_for_memory` double-admit race
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `memory_admission.py:60-97` |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Concurrency                 |
+
+**Issue:** `wait_for_memory` checks available memory and returns to let the caller proceed, but the check-then-admit sequence is not atomic — two jobs can both pass the check in the same window and both get admitted, each assuming they were the only one cleared.
+
+**Impact:** Under concurrent job bursts near the memory ceiling, more jobs can be admitted simultaneously than the admission gate is meant to allow, risking the OOM condition the gate exists to prevent.
+
+---
+
+### ISS-39: `gunicorn graceful_timeout` shorter than Langfuse flush's worst-case network call
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `gunicorn.conf.py:~13`, `tracing.py` |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Observability               |
+
+**Issue:** `graceful_timeout = 5` (and `timeout_graceful_shutdown` is set even tighter in the ASGI layer) while `tracing.py`'s shutdown flush path makes a real network call to the Langfuse endpoint. No `max_requests`/`max_requests_jitter` is configured either, so worker recycling never happens proactively.
+
+**Impact:** Under a slow or unreachable Langfuse endpoint, a graceful shutdown/restart can be killed mid-flush, silently dropping the trace batch for whatever requests were in flight at shutdown.
+
+---
+
+### ISS-40: `registry.py`'s `delete_doc` has no per-call timeout
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `registry.py:~208-216`      |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Compliance / reliability    |
+
+**Issue:** The Postgres delete issued from the registry has no explicit statement/connection timeout of its own; it inherits whatever pool-level default exists (if any). Combined with ISS-02 (fire-and-forget scheduling), a slow or hung Postgres delete has no bounded worst case.
+
+**Impact:** Compounds ISS-02 — even if ISS-02's fire-and-forget gap is fixed with an `asyncio.wait_for` wrapper, the timeout value chosen there is only a backstop if the underlying query itself can hang indefinitely with no statement timeout.
+
+---
+
+### ISS-43: `stress_test.py`/`test.py` default or hardcode a production MCP URL
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `stress_test.py:~40`, `test.py:~21` |
+| **Severity** | 🟡 LATENT                   |
+| **Category** | Ops safety                  |
+
+**Issue:** `stress_test.py`'s `BASE_URL` falls back to `https://pageindex.aiwithsalil.work` when the env var is unset; `test.py` hardcodes the same production URL with no override mechanism at all.
+
+**Impact:** Running either script without realizing the env var isn't set sends real load (`stress_test.py`) or a real query (`test.py`, PII-adjacent, no ZDR enforcement at the script level) against the production deployment instead of a local/staging target.
 
 ---
 
@@ -232,6 +368,76 @@ except Exception as e:
 | **Category** | Security           |
 
 **Issue:** `path.startswith("/metrics")` or `path.startswith("/upload")` could match unintended paths (e.g., `/metrics-secret`). No such routes exist today.
+
+---
+
+### ISS-38: `RAG_PARSE_FAILURES` Counter labeled by `doc_id` — unbounded cardinality
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `metrics.py:195-201`        |
+| **Severity** | 🟢 STYLE/TECH DEBT          |
+| **Category** | Observability                |
+
+**Issue:** The counter is labeled per-`doc_id`. Prometheus label cardinality grows monotonically with corpus size and never shrinks (old doc_ids' series persist even after the doc is deleted).
+
+**Impact:** At corpus scale this becomes a Prometheus memory/storage cost issue, not a correctness bug today.
+
+---
+
+### ISS-42: `upload.py` (root) — dead/broken script calling a nonexistent MCP tool
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `upload.py` (root, 88 lines) |
+| **Severity** | 🟢 STYLE/TECH DEBT          |
+| **Category** | Dead code                    |
+
+**Issue:** Calls a `process_document` MCP tool via `langchain_mcp_adapters` that does not exist on the server (`server.py` registers only 5 read-only query tools). Would crash with a `KeyError` if run. Zero importers anywhere in the repo; `ingest_via_server.py` is the current working equivalent using the real `/upload/files` HTTP API.
+
+**Impact:** None at runtime (never invoked), but confusing for anyone who finds it and assumes it's a working ingestion path.
+
+---
+
+### ISS-44: Duplicated page-range parsing logic
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `tools/documents.py:~352-360`, `client.py:~769-776` |
+| **Severity** | 🟢 STYLE/TECH DEBT          |
+| **Category** | Maintainability               |
+
+**Issue:** Both `get_page_content` implementations already share `_build_node_map` from `helpers.py`, but the page-spec parsing loop (`"1-3,5"` → `set[int]`) and the subsequent `hits` filtering are copy-pasted verbatim in both call sites — one copy has a logging/metrics wrapper, the other doesn't.
+
+**Impact:** A future page-spec parsing bug fix applied to one copy is not guaranteed to reach the other.
+
+---
+
+### ISS-45: `tools/processing.py` — 1-line dead stub
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `tools/processing.py` (1 line) |
+| **Severity** | 🟢 STYLE/TECH DEBT          |
+| **Category** | Dead code                    |
+
+**Issue:** Zero importers anywhere in `src/`; `tools/__init__.py` never references it. Entire file content is a tombstone comment for a removed feature.
+
+**Impact:** None — pure directory noise.
+
+---
+
+### ISS-46: `registry_backfill.py` sequential non-batched upserts
+
+| Field              | Value                       |
+| ------------------ | --------------------------- |
+| **File**     | `registry_backfill.py:124-159` (`_upsert_all`) |
+| **Severity** | 🟢 STYLE/TECH DEBT          |
+| **Category** | Performance                  |
+
+**Issue:** `_upsert_all` awaits `upsert_doc` one row at a time in a `for` loop, logging progress every 50 rows. No concurrency.
+
+**Impact:** Fine for current corpus size (this is a one-shot operator script, not a hot path); would become a bottleneck only if corpus size grows by an order of magnitude.
 
 ---
 
