@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "codebase-memory-mcp": {
-      "type": "http",
-      "url": "http://localhost:8765/mcp"
-    }
-  }
-}
