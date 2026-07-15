@@ -4,6 +4,8 @@
 
 <!-- Parent: Tasks -->
 
+<!-- Confluence-Page-Id: 5102600195 -->
+
 # Implementation Plan: Corpus Gap Remediation — Ingestion Pipeline Hardening
 
 ## Traceability
@@ -156,12 +158,13 @@ Implements six corpus gap remediations across the PageIndex ingestion pipeline, 
 
   *[RFC-010 Batch 3](../rfcs/010-corpus-gap-remediation.md#batch-3--p3-complex-upstream-dependent): "P3 complex, upstream-dependent — file Docling issue and apply interim Arabic post-process"*
 
-  - [ ] <a id="31-upstream-docling-issue"></a>3.1 File upstream Docling issue ([D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim))
+  - [x] <a id="31-upstream-docling-issue"></a>3.1 File upstream Docling issue ([D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim))
 
     - File a Docling GitHub issue documenting the في to `#` markdown serialization bug:
       - Provide reproduction: `pdftotext` extracts 162 clean في and zero `#` from the same PDF
       - Affected document: `b87e897e` (Federal Decree-Law 33 Arabic) with 2,923 occurrences
     - _Requirements:_ [RFC-010 D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim) | [Design Property 6](../designs/design-rfc010-corpus-gap-remediation.md#property-6-arabic-hash-substitution-fix)
+    - **Filed 2026-07-14** as [docling-project/docling#3802](https://github.com/docling-project/docling/issues/3802). Maintainer `wittjeff` root-caused it to docling-parse's ToUnicode fallback (not markdown serialization) and opened fix PR [docling-parse#299](https://github.com/docling-project/docling-parse/pull/299) (open, CI green, unreviewed as of 2026-07-15).
   - [ ] <a id="32-interim-fi-hash-postprocess"></a>3.2 Interim في to `#` post-process ([D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim))
 
     - Add `_fix_fi_hash_substitution(md)` function in `converters.py`:
@@ -178,6 +181,13 @@ Implements six corpus gap remediations across the PageIndex ingestion pipeline, 
       - Test: `test_non_arabic_hash_not_replaced` — non-Arabic text with `#`, assert no replacement
       - Test: `test_heading_markers_not_replaced` — line-initial `# ` heading markers, assert NOT replaced
     - **Validates:** [Design Property 6](../designs/design-rfc010-corpus-gap-remediation.md#property-6-arabic-hash-substitution-fix) | [RFC-010 D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim) | [RFC Test Strategy: D5](../rfcs/010-corpus-gap-remediation.md#gap-5a-d5--في-post-process)
+  - [x] <a id="35-glyph-marker-detection-forward-compat"></a>3.5 GLYPH marker detection — forward-compat for docling-parse#299
+
+    - _Requirements:_ [RFC-010 D5 — Upstream status](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim) | [Design Property 3](../designs/design-rfc010-corpus-gap-remediation.md#property-3-extended-garble-detection-tree-path) | [Design Property 4](../designs/design-rfc010-corpus-gap-remediation.md#property-4-flat-path-garble-gate) | [Design Service: helpers.py](../designs/design-rfc010-corpus-gap-remediation.md#2-helperspy)
+    - **Done 2026-07-15.** Added `if "GLYPH<" in blob: return True` to both `_tree_is_garbled` (`helpers.py:525`) and `_flat_text_is_garbled` (`helpers.py:1063`), anticipating [docling-parse#299](https://github.com/docling-project/docling-parse/pull/299) — once merged, unmapped codes in symbolic/composite-font PDFs emit `GLYPH<N>` instead of fabricated ASCII (e.g. `#`), and this check routes those documents to OCR escalation instead of silently persisting the marker.
+    - Tests added to `tests/test_rfc010_helpers.py`: `test_tree_glyph_marker_garbled`, `test_flat_text_glyph_marker_garbled`, `test_tree_no_glyph_marker_clean` (negative case — "glyph" as a normal word must not false-positive)
+    - Full suite green: 368 passed, 13 skipped, no regressions
+    - Currently inert on our corpus — no PDF produces `GLYPH<>` output until the docling-parse dependency is bumped past #299
   - [ ] <a id="34-checkpoint-batch-3"></a>3.4 Checkpoint — Batch 3
 
     - Run `uv run pytest` — all tests pass including [Batch 0](#0-batch-0-reprocess-stale-artifacts-d0) + [Batch 1](#1-batch-1-p1-fixes-d1-d4) + [Batch 2](#2-batch-2-p2-fixes-d3a-d3b-d2) + Batch 3

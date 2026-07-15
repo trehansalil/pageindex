@@ -114,6 +114,30 @@ def test_flat_text_normal_not_garbled():
     assert _flat_text_is_garbled(md) is False
 
 
+def test_tree_glyph_marker_garbled():
+    """GLYPH<> markers from docling-parse unmapped symbolic fonts trigger garble gate."""
+    nodes = [
+        {"title": "Section", "text": "شأش GLYPH<35> أش normal text here", "nodes": []},
+        {"title": "Section 2", "text": "more content with GLYPH<42> markers", "nodes": []},
+    ]
+    assert _tree_is_garbled(nodes) is True
+
+
+def test_flat_text_glyph_marker_garbled():
+    """GLYPH<> markers in flat-path markdown trigger garble gate."""
+    md = "المادة (1) يعمل بأحكام القانون المرفق GLYPH<35> شأن تنظيم علاقات العمل\n" * 5
+    assert _flat_text_is_garbled(md) is True
+
+
+def test_tree_no_glyph_marker_clean():
+    """Text mentioning 'GLYPH' as a normal word doesn't false-positive."""
+    nodes = [
+        {"title": "Heading", "text": "The word glyph appears in typography discussions.", "nodes": []},
+        {"title": "Heading 2", "text": "Multiple glyphs can be rendered from a single font.", "nodes": []},
+    ]
+    assert _tree_is_garbled(nodes) is False
+
+
 # ── D4: _looks_like_toc_page ────────────────────────────────────────────────
 
 

@@ -1,6 +1,7 @@
 <!-- Space: CITRA -->
 <!-- Title: Design: Corpus Gap Remediation — Ingestion Pipeline Hardening -->
 <!-- Parent: Designs -->
+<!-- Confluence-Page-Id: 5103026177 -->
 
 # Design Document: Corpus Gap Remediation — Ingestion Pipeline Hardening
 
@@ -342,15 +343,17 @@ class FlatBlock:
 
 ### Property 3: Extended garble detection (tree path)
 
-*For any* tree node text blob processed by `_tree_is_garbled`, system SHALL return `True` when the blob contains PUA-char ratio >3%, OR digit ratio >60% on blobs >500 chars, OR single-token repetition >30% of all words, in addition to all existing checks (empty, NUL, FFFD, control-char ratio >5%).
+*For any* tree node text blob processed by `_tree_is_garbled`, system SHALL return `True` when the blob contains PUA-char ratio >3%, OR digit ratio >60% on blobs >500 chars, OR single-token repetition >30% of all words, OR the literal substring `GLYPH<` is present, in addition to all existing checks (empty, NUL, FFFD, control-char ratio >5%).
 
-**Validates**: [RFC-010 D3 Part A](../rfcs/010-corpus-gap-remediation.md#d3--extended-garble-detection-gap-2--43-lines). **Tested in**: [Task 2.4](../tasks/tasks-rfc010-corpus-gap-remediation.md#24-unit-tests-d3). **Service contract**: [helpers.py](#2-helperspy). **Sequence diagram**: [Ingestion Flow](#ingestion-flow-d0-d1-d2-d3-d5).
+**Validates**: [RFC-010 D3 Part A](../rfcs/010-corpus-gap-remediation.md#d3--extended-garble-detection-gap-2--43-lines). **Tested in**: [Task 2.4](../tasks/tasks-rfc010-corpus-gap-remediation.md#24-unit-tests-d3), [Task 3.5](../tasks/tasks-rfc010-corpus-gap-remediation.md#35-glyph-marker-detection-forward-compat) (GLYPH marker case). **Service contract**: [helpers.py](#2-helperspy). **Sequence diagram**: [Ingestion Flow](#ingestion-flow-d0-d1-d2-d3-d5).
+
+> **2026-07-15 addition.** The `GLYPH<` check is forward-compatible groundwork for [docling-parse#299](https://github.com/docling-project/docling-parse/pull/299) (upstream fix tracked under [D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim)), which will make docling-parse emit `GLYPH<N>` markers instead of fabricating ASCII (e.g. `#`) for unmapped codes in symbolic/composite fonts. Until that dependency is bumped, no PDF in our corpus produces `GLYPH<>` output, so this check is currently inert but exercised by tests.
 
 ### Property 4: Flat-path garble gate
 
-*For any* markdown content entering the FLAT-03 routing path in `client.py:index`, system SHALL call `_flat_text_is_garbled(md_content)` before `route_and_extract_flat`. If garbled, system SHALL override the validation reason to `"garbling"` to enable OCR escalation, closing the flat-path bypass.
+*For any* markdown content entering the FLAT-03 routing path in `client.py:index`, system SHALL call `_flat_text_is_garbled(md_content)` before `route_and_extract_flat`. If garbled, system SHALL override the validation reason to `"garbling"` to enable OCR escalation, closing the flat-path bypass. `_flat_text_is_garbled` SHALL apply the same `GLYPH<` marker check as [Property 3](#property-3-extended-garble-detection-tree-path).
 
-**Validates**: [RFC-010 D3 Part B](../rfcs/010-corpus-gap-remediation.md#d3--extended-garble-detection-gap-2--43-lines). **Tested in**: [Task 2.4](../tasks/tasks-rfc010-corpus-gap-remediation.md#24-unit-tests-d3). **Service contract**: [client.py](#1-clientpy), [helpers.py](#2-helperspy). **Sequence diagram**: [Flat-Doc Routing Flow](#flat-doc-routing-flow-d1-d3-d4).
+**Validates**: [RFC-010 D3 Part B](../rfcs/010-corpus-gap-remediation.md#d3--extended-garble-detection-gap-2--43-lines). **Tested in**: [Task 2.4](../tasks/tasks-rfc010-corpus-gap-remediation.md#24-unit-tests-d3), [Task 3.5](../tasks/tasks-rfc010-corpus-gap-remediation.md#35-glyph-marker-detection-forward-compat) (GLYPH marker case). **Service contract**: [client.py](#1-clientpy), [helpers.py](#2-helperspy). **Sequence diagram**: [Flat-Doc Routing Flow](#flat-doc-routing-flow-d1-d3-d4).
 
 ### Property 5: TOC page classification
 
@@ -363,6 +366,8 @@ class FlatBlock:
 *For any* markdown output from `pdf_to_markdown_docling` where >30% of characters are Arabic script (`؀`--`ۿ`), system SHALL replace inline `#` (preceded and followed by non-whitespace) with في, while leaving line-initial `#` heading markers unmodified.
 
 **Validates**: [RFC-010 D5](../rfcs/010-corpus-gap-remediation.md#d5--في-interim-post-process-gap-5a--upstream--interim). **Tested in**: [Task 3.3](../tasks/tasks-rfc010-corpus-gap-remediation.md#33-unit-tests-d5). **Service contract**: [converters.py](#3-converterspy). **Sequence diagram**: [Ingestion Flow](#ingestion-flow-d0-d1-d2-d3-d5).
+
+> **Status (2026-07-15).** This property is interim per its RFC decision. Root cause traced upstream to [docling-project/docling#3802](https://github.com/docling-project/docling/issues/3802) — docling-parse's ToUnicode-fallback logic, not markdown serialization. Fix PR [docling-parse#299](https://github.com/docling-project/docling-parse/pull/299) is open (CI green, unreviewed). Once merged and the dependency is bumped, `#` will no longer be fabricated for this failure mode (`GLYPH<N>` markers appear instead — see [Property 3](#property-3-extended-garble-detection-tree-path)/[Property 4](#property-4-flat-path-garble-gate)), and this property plus `_fix_fi_hash_substitution`/`_INLINE_HASH_RE` should be retired.
 
 ### Property 7: Stale artifact reprocessing
 

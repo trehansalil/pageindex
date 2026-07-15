@@ -1,6 +1,7 @@
 <!-- Space: CITRA -->
 <!-- Title: RFC-010: Corpus Gap Remediation — Ingestion Pipeline Hardening -->
 <!-- Parent: Data-AI Refactoring Experiments -->
+<!-- Confluence-Page-Id: 5102862339 -->
 
 ---
 id: RFC-010
@@ -285,6 +286,29 @@ def _fix_fi_hash_substitution(md: str) -> str:
 
 **Risk.** This is fragile — the regex may over-correct legitimate inline `#` in Arabic
 text. Scoped to P3 priority and guarded by the Arabic-dominance threshold.
+
+**Upstream status (2026-07-15).** Filed as
+[docling-project/docling#3802](https://github.com/docling-project/docling/issues/3802).
+Maintainer `wittjeff` diagnosed the actual root cause: not the markdown serializer,
+but `docling-parse`'s text-extraction fallback. Symbolic/subsetted Arabic fonts assign
+the في ligature glyph to a low character code (commonly `0x23`); when the font's
+`/ToUnicode` CMap omits that ligature entry (a common PDF-generator bug), docling-parse
+fell back to `StandardEncoding[0x23]` = `#`, fabricating ASCII instead of signaling a
+miss. Fix PR [docling-parse#299](https://github.com/docling-project/docling-parse/pull/299)
+(open, CI green, zero reviews as of 2026-07-15) changes the fallback: unmapped codes in
+symbolic or Type0 (composite) fonts now emit a `GLYPH<N>` marker instead of the
+fabricated Standard/WinAnsi character. Non-symbolic Latin fonts are unaffected.
+
+**Forward-compat addition (landed ahead of upstream merge, 2026-07-15).** Added a
+`"GLYPH<" in blob` check to both `_tree_is_garbled` and `_flat_text_is_garbled` in
+`helpers.py` (~2 lines each), so that once docling-parse#299 merges and we bump the
+dependency, `GLYPH<N>` markers are treated as garbling and route the document to OCR
+escalation instead of silently persisting a marker string. This is additive and
+inert today — no PDF in our corpus currently produces `GLYPH<>` output, since our
+docling-parse version predates the fix. `_fix_fi_hash_substitution` (D5's interim
+regex) remains in place until the upstream fix is confirmed on our corpus; it becomes
+dead code once `#` is no longer fabricated (`GLYPH<N>` won't match
+`_INLINE_HASH_RE`), at which point it should be removed along with its dedicated tests.
 
 ## Implementation Plan
 

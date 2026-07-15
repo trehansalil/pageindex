@@ -522,6 +522,8 @@ def _tree_is_garbled(nodes: list) -> bool:
         return True
     if "\x00" in blob or "\ufffd" in blob:
         return True
+    if "GLYPH<" in blob:
+        return True
     bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
     if (bad / len(blob)) > 0.05:
         return True
@@ -1057,6 +1059,8 @@ def _flat_text_is_garbled(md: str) -> bool:
     if not blob.strip():
         return True
     if "\x00" in blob or "�" in blob:
+        return True
+    if "GLYPH<" in blob:
         return True
     length = len(blob)
     bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
