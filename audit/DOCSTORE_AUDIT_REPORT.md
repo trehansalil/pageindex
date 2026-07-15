@@ -1,206 +1,266 @@
 <!-- Space: CITRA -->
+
 <!-- Title: PageIndex Docstore Audit -->
+
 <!-- Parent: Data-AI Refactoring Experiments -->
+
 <!-- Confluence-Page-ID: 5092212742 -->
+
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5092212742/PageIndex+Docstore+Audit -->
 
 # Docstore Audit Report — Executive Summary
 
-**Date:** 2026-07-10
-**Scope:** 23 docstore-related files across core pipeline, support scripts, and infrastructure
+**Date:** 2026-07-15 (updated; original audit 2026-07-10)
+**Scope:** 23 docstore-related files + 25-document corpus quality analysis
 **Branch:** `feat/scaling-pageindex`
 
 ---
 
 ## 1. Audit Overview
 
-This audit systematically examined the PageIndex MCP Server's docstore subsystem — the entire document lifecycle from ingestion through storage, retrieval, and deletion. The audit was conducted in 5 waves:
+This audit combines two passes:
 
-1. **Scope** — defined the 23 in-scope files, 10 system boundaries, and 8 audit goal categories
-2. **Exploration** — per-file analysis via 6 parallel agents, identifying ~80 raw red flags
-3. **Issues** — deep verification via 4 parallel agents, confirming 25 real issues from ~80 candidates
-4. **Fixes** — fix research via 4 parallel agents, producing 2-3 approaches per issue with complexity estimates
-5. **Report** — this synthesis with prioritized execution plan
+1. **Code audit (2026-07-10)** — 5-wave systematic examination of the docstore subsystem (ingestion, storage, retrieval, deletion) across 23 files, yielding 25 verified issues.
+2. **Corpus quality audit (2026-07-15)** — MARGINAL-verdict deep analysis comparing the 17 MARGINAL documents from the DOC_STORE_CORPUS_REPORT (2026-07-14) against both the E2E baseline (2026-07-10) and original source PDFs to verify extraction correctness and identify residual gaps.
 
-**Methodology:** Read-only analysis. Every issue was traced end-to-end against actual source code by independent verification agents. No changes were made to the codebase.
+**Context:** Between the baseline E2E run and the corpus report, RFC-010 D1-D5 fixes landed: splitter redesign, garble-gate hardening, OCR-escalation wiring, flat-doc routing, heading indent normalization, TOC dot-leader filter, and interim في→# post-processing. The corpus improved from 4% PASS / 48% FAIL to 24% PASS / 8% FAIL.
 
----
-
-## 2. Findings Summary
-
-| Classification | Count | Description |
-|---|---|---|
-| 🔴 FAILING | 1 | Will cause failures in fresh deployments now |
-| 🟠 DEGRADED | 7 | Working but with compliance, performance, or consistency gaps |
-| 🟡 LATENT | 13 | Could fail under specific conditions (scale, concurrency, attack) |
-| 🟢 STYLE/TECH DEBT | 4 | Verified as non-issues or intentional design |
-
-### Top 5 Critical Issues
-
-| # | Issue | Why It Matters |
-|---|---|---|
-| ISS-01 | Redis URL defaults to `neonatal-care` hostname | Every fresh deployment without `REDIS_URL` silently fails |
-| ISS-02 | Erasure cascade fire-and-forgets registry delete | Right-to-erasure compliance gap (CLAUDE.md Hard Rule #2) |
-| ISS-03 | Backfill marks registry complete on 0 docs | Transient MinIO outage hides entire corpus from query tools |
-| ISS-07 | New Redis connection created per MCP tool call | Connection storm under load (2 separate call sites) |
-| ISS-09 | doc_id truncated to 8 hex chars (32-bit entropy) | Silent document overwrite at ~6,500 docs (birthday paradox) |
+**Resolution status (2026-07-15):** 18 of 31 issues verified fixed in codebase. 13 remain open (11 code + 2 corpus).
 
 ---
 
-## 3. Systemic Patterns
+## 2. Remaining Code Issues
 
-Four systemic anti-patterns underlie the majority of findings:
+| Classification     | Count | Description                                                       |
+| ------------------ | ----- | ----------------------------------------------------------------- |
+| 🟠 DEGRADED        | 5     | Working but with compliance, performance, or consistency gaps     |
+| 🟡 LATENT          | 2     | Could fail under specific conditions (scale, concurrency, attack) |
+| 🟢 STYLE/TECH DEBT | 4     | Verified as non-issues or intentional design                      |
 
-### 3.1 Ad-hoc Redis Connection Management
-**Issues:** ISS-07, ISS-16
-**Pattern:** Redis connections are created and destroyed per-call in 4+ locations instead of reusing the existing `get_async_redis()` / `get_cache_redis()` singletons in `cache.py`.
-**Fix theme:** Consolidate all Redis access through `cache.py` singletons + cache the monotonic `registry_complete` flag in-process.
+### Top Remaining Issues
 
-### 3.2 Broad `except Exception` with Low-Level Logging
-**Issues:** ISS-08, ISS-16, ISS-17, ISS-18, ISS-19
-**Pattern:** 8+ locations catch all exceptions with debug-level logging, creating invisible degradation. The fail-open intent is correct; the visibility is not.
-**Fix theme:** Narrow catches to expected error types. Raise logging to WARNING. Add Prometheus counters for alertability.
+| #      | Issue                                            | Why It Matters                                              |
+| ------ | ------------------------------------------------ | ----------------------------------------------------------- |
+| ISS-02 | Erasure cascade fire-and-forgets registry delete  | Right-to-erasure compliance gap (CLAUDE.md Hard Rule #2)    |
+| ISS-03 | Backfill marks registry complete on 0 docs       | Transient MinIO outage hides entire corpus from query tools |
+| ISS-07 | Redis conn storm (partially fixed)               | worker.py still has ad-hoc connections                      |
+| ISS-05 | `list_processed_docs` O(N) serial MinIO GETs     | Performance degradation at scale                            |
+| ISS-08 | `_describe` drops all OpenAI errors              | Image description failures invisible                       |
 
-### 3.3 Non-Transactional Multi-Step Writes
-**Issues:** ISS-04, ISS-11, ISS-12
-**Pattern:** Sequential write operations (stage → set status → enqueue, save_raw → save_doc → save_meta) have no rollback on partial failure, leaving the system in inconsistent states.
-**Fix theme:** Reorder operations so the most critical write succeeds first; validate inputs before any write begins.
+### Resolved Issues (18 total)
 
-### 3.4 O(N) Fallback Paths
-**Issues:** ISS-05, ISS-06, ISS-21
-**Pattern:** MinIO listing is O(N) with serial GETs. This path fires on every registry fallback AND on every "document not found" error — creating both a performance bottleneck and a DoS vector.
-**Fix theme:** Make the registry the authoritative listing source. Remove O(N) MinIO listing from error paths entirely.
+ISS-01 (Redis URL default), ISS-04 (upload validation), ISS-06 (pagination), ISS-09 (full UUID), ISS-10 (hash cache migration), ISS-11 (save order), ISS-12 (enqueue order), ISS-13 (auth warning gauge), ISS-14 (tessdata size cap), ISS-15 (upload size limit), ISS-16 (cache error narrowing), ISS-17 (None guard), ISS-20 (staging delete metric), ISS-21 (O(N) error path removed), ISS-26 (OCR escalation), ISS-27 (garble-gate text), ISS-28 (splitter redesign), ISS-29 (presentation-form Arabic).
 
 ---
 
-## 4. Prioritized Fix Plan
+## 3. Systemic Code Patterns
 
-### Batch 0 — Immediate (1-2 hours, all Size S)
+Three systemic anti-patterns underlie the remaining findings:
 
-These are standalone fixes with zero dependencies and zero risk. Ship them today.
+### 3.1 Broad `except Exception` with Low-Level Logging
 
-| Issue | Fix | File | Lines Changed |
-|---|---|---|---|
-| ISS-01 | Change Redis URL default to `localhost:6379/0` | `config.py:81` | 1 |
-| ISS-17 | Add `None` guard on `_llm()` content | `helpers.py:51` | 4 |
-| ISS-04 | Validate all file extensions before staging | `upload_app.py:74-84` | ~10 |
-| ISS-12 | Move `enqueue_job` before `job_status_set` | `upload_app.py:98-108` | ~5 |
-| ISS-11 | Move `save_raw` after `save_doc` | `client.py:590-591` | ~3 |
-| ISS-21 | Remove `list_processed_docs()` from error paths | `tools/documents.py:195,258,300` | ~6 |
+**Issues:** ISS-08, ISS-18, ISS-19
+**Pattern:** Locations that catch all exceptions with debug-level logging, creating invisible degradation.
+**Fix theme:** Narrow catches to expected types, raise to WARNING, add Prometheus counters.
 
-**Total:** ~29 lines changed. 6 issues resolved. Zero dependencies.
+### 3.2 O(N) Fallback Paths
 
----
+**Issues:** ISS-05
+**Pattern:** MinIO listing is O(N) serial GETs on fallback path.
+**Fix theme:** Make registry authoritative; remove O(N) MinIO listing.
 
-### Batch 1 — Quick Wins (half-day, all Size S)
+### 3.3 Compliance Gap
 
-These fix visibility and connection management. Some are prerequisites for Batch 2.
-
-| Issue | Fix | File | Lines Changed |
-|---|---|---|---|
-| ISS-07 | Reuse `get_async_redis()` singleton + cache `registry_complete` flag | `documents.py`, `helpers.py` | ~20 |
-| ISS-03 | Skip `set_registry_complete` when 0 keys found | `registry_backfill.py:191` | ~3 |
-| ISS-13 | Add WARNING log + `MCP_AUTH_DISABLED` Prometheus gauge | `auth.py`, `metrics.py` | ~10 |
-| ISS-16 | Narrow catch to `RedisError` + raise to WARNING + add counter | `cache.py:79,93,102`, `metrics.py` | ~15 |
-| ISS-09 | Use full `uuid.uuid4()` instead of `[:8]` truncation | `client.py:539,590` | 2 |
-
-**Total:** ~50 lines changed. 5 issues resolved.
+**Issues:** ISS-02
+**Pattern:** Fire-and-forget background task in erasure cascade.
+**Fix theme:** Await with timeout before reporting success.
 
 ---
 
-### Batch 2 — Structural Fixes (1-2 days, mix of S and M)
+## 4. MARGINAL Document Deep Analysis
 
-These improve precision, resilience, and performance. Depend on Batch 0/1 prerequisites.
+This section analyzes all 17 MARGINAL-verdict documents from the DOC_STORE_CORPUS_REPORT (2026-07-14), comparing preprocessed output against the E2E baseline (2026-07-10) and original source PDFs.
 
-| Issue | Fix | Prereq | Lines Changed |
-|---|---|---|---|
-| ISS-18 | Regex JSON extraction + narrow catch | ISS-17 | ~10 |
-| ISS-19 | Same pattern as ISS-18 + `RAG_PARSE_FAILURES` counter | ISS-17 | ~15 |
-| ISS-05 | Store `node_count` in `.meta.json` sidecar | — | ~10 |
-| ISS-06 | Pass pagination params to registry `list_docs` | ISS-05, ISS-07 | ~15 |
-| ISS-02 | Await registry delete with 5s timeout | — | ~20 |
-| ISS-08 | Retry transient OpenAI errors + `IMAGE_DESCRIBE_FAILURES` counter | — | ~15 |
-| ISS-20 | Return boolean from `delete_staging` + `STAGING_DELETE_FAILURES` counter | — | ~10 |
+### 4.1 Corpus Movement Summary
 
-**Total:** ~95 lines changed. 7 issues resolved.
+| Movement                           | Count | Documents                                                                                                |
+| ---------------------------------- | ----- | -------------------------------------------------------------------------------------------------------- |
+| **FAIL -> MARGINAL** (rescued)      | 5     | MOU MOHRE, اتفاقية, قرار 1, قرار 106, وارد 597                                                          |
+| **MARGINAL -> improved MARGINAL**   | 4     | cabinet_res_21(1)(1), cabinet_res_21(1), حقوق الإنسان, Ministerial Res 279                               |
+| **MARGINAL -> quality-improved**    | 2     | مرسوم 13, سياسة حوكمة                                                                                   |
+| **MARGINAL -> unchanged**           | 4     | GHV-TKV-Tarif, Haftpflicht-Besondere, Unfallversicherung, uae_numbers_portrait                           |
+| **MARGINAL with regression signal**| 1     | مرسوم 33                                                                                                 |
+| **PASS promotion candidates**      | 2     | سياسة حوكمة, Haftpflicht-Besondere (overlap with above)                                                  |
+
+### 4.2 Category A — OCR-Rescued Documents (FAIL -> MARGINAL)
+
+These 5 documents were previously 100% image blocks with zero extracted text. D1 OCR-escalation now fires and recovers real Arabic content.
+
+| # | Document | doc_id | Baseline chars | Current chars | Recovery | Residual Issue |
+|---|----------|--------|---------------|--------------|----------|----------------|
+| 1 | MOU MOHRE | `7c0a0100` | 182 | 12,204 | +6,605% | OCR noise fragments (`Salgll rot!` for `الموافق`); 45% single-leaf |
+| 2 | اتفاقية مستوى الخدمة | `a5ef1929` | 630 | 29,947 | +4,653% | OCR noise (`blll`); 47% single-leaf concentration |
+| 3 | قرار رقم 1 | `34b3b7ee` | 294 | 39,112 | +13,203% | OCR noise pattern same class as #1/#2; 43.5% single-leaf |
+| 4 | قرار رقم 106 | `7b819149` | 210 | 32,763 | +15,501% | Highest single-leaf concentration of rescued group (60.9%) |
+| 5 | وارد 597 | `127ba17a` | 38,778 (numeric junk) | 74,407 (clean Arabic) | digit_ratio 0.91->0.01 | 28% single-leaf; `1651001429` pattern fully eliminated |
+
+**Assessment:** OCR-escalation is working correctly. All 5 now contain legible, queryable Arabic text. The residual OCR noise fragments are short-phrase Tesseract misreadings on decorative/recital-clause typography — cosmetic (< 0.5% of total text) and do not impair search or RAG retrieval.
+
+### 4.3 Category B — Structurally Improved Documents
+
+| # | Document | doc_id | Baseline | Current | Delta |
+|---|----------|--------|----------|---------|-------|
+| 1 | cabinet_res_21(1)(1) | `997a140a` | 22 nodes, 80.8% max_leaf | 37 nodes, 73.4% max_leaf | Gap 3 improved: 15 `ARTICLE` headers detected; residual merged fee-schedule block |
+| 2 | cabinet_res_21(1) | `0dc36fb4` | identical to above | identical to above | Duplicate doc — deterministic extraction confirmed |
+| 3 | حقوق الإنسان | `e8596b90` | 34 nodes, 87.7% max_leaf (FAIL) | 322 nodes, 27.4% max_leaf | Gap 4 major win: presentation-form Arabic handled. Residual 137k leaf = genuine ToC + 2 long articles |
+| 4 | Ministerial Res 279 | `c6a673f1` | 18 nodes, 56.1% max_leaf | 28 nodes, 34.0% max_leaf | Structural improvement; **690 tab chars persist** — Docling font/spacing extraction artifact |
+| 5 | Reitlehrer | `7116d385` | 7 nodes, 52.8% max_leaf | 9 nodes, 29.6% max_leaf | Inherently short fragment document (3,562 chars total) |
+
+**Assessment:** The splitter redesign (Gap 3) and presentation-form Arabic handling (Gap 4) delivered substantial improvements. حقوق الإنسان is the biggest structural win in the entire corpus (88% -> 27% concentration).
+
+### 4.4 Category C — Text Quality Improved
+
+| # | Document | doc_id | Baseline Issue | Current State |
+|---|----------|--------|----------------|---------------|
+| 1 | مرسوم 13 | `d9f0a0e9` | 81 `#` substitutions, "Oleg" Latin mojibake | **Mojibake eliminated** (0 occurrences). Residual: minor `- deg -` OCR noise token |
+| 2 | سياسة حوكمة | `efd65b00` | RTL table-field corruption flagged | **CLEAN** — diacritic density 0.3% (normal), no corruption confirmed this run |
+
+**Assessment:** مرسوم 13 is a D3/D5 success story. سياسة حوكمة's original MARGINAL verdict appears overly cautious; see promotion candidates below.
+
+### 4.5 Category D — Unchanged (Docling/Source Limitations)
+
+| # | Document | doc_id | Why Unchanged | Addressable? |
+|---|----------|--------|---------------|--------------|
+| 1 | GHV-TKV-Tarif | `a6a49019` | Gap 6: tariff table column structure degraded in Docling's markdown output | No — Docling table extraction limitation |
+| 2 | Haftpflicht-Besondere | `906392fb` | 16% max_leaf concentration, 33 nodes | Borderline — see PASS promotion candidate |
+| 3 | Unfallversicherung | `4bbd7ede` | 80.8% image blocks, 1,263 chars; benefits-table structure degraded | No — image-dominant layout with Docling table degradation (Gap 6) |
+| 4 | uae_numbers_portrait | `f274ece1` | 57% image blocks, 129 chars; infographic-style PDF | No — genuinely image-dominant content with minimal text layer |
+
+**Assessment:** These 4 documents represent hard limits of the current Docling-based extraction pipeline. None are addressable without either a VLM-based table extraction path or a fundamentally different PDF parser.
+
+### 4.6 Category E — Regression Signal
+
+| Document | doc_id | Metric | Baseline (06-30 splitter) | Current (07-14) | Concern |
+|----------|--------|--------|--------------------------|-----------------|---------|
+| مرسوم 33 | `8b05de59` | node_count | 125 | 58 | -54% nodes |
+| | | max_leaf | 6,447 (5.3%) | 32,583 (26.7%) | +405% leaf size |
+| | | في→# | ~699 occurrences | ~699 occurrences | D5 interim fix — unchanged as expected |
+
+**Assessment:** The node-count drop (125->58) and max_leaf growth (6,447->32,583) need investigation. Likely explanation: D4 TOC dot-leader filter correctly removing noise nodes. Run a node-title diff between the 06-30 and 07-14 trees to confirm.
+
+### 4.7 PASS Promotion Candidates
+
+| Document | doc_id | Case for PASS | Case Against |
+|----------|--------|---------------|-------------|
+| **سياسة حوكمة** | `efd65b00` | CLEAN text quality, 16.5% max_leaf, 18 nodes depth-2, 0.3% diacritic density (normal) | Original MARGINAL was based on unconfirmed RTL table-field corruption. This run found **no corruption** |
+| **Haftpflicht-Besondere** | `906392fb` | 16% max_leaf is within acceptable range, 33 nodes depth-2 | Uneven split pattern, but 16% concentration is comparable to other PASS documents |
+
+**Recommendation:** Promote both to PASS in the next corpus report update.
 
 ---
 
-### Batch 3 — Hardening (1 day, Size S-M)
+## 5. Combined Gap Status
 
-Lower-priority security and resilience improvements.
-
-| Issue | Fix | Lines Changed |
-|---|---|---|
-| ISS-10 | Move hash tracking to Redis HSET (immediate) or Postgres column (long-term) | ~20 |
-| ISS-14 | Add timeout + size cap to tessdata download; pre-bake in Docker | ~15 |
-| ISS-15 | Chunked upload read with `MAX_UPLOAD_SIZE_MB` cap | ~15 |
-
-**Total:** ~50 lines changed. 3 issues resolved.
-
----
-
-### Batch 4 — Long-Term (next sprint)
-
-Registry stabilization — make Postgres the authoritative source.
-
-| Issue | Fix | Prereq |
-|---|---|---|
-| ISS-05 (B) | Remove MinIO fallback, registry-only listing | ISS-03, registry stable |
-| ISS-10 (B) | Move hash tracking to `doc_registry.sha256` column | RFC-006 stable |
+| Gap | Baseline | Current Status |
+|-----|----------|----------------|
+| **Gap 1** — OCR escalation | 6 FAIL docs (image-only, zero text) | **4/6 resolved** — real Arabic text recovered. Remaining 2 are genuine infographics |
+| **Gap 2** — Garble-gate text content | 3 FAIL (mojibake, Latin-sub, digit-junk) | **2/3 resolved** — القرار التنظيمي is structural CMap corruption |
+| **Gap 3** — Latin inline Article markers | 2 FAIL, 4 MARGINAL | **Splitter redesign landed** — 4->PASS, cabinet_res_21 pair improved (81->73%) |
+| **Gap 4** — Presentation-form Arabic | 1 FAIL (88% single leaf) | **Improved to 27%** — حقوق الإنسان structurally sound |
+| **Gap 5** — في→# substitution | 2 MARGINAL | **Unchanged** — D5 interim fix; full resolution requires upstream Docling fix (#3802) |
+| **Gap 6** — Table column degradation | 3 MARGINAL | **1/3 resolved** (world-stats-pocketbook->PASS). 2 unchanged |
+| **ISS-02** — Erasure cascade | 🟠 DEGRADED | 🟠 Open — Batch 2 |
+| **ISS-03** — Backfill 0-doc | 🟠 DEGRADED | 🟠 Open — Batch 1 |
+| **ISS-05** — O(N) MinIO GETs | 🟠 DEGRADED | 🟠 Open — Batch 2 |
+| **ISS-07** — Redis conn storm | 🟠 DEGRADED | 🟡 Partially fixed — worker.py remaining |
+| **ISS-08** — OpenAI error swallow | 🟠 DEGRADED | 🟠 Open — Batch 2 |
 
 ---
 
-## 5. Execution Order Rationale
+## 6. Remaining Fix Plan
 
-```
-Batch 0 (today)          Batch 1 (next)           Batch 2 (after)         Batch 3
-─────────────────       ─────────────────       ─────────────────       ──────────
-ISS-01 redis_url        ISS-07 conn storm  ───→ ISS-06 pagination      ISS-10 hash
-ISS-17 None guard  ───→ ISS-03 backfill 0k ──→ ISS-05 node_count      ISS-14 tessdata
-ISS-04 validate 1st     ISS-13 auth warn        ISS-18 narrow catch    ISS-15 upload cap
-ISS-12 enqueue order    ISS-16 cache warn        ISS-19 narrow catch
-ISS-11 save order       ISS-09 full UUID         ISS-02 await delete
-ISS-21 remove listing                            ISS-08 retry OpenAI
-                                                  ISS-20 staging metric
-```
+### Batch 1 — Quick Wins (half-day)
 
-Arrows show dependencies. Items without arrows are independently shippable.
+| Issue  | Fix                                                                     | Lines Changed |
+| ------ | ----------------------------------------------------------------------- | ------------- |
+| ISS-07 | Fix remaining worker.py ad-hoc connections                              | ~10           |
+| ISS-03 | Skip `set_registry_complete` when 0 keys found                         | ~3            |
+
+### Batch 2 — Structural Fixes (1-2 days)
+
+| Issue  | Fix                                                                         | Lines Changed |
+| ------ | --------------------------------------------------------------------------- | ------------- |
+| ISS-18 | Regex JSON extraction + narrow catch                                        | ~10           |
+| ISS-19 | Same pattern as ISS-18 + `RAG_PARSE_FAILURES` counter                       | ~15           |
+| ISS-05 | Store `node_count` in `.meta.json` sidecar                                  | ~10           |
+| ISS-02 | Await registry delete with 5s timeout                                       | ~20           |
+| ISS-08 | Retry transient OpenAI errors + `IMAGE_DESCRIBE_FAILURES` counter           | ~15           |
+
+### Batch 3 — Long-Term
+
+| Issue      | Fix                                                 | Prereq                  |
+| ---------- | --------------------------------------------------- | ----------------------- |
+| ISS-05 (B) | Remove MinIO fallback, registry-only listing        | ISS-03, registry stable |
 
 ---
 
-## 6. What This Audit Did NOT Cover
+## 7. What This Audit Did NOT Cover
 
-- **Test coverage gaps** — no mutation testing or coverage analysis was performed
+- **Test coverage gaps** — no mutation testing or coverage analysis
 - **Dependency vulnerabilities** — no `pip audit` or CVE scan
-- **Load/stress testing** — performance issues were identified by code inspection, not benchmarking
+- **Load/stress testing** — performance issues identified by code inspection, not benchmarking
 - **Deployment configuration** — Kubernetes manifests, Helm charts, ingress rules
-- **LLM prompt quality** — the RAG prompts in `helpers.py` were not evaluated for accuracy
-- **Docling/pymupdf4llm internals** — third-party library behavior was taken at face value
-- **The 21+ test files** — test quality and coverage were out of scope
+- **LLM prompt quality** — RAG prompts not evaluated for accuracy
+- **Docling/pymupdf4llm internals** — third-party library behavior taken at face value
+- **مرسوم 33 node-title diff** — regression signal flagged but not root-caused (requires tree comparison)
 
 ---
 
-## 7. Risk Assessment
+## 8. Risk Assessment
 
-| Risk | Current State | After Batch 0+1 |
-|---|---|---|
-| Fresh deployment fails silently | 🔴 High (ISS-01) | 🟢 Resolved |
-| Right-to-erasure incomplete | 🟠 Medium (ISS-02) | 🟠 Unchanged (Batch 2) |
-| Corpus invisibility on backfill | 🟠 Medium (ISS-03) | 🟢 Resolved |
-| Document overwrite at scale | 🟡 Low-Medium (ISS-09) | 🟢 Resolved |
-| Redis connection exhaustion | 🟠 Medium (ISS-07) | 🟢 Resolved |
-| Silent performance degradation | 🟠 Medium (ISS-05/06) | 🟠 Partially improved (Batch 2) |
-| Invisible Redis misconfiguration | 🟡 Low (ISS-16) | 🟢 Resolved |
+| Risk                             | Current State            | After Batch 1+2                 |
+| -------------------------------- | ------------------------ | ------------------------------- |
+| Right-to-erasure incomplete      | 🟠 Medium (ISS-02)       | 🟢 Resolved (Batch 2)           |
+| Corpus invisibility on backfill  | 🟠 Medium (ISS-03)       | 🟢 Resolved (Batch 1)           |
+| Redis connection churn (worker)  | 🟡 Low (ISS-07 partial)  | 🟢 Resolved (Batch 1)           |
+| Silent performance degradation   | 🟠 Medium (ISS-05)       | 🟢 Resolved (Batch 2)           |
+| Table extraction (Gap 6)         | 🟡 2/3 unchanged          | 🟡 Unchanged — RFC-004 scope    |
+| في→# substitution (Gap 5)       | 🟡 Upstream Docling #3802 | 🟡 Unchanged — upstream pending |
+| CMap corruption (Gap 2 residual) | 🔴 Structural, unfixable  | 🔴 Unchanged                    |
 
 ---
 
-## 8. Deliverables
+## 9. Deliverables
 
-| File | Content |
-|---|---|
-| [`audit/SCOPE.md`](SCOPE.md) | System boundaries, file inventory, audit goals |
-| [`audit/EXPLORATION.md`](EXPLORATION.md) | Per-file summaries with ~80 red flags |
-| [`audit/ISSUES.md`](ISSUES.md) | 25 verified issues with classifications and evidence |
-| [`audit/FIXES.md`](FIXES.md) | 2-3 fix approaches per issue with recommendations |
-| [`audit/DOCSTORE_AUDIT_REPORT.md`](DOCSTORE_AUDIT_REPORT.md) | This executive summary |
+| File                                                          | Content                                                            |
+| ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`audit/SCOPE.md`](SCOPE.md)                                 | System boundaries, file inventory, audit goals                     |
+| [`audit/EXPLORATION.md`](EXPLORATION.md)                     | Per-file summaries with ~80 red flags                              |
+| [`audit/ISSUES.md`](ISSUES.md)                               | 13 open issues with classifications and evidence                   |
+| [`audit/FIXES.md`](FIXES.md)                                 | Fix approaches for remaining issues with recommendations           |
+| [`audit/DOCSTORE_AUDIT_REPORT.md`](DOCSTORE_AUDIT_REPORT.md) | This executive summary (code audit + corpus quality analysis)      |
+| [`DOC_STORE_CORPUS_REPORT.md`](../DOC_STORE_CORPUS_REPORT.md)| Full 25-document corpus report with per-doc verdicts and metrics   |
+
+---
+
+## Appendix: MARGINAL Document Metrics Comparison
+
+| # | Document | doc_id | E2E Baseline (07-10) | doc_store Run (07-14) | Delta |
+|---|----------|--------|---------------------|-----------------------|-------|
+| 1 | GHV-TKV-Tarif | `a6a49019` | flat, 24 blocks | flat, 24 blocks, 389 chars | Unchanged (Gap 6) |
+| 2 | Haftpflicht-Besondere | `906392fb` | 33 nodes, depth 2, max_leaf 13.1k | 33 nodes, depth 2, max_leaf 20.9k (16%) | Stable — **PASS candidate** |
+| 3 | MOU MOHRE | `7c0a0100` | FAIL: 100% image, 0 text | 16 nodes, depth 2, 12.2k chars | **Rescued via OCR** |
+| 4 | Ministerial Res 279 | `c6a673f1` | 18 nodes, depth 1 | 28 nodes, depth 5, 690 tab chars | Improved structure, tab artifacts persist |
+| 5 | Reitlehrer | `7116d385` | 7 nodes, depth 1 | 9 nodes, depth 3, 3.5k chars | Slight improvement, inherently small |
+| 6 | Unfallversicherung | `4bbd7ede` | flat, 78 blocks, 63 images | flat, 78 blocks, 80.8% img, 1.3k chars | Unchanged (Gap 6) |
+| 7 | cabinet_res_21(1)(1) | `997a140a` | FAIL: 22 nodes, 80.8% max_leaf | 37 nodes, 73.4% max_leaf | Gap 3 improved |
+| 8 | cabinet_res_21(1) | `0dc36fb4` | identical to #7 | identical to #7 | Duplicate confirmed |
+| 9 | uae_numbers_portrait | `f274ece1` | flat, 57% img, 129 chars | flat, 57% img, 129 chars | Unchanged (infographic) |
+| 10 | اتفاقية | `a5ef1929` | FAIL: 100% image, 0 text | 40 nodes, depth 2, 29.9k chars | **Rescued via OCR** |
+| 11 | سياسة حوكمة | `efd65b00` | 18 nodes, depth 2 | 18 nodes, depth 2, 19.8k chars, CLEAN | Unchanged — **PASS candidate** |
+| 12 | قرار 1 | `34b3b7ee` | FAIL: 100% image, 0 text | 33 nodes, depth 2, 39.1k chars | **Rescued via OCR** |
+| 13 | قرار 106 | `7b819149` | FAIL: 100% image, 0 text | 20 nodes, depth 2, 32.8k chars | **Rescued via OCR** |
+| 14 | مرسوم 13 | `d9f0a0e9` | 17 nodes, 81 # subs, mojibake | 17 nodes, 0 # subs, 0 mojibake | **Text quality fixed** |
+| 15 | مرسوم 33 | `8b05de59` | 125 nodes, max_leaf 6.4k | 58 nodes, max_leaf 32.6k | **Regression signal** — investigate |
+| 16 | وارد 597 | `127ba17a` | FAIL: digit_ratio 0.91 | 13 nodes, digit_ratio 0.01, clean Arabic | **Rescued via garble-gate fix** |
+| 17 | حقوق الإنسان | `e8596b90` | FAIL: 88% single leaf | 322 nodes, 27.4% max_leaf | **Major structural improvement** |

@@ -6,6 +6,8 @@
 
 # Docstore Audit — Scope Definition (Wave 1)
 
+**Last updated:** 2026-07-15 (added corpus quality scope, updated file inventory for RFC-010 changes)
+
 ## 1. What Are "Docstore Files"?
 
 The docstore subsystem is the entire document lifecycle — ingestion, conversion, storage, retrieval, and deletion. It spans the following files:
@@ -106,3 +108,48 @@ This audit systematically examines the docstore subsystem for:
 6. **Architectural anti-patterns** — Tight coupling, layering violations, inconsistent abstractions
 7. **Data integrity risks** — Partial writes without rollback, cache/storage inconsistency, cascade gaps in deletion
 8. **Security concerns** — Credential exposure, injection vectors, missing auth on paths
+
+## 5. Corpus Quality Scope (added 2026-07-15)
+
+In addition to the code-level audit, the scope was expanded to include a **corpus quality analysis** of all 25 documents in `doc_store/`. This analysis evaluates the end-to-end ingestion pipeline's output quality by comparing preprocessed results against source PDFs.
+
+### 5.1 Corpus
+
+- **Location:** `doc_store/` (25 documents: 24 PDF, 1 JPG)
+- **Languages:** German (11), English (7), Arabic (7)
+- **Formats:** text-layer PDFs, scanned PDFs, image-dominant PDFs, infographics, tables
+
+### 5.2 Verdict Taxonomy
+
+| Verdict      | Criteria |
+| ------------ | -------- |
+| **PASS**     | Well-distributed tree (max_leaf < 15%), correct depth, no garbling, clean text |
+| **MARGINAL** | Functional but with quality issues: high leaf concentration (15–75%), minor OCR noise, tab artifacts, incomplete splitting |
+| **FAIL**     | Unusable output: zero text extracted, mojibake/garbled content persisted, >75% single-leaf concentration |
+
+### 5.3 Systemic Gaps Tracked
+
+Six root-cause gaps were identified in the baseline (2026-07-11) and tracked through RFC-010 D1–D5 remediation:
+
+| Gap | Description | Root Cause |
+| --- | ----------- | ---------- |
+| Gap 1 | OCR escalation never fires on image-only flat docs | Missing image-ratio pre-check in client.py |
+| Gap 2 | Garble-gate checks structure only, not text content | `_tree_is_garbled` / `_flat_text_is_garbled` not checking for mojibake/digit-junk patterns |
+| Gap 3 | Latin inline `Article (N)` markers not matched by splitter | Regex lacked parenthesized form; line-anchored but markers are inline |
+| Gap 4 | Presentation-form Arabic bypasses logical-form regex | Splitter regex matches logical-form المادة but not presentation-form ﺍﳌـﺎﺩﺓ (U+FExx) |
+| Gap 5 | Arabic OCR quality — في→# substitution | Docling bug replacing في with `#` in Arabic markdown output |
+| Gap 6 | Table column structure degrades on complex tables | Docling markdown table rendering limitation on wide/complex layouts |
+
+### 5.4 MARGINAL Deep Analysis Methodology
+
+For the 17 MARGINAL-verdict documents, the audit compares:
+1. **E2E baseline metrics** (2026-07-10, pre-RFC-010) against **doc_store run metrics** (2026-07-14, post-D1–D5)
+2. **Preprocessed JSON structure** (node count, depth, max_leaf concentration) against **source PDF content** (actual sections, articles, tables)
+3. **Text quality signals** (garbling ratio, digit ratio, OCR noise patterns, mojibake occurrences) across runs
+
+### 5.5 New Test Files (RFC-010)
+
+| File | Lines | Coverage |
+| ---- | ----- | -------- |
+| `tests/test_rfc010_helpers.py` | 181 | GLYPH\<N\> marker detection, symbolic token exclusion in garble-gate, extended garble heuristics |
+| `tests/test_rfc010_converters.py` | 156 | `_normalize_indented_headings` (D2), `_fix_fi_hash_substitution` (D5) |

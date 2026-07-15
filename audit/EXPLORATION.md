@@ -58,6 +58,10 @@ Arq async job worker processing document ingestion jobs. Downloads staged docume
 
 Core document format conversion module. Handles PDF→Markdown (Docling primary / pymupdf4llm AGPL fallback), DOCX, PPTX, XLSX, and image→Markdown (OCR). PDF path includes multi-stage heading-depth recovery chain (containment → numbering-regex → PDF-outline). Also includes monkey-patching of `docling-hierarchical-pdf` add-on, OCR language auto-detection, tessdata provisioning, and LibreOffice headless conversion.
 
+**Post-audit changes (RFC-010 D2/D5, +24 lines):**
+- `_normalize_indented_headings` (D2): detects indented heading patterns in Docling markdown output and normalizes them to standard ATX headings.
+- `_fix_fi_hash_substitution` (D5): interim post-processor replacing في→# substitutions in Arabic text — a workaround pending upstream Docling fix (#3802).
+
 **Red flags:**
 1. `urllib.request.urlretrieve(url, dest)` in `_try_download_tessdata` (~line 759): downloads from GitHub with no checksum/integrity verification, no timeout, no size limit. **Potential supply-chain vector.**
 2. `_patch_hierarchical_infer()` monkey-patches a third-party library (~line 908-1017): fingerprint guard will break silently on any upstream version change. Global `_HIERARCHICAL_INFER_PATCHED` bool is not thread-safe.
@@ -84,6 +88,11 @@ CLI subprocess entry point for document conversion. Invoked by `worker.py` as `p
 
 Core RAG pipeline + tree-quality infrastructure. Provides LLM-driven document search (`_rag`, `_search_one_doc`, `_prefilter_docs`), tree validation (`validate_tree`, `_tree_node_count`, `_tree_depth`, `_tree_is_garbled`), deterministic flat-document classifier (`route_and_extract_flat`), oversized-leaf tail-blob splitter (`split_oversized_leaf_nodes`), table fidelity fixes (continuation-table stitching, RTL detection, empty-cell annotation), and registry-narrowing pre-filter (`_registry_narrow`).
 
+**Post-audit changes (RFC-010 D3/D3B, +80 lines):**
+- `_tree_is_garbled` (~line 525): added GLYPH\<N\> marker detection (forward-compat with docling-parse#299). Fixed symbolic token exclusion — `|`, `€` no longer inflate the single-token repetition ratio, preventing false positives on legitimate wide tables.
+- `_flat_text_is_garbled` (~line 1063): same GLYPH marker detection and symbolic token fix applied to the flat-path garble gate (D3B).
+- Both changes landed after GHV-TKV-Tarif ingestion was blocked by a garble-gate false positive on its markdown price table (38.6% pipe-delimiter ratio).
+
 **Red flags:**
 1. `r.choices[0].message.content.strip()` (~line 51): no guard against `None` content — OpenAI can return `content=None` on refusal; would raise `AttributeError`.
 2. `except Exception` in `_prefilter_docs` (~line 98): broad catch silently degrades precision by falling back to all docs.
@@ -97,6 +106,11 @@ Core RAG pipeline + tree-quality infrastructure. Provides LLM-driven document se
 ### client.py
 
 Central indexing + retrieval client. `CustomPageIndexClient` extends upstream `PageIndexClient` to support multi-format conversion, SHA-256 dedup, MinIO persistence, OCR escalation, and the FLAT-03 flat-doc success path. Also hosts LLM provider resolution, OpenAI/Azure/compatible client construction, litellm endpoint configuration, and Langfuse tracing.
+
+**Post-audit changes (RFC-010 D1/D3B, +193 lines):**
+- OCR escalation wiring (D1): `_should_escalate_to_ocr` pre-check detects image-dominant PDFs (high image-to-text ratio) and routes them through Tesseract before tree building. Rescued 5 previously-FAIL Arabic scanned documents.
+- Flat-path garble gate integration (D3B): `_flat_text_is_garbled` check wired into the flat-doc routing path, catching garbled text that previously bypassed the tree-only gate.
+- TOC dot-leader filter (D4): strips dot-leader entries (e.g., `Section Title .......... 42`) from tree nodes to reduce noise.
 
 **Red flags:**
 1. `index()` method is ~380 lines with grandfathered `noqa: C901, PLR0915` (~line 254): god method doing format detection, conversion, validation, flat routing, persistence, and hash caching.
@@ -294,11 +308,35 @@ Gunicorn configuration. 1 worker by default (MCP sessions are in-memory).
 
 ---
 
+## RFC-010 Test Files (added 2026-07-15)
+
+### test_rfc010_helpers.py (new, 181 lines)
+
+Tests for RFC-010 garble-gate hardening in `helpers.py`. Covers:
+- GLYPH\<N\> marker detection in `_tree_is_garbled` and `_flat_text_is_garbled`
+- Symbolic token exclusion (verifies `|`, `€` don't inflate repetition ratio)
+- Extended garble detection heuristics for both tree and flat paths
+
+No red flags — well-structured unit tests with synthetic fixtures.
+
+---
+
+### test_rfc010_converters.py (new, 156 lines)
+
+Tests for RFC-010 converter additions. Covers:
+- `_normalize_indented_headings` (D2): verifies indent-based heading detection and ATX normalization
+- `_fix_fi_hash_substitution` (D5): verifies في→# replacement in Arabic text
+
+No red flags — focused contract tests.
+
+---
+
 ## Summary Statistics
 
 | Category | Files | Red Flags |
 |---|---|---|
-| Core Pipeline | 16 | ~65 |
+| Core Pipeline | 16 (+3 files changed: converters.py +24, helpers.py +80, client.py +193) | ~65 (unchanged — new code is additive, no new red flags) |
 | Support Scripts | 3 | ~9 |
 | Config & Infrastructure | 4 | ~6 |
-| **Total** | **23** | **~80** |
+| Test Files (RFC-010) | 2 (new) | 0 |
+| **Total** | **25** | **~80** |
