@@ -23,18 +23,18 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
 
 ## Tasks
 
-- [ ] <a id="1-batch-0--zero-risk-fixes-d1-d6-d5"></a>1. Batch 0 — Zero-Risk Fixes ([D1](../rfcs/012-reliability-deadcode-quickwins.md#d1--iss-03-no-code-change-close-as-resolved), [D6](../rfcs/012-reliability-deadcode-quickwins.md#d6--iss-43-env-var-override-for-testpys-target-url), [D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files))
+- [x] <a id="1-batch-0--zero-risk-fixes-d1-d6-d5"></a>1. Batch 0 — Zero-Risk Fixes ([D1](../rfcs/012-reliability-deadcode-quickwins.md#d1--iss-03-no-code-change-close-as-resolved), [D6](../rfcs/012-reliability-deadcode-quickwins.md#d6--iss-43-env-var-override-for-testpys-target-url), [D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files))
 
   *[RFC-012 Batch 0](../rfcs/012-reliability-deadcode-quickwins.md#implementation-plan): "Zero-risk fixes — close ISS-03, add test URL env override, delete dead files"*
 
-  - [ ] <a id="11-close-iss-03-as-resolved"></a>1.1 Close ISS-03 as resolved ([D1](../rfcs/012-reliability-deadcode-quickwins.md#d1--iss-03-no-code-change-close-as-resolved))
+  - [x] <a id="11-close-iss-03-as-resolved"></a>1.1 Close ISS-03 as resolved ([D1](../rfcs/012-reliability-deadcode-quickwins.md#d1--iss-03-no-code-change-close-as-resolved))
 
     - Mark ISS-03 as closed/resolved in the audit tracker (`audit/DOCSTORE_AUDIT_REPORT.md`)
     - No code change required: `registry_backfill.py:188-193` already guards `set_registry_complete` behind a non-empty `meta_keys` check
     - Add a note citing the existing guard as the fix
     - _Requirements:_ [RFC-012 D1](../rfcs/012-reliability-deadcode-quickwins.md#d1--iss-03-no-code-change-close-as-resolved) | [Design AD1](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad1--close-iss-03-as-resolved)
 
-  - [ ] <a id="12-add-test-url-env-override"></a>1.2 Add test URL env override ([D6](../rfcs/012-reliability-deadcode-quickwins.md#d6--iss-43-env-var-override-for-testpys-target-url))
+  - [x] <a id="12-add-test-url-env-override"></a>1.2 Add test URL env override ([D6](../rfcs/012-reliability-deadcode-quickwins.md#d6--iss-43-env-var-override-for-testpys-target-url))
 
     - Replace the hardcoded production URL at `test.py:21` with an env-var override:
       ```python
@@ -44,7 +44,7 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
     - Add `import os` if not already present
     - _Requirements:_ [RFC-012 D6](../rfcs/012-reliability-deadcode-quickwins.md#d6--iss-43-env-var-override-for-testpys-target-url) | [Design AD6](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad6--test-url-env-override) | [Design Service: test.py](../designs/design-rfc012-reliability-deadcode-quickwins.md#5-testpy) | [Design Property 5](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-5-test-url-safety)
 
-  - [ ] <a id="13-delete-dead-files"></a>1.3 Delete dead files ([D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files))
+  - [x] <a id="13-delete-dead-files"></a>1.3 Delete dead files ([D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files))
 
     - Delete `upload.py` (repo root) — calls non-existent MCP tool `process_document`; 0 references repo-wide; `ingest_via_server.py` is the active replacement
     - Delete `tools/processing.py` — 1-line tombstone comment; 0 references repo-wide
@@ -52,7 +52,7 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
     - Recoverable via git history if needed
     - _Requirements:_ [RFC-012 D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files) | [Design AD5](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad5--dead-code-removal) | [Design Property 4](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-4-dead-code-absence)
 
-  - [ ] <a id="14-checkpoint--batch-0"></a>1.4 Checkpoint — Batch 0
+  - [x] <a id="14-checkpoint--batch-0"></a>1.4 Checkpoint — Batch 0
 
     - Run `uv run pytest` — all existing tests continue green
     - Verify ISS-03 marked as resolved in audit tracker
@@ -61,11 +61,11 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
     - Verify [Design Property 4](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-4-dead-code-absence) (dead code absence) and [Design Property 5](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-5-test-url-safety) (test URL safety)
     - Ask user if questions arise before proceeding
 
-- [ ] <a id="2-batch-1--reliability-fixes-d2-d4"></a>2. Batch 1 — Reliability Fixes ([D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton), [D4](../rfcs/012-reliability-deadcode-quickwins.md#d4--iss-39-raise-gunicorn-graceful_timeout-add-request-jitter))
+- [x] <a id="2-batch-1--reliability-fixes-d2-d4"></a>2. Batch 1 — Reliability Fixes ([D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton), [D4](../rfcs/012-reliability-deadcode-quickwins.md#d4--iss-39-raise-gunicorn-graceful_timeout-add-request-jitter))
 
   *[RFC-012 Batch 1](../rfcs/012-reliability-deadcode-quickwins.md#implementation-plan): "Reliability fixes — Redis singleton reuse and gunicorn lifecycle tuning"*
 
-  - [ ] <a id="21-route-worker-redis-through-singleton"></a>2.1 Route worker Redis through singleton ([D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton))
+  - [x] <a id="21-route-worker-redis-through-singleton"></a>2.1 Route worker Redis through singleton ([D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton))
 
     - Replace ad-hoc `aioredis.from_url` fallback at `worker.py:275` and `worker.py:446` with the shared `cache.py` singleton:
       ```python
@@ -76,7 +76,7 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
     - Ensures consistency with `helpers.py:389` which already uses the `cache.py:39` singleton
     - _Requirements:_ [RFC-012 D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton) | [Design AD2](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad2--redis-singleton-reuse) | [Design Service: worker.py](../designs/design-rfc012-reliability-deadcode-quickwins.md#1-workerpy) | [Design Service: cache.py](../designs/design-rfc012-reliability-deadcode-quickwins.md#6-cachepy) | [Design Property 1](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-1-redis-singleton-consistency) | [Design Sequence: Worker Startup Flow](../designs/design-rfc012-reliability-deadcode-quickwins.md#worker-startup-flow--d2)
 
-  - [ ] <a id="22-tune-gunicorn-lifecycle"></a>2.2 Tune gunicorn lifecycle ([D4](../rfcs/012-reliability-deadcode-quickwins.md#d4--iss-39-raise-gunicorn-graceful_timeout-add-request-jitter))
+  - [x] <a id="22-tune-gunicorn-lifecycle"></a>2.2 Tune gunicorn lifecycle ([D4](../rfcs/012-reliability-deadcode-quickwins.md#d4--iss-39-raise-gunicorn-graceful_timeout-add-request-jitter))
 
     - In `gunicorn.conf.py`:
       - Raise `graceful_timeout` from `5` to `30` (at line 13) — allows in-flight ingestion requests to complete during worker restart/deploy
@@ -85,18 +85,18 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
     - Note in deploy runbook: longer graceful shutdown window changes deploy-time behavior
     - _Requirements:_ [RFC-012 D4](../rfcs/012-reliability-deadcode-quickwins.md#d4--iss-39-raise-gunicorn-graceful_timeout-add-request-jitter) | [Design AD4](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad4--gunicorn-lifecycle-tuning) | [Design Service: gunicorn.conf.py](../designs/design-rfc012-reliability-deadcode-quickwins.md#3-gunicornconfpy) | [Design Property 3](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-3-graceful-shutdown-completeness)
 
-  - [ ] <a id="23-checkpoint--batch-1"></a>2.3 Checkpoint — Batch 1
+  - [x] <a id="23-checkpoint--batch-1"></a>2.3 Checkpoint — Batch 1
 
     - Run `uv run pytest` — all tests pass including [Batch 0](#1-batch-0--zero-risk-fixes-d1-d6-d5) + Batch 1
     - Verify [Design Property 1](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-1-redis-singleton-consistency) (Redis singleton consistency): no `aioredis.from_url` calls remain outside `cache.py`
     - Verify [Design Property 3](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-3-graceful-shutdown-completeness) (graceful shutdown completeness): `gunicorn.conf.py` has `graceful_timeout >= 30`, `max_requests`, and `max_requests_jitter`
     - Ask user if questions arise before proceeding
 
-- [ ] <a id="3-batch-2--concurrency-fixes-d3-d7"></a>3. Batch 2 — Concurrency Fixes ([D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window), [D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency))
+- [x] <a id="3-batch-2--concurrency-fixes-d3-d7"></a>3. Batch 2 — Concurrency Fixes ([D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window), [D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency))
 
   *[RFC-012 Batch 2](../rfcs/012-reliability-deadcode-quickwins.md#implementation-plan): "Concurrency fixes — admission lock scope and batched registry backfill upserts"*
 
-  - [ ] <a id="31-fix-admission-lock-scope"></a>3.1 Fix admission lock scope ([D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window))
+  - [x] <a id="31-fix-admission-lock-scope"></a>3.1 Fix admission lock scope ([D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window))
 
     - In `memory_admission.py:72-99`:
       - Currently acquires and releases the lock per loop iteration, leaving a window between check and admit where a concurrent request can slip through
@@ -104,7 +104,7 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
       - The lock must be held continuously from the quota check through the admission decision
     - _Requirements:_ [RFC-012 D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window) | [Design AD3](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad3--admission-lock-scope) | [Design Service: memory_admission.py](../designs/design-rfc012-reliability-deadcode-quickwins.md#2-memory_admissionpy) | [Design Property 2](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-2-admission-lock-atomicity) | [Design Sequence: Memory Admission Flow](../designs/design-rfc012-reliability-deadcode-quickwins.md#memory-admission-flow--d3)
 
-  - [ ] <a id="32-batch-registry-backfill-upserts"></a>3.2 Batch registry backfill upserts ([D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency))
+  - [x] <a id="32-batch-registry-backfill-upserts"></a>3.2 Batch registry backfill upserts ([D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency))
 
     - In `registry_backfill.py:129-157`:
       - Replace the sequential `for` loop over per-doc upserts with bounded-concurrency batching:
@@ -119,32 +119,32 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
       - Semaphore bound of 10 prevents overwhelming Redis under large backfills
     - _Requirements:_ [RFC-012 D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency) | [Design AD7](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad7--batched-registry-upserts) | [Design Service: registry_backfill.py](../designs/design-rfc012-reliability-deadcode-quickwins.md#4-registry_backfillpy) | [Design Property 6](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-6-backfill-concurrency-correctness) | [Design Sequence: Registry Backfill Flow](../designs/design-rfc012-reliability-deadcode-quickwins.md#registry-backfill-flow--d7)
 
-  - [ ] <a id="33-checkpoint--batch-2"></a>3.3 Checkpoint — Batch 2
+  - [x] <a id="33-checkpoint--batch-2"></a>3.3 Checkpoint — Batch 2
 
     - Run `uv run pytest` — all tests pass including [Batch 0](#1-batch-0--zero-risk-fixes-d1-d6-d5) + [Batch 1](#2-batch-1--reliability-fixes-d2-d4) + Batch 2
     - Verify [Design Property 2](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-2-admission-lock-atomicity) (admission lock atomicity): lock held continuously through check-then-admit
     - Verify [Design Property 6](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-6-backfill-concurrency-correctness) (backfill concurrency correctness): `asyncio.gather` with semaphore replaces sequential loop
     - Ask user if questions arise before proceeding
 
-- [ ] <a id="4-test-suite"></a>4. Test Suite
+- [x] <a id="4-test-suite"></a>4. Test Suite
 
   *[RFC-012 Test Strategy](../rfcs/012-reliability-deadcode-quickwins.md#test-strategy): "D2 mock/spy on get_async_redis, D3 concurrency test with near-full quota, D7 gather with simulated per-item failure"*
 
-  - [ ] <a id="41-redis-singleton-spy-test"></a>4.1 Redis singleton spy test ([D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton))
+  - [x] <a id="41-redis-singleton-spy-test"></a>4.1 Redis singleton spy test ([D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton))
 
     - **[Property 1](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-1-redis-singleton-consistency) — Redis singleton consistency**:
       - Test: `test_worker_redis_fallback_uses_singleton` — mock `ctx.get("redis")` to return `None`, assert the fallback calls `get_async_redis()` from `cache.py` instead of `aioredis.from_url`
       - Test: `test_no_direct_aioredis_from_url_in_worker` — static assertion: grep/AST scan `worker.py` for `aioredis.from_url` calls, assert zero matches
     - **Validates:** [Design Property 1](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-1-redis-singleton-consistency) | [RFC-012 D2](../rfcs/012-reliability-deadcode-quickwins.md#d2--iss-07-route-worker-redis-access-through-the-shared-singleton) | [RFC Test Strategy](../rfcs/012-reliability-deadcode-quickwins.md#test-strategy)
 
-  - [ ] <a id="42-admission-lock-concurrency-test"></a>4.2 Admission lock concurrency test ([D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window))
+  - [x] <a id="42-admission-lock-concurrency-test"></a>4.2 Admission lock concurrency test ([D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window))
 
     - **[Property 2](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-2-admission-lock-atomicity) — Admission lock atomicity**:
       - Test: `test_concurrent_admission_only_one_admits` — two simultaneous admission checks against a near-full quota (capacity for exactly 1 more), assert only one succeeds
       - Test: `test_admission_lock_held_through_decision` — instrument the lock to verify it is held continuously from check through admit (not released and reacquired per iteration)
     - **Validates:** [Design Property 2](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-2-admission-lock-atomicity) | [RFC-012 D3](../rfcs/012-reliability-deadcode-quickwins.md#d3--iss-37-hold-the-lock-through-the-full-check-then-admit-window) | [RFC Test Strategy](../rfcs/012-reliability-deadcode-quickwins.md#test-strategy)
 
-  - [ ] <a id="43-backfill-gather-test"></a>4.3 Backfill gather test ([D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency))
+  - [x] <a id="43-backfill-gather-test"></a>4.3 Backfill gather test ([D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency))
 
     - **[Property 6](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-6-backfill-concurrency-correctness) — Backfill concurrency correctness**:
       - Test: `test_backfill_upsert_called_per_item` — assert `upsert_doc` is called once per item in a batch of N documents
@@ -152,7 +152,7 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
       - Test: `test_backfill_semaphore_bounds_concurrency` — assert no more than 10 concurrent `upsert_doc` calls execute simultaneously
     - **Validates:** [Design Property 6](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-6-backfill-concurrency-correctness) | [RFC-012 D7](../rfcs/012-reliability-deadcode-quickwins.md#d7--iss-46-batch-registry-backfill-upserts-with-bounded-concurrency) | [RFC Test Strategy](../rfcs/012-reliability-deadcode-quickwins.md#test-strategy)
 
-  - [ ] <a id="44-final-checkpoint"></a>4.4 Final Checkpoint
+  - [x] <a id="44-final-checkpoint"></a>4.4 Final Checkpoint
 
     - Run `uv run pytest` — full test suite passes including all new tests from [Task 4.1](#41-redis-singleton-spy-test), [Task 4.2](#42-admission-lock-concurrency-test), [Task 4.3](#43-backfill-gather-test)
     - Verify all [6 correctness properties](../designs/design-rfc012-reliability-deadcode-quickwins.md#correctness-properties) green:
