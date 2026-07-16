@@ -96,6 +96,19 @@ _MIGRATE_NODE_COUNT_SQL = """
 ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS node_count INTEGER;
 """
 
+# RFC-014 D2: verdict columns for corpus promotion pipeline. Same
+# idempotent ADD COLUMN IF NOT EXISTS pattern as node_count above.
+_MIGRATE_VERDICT_SQL = """
+ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT '';
+ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS pipeline_version INTEGER;
+ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS permanent_marginal BOOLEAN NOT NULL DEFAULT false;
+"""
+
+_CREATE_VERDICT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS doc_registry_verdict_idx
+    ON doc_registry (verdict, pipeline_version);
+"""
+
 # ---------------------------------------------------------------------------
 # Pool lifecycle
 # ---------------------------------------------------------------------------
@@ -119,8 +132,10 @@ async def init_registry(dsn: str) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(_CREATE_TABLE_SQL)
         await conn.execute(_MIGRATE_NODE_COUNT_SQL)
+        await conn.execute(_MIGRATE_VERDICT_SQL)
         await conn.execute(_CREATE_GIN_INDEX_SQL)
         await conn.execute(_CREATE_TIME_INDEX_SQL)
+        await conn.execute(_CREATE_VERDICT_INDEX_SQL)
     logger.info("registry: schema ready (doc_registry)")
 
 
@@ -146,8 +161,9 @@ _UPSERT_SQL = """
 INSERT INTO doc_registry (
     doc_id, doc_name, source_url, processed_at,
     content_class, sha256, product, tier, doc_family,
-    effective_date, doc_description, node_count
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    effective_date, doc_description, node_count,
+    verdict, pipeline_version, permanent_marginal
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 ON CONFLICT (doc_id) DO UPDATE SET
     doc_name        = EXCLUDED.doc_name,
     source_url      = EXCLUDED.source_url,
@@ -159,7 +175,10 @@ ON CONFLICT (doc_id) DO UPDATE SET
     doc_family      = EXCLUDED.doc_family,
     effective_date  = EXCLUDED.effective_date,
     doc_description = EXCLUDED.doc_description,
-    node_count      = EXCLUDED.node_count;
+    node_count      = EXCLUDED.node_count,
+    verdict         = EXCLUDED.verdict,
+    pipeline_version = EXCLUDED.pipeline_version,
+    permanent_marginal = EXCLUDED.permanent_marginal;
 """
 
 
@@ -194,8 +213,32 @@ async def upsert_doc(meta: dict) -> None:
         # count (e.g. a raw legacy .meta.json) — read_registry_fields always
         # supplies it for freshly ingested docs.
         meta.get("node_count"),
+        # RFC-014 D2: verdict columns for corpus promotion pipeline.
+        meta.get("verdict", ""),
+        meta.get("pipeline_version"),
+        meta.get("permanent_marginal", False),
     )
     logger.debug("registry: upserted doc_id=%s", doc_id)
+
+
+# ---------------------------------------------------------------------------
+# Sweep path (RFC-014 D3 — version-gated backfill)
+# ---------------------------------------------------------------------------
+
+_SWEEP_CANDIDATES_SQL = """
+SELECT doc_id FROM doc_registry
+WHERE (pipeline_version IS NULL OR pipeline_version < $1)
+  AND permanent_marginal = false;
+"""
+
+
+async def sweep_candidates(current_version: int) -> list[str]:
+    """Return doc_ids eligible for verdict re-check (D3 sweep)."""
+    pool = get_pool()
+    if pool is None:
+        return []
+    rows = await pool.fetch(_SWEEP_CANDIDATES_SQL, current_version)
+    return [r["doc_id"] for r in rows]
 
 
 # ---------------------------------------------------------------------------

@@ -123,7 +123,10 @@ async def test_upsert_maps_all_fields_in_order():
     assert args[1:] == (
         "abc123", "AKB.pdf", "s3://x", "2026-07-10T00:00:00", "flat_table",
         "deadbeef", "huk", "komfort", "phv", "2026-01-01", "liability terms",
-        42,  # D2 (RFC-009): node_count is the trailing positional param
+        42,  # D2 (RFC-009): node_count
+        "",  # RFC-014 D2: verdict (default empty)
+        None,  # RFC-014 D2: pipeline_version (default None)
+        False,  # RFC-014 D2: permanent_marginal (default False)
     )
 
 
@@ -135,10 +138,13 @@ async def test_upsert_defaults_missing_keys_to_empty_string():
     args = pool.execute.await_args.args
     assert args[1] == "abc123"
     assert args[2] == "only-name.pdf"
-    # Text columns default to ""; the trailing node_count (D2) defaults to None
-    # since the caller supplied no count.
-    assert args[-1] is None
-    assert all(a == "" for a in args[3:-1])
+    # Text columns default to ""; node_count defaults to None; verdict fields
+    # default to ("", None, False) per RFC-014 D2.
+    assert args[12] is None  # node_count
+    assert args[13] == ""    # verdict
+    assert args[14] is None  # pipeline_version
+    assert args[15] is False  # permanent_marginal
+    assert all(a == "" for a in args[3:12])
 
 
 async def test_upsert_skips_row_with_empty_doc_id():
@@ -414,3 +420,54 @@ async def test_delete_doc_is_idempotent(reg):
     # Second delete of an absent row is a safe no-op.
     await registry.delete_doc("gone")
     assert await registry.count_docs() == 0
+
+
+# ── RFC-014 D2 — verdict fields in upsert_doc ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_upsert_maps_verdict_fields_when_present():
+    """RFC-014 D2: verdict/pipeline_version/permanent_marginal are forwarded
+    to the positional $13/$14/$15 slots when present in the meta dict."""
+    pool = AsyncMock()
+    registry._pool = pool
+    try:
+        meta = {
+            "doc_id": "v1",
+            "doc_name": "test.pdf",
+            "verdict": "PASS",
+            "pipeline_version": 1,
+            "permanent_marginal": True,
+        }
+        await registry.upsert_doc(meta)
+        args = pool.execute.await_args.args
+        assert args[13] == "PASS"
+        assert args[14] == 1
+        assert args[15] is True
+    finally:
+        registry._pool = None
+
+
+# ── RFC-014 D2 — migration SQL shape ────────────────────────────────────────
+
+def test_migrate_verdict_sql_is_idempotent():
+    """RFC-014 D2: migration DDL uses IF NOT EXISTS so it's re-runnable."""
+    sql = registry._MIGRATE_VERDICT_SQL
+    assert "ADD COLUMN IF NOT EXISTS verdict" in sql
+    assert "ADD COLUMN IF NOT EXISTS pipeline_version" in sql
+    assert "ADD COLUMN IF NOT EXISTS permanent_marginal" in sql
+
+
+def test_verdict_index_sql_is_idempotent():
+    """RFC-014 D2: compound index DDL uses IF NOT EXISTS."""
+    sql = registry._CREATE_VERDICT_INDEX_SQL
+    assert "CREATE INDEX IF NOT EXISTS" in sql
+    assert "verdict" in sql
+    assert "pipeline_version" in sql
+
+
+def test_upsert_sql_has_15_parameters():
+    """RFC-014 D2: _UPSERT_SQL expanded from 12 to 15 positional params."""
+    sql = registry._UPSERT_SQL
+    assert "$15" in sql
+    for col in ("verdict", "pipeline_version", "permanent_marginal"):
+        assert col in sql

@@ -297,7 +297,10 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
 
-_META_FIELDS = ("doc_id", "doc_name", "source_url", "processed_at")
+_META_FIELDS = ("doc_id", "doc_name", "source_url", "processed_at",
+                "verdict", "verdict_reason", "max_leaf_ratio",
+                "pipeline_version", "permanent_marginal",
+                "promotion_eligible", "verdict_computed_at")
 
 
 def save_doc_meta(doc_id: str, meta: dict) -> None:
@@ -315,7 +318,12 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
     start = time.monotonic()
     mc = get_minio()
     try:
-        sidecar = {k: meta.get(k, "") for k in _META_FIELDS}
+        # Only the original 4 fields are defaulted to "" when absent; the
+        # RFC-014 D2 verdict fields (also listed in _META_FIELDS for registry
+        # projection purposes) are handled separately below as omit-when-absent
+        # so legacy callers stay byte-identical.
+        _base_fields = ("doc_id", "doc_name", "source_url", "processed_at")
+        sidecar = {k: meta.get(k, "") for k in _base_fields}
         # FLAT-02-C1/C3: carry content_class only when present (flat docs) so the
         # tree-doc sidecar shape is unchanged.
         if meta.get("content_class"):
@@ -334,6 +342,13 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             node_count = _tree_node_count(meta.get("structure") or [])
         if node_count is not None:
             sidecar["node_count"] = int(node_count)
+        # RFC-014 D2: persist verdict fields when present so legacy sidecars
+        # (pre-D2) stay byte-identical when these fields are absent.
+        for vf in ("verdict", "verdict_reason", "max_leaf_ratio",
+                   "pipeline_version", "permanent_marginal",
+                   "promotion_eligible", "verdict_computed_at"):
+            if vf in meta:
+                sidecar[vf] = meta[vf]
         content = json.dumps(sidecar, indent=2).encode()
         mc.put_object(
             settings.minio_bucket,
@@ -391,6 +406,10 @@ def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict 
         from .helpers import _tree_node_count  # lazy: avoid import cycle
 
         fields["node_count"] = _tree_node_count(data.get("structure") or [])
+        # RFC-014 D2: carry verdict fields from sidecar to registry
+        for vf in ("verdict", "pipeline_version", "permanent_marginal"):
+            if vf in data:
+                fields[vf] = data[vf]
         return fields
     except S3Error as e:
         logger.warning("read_registry_fields: %s not readable (%s)", key, e.code)

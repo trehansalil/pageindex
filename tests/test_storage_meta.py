@@ -137,6 +137,54 @@ def test_backward_compat_missing_node_count(mock_minio):
     assert docs[0]["node_count"] is None
 
 
+def test_save_doc_meta_verdict_fields_present(mock_minio):
+    """RFC-014 D2: verdict fields are included in sidecar when present."""
+    meta = {
+        "doc_id": "v001",
+        "doc_name": "test.pdf",
+        "source_url": "",
+        "processed_at": "2026-07-16T00:00:00+00:00",
+        "verdict": "PASS",
+        "verdict_reason": "cat_b_promoted",
+        "max_leaf_ratio": 0.12,
+        "pipeline_version": 1,
+        "permanent_marginal": False,
+        "promotion_eligible": True,
+        "verdict_computed_at": "2026-07-16T00:00:00+00:00",
+    }
+    save_doc_meta("v001", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar["verdict"] == "PASS"
+    assert sidecar["verdict_reason"] == "cat_b_promoted"
+    assert sidecar["max_leaf_ratio"] == 0.12
+    assert sidecar["pipeline_version"] == 1
+    assert sidecar["permanent_marginal"] is False
+    assert sidecar["promotion_eligible"] is True
+    assert sidecar["verdict_computed_at"] == "2026-07-16T00:00:00+00:00"
+
+
+def test_save_doc_meta_verdict_fields_absent_legacy_compat(mock_minio):
+    """RFC-014 D2: when verdict fields are absent (legacy caller), sidecar
+    is byte-identical to the pre-D2 format — no extra keys added."""
+    meta = {
+        "doc_id": "legacy02",
+        "doc_name": "old.pdf",
+        "source_url": "",
+        "processed_at": "2026-01-01T00:00:00+00:00",
+    }
+    save_doc_meta("legacy02", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert set(sidecar.keys()) == {"doc_id", "doc_name", "source_url", "processed_at"}
+    for vf in ("verdict", "verdict_reason", "max_leaf_ratio",
+               "pipeline_version", "permanent_marginal",
+               "promotion_eligible", "verdict_computed_at"):
+        assert vf not in sidecar
+
+
 async def test_delete_doc_removes_meta_sidecar(mock_minio):
     mock_minio.list_objects.return_value = []
     # delete_doc reads the doc first (to capture doc_name for the hash-cache step

@@ -27,11 +27,14 @@ from .converters import (
     pptx_to_markdown,
     xlsx_to_markdown,
 )
+from .config import CURRENT_PIPELINE_VERSION
 from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
     _flat_text_is_garbled,
     _strip_text,
+    _tree_max_leaf_ratio,
+    classify_verdict,
     route_and_extract_flat,
     split_oversized_leaf_nodes,
     validate_tree,
@@ -614,6 +617,13 @@ class CustomPageIndexClient(PageIndexClient):
                             )
                             processed_at = datetime.now(UTC).isoformat()
 
+                            # RFC-014 D3: compute verdict for flat doc.
+                            flat_structure = result.get("structure", [])
+                            f_verdict, f_verdict_reason = classify_verdict(
+                                flat_structure, content_class, None,
+                            )
+                            _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
+
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
                             # un-cascaded derivative).
@@ -628,6 +638,11 @@ class CustomPageIndexClient(PageIndexClient):
                                     "sha256": sha256,
                                     "content_class": content_class,
                                     "blocks": blocks,
+                                    "verdict": f_verdict,
+                                    "verdict_reason": f_verdict_reason,
+                                    "max_leaf_ratio": round(f_mlr, 4),
+                                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                                    "verdict_computed_at": datetime.now(UTC).isoformat(),
                                 },
                             )
                             FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
@@ -691,11 +706,19 @@ class CustomPageIndexClient(PageIndexClient):
                 },
             )
 
+            structure = result.get("structure", [])
+            verdict, verdict_reason = classify_verdict(structure, "", None)
+            _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
                 "doc_id": doc_id,
                 "doc_name": filename,
                 "source_url": source_url,
                 "processed_at": processed_at,
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "max_leaf_ratio": round(mlr, 4),
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": datetime.now(UTC).isoformat(),
             }
             await asyncio.to_thread(save_doc_meta, doc_id, meta)
 

@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
+# Pipeline version — bumped in the same commit as any splitter/garble/OCR fix
+# that could change corpus classification (RFC-014 D3).
+# ---------------------------------------------------------------------------
+CURRENT_PIPELINE_VERSION: int = 1
+CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
+
+# ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
 # ---------------------------------------------------------------------------
 if not os.environ.get("OPENAI_API_KEY") and os.environ.get("CHATGPT_API_KEY"):

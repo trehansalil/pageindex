@@ -606,6 +606,116 @@ def validate_tree(structure: list) -> tuple[bool, str]:
     return True, ""
 
 
+# ── RFC-014 D1: verdict computation helpers ─────────────────────────────────────
+
+def _tree_max_leaf_ratio(structure: list) -> tuple[int, int, float]:
+    max_leaf = 0
+    total = 0
+
+    def _walk(nodes: list) -> None:
+        nonlocal max_leaf, total
+        for n in nodes:
+            chars = len(n.get("title", "")) + len(n.get("text", ""))
+            total += chars
+            children = n.get("nodes") or []
+            if not children:
+                max_leaf = max(max_leaf, chars)
+            else:
+                _walk(children)
+
+    _walk(structure)
+    ratio = max_leaf / total if total > 0 else 0.0
+    return max_leaf, total, ratio
+
+
+def ocr_noise_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    noise = sum(
+        1 for c in text
+        if c == "�"
+        or 0xE000 <= ord(c) <= 0xF8FF
+        or (ord(c) < 32 and c not in "\n\r\t")
+    )
+    return noise / len(text)
+
+
+def hash_pipe_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    count = sum(1 for c in text if c in "#|")
+    return count / len(text)
+
+
+def classify_verdict(
+    structure: list,
+    content_class: str,
+    validate_reason: str | None,
+) -> tuple[str, str]:
+    if validate_reason == "garbling":
+        return "FAIL", "garbling"
+
+    _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
+    if max_leaf_ratio > 0.75:
+        return "FAIL", f"max_leaf_ratio={max_leaf_ratio:.2f}"
+
+    node_count = _tree_node_count(structure)
+    depth = _tree_depth(structure)
+    garbled = _tree_is_garbled(structure)
+
+    if node_count >= 3 and depth >= 2 and max_leaf_ratio < 0.15 and not garbled:
+        return "PASS", ""
+
+    # Base verdict is MARGINAL — try category-specific promotion.
+    # Category B/C use the wider 0.17 threshold (RFC-014 D4).
+    from .config import CATEGORY_BC_PROMOTION_THRESHOLD
+
+    flat_text = _flatten_tree_text(structure)
+
+    if content_class.startswith("ocr_"):
+        if max_leaf_ratio < 0.15 and ocr_noise_ratio(flat_text) < 0.005:
+            return "PASS", "cat_a_promoted"
+    elif content_class.startswith("flat_"):
+        if max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD and node_count >= 3:
+            return "PASS", "cat_b_promoted"
+    else:
+        if not garbled and hash_pipe_ratio(flat_text) < 0.01 and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD:
+            return "PASS", "cat_c_promoted"
+
+    # Build descriptive reason for remaining MARGINAL
+    if garbled:
+        reason = "garbling"
+    elif node_count < 3:
+        reason = f"node_count={node_count}"
+    elif depth < 2:
+        reason = f"depth={depth}"
+    else:
+        reason = f"leaf_concentration={max_leaf_ratio:.2f}"
+    return "MARGINAL", reason
+
+
+def detect_regression(
+    structure: list,
+    prev_node_count: int | None,
+    prev_max_leaf_ratio: float | None,
+) -> bool:
+    """Category E regression gate (RFC-014 D4, Property 6).
+
+    Returns True when BOTH conditions hold vs. the last stored verdict:
+      - node_count dropped >30%
+      - max_leaf_ratio grew >2x
+    """
+    if prev_node_count is None or prev_max_leaf_ratio is None:
+        return False
+    if prev_node_count == 0:
+        return False
+    cur_count = _tree_node_count(structure)
+    _, _, cur_ratio = _tree_max_leaf_ratio(structure)
+    count_dropped = cur_count < prev_node_count * 0.7
+    ratio_grew = prev_max_leaf_ratio > 0 and cur_ratio > prev_max_leaf_ratio * 2
+    return count_dropped and ratio_grew
+
+
 # ── FLAT-01: deterministic flat-document classifier + block extractor ──────────
 # RFC-004 Amendment 1 (D1'/D2'/D3'): a clean-text-layer document with no heading
 # hierarchy is a SUCCESS, not a low_quality_tree error. This classifier owns the
