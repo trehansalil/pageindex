@@ -174,7 +174,9 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | **ISS-03** — Backfill 0-doc | 🟢 RESOLVED | 🟢 Resolved — `registry_backfill.py:188-193` already guards `set_registry_complete` behind non-empty `meta_keys` check. Closed per RFC-012 D1. |
 | **ISS-05** — O(N) MinIO GETs | 🟠 DEGRADED | 🟠 Open — Batch 2 |
 | **ISS-07** — Redis conn storm | 🟠 DEGRADED | 🟡 Partially fixed — worker.py remaining |
-| **ISS-08** — OpenAI error swallow | 🟠 DEGRADED | 🟠 Open — Batch 2 |
+| **ISS-08** — OpenAI error swallow | 🟢 RESOLVED | 🟢 Resolved — `_describe` already retries with backoff + `IMAGE_DESCRIBE_FAILURES` counter. Closed per RFC-013 D1. |
+| **ISS-18** — Broad except in JSON parse | 🟢 RESOLVED | 🟢 Resolved — `_extract_json_object` shared, except narrowed to `(json.JSONDecodeError, KeyError, TypeError)`. Closed per RFC-013 D2. |
+| **ISS-19** — RAG parse failures invisible | 🟢 RESOLVED | 🟢 Resolved — Narrowed except + `RAG_PARSE_FAILURES.labels(doc_id=doc_id)` counter. Closed per RFC-013 D3. |
 
 ---
 

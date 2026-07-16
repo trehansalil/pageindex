@@ -151,7 +151,11 @@ def test_index_01_c3_non_pdf_uses_own_converter_not_pdf_route():
 
 
 # ── detect_ocr_langs (Fix 5) ─────────────────────────────────────────────────
-from pageindex_mcp.converters import detect_ocr_langs, ensure_tessdata  # noqa: E402
+from pageindex_mcp.converters import (  # noqa: E402
+    TessdataUnavailableError,
+    detect_ocr_langs,
+    ensure_tessdata,
+)
 
 
 @pytest.mark.parametrize(
@@ -189,11 +193,18 @@ def test_ensure_tessdata_no_prefix_returns_input_unchanged(monkeypatch):
 
 def test_ensure_tessdata_missing_files_fallback(monkeypatch, tmp_path):  # LANG-01-C2
     """With TESSDATA_PREFIX set to an empty dir and download disabled,
-    all missing langs are dropped and the fallback ['deu','eng'] is returned."""
+    a missing Latin-script lang is dropped and the fallback ['deu','eng'] is
+    returned; a missing non-Latin-script lang (e.g. 'ara') now raises
+    TessdataUnavailableError instead of being silently dropped (D6/HR5)."""
     monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
     monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
-    result = ensure_tessdata(["ara", "eng"])
-    # No .traineddata files exist in tmp_path -> all dropped -> fallback
+
+    # Non-Latin lang missing -> raise, not silently dropped.
+    with pytest.raises(TessdataUnavailableError):
+        ensure_tessdata(["ara", "eng"])
+
+    # All-Latin request with nothing available -> safe degrade fallback.
+    result = ensure_tessdata(["fra", "eng"])
     assert result == ["deu", "eng"]
 
 

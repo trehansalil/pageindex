@@ -29,7 +29,7 @@ from .converters import (
 )
 from .helpers import (
     LowQualityTreeError,
-    _build_node_map,
+    _extract_page_hits,
     _flat_text_is_garbled,
     _strip_text,
     route_and_extract_flat,
@@ -772,29 +772,7 @@ class CustomPageIndexClient(PageIndexClient):
         import json
 
         data = await asyncio.to_thread(get_doc, doc_id)
-        nm: dict = {}
-        _build_node_map(data.get("structure", []), nm)
-
-        wanted: set[int] = set()
-        for part in pages.split(","):
-            part = part.strip()
-            if "-" in part:
-                a, b = part.split("-", 1)
-                wanted.update(range(int(a), int(b) + 1))
-            else:
-                wanted.add(int(part))
-
-        hits = [
-            {
-                "node_id": nid,
-                "title": n.get("title"),
-                "pages": f"{n.get('start_index')}-{n.get('end_index')}",
-                "text": n["text"],
-            }
-            for nid, n in nm.items()
-            if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted
-            and "text" in n
-        ]
+        hits = _extract_page_hits(data.get("structure", []), pages)
 
         if not hits:
             return json.dumps({"error": f"No content found for pages '{pages}' in doc '{doc_id}'."})

@@ -1,5 +1,6 @@
 """MinIO client singleton and document storage CRUD."""
 
+import asyncio
 import json
 import logging
 import time
@@ -430,28 +431,27 @@ def list_processed_docs() -> list[dict]:
                 if doc_id not in meta_keys:
                     meta_keys[doc_id] = name
 
-        docs = []
-        for doc_id, obj_name in meta_keys.items():
+        def _fetch_one(doc_id: str, obj_name: str) -> dict | None:
+            """Blocking single-doc fetch; run inside asyncio.to_thread by the
+            bounded-concurrency fan-out below. Returns None on failure (logged)."""
             response = None
             try:
                 response = mc.get_object(settings.minio_bucket, obj_name)
                 data = json.loads(response.read())
-                docs.append(
-                    {
-                        "doc_id": data.get("doc_id", doc_id),
-                        "doc_name": data.get("doc_name", data.get("filename", "unknown")),
-                        "source_url": data.get("source_url", ""),
-                        "processed_at": data.get("processed_at", ""),
-                        "content_class": data.get("content_class", ""),
-                        # D2 (RFC-009): node_count persisted at save time. Legacy
-                        # sidecars predate this field — default to None (never
-                        # KeyError) so recent_documents degrades gracefully.
-                        "node_count": data.get("node_count"),
-                    }
-                )
+                return {
+                    "doc_id": data.get("doc_id", doc_id),
+                    "doc_name": data.get("doc_name", data.get("filename", "unknown")),
+                    "source_url": data.get("source_url", ""),
+                    "processed_at": data.get("processed_at", ""),
+                    "content_class": data.get("content_class", ""),
+                    # D2 (RFC-009): node_count persisted at save time. Legacy
+                    # sidecars predate this field — default to None (never
+                    # KeyError) so recent_documents degrades gracefully.
+                    "node_count": data.get("node_count"),
+                }
             except Exception as e:
                 logger.warning("Failed to read doc metadata %s: %s", obj_name, e)
-                continue
+                return None
             finally:
                 if response is not None:
                     try:
@@ -459,6 +459,29 @@ def list_processed_docs() -> list[dict]:
                         response.release_conn()
                     except Exception:
                         pass
+
+        # D4 (RFC-013 / ISS-05): bounded-concurrency fetch instead of a serial
+        # per-doc loop. mc.get_object is sync (minio.Minio), so each fetch is
+        # offloaded to a worker thread via asyncio.to_thread; a semaphore caps
+        # in-flight requests at 10 to avoid overwhelming MinIO on large corpora.
+        async def _fetch_all() -> list[dict | None]:
+            semaphore = asyncio.Semaphore(10)
+
+            async def _bounded_fetch(doc_id: str, obj_name: str) -> dict | None:
+                async with semaphore:
+                    return await asyncio.to_thread(_fetch_one, doc_id, obj_name)
+
+            tasks = [
+                _bounded_fetch(doc_id, obj_name) for doc_id, obj_name in meta_keys.items()
+            ]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+
+        # list_processed_docs is sync; callers on an async path (e.g.
+        # client.py) already offload it via asyncio.to_thread, so this
+        # function never runs on a thread that already owns a running loop.
+        results = asyncio.run(_fetch_all())
+
+        docs = [r for r in results if isinstance(r, dict)]
         logger.debug("Listed %d processed documents", len(docs))
         return docs
     finally:

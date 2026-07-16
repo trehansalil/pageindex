@@ -676,6 +676,18 @@ def pdf_to_markdown(pdf_path: str) -> str:
     return normalize_dashes(_relevel_headings(md))
 
 
+class TessdataUnavailableError(RuntimeError):
+    """Raised when non-Latin tessdata is missing and cannot be downloaded."""
+    pass
+
+
+_LATIN_LANGS = frozenset({
+    "afr", "cat", "ces", "dan", "deu", "eng", "est", "fin", "fra",
+    "hrv", "hun", "ind", "isl", "ita", "lav", "lit", "msa", "nld",
+    "nor", "pol", "por", "ron", "slk", "slv", "spa", "swe", "tur", "vie",
+})
+
+
 # --- Fix 5: OCR language auto-detection + on-demand tessdata (RFC fizzy-forging-pearl) ---
 # Deterministic, no model, no network for detection: classify by Unicode-script ratio.
 _AR_SCRIPT_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
@@ -722,9 +734,13 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
     For each requested language, check ``TESSDATA_PREFIX`` for the traineddata file.
     Missing files are fetched from the official tessdata repo ONLY when
     ``TESSDATA_ALLOW_DOWNLOAD=1`` (egress-limited workers instead rely on PRE-BAKED
-    traineddata in the image, mirroring the DOCLING_ARTIFACTS_PATH pre-bake). NEVER
-    raises: an unavailable language is dropped; if nothing remains we fall back to
-    ['deu','eng'] so OCR still runs. tessdata is data, not AGPL code (HR4)."""
+    traineddata in the image, mirroring the DOCLING_ARTIFACTS_PATH pre-bake). A
+    missing Latin-script language is dropped (silent degrade is safe); a missing
+    non-Latin-script language raises ``TessdataUnavailableError`` instead of being
+    silently dropped, since that would silently degrade OCR to gibberish/empty
+    output for scripts Latin OCR cannot read. If nothing remains after dropping
+    Latin languages we fall back to ['deu','eng'] so OCR still runs. tessdata is
+    data, not AGPL code (HR4)."""
     prefix = os.getenv("TESSDATA_PREFIX", "").strip()
     allow_dl = os.getenv("TESSDATA_ALLOW_DOWNLOAD", "0").strip().lower() in ("1", "true", "yes")
     available: list[str] = []
@@ -740,6 +756,10 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
         if allow_dl and _try_download_tessdata(lang, prefix):
             available.append(lang)
         else:
+            if lang not in _LATIN_LANGS:
+                raise TessdataUnavailableError(
+                    f"non-Latin tessdata missing: {lang} (prefix={prefix}, download={allow_dl})"
+                )
             logger.warning(
                 "tessdata for '%s' missing under %s (download=%s); dropping language",
                 lang,

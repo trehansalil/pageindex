@@ -9,6 +9,7 @@ from ..config import settings
 from ..helpers import (
     _build_node_map,
     _check_registry_complete_cached,
+    _extract_page_hits,
     _rag,
     _strip_text,
     flat_doc_view,
@@ -363,28 +364,7 @@ def get_page_content(doc_id: str, pages: str) -> str:
         TOOL_DURATION.labels(tool="get_page_content").observe(elapsed)
         logger.debug("get_page_content completed in %.3fs", elapsed)
 
-    wanted: set[int] = set()
-    for part in pages.split(","):
-        part = part.strip()
-        if "-" in part:
-            a, b = part.split("-", 1)
-            wanted.update(range(int(a), int(b) + 1))
-        else:
-            wanted.add(int(part))
-
-    nm: dict = {}
-    _build_node_map(data.get("structure", []), nm)
-
-    hits = [
-        {
-            "node_id": nid,
-            "title": n.get("title"),
-            "pages": f"{n.get('start_index')}-{n.get('end_index')}",
-            "text": n["text"],
-        }
-        for nid, n in nm.items()
-        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted and "text" in n
-    ]
+    hits = _extract_page_hits(data.get("structure", []), pages)
 
     if not hits:
         logger.warning("get_page_content: no content for pages %s in doc %s", pages, doc_id)

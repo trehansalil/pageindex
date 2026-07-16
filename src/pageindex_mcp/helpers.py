@@ -142,6 +142,36 @@ def _build_node_map(nodes: list, nm: dict) -> None:
             _build_node_map(n["nodes"], nm)
 
 
+def _parse_page_spec(pages: str) -> set[int]:
+    """Parse '1-3,5' style page spec into a set of page numbers."""
+    wanted: set[int] = set()
+    for part in pages.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            wanted.update(range(int(a), int(b) + 1))
+        else:
+            wanted.add(int(part))
+    return wanted
+
+
+def _extract_page_hits(structure: list, pages: str) -> list[dict]:
+    """Shared page-hit extraction: build node map, parse page spec, filter by intersection."""
+    nm: dict = {}
+    _build_node_map(structure, nm)
+    wanted = _parse_page_spec(pages)
+    return [
+        {
+            "node_id": nid,
+            "title": n.get("title"),
+            "pages": f"{n.get('start_index')}-{n.get('end_index')}",
+            "text": n["text"],
+        }
+        for nid, n in nm.items()
+        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted and "text" in n
+    ]
+
+
 async def _rag(query: str, doc_ids: list[str]) -> str:
     """
     Run PageIndex tree-search + answer-generation pipeline.
@@ -507,7 +537,8 @@ def _tree_depth(nodes: list) -> int:
     return best
 
 
-def _tree_is_garbled(nodes: list) -> bool:
+def _flatten_tree_text(nodes: list) -> str:
+    """Concatenate all title+text from a tree structure into a single string."""
     parts: list[str] = []
 
     def _walk(ns: list) -> None:
@@ -517,7 +548,15 @@ def _tree_is_garbled(nodes: list) -> bool:
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
-    blob = "".join(parts)
+    return "".join(parts)
+
+
+def _is_garbled_blob(blob: str) -> bool:
+    """Unified garble-detection heuristics (D7 / RFC-013).
+
+    Checks (in order): empty, null/replacement bytes, GLYPH< markers,
+    control-char ratio >5%, PUA ratio >3%, digit ratio >60% (blobs >500 chars),
+    token repetition >30% (>20 alnum tokens, excluding symbolic tokens)."""
     if not blob.strip():
         return True
     if "\x00" in blob or "\ufffd" in blob:
@@ -546,6 +585,10 @@ def _tree_is_garbled(nodes: list) -> bool:
         if (most_common_count / len(tokens)) > 0.30:
             return True
     return False
+
+
+def _tree_is_garbled(nodes: list) -> bool:
+    return _is_garbled_blob(_flatten_tree_text(nodes))
 
 
 def validate_tree(structure: list) -> tuple[bool, str]:
@@ -1055,33 +1098,7 @@ _TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
 
 def _flat_text_is_garbled(md: str) -> bool:
     """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
-    blob = md or ""
-    if not blob.strip():
-        return True
-    if "\x00" in blob or "�" in blob:
-        return True
-    if "GLYPH<" in blob:
-        return True
-    length = len(blob)
-    bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
-    if (bad / length) > 0.05:
-        return True
-    pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
-    if (pua / length) > 0.03:
-        return True
-    if length > 500:
-        digits = sum(1 for c in blob if c.isdigit())
-        if (digits / length) > 0.60:
-            return True
-    # Purely symbolic tokens ('|' table delimiters, '€'/currency signs) are
-    # excluded: a wide price table legitimately produces dozens of these per
-    # row, which is not garbling.
-    tokens = [t for t in blob.split() if any(c.isalnum() for c in t)]
-    if len(tokens) > 20:
-        most_common_count = Counter(tokens).most_common(1)[0][1]
-        if (most_common_count / len(tokens)) > 0.30:
-            return True
-    return False
+    return _is_garbled_blob(md or "")
 
 
 def _looks_like_toc_page(block_text: str) -> bool:
