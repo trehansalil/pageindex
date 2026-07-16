@@ -40,6 +40,7 @@ class Settings:
     max_upload_size_mb: int
     # Auth
     mcp_bearer_token: str
+    mcp_allow_unauthenticated: bool
     # LLM configuration
     openai_api_key: str
     openai_base_url: str | None
@@ -70,6 +71,30 @@ class Settings:
     # When false (default) prompt/completion bodies are masked before leaving the
     # process (HR3 — potential-PII corpus); usage/model/cost are still recorded.
     langfuse_trace_content: bool
+    # HR3: PII corpus flag — when true, startup asserts openai_base_url is on
+    # the ZDR allow-list (RFC-011 D6 / ISS-33).
+    pii_corpus: bool
+
+
+# HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
+# guarantees suitable for PII-bearing corpora. Sources:
+# - Azure modified-abuse-monitoring (*.openai.azure.com)
+# - AWS Bedrock (bedrock-runtime.*.amazonaws.com)
+# - OpenAI EU ZDR (eu.api.openai.com)
+# Update this tuple when new ZDR-qualified endpoints are verified.
+_ZDR_ALLOW_PATTERNS: tuple[str, ...] = (
+    ".openai.azure.com",
+    "bedrock-runtime.",
+    "eu.api.openai.com",
+)
+
+
+def _is_zdr_allowlisted(base_url: str | None) -> bool:
+    """Return True if base_url matches any ZDR allow-list pattern."""
+    if not base_url:
+        return False
+    url = base_url.lower()
+    return any(pattern in url for pattern in _ZDR_ALLOW_PATTERNS)
 
 
 def _load_settings() -> Settings:
@@ -89,6 +114,10 @@ def _load_settings() -> Settings:
         cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
         max_upload_size_mb=int(os.environ.get("MAX_UPLOAD_SIZE_MB", "100")),
         mcp_bearer_token=os.environ.get("MCP_BEARER_TOKEN", ""),
+        mcp_allow_unauthenticated=os.environ.get("MCP_ALLOW_UNAUTHENTICATED", "false")
+        .strip()
+        .lower()
+        in ("1", "true", "yes"),
         openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         azure_api_version=os.environ.get("AZURE_API_VERSION"),
@@ -107,6 +136,8 @@ def _load_settings() -> Settings:
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
         langfuse_host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
         langfuse_trace_content=os.environ.get("LANGFUSE_TRACE_CONTENT", "false").strip().lower()
+        in ("1", "true", "yes"),
+        pii_corpus=os.environ.get("PII_CORPUS", "false").strip().lower()
         in ("1", "true", "yes"),
     )
 

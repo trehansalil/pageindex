@@ -212,7 +212,9 @@ async def delete_doc(doc_id: str) -> None:
     pool = get_pool()
     if pool is None:
         return
-    await pool.execute(_DELETE_SQL, doc_id)
+    from .config import settings
+
+    await pool.execute(_DELETE_SQL, doc_id, timeout=settings.registry_delete_timeout_s)
     logger.info("registry: deleted doc_id=%s", doc_id)
 
 

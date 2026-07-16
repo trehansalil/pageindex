@@ -47,6 +47,17 @@ _inner_lifespan = starlette_app.router.lifespan_context
 
 @contextlib.asynccontextmanager
 async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
+    # RFC-011 D6 / ISS-33: refuse to start if PII corpus is routed through
+    # a non-ZDR endpoint (HR3 enforcement).
+    if settings.pii_corpus:
+        from .config import _is_zdr_allowlisted
+
+        if not _is_zdr_allowlisted(settings.openai_base_url):
+            raise RuntimeError(
+                f"PII_CORPUS=true but openai_base_url={settings.openai_base_url!r} "
+                "is not on the ZDR allow-list (HR3)"
+            )
+
     redis = await get_async_redis()
     scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))
     # RFC-006: open the Postgres registry pool so the query read path

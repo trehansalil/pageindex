@@ -39,7 +39,7 @@ This audit combines three passes:
 | #      | Issue                                            | Why It Matters                                              |
 | ------ | ------------------------------------------------ | ----------------------------------------------------------- |
 | ISS-41 | Erasure cascade never deletes `preloaded/<filename>` raw object | Right-to-erasure gap (Hard Rule #2) — new this pass |
-| ISS-02 | Erasure cascade fire-and-forgets registry delete  | Right-to-erasure compliance gap (CLAUDE.md Hard Rule #2)    |
+| ~~ISS-02~~ | ~~Erasure cascade fire-and-forgets registry delete~~ | 🟢 Resolved — already bounded (RFC-011 D1) |
 | ISS-03 | Backfill marks registry complete on 0 docs       | Transient MinIO outage hides entire corpus from query tools |
 | ISS-34 | `ensure_tessdata` silently drops non-Latin script requests | False-clean OCR mojibake — new this pass |
 | ISS-35 | AGPL fallback reachable with no hard gate/alert  | Hard Rule #4 legal-exposure gap — new this pass |
@@ -170,7 +170,7 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | **Gap 4** — Presentation-form Arabic | 1 FAIL (88% single leaf) | **Improved to 27%** — حقوق الإنسان structurally sound |
 | **Gap 5** — في→# substitution | 2 MARGINAL | **Unchanged** — D5 interim fix; full resolution requires upstream Docling fix (#3802) |
 | **Gap 6** — Table column degradation | 3 MARGINAL | **1/3 resolved** (world-stats-pocketbook->PASS). 2 unchanged |
-| **ISS-02** — Erasure cascade | 🟠 DEGRADED | 🟠 Open — Batch 2 |
+| **ISS-02** — Erasure cascade | 🟢 RESOLVED | 🟢 Resolved — registry delete already bounded by `asyncio.wait_for` + `registry_delete_timeout_s` (storage.py:255-274). Regression: `test_delete_doc_awaits_registry` (:388), `test_delete_doc_registry_timeout` (:404), erasure-cascade Postgres-failure scenario (:480). Closed per RFC-011 D1. |
 | **ISS-03** — Backfill 0-doc | 🟠 DEGRADED | 🟠 Open — Batch 1 |
 | **ISS-05** — O(N) MinIO GETs | 🟠 DEGRADED | 🟠 Open — Batch 2 |
 | **ISS-07** — Redis conn storm | 🟠 DEGRADED | 🟡 Partially fixed — worker.py remaining |

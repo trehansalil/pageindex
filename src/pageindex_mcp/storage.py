@@ -163,6 +163,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
        1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
        4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename
        6. Postgres registry row (D2: awaited with a timeout, never fire-and-forget).
+       7. preloaded/<doc_name> raw object (D2: not all docs have one; NoSuchKey tolerated).
     Idempotent (C2: missing objects tolerated). Returns {"errors": [...]} — every
     individual store failure is reported to the caller, never raised (Property 4)."""
     MINIO_OPS.labels(operation="delete").inc()
@@ -272,6 +273,19 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                     errors.append(f"registry: {e}")
             else:
                 logger.info("ERASE %s step6: registry pool not ready, skipping (non-fatal)", doc_id)
+
+        # 7. preloaded/<doc_name> raw object (RFC-011 D2 / ISS-41 / HR2)
+        if doc_name:
+            try:
+                mc.remove_object(settings.minio_bucket, f"preloaded/{doc_name}")
+                logger.info("ERASE %s step7: removed preloaded/%s", doc_id, doc_name)
+            except S3Error as e:
+                if getattr(e, "code", "") != "NoSuchKey":
+                    errors.append(f"preloaded/: {e}")
+        else:
+            logger.warning(
+                "ERASE %s step7: doc_name unknown; cannot purge preloaded object", doc_id
+            )
 
         if errors:
             logger.error("ERASE %s partial failure across stores: %s", doc_id, errors)

@@ -38,7 +38,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         token = settings.mcp_bearer_token
         if not token:
-            # No token configured — auth is disabled (dev mode)
+            if not settings.mcp_allow_unauthenticated:
+                return JSONResponse(
+                    {"error": "auth not configured"}, status_code=503
+                )
+            # Explicit opt-in pass-through (dev/trusted-network mode)
             if not _auth_warned:
                 logger.warning(
                     "MCP bearer-token auth is DISABLED — MCP_BEARER_TOKEN is empty"

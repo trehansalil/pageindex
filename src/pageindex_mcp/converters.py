@@ -1239,11 +1239,17 @@ def pdf_markdown_converters() -> list[tuple[str, Callable[[str], str]]]:
             chain.insert(0, ("docling", pdf_to_markdown_docling))
         else:
             chain.append(("docling", pdf_to_markdown_docling))
+            from .metrics import AGPL_FALLBACK_TOTAL
+
+            AGPL_FALLBACK_TOTAL.labels(reason="operator_configured").inc()
     elif primary == "docling":
         logger.warning(
             "PDF_CONVERTER=docling but docling is not installed; install the "
             "'docling' extra (uv sync --extra docling). Falling back to pymupdf4llm."
         )
+        from .metrics import AGPL_FALLBACK_TOTAL
+
+        AGPL_FALLBACK_TOTAL.labels(reason="docling_missing").inc()
     return chain
 
 

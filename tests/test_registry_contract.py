@@ -83,6 +83,16 @@ async def test_writes_are_noops_when_pool_absent(no_pool):
     await registry.delete_doc("x")
 
 
+async def test_delete_doc_passes_statement_timeout():
+    pool = _mock_pool()
+    with patch.object(registry, "get_pool", return_value=pool):
+        await registry.delete_doc("test-doc-id")
+    pool.execute.assert_awaited_once()
+    call_kwargs = pool.execute.await_args.kwargs
+    assert "timeout" in call_kwargs
+    assert call_kwargs["timeout"] > 0
+
+
 # ---------------------------------------------------------------------------
 # Unit — upsert_doc payload mapping
 # ---------------------------------------------------------------------------

@@ -147,6 +147,11 @@ STAGING_DELETE_FAILURES = Counter(
     "delete_staging S3Error failures (RFC-007 D9). Previously swallowed silently; "
     "now an observable signal alongside the bool return value.",
 )
+AGPL_FALLBACK_TOTAL = Counter(
+    "pageindex_agpl_fallback_total",
+    "PDF conversions that used the AGPL pymupdf4llm path",
+    ["reason"],
+)
 
 # ---------------------------------------------------------------------------
 # Subprocess-isolated converter metrics (Plan 01 / Phase 3)

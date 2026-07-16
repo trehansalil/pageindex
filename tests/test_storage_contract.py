@@ -118,6 +118,7 @@ async def test_erase_01_c1_cascade_order_across_stores(mock_minio):
         "processed/abc12345.json",
         "processed/abc12345.flat.json",  # FLAT-02-C2: flat derived store joins cascade
         "processed/abc12345.meta.json",
+        "preloaded/report.pdf",  # RFC-011 D2: preloaded object joins cascade (step 7)
     ]
     # MinIO purge precedes Redis purge precedes hash-cache clear.
     kinds = [kind for kind, _ in order]
@@ -245,6 +246,7 @@ async def test_flat_02_c2_delete_doc_purges_flat_json(mock_minio):
         "processed/flat0001.json",
         "processed/flat0001.flat.json",
         "processed/flat0001.meta.json",
+        "preloaded/katzen.pdf",  # RFC-011 D2: preloaded object joins cascade (step 7)
     ]
 
 
@@ -334,10 +336,11 @@ async def test_fix4_hr2_xlsx_and_image_flat_doc_cascade_is_complete(
         f"processed/{doc_id}.json",
         f"processed/{doc_id}.flat.json",
         f"processed/{doc_id}.meta.json",
+        f"preloaded/{doc_name}",  # RFC-011 D2: preloaded object joins cascade (step 7)
     ]
     assert removed == expected, (
         f"delete_doc for a {content_class} ({doc_name}) must purge exactly the "
-        f"four standard derived stores in cascade order; got {removed}"
+        f"five standard derived stores in cascade order; got {removed}"
     )
 
 
@@ -506,3 +509,54 @@ async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(mon
 
     assert len(result["errors"]) == 1
     assert "registry" in result["errors"][0].lower()
+
+
+# ── RFC-011 D2 / ISS-41 — erasure cascade purges preloaded/<doc_name> ────────
+async def test_erasure_cascade_purges_preloaded_object(mock_minio):
+    """RFC-011 D2: delete_doc additionally removes preloaded/<doc_name> (step 7),
+    the raw object a preload/seed step may have staged outside the normal
+    uploads/ path. HR2: every derived store must join the cascade."""
+    load_resp = MagicMock()
+    load_resp.read.return_value = json.dumps(
+        {"doc_id": "preload001", "doc_name": "report.pdf"}
+    ).encode()
+    mock_minio.get_object.return_value = load_resp
+    mock_minio.list_objects.return_value = []
+
+    with patch("pageindex_mcp.cache.doc_cache_delete"), \
+         patch("pageindex_mcp.storage.hash_cache_delete"):
+        result = await delete_doc("preload001")
+
+    mock_minio.remove_object.assert_any_call(settings.minio_bucket, "preloaded/report.pdf")
+    assert result == {"errors": []}
+
+
+async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_minio, caplog):
+    """RFC-011 D2: when doc_name cannot be recovered (no processed/<id>.json AND
+    no uploads/<id>/ objects to source a basename fallback from), step 7 logs a
+    warning and skips the preloaded/ purge rather than guessing a key."""
+    from minio.error import S3Error
+
+    mock_minio.get_object.side_effect = S3Error(
+        MagicMock(), "NoSuchKey", "missing", "res", "req", "host"
+    )
+    mock_minio.list_objects.return_value = []
+    mock_minio.remove_object.side_effect = S3Error(
+        MagicMock(), "NoSuchKey", "missing", "res", "req", "host"
+    )
+
+    with patch("pageindex_mcp.cache.doc_cache_delete"), \
+         patch("pageindex_mcp.storage.hash_cache_delete"), \
+         caplog.at_level("WARNING"):
+        result = await delete_doc("nodocname001")
+
+    assert any(
+        "step7" in rec.getMessage() and "doc_name unknown" in rec.getMessage()
+        for rec in caplog.records
+    )
+    preloaded_calls = [
+        c for c in mock_minio.remove_object.call_args_list
+        if c.args[1].startswith("preloaded/")
+    ]
+    assert preloaded_calls == []
+    assert result["errors"] == []
