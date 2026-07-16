@@ -126,6 +126,7 @@ async def _upsert_all(meta_keys: list[str], dry_run: bool) -> list[str]:
     failed: list[str] = []
     total = len(meta_keys)
 
+    prepared: list[tuple[str, dict]] = []
     for i, key in enumerate(meta_keys, 1):
         meta = _load_meta(key)
         if meta is None:
@@ -134,7 +135,7 @@ async def _upsert_all(meta_keys: list[str], dry_run: bool) -> list[str]:
 
         doc_id = meta.get("doc_id", "")
         if not doc_id:
-            stem = Path(key).stem  # e.g. "abc12345.meta"
+            stem = Path(key).stem
             doc_id = stem.removesuffix(".meta")
             meta["doc_id"] = doc_id
 
@@ -148,14 +149,39 @@ async def _upsert_all(meta_keys: list[str], dry_run: bool) -> list[str]:
             )
             continue
 
-        try:
-            await upsert_doc(meta)
-            if i % 50 == 0 or i == total:
-                logger.info("Progress: %d/%d upserted …", i, total)
-        except Exception as exc:
-            logger.error("Failed to upsert doc_id=%s (%s): %s", doc_id, key, exc)
-            failed.append(key)
+        prepared.append((key, meta))
 
+    if not prepared:
+        return failed
+
+    sem = asyncio.Semaphore(10)
+
+    async def _bounded_upsert(key: str, meta: dict) -> str | None:
+        async with sem:
+            try:
+                await upsert_doc(meta)
+                return None
+            except Exception as exc:
+                logger.error(
+                    "Failed to upsert doc_id=%s (%s): %s",
+                    meta.get("doc_id", ""),
+                    key,
+                    exc,
+                )
+                return key
+
+    results = await asyncio.gather(
+        *(_bounded_upsert(k, m) for k, m in prepared),
+        return_exceptions=True,
+    )
+    for r in results:
+        if isinstance(r, BaseException):
+            logger.error("Unexpected backfill error: %s", r)
+            failed.append("<unknown>")
+        elif r is not None:
+            failed.append(r)
+
+    logger.info("Upserted %d/%d (failed: %d)", total - len(failed), total, len(failed))
     return failed
 
 

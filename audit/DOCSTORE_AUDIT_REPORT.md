@@ -171,7 +171,7 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | **Gap 5** — في→# substitution | 2 MARGINAL | **Unchanged** — D5 interim fix; full resolution requires upstream Docling fix (#3802) |
 | **Gap 6** — Table column degradation | 3 MARGINAL | **1/3 resolved** (world-stats-pocketbook->PASS). 2 unchanged |
 | **ISS-02** — Erasure cascade | 🟢 RESOLVED | 🟢 Resolved — registry delete already bounded by `asyncio.wait_for` + `registry_delete_timeout_s` (storage.py:255-274). Regression: `test_delete_doc_awaits_registry` (:388), `test_delete_doc_registry_timeout` (:404), erasure-cascade Postgres-failure scenario (:480). Closed per RFC-011 D1. |
-| **ISS-03** — Backfill 0-doc | 🟠 DEGRADED | 🟠 Open — Batch 1 |
+| **ISS-03** — Backfill 0-doc | 🟢 RESOLVED | 🟢 Resolved — `registry_backfill.py:188-193` already guards `set_registry_complete` behind non-empty `meta_keys` check. Closed per RFC-012 D1. |
 | **ISS-05** — O(N) MinIO GETs | 🟠 DEGRADED | 🟠 Open — Batch 2 |
 | **ISS-07** — Redis conn storm | 🟠 DEGRADED | 🟡 Partially fixed — worker.py remaining |
 | **ISS-08** — OpenAI error swallow | 🟠 DEGRADED | 🟠 Open — Batch 2 |
@@ -240,7 +240,7 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | AGPL fallback with no observability (HR4) | 🟡 Low-Medium (ISS-35, new) | 🟢 Metric shipped (Batch 1); strict gate pending legal sign-off |
 | OCR false-clean Latin mojibake (ISS-34, new) | 🟠 Medium | 🟢 Resolved (Batch 2) |
 | Auth fails open on missing token (ISS-32, new) | 🟡 Low-Medium | 🟢 Resolved (Batch 1) |
-| Corpus invisibility on backfill  | 🟠 Medium (ISS-03)       | 🟢 Resolved (Batch 1)           |
+| Corpus invisibility on backfill  | 🟢 Resolved (ISS-03)     | 🟢 Resolved — existing guard at `registry_backfill.py:188-193`. Closed per RFC-012 D1. |
 | Redis connection churn (worker)  | 🟡 Low (ISS-07 partial)  | 🟢 Resolved (Batch 1)           |
 | Silent performance degradation   | 🟠 Medium (ISS-05)       | 🟢 Resolved (Batch 2)           |
 | Table extraction (Gap 6)         | 🟡 2/3 unchanged          | 🟡 Unchanged — RFC-004 scope    |

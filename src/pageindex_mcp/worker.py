@@ -24,6 +24,7 @@ import redis.asyncio as aioredis
 from arq import cron
 from arq.connections import RedisSettings
 
+from .cache import get_async_redis
 from .config import settings
 from .memory_admission import wait_for_memory
 from .metrics import (
@@ -272,9 +273,7 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     to a local temp directory, runs conversion in an isolated child process,
     then cleans up both.
     """
-    redis: aioredis.Redis = ctx.get("redis") or aioredis.from_url(
-        settings.redis_url, decode_responses=True
-    )
+    redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
     # Extract filename from staging key: uploads/staging/<job_id>/<filename>
     filename = os.path.basename(staging_key)
     tmp_dir = tempfile.mkdtemp()
@@ -443,9 +442,7 @@ async def reap_stale_jobs(ctx: dict) -> None:
     alone — we never reap a job we cannot *prove* is stale, so an in-flight job is
     never wrongly failed.
     """
-    redis: aioredis.Redis = ctx.get("redis") or aioredis.from_url(
-        settings.redis_url, decode_responses=True
-    )
+    redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
     cutoff = JOB_TIMEOUT + REAP_GRACE
     now = int(time.time())
     reaped = 0
