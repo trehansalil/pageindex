@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: Design: Query-Path Performance & Input Hardening -->
-<!-- Parent: Designs -->
+<!-- Folder: Designs -->
 <!-- Confluence-Page-ID: 5093326851 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5093326851/Design+Query-Path+Performance+Input+Hardening -->
 

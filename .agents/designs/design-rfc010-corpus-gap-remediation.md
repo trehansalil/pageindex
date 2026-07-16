@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: Design: Corpus Gap Remediation — Ingestion Pipeline Hardening -->
-<!-- Parent: Designs -->
+<!-- Folder: Designs -->
 <!-- Confluence-Page-ID: 5103026177 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5103026177/Design+Corpus+Gap+Remediation+Ingestion+Pipeline+Hardening -->
 

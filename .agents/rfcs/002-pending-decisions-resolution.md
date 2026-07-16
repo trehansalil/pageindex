@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: RFC-002: Pending-Decisions Resolution (RFC session) -->
-<!-- Parent: RFCs -->
+<!-- Folder: RFCs -->
 <!-- Confluence-Page-ID: 5105549326 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5105549326/RFC-002+Pending-Decisions+Resolution+RFC+session -->
 

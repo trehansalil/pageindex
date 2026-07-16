@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: RFC-001: Initial Plan Review (review of RFC-000) -->
-<!-- Parent: RFCs -->
+<!-- Folder: RFCs -->
 <!-- Confluence-Page-ID: 5104435227 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5104435227/RFC-001+Initial+Plan+Review+review+of+RFC-000 -->
 

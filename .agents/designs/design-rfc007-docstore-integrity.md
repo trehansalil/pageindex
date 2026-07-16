@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: Design: Docstore Data-Integrity & Compliance Hardening -->
-<!-- Parent: Designs -->
+<!-- Folder: Designs -->
 <!-- Confluence-Page-ID: 5093588993 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5093588993/Design+Docstore+Data-Integrity+Compliance+Hardening -->
 

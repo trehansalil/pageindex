@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: Implementation Plan: Corpus Gap Remediation — Ingestion Pipeline Hardening -->
-<!-- Parent: Tasks -->
+<!-- Folder: Tasks -->
 <!-- Confluence-Page-ID: 5102600195 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5102600195/Implementation+Plan+Corpus+Gap+Remediation+Ingestion+Pipeline+Hardening -->
 

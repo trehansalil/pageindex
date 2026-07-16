@@ -1,7 +1,7 @@
 <!-- Space: CITRA -->
 <!-- Title: RFC-010: Corpus Gap Remediation — Ingestion Pipeline Hardening -->
-<!-- Parent: RFCs -->
-<!-- Parent: RFCs -->
+<!-- Folder: RFCs -->
+<!-- Folder: RFCs -->
 <!-- Confluence-Page-Id: 5102862339 -->
 
 ---

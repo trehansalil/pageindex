@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: RFC-004: VLM-Based Document-Hierarchy Detection (research → design recommendation) -->
-<!-- Parent: RFCs -->
+<!-- Folder: RFCs -->
 <!-- Confluence-Page-ID: 5105582083 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5105582083/RFC-004+VLM-Based+Document-Hierarchy+Detection+research+design+recommendation -->
 

@@ -1,6 +1,6 @@
 <!-- Space: CITRA -->
 <!-- Title: Design: Observability & Error-Handling Overhaul -->
-<!-- Parent: Designs -->
+<!-- Folder: Designs -->
 <!-- Confluence-Page-ID: 5093621762 -->
 <!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5093621762/Design+Observability+Error-Handling+Overhaul -->
 
