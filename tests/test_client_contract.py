@@ -354,6 +354,181 @@ async def test_OCR_01_C3_retry_exception_is_terminal_not_swallowed_as_success(
 
 
 # ---------------------------------------------------------------------------
+# D1: image-ratio OCR pre-check (RFC-010) — a PDF rejected for a non-garbling
+# reason (node_count<3 / depth<2) whose markdown is >50% "<!-- image -->"
+# lines gets one force_full_page_ocr retry before falling through to FLAT-03
+# flat-doc routing.
+# ---------------------------------------------------------------------------
+_IMAGE_HEAVY_MD = "\n".join(["<!-- image -->"] * 4 + ["some real text line"] * 2)  # 4/6 = 66.7%
+_IMAGE_LIGHT_MD = "\n".join(["<!-- image -->"] * 2 + ["some real text line"] * 5)  # 2/7 = 28.6%
+
+
+def _wire_image_ratio_escalation(
+    monkeypatch,
+    *,
+    initial_md,
+    validate_side_effect,
+    retry_raises=False,
+    ocr_escalation_enabled=True,
+    flat_doc_routing=True,
+):
+    """Wire index() up to the .pdf branch with a controllable md->tree pipeline,
+    so the D1 image-ratio retry branch can be exercised without any real
+    Docling/Tesseract/network/LLM dependency."""
+    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing=flat_doc_routing))
+    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
+    monkeypatch.setattr(
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: initial_md)]
+    )
+    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "_OCR_ESCALATION", ocr_escalation_enabled)
+    monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda sample: ["eng"])
+    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+
+    pdf_to_markdown_calls = []
+
+    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs):
+        pdf_to_markdown_calls.append(
+            {"path": path, "force_full_page_ocr": force_full_page_ocr, "langs": langs}
+        )
+        if retry_raises:
+            raise RuntimeError("boom")
+        return "# ocr-recovered md with real text"
+
+    monkeypatch.setattr(client_mod, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
+    mocks = {
+        "save_doc": MagicMock(),
+        "save_flat_doc": MagicMock(),
+        "save_raw": MagicMock(),
+        "save_doc_meta": MagicMock(),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+        "OCR_ESCALATION_TOTAL": MagicMock(),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(client_mod, name, m)
+    return mocks, pdf_to_markdown_calls
+
+
+async def test_image_dominant_triggers_ocr_escalation(monkeypatch, pdf_file_with_content):
+    """D1: a non-garbling rejection (depth<2) on markdown that is >50%
+    '<!-- image -->' lines triggers exactly one force_full_page_ocr retry."""
+    mocks, pdf_calls = _wire_image_ratio_escalation(
+        monkeypatch,
+        initial_md=_IMAGE_HEAVY_MD,
+        validate_side_effect=[(False, "depth<2"), (True, None)],
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    doc_id = await c.index(pdf_file_with_content)
+
+    assert isinstance(doc_id, str) and len(doc_id) == 36
+    assert len(pdf_calls) == 1
+    assert pdf_calls[0]["force_full_page_ocr"] is True
+    # Recovered -> persisted as a tree, not the flat path.
+    mocks["save_doc"].assert_called_once()
+    mocks["route_and_extract_flat"].assert_not_called()
+
+
+async def test_below_image_threshold_no_escalation(monkeypatch, pdf_file_with_content):
+    """D1: markdown at/under the 50% image-line threshold never escalates —
+    the non-garbling rejection proceeds straight to FLAT-03 flat routing."""
+    mocks, pdf_calls = _wire_image_ratio_escalation(
+        monkeypatch,
+        initial_md=_IMAGE_LIGHT_MD,
+        validate_side_effect=[(False, "depth<2")],
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    assert pdf_calls == []
+    mocks["OCR_ESCALATION_TOTAL"].labels.assert_not_called()
+    mocks["route_and_extract_flat"].assert_called_once()
+    mocks["save_flat_doc"].assert_called_once()
+
+
+async def test_ocr_escalation_disabled_no_escalation(monkeypatch, pdf_file_with_content):
+    """D1: the _OCR_ESCALATION kill-switch suppresses the retry regardless of
+    image ratio; the rejection falls through to flat routing unchanged."""
+    mocks, pdf_calls = _wire_image_ratio_escalation(
+        monkeypatch,
+        initial_md=_IMAGE_HEAVY_MD,
+        validate_side_effect=[(False, "depth<2")],
+        ocr_escalation_enabled=False,
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    assert pdf_calls == []
+    mocks["OCR_ESCALATION_TOTAL"].labels.assert_not_called()
+    mocks["route_and_extract_flat"].assert_called_once()
+
+
+async def test_ocr_escalation_metric_increments(monkeypatch, pdf_file_with_content):
+    """D1: OCR_ESCALATION_TOTAL increments with result='recovered' when the
+    retry validates ok, and with result='still_image_only' when it does not —
+    and in the latter case the doc still falls through to flat routing rather
+    than being silently dropped."""
+    recovered_mocks, _ = _wire_image_ratio_escalation(
+        monkeypatch,
+        initial_md=_IMAGE_HEAVY_MD,
+        validate_side_effect=[(False, "depth<2"), (True, None)],
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+    await c.index(pdf_file_with_content)
+    recovered_mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="recovered")
+    recovered_mocks["OCR_ESCALATION_TOTAL"].labels.return_value.inc.assert_called_once()
+
+    still_image_mocks, _ = _wire_image_ratio_escalation(
+        monkeypatch,
+        initial_md=_IMAGE_HEAVY_MD,
+        validate_side_effect=[(False, "depth<2"), (False, "depth<2")],
+    )
+    c2 = _make_client()
+    monkeypatch.setattr(c2, "_run_md_to_tree", lambda *a, **k: _tree_result())
+    await c2.index(pdf_file_with_content)
+    still_image_mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(
+        result="still_image_only"
+    )
+    still_image_mocks["route_and_extract_flat"].assert_called_once()
+
+
+async def test_image_ratio_retry_exception_is_terminal_not_swallowed_as_success(
+    monkeypatch, pdf_file_with_content
+):
+    """D1: an exception during the image-ratio retry itself increments
+    OCR_ESCALATION_TOTAL{result=error} and the original rejection still
+    governs — it falls through to flat routing, never a silent success."""
+    mocks, pdf_calls = _wire_image_ratio_escalation(
+        monkeypatch,
+        initial_md=_IMAGE_HEAVY_MD,
+        validate_side_effect=[(False, "depth<2")],
+        retry_raises=True,
+    )
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    assert len(pdf_calls) == 1
+    mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="error")
+    mocks["route_and_extract_flat"].assert_called_once()
+    mocks["save_doc"].assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # CONV-01-C4 / CONV-01-C5: .xlsx and image dispatch through index() (RFC-005 Fix 4)
 # ---------------------------------------------------------------------------
 @pytest.fixture
