@@ -50,6 +50,7 @@ Implements 7 reliability and dead-code quick-wins identified by `audit/DOCSTORE_
     - Delete `tools/processing.py` — 1-line tombstone comment; 0 references repo-wide
     - Both confirmed dead via codebase-graph reference search (per [RFC-012 D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files))
     - Recoverable via git history if needed
+    - **Post-hoc correction (2026-07-16):** commit ff473e5 deleted `upload.py` but left `src/pageindex_mcp/tools/processing.py` in place despite the checkbox already being marked done; caught during a re-verification pass, confirmed 0 references, and deleted
     - _Requirements:_ [RFC-012 D5](../rfcs/012-reliability-deadcode-quickwins.md#d5--iss-42--iss-45-delete-confirmed-dead-files) | [Design AD5](../designs/design-rfc012-reliability-deadcode-quickwins.md#ad5--dead-code-removal) | [Design Property 4](../designs/design-rfc012-reliability-deadcode-quickwins.md#property-4-dead-code-absence)
 
   - [x] <a id="14-checkpoint--batch-0"></a>1.4 Checkpoint — Batch 0

@@ -23,34 +23,34 @@ Implements five compliance and auth hardening fixes ([D1](../rfcs/011-compliance
 
 ## Tasks
 
-- [ ] <a id="0-batch-0-close-resolved-issues-d1"></a>0. Batch 0 — Close Resolved Issues ([D1](../rfcs/011-compliance-auth-quickwins.md#d1--iss-02-no-code-change-close-as-resolved))
+- [x] <a id="0-batch-0-close-resolved-issues-d1"></a>0. Batch 0 — Close Resolved Issues ([D1](../rfcs/011-compliance-auth-quickwins.md#d1--iss-02-no-code-change-close-as-resolved))
 
   *[RFC-011 D1](../rfcs/011-compliance-auth-quickwins.md#d1--iss-02-no-code-change-close-as-resolved): "No code change — registry delete already bounded. Close in audit tracker only."*
 
-  - [ ] <a id="01-close-iss-02-audit-tracker"></a>0.1 Close ISS-02 in audit tracker ([D1](../rfcs/011-compliance-auth-quickwins.md#d1--iss-02-no-code-change-close-as-resolved))
+  - [x] <a id="01-close-iss-02-audit-tracker"></a>0.1 Close ISS-02 in audit tracker ([D1](../rfcs/011-compliance-auth-quickwins.md#d1--iss-02-no-code-change-close-as-resolved))
 
     - Mark ISS-02 as resolved in `audit/DOCSTORE_AUDIT_REPORT.md`
     - Reference existing regression coverage: `tests/test_storage_contract.py:388` (`test_delete_doc_awaits_registry`), `:404` (`test_delete_doc_registry_timeout`), `:480` (Postgres-failure scenario)
     - No code changes required; `storage.py:255-274` cascade step 6 already awaits `_registry_delete_doc` with `asyncio.wait_for` and appends both `TimeoutError` and generic `Exception` to the cascade's `errors` list
     - _Requirements:_ [RFC-011 D1](../rfcs/011-compliance-auth-quickwins.md#d1--iss-02-no-code-change-close-as-resolved)
 
-  - [ ] <a id="02-checkpoint-batch-0"></a>0.2 Checkpoint — Batch 0
+  - [x] <a id="02-checkpoint-batch-0"></a>0.2 Checkpoint — Batch 0
 
     - Confirm ISS-02 marked as resolved in audit tracker
     - No code or test verification needed
 
-- [ ] <a id="1-batch-1-fail-closed-auth-and-erasure-d4-d2"></a>1. Batch 1 — Fail-Closed Auth & Erasure ([D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default), [D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade))
+- [x] <a id="1-batch-1-fail-closed-auth-and-erasure-d4-d2"></a>1. Batch 1 — Fail-Closed Auth & Erasure ([D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default), [D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade))
 
   *Highest-signal fixes first per [RFC Implementation Plan](../rfcs/011-compliance-auth-quickwins.md#implementation-plan): fail-closed auth default + erasure cascade gap (HR2 violation)*
 
-  - [ ] <a id="11-auth-fail-closed-default"></a>1.1 Auth fail-closed default ([D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default), ~12 lines in `auth.py` + `config.py`)
+  - [x] <a id="11-auth-fail-closed-default"></a>1.1 Auth fail-closed default ([D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default), ~12 lines in `auth.py` + `config.py`)
 
     - Add `MCP_ALLOW_UNAUTHENTICATED` to `config.py` (bool, default `false`), alongside existing `mcp_bearer_token`
     - Modify auth middleware in `auth.py:39-47`: when `settings.mcp_bearer_token` is unset and `settings.mcp_allow_unauthenticated` is not set, return `JSONResponse({"error": "auth not configured"}, status_code=503)`
     - Keep existing `MCP_AUTH_DISABLED` gauge and `_warn_once_auth_disabled()` warning for the explicit opt-in pass-through path
     - _Requirements:_ [RFC-011 D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default) | [Design Property 3](../designs/design-rfc011-compliance-auth-quickwins.md#property-3-auth-fail-closed-default) | [Design Service: auth.py](../designs/design-rfc011-compliance-auth-quickwins.md#3-authpy) | [Design Sequence: Auth Middleware](../designs/design-rfc011-compliance-auth-quickwins.md#auth-middleware-flow--d4)
 
-  - [ ] <a id="12-preloaded-purge-erasure-cascade"></a>1.2 Preloaded purge in erasure cascade ([D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade), ~10 lines in `storage.py`)
+  - [x] <a id="12-preloaded-purge-erasure-cascade"></a>1.2 Preloaded purge in erasure cascade ([D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade), ~10 lines in `storage.py`)
 
     - Add step 7 after registry delete in the erasure cascade (`storage.py:160-281`)
     - Use `doc_name` already resolved at cascade start (`storage.py:177-181`, flat-doc basename fallback at `:196-200`)
@@ -60,36 +60,36 @@ Implements five compliance and auth hardening fixes ([D1](../rfcs/011-compliance
     - Update cascade docstring (`storage.py:161-166`) to enumerate step 7
     - _Requirements:_ [RFC-011 D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade) | [HR2](../rfcs/011-compliance-auth-quickwins.md#hard-rule-constraints-claudemd--binding) | [Design Property 1](../designs/design-rfc011-compliance-auth-quickwins.md#property-1-preloaded-object-erasure) | [Design Service: storage.py](../designs/design-rfc011-compliance-auth-quickwins.md#1-storagepy) | [Design Sequence: Erasure Cascade](../designs/design-rfc011-compliance-auth-quickwins.md#erasure-cascade-flow--d2)
 
-  - [ ] <a id="13-unit-tests-d4"></a>1.3 Write auth middleware tests ([D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default))
+  - [x] <a id="13-unit-tests-d4"></a>1.3 Write auth middleware tests ([D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default))
 
     - **Validates:** [Design Property 3](../designs/design-rfc011-compliance-auth-quickwins.md#property-3-auth-fail-closed-default) | [RFC-011 D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default) | [RFC Test Strategy](../rfcs/011-compliance-auth-quickwins.md#test-strategy)
     - Test: token unset + `MCP_ALLOW_UNAUTHENTICATED` unset (default) -> 503 response with `{"error": "auth not configured"}`
     - Test: token unset + `MCP_ALLOW_UNAUTHENTICATED=true` -> pass-through with warning (`MCP_AUTH_DISABLED` gauge set, `_warn_once_auth_disabled` fires)
     - Test: token set -> normal auth flow (regression guard — existing behavior unchanged)
 
-  - [ ] <a id="14-unit-tests-d2"></a>1.4 Write preloaded purge tests ([D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade))
+  - [x] <a id="14-unit-tests-d2"></a>1.4 Write preloaded purge tests ([D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade))
 
     - **Validates:** [Design Property 1](../designs/design-rfc011-compliance-auth-quickwins.md#property-1-preloaded-object-erasure) | [RFC-011 D2](../rfcs/011-compliance-auth-quickwins.md#d2--iss-41-purge-preloadedfilename-in-the-erasure-cascade) | [RFC Test Strategy](../rfcs/011-compliance-auth-quickwins.md#test-strategy)
     - Extend `tests/test_storage_contract.py` — assert `remove_object` called on `preloaded/<name>` during the cascade
     - Test: `doc_name is None` -> warning logged, no `remove_object` call for preloaded path
 
-  - [ ] <a id="15-checkpoint-batch-1"></a>1.5 Checkpoint — Batch 1
+  - [x] <a id="15-checkpoint-batch-1"></a>1.5 Checkpoint — Batch 1
 
     - Run `uv run pytest` — all tests pass including new [Task 1.3](#13-unit-tests-d4) and [Task 1.4](#14-unit-tests-d2) tests
     - Verify [Design Property 1](../designs/design-rfc011-compliance-auth-quickwins.md#property-1-preloaded-object-erasure) and [Design Property 3](../designs/design-rfc011-compliance-auth-quickwins.md#property-3-auth-fail-closed-default) hold
     - Note: [D4](../rfcs/011-compliance-auth-quickwins.md#d4--iss-32-bearer-auth-fails-closed-by-default) is behavior-changing — flag in deploy runbook per [RFC Risks](../rfcs/011-compliance-auth-quickwins.md#risks)
 
-- [ ] <a id="2-batch-2-registry-timeout-and-agpl-metric-d3-d5"></a>2. Batch 2 — Registry Timeout & AGPL Metric ([D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete), [D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only))
+- [x] <a id="2-batch-2-registry-timeout-and-agpl-metric-d3-d5"></a>2. Batch 2 — Registry Timeout & AGPL Metric ([D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete), [D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only))
 
   *Independent of Batch 1 — no shared code surface*
 
-  - [ ] <a id="21-registry-statement-timeout"></a>2.1 Registry statement timeout ([D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete), ~4 lines in `registry.py`)
+  - [x] <a id="21-registry-statement-timeout"></a>2.1 Registry statement timeout ([D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete), ~4 lines in `registry.py`)
 
     - Add `timeout=settings.registry_delete_timeout_s` kwarg to `pool.execute(_DELETE_SQL, doc_id)` in `registry.py:208-216`
     - Reuses existing `registry_delete_timeout_s` config value (`config.py:34,87`) — no new config needed
     - _Requirements:_ [RFC-011 D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete) | [Design Property 2](../designs/design-rfc011-compliance-auth-quickwins.md#property-2-registry-delete-statement-timeout) | [Design Service: registry.py](../designs/design-rfc011-compliance-auth-quickwins.md#2-registrypy)
 
-  - [ ] <a id="22-agpl-fallback-metric"></a>2.2 AGPL fallback metric ([D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only), ~10 lines in `metrics.py` + `converters.py`)
+  - [x] <a id="22-agpl-fallback-metric"></a>2.2 AGPL fallback metric ([D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only), ~10 lines in `metrics.py` + `converters.py`)
 
     - Define `AGPL_FALLBACK_TOTAL` Counter in `metrics.py` following existing `pageindex_<domain>_<noun>_total` naming:
       ```python
@@ -105,47 +105,47 @@ Implements five compliance and auth hardening fixes ([D1](../rfcs/011-compliance
     - Hard gate (`PDF_CONVERTER_STRICT`) explicitly out of scope per [RFC-011](../rfcs/011-compliance-auth-quickwins.md#what-this-rfc-does-not-cover)
     - _Requirements:_ [RFC-011 D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only) | [HR4](../rfcs/011-compliance-auth-quickwins.md#hard-rule-constraints-claudemd--binding) | [Design Property 4](../designs/design-rfc011-compliance-auth-quickwins.md#property-4-agpl-fallback-observability) | [Design Service: converters.py](../designs/design-rfc011-compliance-auth-quickwins.md#4-converterspy) | [Design Service: metrics.py](../designs/design-rfc011-compliance-auth-quickwins.md#7-metricspy)
 
-  - [ ] <a id="23-unit-tests-d3"></a>2.3 Write registry timeout tests ([D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete))
+  - [x] <a id="23-unit-tests-d3"></a>2.3 Write registry timeout tests ([D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete))
 
     - **Validates:** [Design Property 2](../designs/design-rfc011-compliance-auth-quickwins.md#property-2-registry-delete-statement-timeout) | [RFC-011 D3](../rfcs/011-compliance-auth-quickwins.md#d3--iss-40-statement-level-timeout-on-registry-delete) | [RFC Test Strategy](../rfcs/011-compliance-auth-quickwins.md#test-strategy)
     - Extend `tests/test_registry_contract.py` — assert `pool.execute` receives `timeout` kwarg matching `settings.registry_delete_timeout_s`
 
-  - [ ] <a id="24-unit-tests-d5"></a>2.4 Write AGPL metric tests ([D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only))
+  - [x] <a id="24-unit-tests-d5"></a>2.4 Write AGPL metric tests ([D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only))
 
     - **Validates:** [Design Property 4](../designs/design-rfc011-compliance-auth-quickwins.md#property-4-agpl-fallback-observability) | [RFC-011 D5](../rfcs/011-compliance-auth-quickwins.md#d5--iss-35-agpl-fallback-observability-metric-only) | [RFC Test Strategy](../rfcs/011-compliance-auth-quickwins.md#test-strategy)
     - Assert counter increments with `reason="operator_configured"` when `PDF_CONVERTER=pymupdf4llm` is explicit
     - Assert counter increments with `reason="docling_missing"` when Docling is unavailable
 
-  - [ ] <a id="25-checkpoint-batch-2"></a>2.5 Checkpoint — Batch 2
+  - [x] <a id="25-checkpoint-batch-2"></a>2.5 Checkpoint — Batch 2
 
     - Run `uv run pytest` — all tests pass including new [Task 2.3](#23-unit-tests-d3) and [Task 2.4](#24-unit-tests-d5) tests
     - Verify [Design Property 2](../designs/design-rfc011-compliance-auth-quickwins.md#property-2-registry-delete-statement-timeout) and [Design Property 4](../designs/design-rfc011-compliance-auth-quickwins.md#property-4-agpl-fallback-observability) hold
 
-- [ ] <a id="3-batch-3-zdr-startup-assertion-d6"></a>3. Batch 3 — ZDR Startup Assertion ([D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora))
+- [x] <a id="3-batch-3-zdr-startup-assertion-d6"></a>3. Batch 3 — ZDR Startup Assertion ([D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora))
 
   *Depends on reviewed ZDR allow-list per [RFC Risks](../rfcs/011-compliance-auth-quickwins.md#risks)*
 
-  - [ ] <a id="31-zdr-startup-assertion"></a>3.1 ZDR startup assertion ([D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora), ~15 lines in `config.py` + `server.py`)
+  - [x] <a id="31-zdr-startup-assertion"></a>3.1 ZDR startup assertion ([D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora), ~15 lines in `config.py` + `server.py`)
 
     - Define ZDR allow-list constant in `config.py` next to other routing config, documented inline with the source ladder (Azure modified-abuse-monitoring host / Bedrock / OpenAI EU-ZDR endpoints)
     - Add `PII_CORPUS` config flag (bool, default `false`) in `config.py`
     - In `server.py` lifespan (`_lifespan_with_scrape`, lines 49-92): if `settings.pii_corpus` is `true` and `settings.openai_base_url` is not in the ZDR allow-list, raise `RuntimeError` with message referencing [HR3](../rfcs/011-compliance-auth-quickwins.md#hard-rule-constraints-claudemd--binding)
     - _Requirements:_ [RFC-011 D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora) | [HR3](../rfcs/011-compliance-auth-quickwins.md#hard-rule-constraints-claudemd--binding) | [Design Property 5](../designs/design-rfc011-compliance-auth-quickwins.md#property-5-zdr-routing-enforcement) | [Design Service: config.py](../designs/design-rfc011-compliance-auth-quickwins.md#5-configpy) | [Design Service: server.py](../designs/design-rfc011-compliance-auth-quickwins.md#6-serverpy) | [Design Sequence: Startup Validation](../designs/design-rfc011-compliance-auth-quickwins.md#startup-validation-flow--d6)
 
-  - [ ] <a id="32-unit-tests-d6"></a>3.2 Write ZDR assertion tests ([D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora))
+  - [x] <a id="32-unit-tests-d6"></a>3.2 Write ZDR assertion tests ([D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora))
 
     - **Validates:** [Design Property 5](../designs/design-rfc011-compliance-auth-quickwins.md#property-5-zdr-routing-enforcement) | [RFC-011 D6](../rfcs/011-compliance-auth-quickwins.md#d6--iss-33-startup-zdr-routing-assertion-for-pii-flagged-corpora) | [RFC Test Strategy](../rfcs/011-compliance-auth-quickwins.md#test-strategy)
     - Test: `PII_CORPUS=true` + allowlisted `openai_base_url` -> startup succeeds (no exception)
     - Test: `PII_CORPUS=true` + arbitrary `openai_base_url` -> `RuntimeError` raised
     - Test: `PII_CORPUS=false` -> no check performed regardless of `openai_base_url` value
 
-  - [ ] <a id="33-checkpoint-batch-3"></a>3.3 Checkpoint — Batch 3
+  - [x] <a id="33-checkpoint-batch-3"></a>3.3 Checkpoint — Batch 3
 
     - Run `uv run pytest` — all tests pass including new [Task 3.2](#32-unit-tests-d6) tests
     - Verify [Design Property 5](../designs/design-rfc011-compliance-auth-quickwins.md#property-5-zdr-routing-enforcement) holds
     - Confirm ZDR allow-list has been reviewed and signed off per [RFC Risks](../rfcs/011-compliance-auth-quickwins.md#risks)
 
-- [ ] <a id="4-final-checkpoint"></a>4. Final Checkpoint
+- [x] <a id="4-final-checkpoint"></a>4. Final Checkpoint
 
   - Run full test suite: `uv run pytest` — zero failures
   - Verify all 5 design correctness properties hold:
