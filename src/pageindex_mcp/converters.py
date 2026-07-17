@@ -1,6 +1,7 @@
 """Document format conversion helpers and tree search utilities."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -143,6 +144,19 @@ _WORD_RE = re.compile(r"^(teil|anhang|abschnitt|kapitel)\b", re.IGNORECASE)
 # Arabic structural words consumed the same way as the Latin _WORD_RE (Fix 1): the
 # label that NESTS is the number/letter that follows المادة/الباب/الفصل/القسم/الجزء/مرسوم.
 _AR_WORD_RE = re.compile(r"^(?:ال)?(?:مادة|باب|فصل|قسم|جزء|مرسوم)\b")
+# English "Article N" / "Art. N" and section-symbol "§ N" headings (RFC-015 D3
+# Part B / task 1.4): without this, _segment_label() rejects "Article 5" as
+# prose (its first alnum component is the multi-letter word "Article", which
+# fails the single-letter-or-digit label-first-component gate below) and
+# returns [] — an unlabelled/"bare title" heading whose ORIGINAL doc-derived
+# level is left untouched by _relevel_by_containment. On corpora where that
+# original level is deeply nested under an unrelated sub-bullet, Articles 3-6
+# inherit that nesting verbatim ("staircase" mis-nesting) instead of getting an
+# explicit depth. Recognising the "Art(icle|.) N" / "§ N" prefix as a
+# structural word (consumed the same way as Teil/Abschnitt/Kapitel above)
+# lets the bare number become the label, so containment assigns depth 1.
+_ARTICLE_RE = re.compile(r"^(?:Art(?:icle|\.)\s+\d+|§\s*\d+)", re.IGNORECASE)
+_ARTICLE_WORD_RE = re.compile(r"^(?:Art(?:icle|\.)|§)\s*", re.IGNORECASE)
 
 
 def _collapse_spaced(text: str) -> str:
@@ -213,6 +227,11 @@ def _segment_label(title: str) -> list[str]:
     wm = _WORD_RE.match(t)
     if wm:
         t = t[wm.end() :].lstrip(" -")
+    elif _ARTICLE_RE.match(t):
+        # "Article 5" / "Art. 5" / "§ 12" (RFC-015 D3 Part B): consume just the
+        # word/symbol, leaving the bare number as the label so it gets an
+        # explicit containment depth instead of falling through as prose.
+        t = _ARTICLE_WORD_RE.sub("", t, count=1)
     else:
         awm = _AR_WORD_RE.match(t)
         if awm:
@@ -608,6 +627,32 @@ def _recover_heading_depth(md: str, heading_pages: dict[str, list[int]], pdf_pat
     return md
 
 
+# RFC-015 D5d: a valid sub-clause component is a digit run with an OPTIONAL single
+# lowercase-letter suffix ("10a"), OR a lone lowercase letter ("a"). The lone-letter
+# alternative is load-bearing: _segment_label() splits a letter suffix into its OWN
+# component ("A.1.1a" -> [A,1,1,a]; "§ 5a" -> [5,a]), so the blueprint's literal
+# `\d+[a-z]?` alone would never match the standalone trailing "a" in its own worked
+# example ('7','10','a'). Widening to `\d+[a-z]?|[a-z]` promotes letter-suffixed
+# sub-clauses (doc acc20e08) while a BARE list marker "a" (label ["a"], no numeric
+# anchor prefix) still cannot promote — the k-loop below requires a non-empty prefix.
+_SUBCLAUSE_COMP_RE = re.compile(r"\d+[a-z]?|[a-z]")
+
+
+def _is_numeric_extension(lab: tuple, anchors: set) -> bool:
+    """True when ``lab`` is a kept anchor label plus a run of numeric / letter-suffix
+    sub-components (RFC-015 D5d).
+
+    There must be a non-empty kept-section label P (in ``anchors``) that is a PROPER
+    prefix of ``lab``, and every component beyond P must be a pure digit run, a digit
+    run with a single trailing lowercase letter, or a lone lowercase letter. The
+    proper-prefix requirement (``k`` never reaches 0) means a bare list marker cannot
+    promote itself."""
+    return any(
+        lab[:k] in anchors and all(_SUBCLAUSE_COMP_RE.fullmatch(c) for c in lab[k:])
+        for k in range(len(lab) - 1, 0, -1)
+    )
+
+
 def _repromote_numbered_headings(doc) -> int:
     """Re-promote demoted body TextItems back to headings (no hardcoding).
 
@@ -644,10 +689,7 @@ def _repromote_numbered_headings(doc) -> int:
         lab = label_of(item)
         if not lab:
             continue
-        if any(
-            lab[:k] in anchors and all(c.isdigit() for c in lab[k:])
-            for k in range(len(lab) - 1, 0, -1)
-        ):
+        if _is_numeric_extension(lab, anchors):
             # TextItem -> SectionHeaderItem, then swap in at its self_ref index
             # (the add-on's set_item_in_doc pattern).
             header = SectionHeaderItem(
@@ -678,14 +720,42 @@ def pdf_to_markdown(pdf_path: str) -> str:
 
 class TessdataUnavailableError(RuntimeError):
     """Raised when non-Latin tessdata is missing and cannot be downloaded."""
+
     pass
 
 
-_LATIN_LANGS = frozenset({
-    "afr", "cat", "ces", "dan", "deu", "eng", "est", "fin", "fra",
-    "hrv", "hun", "ind", "isl", "ita", "lav", "lit", "msa", "nld",
-    "nor", "pol", "por", "ron", "slk", "slv", "spa", "swe", "tur", "vie",
-})
+_LATIN_LANGS = frozenset(
+    {
+        "afr",
+        "cat",
+        "ces",
+        "dan",
+        "deu",
+        "eng",
+        "est",
+        "fin",
+        "fra",
+        "hrv",
+        "hun",
+        "ind",
+        "isl",
+        "ita",
+        "lav",
+        "lit",
+        "msa",
+        "nld",
+        "nor",
+        "pol",
+        "por",
+        "ron",
+        "slk",
+        "slv",
+        "spa",
+        "swe",
+        "tur",
+        "vie",
+    }
+)
 
 
 # --- Fix 5: OCR language auto-detection + on-demand tessdata (RFC fizzy-forging-pearl) ---
@@ -1073,18 +1143,271 @@ def _normalize_indented_headings(md: str) -> str:
     return _INDENTED_HEADING_RE.sub(r"\1", md)
 
 
-_INLINE_HASH_RE = re.compile(r"(?<=\S)#(?=\S)")
+# RFC-015 D5c: Docling occasionally emits several '#{1,6} '-prefixed headings on ONE
+# physical line ("text### Heading"); the line-anchored heading regexes downstream see
+# only the first, so the rest fuse into a giant tail blob (doc 7dcf7cb7). The lookbehind
+# `[^\n#]` matches only a heading marker preceded by a non-newline, non-'#' char, so a
+# marker mid-line ("text### X") splits while true line-start headings AND the interior
+# of a genuine multi-'#' run ("## X" must NOT split into "#\n# X") are left untouched.
+# (Tightened from the RFC-015 pseudocode's `[^\n]`, which wrongly split multi-'#' runs.)
+_RUN_TOGETHER_HEADING_RE = re.compile(r"(?<=[^\n#])(#{1,6}\s)")
+
+
+def _split_run_together_headings(md: str) -> str:
+    """Insert a newline before any heading marker Docling emitted mid-line (RFC-015 D5c).
+
+    Runs BEFORE the hash-sentinel fix (D4) and heading-depth inference so a run-together
+    ``text### Heading`` is separated onto its own line first — both D4's per-line pass
+    and the splitter's ordinal matching only inspect one marker per line."""
+    return _RUN_TOGETHER_HEADING_RE.sub(r"\n\1", md)
+
+
+# RFC-015 D4: consume WHOLE '#+' runs (not just interior '#'). RFC-010 D5 used
+# `(?<=\S)#(?=\S)` (non-whitespace both sides), so when the corrupted في run's outer
+# edges sat next to whitespace — the normal case, في being a standalone word — the
+# boundary '#'s survived, leaving `#في#`/`#فيفي#`. That residue poisoned the splitter's
+# oversized-ordinal anchor, fusing whole legal instruments into one leaf (doc aebf15b4).
+_INLINE_HASH_RE = re.compile(r"#+")
+_HEADING_MARKER_LINE_RE = re.compile(r"#{1,6}[ \t]")
 
 
 def _fix_fi_hash_substitution(md: str) -> str:
-    """Interim fix: restore في from Docling's # substitution in Arabic text."""
-    alpha = [c for c in md if c.isalpha()]
-    if not alpha:
+    """Restore في from Docling's ``#`` substitution in Arabic text (RFC-015 D4).
+
+    Docling renders the standalone Arabic word في as ``#``. This converts every inline
+    ``#+`` run back to في, per line, while preserving genuine line-initial markdown
+    heading markers (``#{1,6}`` followed by a space). Widened from the RFC-010 D5
+    interior-only regex so boundary/standalone ``#`` are also consumed (see the note
+    above). Runs EARLIER in the pipeline (before heading-depth inference) so في is a
+    single token by the time the heading regex sees it. Pure local string surgery — no
+    LLM, no network (HR3)."""
+    if not md:
         return md
-    arabic = sum(1 for c in alpha if "؀" <= c <= "ۿ")
-    if arabic / len(alpha) <= 0.30:
+    arabic = sum(1 for c in md if "؀" <= c <= "ۿ")
+    if arabic / len(md) <= 0.15:
         return md
-    return _INLINE_HASH_RE.sub("في", md)
+    out: list[str] = []
+    for line in md.splitlines(keepends=True):
+        stripped = line.lstrip()
+        # Preserve a genuine markdown heading marker ("## Heading"); convert everything
+        # else — inline '#' runs that are corrupted في — to في.
+        if _HEADING_MARKER_LINE_RE.match(stripped):
+            out.append(line)
+        else:
+            out.append(_INLINE_HASH_RE.sub("في", line))
+    return "".join(out)
+
+
+def reconstruct_bidi_order(text: str) -> str:
+    """Reorder visual-order Arabic runs into logical reading order (RFC-015 D7).
+
+    Some PDFs store Arabic in visual/glyph order (presentation forms) rather than
+    logical reading order — the characters are correct, just reversed. ``python-bidi``
+    (pure-Python, MIT, Unicode BiDi Algorithm UAX #9) restores logical order. Applied
+    per line and gated on an Arabic ratio > 0.15 over the WHOLE text, so German/English
+    documents are byte-for-byte untouched (zero false-positive risk). A leading markdown
+    heading marker is split off and re-prefixed so BiDi reordering never moves the
+    ``#`` prefix — heading-depth inference runs right after D7 and must still see it.
+    Pure local computation — no LLM, no network (HR3)."""
+    if not text:
+        return text
+    arabic = len(_AR_SCRIPT_RE.findall(text))
+    if arabic / len(text) <= 0.15:
+        return text
+    from bidi.algorithm import get_display
+
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        m = _BIDI_HEADING_PREFIX_RE.match(line)
+        if m:
+            out.append(m.group(1) + get_display(m.group(2)))
+        else:
+            out.append(get_display(line))
+    return "".join(out)
+
+
+# Split a leading markdown heading marker off a line so reconstruct_bidi_order reorders
+# only the title text, leaving the '#' prefix in place for depth inference.
+_BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
+
+
+# RFC-015 D6 gate. Mirrors client.py:66 VERBATIM — two independent module-level copies
+# (converters.py must not import client.py: that would create an import cycle). If you
+# change the default or the accepted truthy values here, change client.py:66 too.
+_OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+
+_IMAGE_MARKER = "<!-- image -->"
+_PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
+
+
+def _collect_picture_regions(doc) -> list[dict]:
+    """List each PictureItem's 1-indexed page + bbox in document iteration order (D6).
+
+    The order matches the ``<!-- image -->`` markers ``export_to_markdown()`` emits, so
+    the caller can splice recovered text by positional index (picture bboxes are stable
+    across the add-on's in-place mutation, unlike heading selection)."""
+    from docling_core.types.doc.document import PictureItem
+
+    regions: list[dict] = []
+    for item, _ in doc.iterate_items(with_groups=False):
+        if isinstance(item, PictureItem) and item.prov:
+            prov = item.prov[0]
+            regions.append({"page": prov.page_no, "bbox": prov.bbox})
+    return regions
+
+
+def _bbox_to_fitz_rect(bbox, page_height: float, fitz):
+    """Convert a Docling BoundingBox to a top-left-origin ``fitz.Rect`` (D6).
+
+    Docling bboxes may carry a BOTTOMLEFT coordinate origin (PDF-native), while
+    ``fitz.Rect`` is TOP-LEFT; convert using the page height when needed. Returns None
+    on any unusable bbox so the caller skips that picture."""
+    try:
+        left, top, right, bottom = bbox.l, bbox.t, bbox.r, bbox.b
+        origin = getattr(bbox, "coord_origin", None)
+        origin_name = getattr(origin, "name", str(origin or "")).upper()
+        if origin_name.startswith("BOTTOM"):
+            top, bottom = page_height - top, page_height - bottom
+        y0, y1 = sorted((top, bottom))
+        x0, x1 = sorted((left, right))
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            return None
+        return fitz.Rect(x0, y0, x1, y1)
+    except Exception:
+        return None
+
+
+def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
+    """OCR one image file via the LOCAL ``tesseract`` CLI (RFC-015 D6; HR3-clean).
+
+    Uses the same system ``tesseract`` binary + ``TESSDATA_PREFIX`` the Docling OCR
+    path uses — no LLM, no network egress, so PII in a chart never leaves the host
+    (HR3). Returns stripped recognised text, or '' on any failure (never raises)."""
+    tess = shutil.which("tesseract")
+    if not tess:
+        logger.warning("tesseract binary not found; skipping per-picture OCR")
+        return ""
+    try:
+        proc = subprocess.run(
+            [tess, png_path, "stdout", "-l", "+".join(langs)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return proc.stdout.strip()
+    except Exception as exc:
+        logger.warning("per-picture tesseract OCR failed (%s)", exc)
+        return ""
+
+
+def _recover_picture_text(pdf_path: str, regions: list[dict], langs: list[str]) -> dict[int, str]:
+    """Crop each picture bbox from the PDF and OCR it locally (RFC-015 D6).
+
+    Returns ``{picture_index: recovered_text}`` for pictures whose OCR yields more than
+    ``_PICTURE_OCR_MIN_CHARS`` characters. Docling's layout model buckets chart
+    data-labels / axis text into a Picture cluster, so ``export_to_markdown()`` renders
+    the whole cluster as a bare ``<!-- image -->`` and that co-located text is lost;
+    region-scoped OCR recovers it regardless of the page-level image ratio that gates
+    the existing D1 escalation (RFC-010).
+
+    HR3: OCR runs entirely through the LOCAL tesseract binary — no LLM, no network
+    egress — so PII rendered inside a chart never leaves the host.
+
+    HR4: this imports ``fitz`` (PyMuPDF, AGPL-3.0) directly for bbox cropping. Unlike
+    the pypdfium2 outline read (``_read_pdf_outline``), this is a FIRST-PARTY AGPL
+    import on the DEFAULT (``PDF_CONVERTER=docling``) path — not merely a transitive
+    dependency, and NOT the ``agpl-fallback``-gated pymupdf4llm route. Reconciled with
+    the user for RFC-015 (2026-07-17); see the [GAP] in ``.agents/state/PENDING_DECISIONS.md``
+    flagging the AGPL legal-review follow-up. The import is function-scoped and only
+    fires when the document actually contains pictures."""
+    import fitz  # PyMuPDF, AGPL-3.0 — first-party import on the DEFAULT path; see HR4 note above
+
+    recovered: dict[int, str] = {}
+    pdf = fitz.open(pdf_path)
+    try:
+        for i, region in enumerate(regions):
+            page_index = region["page"] - 1  # PyMuPDF pages are 0-indexed
+            if page_index < 0 or page_index >= pdf.page_count:
+                continue
+            page = pdf[page_index]
+            rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
+            if rect is None:
+                continue
+            pix = page.get_pixmap(clip=rect, dpi=300)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                pix.save(tmp_path)
+                text = _tesseract_ocr_image(tmp_path, langs)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+            if len(text.strip()) > _PICTURE_OCR_MIN_CHARS:
+                recovered[i] = " ".join(text.split())
+    finally:
+        pdf.close()
+    return recovered
+
+
+def _splice_picture_text(md: str, recovered: dict[int, str]) -> str:
+    """Append recovered chart text as a ``> [Chart text]: ...`` blockquote after the
+    i-th ``<!-- image -->`` marker whose picture yielded text (RFC-015 D6)."""
+    if not recovered:
+        return md
+    counter = {"i": 0}
+
+    def _repl(m: "re.Match[str]") -> str:
+        i = counter["i"]
+        counter["i"] += 1
+        text = recovered.get(i)
+        if text:
+            return m.group(0) + "\n\n> [Chart text]: " + text
+        return m.group(0)
+
+    return re.sub(re.escape(_IMAGE_MARKER), _repl, md)
+
+
+def _pre_inference_normalize(text: str) -> str:
+    """Markdown clean-up run BEFORE heading-depth inference (RFC-015 D5c/D4/D7).
+
+    Ordering is load-bearing: D5c (split run-together headings) must precede D4 (the
+    per-line hash-sentinel fix, so ``##Foo ###Bar`` is split before the one-marker-per-
+    line pass), which must precede D7 (BiDi reorder) and depth inference (so في is a
+    single token by the time the heading regex parses it)."""
+    text = _split_run_together_headings(text)  # D5c
+    text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
+    return reconstruct_bidi_order(text)  # D7
+
+
+def _maybe_splice_picture_ocr(md: str, document, pdf_path: str) -> str:
+    """Recover chart/infographic text Docling bucketed into a Picture bbox (RFC-015 D6).
+
+    Docling drops picture clusters as a bare ``<!-- image -->``, discarding co-located
+    chart text. Region-scoped local OCR (HR3) fires per picture regardless of the
+    page-level image ratio that gates the D1 escalation. Gated on ``_OCR_ESCALATION``
+    (mirrors client.py:66) and never fatal — any failure leaves the markdown as-is."""
+    if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
+        return md
+    try:
+        regions = _collect_picture_regions(document)
+        if not regions:
+            return md
+        langs = ensure_tessdata(detect_ocr_langs(md))
+        recovered = _recover_picture_text(pdf_path, regions, langs)
+        if recovered:
+            md = _splice_picture_text(md, recovered)
+            logger.info(
+                "recovered per-picture chart text for %d image(s) in %s",
+                len(recovered),
+                pdf_path,
+            )
+    except Exception as exc:
+        logger.warning(
+            "per-picture OCR recovery failed for %s (%s); leaving markdown as-is",
+            pdf_path,
+            exc,
+        )
+    return md
 
 
 def pdf_to_markdown_docling(
@@ -1196,6 +1519,12 @@ def pdf_to_markdown_docling(
     post_md = result.document.export_to_markdown()
     if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
+
+    # RFC-015 D5c/D4/D7: normalise BOTH candidate markdown sources BEFORE heading-depth
+    # inference so the heading regexes see split, في-restored, logically-ordered text
+    # (see _pre_inference_normalize for the load-bearing ordering rationale).
+    post_md = _pre_inference_normalize(post_md)
+    raw_md = _pre_inference_normalize(raw_md)
     post_headings = len(_HEADING_RE.findall(post_md))
     raw_headings = len(_HEADING_RE.findall(raw_md))
 
@@ -1231,7 +1560,7 @@ def pdf_to_markdown_docling(
             )
             md = md_raw
     md = _normalize_indented_headings(md)
-    md = _fix_fi_hash_substitution(md)
+    md = _maybe_splice_picture_ocr(md, result.document, pdf_path)  # RFC-015 D6
     return md
 
 

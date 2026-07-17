@@ -1,6 +1,24 @@
-"""Unit tests for RFC-010 corpus gap remediation: converters.py deliverables D2, D5."""
+"""Unit tests for RFC-010/RFC-015 corpus gap remediation: converters.py.
 
-from pageindex_mcp.converters import _normalize_indented_headings, _fix_fi_hash_substitution
+RFC-010: D2 (_normalize_indented_headings), D5 (_fix_fi_hash_substitution).
+RFC-015 (Couple E): D4 (widened hash sentinel), D5c (_split_run_together_headings),
+D5d (_is_numeric_extension), D6 (per-picture OCR splice), D7 (reconstruct_bidi_order)."""
+
+import sys
+import types
+from unittest import mock
+
+from pageindex_mcp import converters
+from pageindex_mcp.converters import (
+    _bbox_to_fitz_rect,
+    _fix_fi_hash_substitution,
+    _is_numeric_extension,
+    _normalize_indented_headings,
+    _recover_picture_text,
+    _splice_picture_text,
+    _split_run_together_headings,
+    reconstruct_bidi_order,
+)
 
 
 class TestNormalizeIndentedHeadings:
@@ -79,11 +97,13 @@ class TestFixFiHashSubstitution:
         # No inline # in this text anyway, but verify the heading marker stays intact
         assert "# عنوان" in result
 
-    def test_spaced_hash_not_replaced(self):
-        """word # word (spaces around #) is NOT replaced."""
+    def test_spaced_standalone_hash_replaced(self):
+        """RFC-015 D4: a standalone spaced '#' in Arabic-dominant text IS the corrupted
+        في and now gets converted (RFC-010 D5's interior-only regex wrongly preserved it)."""
         md = "المادة # الأولى في القانون العربي"
         result = _fix_fi_hash_substitution(md)
-        assert " # " in result  # spaced hash preserved
+        assert "#" not in result  # boundary/standalone hash now consumed
+        assert "في" in result
 
     def test_below_threshold_hash_not_replaced(self):
         """Mixed text with <30% Arabic doesn't trigger substitution."""
@@ -122,17 +142,14 @@ class TestFixFiHashSubstitution:
         assert "في" in result
         assert "article#section" not in result
 
-    def test_exactly_thirty_percent_arabic_threshold(self):
-        """Boundary case: exactly 30% Arabic chars should NOT trigger (uses <=)."""
-        # Create text with exactly 30% Arabic
-        # 10 chars total: 3 Arabic, 7 English
-        # "cat#dog ABC" = 11 chars, 0 Arabic, 11 Latin
-        # We need exactly 30%: e.g., 10 chars with 3 Arabic
-        # 10 alpha chars with exactly 3 Arabic (30%)
-        md = "abc#def ghق يل"
+    def test_below_fifteen_percent_arabic_not_replaced(self):
+        """RFC-015 D4: the gate is now arabic/len(md) <= 0.15 over ALL chars (was 0.30
+        over alpha-only in RFC-010 D5). Below it, the inline '#' is preserved."""
+        # 16 chars, 1 Arabic (0.0625) -> well below the 0.15 threshold
+        md = "abcdefg#hijklmnء"
         result = _fix_fi_hash_substitution(md)
-        # At exactly 30%, the condition is arabic/len(alpha) <= 0.30, so it does NOT replace
-        assert "abc#def" in result or "abc في def" in result  # Either way is fine at the boundary
+        assert "#" in result  # sub-threshold -> untouched
+        assert "abcdefg#hijklmn" in result
 
     def test_just_above_thirty_percent_arabic(self):
         """Boundary case: just above 30% Arabic should trigger replacement."""
@@ -154,3 +171,304 @@ class TestFixFiHashSubstitution:
         result = _fix_fi_hash_substitution(md)
         assert "في" in result
         assert "#" not in result  # inline hash replaced with في (no spaces added)
+
+
+class TestSplitRunTogetherHeadings:
+    """RFC-015 D5c: _split_run_together_headings() newlines mid-line heading markers."""
+
+    def test_midline_heading_split(self):
+        assert _split_run_together_headings("text### Heading") == "text\n### Heading"
+
+    def test_line_start_heading_untouched(self):
+        md = "# Real heading\ncontent line\n## Second\n"
+        assert _split_run_together_headings(md) == md
+
+    def test_two_headings_one_line(self):
+        assert _split_run_together_headings("## A ## B") == "## A \n## B"
+
+    def test_no_headings_unchanged(self):
+        assert _split_run_together_headings("no headings here at all") == "no headings here at all"
+
+    def test_marker_without_space_not_split(self):
+        # '###foo' (no space after the run) is not a heading marker -> not split.
+        assert _split_run_together_headings("word###foo") == "word###foo"
+
+    def test_leading_whitespace_heading_untouched(self):
+        # A marker at physical line start (even preceded only by the newline) is untouched.
+        assert _split_run_together_headings("a\n### B") == "a\n### B"
+
+
+class TestFixFiHashD4Boundary:
+    """RFC-015 D4: widened '#+' consumption of boundary/standalone hashes."""
+
+    def test_boundary_hashes_consumed(self):
+        # RFC-010 D5 left the outer '#'s (#في#); D4 consumes whole runs.
+        md = "المادة#في#الثانية والثالثة والرابعة"
+        result = _fix_fi_hash_substitution(md)
+        assert "#" not in result
+
+    def test_hash_run_collapses_to_single_fi(self):
+        # A run of consecutive '#' collapses to ONE في.
+        md = "المادة###الثانية والثالثة والرابعة الطويلة"
+        result = _fix_fi_hash_substitution(md)
+        assert "###" not in result
+        assert "في" in result
+
+    def test_heading_marker_line_preserved(self):
+        md = "## عنوان طويل من النص العربي الكافي\nالمادة الأولى في القانون"
+        result = _fix_fi_hash_substitution(md)
+        assert result.startswith("## ")
+
+
+class TestReconstructBidiOrder:
+    """RFC-015 D7: reconstruct_bidi_order() reorders Arabic, gated + structure-safe."""
+
+    def test_non_arabic_unchanged(self):
+        md = "# English Heading\n\nJust some plain English prose here.\n"
+        assert reconstruct_bidi_order(md) == md
+
+    def test_german_unchanged(self):
+        md = "## Haftpflicht und Geltungsbereich\n\nDer Versicherungsschutz für Tiere.\n"
+        assert reconstruct_bidi_order(md) == md
+
+    def test_below_threshold_unchanged(self):
+        # A single Arabic char in a long Latin line stays below the 0.15 gate.
+        md = "this is a long line of english text with one arabic letter ء here"
+        assert reconstruct_bidi_order(md) == md
+
+    def test_arabic_line_is_char_preserving_permutation(self):
+        # BiDi reordering permutes characters; it must not add/drop any.
+        md = "المادة الأولى في القانون العربي الطويل الكافي جدا"
+        result = reconstruct_bidi_order(md)
+        assert sorted(result) == sorted(md)
+
+    def test_arabic_heading_prefix_preserved(self):
+        # The '#' marker must survive so depth inference still parses it.
+        md = "## المادة الأولى في القانون العربي الطويل الكافي"
+        result = reconstruct_bidi_order(md)
+        assert result.startswith("## ")
+
+    def test_empty_string(self):
+        assert reconstruct_bidi_order("") == ""
+
+    def test_multiline_preserves_line_count_and_per_line_reorder(self):
+        # RFC-015 D7 gap: existing tests above are all single-line. Reordering is
+        # applied per line via splitlines(keepends=True); this must hold across a
+        # multi-line blob, not just collapse/scramble everything into one BiDi run.
+        # Line 0: heading marker + Arabic title (regression against the D7 heading
+        # guard, now proven across multiple lines in one call).
+        # Line 1: plain Arabic prose line.
+        # Line 2: another plain Arabic prose line.
+        md = (
+            "## المادة الأولى في القانون العربي الطويل الكافي\n"
+            "نص عربي طويل كاف لتجاوز حد الخمسة عشر بالمئة المطلوب هنا\n"
+            "سطر عربي آخر طويل بما يكفي لتجاوز عتبة الكشف المطلوبة أيضا\n"
+        )
+        result = reconstruct_bidi_order(md)
+        result_lines = result.splitlines()
+        md_lines = md.splitlines()
+        # Newlines preserved: same number of lines in, same number out.
+        assert len(result_lines) == len(md_lines)
+        # Heading marker line still starts with '##' (per-line guard, not just line 0
+        # of a single monolithic BiDi run over the whole blob).
+        assert result_lines[0].startswith("## ")
+        # Each Arabic prose line was itself permuted (char-preserving), not left
+        # untouched and not merged with neighboring lines.
+        assert sorted(result_lines[1]) == sorted(md_lines[1])
+        assert sorted(result_lines[2]) == sorted(md_lines[2])
+
+
+class TestIsNumericExtension:
+    """RFC-015 D5d: _is_numeric_extension() accepts digit + optional letter-suffix subclauses."""
+
+    def test_letter_suffix_trailing_component(self):
+        # Blueprint's worked example: ('7','10','a') extends anchor ('7','10').
+        assert _is_numeric_extension(("7", "10", "a"), {("7", "10")}) is True
+
+    def test_pure_numeric_extension(self):
+        assert _is_numeric_extension(("A", "1", "1"), {("A", "1")}) is True
+
+    def test_digit_letter_suffix_component(self):
+        assert _is_numeric_extension(("A", "1", "1", "a"), {("A", "1", "1")}) is True
+
+    def test_section_symbol_letter_subclause(self):
+        # "§ 5a" -> label ('5','a'); anchor ('5',) from "§ 5".
+        assert _is_numeric_extension(("5", "a"), {("5",)}) is True
+
+    def test_bare_list_marker_not_promoted(self):
+        # No numeric anchor prefix (the k-loop requires a proper non-empty prefix).
+        assert _is_numeric_extension(("a",), set()) is False
+
+    def test_no_matching_anchor(self):
+        assert _is_numeric_extension(("A", "1", "1"), {("B",)}) is False
+
+    def test_missegmented_prose_not_promoted(self):
+        # ('F','hren') from "Fuehren" — 'hren' is neither a digit run nor a single letter.
+        assert _is_numeric_extension(("F", "hren"), {("F",)}) is False
+
+
+class TestSplicePictureText:
+    """RFC-015 D6: _splice_picture_text() attaches recovered text to the i-th image marker."""
+
+    def test_single_marker_spliced(self):
+        md = "Intro\n\n<!-- image -->\n\nOutro"
+        out = _splice_picture_text(md, {0: "Revenue 2024 42%"})
+        assert "> [Chart text]: Revenue 2024 42%" in out
+        assert "<!-- image -->" in out  # original marker retained
+
+    def test_positional_matching(self):
+        md = "<!-- image -->\ntext\n<!-- image -->"
+        out = _splice_picture_text(md, {1: "second chart"})
+        # Only the SECOND marker gets a caption.
+        assert out.count("> [Chart text]:") == 1
+        assert out.endswith("second chart")
+
+    def test_no_recovered_returns_unchanged(self):
+        md = "<!-- image -->"
+        assert _splice_picture_text(md, {}) == md
+
+    def test_marker_without_recovery_untouched(self):
+        md = "<!-- image -->\n<!-- image -->"
+        out = _splice_picture_text(md, {0: "only first has text"})
+        assert out.count("> [Chart text]:") == 1
+
+
+class TestBboxToFitzRect:
+    """RFC-015 D6: _bbox_to_fitz_rect() converts Docling bboxes to top-left fitz.Rect."""
+
+    class _FakeRect:
+        def __init__(self, x0, y0, x1, y1):
+            self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+
+    class _FakeFitz:
+        Rect = None  # set below
+
+    def _fitz(self):
+        f = self._FakeFitz()
+        f.Rect = self._FakeRect
+        return f
+
+    def test_topleft_origin_passthrough(self):
+        bbox = types.SimpleNamespace(l=10, t=20, r=110, b=120, coord_origin=None)
+        rect = _bbox_to_fitz_rect(bbox, 800.0, self._fitz())
+        assert (rect.x0, rect.y0, rect.x1, rect.y1) == (10, 20, 110, 120)
+
+    def test_bottomleft_origin_converted(self):
+        origin = types.SimpleNamespace(name="BOTTOMLEFT")
+        bbox = types.SimpleNamespace(l=10, t=700, r=110, b=600, coord_origin=origin)
+        rect = _bbox_to_fitz_rect(bbox, 800.0, self._fitz())
+        # top = 800-700=100, bottom = 800-600=200 -> sorted y (100,200)
+        assert (rect.y0, rect.y1) == (100, 200)
+
+    def test_degenerate_bbox_returns_none(self):
+        bbox = types.SimpleNamespace(l=10, t=20, r=10, b=20, coord_origin=None)
+        assert _bbox_to_fitz_rect(bbox, 800.0, self._fitz()) is None
+
+
+class TestRecoverPictureText:
+    """RFC-015 D6: _recover_picture_text() crops + OCRs picture bboxes (fitz/tesseract mocked)."""
+
+    @staticmethod
+    def _install_fake_fitz(monkeypatch):
+        class _Pix:
+            def save(self, path):
+                with open(path, "wb") as fh:
+                    fh.write(b"\x89PNG")
+
+        class _Page:
+            rect = types.SimpleNamespace(height=800.0)
+
+            def get_pixmap(self, clip, dpi):
+                return _Pix()
+
+        class _Pdf:
+            page_count = 1
+
+            def __getitem__(self, i):
+                return _Page()
+
+            def close(self):
+                pass
+
+        fake = types.ModuleType("fitz")
+        fake.Rect = lambda *a: types.SimpleNamespace(coords=a)
+        fake.open = lambda path: _Pdf()
+        monkeypatch.setitem(sys.modules, "fitz", fake)
+
+    def test_recovers_text_above_min(self, monkeypatch):
+        self._install_fake_fitz(monkeypatch)
+        monkeypatch.setattr(
+            "pageindex_mcp.converters._tesseract_ocr_image",
+            lambda png, langs: "Revenue chart data recovered from the picture",
+        )
+        regions = [
+            {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
+        ]
+        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        assert 0 in out
+        assert "Revenue" in out[0]
+
+    def test_short_ocr_dropped(self, monkeypatch):
+        self._install_fake_fitz(monkeypatch)
+        monkeypatch.setattr(
+            "pageindex_mcp.converters._tesseract_ocr_image",
+            lambda png, langs: "short",  # <= 20 chars -> dropped as noise
+        )
+        regions = [
+            {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
+        ]
+        assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
+
+    def test_page_out_of_range_skipped(self, monkeypatch):
+        self._install_fake_fitz(monkeypatch)
+        monkeypatch.setattr(
+            "pageindex_mcp.converters._tesseract_ocr_image",
+            lambda png, langs: "this should never be reached at all",
+        )
+        regions = [
+            {"page": 99, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
+        ]
+        assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
+
+
+class TestMaybeSplicePictureOcr:
+    """RFC-015 D6: _maybe_splice_picture_ocr() gates the first-party AGPL ``fitz``
+    import (via _recover_picture_text) behind the module-level _OCR_ESCALATION
+    constant. Existing TestRecoverPictureText tests call _recover_picture_text
+    directly and never exercise this gate."""
+
+    def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
+        monkeypatch.setattr(converters, "_OCR_ESCALATION", False)
+        md = "Intro\n\n<!-- image -->\n\nOutro"
+        bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
+        pictures = [{"page": 1, "bbox": bbox}]
+        # Gate short-circuits before _collect_picture_regions is even reached, so
+        # a non-empty "pictures" stand-in and a dummy document/pdf_path suffice.
+        with mock.patch.object(
+            converters, "_collect_picture_regions", return_value=pictures
+        ) as mock_collect, mock.patch.object(converters, "_recover_picture_text") as mock_recover:
+            out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
+
+        mock_collect.assert_not_called()
+        mock_recover.assert_not_called()
+        assert out == md
+
+    def test_escalation_enabled_invokes_recovery(self, monkeypatch):
+        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        md = "Intro\n\n<!-- image -->\n\nOutro"
+        bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
+        pictures = [{"page": 1, "bbox": bbox}]
+        with (
+            mock.patch.object(converters, "_collect_picture_regions", return_value=pictures),
+            mock.patch.object(converters, "detect_ocr_langs", return_value=["eng"]),
+            mock.patch.object(converters, "ensure_tessdata", side_effect=lambda langs: langs),
+            mock.patch.object(
+                converters,
+                "_recover_picture_text",
+                return_value={0: "Revenue 2024 recovered chart text"},
+            ) as mock_recover,
+        ):
+            out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
+
+        assert mock_recover.call_count >= 1
+        assert "Revenue 2024 recovered chart text" in out

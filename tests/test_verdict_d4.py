@@ -96,7 +96,17 @@ class TestThresholdPromotion:
         assert verdict == "MARGINAL"
 
     def test_base_pass_uses_015(self):
-        """Base PASS rule (node_count>=3, depth>=2, ratio<0.15) unaffected by 0.17."""
+        """Base PASS rule (node_count>=3, depth>=2, ratio<0.15) unaffected by 0.17.
+
+        RFC-015 D3A made `_tree_max_leaf_ratio`'s denominator leaf-chars-only
+        (previously non-leaf wrapper titles/text were summed in too, inflating
+        the denominator and deflating the ratio). With 6 equal-sized leaves the
+        ratio is now 1/6≈0.167 (was ~0.123 pre-D3A), crossing the 0.15 base
+        threshold and falling through to the cat_c_promoted path instead. A 7th
+        equal-sized leaf keeps the ratio at 1/7≈0.143 — comfortably below 0.15
+        again — so this test continues to exercise the *unpromoted* base
+        0.15 threshold path, per its name and docstring.
+        """
         tree = [
             {"title": "Root", "text": "a" * 10, "nodes": [
                 {"title": "Ch1", "text": "b" * 100, "nodes": [
@@ -108,6 +118,7 @@ class TestThresholdPromotion:
                     {"title": "L4", "text": "g" * 100, "nodes": []},
                     {"title": "L5", "text": "h" * 100, "nodes": []},
                     {"title": "L6", "text": "i" * 100, "nodes": []},
+                    {"title": "L7", "text": "j" * 100, "nodes": []},
                 ]},
             ]},
         ]

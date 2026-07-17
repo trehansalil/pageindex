@@ -56,6 +56,12 @@ dependencies = [
     "langfuse>=3.0.0",
     # openpyxl (MIT, HR4-clean): .xlsx -> markdown table adapter (Fix 4).
     "openpyxl>=3.1.0",
+    # python-bidi (MIT, HR4-clean): Unicode BiDi Algorithm (UAX #9) for RFC-015 D7 —
+    # reorders visual-order Arabic runs back into logical reading order
+    # (reconstruct_bidi_order). Pinned <0.5 to stay PURE-PYTHON: 0.5.0+ replaced the
+    # Python implementation with a compiled Rust/PyO3 extension, which the RFC-015 D7
+    # "no C extension" requirement rules out.
+    "python-bidi>=0.4.2,<0.5",
 ]
 
 [project.optional-dependencies]

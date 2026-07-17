@@ -33,6 +33,7 @@ from .helpers import (
     _extract_page_hits,
     _flat_text_is_garbled,
     _strip_text,
+    _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     classify_verdict,
     route_and_extract_flat,
@@ -834,6 +835,19 @@ class CustomPageIndexClient(PageIndexClient):
         # If called from a thread (asyncio.to_thread), spin a new loop.
         try:
             asyncio.get_running_loop()
-            return await coro
+            result = await coro
         except RuntimeError:
-            return asyncio.run(coro)
+            result = asyncio.run(coro)
+
+        # RFC-015 D10: splice in any preamble content the fork's tree-builder
+        # silently drops (content before the first heading in the source md).
+        try:
+            md_text = await asyncio.to_thread(
+                lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
+                md_path,
+            )
+            result = _synthesize_preamble_node(md_text, result)
+        except OSError:
+            logger.warning("D10: could not read %s to check for preamble content", md_path)
+
+        return result

@@ -8,7 +8,8 @@ Usage:
                 If omitted, all supported files in doc_store/ are processed.
     --bg      — detach and run as a background process; output goes to preprocess.log
 
-Supported extensions: .pdf  .docx  .pptx  .md  .txt  .html
+Supported extensions: see pageindex_mcp.client._SUPPORTED (.pdf .docx .pptx .md
+.markdown .txt .html .xlsx .png .jpg .jpeg .tif .tiff)
 
 Each file is indexed in a FRESH child process (``pageindex_mcp.converters_cli``,
 the same isolation the arq worker uses via ``_run_converter_subprocess``). Docling
@@ -105,10 +106,11 @@ class _FilteredStderr:
 
 from dotenv import load_dotenv
 
+from pageindex_mcp.client import _SUPPORTED as SUPPORTED
+
 load_dotenv()
 
 DOC_STORE = Path(__file__).parent / "doc_store"
-SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".txt", ".html"}
 LOG_FILE  = Path(__file__).parent / "preprocess.log"
 
 
@@ -178,11 +180,11 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     """Recompute verdict for one or all docs without re-ingestion (RFC-014 D3)."""
     import json
     from datetime import UTC, datetime
-    from pageindex_mcp.config import Settings
+    from pageindex_mcp.config import _load_settings
     from pageindex_mcp.helpers import _tree_max_leaf_ratio, classify_verdict
     from pageindex_mcp.storage import get_minio, save_doc_meta
 
-    settings = Settings()
+    settings = _load_settings()
     mc = get_minio()
 
     if doc_id:

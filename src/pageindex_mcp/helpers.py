@@ -587,8 +587,44 @@ def _is_garbled_blob(blob: str) -> bool:
     return False
 
 
+# RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
+# digit%, repetition%) dilute away a handful of corrupted Latin fragments glued
+# to Arabic across a long document, so OCR escalation never fires. This
+# length-independent per-node pattern catches Arabic-Latin-Arabic and
+# Latin-Arabic-Latin fragments directly.
+# NOTE (RFC-015 D8): the design sketch wrote the ASCII class as [\x20-\x7E], but
+# \x20 is SPACE — including it makes "[Arabic][space][Arabic]" match every
+# inter-word gap in normal Arabic prose (clean Arabic scores ratio ~0.9, well
+# above the 0.02 threshold), which would flag EVERY Arabic document as garbled and
+# contradicts the design's own calibration (b1a72fb2 legitimate Arabic must NOT
+# trigger). "Glued" fragments are by definition whitespace-free, so the class is
+# \x21-\x7E (printable ASCII, no space). See PENDING_DECISIONS [GAP] D8-space.
+_MIXED_SCRIPT_RE = re.compile(
+    r"[؀-ۿ][\x21-\x7E]{1,8}[؀-ۿ]"  # Arabic-Latin-Arabic (glued, no space)
+    r"|[\x21-\x7E]{1,8}[؀-ۿ][\x21-\x7E]{1,8}"  # Latin-Arabic-Latin (glued, no space)
+)
+
+
+def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
+    """RFC-015 D8: detect localized Latin/digit fragments glued to Arabic script.
+
+    Requires >100 chars and >``threshold`` (2%) of whitespace-tokens matching the
+    Arabic-Latin-Arabic / Latin-Arabic-Latin pattern. Calibrated against 92eebefa
+    (21.4% mixed-script — must trigger) while sparing b1a72fb2 (legitimate
+    transliterated names — below 2%). Additive-only: OR'd into the existing garble
+    gates, so it can flag MORE text as garbled but never un-flag text the bulk
+    heuristics already caught (HR5-tightening)."""
+    if len(text) < 100:
+        return False
+    matches = _MIXED_SCRIPT_RE.findall(text)
+    return (len(matches) / max(len(text.split()), 1)) > threshold
+
+
 def _tree_is_garbled(nodes: list) -> bool:
-    return _is_garbled_blob(_flatten_tree_text(nodes))
+    blob = _flatten_tree_text(nodes)
+    # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
+    # mixed-script. Never narrows the existing gate.
+    return _is_garbled_blob(blob) or _has_sparse_mojibake(blob)
 
 
 def validate_tree(structure: list) -> tuple[bool, str]:
@@ -603,29 +639,57 @@ def validate_tree(structure: list) -> tuple[bool, str]:
         return False, "depth<2"
     if _tree_is_garbled(structure):
         return False, "garbling"
+    # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
+    # surfaces this reason as a low_quality_tree error rather than persisting.
+    if _tree_is_reordered(structure):
+        return False, "reordered"
     return True, ""
 
 
 # ── RFC-014 D1: verdict computation helpers ─────────────────────────────────────
 
+def _walk_leaves(structure: list):
+    """Yield each leaf node dict (no ``nodes`` children) in document order."""
+    for n in structure or []:
+        if not isinstance(n, dict):
+            continue
+        children = n.get("nodes") or []
+        if children:
+            yield from _walk_leaves(children)
+        else:
+            yield n
+
+
 def _tree_max_leaf_ratio(structure: list) -> tuple[int, int, float]:
+    # RFC-015 D3A: denominator is LEAF chars only. Summing non-leaf wrapper
+    # titles into `total` inflated the denominator and deflated the ratio,
+    # masking over-nested "staircase" trees (a4c1b522). Leaf-only is a strict
+    # tightening — the ratio can only rise, never fall, so no previously-failing
+    # tree can newly PASS.
     max_leaf = 0
     total = 0
+    for leaf in _walk_leaves(structure):
+        chars = len(leaf.get("title", "")) + len(leaf.get("text", ""))
+        total += chars
+        max_leaf = max(max_leaf, chars)
 
-    def _walk(nodes: list) -> None:
-        nonlocal max_leaf, total
-        for n in nodes:
-            chars = len(n.get("title", "")) + len(n.get("text", ""))
-            total += chars
-            children = n.get("nodes") or []
-            if not children:
-                max_leaf = max(max_leaf, chars)
-            else:
-                _walk(children)
-
-    _walk(structure)
     ratio = max_leaf / total if total > 0 else 0.0
     return max_leaf, total, ratio
+
+
+def _tree_is_reordered(structure: list) -> bool:
+    """RFC-015 D2: True if any leaf's start_index (fallback line_num) regresses
+    below the running max seen so far — i.e. content emitted out of source order
+    (54e92c0a: a span emitted after the document's final article)."""
+    running_max: int | None = None
+    for leaf in _walk_leaves(structure):
+        idx = leaf.get("start_index", leaf.get("line_num"))
+        if idx is None:
+            continue
+        if running_max is not None and idx < running_max:
+            return True
+        running_max = idx if running_max is None else max(running_max, idx)
+    return False
 
 
 def ocr_noise_ratio(text: str) -> float:
@@ -654,6 +718,10 @@ def classify_verdict(
 ) -> tuple[str, str]:
     if validate_reason == "garbling":
         return "FAIL", "garbling"
+    # RFC-015 D2: content-ordering regression forces the lowest tier. Self-contained
+    # (checks the structure directly) so it holds even when validate_reason is None.
+    if validate_reason == "reordered" or _tree_is_reordered(structure):
+        return "FAIL", "reordered"
 
     _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
     if max_leaf_ratio > 0.75:
@@ -768,6 +836,25 @@ def _flat_verbalize_rows(headers: list[str], data_rows: list[list[str]]) -> list
     return records
 
 
+def _forward_fill_leading_column(rows: list[list[str]]) -> list[list[str]]:
+    """RFC-015 D9: forward-fill empty cells in COLUMN 0 only, from the most recent
+    non-empty column-0 value (merged rowspan header labels — e544d939 Katze table,
+    where a merged ``Selbstbehalt`` label is dropped from 22 data rows).
+
+    Column 0 exclusively — data columns (index 1+) are never modified, mirroring
+    the RFC's explicit anti-goal of not corrupting data columns. Mutates ``rows``
+    in place and returns it."""
+    last_val = ""
+    for row in rows:
+        if not row:
+            continue
+        if row[0].strip():
+            last_val = row[0].strip()
+        elif last_val:
+            row[0] = last_val
+    return rows
+
+
 def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
     """Parse a markdown table beginning at `start` (a header row followed by a
     separator). Returns (table_block, next_index)."""
@@ -777,6 +864,11 @@ def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
     while i < len(lines) and _flat_is_pipe_row(lines[i]) and not _flat_is_separator_row(lines[i]):
         data_rows.append(_flat_split_pipe_row(lines[i]))
         i += 1
+    # RFC-015 D9: forward-fill merged rowspan labels in column 0 before
+    # verbalization, so both the structured `rows` matrix and the `row_records`
+    # carry the recovered label. Applied to DATA rows only (the header row keeps
+    # its own column titles); column 0 only (data columns untouched).
+    data_rows = _forward_fill_leading_column(data_rows)
     block = {
         "role": "table",
         "headers": header,
@@ -808,6 +900,7 @@ _OVERSIZED_ORDINAL_RE = re.compile(
     r"§\s*\(?\s*(?P<sec>\d+(?:\.\d+)?)"  # § 12 / § (12) / § 12.1
     r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+(?:\.\d+)?)"  # Article 9 / Art. 9 / Article (9)
     r"|Section\s+\(?\s*(?P<s>\d+(?:\.\d+)?)"  # Section 4 / Section (4) / Section 4.2
+    r"|Schedule\s+\(?\s*(?P<sched>\d+(?:\.\d+)?)"  # RFC-015 D5b: Schedule 3 / Schedule (3)
     r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥
     r")"
 )
@@ -862,7 +955,14 @@ def _ordinal_value(m: "re.Match[str]") -> tuple[int, ...]:
     dotted components compared lexicographically (NOT a float — ``3.10`` must
     stay distinct from ``3.1``, whereas ``float("3.10") == float("3.1")`` would
     silently collapse them and eject a genuine heading from the increasing run)."""
-    digits = m.group("art") or m.group("sec") or m.group("s") or m.group("mada") or ""
+    digits = (
+        m.group("art")
+        or m.group("sec")
+        or m.group("s")
+        or m.group("sched")  # RFC-015 D5b
+        or m.group("mada")
+        or ""
+    )
     digits = digits.translate(_ARABIC_INDIC).replace("٫", ".")
     return tuple(int(part) for part in digits.split("."))
 
@@ -971,6 +1071,79 @@ def _split_on_paragraph_markers(
     return True
 
 
+_PREAMBLE_MIN_CHARS = 50
+
+
+def _synthesize_preamble_node(md_text: str, tree: dict) -> dict:
+    """RFC-015 D10: recover body text that precedes a document's first heading.
+
+    ``md_to_tree`` (the vendored fork's tree-builder) starts building nodes only
+    from the first heading match, so any content before it — e.g. the "who is
+    covered" clause preceding Section 1 in doc 722eb392 (GHV Reitlehrer
+    Haftpflicht) — is silently dropped. When that leading preamble (stripped)
+    exceeds ``_PREAMBLE_MIN_CHARS``, this synthesizes a node (mirroring the
+    ``_apply_split`` node shape: ``title``, ``text``, ``nodes``, ``node_id``,
+    optional ``start_index``/``end_index``) and prepends it to
+    ``tree["structure"]`` at index 0, before any other synthesis/promotion.
+
+    Purely additive: a document whose first heading is already at line 1 (no
+    preamble) or whose document has no heading at all gets no new node, and
+    ``tree`` is returned unchanged (mutated in place when a splice happens).
+    """
+    if not md_text or not isinstance(tree, dict):
+        return tree
+
+    structure = tree.get("structure")
+    if not isinstance(structure, list):
+        return tree
+
+    lines = md_text.splitlines()
+    first_heading_idx = None
+    for i, line in enumerate(lines):
+        if _FLAT_HEADING_RE.match(line):
+            first_heading_idx = i
+            break
+
+    if first_heading_idx is None:
+        # No heading anywhere: headingless docs are already handled by the
+        # existing flat-path/tree logic — this fix does not apply.
+        return tree
+
+    if first_heading_idx == 0:
+        # First heading is already the very first line: no preamble.
+        return tree
+
+    preamble = "\n".join(lines[:first_heading_idx])
+    if len(preamble.strip()) <= _PREAMBLE_MIN_CHARS:
+        return tree
+
+    preamble_node: dict = {
+        "title": "[Preamble]",
+        "text": preamble,
+        "nodes": [],
+        "node_id": "preamble",
+        "start_index": 0,
+        "end_index": max(first_heading_idx - 1, 0),
+    }
+    structure.insert(0, preamble_node)
+    return tree
+
+
+def _has_heading_markers(text: str) -> bool:
+    """RFC-015 D5a: lightweight check for any ``_OVERSIZED_ORDINAL_RE`` marker.
+
+    Matched on the same NFKC-folded copy the splitter itself uses (so presentation-
+    form Arabic and Latin paren forms are seen), so this agrees exactly with the
+    marker-finding done inside ``split_oversized_leaf_nodes``. Used to decouple the
+    split trigger from raw char count: a residual leaf under ``max_chars`` that
+    still carries a real heading sequence (6147c7d7: 19,959 chars) must still be
+    eligible for splitting."""
+    if not text:
+        return False
+    folded, _ = _fold_with_index_map(text)
+    return _OVERSIZED_ORDINAL_RE.search(folded) is not None
+
+
 def split_oversized_leaf_nodes(
     structure: list, max_chars: int = 50000, min_segments: int = 3
 ) -> list:
@@ -1005,7 +1178,16 @@ def split_oversized_leaf_nodes(
             continue
 
         text = node.get("text") or ""
-        if len(text) <= max_chars:
+        # RFC-015 D5a: decouple the split trigger from raw size. A leaf is
+        # split-eligible when it is oversized OR carries detectable heading
+        # markers — a marker-dense residual leaf under max_chars (6147c7d7,
+        # 19,959 chars) still collapses a real hierarchy and must be split.
+        # Strictly ADDITIVE: only widens the eligible set, never removes an
+        # oversized leaf from it, and every downstream guard (frontmatter-ToC
+        # accept, strictly-increasing-run ≥ min_segments, paragraph-fallback
+        # acceptance) is unchanged, so no leaf is split without a genuine
+        # ordinal sequence (HR5-neutral: recovers more real structure only).
+        if len(text) <= max_chars and not _has_heading_markers(text):
             continue
 
         folded, idx_map = _fold_with_index_map(text)
@@ -1208,7 +1390,9 @@ _TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
 
 def _flat_text_is_garbled(md: str) -> bool:
     """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
-    return _is_garbled_blob(md or "")
+    text = md or ""
+    # Additive OR (RFC-015 D8): sparse mixed-script mojibake, same as the tree gate.
+    return _is_garbled_blob(text) or _has_sparse_mojibake(text)
 
 
 def _looks_like_toc_page(block_text: str) -> bool:
