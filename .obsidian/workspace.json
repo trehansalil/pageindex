@@ -4,17 +4,17 @@
     "type": "split",
     "children": [
       {
-        "id": "c387ff1fa0a98499",
+        "id": "47a2318a20540ca7",
         "type": "tabs",
         "children": [
           {
-            "id": "e792d9caa1731922",
+            "id": "05f0e3c121e313a4",
             "type": "leaf",
             "state": {
-              "type": "graph",
+              "type": "empty",
               "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "icon": "lucide-file",
+              "title": "New tab"
             }
           }
         ]
@@ -176,35 +176,45 @@
       "bases:Create new base": false
     }
   },
-  "active": "e792d9caa1731922",
+  "active": "05f0e3c121e313a4",
   "lastOpenFiles": [
+    "designs/designs-metadata.md",
+    "AGENT_DRIVEN_DEVELOPMENT.md",
+    "tasks/tasks-rfc015-corpus-audit-remediation.md",
+    "tasks/tasks-rfc014-corpus-promotion-pipeline.md",
+    "tasks/tasks-rfc013-structural-hardening.md",
+    "tasks/tasks-rfc012-reliability-deadcode-quickwins.md",
+    "tasks/tasks-rfc011-compliance-auth-quickwins.md",
+    "tasks/tasks-rfc010-corpus-gap-remediation.md",
+    "tasks/tasks-rfc009-query-path-performance-input-hardening.md",
+    "tasks/tasks-rfc008-observability-error-handling.md",
+    "tasks/tasks-rfc007-docstore-integrity.md",
+    "tasks/tasks-metadata.md",
+    "tasks",
+    "designs/design-rfc015-corpus-audit-remediation.md",
+    "designs/design-rfc014-corpus-promotion-pipeline.md",
+    "designs/design-rfc013-structural-hardening.md",
+    "designs/design-rfc012-reliability-deadcode-quickwins.md",
+    "designs/design-rfc011-compliance-auth-quickwins.md",
+    "designs/design-rfc010-corpus-gap-remediation.md",
+    "designs/design-rfc009-query-path-performance-input-hardening.md",
+    "designs/design-rfc008-observability-error-handling.md",
+    "designs/design-rfc007-docstore-integrity.md",
+    "designs",
+    "rfcs/rfcs-metadata.md",
+    "rfcs/015-corpus-audit-remediation.md",
+    "rfcs/014-corpus-promotion-pipeline.md",
+    "rfcs/013-structural-hardening.md",
+    "rfcs/012-reliability-deadcode-quickwins.md",
+    "rfcs",
     "tests/__pycache__/test_registry_backfill.cpython-312-pytest-9.0.3.pyc",
     "tests/test_registry_backfill.py",
     "src/pageindex_mcp/upload_app.py.tmp.74431.9afaa3a21fb0",
-    "2026-07-10.md",
-    "ARCHITECTURE.md",
-    "tasks.md",
-    "audit/DOCSTORE_AUDIT_REPORT.md",
-    "audit/FIXES.md",
-    "audit/ISSUES.md",
-    "audit/EXPLORATION.md",
-    "audit/SCOPE.md",
     "audit",
     "doc_store/ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf",
     "doc_store/cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) (1) - Copy.pdf",
     "doc_store/مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
-    "doc_store/القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
-    "doc_store/وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
-    "doc_store/قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
-    "doc_store/قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
     "doc_store/image pie chart about labor distribution in january 2025 - Copy.jpg",
-    "E2E_CORPUS_REPORT.md",
-    "AGENT_DRIVEN_DEVELOPMENT.md",
-    "RESEARCH.md",
-    "TOOLS.md",
-    "Untitled.md",
-    "CLAUDE.md",
-    "Untitled.canvas",
-    "2026-07-03.md"
+    "Untitled.canvas"
   ]
 }
