@@ -47,6 +47,7 @@ from .metrics import (
     PDF_EXTRACT_FALLBACKS,
     PDF_PRIMARY_CONVERTER_FAILURES,
     RAW_UPLOAD_FAILURES,
+    VLM_FALLBACK_TOTAL,
 )
 from .storage import (
     hash_cache_get,
@@ -499,6 +500,48 @@ class CustomPageIndexClient(PageIndexClient):
                         "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
                     )
 
+            # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
+            # whose OCR escalation was either skipped or failed.
+            if (
+                not ok
+                and reason == "garbling"
+                and ext == ".pdf"
+                and settings.vlm_fallback
+            ):
+                try:
+                    from .converters import vlm_extract_markdown
+
+                    logger.warning(
+                        "Garbling persists after OCR escalation for %s; "
+                        "attempting VLM fallback (model=%s)",
+                        filename,
+                        settings.vlm_model,
+                    )
+                    md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
+                    if tmp_md_path and os.path.exists(tmp_md_path):
+                        os.unlink(tmp_md_path)
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(md_content)
+                        tmp_md_path = md_tmp.name
+                    result = await self._run_md_to_tree(tmp_md_path)
+                    result["structure"] = split_oversized_leaf_nodes(
+                        result.get("structure", [])
+                    )
+                    ok, reason = validate_tree(result.get("structure", []))
+                    VLM_FALLBACK_TOTAL.labels(
+                        result="recovered" if ok else "still_garbled"
+                    ).inc()
+                except Exception as vlm_exc:
+                    VLM_FALLBACK_TOTAL.labels(result="error").inc()
+                    logger.error(
+                        "VLM fallback failed for %s (%s)",
+                        filename,
+                        vlm_exc,
+                        exc_info=True,
+                    )
+
             # D1: image-dominant PDFs (>50% <!-- image --> lines) get one OCR retry
             # before falling through to flat routing — rescues scanned PDFs whose
             # text layer is empty placeholders.
@@ -598,7 +641,43 @@ class CustomPageIndexClient(PageIndexClient):
                                 "overriding reason to garbling",
                                 filename,
                             )
-                        else:
+                            # VLM last-resort: the flat-path garble gate caught
+                            # garbled text that the tree gate missed (e.g. digit-
+                            # ratio watermark routed here via node_count<3).
+                            if ext == ".pdf" and settings.vlm_fallback:
+                                try:
+                                    from .converters import vlm_extract_markdown
+
+                                    logger.warning(
+                                        "Flat-path garbling on %s; attempting "
+                                        "VLM fallback (model=%s)",
+                                        filename,
+                                        settings.vlm_model,
+                                    )
+                                    vlm_md = await vlm_extract_markdown(
+                                        file_path, settings.vlm_model
+                                    )
+                                    if not _flat_text_is_garbled(vlm_md):
+                                        flat_md = vlm_md
+                                        reason = "node_count<3"
+                                        VLM_FALLBACK_TOTAL.labels(
+                                            result="recovered"
+                                        ).inc()
+                                    else:
+                                        VLM_FALLBACK_TOTAL.labels(
+                                            result="still_garbled"
+                                        ).inc()
+                                except Exception as vlm_exc:
+                                    VLM_FALLBACK_TOTAL.labels(
+                                        result="error"
+                                    ).inc()
+                                    logger.error(
+                                        "VLM fallback failed for %s (%s)",
+                                        filename,
+                                        vlm_exc,
+                                        exc_info=True,
+                                    )
+                        if reason != "garbling":
                             content_class, blocks = await asyncio.to_thread(
                                 route_and_extract_flat, flat_md
                             )

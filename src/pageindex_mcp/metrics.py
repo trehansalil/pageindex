@@ -129,6 +129,12 @@ OCR_ESCALATION_TOTAL = Counter(
     "PDF (Fix 3). Labelled by result: recovered | still_garbled | error.",
     ["result"],
 )
+VLM_FALLBACK_TOTAL = Counter(
+    "pageindex_vlm_fallback_total",
+    "VLM last-resort fallback attempts on garble-rejected PDFs whose OCR "
+    "escalation also failed (RFC-004 Approach B).",
+    ["result"],
+)
 PDF_PRIMARY_CONVERTER_FAILURES = Counter(
     "pageindex_pdf_primary_converter_failures_total",
     "Configured primary PDF converter (e.g. docling) failures that forced a fallback. "

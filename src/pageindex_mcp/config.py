@@ -81,6 +81,8 @@ class Settings:
     # HR3: PII corpus flag — when true, startup asserts openai_base_url is on
     # the ZDR allow-list (RFC-011 D6 / ISS-33).
     pii_corpus: bool
+    vlm_fallback: bool
+    vlm_model: str
 
 
 # HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
@@ -146,6 +148,9 @@ def _load_settings() -> Settings:
         in ("1", "true", "yes"),
         pii_corpus=os.environ.get("PII_CORPUS", "false").strip().lower()
         in ("1", "true", "yes"),
+        vlm_fallback=os.environ.get("VLM_FALLBACK", "false").strip().lower()
+        in ("1", "true", "yes"),
+        vlm_model=os.environ.get("VLM_MODEL", "gpt-4.1"),
     )
 
 

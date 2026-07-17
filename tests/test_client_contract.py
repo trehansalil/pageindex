@@ -34,6 +34,8 @@ def _fake_settings(flat_doc_routing: bool):
         minio_endpoint="localhost:9000",
         minio_bucket="pageindex",
         flat_doc_routing=flat_doc_routing,
+        vlm_fallback=False,
+        vlm_model="gpt-4.1",
     )
 
 

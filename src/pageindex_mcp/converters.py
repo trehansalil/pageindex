@@ -1824,6 +1824,119 @@ def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> 
     return normalize_dashes(md)
 
 
+def rasterize_pdf_pages(pdf_path: str, dpi: int = 200) -> list[str]:
+    """Rasterize each PDF page to a base64 data-URI PNG via pypdfium2 (HR4-safe)."""
+    import base64
+    import io
+
+    import pypdfium2 as pdfium
+    from PIL import Image
+
+    pdoc = pdfium.PdfDocument(pdf_path)
+    try:
+        result: list[str] = []
+        scale = dpi / 72
+        for page_index in range(len(pdoc)):
+            page = pdoc[page_index]
+            bitmap = page.render(scale=scale)  # type: ignore[arg-type]
+            pil_image: Image.Image = bitmap.to_pil()
+            buf = io.BytesIO()
+            pil_image.save(buf, format="PNG", optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            result.append(f"data:image/png;base64,{b64}")
+            page.close()
+        return result
+    finally:
+        pdoc.close()
+
+
+async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
+    """Extract markdown from a PDF via a vision LLM — last-resort garble fallback."""
+    import openai
+
+    from .client import get_openai_client
+    from .config import settings
+
+    resolved_model = model or settings.vlm_model
+    if resolved_model.startswith("azure/"):
+        resolved_model = resolved_model[len("azure/"):]
+
+    page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    if not page_images:
+        raise RuntimeError(f"vlm_extract_markdown: no pages rasterized from {pdf_path}")
+
+    client = get_openai_client()
+
+    _VLM_PAGE_PROMPT = (
+        "You are a document OCR assistant. Extract ALL visible text content from "
+        "this scanned document page and return it as clean Markdown.\n\n"
+        "Rules:\n"
+        "- Preserve the document's heading hierarchy using Markdown heading levels "
+        "(#, ##, ###, etc.).\n"
+        "- Preserve tables as Markdown tables.\n"
+        "- Preserve numbered and bulleted lists.\n"
+        "- Ignore watermarks, background patterns, and page numbers.\n"
+        "- If the page contains Arabic or right-to-left text, preserve the original "
+        "script — do NOT transliterate.\n"
+        "- Do NOT describe images; extract only text.\n"
+        "- If the page is blank or contains no readable text, return exactly: "
+        "<!-- blank page -->\n"
+        "- Return ONLY the extracted Markdown, no commentary or wrapper."
+    )
+
+    async def _extract_page(page_idx: int, image_uri: str) -> tuple[int, str]:
+        async def _call() -> str:
+            response = await client.chat.completions.create(
+                model=resolved_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": image_uri}},
+                            {"type": "text", "text": _VLM_PAGE_PROMPT},
+                        ],
+                    }
+                ],
+                max_tokens=4096,
+                temperature=0.0,
+            )
+            return response.choices[0].message.content.strip()
+
+        try:
+            return (page_idx, await _call())
+        except (openai.RateLimitError, openai.APIConnectionError):
+            await asyncio.sleep(2)
+            try:
+                return (page_idx, await _call())
+            except Exception as retry_exc:
+                logger.error(
+                    "VLM page %d failed after retry: %s", page_idx + 1, retry_exc
+                )
+                return (page_idx, "")
+        except Exception as exc:
+            logger.error("VLM page %d extraction failed: %s", page_idx + 1, exc)
+            return (page_idx, "")
+
+    sem = asyncio.Semaphore(4)
+
+    async def _bounded(idx: int, uri: str) -> tuple[int, str]:
+        async with sem:
+            return await _extract_page(idx, uri)
+
+    results = await asyncio.gather(*[_bounded(i, u) for i, u in enumerate(page_images)])
+    results_sorted = sorted(results, key=lambda r: r[0])
+    page_markdowns = [
+        md for _, md in results_sorted if md and md.strip() != "<!-- blank page -->"
+    ]
+
+    if not page_markdowns:
+        raise RuntimeError(
+            f"vlm_extract_markdown: VLM returned no content for any page of {pdf_path}"
+        )
+
+    return "\n\n---\n\n".join(page_markdowns)
+
+
 def docx_to_markdown(path: str) -> str:
     """Convert a DOCX file to a markdown string preserving heading hierarchy."""
     from docx import Document
