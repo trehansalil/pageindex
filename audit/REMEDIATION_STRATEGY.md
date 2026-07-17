@@ -1,3 +1,8 @@
+<!-- Space: CITRA -->
+<!-- Title: Audit: Remediation Strategy -->
+<!-- Parent: PageIndex Docstore Audit -->
+<!-- Confluence-Page-ID: 5108760577 -->
+<!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5108760577/Audit+Remediation+Strategy -->
 
 # Docstore Audit Remediation Strategy
 
