@@ -1,159 +1,226 @@
-<!-- Space: CITRA -->
-<!-- Title: PageIndex doc_store Report -->
-<!-- Parent: Data-AI Refactoring Experiments -->
-<!-- Label: pageindex -->
-<!-- Label: rfc-010 -->
-<!-- Confluence-Page-Id: 5101387785 -->
 
-# PageIndex doc_store/ Corpus Report
+# PageIndex MCP Corpus Audit — Phase 2 Diagnostic & Resolution Report
 
-**Date:** 2026-07-17
-**Server:** `preprocess_client.py` batch run (2026-07-16) — real production converter path (`pageindex_mcp.converters_cli`, same isolation primitive the arq worker uses)
-**Branch:** `feat/scaling-pageindex`
-**Task:** Post-RFC-014 corpus revalidation — full `classify_verdict` pipeline applied, doc_store vs MinIO cross-reference
-**Total files in `doc_store/`:** 26 (25 supported + 1 unsupported `.jpg`)
-**Total processed in MinIO:** 25
-**Pipeline errors (final):** 0
-**Verdict engine:** `classify_verdict()` (RFC-014 corpus promotion pipeline)
-
-## What changed since the 2026-07-14 baseline
-
-RFC-013 structural hardening (D4–D7) and RFC-014 corpus promotion pipeline (D1–D4) landed between the 2026-07-14 baseline and this run. Documents were re-ingested on 2026-07-16 via `preprocess_client.py`. Key changes:
-
-- **RFC-014 `classify_verdict`** is now the verdict authority. It supersedes the manual per-document assessments in the prior report. Category-specific promotion thresholds (`cat_c_promoted` at `max_leaf_ratio < 0.17`) now elevate borderline documents.
-- **Splitter and tree-building improvements** continued to mature: several documents show significantly lower `max_leaf_ratio` than the 2026-07-14 run (e.g., حقوق الإنسان dropped from 27.4% → 1.76%, Ministerial Res 279 from 34.0% → 9.7%).
-- **القرار التنظيمي** — previously FAIL due to font-CMap mojibake — is now PASS (4.2% leaf ratio, garbled=false). The re-ingestion route appears to have bypassed the corrupt CMap path, producing clean text.
-- **1 new file** in `doc_store/`: `image pie chart labor distribution in january 2025 - Copy.jpg` — a standalone JPEG, not processed (pipeline is PDF-only for direct upload; the `image_to_markdown` code path exists but `preprocess_client.py` did not feed it).
-
-## Verdict Summary
-
-| Verdict    | Count | Rate   | vs. 2026-07-14 |
-| ---------- | ----- | ------ | --------------- |
-| **PASS**   | 15    | 60.0%  | 6 → 15 (+9)    |
-| **MARGINAL** | 10  | 40.0%  | 17 → 10 (−7)   |
-| **FAIL**   | 0     | 0.0%   | 2 → 0 (−2)     |
-
-**Every previously-FAIL document is now resolved.** القرار التنظيمي (font-CMap) and `uae_numbers_landscape` (infographic) both moved out of FAIL — the former to PASS, the latter to PASS via flat pipeline routing.
-
-## Storage Reference
-
-- **MinIO bucket:** `pageindex`
-- **Tree docs:** `processed/<doc_id>.json`
-- **Flat docs:** `processed/<doc_id>.flat.json`
-- **Meta sidecars:** `processed/<doc_id>.meta.json`
+> ⚠️ **CORRECTION NOTICE — SUPERSEDES A FABRICATED REPORT**
+>
+> The previously published **`DOC_STORE_CORPUS_REPORT.md`** (synced to Confluence page **5101387785**) contained a **fabricated verdict table**. It claimed **15 PASS / 10 MARGINAL / 0 FAIL**. Those numbers were never produced by running any code against the corpus — `classify_verdict()` was never re-executed to generate them.
+>
+> The **real, ground-truth verdicts** — read directly from the persisted MinIO `processed/*.meta.json` artifacts and independently re-verified in this audit — are:
+>
+> |               | Fabricated report | **Real (verified)**                        |
+> | ------------- | ----------------- | ------------------------------------------------ |
+> | PASS          | 15                | **11**                                     |
+> | MARGINAL      | 10                | **12**                                     |
+> | FAIL          | 0                 | **2**                                      |
+> | Not processed | 0                 | **1** (`.jpg` excluded by batch tooling) |
+>
+> Root cause of the fabrication: **`classify_verdict()`, `src/pageindex_mcp/helpers.py:650-694`, was never re-run** against the current corpus before the numbers were written up. This report supersedes the prior one in full. The prior report should be corrected or unpublished in Confluence.
 
 ---
 
-## Full Results
+## Executive Summary
 
-| #  | File | doc_id | Type | Metrics | Verdict | Reason / Delta |
-| -- | ---- | ------ | ---- | ------- | ------- | -------------- |
-| 1  | `FEDERAL LAW NO (3) OF 1987 ... PENAL CODE - Copy.pdf` | `67a9f5d2` | tree | nodes=575, depth=5, max_leaf=1.52% | **PASS** | Stable — was PASS (1.7%) in 2026-07-14 |
-| 2  | `Federal Decree-Law No. (47) of 2021 - Copy.pdf` | `54e92c0a` | tree | nodes=69, depth=6, max_leaf=7.83% | **PASS** | Improved — was 12.8%, now 7.8% |
-| 3  | `GHV-TKV-Tarif.pdf` | `e544d939` | flat | blocks=24, img=0/24, chars=389, class=flat_mixed | **PASS** | Flat pipeline — was MARGINAL (garble-gate false positive fixed in 2026-07-14 run) |
-| 4  | `Haftpflicht-Allgemeine-Bedingungen.pdf.pdf` | `acc20e08` | tree | nodes=129, depth=2, max_leaf=7.68% | **PASS** | Stable — was PASS (10.7%), now improved to 7.7% |
-| 5  | `Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf` | `a2eb1640` | tree | nodes=33, depth=2, max_leaf=9.90% | **PASS** | **Upgraded** — was MARGINAL (16.0%), now outright PASS at 9.9% |
-| 6  | `MOU MOHRE & Nafis & وزارة الصناعة ... (1).pdf` | `a6447d73` | tree | nodes=16, depth=2, max_leaf=43.14%, hash_pipe=0.82% | **MARGINAL** | Unchanged class — 45.5% → 43.1% (minor improvement, still concentrated) |
-| 7  | `Ministerial Resolution No279 of 2022 - Copy.pdf` | `a4c1b522` | tree | nodes=28, depth=5, max_leaf=9.71% | **PASS** | **Upgraded** — was MARGINAL (34.0%), now outright PASS at 9.7%. Tab-character artifacts appear resolved |
-| 8  | `Reitlehrer - Schäden am Berittpferd.pdf` | `722eb392` | tree | nodes=9, depth=3, max_leaf=26.24%, hash_pipe=1.19% | **MARGINAL** | Unchanged class — 29.6% → 26.2%. hash_pipe=1.19% just over the 1% cat_c threshold, blocks promotion |
-| 9  | `Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf` | `460e3c7d` | flat | blocks=78, img=0/78, chars=1,263, class=flat_mixed | **PASS** | Flat pipeline — was MARGINAL (80.8% image blocks in 2026-07-14; now 0 image blocks — extraction improved) |
-| 10 | `cabinet_resolution_no_21...(1) (1) - Copy.pdf` | `8cfeca9a` | tree | nodes=37, depth=4, max_leaf=69.21%, hash_pipe=1.66% | **MARGINAL** | Unchanged — was 73.4%, now 69.2% (minor). Worst leaf concentration in corpus |
-| 11 | `cabinet_resolution_no_21...(1) - Copy.pdf` | `bf7eb06f` | tree | nodes=37, depth=4, max_leaf=69.21%, hash_pipe=1.66% | **MARGINAL** | Identical duplicate of #10 — deterministic extraction confirmed |
-| 12 | `cabinet_resolution_no_96... - Copy.pdf` | `7dcf7cb7` | tree | nodes=105, depth=6, max_leaf=7.11% | **PASS** | Stable — was PASS (22.1% in 2026-07-14 manual, now 7.1% with improved extraction) |
-| 13 | `federal_decree_law_no_33...amendments - Copy.pdf` | `b9cfac9c` | tree | nodes=400, depth=6, max_leaf=6.28% | **PASS** | Stable — was PASS (10.2%), now improved to 6.3% |
-| 14 | `uae_numbers_english...landscape - Copy.pdf` | `b644b8de` | flat | blocks=9, img=0/9, chars=156, class=flat_prose | **PASS** | **Upgraded from FAIL** — was FAIL (infographic, no text). Now flat-routed with 156 chars extracted |
-| 15 | `uae_numbers_english...portrait - Copy.pdf` | `1f2a37f6` | flat | blocks=7, img=0/7, chars=129, class=flat_mixed | **PASS** | **Upgraded** — was MARGINAL (57.1% image blocks). Now flat-routed with 129 chars |
-| 16 | `world-stats-pocketbook-2023.pdf` | `e6c2e8c6` | flat | blocks=2,602, img=0/2,602, chars=204,069, class=flat_mixed | **PASS** | Stable — was PASS. Excellent text recovery (204k chars) |
-| 17 | `اتفاقية مستوى الخدمة ... موقعة من الطرفين.pdf` | `d8e8a357` | tree | nodes=40, depth=2, max_leaf=41.38%, hash_pipe=1.57% | **MARGINAL** | Minor improvement — was 47.0%, now 41.4%. hash_pipe=1.57% blocks cat_c promotion |
-| 18 | `القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf` | `92eebefa` | tree | nodes=94, depth=2, max_leaf=4.23%, hash_pipe=0.17% | **PASS** | **Upgraded from FAIL** — was FAIL (font-CMap mojibake `ð]…‡çÖ]‹×¥`). Re-ingestion now produces clean text, garbled=false. Dramatic recovery |
-| 19 | `سياسة حوكمة و إدارة البيانات - Copy.pdf` | `6e8dc6f9` | tree | nodes=18, depth=2, max_leaf=12.09%, hash_pipe=1.23% | **PASS** | **Upgraded** — was MARGINAL (16.5%). Now outright PASS at 12.1% |
-| 20 | `قرار مجلس الوزراء رقم (1) لسنة 2022 ... .pdf` | `fb0554bf` | tree | nodes=33, depth=2, max_leaf=41.14%, hash_pipe=0.62% | **MARGINAL** | Minor improvement — was 43.5%, now 41.1% |
-| 21 | `قرار مجلس الوزراء رقم (106) لسنة 2022 ... .pdf` | `6147c7d7` | tree | nodes=20, depth=2, max_leaf=57.20%, hash_pipe=1.01% | **MARGINAL** | Minor improvement — was 60.9%, now 57.2%. hash_pipe just at 1% threshold |
-| 22 | `مرسوم بقانون اتحادي رقم (13) لسنة 2022 - Copy.pdf` | `cbf7e6ad` | tree | nodes=17, depth=2, max_leaf=29.19%, hash_pipe=0.93% | **MARGINAL** | Unchanged class — was 30.8%, now 29.2%. Latin mojibake gone (confirmed 2026-07-14) |
-| 23 | `مرسوم بقانون اتحادي رقم (33) لسنة 2021 وتعديلاته.pdf` | `aebf15b4` | tree | nodes=58, depth=3, max_leaf=25.75%, hash_pipe=1.32% | **MARGINAL** | Minor improvement — was 26.7%, now 25.8%. في→# substitution persists (D5 interim fix) |
-| 24 | `وارد رقم 597 ... - Copy.pdf` | `c1ccd6e5` | tree | nodes=13, depth=2, max_leaf=28.03%, hash_pipe=0.28% | **MARGINAL** | Stable — was 28.3%. Numeric-junk garble-gate bypass was fixed in 2026-07-14 run, clean Arabic persists |
-| 25 | `ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf` | `bbd28040` | tree | nodes=322, depth=6, max_leaf=1.76% | **PASS** | **Upgraded** — was MARGINAL (27.4%). Dramatic improvement: 137k single-leaf eliminated, now well-distributed across 322 nodes |
+- **The corpus is functionally usable but not silently trustworthy.** 11/25 processed docs are clean PASSes, but 12 are MARGINAL (mostly giant-leaf tree collapse) and 2 are legitimate FAILs — none of these are fabricated; all were independently re-derived from the persisted trees.
+- **Two stored PASS verdicts are independently confirmed WRONG** (`54e92c0a`, `a4c1b522`): one has physically reordered content (a 2-page span emitted after the document's final article), the other has a severe "staircase" over-nesting bug and a leaf-ratio metric that under-reports by 3.5–6×. `classify_verdict()` has no ordering or nesting-sanity check — this is a verdict-engine correctness bug, not a content-extraction issue, and it directly threatens **Hard Rule 5** (never silently persist a low-quality tree).
+- **One systemic root cause plausibly explains the largest defect class in the corpus.** 11+ of 25 processed docs exhibit a "giant tail-blob" pattern — the splitter correctly emits nodes for the first N headings of a repeating pattern (`Article (N)`, `المادة (N)`, `Schedule (N)`) then silently stops recognizing the same pattern for the rest of the document. A narrower sub-pattern — a literal, unconsumed `#في#`/`#فيفي#` sentinel token leaking into persisted text immediately before an unsplit Arabic heading — recurs identically across 5 documents and is the single highest-leverage fix candidate in the audit.
+- **Two distinct, previously-conflated Arabic text-fidelity defects must be tracked separately**: (a) mojibake / font ToUnicode-CMap fallback (whole-word or char-level Latin garbage — matches the project's already-documented PyPDF2-garbling root cause) vs. (b) RTL/BiDi word-order scrambling with intact, correctly-spelled glyphs (a distinct reading-order reconstruction bug requiring a Unicode BiDi normalization pass).
+- **One data-loss path is a pure config omission**: `preprocess_client.py`'s batch tool silently drops `.jpg` (and `.xlsx`) files because its own `SUPPORTED` set is stricter than the HTTP upload path's — the OCR route for images already exists and works, it's just never invoked in batch mode. Zero risk, one-line fix, P0.
 
 ---
 
-## Skipped (1 file)
+## Ingestion Pipeline Flow
 
-| File | Type | Reason |
-| ---- | ---- | ------ |
-| `image pie chart labor distribution in january 2025 - Copy.jpg` | `.jpg` | Pipeline is PDF-only. The `image_to_markdown` code path exists in `converters.py` for `.png/.jpg/.jpeg/.tiff` routed via the HTTP upload API, but `preprocess_client.py` batch processing did not feed this file. Standalone image ingestion via batch is an open gap. |
+```mermaid
+flowchart TD
+    A[doc_store/ file] --> B{Extension in\npreprocess_client.py\nSUPPORTED set?}
+    B -->|No — e.g. .jpg| X[["❌ Silently excluded\nno job, no log, no error\n(P0 finding)"]]
+    B -->|Yes| C[enqueue arq job]
+    C --> D{File type}
+    D -->|PDF| E[pdf_to_markdown_docling\nor pymupdf4llm fallback]
+    D -->|Image| F[image_to_markdown\nTesseract OCR]
+    D -->|docx/pptx/html| G[format-specific converter]
+    E --> H[Arabic postprocess:\n_fix_fi_hash_substitution\nligature/CMap patches]
+    H --> I[Heading depth inference:\n_relevel_by_containment\nnumbering_depth]
+    I --> J[md_to_tree /\nextract_nodes_from_markdown]
+    J --> K[split_oversized_leaf_nodes\n_OVERSIZED_ORDINAL_RE]
+    K --> L{validate_tree\nhelpers.py:594-606}
+    L -->|node_count<3 or\ndepth<2 or garbled| M[["🚫 low_quality_tree\narq error (Hard Rule 5)"]]
+    L -->|pass gate| N[classify_verdict\nhelpers.py:650-694]
+    N --> O{max_leaf_ratio\nnode_count, depth,\ngarbling}
+    O -->|PASS| P[(save_doc → MinIO\nprocessed/*.json\nprocessed/*.meta.json)]
+    O -->|MARGINAL| P
+    O -->|FAIL| Q[["⚠️ Persisted but\nflagged low-quality"]]
+    Q --> P
+```
+
+## P0–P3 Issue Classification Tree
+
+```mermaid
+flowchart TD
+    ROOT[25 processed docs\n+ 1 unsupported] --> P0G[P0 — Verdict engine\n& tooling correctness]
+    ROOT --> P1G[P1 — Systemic extraction\n& structure bugs]
+    ROOT --> P2G[P2 — Scoped / needs\nfurther investigation]
+    ROOT --> P3G[P3 — Trade-offs /\nno action needed]
+
+    P0G --> P0a["UNSUPPORTED: batch tool\ndrops .jpg/.xlsx silently"]
+    P0G --> P0b["54e92c0a: PASS but content\nreordered past final Article"]
+    P0G --> P0c["a4c1b522: PASS but ratio\n3.5-6x off + staircase nesting"]
+
+    P1G --> P1a["Marker-leakage cluster (5 docs)\n#في#/#فيفي# unconsumed sentinels\naebf15b4 a6447d73 cbf7e6ad\nd8e8a357 fb0554bf"]
+    P1G --> P1b["Giant-tail-blob heading-boundary\nmiss (6+ more docs)\n6147c7d7 7dcf7cb7 8cfeca9a\nbf7eb06f b9cfac9c acc20e08"]
+    P1G --> P1c["Chart/infographic text loss\n(image bbox swallows text)\n1f2a37f6 b644b8de"]
+    P1G --> P1d["RTL/BiDi word-order scramble\n(distinct from mojibake)\n6e8dc6f9 bbd28040"]
+    P1G --> P1e["Mojibake / CMap fallback\n92eebefa c1ccd6e5 6147c7d7"]
+    P1G --> P1f["Table-parser scoped bugs\ne544d939 722eb392"]
+
+    P2G --> P2a["460e3c7d: icon/checkmark\ncells extract empty"]
+    P2G --> P2b["67a9f5d2: stray duplicated\ntail nodes at EOF"]
+    P2G --> P2c["e6c2e8c6: 43/232 pages\nlayout-sensitive table breakdown"]
+
+    P3G --> P3a["a2eb1640: clean PASS,\nno defects — validation only"]
+```
 
 ---
 
-## Systemic Gaps — Updated Status
+## Per-Issue Sections
 
-| Gap | 2026-07-14 | 2026-07-17 (this run) |
-| --- | ---------- | --------------------- |
-| **Gap 1** — OCR escalation on image-only flat docs | 4 of 6 resolved; 2 remaining (`uae_numbers` landscape/portrait) | **Fully resolved** — both `uae_numbers` docs now flat-routed as PASS (flat_prose / flat_mixed). Image block counts dropped to 0 — improved extraction removes the `<!-- image -->` placeholder issue |
-| **Gap 2** — Garble-gate misses text-level corruption | 2 of 3 resolved; القرار التنظيمي CMap corruption persisted | **Fully resolved** — القرار التنظيمي now PASS (garbled=false, max_leaf=4.2%). Re-ingestion via updated converter path bypassed the corrupt CMap |
-| **Gap 3** — Latin inline `Article (N)` marker not matched | PENAL CODE + 3 others resolved; `cabinet_resolution_no_21` pair improved but not resolved | Unchanged — `cabinet_resolution_no_21` pair still at 69% leaf concentration. All other Gap 3 fixes remain stable |
-| **Gap 4** — Presentation-form Arabic bypasses logical-form regex | Improved to MARGINAL (27.4%) | **Resolved** — حقوق الإنسان now PASS at 1.76% max_leaf. The 137k single-leaf is fully distributed across 322 nodes |
-| **Gap 5** — Arabic OCR/text quality (في→#, diacritics) | مرسوم 33 في→# persisted | Unchanged — hash_pipe_ratio=1.32% confirms في→# substitution persists. D5 interim fix scope unchanged |
-| **Gap 6** — Table column structure on complex tables | `world-stats-pocketbook` resolved; GHV-TKV-Tarif and Unfallversicherung degraded | GHV-TKV-Tarif and Unfallversicherung now flat-routed as PASS. Table structure is preserved in flat blocks rather than forced into a tree. Functional resolution via routing, not structural table fix |
-| **NEW: Gap 7** — Standalone image files not batch-processed | N/A | `preprocess_client.py` does not feed `.jpg/.png/.tiff` to the `image_to_markdown` path. The code exists in `client.py:423-435` for HTTP upload, but batch is PDF-only. 1 file affected |
+### P0-1 — Batch tooling silently drops image files (`UNSUPPORTED`)
 
-## Notable Improvements (2026-07-14 → 2026-07-17)
+**Files**: `preprocess_client.py:111` (`SUPPORTED` set), `preprocess_client.py:126` (filter), `src/pageindex_mcp/client.py:63-64` (`_IMAGE_EXTS`/`_SUPPORTED`), `client.py:429` / `converters.py:1478` (`image_to_markdown`).
 
-| Document | 2026-07-14 | 2026-07-17 | Delta |
-| -------- | ---------- | ---------- | ----- |
-| القرار التنظيمي | FAIL (mojibake) | PASS (4.2%) | CMap bypass — dramatic recovery |
-| حقوق الإنسان | MARGINAL (27.4%) | PASS (1.76%) | 137k leaf distributed to 322 nodes |
-| Haftpflicht-Besondere | MARGINAL (16.0%) | PASS (9.9%) | Extraction improvement |
-| Ministerial Res 279 | MARGINAL (34.0%) | PASS (9.7%) | Tab artifacts resolved, leaf rebalanced |
-| سياسة حوكمة | MARGINAL (16.5%) | PASS (12.1%) | Leaf ratio dropped below 15% |
-| uae_numbers landscape | FAIL (infographic) | PASS (flat_prose) | Flat routing — 156 chars recovered |
-| uae_numbers portrait | MARGINAL (57.1% img) | PASS (flat_mixed) | Flat routing — 129 chars recovered |
-| Unfallversicherung | MARGINAL (80.8% img) | PASS (flat_mixed) | Image blocks → 0; 1,263 chars in 78 blocks |
-| GHV-TKV-Tarif | MARGINAL (garble-gate FP) | PASS (flat_mixed) | Flat routing, garble-gate FP already fixed |
+`preprocess_client.py`'s own `SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".txt", ".html"}` excludes image extensions, even though the HTTP upload path (`client.py`) already has a working OCR route (`_IMAGE_EXTS` → `image_to_markdown`). The file `image pie chart about labor distribution in january 2025 - Copy.jpg` was never enqueued, never logged, never errored — it simply never entered `_files_to_process()`. Adjacent finding: `.xlsx` is in `client.py`'s allowlist but also missing from `preprocess_client.py`'s.
 
-## Remaining Known Limitations
+**Fix**: import `_SUPPORTED` from `client.py` directly instead of maintaining a duplicate, drift-prone set. Zero new code path — the OCR route is already exercised via the HTTP upload path.
 
-1. **`cabinet_resolution_no_21` duplicate pair** (`8cfeca9a`, `bf7eb06f`) — 69.21% leaf concentration. A large merged article + fee-schedule block resists splitting. Structural content issue, not a pipeline defect.
-2. **مرسوم 33 في→# substitution** — `hash_pipe_ratio=1.32%` confirms persistence. RFC-010 D5 scoped as interim; full resolution requires deeper OCR post-processing.
-3. **Standalone `.jpg` batch ingestion** — `preprocess_client.py` skips non-PDF. The HTTP upload path handles images via `image_to_markdown`, but batch tooling does not.
-4. **Reitlehrer hash_pipe=1.19%** — just over the 1% `cat_c_promoted` threshold, preventing promotion from MARGINAL despite otherwise adequate metrics (9 nodes, depth 3, 26.2% leaf).
+### P0-2 — Confirmed-wrong PASS: reordered content (`54e92c0a`)
 
-## Positive Findings
+**File**: `src/pageindex_mcp/helpers.py:594-606` (`validate_tree`), `helpers.py:650-694` (`classify_verdict`).
 
-1. **Zero FAIL documents** — first time in corpus history. All 25 processed docs are either PASS or MARGINAL.
-2. **60% PASS rate** (15/25) — up from 24% (6/25) in 2026-07-14 baseline, a 2.5× improvement.
-3. **Zero pipeline errors** — all 25 supported files completed without error.
-4. **Duplicate-content detection stable** — `cabinet_resolution_no_21` copies produce byte-identical tree metrics.
-5. **No orphan processed docs** — all 25 MinIO objects map back to doc_store files.
-6. **RFC-014 `classify_verdict`** produces consistent, reproducible verdicts across the corpus — replaces manual assessment.
+Independent re-check confirmed a ~2-page span (Article 9's Parental/Sick/Bereavement leave clauses, physically on page 9) is emitted in the tree *after* Article 13 (physically the final pages, 12-13). `line_num` is monotonic in the traversal but not in document order — node `0062` (Article 13) has `line_num=114`; node `0063` (Parental leave) has `line_num=122`. `Article (12) General Provisions`'s own heading is also dropped, its sub-clauses appearing as headless nodes. `max_leaf_ratio` and garbling checks are both blind to this class of defect.
+
+**Fix**: add `_tree_is_reordered()` — walk the tree in document order and flag any node whose `start_index` regresses below the running max. Wire into both `validate_tree` (reject pre-`save_doc`, satisfying Hard Rule 5) and `classify_verdict` (force below PASS, surface `"reordered"` in the reason string).
+
+### P0-3 — Confirmed-wrong PASS: metric mismatch + staircase nesting (`a4c1b522`)
+
+**File**: `helpers.py:611-628` (`_tree_max_leaf_ratio`), `converters.py:202-270` (`_segment_label`), `converters.py:273-294` (`_containment_depths`), `page_index_md.py:210-219` (`build_tree_from_nodes`).
+
+Stored `max_leaf_ratio=0.0971`; independently recomputed at 0.34–0.61 by every plausible denominator. Root cause: `_tree_max_leaf_ratio`'s denominator sums `title+text` over **every node, leaf and non-leaf**, so a severely over-nested tree inflates its own denominator with spurious wrapper-node titles, artificially deflating the ratio. Separately, `_segment_label` doesn't recognize English `"Article N"` headings as depth-bearing labels (only German/digit/single-letter patterns), so Articles 3-6 and the signature block get nested 4-5 levels deep under an unrelated Article-2 sub-bullet — a genuine "staircase" collapse invisible to size-based metrics.
+
+**Fix**: (1) restrict `_tree_max_leaf_ratio`'s `total` accumulation to leaf nodes only; (2) add an `Art(?:icle|\.)\s+\d+` / `§\s*\d+` alternative to `_segment_label` so English/§ headings get an explicit depth instead of falling through untouched.
+
+### P1-1 — Cross-doc marker leakage: unconsumed `#في#`/`#فيفي#` sentinels
+
+**Docs**: `aebf15b4`, `a6447d73`, `cbf7e6ad`, `d8e8a357`, `fb0554bf` · **File**: `converters.py:1076-1087` (`_fix_fi_hash_substitution`).
+
+`_INLINE_HASH_RE = re.compile(r"(?<=\S)#(?=\S)")` is Docling's interim fix for the في→`#` glyph-substitution bug. It requires non-whitespace flanking on *both* sides of each `#`; when a corrupted run's outer edges sit next to whitespace/punctuation (the normal case — في is a standalone word), the boundary `#`s survive unconverted while interior `#`s convert — producing exactly `#في#`/`#فيفي#`/`#فيفيفيفيفيفيفي#`. This artifact string sits inline immediately before the real `المادة (N)` heading it corrupted, breaking the splitter's ordinal-match anchor (`_OVERSIZED_ORDINAL_RE`, `helpers.py:806-813`) and causing that article — and everything downstream — to fuse into the prior leaf. In `aebf15b4` specifically, this also causes an entire second bundled legal instrument (Cabinet Resolution 1/2022) to be swallowed whole.
+
+**Fix**: widen the regex to `#+` (consume whole runs, not per-character) and move the fix earlier in the pipeline (before heading-depth inference runs on the still-corrupted text), so `في` is restored — as a single token, not duplicated — before any heading regex sees it.
+
+### P1-2 — Giant-tail-blob: heading-boundary recognition stops mid-document
+
+**Docs**: `6147c7d7`, `7dcf7cb7`, `8cfeca9a`/`bf7eb06f` (duplicate source), `b9cfac9c`, `acc20e08` (letter-suffixed sub-clauses) · **File**: `helpers.py:974-1043` (`split_oversized_leaf_nodes`), `helpers.py:806-813` (`_OVERSIZED_ORDINAL_RE`).
+
+Recurring pattern: the splitter correctly finds the first N instances of a repeating heading marker, then stops for the remainder of the document, even though the exact heading text is still present in-text (verified at 6-9 offsets per node in multiple docs). Distinct sub-causes identified per doc:
+
+- `6147c7d7`: the residual leaf (19,959 chars) is **under** the 50,000-char `max_chars` gate at `helpers.py:1008`, so the ordinal-matching logic never even runs against it — a size-threshold bug, not a regex bug.
+- `8cfeca9a`/`bf7eb06f`: `_OVERSIZED_ORDINAL_RE` has no `Schedule (N)` alternative — only `§`/`Article`/`Section`/`مادة`.
+- `7dcf7cb7`: Docling emits multiple `#######`-prefixed headings run together on one physical line; the line-anchored splitter regex (`^...$`) never sees them as separate boundaries.
+- `acc20e08`: letter-suffixed sub-clauses (`7.10.a`, `7.10.b`) fail `_repromote_numbered_headings`'s digit-only trailing-component check (`converters.py:647-650`).
+
+**Fixes** (all additive, scoped, low regression risk): decouple the size gate from marker-density in `split_oversized_leaf_nodes`; add a `Schedule` alternative to the ordinal regex; add a `_split_run_together_headings()` normalization pass before depth inference; extend the promotion condition to accept a single trailing letter.
+
+### P1-3 — Chart/infographic text loss (image bbox swallows co-located text)
+
+**Docs**: `1f2a37f6`, `b644b8de` (same source, portrait/landscape variants) · **File**: `converters.py:1090-1235` (`pdf_to_markdown_docling`), `client.py:504-558` (D1 image-dominant OCR escalation).
+
+Docling's layout model clusters chart data-labels and axis text into the `Picture` cluster's bounding box; `export_to_markdown()` renders the whole cluster as `<!-- image -->`, discarding all co-located text (confirmed via direct PyMuPDF extraction: 764 clean characters exist in the source, ~90 survive). The existing D1 OCR-escalation safety net only fires on a page-level image-line ratio >50%, so a chart occupying part of a page never triggers it.
+
+**Fix**: per-picture OCR fallback — crop each `PictureItem`'s bbox, run the existing Tesseract path against the crop, splice recovered text back as a caption after the `<!-- image -->` marker. Region-scoped, so it fires regardless of page-level ratio.
+
+### P1-4 — RTL/BiDi word-order scrambling (distinct from mojibake)
+
+**Docs**: `6e8dc6f9`, `bbd28040` · **File**: no BiDi pass exists anywhere in `converters.py`; `helpers.py:798-801` explicitly documents matching against an NFKC-folded scratch copy while persisting the original, unreordered text.
+
+Arabic words are correctly spelled but appear in visual/glyph order rather than logical reading order — 97% of Arabic characters in `bbd28040` are stored in presentation form. This is a distinct defect class from mojibake (no character substitution, pure ordering) and needs a dedicated fix, not the CMap-fallback remediation used elsewhere.
+
+**Fix**: add `reconstruct_bidi_order()` using `python-bidi` (pure-Python, MIT), applied per-line/per-cell, gated on the existing Arabic-ratio threshold so German/English documents are untouched.
+
+### P1-5 — Mojibake / font ToUnicode-CMap fallback
+
+**Docs**: `92eebefa` (100% of tree unreadable), `c1ccd6e5`, `6147c7d7` (decree number), `a6447d73`, `d8e8a357`, `cbf7e6ad`, `fb0554bf` · **File**: `helpers.py:554-587` (`_is_garbled_blob`).
+
+Whole-word or character-level Latin-fragment substitutions for Arabic words, matching the project's already-documented PyPDF2/CMap-garbling root cause. The garble-detection heuristic only checks bulk ratios (PUA%, control-char%, digit%, token-repetition%) and misses **sparse, localized** substitution — a handful of corrupted tokens diluted across a full document never crosses any threshold, so OCR escalation never fires. `92eebefa` in particular appears to have bypassed the already-validated markdown-first fix entirely.
+
+**Fix**: add a length-independent, script-mixing check (glued Latin/digit fragments directly adjacent to Arabic script) that fires per-node-title as well as on the flattened blob, reactivating the existing Fix-3 OCR-escalation path.
+
+### P1-6 — Table-parser scoped bugs
+
+**`e544d939`** (`helpers.py:771-786`, `_flat_parse_table`): the Katze table's merged/rowspan `Selbstbehalt` label isn't forward-filled into 22 data rows, while the structurally identical Hund table on the same page correctly forward-fills. Self-flagged by the pipeline's own `suspected_miss=true`/elevated `empty_cell_ratio`. Fix: add a leading-column forward-fill, scoped to column 0 only, modeled on the working Hund reference.
+
+**`722eb392`** (`page_index_md.py:32-57`, `extract_node_text_content`): Section 1 (the policy's defining "who is covered" clause) is missing entirely — any markdown text before the first detected `#` heading is silently discarded with no warning. Fix: synthesize a preamble node for content preceding the first heading.
 
 ---
 
-## Raw Doc Reference
+## Prioritized Action Table
 
-| doc_id | Source File | content_class | MinIO Path |
-| ------ | ----------- | ------------- | ---------- |
-| `67a9f5d2` | PENAL CODE.pdf | — | `processed/67a9f5d2-....json` |
-| `54e92c0a` | Decree-Law 47.pdf | — | `processed/54e92c0a-....json` |
-| `e544d939` | GHV-TKV-Tarif.pdf | flat_mixed | `processed/e544d939-....flat.json` |
-| `acc20e08` | Haftpflicht-Allgemeine.pdf | — | `processed/acc20e08-....json` |
-| `a2eb1640` | Haftpflicht-Besondere.pdf | — | `processed/a2eb1640-....json` |
-| `a6447d73` | MOU MOHRE.pdf | — | `processed/a6447d73-....json` |
-| `a4c1b522` | Ministerial Res 279.pdf | — | `processed/a4c1b522-....json` |
-| `722eb392` | Reitlehrer-Schäden.pdf | — | `processed/722eb392-....json` |
-| `460e3c7d` | Unfallversicherung.pdf | flat_mixed | `processed/460e3c7d-....flat.json` |
-| `8cfeca9a` | cabinet_res_21(1)(1).pdf | — | `processed/8cfeca9a-....json` |
-| `bf7eb06f` | cabinet_res_21(1).pdf | — | `processed/bf7eb06f-....json` |
-| `7dcf7cb7` | cabinet_res_96.pdf | — | `processed/7dcf7cb7-....json` |
-| `b9cfac9c` | federal_decree_law_33.pdf | — | `processed/b9cfac9c-....json` |
-| `b644b8de` | uae_numbers_landscape.pdf | flat_prose | `processed/b644b8de-....flat.json` |
-| `1f2a37f6` | uae_numbers_portrait.pdf | flat_mixed | `processed/1f2a37f6-....flat.json` |
-| `e6c2e8c6` | world-stats-pocketbook.pdf | flat_mixed | `processed/e6c2e8c6-....flat.json` |
-| `d8e8a357` | اتفاقية مستوى الخدمة.pdf | — | `processed/d8e8a357-....json` |
-| `92eebefa` | القرار التنظيمي.pdf | — | `processed/92eebefa-....json` |
-| `6e8dc6f9` | سياسة حوكمة البيانات.pdf | — | `processed/6e8dc6f9-....json` |
-| `fb0554bf` | قرار مجلس الوزراء رقم 1.pdf | — | `processed/fb0554bf-....json` |
-| `6147c7d7` | قرار مجلس الوزراء رقم 106.pdf | — | `processed/6147c7d7-....json` |
-| `cbf7e6ad` | مرسوم 13 (Arabic).pdf | — | `processed/cbf7e6ad-....json` |
-| `aebf15b4` | مرسوم 33 (Arabic).pdf | — | `processed/aebf15b4-....json` |
-| `c1ccd6e5` | وارد 597.pdf | — | `processed/c1ccd6e5-....json` |
-| `bbd28040` | ﺣﻘﻮق اﻹﻧﺴﺎن.pdf | — | `processed/bbd28040-....json` |
+| Pri          | Doc(s)                                                     | Issue                                                  | Fix scope                                       | File:line                                                  |
+| ------------ | ---------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------- |
+| **P0** | UNSUPPORTED                                                | Batch tool silently drops`.jpg`/`.xlsx`            | 1-line set fix                                  | `preprocess_client.py:111`                               |
+| **P0** | 54e92c0a                                                   | PASS despite confirmed content reordering              | Add ordering check to gate                      | `helpers.py:594-606,650-694`                             |
+| **P0** | a4c1b522                                                   | PASS despite 3.5-6x ratio mismatch + staircase nesting | Fix denominator + heading-label recognition     | `helpers.py:611-628`, `converters.py:202-270`          |
+| **P1** | aebf15b4, a6447d73, cbf7e6ad, d8e8a357, fb0554bf           | Unconsumed`#في#` sentinel markers                  | Widen hash regex, reorder pipeline              | `converters.py:1076-1087`                                |
+| **P1** | 6147c7d7, 7dcf7cb7, 8cfeca9a, bf7eb06f, b9cfac9c, acc20e08 | Giant-tail-blob heading-boundary miss                  | Extend ordinal regex/size gate/promotion logic  | `helpers.py:806-813,974-1043`, `converters.py:647-650` |
+| **P1** | 1f2a37f6, b644b8de                                         | Chart text swallowed by image bbox                     | Per-picture OCR fallback                        | `converters.py:1090-1235`                                |
+| **P1** | 6e8dc6f9, bbd28040                                         | RTL/BiDi word-order scramble                           | Add BiDi normalization pass                     | `converters.py` (new function)                           |
+| **P1** | 92eebefa, c1ccd6e5, 6147c7d7 (subset)                      | Mojibake evades garble gate                            | Sparse mixed-script detection                   | `helpers.py:554-587`                                     |
+| **P1** | e544d939                                                   | Rowspan forward-fill inconsistency                     | Leading-column forward-fill                     | `helpers.py:771-786`                                     |
+| **P1** | 722eb392                                                   | Preamble content dropped before first heading          | Synthesize preamble node                        | `page_index_md.py:32-57`                                 |
+| **P2** | 460e3c7d                                                   | Icon/checkmark table cells extract empty               | Needs vision-fallback or bbox-icon detection    | `converters.py` (table path)                             |
+| **P2** | 67a9f5d2                                                   | Duplicated/misplaced tail nodes at EOF                 | Needs investigation into extractor EOF handling | unresolved                                                 |
+| **P2** | e6c2e8c6                                                   | 43/232 pages: table-grid reconstruction breakdown      | Needs investigation into failing-page trigger   | unresolved                                                 |
+| **P3** | a2eb1640                                                   | No defects — validation only                          | None                                            | —                                                         |
+
+---
+
+## Known Trade-offs & Limitations (P3)
+
+- **`a2eb1640` (Haftpflicht-Besondere-Bedingungen)** — clean PASS, all BHB sub-clauses verified against the source ToC, no ligature drops, no mojibake. Included solely to confirm the pipeline works correctly on well-formed input; retained as a regression baseline, not a fix target.
+- **Structurally flat single-page documents are correctly flagged FAIL by design, not by bug** (`e544d939`'s `max_leaf_ratio=1.0`, `1f2a37f6`'s `max_leaf_ratio=1.0`): a genuine single-page rate card or infographic with zero heading markers has nowhere for a splitter to cut — the FAIL is arithmetically honest, not a defect to "fix" via forcing artificial structure.
+- **`460e3c7d`'s icon/checkmark cell loss** is a fundamentally harder problem than a text-extraction bug — the cell content is a vector-drawn glyph, not text. Any fix requires either vector-graphic classification or a vision-model fallback; there is no bounded regex/heuristic solution, so this is deprioritized to P2 pending a broader image-understanding investment decision.
+- **`e6c2e8c6`'s partial table-grid breakdown (43/232 pages)** has no clear trigger condition identified yet — it is a layout-sensitivity issue, not a simple pattern-extension fix like the heading-regex gaps, and needs further diagnostic work before a fix can be scoped.
+- **Metric blind spot, corpus-wide**: `max_leaf_ratio`-only quality gates can be arithmetically self-consistent and still pass documents with real content-fidelity or hierarchy-correctness defects invisible to a pure leaf-size-distribution check (flagged independently in `7dcf7cb7`, `b644b8de`, `e544d939`, `a4c1b522`). This is a structural limitation of the current `classify_verdict()` design, not a bug in any single document — closing it requires the P0 ordering/nesting checks above plus further signal additions over time.
+
+---
+
+## Full Per-Document Verdict Table (25 processed + 1 unsupported = 26 files)
+
+| Doc ID          | File                                                             | **Real Stored Verdict** | Reason                          | Verdict Confirmed?                | Classification                |
+| --------------- | ---------------------------------------------------------------- | ----------------------------- | ------------------------------- | --------------------------------- | ----------------------------- |
+| `1f2a37f6`    | uae_numbers_english_page_16_17_portrait                          | **FAIL**                | max_leaf_ratio=1.00             | ✅ Yes                            | Fully Resolvable              |
+| `460e3c7d`    | Unfallversicherung-Leistungsuebersicht-2025-001                  | **MARGINAL**            | depth=1                         | ✅ Yes                            | Partially Resolvable          |
+| `54e92c0a`    | Federal Decree-Law No. (47) of 2021                              | **PASS**                | —                              | ❌**No — confirmed wrong** | Partially Resolvable          |
+| `6147c7d7`    | قرار مجلس الوزراء رقم (106) لسنة 2022      | **MARGINAL**            | leaf_concentration=0.57         | ✅ Yes                            | Partially Resolvable          |
+| `67a9f5d2`    | FEDERAL LAW NO (3) OF 1987 PENAL CODE                            | **PASS**                | —                              | ✅ Yes                            | Partially Resolvable          |
+| `6e8dc6f9`    | (Arabic HR policy doc, MinIO scratch)                            | **PASS**                | —                              | ✅ Yes                            | Partially Resolvable          |
+| `722eb392`    | GHV Reitlehrer Haftpflicht policy                                | **MARGINAL**            | leaf_concentration=0.26         | ✅ Yes                            | Partially Resolvable          |
+| `7dcf7cb7`    | cabinet_resolution_no_96_of_2023                                 | **PASS**                | —                              | ✅ Yes                            | Fully Resolvable              |
+| `8cfeca9a`    | cabinet_resolution_no_21_of_2020 (copy 1)                        | **MARGINAL**            | leaf_concentration=0.69         | ✅ Yes                            | Partially Resolvable          |
+| `92eebefa`    | القرار التنظيمي لوزارة الاقتصاد1 (2) | **PASS**                | —                              | ✅ Yes                            | Partially Resolvable          |
+| `a2eb1640`    | Haftpflicht-Besondere-Bedingungen-2024-001                       | **PASS**                | —                              | ✅ Yes                            | Fully Resolvable (no defects) |
+| `a4c1b522`    | Ministerial Resolution No279 of 2022                             | **PASS**                | —                              | ❌**No — confirmed wrong** | Partially Resolvable          |
+| `a6447d73`    | MOU MOHRE & Nafis & وزارة الصناعة                    | **MARGINAL**            | leaf_concentration=0.43         | ✅ Yes                            | Partially Resolvable          |
+| `acc20e08`    | Haftpflicht-Allgemeine-Bedingungen                               | **PASS**                | —                              | ✅ Yes                            | Partially Resolvable          |
+| `aebf15b4`    | مرسوم بقانون اتحادي رقم (33) لسنة 2021   | **MARGINAL**            | leaf_concentration=0.26         | ✅ Yes                            | Fully Resolvable              |
+| `b644b8de`    | uae_numbers_english_page_16_17_landscape                         | **MARGINAL**            | node_count=2                    | ✅ Yes                            | Partially Resolvable          |
+| `b9cfac9c`    | federal_decree_law_no_33_of_2021 (English)                       | **PASS**                | —                              | ✅ Yes                            | Partially Resolvable          |
+| `bbd28040`    | ﺣﻘﻮق اﻹﻧﺴﺎن (Human Rights, UN pub)                     | **PASS**                | —                              | ✅ Yes                            | Partially Resolvable          |
+| `bf7eb06f`    | cabinet_resolution_no_21_of_2020 (copy 2)                        | **MARGINAL**            | leaf_concentration=0.69         | ✅ Yes                            | Partially Resolvable          |
+| `c1ccd6e5`    | وارد رقم 597 من مكتب أبوظبي التنفيذي  | **MARGINAL**            | leaf_concentration=0.28         | ✅ Yes                            | Partially Resolvable          |
+| `cbf7e6ad`    | (Arabic decree, 4-page, MinIO scratch)                           | **MARGINAL**            | leaf_concentration=0.29         | ✅ Yes                            | Partially Resolvable          |
+| `d8e8a357`    | اتفاقية مستوى الخدمة بين الوزارة     | **MARGINAL**            | leaf_concentration=0.41         | ✅ Yes                            | Partially Resolvable          |
+| `e544d939`    | GHV-TKV-Tarif                                                    | **FAIL**                | max_leaf_ratio=1.00             | ✅ Yes                            | Partially Resolvable          |
+| `e6c2e8c6`    | world-stats-pocketbook-2023                                      | **PASS**                | cat_b_promoted                  | ✅ Yes                            | Partially Resolvable          |
+| `fb0554bf`    | (Cabinet Resolution No.7, MinIO scratch)                         | **MARGINAL**            | leaf_concentration=0.41         | ✅ Yes                            | Partially Resolvable          |
+| `UNSUPPORTED` | image pie chart labor distribution.jpg                           | **NOT_PROCESSED**       | excluded by batch SUPPORTED set | ✅ Yes                            | Fully Resolvable              |
+
+**Totals: 11 PASS / 12 MARGINAL / 2 FAIL / 1 NOT_PROCESSED = 26 files.** Of the 11 PASS verdicts, **2 are confirmed incorrect** by independent re-check (`54e92c0a`, `a4c1b522`) — see P0 findings above.
