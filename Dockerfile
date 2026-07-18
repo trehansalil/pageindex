@@ -60,6 +60,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
         tesseract-ocr \
+        curl \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-bake tessdata files for production OCR (deu, eng, ara).
