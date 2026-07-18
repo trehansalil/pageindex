@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+import pageindex_mcp.server as server_module
+
 from pageindex_mcp.config import _is_zdr_allowlisted
 
 
@@ -31,8 +33,6 @@ def test_zdr_rejects_none():
 def test_zdr_rejects_empty():
     assert _is_zdr_allowlisted("") is False
 
-
-import pageindex_mcp.server as server_module
 
 
 async def test_lifespan_raises_when_pii_corpus_with_non_zdr_url():

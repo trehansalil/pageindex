@@ -44,7 +44,7 @@ def test_preamble_over_threshold_synthesizes_node_at_index_0():
 
 
 def test_trivial_preamble_at_or_under_threshold_is_not_synthesized():
-    # 50 chars exactly (the threshold is a strict ">" check) plus whitespace-only content.
+    # Whitespace-only preamble (strips to 0 chars, under 50-char threshold) — preamble is not synthesized.
     md_text = "   \n\n## Section 1\n\nBody text.\n"
     original_node = {"title": "Section 1", "text": "Body text.", "nodes": []}
     tree = _tree([original_node])

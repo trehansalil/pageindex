@@ -186,12 +186,18 @@ async def test_registry_path_returns_correct_results():
 
 async def test_no_list_processed_docs_calls():
     """Under every registry-unavailable condition, neither listing function may
-    call storage.list_processed_docs() (D6: no O(N) MinIO fallback). The default
-    test settings leave POSTGRES_DSN unset -> the real _require_registry_ready
-    gate raises 'disabled', exercising the true unavailable path end-to-end."""
+    call storage.list_processed_docs() (D6: no O(N) MinIO fallback). The registry
+    is mocked as unavailable (returning the standard disabled error shape)."""
     import pageindex_mcp.storage as storage_mod
+    from pageindex_mcp.tools.documents import RegistryUnavailableError
 
-    with patch.object(storage_mod, "list_processed_docs") as minio:
+    async def _registry_disabled(*_args, **_kwargs):
+        raise RegistryUnavailableError("disabled")
+
+    with (
+        patch.object(documents, "_require_registry_ready", side_effect=_registry_disabled),
+        patch.object(storage_mod, "list_processed_docs") as minio,
+    ):
         recent = json.loads(await documents.recent_documents(page=1, page_size=5))
         find = json.loads(await documents.find_relevant_documents("q"))
 

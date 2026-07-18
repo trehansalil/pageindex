@@ -138,7 +138,7 @@ def test_recompute_verdicts_omits_pipeline_version():
     from preprocess_client import recompute_verdicts
 
     source = inspect.getsource(recompute_verdicts)
-    assert "pipeline_version" not in source or "pipeline_version" in source
+    assert "pipeline_version" not in source, "recompute_verdicts must not add pipeline_version to meta"
     # The key property: meta dict in recompute_verdicts does NOT include
     # pipeline_version. We verify by checking the function exists and its
     # docstring mentions "without re-ingestion".

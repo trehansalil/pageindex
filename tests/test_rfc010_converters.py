@@ -151,17 +151,16 @@ class TestFixFiHashSubstitution:
         assert "#" in result  # sub-threshold -> untouched
         assert "abcdefg#hijklmn" in result
 
-    def test_just_above_thirty_percent_arabic(self):
-        """Boundary case: just above 30% Arabic should trigger replacement."""
-        # Create text with ~31% Arabic
-        # 13 chars: 4 Arabic, 9 Latin (4/13 ≈ 0.308 > 0.30)
-        # "a b c د e f ق g h ي x y z" actually we need alphabetic only
-        # Count only alphabetic chars
+    def test_above_fifteen_percent_arabic(self):
+        """Boundary case: above 15% over all characters should trigger replacement."""
+        # Create text with ~31% Arabic over all chars (well above the 15% threshold)
+        # 13 chars: 4 Arabic, 9 Latin (4/13 ≈ 0.308 > 0.15 over all chars)
+        # Count arabic/len(md) — RFC-015 D4 gate
         arabic_portion = "قيلم"  # 4 Arabic chars
         latin_portion = "abcdefghi"  # 9 Latin chars
         md = f"{latin_portion[0:3]}#{latin_portion[3:]}{arabic_portion}"  # abc#defghiqيلم
         result = _fix_fi_hash_substitution(md)
-        # 4 Arabic out of 13 alpha = 30.77% > 30%, so should replace
+        # 4 Arabic out of 13 total chars = 30.77% > 15% threshold, so should replace
         assert "في" in result
 
     def test_control_sequence_not_affected(self):

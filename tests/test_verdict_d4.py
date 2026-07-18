@@ -49,7 +49,7 @@ class TestThresholdPromotion:
             (0.165, "PASS"),   # سياسة حوكمة-like: below 0.17 → promoted
             (0.160, "PASS"),   # Haftpflicht-Besondere-like: below 0.17 → promoted
             (0.149, "PASS"),   # Well below threshold
-            (0.170, "PASS"),   # Exactly at threshold → NOT promoted (< not <=)... wait
+            (0.170, "MARGINAL"),   # Exactly at threshold — NOT promoted (strict < not <=), stays MARGINAL
         ],
     )
     def test_cat_c_below_017_promotes(self, ratio, expected_verdict):
@@ -62,6 +62,7 @@ class TestThresholdPromotion:
             assert reason == "cat_c_promoted"
         else:
             assert verdict == "MARGINAL"
+        assert verdict == expected_verdict
 
     def test_cat_c_above_017_stays_marginal(self):
         """Cat C docs with max_leaf_ratio >= 0.17 stay MARGINAL."""

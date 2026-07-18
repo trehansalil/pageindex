@@ -122,7 +122,7 @@ def test_classify_verdict_ordered_can_pass():
     verdict, _ = classify_verdict(
         _wellformed_tree([10, 20, 30]), content_class="tree", validate_reason=None
     )
-    assert verdict != "FAIL" or True  # ordering gate must not be what fails it
+    assert verdict != "FAIL", "ordering gate must not force FAIL for in-order tree"
     # Specifically: the reordering gate does not fire.
     assert _tree_is_reordered(_wellformed_tree([10, 20, 30])) is False
 
