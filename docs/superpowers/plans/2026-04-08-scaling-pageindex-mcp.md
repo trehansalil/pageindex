@@ -15,6 +15,7 @@
 **Why:** `list_processed_docs()` currently downloads and JSON-parses every full processed doc from MinIO on every call. Writing a small metadata sidecar at index time lets listing read only tiny files.
 
 **Files:**
+
 - Modify: `src/pageindex_mcp/storage.py` — add `save_doc_meta()`, rewrite `list_processed_docs()`
 - Modify: `src/pageindex_mcp/client.py:131` — call `save_doc_meta()` after `save_doc()`
 - Create: `tests/test_storage_meta.py`
@@ -268,6 +269,7 @@ git commit -m "feat: add .meta.json sidecars to avoid full doc downloads on list
 **Why:** `find_relevant_documents` calls `list_processed_docs()` (loads all docs for IDs), then `_rag_inner` calls `load_doc()` for each doc again. Pass doc_ids through directly instead of reloading.
 
 **Files:**
+
 - Modify: `src/pageindex_mcp/tools/documents.py:68-89` — pass doc_ids list directly
 - Modify: `src/pageindex_mcp/helpers.py:58-68` — `_rag` and `_rag_inner` already accept `doc_ids`, no change needed there
 - Create: `tests/test_rag_dedup.py`
@@ -348,6 +350,7 @@ git commit -m "test: verify RAG pipeline loads each document exactly once"
 **Why:** With multiple gunicorn workers, in-memory caches aren't shared. A Redis cache for `load_doc` prevents redundant MinIO reads across all workers. Documents are immutable after processing, so caching is safe.
 
 **Files:**
+
 - Create: `src/pageindex_mcp/cache.py` — Redis cache get/set/invalidate helpers
 - Modify: `src/pageindex_mcp/storage.py` — wrap `load_doc` with cache, invalidate on `save_doc`/`delete_doc`
 - Modify: `src/pageindex_mcp/config.py` — add `cache_ttl` setting
@@ -512,6 +515,7 @@ from .cache import doc_cache_get, doc_cache_set, doc_cache_delete
 ```
 
 Update `load_doc`:
+
 ```python
 def load_doc(doc_id: str) -> dict:
     """Fetch processed/<doc_id>.json. Uses Redis cache when available."""
@@ -545,6 +549,7 @@ def load_doc(doc_id: str) -> dict:
 ```
 
 At the end of `save_doc`, invalidate stale cache:
+
 ```python
 def save_doc(doc_id: str, data: dict) -> None:
     # ... existing put_object logic ...
@@ -552,6 +557,7 @@ def save_doc(doc_id: str, data: dict) -> None:
 ```
 
 At the start of `delete_doc`, invalidate:
+
 ```python
 def delete_doc(doc_id: str) -> None:
     doc_cache_delete(doc_id)
@@ -577,6 +583,7 @@ git commit -m "feat: add Redis-backed shared cache for load_doc across workers"
 **Why:** CPU/IO-heavy indexing (PDF parsing, LibreOffice, LLM calls) currently runs in-process via `asyncio.create_task`, which competes with query serving. Moving to `arq` workers lets processing run in dedicated processes.
 
 **Files:**
+
 - Create: `src/pageindex_mcp/worker.py` — arq worker definition
 - Modify: `src/pageindex_mcp/upload_app.py` — enqueue to arq instead of `asyncio.create_task`
 - Modify: `pyproject.toml` — add `arq` dependency
@@ -896,6 +903,7 @@ from pageindex_mcp.upload_app import (
 ```
 
 Key changes to test patterns:
+
 - `test_single_upload_returns_job_id`: mock `_get_arq_pool` to return `AsyncMock(enqueue_job=AsyncMock())`
 - `test_status_done_after_processing`: write `{"status": "done", "doc_id": "deadbeef"}` directly to fakeredis, then check status
 - `test_status_error_on_processing_failure`: write error status directly to fakeredis
@@ -920,6 +928,7 @@ git commit -m "feat: move document processing to arq worker queue"
 **Why:** The server currently runs a single uvicorn process. Gunicorn with uvicorn worker class utilizes multiple CPU cores for query serving.
 
 **Files:**
+
 - Modify: `pyproject.toml` — add `gunicorn` dependency
 - Modify: `src/pageindex_mcp/server.py` — expose ASGI app at module level for gunicorn
 - Modify: `Dockerfile` — switch CMD to gunicorn
@@ -1087,6 +1096,7 @@ git commit -m "feat: serve via gunicorn with uvicorn workers for multi-core scal
 ### Task 6: Update CLAUDE.md with new architecture
 
 **Files:**
+
 - Modify: `CLAUDE.md`
 
 - [ ] **Step 1: Update CLAUDE.md**

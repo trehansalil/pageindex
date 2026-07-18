@@ -16,6 +16,7 @@ TEST_API_KEY = "test-key-123"
 
 _mock_settings = MagicMock()
 _mock_settings.upload_api_key = TEST_API_KEY
+_mock_settings.max_upload_size_mb = 100
 
 
 @pytest.fixture(autouse=True)
@@ -229,3 +230,34 @@ async def test_unknown_job_id_returns_404(client):
         "/status/nonexistent-job-id", headers={"X-API-Key": TEST_API_KEY}
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# RFC-007 Batch 0 correctness properties (P1, P2)
+# ---------------------------------------------------------------------------
+
+async def test_upload_mixed_invalid_no_staging(client, fake_redis, mock_arq_pool):
+    """Property 2 (D4): a batch with one invalid file rejects the WHOLE batch —
+    zero MinIO staging, zero Redis mutations, zero arq enqueues, even for the
+    otherwise-valid file in the same batch."""
+    response = await client.post(
+        "/files",
+        files=[_pdf_file("good.pdf"), ("files", ("virus.exe", b"MZ", "application/octet-stream"))],
+        headers={"X-API-Key": TEST_API_KEY},
+    )
+    assert response.status_code == 400
+    mock_arq_pool.enqueue_job.assert_not_awaited()
+    assert await fake_redis.keys("pageindex:job:*") == []
+
+
+async def test_enqueue_failure_no_phantom_status(client, fake_redis, mock_arq_pool):
+    """Property 1 (D8): if enqueue_job raises, no Redis status hash is created
+    for that job — no phantom "pending" entry survives a failed enqueue."""
+    mock_arq_pool.enqueue_job.side_effect = RuntimeError("arq unavailable")
+    with pytest.raises(RuntimeError):
+        await client.post(
+            "/files",
+            files=[_pdf_file()],
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+    assert await fake_redis.keys("pageindex:job:*") == []

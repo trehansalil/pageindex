@@ -42,6 +42,10 @@ dependencies = [
     "html2text>=2025.4.15",
     "redis[asyncio]>=5.3.1",
     "arq>=0.27.0",
+    # asyncpg (PostgreSQL-licensed, BSD-style): async Postgres driver for the
+    # RFC-006 document registry (registry.py). Declared directly because we
+    # import it directly (not a transitive dep). HR4-clean.
+    "asyncpg>=0.30.0",
     "fastapi>=0.135.3",
     "uvicorn>=0.44.0",
     "anyio>=4.13.0",
@@ -52,6 +56,12 @@ dependencies = [
     "langfuse>=3.0.0",
     # openpyxl (MIT, HR4-clean): .xlsx -> markdown table adapter (Fix 4).
     "openpyxl>=3.1.0",
+    # python-bidi (MIT, HR4-clean): Unicode BiDi Algorithm (UAX #9) for RFC-015 D7 —
+    # reorders visual-order Arabic runs back into logical reading order
+    # (reconstruct_bidi_order). Pinned <0.5 to stay PURE-PYTHON: 0.5.0+ replaced the
+    # Python implementation with a compiled Rust/PyO3 extension, which the RFC-015 D7
+    # "no C extension" requirement rules out.
+    "python-bidi>=0.4.2,<0.5",
 ]
 
 [project.optional-dependencies]

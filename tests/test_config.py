@@ -23,8 +23,17 @@ def test_settings_redis_defaults(monkeypatch):
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
     importlib.reload(cfg)
-    assert cfg.settings.redis_url == "redis://neonatal-care-redis.neonatal-care:6379/1"
+    assert cfg.settings.redis_url == "redis://localhost:6379/0"
     assert cfg.settings.upload_api_key == ""
+
+
+def test_config_redis_default(monkeypatch):
+    """RFC-007 D1 / Property 9: no REDIS_URL env var -> redis://localhost:6379/0."""
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    import pageindex_mcp.config as cfg
+    importlib.reload(cfg)
+    assert cfg.settings.redis_url == "redis://localhost:6379/0"
 
 
 def test_settings_llm_provider_default_auto(monkeypatch):

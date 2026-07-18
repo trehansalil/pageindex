@@ -151,7 +151,11 @@ def test_index_01_c3_non_pdf_uses_own_converter_not_pdf_route():
 
 
 # ── detect_ocr_langs (Fix 5) ─────────────────────────────────────────────────
-from pageindex_mcp.converters import detect_ocr_langs, ensure_tessdata  # noqa: E402
+from pageindex_mcp.converters import (  # noqa: E402
+    TessdataUnavailableError,
+    detect_ocr_langs,
+    ensure_tessdata,
+)
 
 
 @pytest.mark.parametrize(
@@ -189,11 +193,18 @@ def test_ensure_tessdata_no_prefix_returns_input_unchanged(monkeypatch):
 
 def test_ensure_tessdata_missing_files_fallback(monkeypatch, tmp_path):  # LANG-01-C2
     """With TESSDATA_PREFIX set to an empty dir and download disabled,
-    all missing langs are dropped and the fallback ['deu','eng'] is returned."""
+    a missing Latin-script lang is dropped and the fallback ['deu','eng'] is
+    returned; a missing non-Latin-script lang (e.g. 'ara') now raises
+    TessdataUnavailableError instead of being silently dropped (D6/HR5)."""
     monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
     monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
-    result = ensure_tessdata(["ara", "eng"])
-    # No .traineddata files exist in tmp_path -> all dropped -> fallback
+
+    # Non-Latin lang missing -> raise, not silently dropped.
+    with pytest.raises(TessdataUnavailableError):
+        ensure_tessdata(["ara", "eng"])
+
+    # All-Latin request with nothing available -> safe degrade fallback.
+    result = ensure_tessdata(["fra", "eng"])
     assert result == ["deu", "eng"]
 
 
@@ -219,6 +230,85 @@ def test_ensure_tessdata_prebaked_is_noop(monkeypatch, tmp_path):  # LANG-01-C3
 
     assert result == ["ara", "eng"]
     assert download_calls == []
+
+
+# ── _try_download_tessdata hardening (RFC-009 D5, Property 5) ────────────────
+from pageindex_mcp.converters import _try_download_tessdata  # noqa: E402
+
+
+class _FakeResponse:
+    """Minimal stand-in for the context-managed object urlopen() returns."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self, _size):
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+
+def test_tessdata_oversize_cleanup(monkeypatch, tmp_path):
+    """Property 5: a download exceeding the 100 MB cap is aborted, returns
+    False, and leaves no partial file behind."""
+    import pageindex_mcp.converters as converters_mod
+
+    over_cap_chunk = b"x" * (converters_mod._TESSDATA_MAX_BYTES + 1)
+
+    def fake_urlopen(url, timeout=None):
+        assert timeout == converters_mod._TESSDATA_TIMEOUT_S
+        return _FakeResponse([over_cap_chunk])
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = converters_mod._try_download_tessdata("ara", str(tmp_path))
+
+    assert result is False
+    assert not (tmp_path / "ara.traineddata").exists()
+
+
+def test_tessdata_timeout(monkeypatch, tmp_path):
+    """Property 5: a socket timeout during download is handled (not raised),
+    returns False, and leaves no partial file behind."""
+    import socket
+
+    import pageindex_mcp.converters as converters_mod
+
+    def fake_urlopen(url, timeout=None):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = converters_mod._try_download_tessdata("eng", str(tmp_path))
+
+    assert result is False
+    assert not (tmp_path / "eng.traineddata").exists()
+
+
+def test_tessdata_valid_download(monkeypatch, tmp_path):
+    """Property 5: a valid download under the cap is written to dest with
+    the correct content and returns True."""
+    import pageindex_mcp.converters as converters_mod
+
+    payload = b"traineddata-bytes" * 100
+
+    def fake_urlopen(url, timeout=None):
+        return _FakeResponse([payload])
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = converters_mod._try_download_tessdata("deu", str(tmp_path))
+
+    assert result is True
+    dest = tmp_path / "deu.traineddata"
+    assert dest.exists()
+    assert dest.read_bytes() == payload
 
 
 # ── xlsx_to_markdown (Fix 4) ──────────────────────────────────────────────────

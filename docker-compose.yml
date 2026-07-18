@@ -51,11 +51,18 @@ x-app: &app
     MCP_PORT: "8201"
     WEB_CONCURRENCY: "1"
     CACHE_TTL: "300"
+    # RFC-006: Postgres registry DSN. Targets the compose postgres service.
+    # Set REGISTRY_ENABLED=false in .env to disable if Postgres is not needed.
+    POSTGRES_DSN: postgresql://pageindex:pageindex@postgres:5432/pageindex
+    REGISTRY_ENABLED: ${REGISTRY_ENABLED:-true}
+    PAGEINDEX_CATALOG_TOPK: ${PAGEINDEX_CATALOG_TOPK:-200}
   depends_on:
     redis:
       condition: service_healthy
     minio-setup:
       condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
   restart: unless-stopped
 
 services:
@@ -109,6 +116,28 @@ services:
       "
     restart: "no"
 
+  # ─── Postgres: document registry (RFC-006) ───────────────────────────────────
+  # Used by the app for corpus-scale doc discovery and BM25 narrowing.
+  # Set REGISTRY_ENABLED=false to disable registry reads/writes without removing
+  # this service. Port 5432 is exposed for the host-side backfill script and psql.
+  postgres:
+    image: postgres:16-alpine
+    container_name: pageindex-postgres
+    environment:
+      POSTGRES_USER: pageindex
+      POSTGRES_PASSWORD: pageindex
+      POSTGRES_DB: pageindex
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pageindex -d pageindex"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   # ─── PageIndex MCP server (gunicorn + uvicorn workers) ───────────────────────
   # Only starts with `--profile app`; otherwise this is infra-only.
   pageindex-mcp:
@@ -136,3 +165,4 @@ services:
 volumes:
   redis_data:
   minio_data:
+  postgres_data:

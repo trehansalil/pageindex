@@ -1,3 +1,9 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-003: Tier-0 Decision Lock & Staged Remediation (RFC session) -->
+<!-- Folder: RFCs -->
+<!-- Confluence-Page-ID: 5104893974 -->
+<!-- Confluence-URL: https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5104893974/RFC-003+Tier-0+Decision+Lock+Staged+Remediation+RFC+session -->
+
 ---
 id: RFC-003
 title: Tier-0 Decision Lock & Staged Remediation (RFC session)

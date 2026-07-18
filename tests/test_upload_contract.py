@@ -21,6 +21,7 @@ TEST_API_KEY = "contract-key-xyz"
 
 _mock_settings = MagicMock()
 _mock_settings.upload_api_key = TEST_API_KEY
+_mock_settings.max_upload_size_mb = 100
 
 
 @pytest.fixture(autouse=True)

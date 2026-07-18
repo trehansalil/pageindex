@@ -7,8 +7,10 @@
 > the `##` headings below by name.
 >
 > **Design constraint (hard).** Reuse the existing FastMCP + arq + MinIO + Redis + Prometheus
-> stack. **No vector database. No new infrastructure tier.** Every evolution below is additive to
-> this stack.
+> stack. **No vector database.** Every evolution below is additive to this stack.
+> RFC-006 adds **Postgres** as a new stateful component for the corpus-scale document registry
+> (replacing O(N) MinIO listing at millions-doc scale). This is the only infrastructure addition
+> beyond the original MinIO/Redis/Prometheus triad.
 >
 > **Conventions.**
 > - **[current]** — implemented and running in `master` today.
@@ -53,6 +55,12 @@ The platform splits cleanly into two planes that share only Redis and MinIO:
                          │ pageindex:doc:<id>    │◀────────▶│ hashes/processed_hashes.json            │
                          │ (cache, TTL)          │          │ processed/graph.json  [Tier 2]          │
                          └──────────┬────────────┘          └─────────────────────────────────────────┘
+                                    │                                         │
+                         ┌── Postgres ───────────┐                           │
+                         │ doc_registry          │◀────── save_doc_meta() ───┘
+                         │ (doc_id PK, tsvector) │  RFC-006: corpus-scale
+                         │ GIN + processed_at    │  narrowing & listing
+                         └───────────────────────┘
                                     │ consume
                          ┌──────────▼─────────── Ingestion plane (stateless, scale by replicas) ──────┐
                          │  arq worker  →  process_document_job  →  CustomPageIndexClient.index()      │
@@ -125,9 +133,18 @@ will enforce that the dependency arrows below never reverse.
 
 ### Storage / cache layer  [current]
 - **`storage.py`** — MinIO client singleton + all object CRUD: `save_doc`/`load_doc`/`delete_doc`,
-  `save_doc_meta`, `list_processed_docs`, `save_raw`, hash-cache, staging, and `sync_preloaded_to_minio`.
+  `save_doc_meta` (writes lightweight sidecar only — the RFC-006 Postgres dual-write is done by
+  `worker._upsert_registry_row` in the long-lived worker parent, since `save_doc_meta` runs inside
+  the isolated `converters_cli` subprocess which never opens a registry pool), `list_processed_docs`, `save_raw`,
+  hash-cache, staging, and `sync_preloaded_to_minio`.
 - **`cache.py`** — Redis-backed read-through cache for processed trees (`pageindex:doc:<id>`, TTL
   `CACHE_TTL`), invalidated on `save_doc`/`delete_doc`. Shared across all gunicorn workers.
+- **`registry.py`** — Postgres-backed document registry (RFC-006). Async `asyncpg` connection pool;
+  `doc_registry` table with GIN full-text index and `processed_at` index. Provides `upsert_doc`,
+  `delete_doc`, `list_docs` (replaces O(N) MinIO listing), `stage_a_filter` (exact facet narrowing,
+  no-op pre-Tier-1), and `stage_b_candidates` (ts_rank/BM25 top-K narrowing). Backfill script:
+  `registry_backfill.py`. Registry reads are gated behind a `pageindex:registry:complete` Redis flag
+  with an observable MinIO fallback (`pageindex_registry_fallback_total` metric).
 
 ### Converters layer  [current + Tier 0/1]
 - **`converters.py`** — `libreoffice_to_pdf` (DOCX/PPTX → PDF), `docx_to_markdown`, `pptx_to_markdown`,
@@ -493,6 +510,14 @@ are configured to the same endpoint; no separate configuration exists per plane.
 
 MinIO, Redis, and server binding variables are documented in `.env.example` and the *Data Model & Storage Layout* section above.
 
+### Postgres registry (RFC-006)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `POSTGRES_DSN` | — | asyncpg DSN, e.g. `postgresql://user:pass@host:5432/dbname`. When unset, registry is bypassed entirely and `list_processed_docs()` MinIO scanning is used. |
+| `REGISTRY_ENABLED` | `true` | Master switch. Set to `false` to disable all registry reads/writes without removing Postgres from the deployment. |
+| `PAGEINDEX_CATALOG_TOPK` | `200` | Stage B BM25 cut-off — top-K docs returned by `ts_rank`/GIN before the LLM prefilter. Tune by measured recall (RFC-006 F8). |
+
 ---
 
 ## Observability
@@ -507,6 +532,7 @@ Prometheus is the only telemetry backend (`metrics.py`, exposed at `/metrics` vi
 | `pageindex_rag_searches_total` / `_rag_duration_seconds` / `pageindex_llm_calls_total` / `_llm_duration_seconds` | Counter/Histogram | `helpers._rag` |
 | `pageindex_minio_operations_total{operation}` / `_minio_duration_seconds{operation}` | Counter/Histogram | `storage.py` |
 | `pageindex_documents_total` | Gauge | `recent_documents` |
+| `pageindex_registry_fallback_total{reason}` | Counter | `reason` = `disabled` \| `pool_not_ready` \| `backfill_incomplete` \| `postgres_error` | Times the read path fell back from the Postgres registry to MinIO listing. Never silent — every fallback is logged and counted (RFC-006 F4). |
 | **`pageindex_low_quality_trees_total`** | **Counter** | **`validate_tree` failure  [planned — Tier 0]** |
 | **golden-question pass-rate** | **Gauge** | **nightly eval cron  [planned — Tier 2 P2]** |
 

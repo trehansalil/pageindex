@@ -24,6 +24,7 @@ import redis.asyncio as aioredis
 from arq import cron
 from arq.connections import RedisSettings
 
+from .cache import get_async_redis
 from .config import settings
 from .memory_admission import wait_for_memory
 from .metrics import (
@@ -34,7 +35,7 @@ from .metrics import (
     UPLOAD_DURATION,
     UPLOADS,
 )
-from .storage import delete_staging, download_staging
+from .storage import delete_staging, download_staging, read_registry_fields
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +273,7 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     to a local temp directory, runs conversion in an isolated child process,
     then cleans up both.
     """
-    redis: aioredis.Redis = ctx.get("redis") or aioredis.from_url(
-        settings.redis_url, decode_responses=True
-    )
+    redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
     # Extract filename from staging key: uploads/staging/<job_id>/<filename>
     filename = os.path.basename(staging_key)
     tmp_dir = tempfile.mkdtemp()
@@ -382,6 +381,11 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         logger.info(
             "Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start
         )
+        # RFC-006 dual-write: the document save (and the fork's save_doc_meta)
+        # ran in the isolated converter child, which has no registry pool. The
+        # registry upsert must therefore happen here in the long-lived parent,
+        # where startup() opened the pool. Best-effort — never fail the job.
+        await _upsert_registry_row(doc_id, content_class)
         cleanup_staging = True  # terminal success
         return doc_id
     except (TimeoutError, ConverterOOMError, ConverterChildError) as exc:
@@ -420,7 +424,9 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # rejection, or max_tries exhausted). Pending retries must keep the original
         # file so re-runs can re-download it from MinIO.
         if cleanup_staging:
-            await asyncio.to_thread(delete_staging, staging_key)
+            staging_deleted = await asyncio.to_thread(delete_staging, staging_key)
+            if not staging_deleted:
+                logger.warning("Staging object left behind after delete failure: %s", staging_key)
 
 
 async def reap_stale_jobs(ctx: dict) -> None:
@@ -436,9 +442,7 @@ async def reap_stale_jobs(ctx: dict) -> None:
     alone — we never reap a job we cannot *prove* is stale, so an in-flight job is
     never wrongly failed.
     """
-    redis: aioredis.Redis = ctx.get("redis") or aioredis.from_url(
-        settings.redis_url, decode_responses=True
-    )
+    redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
     cutoff = JOB_TIMEOUT + REAP_GRACE
     now = int(time.time())
     reaped = 0
@@ -473,14 +477,53 @@ async def reap_stale_jobs(ctx: dict) -> None:
         logger.warning("reap_stale_jobs flipped %d stale processing job(s) to error", reaped)
 
 
+async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
+    """Parent-side RFC-006 dual-write.
+
+    Reads the registry-relevant fields from the just-persisted processed doc and
+    upserts them into the Postgres registry. Runs in the long-lived worker
+    parent (where startup() opened the pool), awaited so it cannot be lost the
+    way a fire-and-forget task would be. Best-effort: any failure logs a warning
+    but never fails the job — the MinIO artifacts remain the source of truth.
+    """
+    if not (settings.registry_enabled and settings.postgres_dsn):
+        return
+    from .registry import get_pool, upsert_doc
+
+    if get_pool() is None:
+        logger.debug("registry: pool not ready, skipping dual-write for %s", doc_id)
+        return
+    try:
+        fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+        if fields:
+            await upsert_doc(fields)
+            logger.info("registry: dual-write upserted doc_id=%s", doc_id)
+    except Exception as exc:
+        logger.warning("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc)
+
+
 async def startup(ctx: dict) -> None:
     ctx["redis"] = aioredis.from_url(settings.redis_url, decode_responses=True)
+    # RFC-006: open the Postgres registry pool so save_doc_meta's dual-write
+    # (storage.py) actually reaches Postgres. Without this, get_pool() stays None
+    # and the ingestion path skips every registry row, leaving the catalog empty.
+    if settings.registry_enabled and settings.postgres_dsn:
+        from .registry import init_registry
+
+        try:
+            await init_registry(settings.postgres_dsn)
+        except Exception as exc:
+            logger.warning("registry: init failed at worker startup, dual-write disabled: %s", exc)
 
 
 async def shutdown(ctx: dict) -> None:
     r = ctx.get("redis")
     if r:
         await r.aclose()
+    if settings.registry_enabled and settings.postgres_dsn:
+        from .registry import close_registry
+
+        await close_registry()
 
 
 class WorkerSettings:

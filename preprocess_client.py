@@ -8,7 +8,8 @@ Usage:
                 If omitted, all supported files in doc_store/ are processed.
     --bg      — detach and run as a background process; output goes to preprocess.log
 
-Supported extensions: .pdf  .docx  .pptx  .md  .txt  .html
+Supported extensions: see pageindex_mcp.client._SUPPORTED (.pdf .docx .pptx .md
+.markdown .txt .html .xlsx .png .jpg .jpeg .tif .tiff)
 
 Each file is indexed in a FRESH child process (``pageindex_mcp.converters_cli``,
 the same isolation the arq worker uses via ``_run_converter_subprocess``). Docling
@@ -105,10 +106,11 @@ class _FilteredStderr:
 
 from dotenv import load_dotenv
 
+from pageindex_mcp.client import _SUPPORTED as SUPPORTED
+
 load_dotenv()
 
 DOC_STORE = Path(__file__).parent / "doc_store"
-SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".txt", ".html"}
 LOG_FILE  = Path(__file__).parent / "preprocess.log"
 
 
@@ -174,7 +176,80 @@ async def preprocess(files: list[Path]) -> None:
     await asyncio.gather(*(_process_one(sem, f) for f in files))
 
 
+async def recompute_verdicts(doc_id: str | None = None) -> None:
+    """Recompute verdict for one or all docs without re-ingestion (RFC-014 D3)."""
+    import json
+    from datetime import UTC, datetime
+    from pageindex_mcp.config import _load_settings
+    from pageindex_mcp.helpers import _tree_max_leaf_ratio, classify_verdict
+    from pageindex_mcp.storage import get_minio, save_doc_meta
+
+    settings = _load_settings()
+    mc = get_minio()
+
+    if doc_id:
+        doc_ids = [doc_id]
+    else:
+        # List all processed docs
+        objects = mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True)
+        doc_ids = []
+        for obj in objects:
+            name = obj.object_name or ""
+            if name.endswith(".json") and not name.endswith(".meta.json") and not name.endswith(".flat.json"):
+                did = name.replace("processed/", "").replace(".json", "")
+                doc_ids.append(did)
+
+    print(f"Recomputing verdicts for {len(doc_ids)} doc(s)...", flush=True)
+    updated = 0
+    errors = 0
+
+    for did in doc_ids:
+        try:
+            key = f"processed/{did}.json"
+            response = mc.get_object(settings.minio_bucket, key)
+            try:
+                data = json.loads(response.read())
+            finally:
+                response.close()
+                response.release_conn()
+
+            structure = data.get("structure") or []
+            content_class = data.get("content_class", "")
+
+            verdict, verdict_reason = classify_verdict(structure, content_class, None)
+            _, _, mlr = _tree_max_leaf_ratio(structure)
+
+            meta = {
+                "doc_id": did,
+                "doc_name": data.get("doc_name", ""),
+                "source_url": data.get("source_url", ""),
+                "processed_at": data.get("processed_at", ""),
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "max_leaf_ratio": round(mlr, 4),
+                "verdict_computed_at": datetime.now(UTC).isoformat(),
+            }
+            if content_class:
+                meta["content_class"] = content_class
+
+            save_doc_meta(did, meta)
+            updated += 1
+            print(f"  {did}: {verdict} ({verdict_reason or 'clean'})", flush=True)
+        except Exception as e:
+            errors += 1
+            print(f"  {did}: ERROR — {e}", flush=True)
+
+    print(f"\nDone: {updated} updated, {errors} errors", flush=True)
+
+
 if __name__ == "__main__":
+    # RFC-014 D3: recompute verdicts without re-ingestion
+    if "--recompute-verdicts" in sys.argv:
+        idx = sys.argv.index("--recompute-verdicts")
+        rv_doc_id = sys.argv[idx + 1] if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("--") else None
+        asyncio.run(recompute_verdicts(rv_doc_id))
+        sys.exit(0)
+
     args = sys.argv[1:]
     background = "--bg" in args
     if background:

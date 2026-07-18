@@ -22,8 +22,13 @@ async def test_find_relevant_documents_loads_each_doc_once():
              "start_index": 1, "end_index": 1},
         ],
     }
+    # RFC-009 D6: registry-only read path — find_relevant_documents lists docs
+    # via the Postgres registry, not a MinIO list_processed_docs() scan.
+    from pageindex_mcp.tools import documents
+
     with (
-        patch("pageindex_mcp.tools.documents.list_processed_docs", return_value=fake_meta),
+        patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)),
+        patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=fake_meta)),
         patch("pageindex_mcp.helpers.get_doc", return_value=fake_doc) as mock_load,
         patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm,
     ):

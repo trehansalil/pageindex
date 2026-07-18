@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections import Counter
 
 from .cache import get_doc
 from .config import settings
@@ -14,6 +15,7 @@ from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
     RAG_DURATION,
+    RAG_PARSE_FAILURES,
     RAG_SEARCHES,
 )
 
@@ -48,9 +50,30 @@ async def _llm(prompt: str, model: str | None = None) -> str:
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )
-        return r.choices[0].message.content.strip()
+        content = r.choices[0].message.content
+        if content is None:
+            logger.warning("LLM returned None content for prompt %s", prompt[:80])
+            return ""
+        return content.strip()
     finally:
         LLM_DURATION.observe(time.monotonic() - start)
+
+
+def _extract_json_object(raw: str) -> str:
+    """Extract the outermost JSON object from an LLM response.
+
+    LLMs frequently wrap JSON in markdown ```json fences or surround it with
+    prose ("Here is the result: {...}"). Grab the ``{...}`` span so the
+    downstream ``json.loads`` sees clean JSON. Falls back to the stripped input
+    when no braces are present (``json.loads`` then raises and the caller handles
+    the failure). Shared by ``_prefilter_docs`` (RFC-008 D6) and
+    ``_search_one_doc`` (RFC-008 D7) — both need identical fence/prose-tolerant
+    extraction.
+    """
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        return match.group(0)
+    return raw.strip()
 
 
 async def _prefilter_docs(
@@ -87,16 +110,15 @@ async def _prefilter_docs(
     raw = await _llm(prompt, model=_FILTER_MODEL)
     logger.info("RAG TIMING: pre-filter LLM call = %.3fs", time.monotonic() - t0)
 
-    clean = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-    clean = re.sub(r"\n?```$", "", clean).strip()
+    clean = _extract_json_object(raw)
 
     try:
         parsed = json.loads(clean)
         ids = parsed.get("relevant_doc_ids", [])
         logger.info("RAG pre-filter: %d/%d docs selected: %s", len(ids), len(doc_summaries), ids)
         return ids
-    except Exception as e:
-        logger.error("RAG pre-filter: failed to parse response, using all docs: %s", e)
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning("RAG pre-filter: failed to parse response, using all docs: %s", e)
         return [d["doc_id"] for d in doc_summaries]
 
 
@@ -118,6 +140,36 @@ def _build_node_map(nodes: list, nm: dict) -> None:
             nm[n["node_id"]] = n
         if n.get("nodes"):
             _build_node_map(n["nodes"], nm)
+
+
+def _parse_page_spec(pages: str) -> set[int]:
+    """Parse '1-3,5' style page spec into a set of page numbers."""
+    wanted: set[int] = set()
+    for part in pages.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            wanted.update(range(int(a), int(b) + 1))
+        else:
+            wanted.add(int(part))
+    return wanted
+
+
+def _extract_page_hits(structure: list, pages: str) -> list[dict]:
+    """Shared page-hit extraction: build node map, parse page spec, filter by intersection."""
+    nm: dict = {}
+    _build_node_map(structure, nm)
+    wanted = _parse_page_spec(pages)
+    return [
+        {
+            "node_id": nid,
+            "title": n.get("title"),
+            "pages": f"{n.get('start_index')}-{n.get('end_index')}",
+            "text": n["text"],
+        }
+        for nid, n in nm.items()
+        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted and "text" in n
+    ]
 
 
 async def _rag(query: str, doc_ids: list[str]) -> str:
@@ -188,8 +240,7 @@ async def _search_one_doc(
         logger.info("RAG TIMING: LLM search(%s) = %.3fs", doc_id, time.monotonic() - llm_t0)
         logger.debug("RAG: LLM raw response for doc %s: %s", doc_id, raw[:500])
 
-        clean = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-        clean = re.sub(r"\n?```$", "", clean).strip()
+        clean = _extract_json_object(raw)
 
         try:
             parsed = json.loads(clean)
@@ -197,9 +248,10 @@ async def _search_one_doc(
             thinking = parsed.get("thinking", "")
             logger.info("RAG: doc %s — LLM selected %d node(s): %s", doc_id, len(ids), ids)
             logger.info("RAG: doc %s — LLM reasoning: %s", doc_id, thinking[:300])
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
             ids = []
-            logger.error(
+            RAG_PARSE_FAILURES.labels(doc_id=doc_id).inc()
+            logger.warning(
                 "RAG: failed to parse LLM response for doc %s: %s — raw: %s", doc_id, e, clean[:300]
             )
 
@@ -231,6 +283,22 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     matched_docs: list[tuple[str, str]] = []
     logger.info("RAG search starting: query=%r across %d doc(s)", query[:100], len(doc_ids))
     rag_t0 = time.monotonic()
+
+    # --- Phase 1.4: Registry narrowing (RFC-006 Stage A + Stage B) ---
+    # Runs BEFORE Phase 1 (doc load) to avoid loading docs that won't survive the
+    # LLM prefilter.  Only activates when the registry pool is ready and the
+    # registry_complete flag is set (same conditions as _list_docs_with_fallback).
+    # Falls through silently when unavailable — doc_ids is unchanged.
+    narrowing_t0 = time.monotonic()
+    narrowed_ids = await _registry_narrow(query, doc_ids)
+    if narrowed_ids is not doc_ids:  # narrowing actually happened
+        logger.info(
+            "RAG TIMING: Phase 1.4 narrowing %d -> %d doc(s) = %.3fs",
+            len(doc_ids),
+            len(narrowed_ids),
+            time.monotonic() - narrowing_t0,
+        )
+        doc_ids = narrowed_ids
 
     # --- Phase 1: Load all documents ---
     phase1_t0 = time.monotonic()
@@ -322,6 +390,123 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     return result
 
 
+_REGISTRY_COMPLETE_TTL_S = 60.0
+_registry_complete_cache: bool = False
+_registry_complete_cache_ts: float = 0.0
+
+
+async def _check_registry_complete_cached() -> bool:
+    """RFC-008 D1 (ISS-07): shared registry-complete check with a 60s cache.
+
+    Uses the ``cache.py`` singleton (``get_async_redis``) instead of opening
+    an ad-hoc connection per call, and caches a positive result for
+    ``_REGISTRY_COMPLETE_TTL_S`` seconds. The flag is monotonic — it flips
+    ``False`` -> ``True`` exactly once, when the initial registry backfill
+    finishes — so caching ``True`` is safe and avoids a Redis round-trip in
+    the steady-state case. A cached ``False`` is never trusted (it may flip
+    to ``True`` at any time), so every call re-checks Redis until the flag is
+    observed ``True``.
+
+    Shared by ``_registry_narrow`` (this module) and
+    ``tools.documents._list_docs_with_fallback``.
+    """
+    global _registry_complete_cache, _registry_complete_cache_ts
+
+    now = time.monotonic()
+    if _registry_complete_cache and (now - _registry_complete_cache_ts) < _REGISTRY_COMPLETE_TTL_S:
+        return True
+
+    from .cache import get_async_redis
+    from .registry import is_registry_complete
+
+    try:
+        r = await get_async_redis()
+        complete = await is_registry_complete(r)
+    except Exception as exc:
+        logger.warning("_check_registry_complete_cached: Redis error checking registry flag: %s", exc)
+        return False
+
+    if complete:
+        _registry_complete_cache = True
+        _registry_complete_cache_ts = now
+
+    return complete
+
+
+async def _registry_narrow(query: str, doc_ids: list[str]) -> list[str]:
+    """RFC-006 Phase 1.4: narrow ``doc_ids`` via Stage A (facet) then Stage B (BM25).
+
+    Returns the original ``doc_ids`` list (same object) when narrowing is
+    unavailable (pool not ready, registry not complete, Postgres error, or
+    registry_enabled=False) so the caller falls through to loading all docs —
+    the existing behaviour.
+
+    Stage A is a no-op until Tier-1 node-metadata fields land (all
+    _KNOWN_FACETS sets are empty → stage_a_filter returns None).
+
+    Stage B cuts to PAGEINDEX_CATALOG_TOPK via ts_rank/GIN.  The result is
+    intersected with ``doc_ids`` so only docs the caller already knows about
+    are returned — prevents the registry from introducing docs the caller
+    hasn't listed (e.g. after a partial backfill).
+    """
+    if not settings.registry_enabled or not settings.postgres_dsn:
+        return doc_ids
+
+    from .registry import get_pool, stage_a_filter, stage_b_candidates
+
+    pool = get_pool()
+    if pool is None:
+        return doc_ids
+
+    # Honour the same backfill-complete gate as the listing path.
+    complete = await _check_registry_complete_cached()
+    if not complete:
+        return doc_ids
+
+    doc_id_set = set(doc_ids)
+
+    # Stage A — exact facet filter (no-op pre-Tier-1).
+    stage_a = await stage_a_filter(query)
+    if stage_a is not None:
+        stage_a_ids = [r["doc_id"] for r in stage_a if r["doc_id"] in doc_id_set]
+        if stage_a_ids:
+            logger.info(
+                "_registry_narrow: Stage A hit — %d/%d docs match facets",
+                len(stage_a_ids),
+                len(doc_ids),
+            )
+            # Still run Stage B on the facet-filtered set to apply topK rank ordering.
+            doc_id_set = set(stage_a_ids)
+
+    # Stage B — BM25 lexical ranking.
+    topk = settings.catalog_topk
+    stage_b = await stage_b_candidates(query, topk)
+    if stage_b is None:
+        # Postgres error in Stage B — fall through to full load.
+        logger.warning("_registry_narrow: Stage B failed — using full doc_ids list")
+        return doc_ids
+
+    # Intersect with the caller's doc_id_set (post Stage A filter if it fired).
+    narrowed = [r["doc_id"] for r in stage_b if r["doc_id"] in doc_id_set]
+    if not narrowed:
+        # No overlap — stage B returned docs the caller doesn't know about yet
+        # (pre-backfill gap) or the query is very unusual.  Fall back to full set.
+        logger.warning(
+            "_registry_narrow: Stage B returned no overlap with caller's doc set — "
+            "falling back to full %d-doc list",
+            len(doc_ids),
+        )
+        return doc_ids
+
+    logger.info(
+        "_registry_narrow: narrowed %d -> %d doc(s) via registry (topk=%d)",
+        len(doc_ids),
+        len(narrowed),
+        topk,
+    )
+    return narrowed
+
+
 class LowQualityTreeError(Exception):
     """Raised when validate_tree rejects a tree (HR5 / WORKER-01-C2).
 
@@ -352,7 +537,8 @@ def _tree_depth(nodes: list) -> int:
     return best
 
 
-def _tree_is_garbled(nodes: list) -> bool:
+def _flatten_tree_text(nodes: list) -> str:
+    """Concatenate all title+text from a tree structure into a single string."""
     parts: list[str] = []
 
     def _walk(ns: list) -> None:
@@ -362,13 +548,83 @@ def _tree_is_garbled(nodes: list) -> bool:
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
-    blob = "".join(parts)
+    return "".join(parts)
+
+
+def _is_garbled_blob(blob: str) -> bool:
+    """Unified garble-detection heuristics (D7 / RFC-013).
+
+    Checks (in order): empty, null/replacement bytes, GLYPH< markers,
+    control-char ratio >5%, PUA ratio >3%, digit ratio >60% (blobs >500 chars),
+    token repetition >30% (>20 alnum tokens, excluding symbolic tokens)."""
     if not blob.strip():
         return True
     if "\x00" in blob or "\ufffd" in blob:
         return True
+    if "GLYPH<" in blob:
+        return True
     bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
-    return (bad / len(blob)) > 0.05
+    if (bad / len(blob)) > 0.05:
+        return True
+    # PUA-char ratio > 3% — font/CMap mojibake
+    pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
+    if (pua / len(blob)) > 0.03:
+        return True
+    # Digit ratio > 60% on blobs > 500 chars — numeric junk
+    if len(blob) > 500:
+        digits = sum(1 for c in blob if c.isdigit())
+        if (digits / len(blob)) > 0.60:
+            return True
+    # Single-token repetition > 30% on blobs with enough tokens. Purely
+    # symbolic tokens ('|' table delimiters, '€'/currency signs) are excluded:
+    # a wide price table legitimately produces dozens of these per row, which
+    # is not garbling.
+    tokens = [t for t in blob.split() if any(c.isalnum() for c in t)]
+    if len(tokens) > 20:
+        most_common_count = Counter(tokens).most_common(1)[0][1]
+        if (most_common_count / len(tokens)) > 0.30:
+            return True
+    return False
+
+
+# RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
+# digit%, repetition%) dilute away a handful of corrupted Latin fragments glued
+# to Arabic across a long document, so OCR escalation never fires. This
+# length-independent per-node pattern catches Arabic-Latin-Arabic and
+# Latin-Arabic-Latin fragments directly.
+# NOTE (RFC-015 D8): the design sketch wrote the ASCII class as [\x20-\x7E], but
+# \x20 is SPACE — including it makes "[Arabic][space][Arabic]" match every
+# inter-word gap in normal Arabic prose (clean Arabic scores ratio ~0.9, well
+# above the 0.02 threshold), which would flag EVERY Arabic document as garbled and
+# contradicts the design's own calibration (b1a72fb2 legitimate Arabic must NOT
+# trigger). "Glued" fragments are by definition whitespace-free, so the class is
+# \x21-\x7E (printable ASCII, no space). See PENDING_DECISIONS [GAP] D8-space.
+_MIXED_SCRIPT_RE = re.compile(
+    r"[؀-ۿ][\x21-\x7E]{1,8}[؀-ۿ]"  # Arabic-Latin-Arabic (glued, no space)
+    r"|[\x21-\x7E]{1,8}[؀-ۿ][\x21-\x7E]{1,8}"  # Latin-Arabic-Latin (glued, no space)
+)
+
+
+def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
+    """RFC-015 D8: detect localized Latin/digit fragments glued to Arabic script.
+
+    Requires >100 chars and >``threshold`` (2%) of whitespace-tokens matching the
+    Arabic-Latin-Arabic / Latin-Arabic-Latin pattern. Calibrated against 92eebefa
+    (21.4% mixed-script — must trigger) while sparing b1a72fb2 (legitimate
+    transliterated names — below 2%). Additive-only: OR'd into the existing garble
+    gates, so it can flag MORE text as garbled but never un-flag text the bulk
+    heuristics already caught (HR5-tightening)."""
+    if len(text) < 100:
+        return False
+    matches = _MIXED_SCRIPT_RE.findall(text)
+    return (len(matches) / max(len(text.split()), 1)) > threshold
+
+
+def _tree_is_garbled(nodes: list) -> bool:
+    blob = _flatten_tree_text(nodes)
+    # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
+    # mixed-script. Never narrows the existing gate.
+    return _is_garbled_blob(blob) or _has_sparse_mojibake(blob)
 
 
 def validate_tree(structure: list) -> tuple[bool, str]:
@@ -383,7 +639,149 @@ def validate_tree(structure: list) -> tuple[bool, str]:
         return False, "depth<2"
     if _tree_is_garbled(structure):
         return False, "garbling"
+    # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
+    # surfaces this reason as a low_quality_tree error rather than persisting.
+    if _tree_is_reordered(structure):
+        return False, "reordered"
     return True, ""
+
+
+# ── RFC-014 D1: verdict computation helpers ─────────────────────────────────────
+
+def _walk_leaves(structure: list):
+    """Yield each leaf node dict (no ``nodes`` children) in document order."""
+    for n in structure or []:
+        if not isinstance(n, dict):
+            continue
+        children = n.get("nodes") or []
+        if children:
+            yield from _walk_leaves(children)
+        else:
+            yield n
+
+
+def _tree_max_leaf_ratio(structure: list) -> tuple[int, int, float]:
+    # RFC-015 D3A: denominator is LEAF chars only. Summing non-leaf wrapper
+    # titles into `total` inflated the denominator and deflated the ratio,
+    # masking over-nested "staircase" trees (a4c1b522). Leaf-only is a strict
+    # tightening — the ratio can only rise, never fall, so no previously-failing
+    # tree can newly PASS.
+    max_leaf = 0
+    total = 0
+    for leaf in _walk_leaves(structure):
+        chars = len(leaf.get("title", "")) + len(leaf.get("text", ""))
+        total += chars
+        max_leaf = max(max_leaf, chars)
+
+    ratio = max_leaf / total if total > 0 else 0.0
+    return max_leaf, total, ratio
+
+
+def _tree_is_reordered(structure: list) -> bool:
+    """RFC-015 D2: True if any leaf's start_index (fallback line_num) regresses
+    below the running max seen so far — i.e. content emitted out of source order
+    (54e92c0a: a span emitted after the document's final article)."""
+    running_max: int | None = None
+    for leaf in _walk_leaves(structure):
+        idx = leaf.get("start_index", leaf.get("line_num"))
+        if idx is None:
+            continue
+        if running_max is not None and idx < running_max:
+            return True
+        running_max = idx if running_max is None else max(running_max, idx)
+    return False
+
+
+def ocr_noise_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    noise = sum(
+        1 for c in text
+        if c == "�"
+        or 0xE000 <= ord(c) <= 0xF8FF
+        or (ord(c) < 32 and c not in "\n\r\t")
+    )
+    return noise / len(text)
+
+
+def hash_pipe_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    count = sum(1 for c in text if c in "#|")
+    return count / len(text)
+
+
+def classify_verdict(
+    structure: list,
+    content_class: str,
+    validate_reason: str | None,
+) -> tuple[str, str]:
+    if validate_reason == "garbling":
+        return "FAIL", "garbling"
+    # RFC-015 D2: content-ordering regression forces the lowest tier. Self-contained
+    # (checks the structure directly) so it holds even when validate_reason is None.
+    if validate_reason == "reordered" or _tree_is_reordered(structure):
+        return "FAIL", "reordered"
+
+    _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
+    if max_leaf_ratio > 0.75:
+        return "FAIL", f"max_leaf_ratio={max_leaf_ratio:.2f}"
+
+    node_count = _tree_node_count(structure)
+    depth = _tree_depth(structure)
+    garbled = _tree_is_garbled(structure)
+
+    if node_count >= 3 and depth >= 2 and max_leaf_ratio < 0.15 and not garbled:
+        return "PASS", ""
+
+    # Base verdict is MARGINAL — try category-specific promotion.
+    # Category B/C use the wider 0.17 threshold (RFC-014 D4).
+    from .config import CATEGORY_BC_PROMOTION_THRESHOLD
+
+    flat_text = _flatten_tree_text(structure)
+
+    if content_class.startswith("ocr_"):
+        if max_leaf_ratio < 0.15 and ocr_noise_ratio(flat_text) < 0.005:
+            return "PASS", "cat_a_promoted"
+    elif content_class.startswith("flat_"):
+        if max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD and node_count >= 3:
+            return "PASS", "cat_b_promoted"
+    else:
+        if not garbled and hash_pipe_ratio(flat_text) < 0.01 and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD:
+            return "PASS", "cat_c_promoted"
+
+    # Build descriptive reason for remaining MARGINAL
+    if garbled:
+        reason = "garbling"
+    elif node_count < 3:
+        reason = f"node_count={node_count}"
+    elif depth < 2:
+        reason = f"depth={depth}"
+    else:
+        reason = f"leaf_concentration={max_leaf_ratio:.2f}"
+    return "MARGINAL", reason
+
+
+def detect_regression(
+    structure: list,
+    prev_node_count: int | None,
+    prev_max_leaf_ratio: float | None,
+) -> bool:
+    """Category E regression gate (RFC-014 D4, Property 6).
+
+    Returns True when BOTH conditions hold vs. the last stored verdict:
+      - node_count dropped >30%
+      - max_leaf_ratio grew >2x
+    """
+    if prev_node_count is None or prev_max_leaf_ratio is None:
+        return False
+    if prev_node_count == 0:
+        return False
+    cur_count = _tree_node_count(structure)
+    _, _, cur_ratio = _tree_max_leaf_ratio(structure)
+    count_dropped = cur_count < prev_node_count * 0.7
+    ratio_grew = prev_max_leaf_ratio > 0 and cur_ratio > prev_max_leaf_ratio * 2
+    return count_dropped and ratio_grew
 
 
 # ── FLAT-01: deterministic flat-document classifier + block extractor ──────────
@@ -438,6 +836,25 @@ def _flat_verbalize_rows(headers: list[str], data_rows: list[list[str]]) -> list
     return records
 
 
+def _forward_fill_leading_column(rows: list[list[str]]) -> list[list[str]]:
+    """RFC-015 D9: forward-fill empty cells in COLUMN 0 only, from the most recent
+    non-empty column-0 value (merged rowspan header labels — e544d939 Katze table,
+    where a merged ``Selbstbehalt`` label is dropped from 22 data rows).
+
+    Column 0 exclusively — data columns (index 1+) are never modified, mirroring
+    the RFC's explicit anti-goal of not corrupting data columns. Mutates ``rows``
+    in place and returns it."""
+    last_val = ""
+    for row in rows:
+        if not row:
+            continue
+        if row[0].strip():
+            last_val = row[0].strip()
+        elif last_val:
+            row[0] = last_val
+    return rows
+
+
 def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
     """Parse a markdown table beginning at `start` (a header row followed by a
     separator). Returns (table_block, next_index)."""
@@ -447,6 +864,11 @@ def _flat_parse_table(lines: list[str], start: int) -> tuple[dict, int]:
     while i < len(lines) and _flat_is_pipe_row(lines[i]) and not _flat_is_separator_row(lines[i]):
         data_rows.append(_flat_split_pipe_row(lines[i]))
         i += 1
+    # RFC-015 D9: forward-fill merged rowspan labels in column 0 before
+    # verbalization, so both the structured `rows` matrix and the `row_records`
+    # carry the recovered label. Applied to DATA rows only (the header row keeps
+    # its own column titles); column 0 only (data columns untouched).
+    data_rows = _forward_fill_leading_column(data_rows)
     block = {
         "role": "table",
         "headers": header,
@@ -478,6 +900,7 @@ _OVERSIZED_ORDINAL_RE = re.compile(
     r"§\s*\(?\s*(?P<sec>\d+(?:\.\d+)?)"  # § 12 / § (12) / § 12.1
     r"|Art(?:icle|\.)?\s+\(?\s*(?P<art>\d+(?:\.\d+)?)"  # Article 9 / Art. 9 / Article (9)
     r"|Section\s+\(?\s*(?P<s>\d+(?:\.\d+)?)"  # Section 4 / Section (4) / Section 4.2
+    r"|Schedule\s+\(?\s*(?P<sched>\d+(?:\.\d+)?)"  # RFC-015 D5b: Schedule 3 / Schedule (3)
     r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥
     r")"
 )
@@ -532,7 +955,14 @@ def _ordinal_value(m: "re.Match[str]") -> tuple[int, ...]:
     dotted components compared lexicographically (NOT a float — ``3.10`` must
     stay distinct from ``3.1``, whereas ``float("3.10") == float("3.1")`` would
     silently collapse them and eject a genuine heading from the increasing run)."""
-    digits = m.group("art") or m.group("sec") or m.group("s") or m.group("mada") or ""
+    digits = (
+        m.group("art")
+        or m.group("sec")
+        or m.group("s")
+        or m.group("sched")  # RFC-015 D5b
+        or m.group("mada")
+        or ""
+    )
     digits = digits.translate(_ARABIC_INDIC).replace("٫", ".")
     return tuple(int(part) for part in digits.split("."))
 
@@ -641,6 +1071,79 @@ def _split_on_paragraph_markers(
     return True
 
 
+_PREAMBLE_MIN_CHARS = 50
+
+
+def _synthesize_preamble_node(md_text: str, tree: dict) -> dict:
+    """RFC-015 D10: recover body text that precedes a document's first heading.
+
+    ``md_to_tree`` (the vendored fork's tree-builder) starts building nodes only
+    from the first heading match, so any content before it — e.g. the "who is
+    covered" clause preceding Section 1 in doc 722eb392 (GHV Reitlehrer
+    Haftpflicht) — is silently dropped. When that leading preamble (stripped)
+    exceeds ``_PREAMBLE_MIN_CHARS``, this synthesizes a node (mirroring the
+    ``_apply_split`` node shape: ``title``, ``text``, ``nodes``, ``node_id``,
+    optional ``start_index``/``end_index``) and prepends it to
+    ``tree["structure"]`` at index 0, before any other synthesis/promotion.
+
+    Purely additive: a document whose first heading is already at line 1 (no
+    preamble) or whose document has no heading at all gets no new node, and
+    ``tree`` is returned unchanged (mutated in place when a splice happens).
+    """
+    if not md_text or not isinstance(tree, dict):
+        return tree
+
+    structure = tree.get("structure")
+    if not isinstance(structure, list):
+        return tree
+
+    lines = md_text.splitlines()
+    first_heading_idx = None
+    for i, line in enumerate(lines):
+        if _FLAT_HEADING_RE.match(line):
+            first_heading_idx = i
+            break
+
+    if first_heading_idx is None:
+        # No heading anywhere: headingless docs are already handled by the
+        # existing flat-path/tree logic — this fix does not apply.
+        return tree
+
+    if first_heading_idx == 0:
+        # First heading is already the very first line: no preamble.
+        return tree
+
+    preamble = "\n".join(lines[:first_heading_idx])
+    if len(preamble.strip()) <= _PREAMBLE_MIN_CHARS:
+        return tree
+
+    preamble_node: dict = {
+        "title": "[Preamble]",
+        "text": preamble,
+        "nodes": [],
+        "node_id": "preamble",
+        "start_index": 0,
+        "end_index": max(first_heading_idx - 1, 0),
+    }
+    structure.insert(0, preamble_node)
+    return tree
+
+
+def _has_heading_markers(text: str) -> bool:
+    """RFC-015 D5a: lightweight check for any ``_OVERSIZED_ORDINAL_RE`` marker.
+
+    Matched on the same NFKC-folded copy the splitter itself uses (so presentation-
+    form Arabic and Latin paren forms are seen), so this agrees exactly with the
+    marker-finding done inside ``split_oversized_leaf_nodes``. Used to decouple the
+    split trigger from raw char count: a residual leaf under ``max_chars`` that
+    still carries a real heading sequence (6147c7d7: 19,959 chars) must still be
+    eligible for splitting."""
+    if not text:
+        return False
+    folded, _ = _fold_with_index_map(text)
+    return _OVERSIZED_ORDINAL_RE.search(folded) is not None
+
+
 def split_oversized_leaf_nodes(
     structure: list, max_chars: int = 50000, min_segments: int = 3
 ) -> list:
@@ -675,7 +1178,16 @@ def split_oversized_leaf_nodes(
             continue
 
         text = node.get("text") or ""
-        if len(text) <= max_chars:
+        # RFC-015 D5a: decouple the split trigger from raw size. A leaf is
+        # split-eligible when it is oversized OR carries detectable heading
+        # markers — a marker-dense residual leaf under max_chars (6147c7d7,
+        # 19,959 chars) still collapses a real hierarchy and must be split.
+        # Strictly ADDITIVE: only widens the eligible set, never removes an
+        # oversized leaf from it, and every downstream guard (frontmatter-ToC
+        # accept, strictly-increasing-run ≥ min_segments, paragraph-fallback
+        # acceptance) is unchanged, so no leaf is split without a genuine
+        # ordinal sequence (HR5-neutral: recovers more real structure only).
+        if len(text) <= max_chars and not _has_heading_markers(text):
             continue
 
         folded, idx_map = _fold_with_index_map(text)
@@ -873,6 +1385,25 @@ def flag_empty_cells(block: dict) -> dict:
     return block
 
 
+_TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
+
+
+def _flat_text_is_garbled(md: str) -> bool:
+    """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
+    text = md or ""
+    # Additive OR (RFC-015 D8): sparse mixed-script mojibake, same as the tree gate.
+    return _is_garbled_blob(text) or _has_sparse_mojibake(text)
+
+
+def _looks_like_toc_page(block_text: str) -> bool:
+    """Return True if text looks like a table-of-contents page (dot-leader lines)."""
+    text_lines = block_text.splitlines()
+    if len(text_lines) < 3:
+        return False
+    matches = sum(1 for ln in text_lines if _TOC_DOT_LEADER_RE.search(ln))
+    return (matches / len(text_lines)) > 0.40
+
+
 # Complexity grandfathered (flat-doc router, FLAT-01); see pyproject [tool.ruff].
 def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
     """FLAT-01-C1/C2/C3: classify a flat (no-hierarchy) markdown document and
@@ -917,9 +1448,15 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
         # Table region: a pipe row immediately followed by a separator row.
         if _flat_is_pipe_row(line) and i + 1 < n and _flat_is_separator_row(lines[i + 1]):
             flush_prose()
-            block, i = _flat_parse_table(lines, i)
-            blocks.append(block)
-            signals.add("table")
+            table_start = i
+            block, i = _flat_parse_table(lines, table_start)
+            raw_table_text = "\n".join(lines[table_start:i])
+            if _looks_like_toc_page(raw_table_text):
+                blocks.append({"role": "prose", "text": raw_table_text})
+                signals.add("prose")
+            else:
+                blocks.append(block)
+                signals.add("table")
             continue
 
         # Heading -> title block (does not by itself decide the content class).

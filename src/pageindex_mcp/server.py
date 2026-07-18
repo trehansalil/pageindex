@@ -47,8 +47,32 @@ _inner_lifespan = starlette_app.router.lifespan_context
 
 @contextlib.asynccontextmanager
 async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
+    # RFC-011 D6 / ISS-33: refuse to start if PII corpus is routed through
+    # a non-ZDR endpoint (HR3 enforcement).
+    if settings.pii_corpus:
+        from .config import _is_zdr_allowlisted
+
+        if not _is_zdr_allowlisted(settings.openai_base_url):
+            raise RuntimeError(
+                f"PII_CORPUS=true but openai_base_url={settings.openai_base_url!r} "
+                "is not on the ZDR allow-list (HR3)"
+            )
+
     redis = await get_async_redis()
     scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))
+    # RFC-006: open the Postgres registry pool so the query read path
+    # (_registry_narrow / _list_docs_with_fallback) can actually use it. Without
+    # this, get_pool() stays None and every query silently falls back to MinIO.
+    if settings.registry_enabled and settings.postgres_dsn:
+        from .registry import init_registry
+
+        try:
+            await init_registry(settings.postgres_dsn)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "registry: init failed at server startup, queries will fall back to MinIO: %s",
+                exc,
+            )
     try:
         if _inner is None:
             yield
@@ -59,6 +83,10 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
         scrape_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await scrape_task
+        if settings.registry_enabled and settings.postgres_dsn:
+            from .registry import close_registry
+
+            await close_registry()
         # Flush the langfuse-python client before the process exits. The query
         # path (find_relevant_documents -> OpenAI SDK via the langfuse.openai
         # wrapper) buffers spans on the SDK's background sender; a short-lived

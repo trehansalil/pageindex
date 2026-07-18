@@ -5,27 +5,153 @@ import logging
 import time
 
 from ..cache import get_doc
-from ..helpers import _build_node_map, _rag, _strip_text, flat_doc_view
+from ..config import settings
+from ..helpers import (
+    _build_node_map,
+    _check_registry_complete_cached,
+    _extract_page_hits,
+    _rag,
+    _strip_text,
+    flat_doc_view,
+)
 from ..metrics import (
     DOCUMENTS_TOTAL,
+    REGISTRY_FALLBACK_TOTAL,
     TOOL_CALLS,
     TOOL_DURATION,
     TOOL_ERRORS,
 )
-from ..storage import list_processed_docs
 from ..tracing import trace_tool
 
 logger = logging.getLogger(__name__)
 
 
-def recent_documents(page: int = 1, page_size: int = 10) -> str:
+class RegistryUnavailableError(RuntimeError):
+    """The Postgres document registry cannot serve the read path.
+
+    RFC-009 D6 (Design Property 7): the listing/query paths are registry-only —
+    there is no MinIO fallback. When the registry is disabled, its pool is not
+    initialised, the backfill is not yet complete, or a Postgres query fails, the
+    read path raises this instead of silently degrading to an O(N) MinIO bucket
+    scan (ISS-05). The MCP tool boundary (``find_relevant_documents`` /
+    ``recent_documents``) turns it into a clean JSON error envelope.
+
+    ``reason`` mirrors the REGISTRY_FALLBACK_TOTAL 'reason' label so the failure
+    mode is observable in both metrics and the error surfaced to the caller.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Document registry unavailable (reason={reason})")
+
+
+async def _require_registry_ready() -> None:
+    """Assert the Postgres registry can serve the read path, else raise.
+
+    RFC-009 D6 replaces the old fall-back-to-MinIO decision: instead of returning
+    False so the caller scans MinIO, every negative branch increments
+    REGISTRY_FALLBACK_TOTAL with a 'reason' label (RFC-006 F4 — kept as the
+    observability signal for *why* the registry was unavailable) and raises
+    RegistryUnavailableError(reason).
+
+    Shared by _list_docs_with_fallback() (full-list read path, find_relevant_
+    documents) and _list_docs_paginated() (RFC-009 D3 server-side pagination),
+    so the readiness gate lives in exactly one place.
+    """
+    if not settings.registry_enabled or not settings.postgres_dsn:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="disabled").inc()
+        logger.warning("registry read path unavailable: registry disabled")
+        raise RegistryUnavailableError("disabled")
+
+    from ..registry import get_pool
+
+    if get_pool() is None:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="pool_not_ready").inc()
+        logger.warning("registry read path unavailable: pool not ready")
+        raise RegistryUnavailableError("pool_not_ready")
+
+    # Check the backfill-complete flag (RFC-008 D1: shared cached check in
+    # helpers.py, uses the cache.py Redis singleton instead of an ad-hoc
+    # connection, and a 60s TTL cache on a positive result).
+    if not await _check_registry_complete_cached():
+        REGISTRY_FALLBACK_TOTAL.labels(reason="backfill_incomplete").inc()
+        logger.warning(
+            "registry read path unavailable: backfill not complete "
+            "(set pageindex:registry:complete in Redis via registry_backfill.py)"
+        )
+        raise RegistryUnavailableError("backfill_incomplete")
+
+
+async def _list_docs_with_fallback() -> tuple[list[dict], bool]:
+    """Return (docs, used_registry) for the *full-list* read path.
+
+    RFC-009 D6 (Design Property 7): registry-only — the MinIO fallback is gone.
+    Raises RegistryUnavailableError when the registry cannot serve the read path
+    (disabled / pool down / backfill incomplete / Postgres query error); the MCP
+    tool boundary (find_relevant_documents) turns that into a JSON error
+    envelope. Used by find_relevant_documents, which needs every doc_id;
+    recent_documents uses _list_docs_paginated() instead (RFC-009 D3).
+
+    The ``used_registry`` element is retained for the caller's log line and is
+    always True on the success path now that the fallback branch is removed.
+    """
+    await _require_registry_ready()
+
+    from ..registry import list_docs
+
+    # Registry is ready — fetch all rows (no server-side pagination at this level;
+    # the caller wants the complete corpus).
+    docs = await list_docs(limit=100_000, offset=0)
+    if docs is None:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="postgres_error").inc()
+        logger.error("_list_docs_with_fallback: registry query failed")
+        raise RegistryUnavailableError("postgres_error")
+
+    return docs, True
+
+
+async def _list_docs_paginated(page: int, page_size: int) -> tuple[list[dict], int, bool]:
+    """Return (page_docs, total, used_registry) for recent_documents (RFC-009 D3).
+
+    Registry path: SQL ``LIMIT``/``OFFSET`` via ``registry.list_docs`` plus
+    ``registry.count_docs`` for the corpus total — NO fetch-all-then-slice and
+    NO tree deserialization (node_count comes straight off the row, D2).
+
+    RFC-009 D6 (Design Property 7): registry-only — the MinIO fetch-all-then-slice
+    fallback is removed. Raises RegistryUnavailableError when the registry cannot
+    serve the read path; the MCP tool boundary (recent_documents) turns that into
+    a JSON error envelope.
+    """
+    offset = (page - 1) * page_size
+
+    await _require_registry_ready()
+
+    from ..registry import count_docs, list_docs
+
+    docs = await list_docs(limit=page_size, offset=offset)
+    total = await count_docs()
+    if docs is None or total is None:
+        REGISTRY_FALLBACK_TOTAL.labels(reason="postgres_error").inc()
+        logger.error("_list_docs_paginated: registry query failed")
+        raise RegistryUnavailableError("postgres_error")
+
+    return docs, total, True
+
+
+async def recent_documents(page: int = 1, page_size: int = 10) -> str:
     """Browse your document collection with pagination. Returns documents sorted
     by upload date (newest first) with processing status."""
     TOOL_CALLS.labels(tool="recent_documents").inc()
     start = time.monotonic()
     logger.info("recent_documents called (page=%d, page_size=%d)", page, page_size)
     try:
-        docs = list_processed_docs()
+        page_docs, total, used_registry = await _list_docs_paginated(page, page_size)
+    except RegistryUnavailableError as e:
+        # RFC-009 D6: registry-only listing — no MinIO fallback. Surface an
+        # explicit error instead of degrading to an O(N) bucket scan.
+        TOOL_ERRORS.labels(tool="recent_documents").inc()
+        logger.error("recent_documents: registry unavailable (reason=%s)", e.reason)
+        return json.dumps({"error": f"Document registry unavailable: {e.reason}"})
     except Exception as e:
         TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents failed to list docs: %s", e)
@@ -35,35 +161,33 @@ def recent_documents(page: int = 1, page_size: int = 10) -> str:
         TOOL_DURATION.labels(tool="recent_documents").observe(elapsed)
         logger.debug("recent_documents completed in %.3fs", elapsed)
 
-    DOCUMENTS_TOTAL.set(len(docs))
+    # RFC-009 D3: DOCUMENTS_TOTAL reflects the whole corpus (count_docs on the
+    # registry path / len of the full MinIO listing on the fallback), NOT the
+    # page_size-bounded slice we just fetched.
+    DOCUMENTS_TOTAL.set(total)
+    logger.info(
+        "recent_documents: %d total docs (source=%s)",
+        total,
+        "registry" if used_registry else "minio",
+    )
 
-    begin = (page - 1) * page_size
-    page_docs = docs[begin : begin + page_size]
+    # RFC-009 D3: node_count comes straight off the listing row (D2 sidecar /
+    # registry column) — no get_doc()/tree deserialization per document. Legacy
+    # docs predating the D2 backfill carry node_count=None → surface as 0.
+    enriched = [
+        {
+            "doc_id": d["doc_id"],
+            "doc_name": d.get("doc_name", "unknown"),
+            "status": "completed",
+            "node_count": d.get("node_count") or 0,
+        }
+        for d in page_docs
+    ]
 
-    enriched = []
-    for d in page_docs:
-        doc_id = d["doc_id"]
-        node_count = 0
-        try:
-            data = get_doc(doc_id)
-            nm: dict = {}
-            _build_node_map(data.get("structure", []), nm)
-            node_count = len(nm)
-        except Exception:
-            logger.warning("recent_documents: failed to load doc %s for enrichment", doc_id)
-        enriched.append(
-            {
-                "doc_id": doc_id,
-                "doc_name": d.get("doc_name", "unknown"),
-                "status": "completed",
-                "node_count": node_count,
-            }
-        )
-
-    logger.info("recent_documents returning %d/%d documents", len(enriched), len(docs))
+    logger.info("recent_documents returning %d/%d documents", len(enriched), total)
     return json.dumps(
         {
-            "total": len(docs),
+            "total": total,
             "page": page,
             "page_size": page_size,
             "documents": enriched,
@@ -85,9 +209,10 @@ async def find_relevant_documents(query: str) -> str:
         # tracing is disabled.
         async with trace_tool("find_relevant_documents"):
             list_t0 = time.monotonic()
-            documents = list_processed_docs()
+            documents, used_registry = await _list_docs_with_fallback()
             logger.info(
-                "find_relevant_documents TIMING: list_processed_docs = %.3fs (%d docs)",
+                "find_relevant_documents TIMING: list_docs (source=%s) = %.3fs (%d docs)",
+                "registry" if used_registry else "minio",
                 time.monotonic() - list_t0,
                 len(documents),
             )
@@ -101,6 +226,14 @@ async def find_relevant_documents(query: str) -> str:
                     }
                 )
             return await _rag(query, [d["doc_id"] for d in documents])
+    except RegistryUnavailableError as e:
+        # RFC-009 D6: registry-only listing — no MinIO fallback. Return a clean
+        # JSON error envelope rather than letting the outage crash the tool.
+        TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
+        logger.error("find_relevant_documents: registry unavailable (reason=%s)", e.reason)
+        return json.dumps(
+            {"error": f"Document registry unavailable: {e.reason}", "available": []}
+        )
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents failed: %s", e, exc_info=True)
@@ -122,8 +255,7 @@ def get_document(doc_id: str) -> str:
     except Exception:
         TOOL_ERRORS.labels(tool="get_document").inc()
         logger.warning("get_document: doc %s not found", doc_id)
-        available = [d["doc_id"] for d in list_processed_docs()]
-        return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
+        return json.dumps({"error": f"Document not found: {doc_id}"})
     finally:
         elapsed = time.monotonic() - start
         TOOL_DURATION.labels(tool="get_document").observe(elapsed)
@@ -185,8 +317,7 @@ def get_document_structure(doc_id: str) -> str:
     except Exception:
         TOOL_ERRORS.labels(tool="get_document_structure").inc()
         logger.warning("get_document_structure: doc %s not found", doc_id)
-        available = [d["doc_id"] for d in list_processed_docs()]
-        return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
+        return json.dumps({"error": f"Document not found: {doc_id}"})
     finally:
         elapsed = time.monotonic() - start
         TOOL_DURATION.labels(tool="get_document_structure").observe(elapsed)
@@ -227,35 +358,13 @@ def get_page_content(doc_id: str, pages: str) -> str:
     except Exception:
         TOOL_ERRORS.labels(tool="get_page_content").inc()
         logger.warning("get_page_content: doc %s not found", doc_id)
-        available = [d["doc_id"] for d in list_processed_docs()]
-        return json.dumps({"error": f"Document not found: {doc_id}", "available": available})
+        return json.dumps({"error": f"Document not found: {doc_id}"})
     finally:
         elapsed = time.monotonic() - start
         TOOL_DURATION.labels(tool="get_page_content").observe(elapsed)
         logger.debug("get_page_content completed in %.3fs", elapsed)
 
-    wanted: set[int] = set()
-    for part in pages.split(","):
-        part = part.strip()
-        if "-" in part:
-            a, b = part.split("-", 1)
-            wanted.update(range(int(a), int(b) + 1))
-        else:
-            wanted.add(int(part))
-
-    nm: dict = {}
-    _build_node_map(data.get("structure", []), nm)
-
-    hits = [
-        {
-            "node_id": nid,
-            "title": n.get("title"),
-            "pages": f"{n.get('start_index')}-{n.get('end_index')}",
-            "text": n["text"],
-        }
-        for nid, n in nm.items()
-        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted and "text" in n
-    ]
+    hits = _extract_page_hits(data.get("structure", []), pages)
 
     if not hits:
         logger.warning("get_page_content: no content for pages %s in doc %s", pages, doc_id)

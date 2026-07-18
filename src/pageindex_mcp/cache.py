@@ -15,6 +15,7 @@ import redis
 import redis.asyncio as aioredis
 
 from .config import settings
+from .metrics import CACHE_ERRORS
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,9 @@ def doc_cache_get(doc_id: str) -> dict | None:
         raw = r.get(f"{_CACHE_PREFIX}{doc_id}")
         if raw is not None:
             return json.loads(raw)
-    except Exception:
-        logger.debug("Cache get failed for %s", doc_id, exc_info=True)
+    except (redis.RedisError, ConnectionError) as exc:
+        logger.warning("cache get failed for %s: %s", doc_id, exc)
+        CACHE_ERRORS.labels(operation="get").inc()
     return None
 
 
@@ -90,8 +92,9 @@ def doc_cache_set(doc_id: str, data: dict) -> None:
             settings.cache_ttl,
             json.dumps(data),
         )
-    except Exception:
-        logger.debug("Cache set failed for %s", doc_id, exc_info=True)
+    except (redis.RedisError, ConnectionError) as exc:
+        logger.warning("cache set failed for %s: %s", doc_id, exc)
+        CACHE_ERRORS.labels(operation="set").inc()
 
 
 def doc_cache_delete(doc_id: str) -> None:
@@ -99,8 +102,9 @@ def doc_cache_delete(doc_id: str) -> None:
     try:
         r = get_cache_redis()
         r.delete(f"{_CACHE_PREFIX}{doc_id}")
-    except Exception:
-        logger.debug("Cache delete failed for %s", doc_id, exc_info=True)
+    except (redis.RedisError, ConnectionError) as exc:
+        logger.warning("cache delete failed for %s: %s", doc_id, exc)
+        CACHE_ERRORS.labels(operation="delete").inc()
 
 
 def get_doc(doc_id: str) -> dict:

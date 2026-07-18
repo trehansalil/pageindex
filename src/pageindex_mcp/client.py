@@ -27,10 +27,15 @@ from .converters import (
     pptx_to_markdown,
     xlsx_to_markdown,
 )
+from .config import CURRENT_PIPELINE_VERSION
 from .helpers import (
     LowQualityTreeError,
-    _build_node_map,
+    _extract_page_hits,
+    _flat_text_is_garbled,
     _strip_text,
+    _synthesize_preamble_node,
+    _tree_max_leaf_ratio,
+    classify_verdict,
     route_and_extract_flat,
     split_oversized_leaf_nodes,
     validate_tree,
@@ -41,14 +46,16 @@ from .metrics import (
     OCR_ESCALATION_TOTAL,
     PDF_EXTRACT_FALLBACKS,
     PDF_PRIMARY_CONVERTER_FAILURES,
+    RAW_UPLOAD_FAILURES,
+    VLM_FALLBACK_TOTAL,
 )
 from .storage import (
+    hash_cache_get,
+    hash_cache_set,
     list_processed_docs,
-    load_hash_cache,
     save_doc,
     save_doc_meta,
     save_flat_doc,
-    save_hash_cache,
     save_raw,
 )
 
@@ -238,8 +245,6 @@ class CustomPageIndexClient(PageIndexClient):
         super().__init__(api_key=api_key or settings.openai_api_key)
         self.model = model or settings.llm_model
         self.retrieve_model = retrieve_model
-        # Serialises hash-cache reads/writes across parallel index() calls on this instance.
-        self._cache_lock = asyncio.Lock()
         # RFC-004 Amendment 1 (Step 5 integration): set to the deterministic
         # content_class when index() routes a doc to the flat success path; stays
         # None for a normal tree doc. converters_cli reads this after index()
@@ -279,24 +284,23 @@ class CustomPageIndexClient(PageIndexClient):
         sha256 = hashlib.sha256(file_bytes).hexdigest()
         logger.debug("File %s: size=%d bytes, sha256=%s", filename, len(file_bytes), sha256[:12])
 
-        # Hash-based dedup: skip if content unchanged.
-        # Lock prevents parallel calls from all seeing a cache-miss simultaneously.
-        async with self._cache_lock:
-            cache = await asyncio.to_thread(load_hash_cache)
-            if cache.get(filename) == sha256:
-                docs = await asyncio.to_thread(list_processed_docs)
-                for d in docs:
-                    if d.get("doc_name") == filename:
-                        logger.info(
-                            "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
-                        )
-                        # FLAT-04 parity: the SHA-dedup early return must restore
-                        # last_content_class (reset to None at the top of index())
-                        # so an unchanged flat doc still surfaces content_class in
-                        # the converters_cli stdout payload, matching a non-deduped
-                        # flat index (cubic PR #9).
-                        self.last_content_class = d.get("content_class") or None
-                        return d["doc_id"]
+        # Hash-based dedup: skip if content unchanged. D6: HGET is a single
+        # atomic Redis op, so no lock is needed to avoid a cache-miss race.
+        cached_sha256 = await asyncio.to_thread(hash_cache_get, filename)
+        if cached_sha256 == sha256:
+            docs = await asyncio.to_thread(list_processed_docs)
+            for d in docs:
+                if d.get("doc_name") == filename:
+                    logger.info(
+                        "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
+                    )
+                    # FLAT-04 parity: the SHA-dedup early return must restore
+                    # last_content_class (reset to None at the top of index())
+                    # so an unchanged flat doc still surfaces content_class in
+                    # the converters_cli stdout payload, matching a non-deduped
+                    # flat index (cubic PR #9).
+                    self.last_content_class = d.get("content_class") or None
+                    return d["doc_id"]
 
         # Convert / index
         tmp_lo_dir = None  # LibreOffice temp dir
@@ -496,6 +500,107 @@ class CustomPageIndexClient(PageIndexClient):
                         "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
                     )
 
+            # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
+            # whose OCR escalation was either skipped or failed.
+            if (
+                not ok
+                and reason == "garbling"
+                and ext == ".pdf"
+                and settings.vlm_fallback
+            ):
+                try:
+                    from .converters import vlm_extract_markdown
+
+                    logger.warning(
+                        "Garbling persists after OCR escalation for %s; "
+                        "attempting VLM fallback (model=%s)",
+                        filename,
+                        settings.vlm_model,
+                    )
+                    md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
+                    if tmp_md_path and os.path.exists(tmp_md_path):
+                        os.unlink(tmp_md_path)
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(md_content)
+                        tmp_md_path = md_tmp.name
+                    result = await self._run_md_to_tree(tmp_md_path)
+                    result["structure"] = split_oversized_leaf_nodes(
+                        result.get("structure", [])
+                    )
+                    ok, reason = validate_tree(result.get("structure", []))
+                    VLM_FALLBACK_TOTAL.labels(
+                        result="recovered" if ok else "still_garbled"
+                    ).inc()
+                except Exception as vlm_exc:
+                    VLM_FALLBACK_TOTAL.labels(result="error").inc()
+                    logger.error(
+                        "VLM fallback failed for %s (%s)",
+                        filename,
+                        vlm_exc,
+                        exc_info=True,
+                    )
+
+            # D1: image-dominant PDFs (>50% <!-- image --> lines) get one OCR retry
+            # before falling through to flat routing — rescues scanned PDFs whose
+            # text layer is empty placeholders.
+            if (
+                not ok
+                and reason != "garbling"
+                and ext == ".pdf"
+                and _OCR_ESCALATION
+                and settings.flat_doc_routing
+                and md_content
+            ):
+                total_lines = md_content.splitlines()
+                image_lines = sum(1 for ln in total_lines if "<!-- image -->" in ln)
+                if total_lines and (image_lines / len(total_lines)) > 0.50:
+                    try:
+                        escalation_langs: list[str] = []
+                        for src in (
+                            detect_ocr_langs(filename),
+                            detect_ocr_langs(md_content or ""),
+                        ):
+                            for lg in src:
+                                if lg not in escalation_langs:
+                                    escalation_langs.append(lg)
+                        langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
+                        logger.warning(
+                            "Image-dominant (%d/%d lines) on %s; "
+                            "escalating to force_full_page_ocr (lang=%s)",
+                            image_lines,
+                            len(total_lines),
+                            filename,
+                            langs,
+                        )
+                        md_content = await asyncio.to_thread(
+                            pdf_to_markdown_docling, file_path, True, langs
+                        )
+                        if tmp_md_path and os.path.exists(tmp_md_path):
+                            os.unlink(tmp_md_path)
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".md", delete=False, mode="w", encoding="utf-8"
+                        ) as md_tmp:
+                            md_tmp.write(md_content)
+                            tmp_md_path = md_tmp.name
+                        result = await self._run_md_to_tree(tmp_md_path)
+                        result["structure"] = split_oversized_leaf_nodes(
+                            result.get("structure", [])
+                        )
+                        ok, reason = validate_tree(result.get("structure", []))
+                        OCR_ESCALATION_TOTAL.labels(
+                            result="recovered" if ok else "still_image_only"
+                        ).inc()
+                    except Exception as ocr_exc:
+                        OCR_ESCALATION_TOTAL.labels(result="error").inc()
+                        logger.error(
+                            "Image-ratio OCR escalation failed for %s (%s)",
+                            filename,
+                            ocr_exc,
+                            exc_info=True,
+                        )
+
             if not ok:
                 # FLAT-03-C1: a non-garbling rejection (node_count<3 / depth<2) is a
                 # *flat* document, not a defective one — route it to the flat success
@@ -526,69 +631,139 @@ class CustomPageIndexClient(PageIndexClient):
                     # reject below instead — a binary doc with no extractable text layer is
                     # genuinely low-quality, not flat.
                     if flat_md is not None:
-                        content_class, blocks = await asyncio.to_thread(
-                            route_and_extract_flat, flat_md
-                        )
-                        logger.info(
-                            "Routing %s to flat success path: reason=%s content_class=%s",
-                            filename,
-                            reason,
-                            content_class,
-                        )
+                        # D3B: flat-path garble gate — catch garbled text that
+                        # passed the tree gate (e.g. numeric-junk docs routed
+                        # here via node_count<3).
+                        if _flat_text_is_garbled(flat_md):
+                            reason = "garbling"
+                            logger.warning(
+                                "Flat-path garble gate triggered for %s; "
+                                "overriding reason to garbling",
+                                filename,
+                            )
+                            # VLM last-resort: the flat-path garble gate caught
+                            # garbled text that the tree gate missed (e.g. digit-
+                            # ratio watermark routed here via node_count<3).
+                            if ext == ".pdf" and settings.vlm_fallback:
+                                try:
+                                    from .converters import vlm_extract_markdown
 
-                        doc_id = str(uuid.uuid4())[:8]
-                        await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+                                    logger.warning(
+                                        "Flat-path garbling on %s; attempting "
+                                        "VLM fallback (model=%s)",
+                                        filename,
+                                        settings.vlm_model,
+                                    )
+                                    vlm_md = await vlm_extract_markdown(
+                                        file_path, settings.vlm_model
+                                    )
+                                    if not _flat_text_is_garbled(vlm_md):
+                                        flat_md = vlm_md
+                                        reason = "node_count<3"
+                                        VLM_FALLBACK_TOTAL.labels(
+                                            result="recovered"
+                                        ).inc()
+                                    else:
+                                        VLM_FALLBACK_TOTAL.labels(
+                                            result="still_garbled"
+                                        ).inc()
+                                except Exception as vlm_exc:
+                                    VLM_FALLBACK_TOTAL.labels(
+                                        result="error"
+                                    ).inc()
+                                    logger.error(
+                                        "VLM fallback failed for %s (%s)",
+                                        filename,
+                                        vlm_exc,
+                                        exc_info=True,
+                                    )
+                        if reason != "garbling":
+                            content_class, blocks = await asyncio.to_thread(
+                                route_and_extract_flat, flat_md
+                            )
+                            logger.info(
+                                "Routing %s to flat success path: reason=%s content_class=%s",
+                                filename,
+                                reason,
+                                content_class,
+                            )
 
-                        protocol = "https" if settings.minio_secure else "http"
-                        source_url = (
-                            f"{protocol}://{settings.minio_endpoint}"
-                            f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
-                        )
-                        processed_at = datetime.now(UTC).isoformat()
+                            doc_id = str(uuid.uuid4())
 
-                        # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
-                        # no tree artifact processed/<doc_id>.json is written (HR2: no
-                        # un-cascaded derivative).
-                        await asyncio.to_thread(
-                            save_flat_doc,
-                            doc_id,
-                            {
-                                "doc_id": doc_id,
-                                "doc_name": filename,
-                                "source_url": source_url,
-                                "processed_at": processed_at,
-                                "sha256": sha256,
-                                "content_class": content_class,
-                                "blocks": blocks,
-                            },
-                        )
-                        FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
+                            protocol = "https" if settings.minio_secure else "http"
+                            source_url = (
+                                f"{protocol}://{settings.minio_endpoint}"
+                                f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
+                            )
+                            processed_at = datetime.now(UTC).isoformat()
 
-                        # Reload before writing so we don't overwrite parallel tasks' entries.
-                        async with self._cache_lock:
-                            cache = await asyncio.to_thread(load_hash_cache)
-                            cache[filename] = sha256
-                            await asyncio.to_thread(save_hash_cache, cache)
+                            # RFC-014 D3: compute verdict for flat doc.
+                            flat_structure = result.get("structure", [])
+                            f_verdict, f_verdict_reason = classify_verdict(
+                                flat_structure, content_class, None,
+                            )
+                            _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
-                        logger.info(
-                            "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
-                            filename,
-                            doc_id,
-                            content_class,
-                            len(blocks),
-                        )
-                        # Step 5 integration: surface content_class to converters_cli
-                        # (subprocess reads this after index() returns → worker hash).
-                        self.last_content_class = content_class
-                        return doc_id
+                            # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
+                            # no tree artifact processed/<doc_id>.json is written (HR2: no
+                            # un-cascaded derivative).
+                            await asyncio.to_thread(
+                                save_flat_doc,
+                                doc_id,
+                                {
+                                    "doc_id": doc_id,
+                                    "doc_name": filename,
+                                    "source_url": source_url,
+                                    "processed_at": processed_at,
+                                    "sha256": sha256,
+                                    "content_class": content_class,
+                                    "blocks": blocks,
+                                    "verdict": f_verdict,
+                                    "verdict_reason": f_verdict_reason,
+                                    "max_leaf_ratio": round(f_mlr, 4),
+                                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                                    "verdict_computed_at": datetime.now(UTC).isoformat(),
+                                },
+                            )
+                            FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
+
+                            # D7: raw upload persisted only after the processed artifact
+                            # succeeds, so a save_raw failure never orphans an unreferenced
+                            # tree. The flat doc is already valid/queryable at this point, so
+                            # log + count rather than raising.
+                            try:
+                                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+                            except Exception:
+                                RAW_UPLOAD_FAILURES.inc()
+                                logger.exception(
+                                    "save_raw failed after save_flat_doc succeeded for doc_id=%s",
+                                    doc_id,
+                                )
+
+                            # D6: HSET is atomic per-field — no read-modify-write, so no
+                            # lock is needed to avoid clobbering a parallel task's entry.
+                            await asyncio.to_thread(hash_cache_set, filename, sha256)
+
+                            logger.info(
+                                "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
+                                filename,
+                                doc_id,
+                                content_class,
+                                len(blocks),
+                            )
+                            # Step 5 integration: surface content_class to converters_cli
+                            # (subprocess reads this after index() returns → worker hash).
+                            self.last_content_class = content_class
+                            return doc_id
 
                 LOW_QUALITY_TREES.labels(reason=reason).inc()
                 logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
                 raise LowQualityTreeError(reason)
 
-            # Persist raw file and processed result
-            doc_id = str(uuid.uuid4())[:8]
-            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+            # Persist processed result first (D7): the tree must succeed validation
+            # and persist before the raw upload is committed, so a save_doc failure
+            # never leaves an orphaned raw upload with no referencing artifact.
+            doc_id = str(uuid.uuid4())
 
             protocol = "https" if settings.minio_secure else "http"
             source_url = (
@@ -611,19 +786,36 @@ class CustomPageIndexClient(PageIndexClient):
                 },
             )
 
+            structure = result.get("structure", [])
+            verdict, verdict_reason = classify_verdict(structure, "", None)
+            _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
                 "doc_id": doc_id,
                 "doc_name": filename,
                 "source_url": source_url,
                 "processed_at": processed_at,
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "max_leaf_ratio": round(mlr, 4),
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": datetime.now(UTC).isoformat(),
             }
             await asyncio.to_thread(save_doc_meta, doc_id, meta)
 
-            # Reload before writing so we don't overwrite other parallel tasks' entries.
-            async with self._cache_lock:
-                cache = await asyncio.to_thread(load_hash_cache)
-                cache[filename] = sha256
-                await asyncio.to_thread(save_hash_cache, cache)
+            # D7: raw upload persisted only after the processed artifact succeeds.
+            # The tree is already valid/queryable, so log + count rather than raising
+            # on a save_raw failure — the raw upload can be re-staged.
+            try:
+                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+            except Exception:
+                RAW_UPLOAD_FAILURES.inc()
+                logger.exception(
+                    "save_raw failed after save_doc succeeded for doc_id=%s", doc_id
+                )
+
+            # D6: HSET is atomic per-field — no read-modify-write, so no lock is
+            # needed to avoid clobbering a parallel task's entry.
+            await asyncio.to_thread(hash_cache_set, filename, sha256)
 
             logger.info(
                 "Indexed %s → doc_id=%s (%d sections)",
@@ -683,29 +875,7 @@ class CustomPageIndexClient(PageIndexClient):
         import json
 
         data = await asyncio.to_thread(get_doc, doc_id)
-        nm: dict = {}
-        _build_node_map(data.get("structure", []), nm)
-
-        wanted: set[int] = set()
-        for part in pages.split(","):
-            part = part.strip()
-            if "-" in part:
-                a, b = part.split("-", 1)
-                wanted.update(range(int(a), int(b) + 1))
-            else:
-                wanted.add(int(part))
-
-        hits = [
-            {
-                "node_id": nid,
-                "title": n.get("title"),
-                "pages": f"{n.get('start_index')}-{n.get('end_index')}",
-                "text": n["text"],
-            }
-            for nid, n in nm.items()
-            if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted
-            and "text" in n
-        ]
+        hits = _extract_page_hits(data.get("structure", []), pages)
 
         if not hits:
             return json.dumps({"error": f"No content found for pages '{pages}' in doc '{doc_id}'."})
@@ -744,6 +914,19 @@ class CustomPageIndexClient(PageIndexClient):
         # If called from a thread (asyncio.to_thread), spin a new loop.
         try:
             asyncio.get_running_loop()
-            return await coro
+            result = await coro
         except RuntimeError:
-            return asyncio.run(coro)
+            result = asyncio.run(coro)
+
+        # RFC-015 D10: splice in any preamble content the fork's tree-builder
+        # silently drops (content before the first heading in the source md).
+        try:
+            md_text = await asyncio.to_thread(
+                lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
+                md_path,
+            )
+            result = _synthesize_preamble_node(md_text, result)
+        except OSError:
+            logger.warning("D10: could not read %s to check for preamble content", md_path)
+
+        return result

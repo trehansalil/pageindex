@@ -94,6 +94,20 @@ DOCUMENTS_TOTAL = Gauge(
     "Total indexed documents in MinIO",
 )
 
+# ---------------------------------------------------------------------------
+# Registry metrics (RFC-006)
+# ---------------------------------------------------------------------------
+REGISTRY_FALLBACK_TOTAL = Counter(
+    "pageindex_registry_fallback_total",
+    "Times the Postgres registry could not serve the read path, by 'reason' — "
+    "registry_enabled=False / POSTGRES_DSN unset (disabled), pool_not_ready, "
+    "backfill_incomplete, or a transient postgres_error. Pre-RFC-009-D6 each of "
+    "these drove a MinIO list_processed_docs() fallback; from D6 the read path is "
+    "registry-only and these instead surface an explicit error. Observable, never "
+    "silent (RFC-006 F4).",
+    ["reason"],
+)
+
 LOW_QUALITY_TREES = Counter(
     "pageindex_low_quality_trees_total",
     "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",
@@ -115,6 +129,12 @@ OCR_ESCALATION_TOTAL = Counter(
     "PDF (Fix 3). Labelled by result: recovered | still_garbled | error.",
     ["result"],
 )
+VLM_FALLBACK_TOTAL = Counter(
+    "pageindex_vlm_fallback_total",
+    "VLM last-resort fallback attempts on garble-rejected PDFs whose OCR "
+    "escalation also failed (RFC-004 Approach B).",
+    ["result"],
+)
 PDF_PRIMARY_CONVERTER_FAILURES = Counter(
     "pageindex_pdf_primary_converter_failures_total",
     "Configured primary PDF converter (e.g. docling) failures that forced a fallback. "
@@ -122,6 +142,21 @@ PDF_PRIMARY_CONVERTER_FAILURES = Counter(
     "is never masked as a generic low_quality_tree. Labels bounded: converter name and "
     "exception class.",
     ["converter", "error"],
+)
+RAW_UPLOAD_FAILURES = Counter(
+    "pageindex_raw_upload_failures_total",
+    "save_raw failures after save_doc/save_flat_doc already succeeded (RFC-007 D7). "
+    "The processed tree remains valid and queryable; the raw upload can be re-staged.",
+)
+STAGING_DELETE_FAILURES = Counter(
+    "pageindex_staging_delete_failures_total",
+    "delete_staging S3Error failures (RFC-007 D9). Previously swallowed silently; "
+    "now an observable signal alongside the bool return value.",
+)
+AGPL_FALLBACK_TOTAL = Counter(
+    "pageindex_agpl_fallback_total",
+    "PDF conversions that used the AGPL pymupdf4llm path",
+    ["reason"],
 )
 
 # ---------------------------------------------------------------------------
@@ -146,6 +181,34 @@ CONVERTER_CHILD_TIMEOUT_TOTAL = Counter(
     "pageindex_converter_child_timeout_total",
     "Converter child processes killed by the parent because JOB_TIMEOUT elapsed "
     "before the child emitted its terminal JSON line.",
+)
+
+# ---------------------------------------------------------------------------
+# Observability & error-handling metrics (RFC-008)
+# ---------------------------------------------------------------------------
+MCP_AUTH_DISABLED = Gauge(
+    "pageindex_mcp_auth_disabled",
+    "1 when MCP_BEARER_TOKEN is empty (bearer-token auth disabled), 0 when set "
+    "(RFC-008 D3/ISS-13).",
+)
+CACHE_ERRORS = Counter(
+    "pageindex_cache_errors_total",
+    "Redis cache errors caught in cache.py (RFC-008 D4/ISS-16). Cache stays "
+    "fail-open; this counter makes the previously debug-logged failures visible.",
+    ["operation"],
+)
+IMAGE_DESCRIBE_FAILURES = Counter(
+    "pageindex_image_describe_failures_total",
+    "OpenAI vision image-describe calls that fell back to the \"image\" "
+    "placeholder (RFC-008 D2/ISS-08). Labelled by exception type.",
+    ["error_type"],
+)
+RAG_PARSE_FAILURES = Counter(
+    "pageindex_rag_parse_failures_total",
+    "_search_one_doc LLM responses that failed JSON extraction/parsing "
+    "(RFC-008 D7/ISS-19); falls back to ids=[]. doc_id cardinality is bounded "
+    "by the prefilter's top-K candidate set (RFC-006 D2), not the full corpus.",
+    ["doc_id"],
 )
 
 

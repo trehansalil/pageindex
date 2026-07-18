@@ -55,6 +55,7 @@ flowchart LR
       IDX["CustomPageIndexClient.index()<br/>pageindex fork → litellm"]
       CONV["converters.py — extraction + tree build<br/>Docling (MIT) primary · pymupdf4llm (AGPL) fallback<br/>pypdfium2 outline · md → tree"]
       VT{"validate_tree()<br/>HR5 quality gate"}
+      OCR["OCR escalation (Tesseract)<br/>lang auto-detect · re-run Docling full-page OCR"]
       ST["TREE route<br/>save_doc + meta + raw"]
       SF["FLAT route (success)<br/>save_flat_doc"]
       GB["GARBLED → terminal reject"]
@@ -87,7 +88,9 @@ flowchart LR
   PDJ --> SUB --> CFG --> IDX --> CONV --> VT
   VT -->|"pass"| ST
   VT -->|"node_count&lt;3 / depth&lt;2"| SF
-  VT -->|"garbling"| GB
+  VT -->|"garbling / image-dominant"| OCR
+  OCR -->|"recovered"| VT
+  OCR -->|"still garbled/image-only"| GB
   GB -->|"low_quality_tree"| DLQ
   ST --> MINIO
   SF --> MINIO
@@ -107,8 +110,11 @@ both report to a single Langfuse project when tracing is enabled.
 **Quality gate.** `validate_tree()` runs before anything is persisted. A clean
 hierarchical tree takes the **TREE route**; a clean-but-flat document
 (`node_count < 3` / `depth < 2`) is still a **success** and takes the **FLAT
-route** (`processed/<id>.flat.json`). Only *garbled* extraction is a terminal
-reject (`low_quality_tree` → DLQ).
+route** (`processed/<id>.flat.json`). A garbled or image-dominant PDF first
+gets one **OCR escalation** retry (Tesseract, language auto-detected from
+filename/content — `ara`/`deu`/`eng`) before extraction is re-run; only a
+document that is still garbled after that retry is a terminal reject
+(`low_quality_tree` → DLQ).
 
 ## Requirements
 
@@ -117,6 +123,8 @@ reject (`low_quality_tree` → DLQ).
 - A running **MinIO** instance (object storage)
 - A running **Redis** instance (job queue + cache)
 - An OpenAI / Azure / OpenAI-compatible API key (for the PageIndex library)
+- **Tesseract OCR** (`tesseract-ocr`) on the worker's `PATH`, for OCR
+  escalation on garbled/image-dominant PDFs (see [OCR escalation](#ocr-escalation-optional))
 
 ## Setup
 
@@ -174,6 +182,18 @@ Copy `.env.example` to `.env` (or export directly) and set the variables below.
 | `MCP_HOST`        | `0.0.0.0`   | Server bind address                                         |
 | `MCP_PORT`        | `8201`      | Server port (`/mcp`, `/upload`, `/metrics` share this port) |
 | `WEB_CONCURRENCY` | `1`         | Keep at `1` — MCP sessions are in-memory per worker         |
+
+### OCR escalation (optional)
+
+Runs once, only when `validate_tree()` flags a document as garbled or
+image-dominant. Language is auto-detected from filename/content
+(Unicode-script ratio — `ara`/`deu`/`eng`), never guessed by an LLM.
+
+| Variable                 | Default   | Description                                                                 |
+| ------------------------ | --------- | ---------------------------------------------------------------------------- |
+| `OCR_ESCALATION`         | `1`       | Enable the Tesseract OCR retry on garbled/image-dominant PDFs; `0` disables it |
+| `TESSDATA_PREFIX`        | —         | Directory holding `<lang>.traineddata`; unset trusts the system Tesseract install |
+| `TESSDATA_ALLOW_DOWNLOAD`| `0`       | `1` fetches missing traineddata from the official tessdata repo at runtime; production images pre-bake `deu`/`eng`/`ara` instead (no egress) |
 
 ### Langfuse tracing (optional)
 
@@ -402,6 +422,12 @@ src/
 - **Quality gate (HR5).** `validate_tree()` runs before `save_doc`. A failing
   (garbled) tree never persists — it surfaces as a `low_quality_tree` error and
   lands in the DLQ. Flat-but-clean documents are a success route, not a reject.
+  The garble gate flags null bytes, replacement chars, `GLYPH<N>` placeholders
+  (docling-parse's unmapped-glyph marker for symbolic/composite fonts — see
+  [docling-project/docling#3802](https://github.com/docling-project/docling/issues/3802)),
+  high PUA/digit/control-char ratios, and single-token repetition. A garbled or
+  image-dominant PDF gets one Tesseract OCR retry (`OCR_ESCALATION`) before the
+  terminal reject.
 - **LLM provider abstraction.** OpenAI, Azure, and any OpenAI-compatible endpoint
   are supported without code changes via `LLM_PROVIDER` / `OPENAI_BASE_URL`. The
   query path uses the OpenAI SDK; the ingestion path uses `litellm`.

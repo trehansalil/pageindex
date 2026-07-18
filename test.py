@@ -18,7 +18,7 @@ async def main():
     client = MultiServerMCPClient({
         "pageindex": {
             "transport": "streamable_http",
-            "url": "https://pageindex.aiwithsalil.work/mcp",
+            "url": os.environ.get("TEST_MCP_URL", "http://localhost:8201/mcp"),
             "headers": {
                 "Authorization": f"Bearer {MCP_BEARER_TOKEN}"
             }

@@ -85,15 +85,15 @@ async def wait_for_memory(redis: Redis) -> bool:
             available = read_meminfo_available_bytes()
             if _has_headroom(available):
                 return True
+
+            if loop.time() >= deadline:
+                logger.warning(
+                    "admission wait cap (%.0fs) hit; proceeding without confirmed headroom",
+                    MEM_ADMISSION_MAX_WAIT_S,
+                )
+                return False
         finally:
             if got_lock:
                 await _release_lock(redis)
-
-        if loop.time() >= deadline:
-            logger.warning(
-                "admission wait cap (%.0fs) hit; proceeding without confirmed headroom",
-                MEM_ADMISSION_MAX_WAIT_S,
-            )
-            return False
 
         await asyncio.sleep(MEM_ADMISSION_POLL_S)

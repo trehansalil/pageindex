@@ -6,8 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import fakeredis
 import pytest
+import redis
 
 from pageindex_mcp.cache import doc_cache_get, doc_cache_set, doc_cache_delete
+from pageindex_mcp.metrics import CACHE_ERRORS
 
 
 SAMPLE_DOC = {"doc_id": "abc12345", "doc_name": "test.pdf", "structure": []}
@@ -45,3 +47,79 @@ def test_cache_ttl_is_set(_patch_redis):
     doc_cache_set("abc12345", SAMPLE_DOC)
     ttl = redis.ttl("pageindex:doc:abc12345")
     assert ttl > 0
+
+
+# --- RFC-008 D4 / ISS-16: narrowed exception scope + WARNING logging + CACHE_ERRORS ---
+
+
+def _counter_value(operation: str) -> float:
+    return CACHE_ERRORS.labels(operation=operation)._value.get()
+
+
+def test_cache_get_redis_error_logs_warning_and_increments_counter(_patch_redis, caplog):
+    before = _counter_value("get")
+    mock_client = MagicMock()
+    mock_client.get.side_effect = redis.RedisError("boom")
+    with patch("pageindex_mcp.cache._redis_sync", mock_client):
+        with caplog.at_level("WARNING"):
+            result = doc_cache_get("abc12345")
+
+    assert result is None  # fail-open fallback preserved
+    assert _counter_value("get") == before + 1
+    assert any(
+        r.levelname == "WARNING" and "cache get failed" in r.message for r in caplog.records
+    )
+
+
+def test_cache_get_non_redis_error_propagates(_patch_redis):
+    mock_client = MagicMock()
+    mock_client.get.side_effect = TypeError("not a cache bug, a code bug")
+    with patch("pageindex_mcp.cache._redis_sync", mock_client):
+        with pytest.raises(TypeError):
+            doc_cache_get("abc12345")
+
+
+def test_cache_set_redis_error_logs_warning_and_increments_counter(_patch_redis, caplog):
+    before = _counter_value("set")
+    mock_client = MagicMock()
+    mock_client.setex.side_effect = redis.RedisError("boom")
+    with patch("pageindex_mcp.cache._redis_sync", mock_client):
+        with caplog.at_level("WARNING"):
+            result = doc_cache_set("abc12345", SAMPLE_DOC)
+
+    assert result is None  # fail-open: no exception raised to caller
+    assert _counter_value("set") == before + 1
+    assert any(
+        r.levelname == "WARNING" and "cache set failed" in r.message for r in caplog.records
+    )
+
+
+def test_cache_set_non_redis_error_propagates(_patch_redis):
+    mock_client = MagicMock()
+    mock_client.setex.side_effect = TypeError("not a cache bug, a code bug")
+    with patch("pageindex_mcp.cache._redis_sync", mock_client):
+        with pytest.raises(TypeError):
+            doc_cache_set("abc12345", SAMPLE_DOC)
+
+
+def test_cache_delete_redis_error_logs_warning_and_increments_counter(_patch_redis, caplog):
+    before = _counter_value("delete")
+    mock_client = MagicMock()
+    mock_client.delete.side_effect = redis.RedisError("boom")
+    with patch("pageindex_mcp.cache._redis_sync", mock_client):
+        with caplog.at_level("WARNING"):
+            result = doc_cache_delete("abc12345")
+
+    assert result is None  # fail-open: no exception raised to caller
+    assert _counter_value("delete") == before + 1
+    assert any(
+        r.levelname == "WARNING" and "cache delete failed" in r.message for r in caplog.records
+    )
+
+
+def test_cache_delete_non_redis_error_propagates(_patch_redis):
+    mock_client = MagicMock()
+    mock_client.delete.side_effect = TypeError("not a cache bug, a code bug")
+    with patch("pageindex_mcp.cache._redis_sync", mock_client):
+        with pytest.raises(TypeError):
+            doc_cache_delete("abc12345")
