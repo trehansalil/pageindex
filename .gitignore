@@ -14,3 +14,6 @@ preprocess.log
 issue/phase0_*.log
 # make confluence-sync change-detection stamp (local only, not shared state)
 .agents/.confluence-sync.stamp
+
+# Obsidian editor config (per-developer, not project source)
+.obsidian/
