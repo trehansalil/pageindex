@@ -65,10 +65,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pre-bake tessdata files for production OCR (deu, eng, ara).
 # D5b (ISS-14): Remove the runtime download path entirely in production.
 # The runtime download hardened in D5 (converters.py) remains as a dev/local fallback.
+#
+# Pinned to tesseract-ocr/tessdata commit ced78752cc61322fb554c280d13360b35b8684e4
+# (pinned 2026-07-17) so the build is reproducible and not subject to upstream
+# changes on the mutable `main` branch. SHA-256 checksums verified at pin time.
 RUN mkdir -p /opt/tessdata && \
-    curl -fsSL -o /opt/tessdata/deu.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/deu.traineddata && \
-    curl -fsSL -o /opt/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata && \
-    curl -fsSL -o /opt/tessdata/ara.traineddata https://github.com/tesseract-ocr/tessdata/raw/main/ara.traineddata
+    curl -fsSL -o /opt/tessdata/deu.traineddata \
+        https://github.com/tesseract-ocr/tessdata/raw/ced78752cc61322fb554c280d13360b35b8684e4/deu.traineddata && \
+    echo "896b3b4956503ab9daa10285db330881b2d74b70d889b79262cc534b9ec699a4  /opt/tessdata/deu.traineddata" | sha256sum -c - && \
+    curl -fsSL -o /opt/tessdata/eng.traineddata \
+        https://github.com/tesseract-ocr/tessdata/raw/ced78752cc61322fb554c280d13360b35b8684e4/eng.traineddata && \
+    echo "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047  /opt/tessdata/eng.traineddata" | sha256sum -c - && \
+    curl -fsSL -o /opt/tessdata/ara.traineddata \
+        https://github.com/tesseract-ocr/tessdata/raw/ced78752cc61322fb554c280d13360b35b8684e4/ara.traineddata && \
+    echo "2005976778bbc14fc56a4ea8d43c6080847aeee72fcc2201488f240daca15c5b  /opt/tessdata/ara.traineddata" | sha256sum -c -
 
 WORKDIR /app
 
