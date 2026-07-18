@@ -231,9 +231,7 @@ async def find_relevant_documents(query: str) -> str:
         # JSON error envelope rather than letting the outage crash the tool.
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents: registry unavailable (reason=%s)", e.reason)
-        return json.dumps(
-            {"error": f"Document registry unavailable: {e.reason}", "available": []}
-        )
+        return json.dumps({"error": f"Document registry unavailable: {e.reason}", "available": []})
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents failed: %s", e, exc_info=True)

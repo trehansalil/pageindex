@@ -14,7 +14,7 @@ import openai
 from pageindex import PageIndexClient
 
 from .cache import get_doc
-from .config import settings
+from .config import CURRENT_PIPELINE_VERSION, settings
 from .converters import (
     detect_ocr_langs,
     docx_to_markdown,
@@ -27,7 +27,6 @@ from .converters import (
     pptx_to_markdown,
     xlsx_to_markdown,
 )
-from .config import CURRENT_PIPELINE_VERSION
 from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
@@ -502,12 +501,7 @@ class CustomPageIndexClient(PageIndexClient):
 
             # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
             # whose OCR escalation was either skipped or failed.
-            if (
-                not ok
-                and reason == "garbling"
-                and ext == ".pdf"
-                and settings.vlm_fallback
-            ):
+            if not ok and reason == "garbling" and ext == ".pdf" and settings.vlm_fallback:
                 try:
                     from .converters import vlm_extract_markdown
 
@@ -526,13 +520,9 @@ class CustomPageIndexClient(PageIndexClient):
                         md_tmp.write(md_content)
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
-                    result["structure"] = split_oversized_leaf_nodes(
-                        result.get("structure", [])
-                    )
+                    result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
                     ok, reason = validate_tree(result.get("structure", []))
-                    VLM_FALLBACK_TOTAL.labels(
-                        result="recovered" if ok else "still_garbled"
-                    ).inc()
+                    VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
                     logger.error(
@@ -660,17 +650,11 @@ class CustomPageIndexClient(PageIndexClient):
                                     if not _flat_text_is_garbled(vlm_md):
                                         flat_md = vlm_md
                                         reason = "node_count<3"
-                                        VLM_FALLBACK_TOTAL.labels(
-                                            result="recovered"
-                                        ).inc()
+                                        VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
                                     else:
-                                        VLM_FALLBACK_TOTAL.labels(
-                                            result="still_garbled"
-                                        ).inc()
+                                        VLM_FALLBACK_TOTAL.labels(result="still_garbled").inc()
                                 except Exception as vlm_exc:
-                                    VLM_FALLBACK_TOTAL.labels(
-                                        result="error"
-                                    ).inc()
+                                    VLM_FALLBACK_TOTAL.labels(result="error").inc()
                                     logger.error(
                                         "VLM fallback failed for %s (%s)",
                                         filename,
@@ -700,7 +684,9 @@ class CustomPageIndexClient(PageIndexClient):
                             # RFC-014 D3: compute verdict for flat doc.
                             flat_structure = result.get("structure", [])
                             f_verdict, f_verdict_reason = classify_verdict(
-                                flat_structure, content_class, None,
+                                flat_structure,
+                                content_class,
+                                None,
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
@@ -809,9 +795,7 @@ class CustomPageIndexClient(PageIndexClient):
                 await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
             except Exception:
                 RAW_UPLOAD_FAILURES.inc()
-                logger.exception(
-                    "save_raw failed after save_doc succeeded for doc_id=%s", doc_id
-                )
+                logger.exception("save_raw failed after save_doc succeeded for doc_id=%s", doc_id)
 
             # D6: HSET is atomic per-field — no read-modify-write, so no lock is
             # needed to avoid clobbering a parallel task's entry.

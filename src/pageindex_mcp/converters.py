@@ -855,6 +855,7 @@ def _try_download_tessdata(lang: str, prefix: str) -> bool:
     (timeout, oversize, network/HTTP error) cleans up the partial file at
     ``dest`` before returning False (Design Property 5: Tessdata download bounded).
     """
+    import contextlib
     import urllib.request
 
     url = f"https://github.com/tesseract-ocr/tessdata/raw/main/{lang}.traineddata"
@@ -862,27 +863,27 @@ def _try_download_tessdata(lang: str, prefix: str) -> bool:
     try:
         os.makedirs(prefix, exist_ok=True)
         total = 0
-        with urllib.request.urlopen(url, timeout=_TESSDATA_TIMEOUT_S) as resp:
-            with open(dest, "wb") as f:
-                while True:
-                    chunk = resp.read(_TESSDATA_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > _TESSDATA_MAX_BYTES:
-                        raise RuntimeError(
-                            f"tessdata download for '{lang}' exceeded {_TESSDATA_MAX_BYTES} byte cap"
-                        )
-                    f.write(chunk)
+        with (
+            urllib.request.urlopen(url, timeout=_TESSDATA_TIMEOUT_S) as resp,
+            open(dest, "wb") as f,
+        ):
+            while True:
+                chunk = resp.read(_TESSDATA_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _TESSDATA_MAX_BYTES:
+                    raise RuntimeError(
+                        f"tessdata download for '{lang}' exceeded {_TESSDATA_MAX_BYTES} byte cap"
+                    )
+                f.write(chunk)
         logger.info("fetched tessdata for '%s' into %s (%d bytes)", lang, prefix, total)
         return True
     except Exception as exc:
         logger.warning("tessdata fetch failed for '%s' (%s)", lang, exc)
         if os.path.exists(dest):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(dest)
-            except OSError:
-                pass
         return False
 
 
@@ -1859,7 +1860,7 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
 
     resolved_model = model or settings.vlm_model
     if resolved_model.startswith("azure/"):
-        resolved_model = resolved_model[len("azure/"):]
+        resolved_model = resolved_model[len("azure/") :]
 
     page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
     if not page_images:
@@ -1909,9 +1910,7 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
             try:
                 return (page_idx, await _call())
             except Exception as retry_exc:
-                logger.error(
-                    "VLM page %d failed after retry: %s", page_idx + 1, retry_exc
-                )
+                logger.error("VLM page %d failed after retry: %s", page_idx + 1, retry_exc)
                 return (page_idx, "")
         except Exception as exc:
             logger.error("VLM page %d extraction failed: %s", page_idx + 1, exc)
@@ -1925,9 +1924,7 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
 
     results = await asyncio.gather(*[_bounded(i, u) for i, u in enumerate(page_images)])
     results_sorted = sorted(results, key=lambda r: r[0])
-    page_markdowns = [
-        md for _, md in results_sorted if md and md.strip() != "<!-- blank page -->"
-    ]
+    page_markdowns = [md for _, md in results_sorted if md and md.strip() != "<!-- blank page -->"]
 
     if not page_markdowns:
         raise RuntimeError(

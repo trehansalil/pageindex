@@ -84,7 +84,11 @@ def _delete_legacy_blob() -> None:
 
 def migrate(dry_run: bool) -> int:
     cache = _load_legacy_blob()
-    logger.info("Found %d entr%s in legacy MinIO hash-cache blob.", len(cache), "y" if len(cache) == 1 else "ies")
+    logger.info(
+        "Found %d entr%s in legacy MinIO hash-cache blob.",
+        len(cache),
+        "y" if len(cache) == 1 else "ies",
+    )
 
     if not cache:
         logger.info("Nothing to migrate.")

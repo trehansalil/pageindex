@@ -146,8 +146,7 @@ def _load_settings() -> Settings:
         langfuse_host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
         langfuse_trace_content=os.environ.get("LANGFUSE_TRACE_CONTENT", "false").strip().lower()
         in ("1", "true", "yes"),
-        pii_corpus=os.environ.get("PII_CORPUS", "false").strip().lower()
-        in ("1", "true", "yes"),
+        pii_corpus=os.environ.get("PII_CORPUS", "false").strip().lower() in ("1", "true", "yes"),
         vlm_fallback=os.environ.get("VLM_FALLBACK", "false").strip().lower()
         in ("1", "true", "yes"),
         vlm_model=os.environ.get("VLM_MODEL", "gpt-4.1"),

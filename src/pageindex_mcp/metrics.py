@@ -199,7 +199,7 @@ CACHE_ERRORS = Counter(
 )
 IMAGE_DESCRIBE_FAILURES = Counter(
     "pageindex_image_describe_failures_total",
-    "OpenAI vision image-describe calls that fell back to the \"image\" "
+    'OpenAI vision image-describe calls that fell back to the "image" '
     "placeholder (RFC-008 D2/ISS-08). Labelled by exception type.",
     ["error_type"],
 )

@@ -423,7 +423,9 @@ async def _check_registry_complete_cached() -> bool:
         r = await get_async_redis()
         complete = await is_registry_complete(r)
     except Exception as exc:
-        logger.warning("_check_registry_complete_cached: Redis error checking registry flag: %s", exc)
+        logger.warning(
+            "_check_registry_complete_cached: Redis error checking registry flag: %s", exc
+        )
         return False
 
     if complete:
@@ -648,6 +650,7 @@ def validate_tree(structure: list) -> tuple[bool, str]:
 
 # ── RFC-014 D1: verdict computation helpers ─────────────────────────────────────
 
+
 def _walk_leaves(structure: list):
     """Yield each leaf node dict (no ``nodes`` children) in document order."""
     for n in structure or []:
@@ -696,10 +699,9 @@ def ocr_noise_ratio(text: str) -> float:
     if not text:
         return 0.0
     noise = sum(
-        1 for c in text
-        if c == "�"
-        or 0xE000 <= ord(c) <= 0xF8FF
-        or (ord(c) < 32 and c not in "\n\r\t")
+        1
+        for c in text
+        if c == "�" or 0xE000 <= ord(c) <= 0xF8FF or (ord(c) < 32 and c not in "\n\r\t")
     )
     return noise / len(text)
 
@@ -747,7 +749,11 @@ def classify_verdict(
         if max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD and node_count >= 3:
             return "PASS", "cat_b_promoted"
     else:
-        if not garbled and hash_pipe_ratio(flat_text) < 0.01 and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD:
+        if (
+            not garbled
+            and hash_pipe_ratio(flat_text) < 0.01
+            and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
+        ):
             return "PASS", "cat_c_promoted"
 
     # Build descriptive reason for remaining MARGINAL

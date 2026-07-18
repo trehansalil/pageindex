@@ -297,10 +297,19 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
 
-_META_FIELDS = ("doc_id", "doc_name", "source_url", "processed_at",
-                "verdict", "verdict_reason", "max_leaf_ratio",
-                "pipeline_version", "permanent_marginal",
-                "promotion_eligible", "verdict_computed_at")
+_META_FIELDS = (
+    "doc_id",
+    "doc_name",
+    "source_url",
+    "processed_at",
+    "verdict",
+    "verdict_reason",
+    "max_leaf_ratio",
+    "pipeline_version",
+    "permanent_marginal",
+    "promotion_eligible",
+    "verdict_computed_at",
+)
 
 
 def save_doc_meta(doc_id: str, meta: dict) -> None:
@@ -344,9 +353,15 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             sidecar["node_count"] = int(node_count)
         # RFC-014 D2: persist verdict fields when present so legacy sidecars
         # (pre-D2) stay byte-identical when these fields are absent.
-        for vf in ("verdict", "verdict_reason", "max_leaf_ratio",
-                   "pipeline_version", "permanent_marginal",
-                   "promotion_eligible", "verdict_computed_at"):
+        for vf in (
+            "verdict",
+            "verdict_reason",
+            "max_leaf_ratio",
+            "pipeline_version",
+            "permanent_marginal",
+            "promotion_eligible",
+            "verdict_computed_at",
+        ):
             if vf in meta:
                 sidecar[vf] = meta[vf]
         content = json.dumps(sidecar, indent=2).encode()
@@ -490,9 +505,7 @@ def list_processed_docs() -> list[dict]:
                 async with semaphore:
                     return await asyncio.to_thread(_fetch_one, doc_id, obj_name)
 
-            tasks = [
-                _bounded_fetch(doc_id, obj_name) for doc_id, obj_name in meta_keys.items()
-            ]
+            tasks = [_bounded_fetch(doc_id, obj_name) for doc_id, obj_name in meta_keys.items()]
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         # list_processed_docs is sync; callers on an async path (e.g.
