@@ -60,12 +60,16 @@ async def require_api_key(
 _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 
-async def _read_bounded(file: UploadFile, filename: str) -> bytes:
-    """Read an UploadFile in 1 MB chunks, aborting with 413 once the total
-    exceeds settings.max_upload_size_mb. Avoids buffering unbounded uploads
-    into memory in a single file.read() call."""
+async def _validate_size_bounded(file: UploadFile, filename: str) -> None:
+    """Validate an UploadFile's size by streaming through it in 1 MB chunks,
+    discarding bytes as we go. Aborts with 413 once the total exceeds
+    settings.max_upload_size_mb. Rewinds the file to offset 0 on success so
+    the caller can re-read the bytes for staging.
+
+    Keeps peak memory O(chunk_size) per file during pass-1 validation instead
+    of O(sum of all file sizes in the batch) — see PR #14 memory review.
+    """
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    chunks: list[bytes] = []
     total = 0
     while True:
         chunk = await file.read(_UPLOAD_CHUNK_SIZE)
@@ -85,6 +89,22 @@ async def _read_bounded(file: UploadFile, filename: str) -> bytes:
                     f"{settings.max_upload_size_mb} MB"
                 ),
             )
+    # Starlette's UploadFile wraps a SpooledTemporaryFile; seek() is supported
+    # and awaitable. Rewind so pass 2 can materialize the bytes for staging.
+    await file.seek(0)
+
+
+async def _read_validated(file: UploadFile) -> bytes:
+    """Read the full contents of an already-size-validated UploadFile.
+
+    Called in pass 2 only, so at most one file's bytes are resident in memory
+    at any time during the batch.
+    """
+    chunks: list[bytes] = []
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -108,7 +128,9 @@ def create_upload_app() -> FastAPI:
 
         # Pass 1 (D4): validate every file before any side effect. On any
         # failure, reject the whole batch with zero MinIO/Redis/arq writes.
-        prepared = []
+        # Bytes are streamed and discarded here so peak memory during
+        # validation is O(chunk_size) per file, not O(sum of file sizes).
+        prepared: list[tuple[str, UploadFile]] = []
         for file in files:
             filename = Path(file.filename or "upload").name
             ext = Path(filename).suffix.lower()
@@ -120,16 +142,19 @@ def create_upload_app() -> FastAPI:
                         f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(_SUPPORTED))}"
                     ),
                 )
-            file_bytes = await _read_bounded(file, filename)
-            prepared.append((filename, file_bytes))
+            await _validate_size_bounded(file, filename)
+            prepared.append((filename, file))
 
-        # Pass 2: only reached once every file passed validation. Stage to
-        # MinIO, then enqueue before setting status (D8) so a failed enqueue
-        # leaves no phantom "pending" entry.
+        # Pass 2: only reached once every file passed validation. Materialize
+        # bytes one file at a time, then stage to MinIO and enqueue before
+        # setting status (D8) so a failed enqueue leaves no phantom "pending"
+        # entry.
         arq_pool = await _get_arq_pool()
         results = []
-        for filename, file_bytes in prepared:
+        for filename, file in prepared:
             job_id = str(uuid.uuid4())
+
+            file_bytes = await _read_validated(file)
 
             staging_key = await asyncio.to_thread(
                 upload_staging,
