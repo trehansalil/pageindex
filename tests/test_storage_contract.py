@@ -470,10 +470,12 @@ async def test_erasure_cascade_all_stores_healthy_reports_no_errors(mock_minio):
     mock_minio.get_object.return_value = load_resp
     mock_minio.list_objects.return_value = []
 
-    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del:
+    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del, \
+         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del:
         result = await delete_doc("cascade001")
 
     mock_cache_del.assert_called_once_with("cascade001")
+    mock_hash_del.assert_called_once_with("report.pdf")
     mock_minio.remove_object.assert_any_call(settings.minio_bucket, "processed/cascade001.json")
     # Registry step is skipped (settings.postgres_dsn unset in the test
     # environment) — a non-fatal, logged, error-free path per storage.py.
@@ -498,14 +500,16 @@ async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(mon
 
     _wire_registry(monkeypatch, registry_delete_doc=_registry_raises)
 
-    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del:
+    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del, \
+         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del:
         result = await delete_doc("cascade002")
 
-    # MinIO and Redis were still purged despite the Postgres failure.
+    # MinIO, Redis cache, and hash-cache were still purged despite the Postgres failure.
     removed_keys = [c.args[1] for c in mock_minio.remove_object.call_args_list]
     assert "processed/cascade002.json" in removed_keys
     assert "uploads/cascade002/report.pdf" in removed_keys
     mock_cache_del.assert_called_once_with("cascade002")
+    mock_hash_del.assert_called_once_with("report.pdf")
 
     assert len(result["errors"]) == 1
     assert "registry" in result["errors"][0].lower()
