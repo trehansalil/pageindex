@@ -27,7 +27,7 @@ all are the kind of fix an L7 review would call "just do it" rather than defer.
 | ISS-03 | **Already fixed** | `registry_backfill.py:188-198` | Now guards against marking backfill complete on 0 keys |
 | ISS-07 | Open | `worker.py:275`, `:446` | Ad-hoc `aioredis.from_url` fallback instead of the `cache.py` singleton |
 | ISS-37 | Open | `memory_admission.py:72-99` | Lock released/reacquired per iteration — check-then-admit race |
-| ISS-39 | Open | `gunicorn.conf.py:13` | `graceful_timeout=5` too low for in-flight ingestion jobs; no `max_requests` jitter |
+| ISS-39 | ✅ RESOLVED 2026-07-18 | `gunicorn.conf.py` | `graceful_timeout=30`, `max_requests=100`, `max_requests_jitter=10` all landed |
 | ISS-42 | Open — dead code | `upload.py` (repo root) | Calls a non-existent MCP tool `process_document`; 0 references repo-wide |
 | ISS-45 | Open — dead code | `tools/processing.py` | Tombstone-only file (1 line), 0 references |
 | ISS-43 | Open | `test.py:21` | Hardcoded production URL, no env override |

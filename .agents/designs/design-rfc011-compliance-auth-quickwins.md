@@ -136,9 +136,10 @@ sequenceDiagram
 
   S->>M: Step 1: remove uploads/{doc_id}.*
   S->>M: Step 2: remove processed/{doc_id}.json
+  S->>M: Step 2b: remove processed/{doc_id}.flat.json  (before meta — matches storage.delete_doc)
   S->>M: Step 3: remove processed/{doc_id}.meta.json
-  S->>M: Step 4: remove processed/{doc_id}.flat.json
-  S->>Redis: Step 5: delete cache key
+  S->>Redis: Step 4: delete cache key
+  S->>S: Step 5: clear hash-cache entry for doc_name
   S->>R: Step 6: delete_doc(doc_id) [with statement timeout, D3]
   R->>R: pool.execute(_DELETE_SQL, doc_id, timeout=...)
 
@@ -346,22 +347,22 @@ class Settings(BaseSettings):
 
 ```python
 # config.py — constant, not env-configurable
+# NOTE: Patterns are matched via case-insensitive SUBSTRING check
+# (`pattern in base_url.lower()`), not glob wildcards. Keep entries as
+# substring fragments — mirrors the actual _ZDR_ALLOW_PATTERNS constant.
 
-ZDR_ALLOW_LIST: tuple[str, ...] = (
-    # Azure modified-abuse-monitoring endpoints
-    "*.openai.azure.com",
-    # AWS Bedrock
-    "bedrock-runtime.*.amazonaws.com",
-    # OpenAI EU-ZDR (added Jan 2026)
-    "api.openai.com",  # with ZDR contractual agreement
-    # Self-hosted (residency fallback)
-    "localhost",
-    "127.0.0.1",
+_ZDR_ALLOW_PATTERNS: tuple[str, ...] = (
+    ".openai.azure.com",    # Azure modified-abuse-monitoring
+    "bedrock-runtime.",     # AWS Bedrock (any region)
+    "eu.api.openai.com",    # OpenAI EU-ZDR
 )
 
 def _is_zdr_allowlisted(base_url: str | None) -> bool:
-    """Check if base_url hostname matches any ZDR allow-list entry."""
-    ...
+    """Return True if base_url matches any ZDR allow-list pattern (substring)."""
+    if not base_url:
+        return False
+    url = base_url.lower()
+    return any(pattern in url for pattern in _ZDR_ALLOW_PATTERNS)
 ```
 
 ### AGPL Fallback Counter

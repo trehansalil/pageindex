@@ -163,7 +163,7 @@ sequenceDiagram
   participant H as helpers.py
 
   Op->>CLI: run sweep
-  CLI->>R: SELECT doc_id FROM doc_registry<br/>WHERE pipeline_version < CURRENT<br/>AND permanent_marginal = false<br/>(doc_registry_verdict_idx)
+  CLI->>R: SELECT doc_id FROM doc_registry<br/>WHERE (pipeline_version IS NULL OR pipeline_version < CURRENT)<br/>AND permanent_marginal = false<br/>(doc_registry_verdict_idx)<br/>[matches _SWEEP_CANDIDATES_SQL — IS NULL branch covers pre-migration rows]
   R-->>CLI: candidate doc_ids
 
   loop for each candidate doc_id

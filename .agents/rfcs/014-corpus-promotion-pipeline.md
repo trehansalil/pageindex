@@ -78,7 +78,7 @@ existing signal.
 
 ### D1 — Verdict as a computed pipeline output
 
-Add to `helpers.py`, matching the existing style of `_tree_node_count` (line 490):
+Add to `helpers.py`, matching the existing style of `_tree_node_count`:
 
 ```python
 def _tree_max_leaf_ratio(structure) -> tuple[int, int, float]:

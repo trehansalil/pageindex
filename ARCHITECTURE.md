@@ -133,7 +133,9 @@ will enforce that the dependency arrows below never reverse.
 
 ### Storage / cache layer  [current]
 - **`storage.py`** — MinIO client singleton + all object CRUD: `save_doc`/`load_doc`/`delete_doc`,
-  `save_doc_meta` (dual-writes to Postgres registry, RFC-006), `list_processed_docs`, `save_raw`,
+  `save_doc_meta` (writes lightweight sidecar only — the RFC-006 Postgres dual-write is done by
+  `worker._upsert_registry_row` in the long-lived worker parent, since `save_doc_meta` runs inside
+  the isolated `converters_cli` subprocess which never opens a registry pool), `list_processed_docs`, `save_raw`,
   hash-cache, staging, and `sync_preloaded_to_minio`.
 - **`cache.py`** — Redis-backed read-through cache for processed trees (`pageindex:doc:<id>`, TTL
   `CACHE_TTL`), invalidated on `save_doc`/`delete_doc`. Shared across all gunicorn workers.

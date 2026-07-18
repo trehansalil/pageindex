@@ -40,7 +40,7 @@ This audit combines three passes:
 | ------ | ------------------------------------------------ | ----------------------------------------------------------- |
 | ISS-41 | Erasure cascade never deletes `preloaded/<filename>` raw object | Right-to-erasure gap (Hard Rule #2) — new this pass |
 | ~~ISS-02~~ | ~~Erasure cascade fire-and-forgets registry delete~~ | 🟢 Resolved — already bounded (RFC-011 D1) |
-| ISS-03 | Backfill marks registry complete on 0 docs       | Transient MinIO outage hides entire corpus from query tools |
+| ~~ISS-03~~ | ~~Backfill marks registry complete on 0 docs~~ | 🟢 RESOLVED 2026-07-18 — see Sections 5 & 8 (`registry_backfill.py` guards `set_registry_complete` behind non-empty check) |
 | ISS-34 | `ensure_tessdata` silently drops non-Latin script requests | False-clean OCR mojibake — new this pass |
 | ISS-35 | AGPL fallback reachable with no hard gate/alert  | Hard Rule #4 legal-exposure gap — new this pass |
 | ISS-32 | Bearer auth fails OPEN when token unset          | Inconsistent with upload API's fail-closed default — new this pass |
@@ -60,19 +60,19 @@ Three systemic anti-patterns underlie the remaining findings:
 
 ### 3.1 Broad `except Exception` with Low-Level Logging
 
-**Issues:** ISS-08, ISS-18, ISS-19
+**Issues:** ~~ISS-08~~, ~~ISS-18~~, ~~ISS-19~~ — 🟢 All RESOLVED (see Section 5). Pattern retained here as historical anti-pattern reference.
 **Pattern:** Locations that catch all exceptions with debug-level logging, creating invisible degradation.
 **Fix theme:** Narrow catches to expected types, raise to WARNING, add Prometheus counters.
 
 ### 3.2 O(N) Fallback Paths
 
-**Issues:** ISS-05
+**Issues:** ISS-05 (still open — bounded-concurrency mitigation landed via RFC-013 D4; pagination push still pending)
 **Pattern:** MinIO listing is O(N) serial GETs on fallback path.
 **Fix theme:** Make registry authoritative; remove O(N) MinIO listing.
 
 ### 3.3 Compliance Gap
 
-**Issues:** ISS-02
+**Issues:** ~~ISS-02~~ — 🟢 RESOLVED (see Section 5). Retained as historical pattern reference.
 **Pattern:** Fire-and-forget background task in erasure cascade.
 **Fix theme:** Await with timeout before reporting success.
 
@@ -172,7 +172,7 @@ These 5 documents were previously 100% image blocks with zero extracted text. D1
 | **Gap 6** — Table column degradation | 3 MARGINAL | **1/3 resolved** (world-stats-pocketbook->PASS). 2 unchanged |
 | **ISS-02** — Erasure cascade | 🟢 RESOLVED | 🟢 Resolved — registry delete already bounded by `asyncio.wait_for` + `registry_delete_timeout_s` (storage.py:255-274). Regression: `test_delete_doc_awaits_registry` (:388), `test_delete_doc_registry_timeout` (:404), erasure-cascade Postgres-failure scenario (:480). Closed per RFC-011 D1. |
 | **ISS-03** — Backfill 0-doc | 🟢 RESOLVED | 🟢 Resolved — `registry_backfill.py:188-193` already guards `set_registry_complete` behind non-empty `meta_keys` check. Closed per RFC-012 D1. |
-| **ISS-05** — O(N) MinIO GETs | 🟠 DEGRADED | 🟠 Open — Batch 2 |
+| **ISS-05** — O(N) MinIO GETs | 🟠 DEGRADED | 🟡 Partially mitigated — RFC-013 D4 added bounded-concurrency (semaphore=10) + `.meta.json` sidecar in `list_processed_docs`; underlying O(N) listing remains. Full resolution requires registry-authoritative path (Batch 2). |
 | **ISS-07** — Redis conn storm | 🟠 DEGRADED | 🟡 Partially fixed — worker.py remaining |
 | **ISS-08** — OpenAI error swallow | 🟢 RESOLVED | 🟢 Resolved — `_describe` already retries with backoff + `IMAGE_DESCRIBE_FAILURES` counter. Closed per RFC-013 D1. |
 | **ISS-18** — Broad except in JSON parse | 🟢 RESOLVED | 🟢 Resolved — `_extract_json_object` shared, except narrowed to `(json.JSONDecodeError, KeyError, TypeError)`. Closed per RFC-013 D2. |

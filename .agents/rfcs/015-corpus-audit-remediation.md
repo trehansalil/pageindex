@@ -273,7 +273,7 @@ async def _recover_picture_text(
     doc_path: str, pictures: list[dict], langs: str
 ) -> dict[int, str]:
     """OCR each picture bbox and return {picture_index: recovered_text}."""
-    import fitz  # pymupdf — already a transitive dep via pymupdf4llm
+    import fitz  # pymupdf — only available when the optional `agpl-fallback` extra is installed (pyproject.toml: `agpl-fallback = ["pymupdf4llm>=0.0.17"]`); this D6 path is HR4-gated and MUST no-op / raise a clear ImportError when that extra is absent.
     recovered = {}
     pdf = fitz.open(doc_path)
     for i, pic in enumerate(pictures):
@@ -296,8 +296,11 @@ minimum avoids noise from OCR artifacts on decorative images. Uses the existing
 Tesseract path — no new dependency.
 
 **HR4 note.** This uses `fitz` (PyMuPDF/AGPL) for bbox cropping. The import is
-scoped to this function and only fires when pictures are detected. This extends the
-existing AGPL surface (already present via `pymupdf4llm`), not a new introduction.
+scoped to this function and only fires when pictures are detected. `pymupdf` is
+NOT part of the default install — it ships only under the optional
+`agpl-fallback` extra (see `pyproject.toml`). This D6 path is therefore
+gated on the same optional install as the existing AGPL fallback, not a
+new default-path introduction.
 
 ### D7 — BiDi word-order normalization (`P1`, ~25 lines + dependency)
 

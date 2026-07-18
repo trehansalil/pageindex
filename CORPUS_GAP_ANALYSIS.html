@@ -95,24 +95,24 @@
 
 <pre class="mermaid">
 flowchart TD
-    A[PDF uploaded] --> B[pdf_to_markdown_docling<br/><small>converters.py:1048</small>]
+    A[PDF uploaded] --> B[pdf_to_markdown_docling<br/><small>converters.py</small>]
     B --> C{do_ocr?}
     C -->|default OFF| D[Text-layer extraction]
     C -->|force_full_page_ocr| E[Tesseract OCR]
     D --> F[Heading recovery cascade]
     E --> F
-    F --> G[split_oversized_leaf_nodes<br/><small>helpers.py:797</small>]
-    G --> H[validate_tree<br/><small>helpers.py:528</small>]
+    F --> G[split_oversized_leaf_nodes<br/><small>helpers.py</small>]
+    G --> H[validate_tree<br/><small>helpers.py</small>]
     H -->|node_count &lt; 3| I{Gap 1 check}
     H -->|depth &lt; 2| I
-    H -->|garbling| J[OCR Escalation<br/><small>client.py:455</small>]
-    H -->|PASS| K[save_doc<br/><small>storage.py:79</small>]
+    H -->|garbling| J[OCR Escalation<br/><small>client.py</small>]
+    H -->|PASS| K[save_doc<br/><small>storage.py</small>]
     I -->|image-only?| L["**GAP 1**: No OCR trigger"]
-    I -->|has text| M[route_and_extract_flat<br/><small>helpers.py:1031</small>]
+    I -->|has text| M[route_and_extract_flat<br/><small>helpers.py</small>]
     J --> N{retry ok?}
     N -->|yes| K
     N -->|no| O[LowQualityTreeError]
-    M --> P[save_flat_doc<br/><small>storage.py:133</small>]
+    M --> P[save_flat_doc<br/><small>storage.py</small>]
     L --> P
 
     style L fill:#fee2e2,stroke:#dc2626,color:#1a1a2e
@@ -205,18 +205,18 @@ flowchart TD
   <p><strong>Impact:</strong> 6 documents produce completely blank output (0 text chars in 4 docs, 58&ndash;73 chars in 2 partial docs).</p>
 
   <h3>Root Cause</h3>
-  <p><code>validate_tree()</code> checks <code>node_count &lt; 3</code> <strong>before</strong> garbling. Image-only PDFs produce only <code>&lt;!-- image --&gt;</code> blocks, fail on structure, and route to FLAT-03 &mdash; which has <strong>zero image-density awareness</strong>. OCR escalation at <code>client.py:455</code> is gated on <code>reason == "garbling"</code>, making it structurally unreachable for these documents.</p>
+  <p><code>validate_tree()</code> checks <code>node_count &lt; 3</code> <strong>before</strong> garbling. Image-only PDFs produce only <code>&lt;!-- image --&gt;</code> blocks, fail on structure, and route to FLAT-03 &mdash; which has <strong>zero image-density awareness</strong>. OCR escalation at <code>client.py</code> is gated on <code>reason == "garbling"</code>, making it structurally unreachable for these documents.</p>
 
   <div class="file-ref">
-    <code>client.py:455</code> &mdash; OCR escalation (garbling-only gate)<br/>
-    <code>client.py:497-520</code> &mdash; FLAT-03 routing (no image check)<br/>
-    <code>helpers.py:528-540</code> &mdash; validate_tree priority order<br/>
-    <code>converters.py:834</code> &mdash; DOCLING_DO_OCR default "0"
+    <code>client.py</code> &mdash; OCR escalation (garbling-only gate)<br/>
+    <code>client.py</code> &mdash; FLAT-03 routing (no image check)<br/>
+    <code>helpers.py</code> &mdash; validate_tree priority order<br/>
+    <code>converters.py</code> &mdash; DOCLING_DO_OCR default "0"
   </div>
 
   <h3>Proposed Fix</h3>
   <div class="verdict-box verdict-fix">
-    <strong>Insert image-ratio pre-check at <code>client.py:497</code></strong> before FLAT-03 routing: if <code>&lt;!-- image --&gt;</code> lines exceed 50% of total lines in a PDF, force one <code>force_full_page_ocr</code> retry with language detection from filename. Reuses existing <code>detect_ocr_langs</code>, <code>ensure_tessdata</code>, <code>pdf_to_markdown_docling</code>, and <code>OCR_ESCALATION_TOTAL</code> metrics. If OCR fails, falls through to FLAT-03 as before &mdash; no worse than today.
+    <strong>Insert image-ratio pre-check at <code>client.py</code></strong> before FLAT-03 routing: if <code>&lt;!-- image --&gt;</code> lines exceed 50% of total lines in a PDF, force one <code>force_full_page_ocr</code> retry with language detection from filename. Reuses existing <code>detect_ocr_langs</code>, <code>ensure_tessdata</code>, <code>pdf_to_markdown_docling</code>, and <code>OCR_ESCALATION_TOTAL</code> metrics. If OCR fails, falls through to FLAT-03 as before &mdash; no worse than today.
   </div>
 
   <details>
@@ -247,22 +247,21 @@ flowchart TD
   <p><strong>Impact:</strong> 3 documents with semantically garbage text persist as "successful" &mdash; PUA mojibake (21% weird chars), Latin substitution ("&#1570;&#1604; Oleg"), and 86% digit-junk.</p>
 
   <h3>Root Cause</h3>
-  <p><code>_tree_is_garbled()</code> at <code>helpers.py:509</code> only checks: empty blob, NUL (<code>\x00</code>), replacement char (<code>U+FFFD</code>), and control-char ratio &gt;5%. Three corruption types sail through as valid Unicode. Worse: the flat-doc path <strong>bypasses the garble check entirely</strong> &mdash; <code>4f37b2e3</code> (86% digit-junk) fails on structure, routes to FLAT-03, and is persisted without any text-quality check.</p>
+  <p><code>_tree_is_garbled()</code> at <code>helpers.py</code> only checks: empty blob, NUL (<code>\x00</code>), replacement char (<code>U+FFFD</code>), and control-char ratio &gt;5%. Three corruption types sail through as valid Unicode. Worse: the flat-doc path <strong>bypasses the garble check entirely</strong> &mdash; <code>4f37b2e3</code> (86% digit-junk) fails on structure, routes to FLAT-03, and is persisted without any text-quality check.</p>
 
   <div class="file-ref">
-    <code>helpers.py:509-525</code> &mdash; <code>_tree_is_garbled</code> (narrow heuristics)<br/>
-    <code>helpers.py:1031</code> &mdash; <code>route_and_extract_flat</code> (no quality gate)<br/>
-    <code>client.py:497-520</code> &mdash; FLAT-03 routing
+    <code>helpers.py</code> &mdash; <code>_tree_is_garbled</code> (narrow heuristics)<br/>
+    <code>helpers.py</code> &mdash; <code>route_and_extract_flat</code> (no quality gate)<br/>
+    <code>client.py</code> &mdash; FLAT-03 routing
   </div>
 
   <h3>Proposed Fix (Two Parts)</h3>
   <div class="verdict-box verdict-fix">
-    <strong>Part A &mdash; Extend <code>_tree_is_garbled</code></strong> (+15 lines at <code>helpers.py:524</code>):<br/>
+    <strong>Part A &mdash; Extend <code>_tree_is_garbled</code></strong> (+15 lines at <code>helpers.py</code>):<br/>
     &bull; PUA-char ratio &gt; 3% &rarr; garbled (catches font/CMap mojibake)<br/>
     &bull; Digit ratio &gt; 60% on blobs &gt; 500 chars &rarr; garbled (catches numeric junk)<br/>
     &bull; Single-token repetition &gt; 30% of all words &rarr; garbled (catches "1651001429"&times;3481)<br/><br/>
-    <strong>Part B &mdash; New <code>_flat_text_is_garbled(md)</code></strong> (+20 lines at <code>helpers.py:~1028</code>):<br/>
-    Same heuristics applied to flat-path markdown before <code>route_and_extract_flat</code>. Wire at <code>client.py:~526</code> &mdash; if garbled, override reason to <code>"garbling"</code> so OCR escalation can fire.
+    <strong>Part B &mdash; <code>_flat_text_is_garbled(md)</code></strong> &mdash; <strong>✅ Already implemented (2026-07-18)</strong> in <code>helpers.py</code>. Wired in <code>client.py</code> (FLAT-03 block). Treat this half of Gap 2 as covered; no further action needed.
   </div>
 
   <details>
@@ -303,9 +302,9 @@ flowchart TD
   <p><strong>Not inline markers</strong> &mdash; every trapped Article uses correct heading syntax (<code>### Article (10)</code>). The real defect is <strong>heading-depth drift</strong>: Docling assigns increasing heading depths (<code>##</code>&rarr;<code>###</code>&rarr;<code>####</code>&rarr;<code>######</code>) to structurally-identical Article headers as font-size cues drift across pages. Additionally, Docling emits headings with <strong>leading whitespace</strong> (<code>&nbsp;&nbsp;&nbsp;&nbsp;### Article (10)</code>) which CommonMark doesn't recognize as headings, so the tree builder treats them as body text.</p>
 
   <div class="file-ref">
-    <code>helpers.py:797-867</code> &mdash; <code>split_oversized_leaf_nodes</code><br/>
-    <code>helpers.py:630</code> &mdash; <code>_OVERSIZED_ORDINAL_RE</code><br/>
-    <code>converters.py:1048+</code> &mdash; <code>pdf_to_markdown_docling</code> output
+    <code>helpers.py</code> &mdash; <code>split_oversized_leaf_nodes</code><br/>
+    <code>helpers.py</code> &mdash; <code>_OVERSIZED_ORDINAL_RE</code><br/>
+    <code>converters.py+</code> &mdash; <code>pdf_to_markdown_docling</code> output
   </div>
 
   <h3>Fix: Two Layers</h3>
@@ -349,8 +348,8 @@ flowchart TD
   </div>
 
   <p class="file-ref">
-    <code>helpers.py:662</code> &mdash; <code>_fold_with_index_map</code> (NFKC + tatweel strip)<br/>
-    <code>helpers.py:630</code> &mdash; <code>_OVERSIZED_ORDINAL_RE</code> (matches &#1575;&#1604;&#1605;&#1575;&#1583;&#1577; after fold)
+    <code>helpers.py</code> &mdash; <code>_fold_with_index_map</code> (NFKC + tatweel strip)<br/>
+    <code>helpers.py</code> &mdash; <code>_OVERSIZED_ORDINAL_RE</code> (matches &#1575;&#1604;&#1605;&#1575;&#1583;&#1577; after fold)
   </p>
 
   <p><em>Caveat: per memory, the 62-file validation noted the Human Rights doc may retain a 137k residual from genuinely long individual articles + ToC block. Full resolution after reprocess may be partial, but the 319k&rarr;~137k improvement is still significant.</em></p>
@@ -377,7 +376,7 @@ flowchart TD
   <p><strong>Impact:</strong> 97% of table rows in <code>70607efb</code> have intra-cell word reversal (e.g., "&#1573;&#1583;&#1575;&#1585;&#1577; &#1575;&#1604;&#1576;&#1610;&#1575;&#1606;&#1575;&#1578;" &rarr; "&#1575;&#1604;&#1576;&#1610;&#1575;&#1606;&#1575;&#1578; &#1577; &#1573;&#1583;&#1575;&#1585;"). Prose/headings outside tables are clean.</p>
 
   <div class="verdict-box verdict-trade">
-    <strong>Upstream Docling/TableFormer limitation.</strong> The table extractor reads cell text by physical x-coordinate (L&rarr;R) instead of respecting the bidi algorithm. <code>table_is_rtl()</code> exists in <code>helpers.py:885</code> but only affects continuation-table column ordering, not within-cell word order. No fix surface in our code. <strong>Mitigation:</strong> flag RTL tables with <code>bidi_scrambled: true</code> in quality metadata.
+    <strong>Upstream Docling/TableFormer limitation.</strong> The table extractor reads cell text by physical x-coordinate (L&rarr;R) instead of respecting the bidi algorithm. <code>table_is_rtl()</code> exists in <code>helpers.py</code> but only affects continuation-table column ordering, not within-cell word order. No fix surface in our code. <strong>Mitigation:</strong> flag RTL tables with <code>bidi_scrambled: true</code> in quality metadata.
   </div>
 </div>
 
@@ -462,7 +461,7 @@ gantt
 
   <h3>P1 &mdash; Simple Fixes (Days 2&ndash;3, ~55 lines total)</h3>
   <ol>
-    <li><strong>Gap 1:</strong> Image-ratio pre-check at <code>client.py:497</code> &mdash; ~35 lines, reuses all existing OCR infrastructure</li>
+    <li><strong>Gap 1:</strong> Image-ratio pre-check at <code>client.py</code> &mdash; ~35 lines, reuses all existing OCR infrastructure</li>
     <li><strong>Gap 6c:</strong> TOC dot-leader filter in <code>route_and_extract_flat</code> &mdash; ~20 lines</li>
   </ol>
 

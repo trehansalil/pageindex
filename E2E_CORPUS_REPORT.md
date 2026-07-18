@@ -168,7 +168,7 @@ These documents have corrupt text layers that pass `validate_tree` because it on
 
 **Symptom:** Documents with corrupt text layers (numeric junk, mojibake from embedded fonts) pass `validate_tree` and persist as success.
 
-**Root cause:** `validate_tree` only checks structural metrics: `depth >= 2`, `node_count >= 3`. It never reads the actual text content.
+**Root cause:** `validate_tree` checks structural metrics first (`node_count >= 3`, `depth >= 2`), then delegates content-level garble detection to `_tree_is_garbled` (null/replacement bytes + high control-char ratio + reordering). The gap is that `_tree_is_garbled`'s heuristics don't catch the three failure modes here — numeric-junk pages, font-substitution mojibake, Latin CMap substitution — which pass the null/control-char checks but are semantically garbage. See RFC-010 D3 for the extended heuristics (PUA ratio, digit ratio, single-token repetition) that close this.
 
 **Affected doc_ids:** `4f37b2e3` (91% digits), `b1e42755` (font mojibake), `b1a72fb2` (Latin mojibake)
 

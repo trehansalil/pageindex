@@ -200,9 +200,12 @@ sequenceDiagram
   C->>S: delete_doc(doc_id)
   S->>M: Delete uploads/{doc_id}
   S->>M: Delete processed/{doc_id}.json
+  S->>M: Delete processed/{doc_id}.flat.json  (FLAT-02-C2)
   S->>M: Delete processed/{doc_id}.meta.json
   S->>R: DEL cache keys
+  S->>S: Clear hash-cache entry (filename → sha256)
   S->>P: await asyncio.wait_for(delete_registry, 5s) (D2)
+  S->>M: Delete preloaded/{doc_name}  (RFC-011 D2 / ISS-41)
   alt Postgres succeeds
     S-->>C: {errors: []}
   else Postgres times out or raises

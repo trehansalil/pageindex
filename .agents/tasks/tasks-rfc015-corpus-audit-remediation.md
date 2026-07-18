@@ -10,7 +10,7 @@
 |---|---|
 | Governing RFC(s) | [RFC-015: Corpus Audit Remediation — Verdict Engine & Extraction Gaps](../rfcs/015-corpus-audit-remediation.md#decision) |
 | Design Document | [Design: Corpus Audit Remediation — Verdict Engine & Extraction Gaps](../designs/design-rfc015-corpus-audit-remediation.md#overview) |
-| PRD / Requirements | [PRD.md](../PRD.md#functional-requirements) |
+| PRD / Requirements | [PRD.md](../../PRD.md#functional-requirements) |
 | Hard Rules | [CLAUDE.md HR1 + HR3 + HR4 + HR5](../rfcs/015-corpus-audit-remediation.md#hard-rule-constraints-claudemd--binding) |
 | RFC Implementation Order | [RFC-015 Implementation Plan](../rfcs/015-corpus-audit-remediation.md#implementation-plan) |
 | RFC Test Strategy | [RFC-015 Test Strategy](../rfcs/015-corpus-audit-remediation.md#test-strategy) |

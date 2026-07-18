@@ -31,10 +31,10 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
 
   - [X] <a id="11-remove-on-listing-from-error-paths-d1"></a>1.1 Remove O(N) listing from error paths ([D1](../rfcs/009-query-path-performance-input-hardening.md#d1--remove-on-listing-from-error-paths-iss-21--immediate))
 
-    - Remove `list_processed_docs()` calls from error paths in three MCP tools:
-      - `get_document` (`documents.py:195`) — remove `available` array construction from not-found response
-      - `get_document_structure` (`documents.py:258`) — remove `available` array construction from not-found response
-      - `get_page_content` (`documents.py:300`) — remove `available` array construction from not-found response
+    - Remove `list_processed_docs()` calls from error paths in three MCP tools (all in `tools/documents.py`):
+      - `get_document` — remove `available` array construction from not-found response
+      - `get_document_structure` — remove `available` array construction from not-found response
+      - `get_page_content` — remove `available` array construction from not-found response
     - Return simple error JSON: `{"error": "Document not found: {doc_id}"}` without the `available` key
     - _Requirements:_ [RFC-009 D1 (ISS-21)](../rfcs/009-query-path-performance-input-hardening.md#d1--remove-on-listing-from-error-paths-iss-21--immediate) | [Design Property 1](../designs/design-rfc009-query-path-performance-input-hardening.md#property-1-no-on-listing-on-error-paths) | [Design Service: tools/documents.py](../designs/design-rfc009-query-path-performance-input-hardening.md#1-toolsdocumentspy) | [Design Sequence: Error Path Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#error-path-flow--d1)
   - [X] <a id="12-error-path-regression-tests-d1"></a>1.2 Write error-path regression tests ([D1](../rfcs/009-query-path-performance-input-hardening.md#d1--remove-on-listing-from-error-paths-iss-21--immediate))
@@ -57,14 +57,14 @@ Implements seven performance and input-hardening fixes across the PageIndex quer
 
   - [X] <a id="21-chunked-upload-with-size-limit-d4"></a>2.1 Implement chunked upload with size limit ([D4](../rfcs/009-query-path-performance-input-hardening.md#d4--chunked-upload-with-size-limit-iss-15))
 
-    - Replace unbounded `file.read()` in `upload_app.py:89` with chunked read (1 MB chunks)
-    - Add `MAX_UPLOAD_SIZE_MB` env var to `settings.py` (default `100`)
+    - Replace unbounded `file.read()` in `upload_app.py` with chunked read (1 MB chunks)
+    - Add `MAX_UPLOAD_SIZE_MB` env var to `config.py` (`Settings.max_upload_size_mb`, default `100`)
     - Abort with HTTP 413 if total bytes exceed `MAX_UPLOAD_SIZE_MB` limit
     - Reassemble chunks with `b"".join(chunks)` after successful size check
     - _Requirements:_ [RFC-009 D4 (ISS-15)](../rfcs/009-query-path-performance-input-hardening.md#d4--chunked-upload-with-size-limit-iss-15) | [Design Property 4](../designs/design-rfc009-query-path-performance-input-hardening.md#property-4-upload-size-bounded) | [Design Service: upload_app.py](../designs/design-rfc009-query-path-performance-input-hardening.md#3-upload_apppy) | [Design Service: settings.py](../designs/design-rfc009-query-path-performance-input-hardening.md#5-settingspy) | [Design Sequence: Upload Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#upload-flow--d4)
   - [X] <a id="22-tessdata-download-hardening-d5"></a>2.2 Harden tessdata download ([D5](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate))
 
-    - Replace `urllib.request.urlretrieve` in `converters.py:755-768` with `urllib.request.urlopen(url, timeout=30)` plus chunked read (1 MB chunks)
+    - Replace `urllib.request.urlretrieve` in `converters.py` (`ensure_tessdata` download block) with `urllib.request.urlopen(url, timeout=30)` plus chunked read (1 MB chunks)
     - Add 100 MB size cap — abort and clean up partial file (`os.unlink(dest)`) if exceeded
     - On any failure (timeout, size exceeded, network error), ensure partial file is cleaned up
     - _Requirements:_ [RFC-009 D5 (ISS-14)](../rfcs/009-query-path-performance-input-hardening.md#d5--tessdata-download-hardening-iss-14-immediate) | [Design Property 5](../designs/design-rfc009-query-path-performance-input-hardening.md#property-5-tessdata-download-bounded) | [Design Service: converters.py](../designs/design-rfc009-query-path-performance-input-hardening.md#4-converterspy) | [Design Sequence: Tessdata Download Flow](../designs/design-rfc009-query-path-performance-input-hardening.md#tessdata-download-flow--d5)
