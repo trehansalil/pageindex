@@ -252,6 +252,75 @@ async def _backfill(dry_run: bool, force: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Startup auto-backfill (called from server.py / worker.py)
+# ---------------------------------------------------------------------------
+
+
+async def run_auto_backfill() -> None:
+    """Lightweight startup-time backfill: sync MinIO metas to Postgres and set the complete flag.
+
+    Called from server and worker startup after init_registry succeeds.
+    Best-effort — any failure logs a warning but never crashes the caller.
+    """
+    if not (settings.registry_enabled and settings.postgres_dsn):
+        return
+
+    from .registry import get_pool
+
+    if get_pool() is None:
+        return
+
+    from .cache import get_async_redis
+
+    try:
+        redis_client = await get_async_redis()
+        if await is_registry_complete(redis_client):
+            logger.debug("auto_backfill: registry complete flag already set, skipping")
+            return
+    except Exception as exc:
+        logger.warning("auto_backfill: Redis check failed, skipping: %s", exc)
+        return
+
+    try:
+        meta_keys = await asyncio.to_thread(_list_meta_keys)
+    except Exception as exc:
+        logger.warning("auto_backfill: MinIO listing failed, skipping: %s", exc)
+        return
+
+    if not meta_keys:
+        from .registry import count_docs
+
+        try:
+            pg_count = await count_docs()
+        except Exception:
+            pg_count = None
+
+        if pg_count is not None and pg_count == 0:
+            await set_registry_complete(redis_client)
+            logger.info("auto_backfill: empty corpus confirmed, registry complete flag set")
+        else:
+            logger.warning(
+                "auto_backfill: MinIO returned 0 metas but registry has %s rows — "
+                "skipping flag (run registry_backfill.py manually to investigate)",
+                pg_count,
+            )
+        return
+
+    failed = await _upsert_all(meta_keys, dry_run=False)
+    if not failed:
+        await set_registry_complete(redis_client)
+        logger.info(
+            "auto_backfill: %d doc(s) synced, registry complete flag set", len(meta_keys)
+        )
+    else:
+        logger.warning(
+            "auto_backfill: %d/%d failed — registry complete flag NOT set",
+            len(failed),
+            len(meta_keys),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
