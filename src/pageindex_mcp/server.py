@@ -73,6 +73,15 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
                 "registry: init failed at server startup, queries will fall back to MinIO: %s",
                 exc,
             )
+        else:
+            from .registry_backfill import run_auto_backfill
+
+            try:
+                await run_auto_backfill()
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "registry: auto-backfill failed at server startup: %s", exc
+                )
     try:
         if _inner is None:
             yield

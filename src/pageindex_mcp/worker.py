@@ -514,6 +514,13 @@ async def startup(ctx: dict) -> None:
             await init_registry(settings.postgres_dsn)
         except Exception as exc:
             logger.warning("registry: init failed at worker startup, dual-write disabled: %s", exc)
+        else:
+            from .registry_backfill import run_auto_backfill
+
+            try:
+                await run_auto_backfill()
+            except Exception as exc:
+                logger.warning("registry: auto-backfill failed at worker startup: %s", exc)
 
 
 async def shutdown(ctx: dict) -> None:
