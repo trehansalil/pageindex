@@ -309,9 +309,7 @@ async def run_auto_backfill() -> None:
     failed = await _upsert_all(meta_keys, dry_run=False)
     if not failed:
         await set_registry_complete(redis_client)
-        logger.info(
-            "auto_backfill: %d doc(s) synced, registry complete flag set", len(meta_keys)
-        )
+        logger.info("auto_backfill: %d doc(s) synced, registry complete flag set", len(meta_keys))
     else:
         logger.warning(
             "auto_backfill: %d/%d failed — registry complete flag NOT set",
