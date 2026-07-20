@@ -269,8 +269,8 @@ async def _sync_registry_metrics_from_redis() -> None:
         )
 
 
-REGISTRY_METRICS_SYNC_INTERVAL_S = float(
-    os.environ.get("PAGEINDEX_REGISTRY_METRICS_SYNC_INTERVAL_S", "5")
+REGISTRY_METRICS_SYNC_INTERVAL_S = max(
+    1.0, float(os.environ.get("PAGEINDEX_REGISTRY_METRICS_SYNC_INTERVAL_S", "5"))
 )
 
 
@@ -283,6 +283,7 @@ async def registry_metrics_sync_loop(interval: float = REGISTRY_METRICS_SYNC_INT
     instead of adding a network round trip — and a stall risk — to every
     /metrics scrape (Phase 3 audit Issue A follow-up).
     """
+    sleep_s = max(1.0, interval)
     while True:
         try:
             await _sync_registry_metrics_from_redis()
@@ -292,7 +293,7 @@ async def registry_metrics_sync_loop(interval: float = REGISTRY_METRICS_SYNC_INT
             logging.getLogger(__name__).warning(
                 "registry metrics sync failed; will retry", exc_info=True
             )
-        await asyncio.sleep(interval)
+        await asyncio.sleep(sleep_s)
 
 
 async def metrics_response(request: Request) -> Response:
