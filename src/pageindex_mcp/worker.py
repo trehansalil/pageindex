@@ -585,15 +585,25 @@ async def _reconcile_registry_drift_cron(ctx: dict) -> None:
 # as a set of minute-of-hour (and, past 60 minutes, hour-of-day) ticks.
 # settings.registry_reconcile_interval_s is already clamped to [60, 86400]
 # (config.py), so this always resolves to a whole-minute cadence between
-# 1 minute and 24 hours; non-divisors of 60/24 round down via floor-division.
+# 1 minute and 24 hours.
+#
+# range(0, 60, step) only produces uniform spacing when step divides 60
+# evenly (e.g. 25-min step → {0,25,50} → gaps of 25/10/25, not uniform).
+# Snap to the largest divisor of 60 (or 24 for hours) that is <= the
+# requested interval so spacing is always uniform.
+_DIVISORS_OF_60 = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60]
+_DIVISORS_OF_24 = [1, 2, 3, 4, 6, 8, 12, 24]
+
 _RECONCILE_INTERVAL_MIN = max(1, settings.registry_reconcile_interval_s // 60)
 if _RECONCILE_INTERVAL_MIN < 60:
-    _RECONCILE_MINUTES = set(range(0, 60, _RECONCILE_INTERVAL_MIN))
+    _step = max(d for d in _DIVISORS_OF_60 if d <= _RECONCILE_INTERVAL_MIN)
+    _RECONCILE_MINUTES = set(range(0, 60, _step))
     _RECONCILE_HOURS = None  # every hour
 else:
-    _RECONCILE_HOUR_STEP = max(1, _RECONCILE_INTERVAL_MIN // 60)
+    _hour_step_raw = max(1, _RECONCILE_INTERVAL_MIN // 60)
+    _hour_step = max(d for d in _DIVISORS_OF_24 if d <= _hour_step_raw)
     _RECONCILE_MINUTES = {0}
-    _RECONCILE_HOURS = set(range(0, 24, _RECONCILE_HOUR_STEP))
+    _RECONCILE_HOURS = set(range(0, 24, _hour_step))
 
 
 class WorkerSettings:

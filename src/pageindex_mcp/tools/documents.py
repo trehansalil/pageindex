@@ -182,7 +182,10 @@ async def recent_documents(page: int = 1, page_size: int = 10) -> str:
         # RFC-009 D6: registry-only listing — no MinIO fallback. Phase 3 audit
         # Issue B: real isError:true instead of a success-envelope "error" field,
         # so the calling LLM can distinguish refusal from an empty result set.
-        TOOL_ERRORS.labels(tool="recent_documents").inc()
+        # verdict_fail is a healthy empty corpus, not a system error — skip
+        # TOOL_ERRORS to avoid inflating error dashboards on fresh deploys.
+        if e.reason != "verdict_fail":
+            TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents: registry unavailable (reason=%s)", e.reason)
         raise ToolError(_tool_error_message(e.reason)) from e
     except Exception as e:
@@ -257,7 +260,8 @@ async def find_relevant_documents(query: str) -> str:
         # RFC-009 D6: registry-only listing — no MinIO fallback. Phase 3 audit
         # Issue B: real isError:true instead of a success-envelope "error" field,
         # so the calling LLM can distinguish refusal from an empty result set.
-        TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
+        if e.reason != "verdict_fail":
+            TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents: registry unavailable (reason=%s)", e.reason)
         raise ToolError(_tool_error_message(e.reason)) from e
     except Exception as e:
