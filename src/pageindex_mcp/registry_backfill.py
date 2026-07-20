@@ -37,6 +37,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,11 @@ from pageindex_mcp.registry import (  # noqa: E402
     upsert_doc,
 )
 from pageindex_mcp.storage import get_minio  # noqa: E402
+
+# Phase 3 audit Issue A #2/#3: tracks the reconciliation job's own last-run time,
+# separate from ``pageindex:registry:complete`` (a one-shot boolean, not a
+# timestamp — cannot answer "is reconciliation still running on schedule?").
+_REGISTRY_LAST_RECONCILE_AT_KEY = "pageindex:registry:last_reconcile_at"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -288,10 +294,10 @@ async def run_auto_backfill() -> None:
         return
 
     if not meta_keys:
-        from .registry import count_docs
+        from .registry import count_docs_all
 
         try:
-            pg_count = await count_docs()
+            pg_count = await count_docs_all()
         except Exception:
             pg_count = None
 
@@ -316,6 +322,72 @@ async def run_auto_backfill() -> None:
             len(failed),
             len(meta_keys),
         )
+
+
+# ---------------------------------------------------------------------------
+# Periodic reconciliation (Phase 3 audit Issue A #3 — arq cron target)
+# ---------------------------------------------------------------------------
+
+
+async def reconcile_registry_drift() -> None:
+    """Sync MinIO metas to Postgres unconditionally — no ``registry:complete``
+    short-circuit.
+
+    ``run_auto_backfill()`` above only ever does useful work once: it returns
+    immediately once the ``pageindex:registry:complete`` flag is set, so it
+    never catches drift introduced after the initial backfill (e.g. a
+    dual-write failure in ``worker.py:_upsert_registry_row`` that silently
+    left a doc's row stale or missing). This sibling entrypoint performs the
+    identical MinIO-vs-Postgres diff/upsert but always runs, and is meant to
+    be called on a recurring arq cron schedule (see ``WorkerSettings.cron_jobs``
+    in worker.py) rather than only at startup.
+
+    Best-effort — any failure logs a warning but never raises, matching
+    ``run_auto_backfill()``'s contract so a transient MinIO/Postgres blip
+    doesn't take down the arq cron scheduler.
+    """
+    if not (settings.registry_enabled and settings.postgres_dsn):
+        return
+
+    from .registry import get_pool
+
+    if get_pool() is None:
+        logger.debug("reconcile_registry_drift: pool not ready, skipping")
+        return
+
+    from .cache import get_async_redis
+
+    try:
+        redis_client = await get_async_redis()
+    except Exception as exc:
+        logger.warning("reconcile_registry_drift: Redis connect failed, skipping: %s", exc)
+        return
+
+    try:
+        meta_keys = await asyncio.to_thread(_list_meta_keys)
+    except Exception as exc:
+        logger.warning("reconcile_registry_drift: MinIO listing failed, skipping: %s", exc)
+        return
+
+    if not meta_keys:
+        logger.debug("reconcile_registry_drift: no MinIO meta sidecars found, nothing to sync")
+        await redis_client.set(_REGISTRY_LAST_RECONCILE_AT_KEY, str(int(time.time())))
+        return
+
+    failed = await _upsert_all(meta_keys, dry_run=False)
+    if failed:
+        logger.warning(
+            "reconcile_registry_drift: %d/%d doc(s) failed to upsert",
+            len(failed),
+            len(meta_keys),
+        )
+    else:
+        logger.info("reconcile_registry_drift: %d doc(s) reconciled", len(meta_keys))
+
+    # Recorded regardless of per-doc failures — this timestamp answers "is the
+    # reconcile job itself still running on schedule?", not "did every doc
+    # succeed?" (that's REGISTRY_WRITE_FAILURES_TOTAL's job, per-doc, in worker.py).
+    await redis_client.set(_REGISTRY_LAST_RECONCILE_AT_KEY, str(int(time.time())))
 
 
 # ---------------------------------------------------------------------------

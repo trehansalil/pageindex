@@ -6,21 +6,23 @@ RAG-01-C1  the pipeline prefilters candidate docs before the tree search; docs
            excluded by the prefilter are never searched; no vector index is used
 RAG-01-C2  tree search runs concurrently across candidate docs, bounded by a
            semaphore of size PAGEINDEX_SEARCH_CONCURRENCY
-RAG-01-C3  with zero indexed docs, the tool returns a JSON error envelope with
-           available=[] and an error message; no LLM tree-search call is made
+RAG-01-C3  with zero indexed docs, the tool raises isError:true (ToolError)
+           with reason=verdict_fail; no LLM tree-search call is made
+           (Phase 3 audit Issue B)
 """
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 
-# ── RAG-01-C3 — no-docs error envelope (real call into the MCP tool) ─────────
-async def test_rag_01_c3_no_documents_returns_error_envelope():
-    """RAG-01-C3: find_relevant_documents() with zero indexed docs returns the
-    query_error_shape envelope (available=[] + error key) and never runs a
+# ── RAG-01-C3 — no-docs isError:true (real call into the MCP tool) ───────────
+async def test_rag_01_c3_no_documents_raises_tool_error():
+    """RAG-01-C3: find_relevant_documents() with zero indexed docs raises a
+    ToolError (isError:true) carrying reason=verdict_fail, and never runs a
     tree-search LLM call. Exercises the real tool entry point."""
+    from fastmcp.exceptions import ToolError
+
     from pageindex_mcp.tools import documents
     from pageindex_mcp.tools.documents import find_relevant_documents
 
@@ -28,12 +30,10 @@ async def test_rag_01_c3_no_documents_returns_error_envelope():
     # listing (registry.list_docs -> []), not an empty MinIO scan.
     with patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)), \
          patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=[])), \
-         patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm:
-        raw = await find_relevant_documents("any query")
+         patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm, \
+         pytest.raises(ToolError, match="verdict_fail"):
+        await find_relevant_documents("any query")
 
-    payload = json.loads(raw)
-    assert payload["available"] == []
-    assert "error" in payload
     # No LLM tree-search call was issued on the empty-corpus path.
     mock_llm.assert_not_called()
 

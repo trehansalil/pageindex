@@ -67,10 +67,16 @@ def _gauge_value(gauge):
 
 class TestToolInstrumentation:
     async def test_recent_documents_increments_counter(self):
+        # Phase 3 audit Issue B: registry-unavailable now raises isError:true
+        # (ToolError) instead of returning a JSON envelope, but TOOL_CALLS still
+        # increments unconditionally at the top of the function.
+        from fastmcp.exceptions import ToolError
+
         before = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
         with patch("pageindex_mcp.storage.list_processed_docs", return_value=[]):
             from pageindex_mcp.tools.documents import recent_documents
-            await recent_documents()
+            with pytest.raises(ToolError):
+                await recent_documents()
         after = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
         assert after == before + 1
 

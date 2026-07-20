@@ -32,6 +32,8 @@ from .metrics import (
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_CHILD_TIMEOUT_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
+    REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP,
+    REGISTRY_WRITE_FAILURES_TOTAL,
     UPLOAD_DURATION,
     UPLOADS,
 )
@@ -497,8 +499,10 @@ async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
         fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
         if fields:
             await upsert_doc(fields)
+            REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()
             logger.info("registry: dual-write upserted doc_id=%s", doc_id)
     except Exception as exc:
+        REGISTRY_WRITE_FAILURES_TOTAL.inc()
         logger.warning("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc)
 
 
@@ -533,6 +537,28 @@ async def shutdown(ctx: dict) -> None:
         await close_registry()
 
 
+async def _reconcile_registry_drift_cron(ctx: dict) -> None:
+    """arq cron wrapper for registry_backfill.reconcile_registry_drift.
+
+    Phase 3 audit Issue A #3/#4: run_auto_backfill() only ever does useful work
+    once (short-circuits once pageindex:registry:complete is set), so it never
+    catches post-completion drift — e.g. a worker._upsert_registry_row dual-write
+    failure that left a doc's row stale. This periodic cron entry calls the
+    non-short-circuiting sibling on a schedule instead.
+    """
+    from .registry_backfill import reconcile_registry_drift
+
+    await reconcile_registry_drift()
+
+
+# arq's cron() only supports crontab-style (fixed minute/hour/...) scheduling,
+# not a raw "every N seconds" repeat — so a configurable interval is expressed
+# as a set of minute-of-hour ticks. Only whole-minute intervals that evenly
+# divide 60 are exact; other values round down via floor-division.
+_RECONCILE_INTERVAL_MIN = max(1, settings.registry_reconcile_interval_s // 60)
+_RECONCILE_MINUTES = set(range(0, 60, _RECONCILE_INTERVAL_MIN))
+
+
 class WorkerSettings:
     functions: ClassVar = [process_document_job]
     on_startup = startup
@@ -553,5 +579,17 @@ class WorkerSettings:
             unique=True,
             max_tries=1,
             timeout=30,
+        ),
+        # Phase 3 audit Issue A #4: PAGEINDEX_REGISTRY_RECONCILE_INTERVAL_S
+        # (default 1200s / 20min) controls the cadence. Not run_at_startup —
+        # startup() already calls run_auto_backfill() once; this only needs to
+        # catch drift introduced afterwards.
+        cron(
+            _reconcile_registry_drift_cron,
+            minute=_RECONCILE_MINUTES,
+            second=0,
+            unique=True,
+            max_tries=1,
+            timeout=300,
         ),
     ]

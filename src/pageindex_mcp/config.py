@@ -70,6 +70,14 @@ class Settings:
     postgres_dsn: str | None
     registry_enabled: bool
     catalog_topk: int
+    # registry_query_concurrency: bound on concurrent get_doc() fan-out during the
+    # RAG Phase 1 doc-load (Phase 3 audit Issue C #1). Was a sequential loop over
+    # up to catalog_topk docs; start conservative pending real load-test numbers.
+    registry_query_concurrency: int
+    # registry_reconcile_interval_s: arq cron interval for the post-backfill drift
+    # reconciliation job (Phase 3 audit Issue A #4). No load data to tune this yet —
+    # start conservative (20 min) per the audit's recommendation.
+    registry_reconcile_interval_s: int
     # LLM-02: Langfuse tracing / cost monitoring. Tracing activates only when both
     # public+secret keys are set; otherwise the LLM-01 path is fully unchanged.
     langfuse_public_key: str
@@ -141,6 +149,12 @@ def _load_settings() -> Settings:
         registry_enabled=os.environ.get("REGISTRY_ENABLED", "true").strip().lower()
         not in ("0", "false", "no"),
         catalog_topk=int(os.environ.get("PAGEINDEX_CATALOG_TOPK", "200")),
+        registry_query_concurrency=int(
+            os.environ.get("PAGEINDEX_REGISTRY_QUERY_CONCURRENCY", "15")
+        ),
+        registry_reconcile_interval_s=int(
+            os.environ.get("PAGEINDEX_REGISTRY_RECONCILE_INTERVAL_S", "1200")
+        ),
         langfuse_public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),
         langfuse_host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),

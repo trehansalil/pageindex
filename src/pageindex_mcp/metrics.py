@@ -108,6 +108,21 @@ REGISTRY_FALLBACK_TOTAL = Counter(
     ["reason"],
 )
 
+REGISTRY_WRITE_FAILURES_TOTAL = Counter(
+    "pageindex_registry_write_failures_total",
+    "Failures of the worker-side RFC-006 dual-write upsert into the Postgres "
+    "registry (_upsert_registry_row's except block). Best-effort: the job "
+    "itself never fails on these, so this is the only signal that a doc's "
+    "registry row silently fell behind its MinIO artifact (Phase 3 audit "
+    "Issue A #1).",
+)
+REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP = Gauge(
+    "pageindex_registry_last_write_success_timestamp",
+    "Unix timestamp of the most recent successful registry dual-write upsert "
+    "(Phase 3 audit Issue A #2). Alert on time() - this exceeding ~2x the "
+    "reconcile interval to catch silent drift between MinIO and the registry.",
+)
+
 LOW_QUALITY_TREES = Counter(
     "pageindex_low_quality_trees_total",
     "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",
