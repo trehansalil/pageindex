@@ -37,9 +37,13 @@ def _fake_settings(*, vlm_fallback: bool = True, vlm_model: str = "gpt-4.1-test"
 def _tree_result():
     return {
         "structure": [
-            {"title": "Root", "text": "root text", "children": [
-                {"title": "Child", "text": "child text", "children": []},
-            ]},
+            {
+                "title": "Root",
+                "text": "root text",
+                "children": [
+                    {"title": "Child", "text": "child text", "children": []},
+                ],
+            },
         ],
         "doc_description": "test doc",
     }
@@ -59,24 +63,22 @@ def pdf_file():
         os.unlink(path)
 
 
-def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False,
-              vlm_fallback=True):
+def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallback=True):
     """Wire index() so the garble retry always fails and the VLM path fires."""
-    monkeypatch.setattr(client_mod, "settings",
-                        _fake_settings(vlm_fallback=vlm_fallback))
+    monkeypatch.setattr(client_mod, "settings", _fake_settings(vlm_fallback=vlm_fallback))
     monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree",
-                        MagicMock(side_effect=validate_side_effect))
-    monkeypatch.setattr(client_mod, "pdf_markdown_converters",
-                        lambda: [("docling", lambda p: "# garbled md")])
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes",
-                        lambda structure: structure)
+    monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
+    monkeypatch.setattr(
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
+    )
+    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda s: ["eng"])
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
-    monkeypatch.setattr(client_mod, "pdf_to_markdown_docling",
-                        lambda path, force, langs: "# still garbled")
+    monkeypatch.setattr(
+        client_mod, "pdf_to_markdown_docling", lambda path, force, langs: "# still garbled"
+    )
 
     vlm_mock = AsyncMock()
     if vlm_raises:
@@ -90,7 +92,8 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False,
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
         "route_and_extract_flat": MagicMock(
-            return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
@@ -116,7 +119,7 @@ async def test_VLM_C1_recovered(monkeypatch, pdf_file):
         validate_side_effect=[
             (False, "garbling"),  # initial
             (False, "garbling"),  # OCR retry
-            (True, None),        # VLM output
+            (True, None),  # VLM output
         ],
     )
     c = _make_client()

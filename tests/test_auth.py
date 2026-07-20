@@ -39,9 +39,7 @@ async def client_no_token():
     )
     with patch.object(auth_module, "settings", no_token_settings):
         app = _make_app()
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
 
 
@@ -52,9 +50,7 @@ async def client_no_token_no_allow():
     )
     with patch.object(auth_module, "settings", no_token_settings):
         app = _make_app()
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
 
 
@@ -67,9 +63,7 @@ async def client_with_token():
     )
     with patch.object(auth_module, "settings", with_token_settings):
         app = _make_app()
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
 
 
@@ -100,9 +94,7 @@ async def test_passthrough_when_allow_unauthenticated_true(client_no_token, capl
     assert response.text == "ok"
     assert MCP_AUTH_DISABLED._value.get() == 1
     warnings = [
-        record
-        for record in caplog.records
-        if "MCP bearer-token auth is DISABLED" in record.message
+        record for record in caplog.records if "MCP bearer-token auth is DISABLED" in record.message
     ]
     assert len(warnings) == 1
 
@@ -120,18 +112,14 @@ async def test_normal_auth_flow_unchanged_when_token_set(client_with_token):
     assert ok_response.text == "ok"
 
 
-async def test_warning_logged_exactly_once_across_multiple_requests(
-    client_no_token, caplog
-):
+async def test_warning_logged_exactly_once_across_multiple_requests(client_no_token, caplog):
     with caplog.at_level("WARNING", logger="pageindex_mcp.auth"):
         await client_no_token.get("/protected")
         await client_no_token.get("/protected")
         await client_no_token.get("/protected")
 
     warnings = [
-        record
-        for record in caplog.records
-        if "MCP bearer-token auth is DISABLED" in record.message
+        record for record in caplog.records if "MCP bearer-token auth is DISABLED" in record.message
     ]
     assert len(warnings) == 1
 

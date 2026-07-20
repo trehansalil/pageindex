@@ -66,9 +66,7 @@ def test_cache_get_redis_error_logs_warning_and_increments_counter(_patch_redis,
 
     assert result is None  # fail-open fallback preserved
     assert _counter_value("get") == before + 1
-    assert any(
-        r.levelname == "WARNING" and "cache get failed" in r.message for r in caplog.records
-    )
+    assert any(r.levelname == "WARNING" and "cache get failed" in r.message for r in caplog.records)
 
 
 def test_cache_get_non_redis_error_propagates(_patch_redis):
@@ -89,9 +87,7 @@ def test_cache_set_redis_error_logs_warning_and_increments_counter(_patch_redis,
 
     assert result is None  # fail-open: no exception raised to caller
     assert _counter_value("set") == before + 1
-    assert any(
-        r.levelname == "WARNING" and "cache set failed" in r.message for r in caplog.records
-    )
+    assert any(r.levelname == "WARNING" and "cache set failed" in r.message for r in caplog.records)
 
 
 def test_cache_set_non_redis_error_propagates(_patch_redis):

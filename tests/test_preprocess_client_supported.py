@@ -65,9 +65,7 @@ async def test_jpg_file_enqueues_via_process_one(tmp_path):
     fake_run = AsyncMock(return_value=mock_result)
     sem = asyncio.Semaphore(1)
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess", fake_run, create=True
-    ):
+    with patch("pageindex_mcp.worker._run_converter_subprocess", fake_run, create=True):
         await preprocess_client._process_one(sem, jpg)
 
     fake_run.assert_awaited_once_with(str(jpg))

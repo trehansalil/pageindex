@@ -34,7 +34,6 @@ def test_zdr_rejects_empty():
     assert _is_zdr_allowlisted("") is False
 
 
-
 async def test_lifespan_raises_when_pii_corpus_with_non_zdr_url():
     bad_settings = dataclasses.replace(
         server_module.settings,

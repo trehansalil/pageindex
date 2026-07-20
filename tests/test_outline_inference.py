@@ -80,12 +80,12 @@ def test_catb_injects_missing_ipid_anchor_and_subordinates_faq():
     Besondere-Bedingungen title IS rendered, so it stays H1 (no duplicate inject).
     This is the BLOCKER-1 fix: the anchor is the real title, never the first FAQ."""
     md = _md(
-        "Katzen-Krankenversicherung",                       # cover, page 1
+        "Katzen-Krankenversicherung",  # cover, page 1
         "Um welche Art von Versicherung handelt es sich?",  # FAQ, page 3
-        "Was ist versichert?",                              # FAQ, page 3
-        "Was ist nicht versichert?",                        # FAQ, page 4
+        "Was ist versichert?",  # FAQ, page 3
+        "Was ist nicht versichert?",  # FAQ, page 4
         "Besondere Bedingungen Katzen-Krankenversicherung",  # T&C anchor, page 5
-        "Leistungen",                                       # T&C child, page 6
+        "Leistungen",  # T&C child, page 6
     )
     heading_pages = {
         _outline_norm("Katzen-Krankenversicherung"): [1],
@@ -101,8 +101,8 @@ def test_catb_injects_missing_ipid_anchor_and_subordinates_faq():
     ]
     out = _apply_outline_levels(md, heading_pages, toc, total_pages=8)
     assert _headings(out) == [
-        (1, "Katzen-Krankenversicherung"),                       # cover: pre-outline, untouched
-        (1, "Informationsblatt zu Versicherungsprodukten"),      # INJECTED (was not rendered)
+        (1, "Katzen-Krankenversicherung"),  # cover: pre-outline, untouched
+        (1, "Informationsblatt zu Versicherungsprodukten"),  # INJECTED (was not rendered)
         (2, "Um welche Art von Versicherung handelt es sich?"),
         (2, "Was ist versichert?"),
         (2, "Was ist nicht versichert?"),
@@ -121,11 +121,11 @@ def test_repeated_identical_titles_are_kept_apart_by_page_deque():
     as H2 — no collision, no zero-width band."""
     md = _md(
         "Besondere Bedingungen Hundehalterhaftpflichtversicherung",  # page 5
-        "Geltungsbereich",                                            # page 6
+        "Geltungsbereich",  # page 6
         "Besondere Bedingungen Hundehalterhaftpflichtversicherung",  # page 13
-        "Beitrag",                                                    # page 14
+        "Beitrag",  # page 14
         "Besondere Bedingungen Hundehalterhaftpflichtversicherung",  # page 21
-        "Kuendigung",                                                 # page 22
+        "Kuendigung",  # page 22
     )
     bb = _outline_norm("Besondere Bedingungen Hundehalterhaftpflichtversicherung")
     heading_pages = {
@@ -158,10 +158,10 @@ def test_copage_nested_l1_l2_entries_do_not_collapse():
     a zero-width band) and the L2 title becomes H2 with its content at H3."""
     md = _md(
         "Umfang des Versicherungsschutzes",  # L1 title, page 3
-        "Begriffsbestimmungen",              # L2 title, page 3
-        "Tierarztkosten",                    # content under L2, page 4
-        "Beitrag und Beginn",                # next L1 title, page 6
-        "Faelligkeit",                       # content under 2nd L1, page 7
+        "Begriffsbestimmungen",  # L2 title, page 3
+        "Tierarztkosten",  # content under L2, page 4
+        "Beitrag und Beginn",  # next L1 title, page 6
+        "Faelligkeit",  # content under 2nd L1, page 7
     )
     heading_pages = {
         _outline_norm("Umfang des Versicherungsschutzes"): [3],
@@ -190,9 +190,9 @@ def test_copage_nested_missing_titles_inject_parent_before_child():
     set, both are injected before the first content heading, shallowest-first so
     the parent H1 precedes the child H2 (injection-ordering correctness)."""
     md = _md(
-        "Allgemeines",     # content, page 3
+        "Allgemeines",  # content, page 3
         "Tierarztkosten",  # content, page 4
-        "Faelligkeit",     # content under 2nd L1, page 7
+        "Faelligkeit",  # content under 2nd L1, page 7
     )
     heading_pages = {
         _outline_norm("Allgemeines"): [3],
@@ -207,10 +207,10 @@ def test_copage_nested_missing_titles_inject_parent_before_child():
     out = _apply_outline_levels(md, heading_pages, toc, total_pages=8)
     assert _headings(out) == [
         (1, "Umfang des Versicherungsschutzes"),  # injected parent first
-        (2, "Begriffsbestimmungen"),              # injected child second
+        (2, "Begriffsbestimmungen"),  # injected child second
         (3, "Allgemeines"),
         (3, "Tierarztkosten"),
-        (1, "Beitrag und Beginn"),                # injected (its own band)
+        (1, "Beitrag und Beginn"),  # injected (its own band)
         (2, "Faelligkeit"),
     ]
 
@@ -248,8 +248,8 @@ def test_heading_without_page_provenance_is_left_unchanged():
     current level instead of being mis-placed into a section band."""
     md = _md(
         "Besondere Bedingungen Katzen-Krankenversicherung",  # page 5, anchor
-        "Leistungen",                                         # page 6, child
-        "Orphan Heading",                                     # NOT in the page map
+        "Leistungen",  # page 6, child
+        "Orphan Heading",  # NOT in the page map
     )
     heading_pages = {
         _outline_norm("Besondere Bedingungen Katzen-Krankenversicherung"): [5],

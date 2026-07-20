@@ -18,8 +18,14 @@ async def test_find_relevant_documents_loads_each_doc_once():
         "doc_name": "a.pdf",
         "doc_description": "",
         "structure": [
-            {"node_id": "n1", "title": "Intro", "summary": "intro", "text": "hello",
-             "start_index": 1, "end_index": 1},
+            {
+                "node_id": "n1",
+                "title": "Intro",
+                "summary": "intro",
+                "text": "hello",
+                "start_index": 1,
+                "end_index": 1,
+            },
         ],
     }
     # RFC-009 D6: registry-only read path — find_relevant_documents lists docs

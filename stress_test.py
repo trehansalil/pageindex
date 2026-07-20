@@ -51,7 +51,7 @@ DEFAULT_REQUEST_DELAY = 0.1  # seconds between requests per worker (backpressure
 
 # Safety thresholds
 DEFAULT_CPU_LIMIT = 200  # percent (e.g., 200 = 2 cores on a 4-core box)
-DEFAULT_MEM_LIMIT = 90   # percent of total node memory
+DEFAULT_MEM_LIMIT = 90  # percent of total node memory
 DEFAULT_ERROR_RATE_LIMIT = 20  # percent
 DEFAULT_P99_LIMIT = 10.0  # seconds
 
@@ -80,6 +80,7 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 
 # ─── Data Classes ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class StepResult:
     concurrency: int
@@ -104,6 +105,7 @@ class StepResult:
 @dataclass
 class ToolResult:
     """Latency tracking per tool type for Phase 2."""
+
     tool_name: str
     latencies: list[float] = field(default_factory=list)
     successes: int = 0
@@ -135,6 +137,7 @@ class ServerMetrics:
 
 
 # ─── Metric Collector ────────────────────────────────────────────────────────
+
 
 class MetricCollector:
     """Polls `kubectl top node` in background to get server metrics."""
@@ -171,7 +174,10 @@ class MetricCollector:
 
     async def _fetch_metrics(self):
         proc = await asyncio.create_subprocess_exec(
-            "kubectl", "top", "node", "--no-headers",
+            "kubectl",
+            "top",
+            "node",
+            "--no-headers",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -197,18 +203,21 @@ class MetricCollector:
             mem_percent=int(mem_pct_str),
             last_updated=time.time(),
         )
-        self.history.append(ServerMetrics(
-            cpu_millicores=cpu_m,
-            cpu_percent=int(cpu_pct_str),
-            mem_percent=int(mem_pct_str),
-            last_updated=time.time(),
-        ))
+        self.history.append(
+            ServerMetrics(
+                cpu_millicores=cpu_m,
+                cpu_percent=int(cpu_pct_str),
+                mem_percent=int(mem_pct_str),
+                last_updated=time.time(),
+            )
+        )
 
     def get_cpu_percent_absolute(self) -> int:
         return self.metrics.cpu_millicores // 10
 
 
 # ─── MCP Session ─────────────────────────────────────────────────────────────
+
 
 class MCPSession:
     """Manages a single MCP session: handshake, tool calls, session reuse."""
@@ -247,16 +256,18 @@ class MCPSession:
         start = time.monotonic()
         try:
             # Step 1: initialize
-            body = json.dumps({
-                "jsonrpc": "2.0",
-                "id": self._next_id(),
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "stress-test", "version": "1.0.0"},
-                },
-            })
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": self._next_id(),
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "stress-test", "version": "1.0.0"},
+                    },
+                }
+            )
             async with self.http.post(
                 self.url, headers=self._headers(), data=body, cookies=self._cookies()
             ) as resp:
@@ -284,10 +295,12 @@ class MCPSession:
                     await resp.read()
 
             # Step 2: notifications/initialized
-            notif = json.dumps({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-            })
+            notif = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                }
+            )
             async with self.http.post(
                 self.url, headers=self._headers(), data=notif, cookies=self._cookies()
             ) as resp:
@@ -306,12 +319,14 @@ class MCPSession:
         """Call an MCP tool. Returns (status_code, latency_seconds). 0 = network error."""
         start = time.monotonic()
         try:
-            body = json.dumps({
-                "jsonrpc": "2.0",
-                "id": self._next_id(),
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-            })
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": self._next_id(),
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                }
+            )
             async with self.http.post(
                 self.url, headers=self._headers(), data=body, cookies=self._cookies()
             ) as resp:
@@ -327,6 +342,7 @@ class MCPSession:
 
 
 # ─── Base Stress Test ────────────────────────────────────────────────────────
+
 
 class BaseStressTest:
     """Shared logic for both phases: metrics, thresholds, ramp loop, printing."""
@@ -367,8 +383,11 @@ class BaseStressTest:
             await asyncio.sleep(0.5)
 
     def _compute_step_result(
-        self, concurrency: int, latencies: list[float],
-        status_codes: dict[int, int], duration: float,
+        self,
+        concurrency: int,
+        latencies: list[float],
+        status_codes: dict[int, int],
+        duration: float,
     ) -> Optional[StepResult]:
         if not latencies:
             return None
@@ -406,13 +425,17 @@ class BaseStressTest:
     def print_step(self, result: StepResult):
         print(f"\n{'─' * 72}")
         print(f"  Concurrency: {result.concurrency}")
-        print(f"  Requests:    {result.total_requests} "
-              f"({result.successful} ok, {result.failed} failed, "
-              f"{result.error_rate}% error rate)")
+        print(
+            f"  Requests:    {result.total_requests} "
+            f"({result.successful} ok, {result.failed} failed, "
+            f"{result.error_rate}% error rate)"
+        )
         print(f"  Throughput:  {result.rps} req/s")
-        print(f"  Latency:     avg={result.avg_latency}s  "
-              f"p50={result.p50_latency}s  p95={result.p95_latency}s  "
-              f"p99={result.p99_latency}s")
+        print(
+            f"  Latency:     avg={result.avg_latency}s  "
+            f"p50={result.p50_latency}s  p95={result.p95_latency}s  "
+            f"p99={result.p99_latency}s"
+        )
         print(f"               min={result.min_latency}s  max={result.max_latency}s")
         print(f"  Status:      {result.status_codes}")
         print(f"  Node CPU:    {result.node_cpu} ({result.node_cpu_pct}% absolute)")
@@ -430,17 +453,21 @@ class BaseStressTest:
             print(f"  Stopped: {self.stop_reason}")
         print(f"{'=' * 80}")
 
-        print(f"{'Conc':>5} {'Reqs':>6} {'OK':>6} {'Fail':>5} {'Err%':>5} "
-              f"{'RPS':>7} {'Avg':>7} {'P50':>7} {'P95':>7} {'P99':>7} "
-              f"{'CPU':>6} {'Mem%':>5}")
+        print(
+            f"{'Conc':>5} {'Reqs':>6} {'OK':>6} {'Fail':>5} {'Err%':>5} "
+            f"{'RPS':>7} {'Avg':>7} {'P50':>7} {'P95':>7} {'P99':>7} "
+            f"{'CPU':>6} {'Mem%':>5}"
+        )
         print(f"{'-' * 80}")
 
         for r in self.results:
-            print(f"{r.concurrency:>5} {r.total_requests:>6} {r.successful:>6} "
-                  f"{r.failed:>5} {r.error_rate:>4.1f}% {r.rps:>7.1f} "
-                  f"{r.avg_latency:>6.3f}s {r.p50_latency:>6.3f}s "
-                  f"{r.p95_latency:>6.3f}s {r.p99_latency:>6.3f}s "
-                  f"{r.node_cpu:>6} {r.node_mem_pct:>4}%")
+            print(
+                f"{r.concurrency:>5} {r.total_requests:>6} {r.successful:>6} "
+                f"{r.failed:>5} {r.error_rate:>4.1f}% {r.rps:>7.1f} "
+                f"{r.avg_latency:>6.3f}s {r.p50_latency:>6.3f}s "
+                f"{r.p95_latency:>6.3f}s {r.p99_latency:>6.3f}s "
+                f"{r.node_cpu:>6} {r.node_mem_pct:>4}%"
+            )
 
         best = self.results[0]
         for r in self.results:
@@ -448,10 +475,12 @@ class BaseStressTest:
                 best = r
 
         print(f"\n  Recommended max concurrency: {best.concurrency}")
-        print(f"  At that level: {best.rps} req/s, "
-              f"p99={best.p99_latency}s, "
-              f"error_rate={best.error_rate}%, "
-              f"CPU={best.node_cpu}")
+        print(
+            f"  At that level: {best.rps} req/s, "
+            f"p99={best.p99_latency}s, "
+            f"error_rate={best.error_rate}%, "
+            f"CPU={best.node_cpu}"
+        )
         print(f"{'=' * 80}")
 
     async def _start_metrics(self):
@@ -461,8 +490,10 @@ class BaseStressTest:
             if self.collector.metrics.last_updated > 0:
                 break
             await asyncio.sleep(1)
-        print(f" CPU={self.collector.metrics.cpu_millicores}m, "
-              f"Mem={self.collector.metrics.mem_percent}%")
+        print(
+            f" CPU={self.collector.metrics.cpu_millicores}m, "
+            f"Mem={self.collector.metrics.mem_percent}%"
+        )
 
     async def _preflight_check(self) -> bool:
         """Returns True if OK to proceed, False if threshold already breached."""
@@ -491,11 +522,14 @@ class BaseStressTest:
 
 # ─── Phase 1: Connection Capacity ────────────────────────────────────────────
 
+
 class Phase1ConnectionTest(BaseStressTest):
     """Ramp concurrent MCP sessions to find the connection ceiling."""
 
     async def run_step(
-        self, http_session: aiohttp.ClientSession, concurrency: int,
+        self,
+        http_session: aiohttp.ClientSession,
+        concurrency: int,
     ) -> Optional[StepResult]:
         latencies: list[float] = []
         status_codes: dict[int, int] = defaultdict(int)
@@ -574,9 +608,7 @@ class Phase1ConnectionTest(BaseStressTest):
         )
         timeout = aiohttp.ClientTimeout(total=60, sock_read=30)
 
-        async with aiohttp.ClientSession(
-            connector=connector, timeout=timeout
-        ) as http_session:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as http_session:
             concurrency = args.start
             while concurrency <= args.max_concurrency and not self._stop:
                 print(f"\n>>> Level {concurrency} concurrent sessions")
@@ -611,6 +643,7 @@ class Phase1ConnectionTest(BaseStressTest):
 
 
 # ─── Phase 2: Tool Execution Load ────────────────────────────────────────────
+
 
 class Phase2ToolTest(BaseStressTest):
     """Fixed concurrency, weighted tool call mix, per-tool breakdown."""
@@ -650,7 +683,8 @@ class Phase2ToolTest(BaseStressTest):
         return chosen, {}
 
     async def _maybe_call_tool(
-        self, mcp: MCPSession,
+        self,
+        mcp: MCPSession,
     ) -> tuple[str, int, float]:
         """Pick and call a tool, respecting LLM call cap.
 
@@ -735,8 +769,7 @@ class Phase2ToolTest(BaseStressTest):
         print(f"\n{'=' * 80}")
         print("  PER-TOOL BREAKDOWN")
         print(f"{'=' * 80}")
-        print(f"{'Tool':<28} {'Reqs':>5} {'Avg':>7} {'P50':>7} "
-              f"{'P95':>7} {'P99':>7} {'Err%':>6}")
+        print(f"{'Tool':<28} {'Reqs':>5} {'Avg':>7} {'P50':>7} {'P95':>7} {'P99':>7} {'Err%':>6}")
         print(f"{'-' * 80}")
 
         for name, _ in TOOL_WEIGHTS:
@@ -744,9 +777,11 @@ class Phase2ToolTest(BaseStressTest):
             if tr.total == 0:
                 continue
             avg = round(sum(tr.latencies) / len(tr.latencies), 3) if tr.latencies else 0
-            print(f"{name:<28} {tr.total:>5} {avg:>6.3f}s "
-                  f"{tr.percentile(50):>6.3f}s {tr.percentile(95):>6.3f}s "
-                  f"{tr.percentile(99):>6.3f}s {tr.error_rate:>5.1f}%")
+            print(
+                f"{name:<28} {tr.total:>5} {avg:>6.3f}s "
+                f"{tr.percentile(50):>6.3f}s {tr.percentile(95):>6.3f}s "
+                f"{tr.percentile(99):>6.3f}s {tr.error_rate:>5.1f}%"
+            )
 
         print(f"\n  LLM calls used: {self._llm_call_count}/{self.args.max_llm_calls}")
         print(f"{'=' * 80}")
@@ -786,9 +821,7 @@ class Phase2ToolTest(BaseStressTest):
         )
         timeout = aiohttp.ClientTimeout(total=120, sock_read=30)
 
-        async with aiohttp.ClientSession(
-            connector=connector, timeout=timeout
-        ) as http_session:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as http_session:
             # Establish MCP sessions
             print(f"Establishing {concurrency} MCP sessions...", end="", flush=True)
             sessions: list[MCPSession] = []
@@ -811,7 +844,9 @@ class Phase2ToolTest(BaseStressTest):
             # Ramp request rate within existing sessions
             rate = args.start
             while rate <= concurrency and not self._stop:
-                print(f"\n>>> Rate level: {rate} concurrent workers across {len(sessions)} sessions")
+                print(
+                    f"\n>>> Rate level: {rate} concurrent workers across {len(sessions)} sessions"
+                )
                 result = await self.run_step(sessions, rate)
                 if result:
                     self.print_step(result)
@@ -841,30 +876,70 @@ class Phase2ToolTest(BaseStressTest):
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
+
 def add_shared_args(p: argparse.ArgumentParser):
     """Add arguments shared by both phases."""
-    p.add_argument("--start", type=int, default=DEFAULT_START_CONCURRENCY,
-                   help=f"Starting concurrency (default: {DEFAULT_START_CONCURRENCY})")
-    p.add_argument("--step", type=int, default=DEFAULT_STEP,
-                   help=f"Concurrency step size (default: {DEFAULT_STEP})")
-    p.add_argument("--max-concurrency", type=int, default=DEFAULT_MAX_CONCURRENCY,
-                   help=f"Max concurrency ceiling (default: {DEFAULT_MAX_CONCURRENCY})")
-    p.add_argument("--step-duration", type=int, default=DEFAULT_STEP_DURATION,
-                   help=f"Seconds to measure at each level (default: {DEFAULT_STEP_DURATION})")
-    p.add_argument("--warmup", type=int, default=DEFAULT_WARMUP,
-                   help=f"Warmup seconds per step (default: {DEFAULT_WARMUP})")
-    p.add_argument("--cpu-limit", type=int, default=DEFAULT_CPU_LIMIT,
-                   help=f"Absolute CPU%% threshold (default: {DEFAULT_CPU_LIMIT})")
-    p.add_argument("--mem-limit", type=int, default=DEFAULT_MEM_LIMIT,
-                   help=f"Memory%% threshold (default: {DEFAULT_MEM_LIMIT})")
-    p.add_argument("--error-rate-limit", type=int, default=DEFAULT_ERROR_RATE_LIMIT,
-                   help=f"Error rate%% threshold (default: {DEFAULT_ERROR_RATE_LIMIT})")
-    p.add_argument("--p99-limit", type=float, default=DEFAULT_P99_LIMIT,
-                   help=f"P99 latency threshold in seconds (default: {DEFAULT_P99_LIMIT})")
-    p.add_argument("--request-delay", type=float, default=DEFAULT_REQUEST_DELAY,
-                   help=f"Delay between requests per worker (default: {DEFAULT_REQUEST_DELAY})")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Show test plan without executing")
+    p.add_argument(
+        "--start",
+        type=int,
+        default=DEFAULT_START_CONCURRENCY,
+        help=f"Starting concurrency (default: {DEFAULT_START_CONCURRENCY})",
+    )
+    p.add_argument(
+        "--step",
+        type=int,
+        default=DEFAULT_STEP,
+        help=f"Concurrency step size (default: {DEFAULT_STEP})",
+    )
+    p.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=DEFAULT_MAX_CONCURRENCY,
+        help=f"Max concurrency ceiling (default: {DEFAULT_MAX_CONCURRENCY})",
+    )
+    p.add_argument(
+        "--step-duration",
+        type=int,
+        default=DEFAULT_STEP_DURATION,
+        help=f"Seconds to measure at each level (default: {DEFAULT_STEP_DURATION})",
+    )
+    p.add_argument(
+        "--warmup",
+        type=int,
+        default=DEFAULT_WARMUP,
+        help=f"Warmup seconds per step (default: {DEFAULT_WARMUP})",
+    )
+    p.add_argument(
+        "--cpu-limit",
+        type=int,
+        default=DEFAULT_CPU_LIMIT,
+        help=f"Absolute CPU%% threshold (default: {DEFAULT_CPU_LIMIT})",
+    )
+    p.add_argument(
+        "--mem-limit",
+        type=int,
+        default=DEFAULT_MEM_LIMIT,
+        help=f"Memory%% threshold (default: {DEFAULT_MEM_LIMIT})",
+    )
+    p.add_argument(
+        "--error-rate-limit",
+        type=int,
+        default=DEFAULT_ERROR_RATE_LIMIT,
+        help=f"Error rate%% threshold (default: {DEFAULT_ERROR_RATE_LIMIT})",
+    )
+    p.add_argument(
+        "--p99-limit",
+        type=float,
+        default=DEFAULT_P99_LIMIT,
+        help=f"P99 latency threshold in seconds (default: {DEFAULT_P99_LIMIT})",
+    )
+    p.add_argument(
+        "--request-delay",
+        type=float,
+        default=DEFAULT_REQUEST_DELAY,
+        help=f"Delay between requests per worker (default: {DEFAULT_REQUEST_DELAY})",
+    )
+    p.add_argument("--dry-run", action="store_true", help="Show test plan without executing")
 
 
 def parse_args() -> argparse.Namespace:
@@ -880,22 +955,39 @@ def parse_args() -> argparse.Namespace:
     # phase2
     p2 = sub.add_parser("phase2", help="Tool execution load test")
     add_shared_args(p2)
-    p2.add_argument("--concurrency", type=int, default=10,
-                    help="Fixed session count (default: 10)")
-    p2.add_argument("--doc-id", default=DEFAULT_DOC_ID,
-                    help=f"Document ID for tool calls (default: {DEFAULT_DOC_ID})")
-    p2.add_argument("--max-llm-calls", type=int, default=DEFAULT_MAX_LLM_CALLS,
-                    help=f"Max find_relevant_documents calls (default: {DEFAULT_MAX_LLM_CALLS})")
+    p2.add_argument("--concurrency", type=int, default=10, help="Fixed session count (default: 10)")
+    p2.add_argument(
+        "--doc-id",
+        default=DEFAULT_DOC_ID,
+        help=f"Document ID for tool calls (default: {DEFAULT_DOC_ID})",
+    )
+    p2.add_argument(
+        "--max-llm-calls",
+        type=int,
+        default=DEFAULT_MAX_LLM_CALLS,
+        help=f"Max find_relevant_documents calls (default: {DEFAULT_MAX_LLM_CALLS})",
+    )
 
     # both
     pb = sub.add_parser("both", help="Phase 1 then Phase 2")
     add_shared_args(pb)
-    pb.add_argument("--concurrency", type=int, default=None,
-                    help="Override Phase 2 concurrency (default: use Phase 1 result)")
-    pb.add_argument("--doc-id", default=DEFAULT_DOC_ID,
-                    help=f"Document ID for tool calls (default: {DEFAULT_DOC_ID})")
-    pb.add_argument("--max-llm-calls", type=int, default=DEFAULT_MAX_LLM_CALLS,
-                    help=f"Max find_relevant_documents calls (default: {DEFAULT_MAX_LLM_CALLS})")
+    pb.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="Override Phase 2 concurrency (default: use Phase 1 result)",
+    )
+    pb.add_argument(
+        "--doc-id",
+        default=DEFAULT_DOC_ID,
+        help=f"Document ID for tool calls (default: {DEFAULT_DOC_ID})",
+    )
+    pb.add_argument(
+        "--max-llm-calls",
+        type=int,
+        default=DEFAULT_MAX_LLM_CALLS,
+        help=f"Max find_relevant_documents calls (default: {DEFAULT_MAX_LLM_CALLS})",
+    )
 
     return p.parse_args()
 
@@ -938,8 +1030,12 @@ async def main():
             waited += poll_interval
             # Fresh kubectl top reading each time
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "top", "node", "--no-headers",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                "kubectl",
+                "top",
+                "node",
+                "--no-headers",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await proc.communicate()
             parts = stdout.decode().split()
@@ -952,15 +1048,20 @@ async def main():
 
             if cpu_ok and mem_ok:
                 consecutive_ok += 1
-                print(f"  Reading {consecutive_ok}/{required_ok} OK: "
-                      f"CPU={cpu_m}m ({cpu_pct}%), Mem={mem_pct}%")
+                print(
+                    f"  Reading {consecutive_ok}/{required_ok} OK: "
+                    f"CPU={cpu_m}m ({cpu_pct}%), Mem={mem_pct}%"
+                )
                 if consecutive_ok >= required_ok:
                     print(f"  Server cooled down.")
                     break
             else:
                 consecutive_ok = 0
-                print(f"  Still hot: CPU={cpu_m}m ({cpu_pct}%), Mem={mem_pct}% — "
-                      f"waiting... ({waited}/{max_cooldown}s)", flush=True)
+                print(
+                    f"  Still hot: CPU={cpu_m}m ({cpu_pct}%), Mem={mem_pct}% — "
+                    f"waiting... ({waited}/{max_cooldown}s)",
+                    flush=True,
+                )
 
         if waited >= max_cooldown and consecutive_ok < required_ok:
             print(f"\n  Server did not cool down within {max_cooldown}s — aborting Phase 2.")

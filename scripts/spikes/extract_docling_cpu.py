@@ -7,6 +7,7 @@ GPU layout model entirely and using CPU-only inference.
 Outputs markdown to /tmp/docling_spike/docling/
 Run with: PYTORCH_ENABLE_MPS_FALLBACK=1 /tmp/docling_venv/bin/python scripts/spikes/extract_docling_cpu.py
 """
+
 import os
 import time
 
@@ -39,9 +40,7 @@ pipeline_options.do_table_structure = True
 pipeline_options.table_structure_options.mode = TableFormerMode.FAST
 
 converter = DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-    }
+    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
 )
 print(f"Converter initialized in {time.time() - t_init:.2f}s", flush=True)
 
@@ -62,14 +61,19 @@ for pdf_name in PDFS:
             f.write(md_text)
         word_count = len(md_text.split())
         char_count = len(md_text)
-        print(f"  -> OK: {char_count} chars, {word_count} words, {elapsed:.2f}s => {out_path}", flush=True)
+        print(
+            f"  -> OK: {char_count} chars, {word_count} words, {elapsed:.2f}s => {out_path}",
+            flush=True,
+        )
     except Exception as e:
         import traceback
+
         elapsed = time.time() - t0
         print(f"  -> ERROR after {elapsed:.2f}s: {e}", flush=True)
         # Print just the last few lines of traceback
         import sys
-        tb_lines = traceback.format_exc().strip().split('\n')
+
+        tb_lines = traceback.format_exc().strip().split("\n")
         for line in tb_lines[-5:]:
             print(f"    {line}", flush=True)
 

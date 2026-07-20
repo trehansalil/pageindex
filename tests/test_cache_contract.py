@@ -42,8 +42,8 @@ def test_cache_01_c1_miss_loads_from_storage_and_populates(_patch_redis):
     result at pageindex:doc:<doc_id> with a TTL, and returns it; the SECOND call
     is served from Redis without a further load_doc (MinIO) read."""
     with patch("pageindex_mcp.storage.load_doc", return_value=SAMPLE_DOC) as mock_load:
-        first = get_doc("deadbeef")          # miss -> load + populate
-        second = get_doc("deadbeef")         # hit  -> no load
+        first = get_doc("deadbeef")  # miss -> load + populate
+        second = get_doc("deadbeef")  # hit  -> no load
 
     assert first == SAMPLE_DOC
     assert second == SAMPLE_DOC
@@ -56,7 +56,7 @@ def test_cache_01_c1_miss_loads_from_storage_and_populates(_patch_redis):
 def test_cache_01_c3_hit_returns_without_storage_read(_patch_redis):
     """CACHE-01-C3: when the key is already present, get_doc() returns it directly
     and storage.load_doc is NOT called."""
-    doc_cache_set("deadbeef", SAMPLE_DOC)    # pre-populate (hit path)
+    doc_cache_set("deadbeef", SAMPLE_DOC)  # pre-populate (hit path)
     with patch("pageindex_mcp.storage.load_doc") as mock_load:
         result = get_doc("deadbeef")
 
@@ -70,12 +70,12 @@ def test_cache_01_c2_invalidation_forces_fresh_read(_patch_redis):
     doc_cache_set("deadbeef", SAMPLE_DOC)
     assert doc_cache_get("deadbeef") == SAMPLE_DOC
 
-    doc_cache_delete("deadbeef")             # invalidate
+    doc_cache_delete("deadbeef")  # invalidate
     assert doc_cache_get("deadbeef") is None
 
     fresh = {"doc_id": "deadbeef", "doc_name": "policy.pdf", "structure": [{"n": 1}]}
     with patch("pageindex_mcp.storage.load_doc", return_value=fresh) as mock_load:
-        result = get_doc("deadbeef")         # miss after invalidation -> reload
+        result = get_doc("deadbeef")  # miss after invalidation -> reload
 
     assert result == fresh
     mock_load.assert_called_once_with("deadbeef")
@@ -92,6 +92,7 @@ def test_cache_01_c2_save_doc_deletes_cache_key(_patch_redis):
     with patch("pageindex_mcp.storage.get_minio") as mock_minio:
         mock_minio.return_value.put_object.return_value = None
         from pageindex_mcp.storage import save_doc
+
         save_doc("deadbeef", SAMPLE_DOC)
 
     assert doc_cache_get("deadbeef") is None

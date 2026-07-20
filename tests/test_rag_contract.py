@@ -6,34 +6,36 @@ RAG-01-C1  the pipeline prefilters candidate docs before the tree search; docs
            excluded by the prefilter are never searched; no vector index is used
 RAG-01-C2  tree search runs concurrently across candidate docs, bounded by a
            semaphore of size PAGEINDEX_SEARCH_CONCURRENCY
-RAG-01-C3  with zero indexed docs, the tool returns a JSON error envelope with
-           available=[] and an error message; no LLM tree-search call is made
+RAG-01-C3  with zero indexed docs, the tool raises isError:true (ToolError)
+           with reason=verdict_fail; no LLM tree-search call is made
+           (Phase 3 audit Issue B)
 """
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 
-# ── RAG-01-C3 — no-docs error envelope (real call into the MCP tool) ─────────
-async def test_rag_01_c3_no_documents_returns_error_envelope():
-    """RAG-01-C3: find_relevant_documents() with zero indexed docs returns the
-    query_error_shape envelope (available=[] + error key) and never runs a
+# ── RAG-01-C3 — no-docs isError:true (real call into the MCP tool) ───────────
+async def test_rag_01_c3_no_documents_raises_tool_error():
+    """RAG-01-C3: find_relevant_documents() with zero indexed docs raises a
+    ToolError (isError:true) carrying reason=verdict_fail, and never runs a
     tree-search LLM call. Exercises the real tool entry point."""
+    from fastmcp.exceptions import ToolError
+
     from pageindex_mcp.tools import documents
     from pageindex_mcp.tools.documents import find_relevant_documents
 
     # RFC-009 D6: registry-only read path — the empty corpus is an empty registry
     # listing (registry.list_docs -> []), not an empty MinIO scan.
-    with patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)), \
-         patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=[])), \
-         patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm:
-        raw = await find_relevant_documents("any query")
+    with (
+        patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)),
+        patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=[])),
+        patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm,
+        pytest.raises(ToolError, match="verdict_fail"),
+    ):
+        await find_relevant_documents("any query")
 
-    payload = json.loads(raw)
-    assert payload["available"] == []
-    assert "error" in payload
     # No LLM tree-search call was issued on the empty-corpus path.
     mock_llm.assert_not_called()
 
@@ -46,10 +48,16 @@ async def test_rag_01_c1_prefilter_excludes_docs_from_search():
     set (the excluded doc is never searched)."""
     from pageindex_mcp import helpers
 
-    doc_a = {"doc_name": "a.pdf", "doc_description": "alpha",
-             "structure": [{"node_id": "n1", "title": "A", "summary": "a", "text": "atext"}]}
-    doc_b = {"doc_name": "b.pdf", "doc_description": "bravo",
-             "structure": [{"node_id": "n2", "title": "B", "summary": "b", "text": "btext"}]}
+    doc_a = {
+        "doc_name": "a.pdf",
+        "doc_description": "alpha",
+        "structure": [{"node_id": "n1", "title": "A", "summary": "a", "text": "atext"}],
+    }
+    doc_b = {
+        "doc_name": "b.pdf",
+        "doc_description": "bravo",
+        "structure": [{"node_id": "n2", "title": "B", "summary": "b", "text": "btext"}],
+    }
     store = {"aaa": doc_a, "bbb": doc_b}
 
     searched = []
@@ -58,10 +66,13 @@ async def test_rag_01_c1_prefilter_excludes_docs_from_search():
         searched.append(doc_id)
         return None  # no matched text; we only care about WHICH docs are searched
 
-    with patch("pageindex_mcp.helpers.get_doc", side_effect=lambda d: store[d]), \
-         patch("pageindex_mcp.helpers._prefilter_docs",
-               new=AsyncMock(return_value=["aaa"])) as mock_prefilter, \
-         patch("pageindex_mcp.helpers._search_one_doc", side_effect=fake_search_one):
+    with (
+        patch("pageindex_mcp.helpers.get_doc", side_effect=lambda d: store[d]),
+        patch(
+            "pageindex_mcp.helpers._prefilter_docs", new=AsyncMock(return_value=["aaa"])
+        ) as mock_prefilter,
+        patch("pageindex_mcp.helpers._search_one_doc", side_effect=fake_search_one),
+    ):
         await helpers._rag("q", ["aaa", "bbb"])
 
     # Prefilter ran before search and selected only 'aaa'.
@@ -83,7 +94,8 @@ async def test_rag_01_c2_concurrent_search_bounded_by_semaphore():
     n_docs = 6
     store = {
         f"d{i}": {
-            "doc_name": f"{i}.pdf", "doc_description": "",
+            "doc_name": f"{i}.pdf",
+            "doc_description": "",
             "structure": [{"node_id": f"n{i}", "title": str(i), "summary": "s", "text": "t"}],
         }
         for i in range(n_docs)
@@ -104,11 +116,12 @@ async def test_rag_01_c2_concurrent_search_bounded_by_semaphore():
             inflight -= 1
         return None
 
-    with patch("pageindex_mcp.helpers.get_doc", side_effect=lambda d: store[d]), \
-         patch("pageindex_mcp.helpers._prefilter_docs",
-               new=AsyncMock(return_value=doc_ids)), \
-         patch("pageindex_mcp.helpers._search_one_doc", side_effect=fake_search_one), \
-         patch("pageindex_mcp.helpers._SEARCH_CONCURRENCY", 2):
+    with (
+        patch("pageindex_mcp.helpers.get_doc", side_effect=lambda d: store[d]),
+        patch("pageindex_mcp.helpers._prefilter_docs", new=AsyncMock(return_value=doc_ids)),
+        patch("pageindex_mcp.helpers._search_one_doc", side_effect=fake_search_one),
+        patch("pageindex_mcp.helpers._SEARCH_CONCURRENCY", 2),
+    ):
         await helpers._rag("q", doc_ids)
 
     # Every candidate doc was searched (N tasks for N prefiltered docs).

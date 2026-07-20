@@ -31,7 +31,9 @@ async def test_concurrent_admission_only_one_admits(monkeypatch):
             return original_has_headroom(available_bytes, floor)
         return False
 
-    monkeypatch.setattr(ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000)
+    monkeypatch.setattr(
+        ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000
+    )
     monkeypatch.setattr(ma, "_has_headroom", _shrinking_headroom)
 
     redis = fakeredis.aioredis.FakeRedis()

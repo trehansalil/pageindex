@@ -25,12 +25,7 @@ _TABLE_MD = (
     "| Komfort | 24 EUR | 50 EUR |\n"
 )
 
-_KV_MD = (
-    "1 Allgemeines\n"
-    "1.1 Geltungsbereich\n"
-    "2 Leistungen\n"
-    "2.1 Umfang\n"
-)
+_KV_MD = "1 Allgemeines\n1.1 Geltungsbereich\n2 Leistungen\n2.1 Umfang\n"
 
 _PROSE_MD = (
     "Der Versicherungsschutz erstreckt sich auf alle versicherten Personen "
@@ -99,8 +94,13 @@ def test_flat_01_c2_table_emitted_as_matrix_and_verbalized_records():
 def test_flat_01_c3_blocks_are_role_typed():
     """FLAT-01-C3: every emitted block carries a role in {title, prose, kv, table}."""
     allowed = {"title", "prose", "kv", "table"}
-    for md in (_TABLE_MD, _KV_MD, _PROSE_MD, _TABLE_MD + "\n" + _PROSE_MD,
-               "# A Heading\n\n" + _PROSE_MD):
+    for md in (
+        _TABLE_MD,
+        _KV_MD,
+        _PROSE_MD,
+        _TABLE_MD + "\n" + _PROSE_MD,
+        "# A Heading\n\n" + _PROSE_MD,
+    ):
         _, blocks = route_and_extract_flat(md)
         assert blocks
         for b in blocks:
@@ -110,9 +110,11 @@ def test_flat_01_c3_blocks_are_role_typed():
 def test_flat_01_c3_classifier_never_calls_quality_gate_or_io():
     """FLAT-01-C3: route_and_extract_flat is pure — it must NOT call validate_tree
     and must make no LLM/MinIO/Redis/VLM call."""
-    with patch.object(helpers, "validate_tree") as mock_validate, \
-         patch.object(helpers, "_llm", new_callable=AsyncMock) as mock_llm, \
-         patch.object(helpers, "get_doc") as mock_get_doc:
+    with (
+        patch.object(helpers, "validate_tree") as mock_validate,
+        patch.object(helpers, "_llm", new_callable=AsyncMock) as mock_llm,
+        patch.object(helpers, "get_doc") as mock_get_doc,
+    ):
         cls, _blocks = route_and_extract_flat(_TABLE_MD + "\n" + _PROSE_MD)
     assert cls == "flat_mixed"
     mock_validate.assert_not_called()
@@ -131,7 +133,7 @@ async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
     data = {
         "doc_name": "tarife.pdf",
         "content_class": "flat_table",
-        "structure": [],          # no usable tree
+        "structure": [],  # no usable tree
         "blocks": blocks,
     }
     sem = asyncio.Semaphore(1)
@@ -143,8 +145,8 @@ async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
     doc_id, name, text = result
     assert doc_id == "doc1"
     assert name == "tarife.pdf"
-    assert "Tarif: Basis" in text          # verbalized row_record surfaced
-    mock_llm.assert_not_called()           # LLM node-selection bypassed
+    assert "Tarif: Basis" in text  # verbalized row_record surfaced
+    mock_llm.assert_not_called()  # LLM node-selection bypassed
 
 
 async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
@@ -160,11 +162,12 @@ async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
     }
     sem = asyncio.Semaphore(1)
 
-    with patch.object(helpers, "_llm", new_callable=AsyncMock,
-                      return_value='{"thinking":"t","node_list":["n1"]}') as mock_llm:
+    with patch.object(
+        helpers, "_llm", new_callable=AsyncMock, return_value='{"thinking":"t","node_list":["n1"]}'
+    ) as mock_llm:
         result = await helpers._search_one_doc("q", "doc2", data, sem)
 
-    mock_llm.assert_awaited_once()         # tree path unchanged
+    mock_llm.assert_awaited_once()  # tree path unchanged
     assert result is not None
     assert result[2] == "alpha text"
 
@@ -177,8 +180,9 @@ async def test_flat_05_c1_content_class_with_empty_structure_is_the_trigger():
 
     data = {"doc_name": "x.pdf", "structure": []}  # no content_class
     sem = asyncio.Semaphore(1)
-    with patch.object(helpers, "_llm", new_callable=AsyncMock,
-                      return_value='{"node_list":[]}') as mock_llm:
+    with patch.object(
+        helpers, "_llm", new_callable=AsyncMock, return_value='{"node_list":[]}'
+    ) as mock_llm:
         await helpers._search_one_doc("q", "doc3", data, sem)
     # Non-flat empty doc falls through to the (LLM) tree path, not the adapter.
     mock_llm.assert_awaited_once()
@@ -221,12 +225,12 @@ def test_flat_05_c2_tree_doc_is_unaffected():
 #          flag_empty_cells  (pure / in-process / no LLM / no IO)
 # =============================================================================
 
+
 def _tbl(headers: list, data_rows: list) -> dict:
     """Build a minimal table block matching the shape _flat_parse_table emits."""
     rows = [list(headers)] + [list(r) for r in data_rows]
     records = [
-        "; ".join(f"{h}: {v}" for h, v in zip(headers, row, strict=False))
-        for row in data_rows
+        "; ".join(f"{h}: {v}" for h, v in zip(headers, row, strict=False)) for row in data_rows
     ]
     return {"role": "table", "headers": list(headers), "rows": rows, "row_records": records}
 
@@ -347,8 +351,8 @@ def test_fix2_c4_non_continuation_tables_pass_through_unchanged():  # TABLE-01-C
     both pass through stitch_continuation_tables with identical content."""
     from pageindex_mcp.helpers import stitch_continuation_tables
 
-    t1 = _tbl(["A", "2019"], [["x", "1"], ["y", "2"]])   # 2 data rows
-    t2 = _tbl(["2020", "2021"], [["10", "20"]])            # 1 data row → different count
+    t1 = _tbl(["A", "2019"], [["x", "1"], ["y", "2"]])  # 2 data rows
+    t2 = _tbl(["2020", "2021"], [["10", "20"]])  # 1 data row → different count
 
     result = stitch_continuation_tables([t1, t2])
 
@@ -448,16 +452,12 @@ async def test_llm_none_content_returns_empty_string(caplog):
     mock_response.choices[0].message.content = None
 
     with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
-        MockFactory.return_value.chat.completions.create = AsyncMock(
-            return_value=mock_response
-        )
+        MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
         with caplog.at_level("WARNING"):
             result = await helpers._llm("some prompt")
 
     assert result == ""
-    assert any(
-        "LLM returned None content" in record.message for record in caplog.records
-    )
+    assert any("LLM returned None content" in record.message for record in caplog.records)
 
 
 async def test_llm_valid_content_strips():
@@ -468,9 +468,7 @@ async def test_llm_valid_content_strips():
     mock_response.choices[0].message.content = "  result  "
 
     with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
-        MockFactory.return_value.chat.completions.create = AsyncMock(
-            return_value=mock_response
-        )
+        MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
         result = await helpers._llm("some prompt")
 
     assert result == "result"
@@ -496,8 +494,12 @@ async def test_d1_check_registry_complete_uses_redis_singleton_not_adhoc_connect
     fake_client.aclose = AsyncMock()
 
     with (
-        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=fake_client)) as mock_get_redis,
-        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)) as mock_is_complete,
+        patch(
+            "pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=fake_client)
+        ) as mock_get_redis,
+        patch(
+            "pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)
+        ) as mock_is_complete,
     ):
         result = await helpers._check_registry_complete_cached()
 
@@ -516,8 +518,12 @@ async def test_d1_registry_complete_true_is_served_from_cache_within_ttl():
     _reset_registry_complete_cache()
 
     with (
-        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())) as mock_get_redis,
-        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)) as mock_is_complete,
+        patch(
+            "pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())
+        ) as mock_get_redis,
+        patch(
+            "pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)
+        ) as mock_is_complete,
     ):
         first = await helpers._check_registry_complete_cached()
         second = await helpers._check_registry_complete_cached()
@@ -537,8 +543,12 @@ async def test_d1_registry_complete_false_is_not_cached_and_rechecks_redis():
     _reset_registry_complete_cache()
 
     with (
-        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())) as mock_get_redis,
-        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=False)) as mock_is_complete,
+        patch(
+            "pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())
+        ) as mock_get_redis,
+        patch(
+            "pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=False)
+        ) as mock_is_complete,
     ):
         first = await helpers._check_registry_complete_cached()
         second = await helpers._check_registry_complete_cached()
@@ -566,8 +576,12 @@ async def test_d1_registry_complete_cache_expires_after_ttl(monkeypatch):
     monkeypatch.setattr(helpers.time, "monotonic", _fake_monotonic)
 
     with (
-        patch("pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())) as mock_get_redis,
-        patch("pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)) as mock_is_complete,
+        patch(
+            "pageindex_mcp.cache.get_async_redis", new=AsyncMock(return_value=AsyncMock())
+        ) as mock_get_redis,
+        patch(
+            "pageindex_mcp.registry.is_registry_complete", new=AsyncMock(return_value=True)
+        ) as mock_is_complete,
     ):
         first = await helpers._check_registry_complete_cached()
         second = await helpers._check_registry_complete_cached()
@@ -648,9 +662,7 @@ async def test_d6_prefilter_malformed_json_falls_back_to_all_docs_with_warning(c
     returned as a candidate and the failure logs at WARNING, not ERROR."""
     summaries = _two_doc_summaries()
 
-    with patch.object(
-        helpers, "_llm", new_callable=AsyncMock, return_value="no json here at all"
-    ):
+    with patch.object(helpers, "_llm", new_callable=AsyncMock, return_value="no json here at all"):
         with caplog.at_level("WARNING"):
             result = await helpers._prefilter_docs("q", summaries)
 
@@ -672,10 +684,7 @@ async def test_d6_prefilter_typeerror_shaped_json_falls_back_to_all_docs(caplog)
             result = await helpers._prefilter_docs("q", summaries)
 
     assert result == ["a", "b"]
-    assert any(
-        r.levelname == "WARNING" and "failed to parse" in r.message
-        for r in caplog.records
-    )
+    assert any(r.levelname == "WARNING" and "failed to parse" in r.message for r in caplog.records)
 
 
 # ── RFC-008 D7 (ISS-19): _search_one_doc JSON extraction + catch + counter ────
@@ -722,9 +731,7 @@ async def test_d7_search_one_doc_malformed_falls_back_ids_empty_warns_and_counts
 
     before = RAG_PARSE_FAILURES.labels(doc_id=doc_id)._value.get()
 
-    with patch.object(
-        helpers, "_llm", new_callable=AsyncMock, return_value="not json, no braces"
-    ):
+    with patch.object(helpers, "_llm", new_callable=AsyncMock, return_value="not json, no braces"):
         with caplog.at_level("WARNING"):
             result = await helpers._search_one_doc("q", doc_id, data, sem)
 

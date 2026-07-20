@@ -31,12 +31,12 @@ from pageindex_mcp.converters import (
 @pytest.mark.parametrize(
     "title,expected",
     [
-        ("A.1.1", ["A", "1", "1"]),          # dot notation (AKB)
-        ("A1-6.1", ["A", "1", "6", "1"]),    # hyphen clause (PHV), with sub-dot
-        ("A(GB)-1", ["A", "GB", "1"]),       # parenthesised group component
-        ("Abschnitt A1", ["A", "1"]),        # structural word consumed, label nests
-        ("Teil A", ["A"]),                   # structural word -> bare section label
-        ("Versicherte Personen", []),        # bare prose title -> no label
+        ("A.1.1", ["A", "1", "1"]),  # dot notation (AKB)
+        ("A1-6.1", ["A", "1", "6", "1"]),  # hyphen clause (PHV), with sub-dot
+        ("A(GB)-1", ["A", "GB", "1"]),  # parenthesised group component
+        ("Abschnitt A1", ["A", "1"]),  # structural word consumed, label nests
+        ("Teil A", ["A"]),  # structural word -> bare section label
+        ("Versicherte Personen", []),  # bare prose title -> no label
     ],
 )
 def test_segment_label_components(title, expected):
@@ -157,8 +157,7 @@ def _is_numeric_extension(label: list[str], anchors: set[tuple]) -> bool:
     can be unit-tested without booting Docling."""
     lab = tuple(label)
     return any(
-        lab[:k] in anchors and all(c.isdigit() for c in lab[k:])
-        for k in range(len(lab) - 1, 0, -1)
+        lab[:k] in anchors and all(c.isdigit() for c in lab[k:]) for k in range(len(lab) - 1, 0, -1)
     )
 
 
@@ -175,7 +174,7 @@ def test_numeric_extension_rejects_non_numeric_tail():
     it is NOT a numeric extension and must not be promoted."""
     anchors = {("A",), ("A", "1")}
     seg = _segment_label("A.1.x")
-    assert seg == ["A", "1", "x"]            # shape: a non-numeric tail component
+    assert seg == ["A", "1", "x"]  # shape: a non-numeric tail component
     assert _is_numeric_extension(seg, anchors) is False
 
 
@@ -185,7 +184,7 @@ def test_numeric_extension_rejects_bare_list_marker():
     text (no spurious promotion)."""
     anchors = {("A",), ("A", "1")}
     seg = _segment_label("a")
-    assert seg == ["a"]                      # a single lowercase list marker
+    assert seg == ["a"]  # a single lowercase list marker
     assert _is_numeric_extension(seg, anchors) is False
 
 
@@ -197,13 +196,13 @@ from pageindex_mcp.converters import numbering_depth  # noqa: E402
     "title,expected",
     [
         # Arabic tier — new in Fix 1
-        ("الباب الأول", 1),       # chapter word -> depth 1
-        ("الفصل الثاني", 1),      # section word -> depth 1
-        ("المادة (9)", 2),         # article -> depth 2
+        ("الباب الأول", 1),  # chapter word -> depth 1
+        ("الفصل الثاني", 1),  # section word -> depth 1
+        ("المادة (9)", 2),  # article -> depth 2
         # German/English UNCHANGED — regression guard
-        ("§3.1.2 Deckung", 3),    # §-paragraph sub-sub-section
+        ("§3.1.2 Deckung", 3),  # §-paragraph sub-sub-section
         ("A.1 Geltungsbereich", 2),  # dot notation two levels
-        ("Teil A Allgemeines", 1),   # part word -> depth 1
+        ("Teil A Allgemeines", 1),  # part word -> depth 1
     ],
 )
 def test_numbering_depth_arabic_and_german_regression(title, expected):
@@ -350,11 +349,7 @@ def test_split_oversized_presentation_form_arabic():
     pf = "ﻣﺍﺩﺓ"  # ﻣ ا ﺩ ة (presentation forms)
     tatweel = "ـ"
     marker = pf + tatweel  # e.g. ﻣﺍﺩﺓـ — folds to standard letters for matching
-    body = (
-        f"{marker} (1) اول. "
-        f"{marker} (2) ثان. "
-        f"{marker} (3) ثالث."
-    )
+    body = f"{marker} (1) اول. {marker} (2) ثان. {marker} (3) ثالث."
     text = "تمهيد. " + body
     assert len(text) > _SMALL_MAX
     # sanity: raw text contains NO standard 'مادة'
@@ -377,6 +372,7 @@ def test_split_oversized_idempotent():  # SPLIT-01-C3
     assert len(text) > _SMALL_MAX
 
     import copy
+
     node1 = _make_leaf("idem", text)
 
     first = split_oversized_leaf_nodes([node1], max_chars=_SMALL_MAX)
@@ -534,7 +530,9 @@ def test_frontmatter_toc_left_intact():  # SPLIT-01-C2
     markers is accepted as-is instead of being force-split (there is nothing
     meaningful to split it on, and فقρة would shred the bibliography)."""
     entries = "\n".join(
-        f"Chapter Title {i} for Dartmouth Publishing House Social Rights Review " + "." * 12 + f" {i}"
+        f"Chapter Title {i} for Dartmouth Publishing House Social Rights Review "
+        + "." * 12
+        + f" {i}"
         for i in range(40)
     )
     text = "حقـوق الإنسان\nDartmouth Publishing House, Social Rights Review 1996.\n" + entries

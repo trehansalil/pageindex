@@ -63,7 +63,9 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return):
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
 
     mocks = {
-        "route_and_extract_flat": MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
         "save_flat_doc": MagicMock(),
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
@@ -146,7 +148,9 @@ async def test_FLAT_03_C2_garbling_always_raises(monkeypatch, md_file, flat_doc_
     """FLAT-03-C2: reason 'garbling' raises LowQualityTreeError('garbling')
     regardless of flat_doc_routing; neither save_doc nor save_flat_doc runs;
     LOW_QUALITY_TREES{reason=garbling} is incremented."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=flat_doc_routing, validate_return=(False, "garbling"))
+    mocks = _wire_common(
+        monkeypatch, flat_doc_routing=flat_doc_routing, validate_return=(False, "garbling")
+    )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _async_result())
 
@@ -254,7 +258,11 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
 
     def _fake_detect(sample):
         detect_calls.append(sample)
-        return ["ara"] if "pdf_file_with_content" not in sample and sample.endswith(".pdf") else ["eng"]
+        return (
+            ["ara"]
+            if "pdf_file_with_content" not in sample and sample.endswith(".pdf")
+            else ["eng"]
+        )
 
     monkeypatch.setattr(client_mod, "detect_ocr_langs", _fake_detect)
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
@@ -270,7 +278,9 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
-        "route_and_extract_flat": MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
@@ -299,7 +309,9 @@ async def test_OCR_01_C1_garbling_retries_once_and_recovers(monkeypatch, pdf_fil
     mocks["OCR_ESCALATION_TOTAL"].labels.return_value.inc.assert_called_once()
 
 
-async def test_OCR_01_C2_escalation_prefers_filename_lang_signal(monkeypatch, pdf_file_with_content):
+async def test_OCR_01_C2_escalation_prefers_filename_lang_signal(
+    monkeypatch, pdf_file_with_content
+):
     """OCR-01-C2: the retry's language detection is called with the filename
     FIRST, then the (garbled) md_content — the garbled text layer is never the
     sole signal."""
@@ -603,4 +615,3 @@ async def _tree_coro():
 
 def _tree_result():
     return _tree_coro()
-

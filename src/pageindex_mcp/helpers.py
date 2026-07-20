@@ -300,18 +300,29 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
         )
         doc_ids = narrowed_ids
 
-    # --- Phase 1: Load all documents ---
+    # --- Phase 1: Load all documents (RFC audit Issue C #1: bounded fan-out) ---
+    # get_doc() is a blocking Redis/MinIO read; previously this ran sequentially
+    # for up to catalog_topk (default 200) docs. Fan out via to_thread + Semaphore
+    # so the wall-clock is dominated by the slowest single load, not the sum.
     phase1_t0 = time.monotonic()
-    doc_data: dict[str, dict] = {}  # doc_id -> data
-    for doc_id in doc_ids:
+    # max(1, ...) defends against a misconfigured 0/negative value even though
+    # config._load_settings() already clamps it — a non-positive semaphore
+    # would deadlock every document load forever.
+    doc_load_semaphore = asyncio.Semaphore(max(1, settings.registry_query_concurrency))
+
+    async def _load_one(doc_id: str) -> tuple[str, dict] | None:
         t = time.monotonic()
-        try:
-            data = get_doc(doc_id)
-        except ValueError:
-            logger.warning("RAG: skipping missing doc %s", doc_id)
-            continue
+        async with doc_load_semaphore:
+            try:
+                data = await asyncio.to_thread(get_doc, doc_id)
+            except ValueError:
+                logger.warning("RAG: skipping missing doc %s", doc_id)
+                return None
         logger.info("RAG TIMING: load_doc(%s) = %.3fs", doc_id, time.monotonic() - t)
-        doc_data[doc_id] = data
+        return (doc_id, data)
+
+    loaded = await asyncio.gather(*(_load_one(doc_id) for doc_id in doc_ids))
+    doc_data: dict[str, dict] = dict(filter(None, loaded))
     logger.info(
         "RAG TIMING: Phase 1 (load %d docs) = %.3fs", len(doc_data), time.monotonic() - phase1_t0
     )

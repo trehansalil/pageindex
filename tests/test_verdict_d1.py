@@ -20,6 +20,7 @@ from pageindex_mcp.helpers import (
 
 # ── synthetic tree builder ───────────────────────────────────────────────────
 
+
 def _make_tree(leaf_sizes: list[int], depth: int = 2) -> list:
     """Build a synthetic tree with given leaf char sizes at the specified depth.
 
@@ -40,6 +41,7 @@ def _make_tree(leaf_sizes: list[int], depth: int = 2) -> list:
 
 
 # ── Property 1: Verdict Determinism — _tree_max_leaf_ratio ─────────────────
+
 
 @pytest.mark.parametrize(
     "leaf_sizes,expected_ratio",
@@ -74,6 +76,7 @@ def test_tree_max_leaf_ratio_uses_title_and_text_chars():
 
 # ── sub-metric tests: ocr_noise_ratio ───────────────────────────────────────
 
+
 def test_ocr_noise_ratio_empty_string():
     assert ocr_noise_ratio("") == 0.0
 
@@ -87,6 +90,7 @@ def test_ocr_noise_ratio_replacement_char():
 
 
 # ── sub-metric tests: hash_pipe_ratio ───────────────────────────────────────
+
 
 def test_hash_pipe_ratio_empty_string():
     assert hash_pipe_ratio("") == 0.0
@@ -102,6 +106,7 @@ def test_hash_pipe_ratio_mixed():
 
 # ── Property 1: Verdict Determinism — classify_verdict category matrix ─────
 
+
 def _balanced_pass_tree() -> list:
     """node_count>=3, depth>=2, max_leaf_ratio<0.15, clean text.
 
@@ -113,10 +118,7 @@ def _balanced_pass_tree() -> list:
         {
             "title": "",
             "text": "",
-            "nodes": [
-                {"title": "", "text": "x" * 100, "nodes": []}
-                for _ in range(10)
-            ],
+            "nodes": [{"title": "", "text": "x" * 100, "nodes": []} for _ in range(10)],
         }
     ]
 
@@ -149,10 +151,7 @@ def _borderline_ratio_tree() -> list:
         {
             "title": "",
             "text": "",
-            "nodes": [
-                {"title": "", "text": "x" * 20, "nodes": []}
-                for _ in range(5)
-            ],
+            "nodes": [{"title": "", "text": "x" * 20, "nodes": []} for _ in range(5)],
         }
     ]
 
@@ -221,6 +220,7 @@ def test_classify_verdict_marginal_depth_under_2():
 
 
 # ── Property 2: HR5 Independence ────────────────────────────────────────────
+
 
 def test_classify_verdict_never_calls_validate_tree():
     """classify_verdict is a pure function: it receives validate_reason as an

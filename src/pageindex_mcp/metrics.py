@@ -1,5 +1,9 @@
 """Prometheus metrics definitions and /metrics response helper."""
 
+import asyncio
+import logging
+import os
+
 from prometheus_client import (
     REGISTRY,
     Counter,
@@ -106,6 +110,33 @@ REGISTRY_FALLBACK_TOTAL = Counter(
     "registry-only and these instead surface an explicit error. Observable, never "
     "silent (RFC-006 F4).",
     ["reason"],
+)
+
+# RFC-006 F3 note: _upsert_registry_row runs in the arq worker process, which
+# has its own in-memory prometheus_client REGISTRY separate from the FastMCP
+# server process that /metrics is served from — a plain Counter/Gauge updated
+# only in the worker would never be visible to a scrape. Both metrics below
+# are instead mirrored through Redis (worker writes on each event; the server
+# re-syncs from Redis into these local objects on every /metrics scrape in
+# _sync_registry_metrics_from_redis()), so a Gauge is used for both — the
+# scrape sets an absolute value pulled from Redis rather than incrementing.
+_REGISTRY_WRITE_FAILURES_REDIS_KEY = "pageindex:metrics:registry_write_failures_total"
+_REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY = "pageindex:metrics:registry_last_write_success_ts"
+
+REGISTRY_WRITE_FAILURES_TOTAL = Gauge(
+    "pageindex_registry_write_failures_total",
+    "Failures of the worker-side RFC-006 dual-write upsert into the Postgres "
+    "registry (_upsert_registry_row's except block). Best-effort: the job "
+    "itself never fails on these, so this is the only signal that a doc's "
+    "registry row silently fell behind its MinIO artifact (Phase 3 audit "
+    "Issue A #1). Mirrored from Redis on scrape — see note above.",
+)
+REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP = Gauge(
+    "pageindex_registry_last_write_success_timestamp",
+    "Unix timestamp of the most recent successful registry dual-write upsert "
+    "(Phase 3 audit Issue A #2). Alert on time() - this exceeding ~2x the "
+    "reconcile interval to catch silent drift between MinIO and the registry. "
+    "Mirrored from Redis on scrape — see note above.",
 )
 
 LOW_QUALITY_TREES = Counter(
@@ -215,6 +246,56 @@ RAG_PARSE_FAILURES = Counter(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+async def _sync_registry_metrics_from_redis() -> None:
+    """Pull the worker-mirrored registry write-failure/last-success values out
+    of Redis into the local process's Gauges before a scrape. Best-effort: a
+    Redis outage should degrade to stale-but-present values, never break the
+    /metrics endpoint itself.
+    """
+    try:
+        from .cache import get_async_redis
+
+        redis_client = await get_async_redis()
+        failures, last_success = await redis_client.mget(
+            _REGISTRY_WRITE_FAILURES_REDIS_KEY, _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY
+        )
+        if failures is not None:
+            REGISTRY_WRITE_FAILURES_TOTAL.set(int(failures))
+        if last_success is not None:
+            REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set(int(last_success))
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "metrics: failed to sync registry write metrics from Redis", exc_info=True
+        )
+
+
+REGISTRY_METRICS_SYNC_INTERVAL_S = max(
+    1.0, float(os.environ.get("PAGEINDEX_REGISTRY_METRICS_SYNC_INTERVAL_S", "5"))
+)
+
+
+async def registry_metrics_sync_loop(interval: float = REGISTRY_METRICS_SYNC_INTERVAL_S) -> None:
+    """Periodically refresh the Redis-mirrored registry Gauges. Cancel to stop.
+
+    Runs on a background task for the server process's lifetime (server.py
+    lifespan) rather than inline in metrics_response(), so a Redis outage or
+    slow connection degrades these two series to stale-but-present values
+    instead of adding a network round trip — and a stall risk — to every
+    /metrics scrape (Phase 3 audit Issue A follow-up).
+    """
+    sleep_s = max(1.0, interval)
+    while True:
+        try:
+            await _sync_registry_metrics_from_redis()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # a sync blip must not kill the loop
+            logging.getLogger(__name__).warning(
+                "registry metrics sync failed; will retry", exc_info=True
+            )
+        await asyncio.sleep(sleep_s)
+
+
 async def metrics_response(request: Request) -> Response:
     """Starlette endpoint: return Prometheus text exposition."""
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE)

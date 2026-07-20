@@ -176,7 +176,12 @@ ON CONFLICT (doc_id) DO UPDATE SET
     effective_date  = EXCLUDED.effective_date,
     doc_description = EXCLUDED.doc_description,
     node_count      = EXCLUDED.node_count,
-    verdict         = EXCLUDED.verdict,
+    -- Preserve the existing verdict when the incoming payload doesn't carry
+    -- one (empty string): periodic reconciliation upserts from MinIO
+    -- .meta.json sidecars, and older/partial sidecars may predate the
+    -- verdict system. Overwriting with '' would silently un-suppress a
+    -- previously verdict='FAIL' doc from the read path.
+    verdict         = COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict),
     pipeline_version = EXCLUDED.pipeline_version,
     permanent_marginal = EXCLUDED.permanent_marginal;
 """
@@ -261,6 +266,26 @@ async def delete_doc(doc_id: str) -> None:
     logger.info("registry: deleted doc_id=%s", doc_id)
 
 
+_LIST_ALL_DOC_IDS_SQL = "SELECT doc_id FROM doc_registry;"
+
+
+async def list_all_doc_ids() -> set[str] | None:
+    """Return every doc_id currently in the registry (including verdict='FAIL'
+    rows — deletion-drift reconciliation needs the true row set, not just the
+    queryable subset). Returns ``None`` on any Postgres error so the caller can
+    treat "unknown" distinctly from "empty" and skip a destructive sync.
+    """
+    pool = get_pool()
+    if pool is None:
+        return None
+    try:
+        rows = await pool.fetch(_LIST_ALL_DOC_IDS_SQL)
+        return {r["doc_id"] for r in rows}
+    except Exception as exc:
+        logger.error("registry: list_all_doc_ids failed: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Read path — recent_documents (F5)
 # ---------------------------------------------------------------------------
@@ -268,11 +293,19 @@ async def delete_doc(doc_id: str) -> None:
 _LIST_SQL = """
 SELECT doc_id, doc_name, source_url, processed_at, content_class, node_count
 FROM   doc_registry
+WHERE  verdict != 'FAIL'
 ORDER  BY processed_at DESC
 LIMIT  $1 OFFSET $2;
 """
 
-_COUNT_SQL = "SELECT COUNT(*) FROM doc_registry;"
+_COUNT_SQL = "SELECT COUNT(*) FROM doc_registry WHERE verdict != 'FAIL';"
+
+# Unfiltered row count — deliberately does NOT apply the verdict != 'FAIL'
+# predicate. registry_backfill.py's empty-corpus guard (D3 / Property 7) needs
+# the true row count to distinguish "Postgres is genuinely empty" from "every
+# row is FAIL-verdict"; count_docs() alone can no longer answer that once it
+# reflects only queryable (non-FAIL) rows (Phase 3 audit Issue B).
+_COUNT_ALL_SQL = "SELECT COUNT(*) FROM doc_registry;"
 
 
 async def list_docs(limit: int = 100, offset: int = 0) -> list[dict] | None:
@@ -307,7 +340,7 @@ async def list_docs(limit: int = 100, offset: int = 0) -> list[dict] | None:
 
 
 async def count_docs() -> int | None:
-    """Total row count.  Returns None on error."""
+    """Queryable row count (excludes verdict='FAIL' rows).  Returns None on error."""
     pool = get_pool()
     if pool is None:
         return None
@@ -319,6 +352,23 @@ async def count_docs() -> int | None:
         return None
 
 
+async def count_docs_all() -> int | None:
+    """Total row count, including verdict='FAIL' rows.  Returns None on error.
+
+    Used only by registry_backfill.py's empty-corpus guard, which needs the
+    true row count rather than the queryable-only count (Phase 3 audit Issue B).
+    """
+    pool = get_pool()
+    if pool is None:
+        return None
+    try:
+        val = await pool.fetchval(_COUNT_ALL_SQL)
+        return int(val)
+    except Exception as exc:
+        logger.error("registry.count_docs_all failed: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Read path — Stage B: lexical/BM25 narrowing (F7)
 # ---------------------------------------------------------------------------
@@ -326,7 +376,8 @@ async def count_docs() -> int | None:
 _STAGE_B_SQL = """
 SELECT doc_id, doc_name, source_url, processed_at, content_class
 FROM   doc_registry
-WHERE  search_text @@ plainto_tsquery('simple', $1)
+WHERE  verdict != 'FAIL'
+  AND  search_text @@ plainto_tsquery('simple', $1)
 ORDER  BY ts_rank(search_text, plainto_tsquery('simple', $1)) DESC
 LIMIT  $2;
 """
@@ -337,6 +388,7 @@ LIMIT  $2;
 _STAGE_B_FALLBACK_SQL = """
 SELECT doc_id, doc_name, source_url, processed_at, content_class
 FROM   doc_registry
+WHERE  verdict != 'FAIL'
 ORDER  BY processed_at DESC
 LIMIT  $1;
 """
@@ -456,7 +508,7 @@ async def stage_a_filter(
     if not resolved:
         return None  # no facet signal found → fall through to Stage B
 
-    clauses = [f"{col} = ${i + 1}" for i, col in enumerate(resolved)]
+    clauses = ["verdict != 'FAIL'"] + [f"{col} = ${i + 1}" for i, col in enumerate(resolved)]
     sql = _STAGE_A_SQL_TEMPLATE.format(where_clause=" AND ".join(clauses))
     params = list(resolved.values())
 

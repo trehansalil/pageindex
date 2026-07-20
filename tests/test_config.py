@@ -9,6 +9,7 @@ def test_settings_has_redis_url(monkeypatch):
     # let a developer's local .env override the env vars set above.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
+
     importlib.reload(cfg)
     assert cfg.settings.redis_url == "redis://myredis:6379/1"
     assert cfg.settings.upload_api_key == "secret123"
@@ -22,6 +23,7 @@ def test_settings_redis_defaults(monkeypatch):
     # developer's local .env and re-inject REDIS_URL after delenv cleared it.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
+
     importlib.reload(cfg)
     assert cfg.settings.redis_url == "redis://localhost:6379/0"
     assert cfg.settings.upload_api_key == ""
@@ -32,6 +34,7 @@ def test_config_redis_default(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
+
     importlib.reload(cfg)
     assert cfg.settings.redis_url == "redis://localhost:6379/0"
 
@@ -41,6 +44,7 @@ def test_settings_llm_provider_default_auto(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
+
     importlib.reload(cfg)
     assert cfg.settings.llm_provider == "auto"
 
@@ -52,5 +56,6 @@ def test_settings_llm_provider_normalized(monkeypatch):
     # .env override LLM_PROVIDER and make this assertion non-deterministic.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     import pageindex_mcp.config as cfg
+
     importlib.reload(cfg)
     assert cfg.settings.llm_provider == "compatible"
