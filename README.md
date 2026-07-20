@@ -182,7 +182,7 @@ All settings are loaded in [`config.py`](src/pageindex_mcp/config.py).
 | Variable                     | Default       | Description                                                                 |
 | ---------------------------- | ------------- | --------------------------------------------------------------------------- |
 | `MCP_BEARER_TOKEN`           | —             | `Authorization: Bearer <token>` on `/mcp`; empty = 503 unless `MCP_ALLOW_UNAUTHENTICATED=true` |
-| `UPLOAD_API_KEY`             | —             | Required by `POST /upload/files` via `X-API-Key` header; empty = uploads always 401 |
+| `UPLOAD_API_KEY`             | —             | Required by `POST /upload/files` via `X-API-Key` header; empty = 503, wrong/missing header = 401 |
 | `MCP_ALLOW_UNAUTHENTICATED`  | `false`       | Explicit opt-in for unauthenticated dev mode (fail-closed by default)      |
 | `PII_CORPUS`                 | `false`       | When `true`, refuses startup unless a ZDR-compliant endpoint is configured |
 

@@ -1,6 +1,8 @@
 """Prometheus metrics definitions and /metrics response helper."""
 
+import asyncio
 import logging
+import os
 
 from prometheus_client import (
     REGISTRY,
@@ -267,7 +269,32 @@ async def _sync_registry_metrics_from_redis() -> None:
         )
 
 
+REGISTRY_METRICS_SYNC_INTERVAL_S = float(
+    os.environ.get("PAGEINDEX_REGISTRY_METRICS_SYNC_INTERVAL_S", "5")
+)
+
+
+async def registry_metrics_sync_loop(interval: float = REGISTRY_METRICS_SYNC_INTERVAL_S) -> None:
+    """Periodically refresh the Redis-mirrored registry Gauges. Cancel to stop.
+
+    Runs on a background task for the server process's lifetime (server.py
+    lifespan) rather than inline in metrics_response(), so a Redis outage or
+    slow connection degrades these two series to stale-but-present values
+    instead of adding a network round trip — and a stall risk — to every
+    /metrics scrape (Phase 3 audit Issue A follow-up).
+    """
+    while True:
+        try:
+            await _sync_registry_metrics_from_redis()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # a sync blip must not kill the loop
+            logging.getLogger(__name__).warning(
+                "registry metrics sync failed; will retry", exc_info=True
+            )
+        await asyncio.sleep(interval)
+
+
 async def metrics_response(request: Request) -> Response:
     """Starlette endpoint: return Prometheus text exposition."""
-    await _sync_registry_metrics_from_redis()
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE)
