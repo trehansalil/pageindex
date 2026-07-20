@@ -149,11 +149,20 @@ def _load_settings() -> Settings:
         registry_enabled=os.environ.get("REGISTRY_ENABLED", "true").strip().lower()
         not in ("0", "false", "no"),
         catalog_topk=int(os.environ.get("PAGEINDEX_CATALOG_TOPK", "200")),
-        registry_query_concurrency=int(
-            os.environ.get("PAGEINDEX_REGISTRY_QUERY_CONCURRENCY", "15")
+        # Clamped to >=1: a non-positive value would create an asyncio.Semaphore(0)
+        # in helpers._rag_inner, deadlocking every document load forever.
+        registry_query_concurrency=max(
+            1, int(os.environ.get("PAGEINDEX_REGISTRY_QUERY_CONCURRENCY", "15"))
         ),
-        registry_reconcile_interval_s=int(
-            os.environ.get("PAGEINDEX_REGISTRY_RECONCILE_INTERVAL_S", "1200")
+        # Clamped to [60, 86400]: worker._reconcile_registry_drift_cron schedules
+        # this on a minute/hour cron grid, which can't honor sub-minute or
+        # multi-day cadences.
+        registry_reconcile_interval_s=max(
+            60,
+            min(
+                86400,
+                int(os.environ.get("PAGEINDEX_REGISTRY_RECONCILE_INTERVAL_S", "1200")),
+            ),
         ),
         langfuse_public_key=os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
         langfuse_secret_key=os.environ.get("LANGFUSE_SECRET_KEY", ""),

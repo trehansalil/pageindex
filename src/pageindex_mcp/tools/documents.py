@@ -36,21 +36,37 @@ class RegistryUnavailableError(RuntimeError):
     initialised, the backfill is not yet complete, or a Postgres query fails, the
     read path raises this instead of silently degrading to an O(N) MinIO bucket
     scan (ISS-05). The MCP tool boundary (``find_relevant_documents`` /
-    ``recent_documents``) turns it into a clean JSON error envelope.
+    ``recent_documents``) turns it into a ``ToolError`` (``isError: true``).
 
     ``reason`` mirrors the REGISTRY_FALLBACK_TOTAL 'reason' label so the failure
     mode is observable in both metrics and the error surfaced to the caller.
 
     Reason vocabulary: ``disabled | pool_not_ready | backfill_incomplete |
     postgres_error | verdict_fail``. ``verdict_fail`` (Phase 3 audit Issue B)
-    covers the case where the registry query succeeded but returned zero
+    covers the case where the registry query *succeeded* but returned zero
     candidates because every match was filtered out as verdict='FAIL' (or the
-    corpus itself is empty) — same clean-refusal treatment either way.
+    corpus itself is empty) — a healthy-but-empty corpus, not an outage. Tool
+    boundaries give it a distinct message from the other (true-outage) reasons.
     """
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"Document registry unavailable (reason={reason})")
+
+
+def _tool_error_message(reason: str) -> str:
+    """Build the caller-facing ToolError message for a RegistryUnavailableError.
+
+    ``verdict_fail`` is a successful, healthy query that found zero queryable
+    (non-FAIL-verdict) documents — not an outage — so it gets separate wording
+    from the other (true-outage) reasons to avoid misleading callers/logs.
+    """
+    if reason == "verdict_fail":
+        return (
+            "No queryable documents in the registry (reason=verdict_fail): "
+            "all candidates are verdict=FAIL, or the corpus is empty"
+        )
+    return f"Document registry unavailable (reason={reason})"
 
 
 async def _require_registry_ready() -> None:
@@ -168,7 +184,7 @@ async def recent_documents(page: int = 1, page_size: int = 10) -> str:
         # so the calling LLM can distinguish refusal from an empty result set.
         TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents: registry unavailable (reason=%s)", e.reason)
-        raise ToolError(f"Document registry unavailable (reason={e.reason})") from e
+        raise ToolError(_tool_error_message(e.reason)) from e
     except Exception as e:
         TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents failed to list docs: %s", e)
@@ -243,7 +259,7 @@ async def find_relevant_documents(query: str) -> str:
         # so the calling LLM can distinguish refusal from an empty result set.
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents: registry unavailable (reason=%s)", e.reason)
-        raise ToolError(f"Document registry unavailable (reason={e.reason})") from e
+        raise ToolError(_tool_error_message(e.reason)) from e
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents failed: %s", e, exc_info=True)

@@ -39,6 +39,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Bootstrap: ensure the src/ tree is on sys.path when run as a script.
@@ -127,16 +128,40 @@ async def _preflight_checks() -> None:
         sys.exit(1)
 
 
-async def _upsert_all(meta_keys: list[str], dry_run: bool) -> list[str]:
-    """Upsert every meta.json sidecar.  Returns a list of failed object keys."""
+async def _upsert_all(
+    meta_keys: list[str],
+    dry_run: bool,
+    collect_doc_ids: set[str] | None = None,
+) -> list[str]:
+    """Upsert every meta.json sidecar.  Returns a list of failed object keys.
+
+    If ``collect_doc_ids`` is given, every doc_id encountered — whether its
+    sidecar loaded successfully or not — is added to it. reconcile_registry_
+    drift() uses this to build the "current MinIO doc set" for deletion-drift
+    detection without a second full MinIO GET pass.
+    """
     failed: list[str] = []
     total = len(meta_keys)
 
+    # Fetch sidecars concurrently (bounded) instead of one at a time on the
+    # event loop thread: _load_meta() does synchronous MinIO GET I/O, and a
+    # serial loop here would block reconcile_registry_drift()'s arq cron tick
+    # (and any other work on the same event loop) for the full listing.
+    load_sem = asyncio.Semaphore(10)
+
+    async def _bounded_load(key: str) -> tuple[str, dict | None]:
+        async with load_sem:
+            return key, await asyncio.to_thread(_load_meta, key)
+
+    loaded = await asyncio.gather(*(_bounded_load(key) for key in meta_keys))
+
     prepared: list[tuple[str, dict]] = []
-    for i, key in enumerate(meta_keys, 1):
-        meta = _load_meta(key)
+    for i, (key, meta) in enumerate(loaded, 1):
         if meta is None:
             failed.append(key)
+            if collect_doc_ids is not None:
+                stem = Path(key).stem
+                collect_doc_ids.add(stem.removesuffix(".meta"))
             continue
 
         doc_id = meta.get("doc_id", "")
@@ -144,6 +169,9 @@ async def _upsert_all(meta_keys: list[str], dry_run: bool) -> list[str]:
             stem = Path(key).stem
             doc_id = stem.removesuffix(".meta")
             meta["doc_id"] = doc_id
+
+        if collect_doc_ids is not None:
+            collect_doc_ids.add(doc_id)
 
         if dry_run:
             logger.info(
@@ -371,10 +399,11 @@ async def reconcile_registry_drift() -> None:
 
     if not meta_keys:
         logger.debug("reconcile_registry_drift: no MinIO meta sidecars found, nothing to sync")
-        await redis_client.set(_REGISTRY_LAST_RECONCILE_AT_KEY, str(int(time.time())))
+        await _record_reconcile_heartbeat(redis_client)
         return
 
-    failed = await _upsert_all(meta_keys, dry_run=False)
+    minio_doc_ids: set[str] = set()
+    failed = await _upsert_all(meta_keys, dry_run=False, collect_doc_ids=minio_doc_ids)
     if failed:
         logger.warning(
             "reconcile_registry_drift: %d/%d doc(s) failed to upsert",
@@ -384,10 +413,66 @@ async def reconcile_registry_drift() -> None:
     else:
         logger.info("reconcile_registry_drift: %d doc(s) reconciled", len(meta_keys))
 
+    await _delete_stale_rows(minio_doc_ids)
+
     # Recorded regardless of per-doc failures — this timestamp answers "is the
     # reconcile job itself still running on schedule?", not "did every doc
     # succeed?" (that's REGISTRY_WRITE_FAILURES_TOTAL's job, per-doc, in worker.py).
-    await redis_client.set(_REGISTRY_LAST_RECONCILE_AT_KEY, str(int(time.time())))
+    await _record_reconcile_heartbeat(redis_client)
+
+
+async def _record_reconcile_heartbeat(redis_client: Any) -> None:
+    """Best-effort: record the last-reconcile timestamp.
+
+    Wrapped separately so a transient Redis outage only drops one
+    observability signal instead of raising out of ``reconcile_registry_
+    drift()``'s otherwise best-effort contract (that contract is what lets a
+    Redis/MinIO/Postgres blip skip a tick without failing the arq cron job).
+    """
+    try:
+        await redis_client.set(_REGISTRY_LAST_RECONCILE_AT_KEY, str(int(time.time())))
+    except Exception as exc:
+        logger.warning("reconcile_registry_drift: failed to record heartbeat: %s", exc)
+
+
+# A stale-row purge is only trusted when it wouldn't wipe out most of the
+# registry — an untrustworthy/partial MinIO listing (e.g. list-API glitch,
+# wrong bucket/prefix) should never cascade into mass deletion.
+_MAX_STALE_DELETE_FRACTION = 0.5
+
+
+async def _delete_stale_rows(minio_doc_ids: set[str]) -> None:
+    """Delete doc_registry rows whose MinIO .meta.json sidecar no longer
+    exists, so a doc removed from MinIO (outside the HR2 erasure flow, e.g. a
+    manual bucket cleanup) doesn't linger in listings/search indefinitely.
+    """
+    from .registry import delete_doc, list_all_doc_ids
+
+    registry_doc_ids = await list_all_doc_ids()
+    if registry_doc_ids is None:
+        logger.warning("reconcile_registry_drift: could not list registry doc_ids, skipping delete-drift check")
+        return
+
+    stale = registry_doc_ids - minio_doc_ids
+    if not stale:
+        return
+
+    if len(stale) > len(registry_doc_ids) * _MAX_STALE_DELETE_FRACTION:
+        logger.warning(
+            "reconcile_registry_drift: refusing to delete %d/%d registry row(s) as stale "
+            "(exceeds %.0f%% safety threshold) — check the MinIO listing before retrying",
+            len(stale),
+            len(registry_doc_ids),
+            _MAX_STALE_DELETE_FRACTION * 100,
+        )
+        return
+
+    for doc_id in stale:
+        try:
+            await delete_doc(doc_id)
+        except Exception as exc:
+            logger.warning("reconcile_registry_drift: failed to delete stale doc_id=%s: %s", doc_id, exc)
+    logger.info("reconcile_registry_drift: deleted %d stale registry row(s)", len(stale))
 
 
 # ---------------------------------------------------------------------------

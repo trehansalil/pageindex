@@ -176,7 +176,12 @@ ON CONFLICT (doc_id) DO UPDATE SET
     effective_date  = EXCLUDED.effective_date,
     doc_description = EXCLUDED.doc_description,
     node_count      = EXCLUDED.node_count,
-    verdict         = EXCLUDED.verdict,
+    -- Preserve the existing verdict when the incoming payload doesn't carry
+    -- one (empty string): periodic reconciliation upserts from MinIO
+    -- .meta.json sidecars, and older/partial sidecars may predate the
+    -- verdict system. Overwriting with '' would silently un-suppress a
+    -- previously verdict='FAIL' doc from the read path.
+    verdict         = COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict),
     pipeline_version = EXCLUDED.pipeline_version,
     permanent_marginal = EXCLUDED.permanent_marginal;
 """
@@ -259,6 +264,26 @@ async def delete_doc(doc_id: str) -> None:
 
     await pool.execute(_DELETE_SQL, doc_id, timeout=settings.registry_delete_timeout_s)
     logger.info("registry: deleted doc_id=%s", doc_id)
+
+
+_LIST_ALL_DOC_IDS_SQL = "SELECT doc_id FROM doc_registry;"
+
+
+async def list_all_doc_ids() -> set[str] | None:
+    """Return every doc_id currently in the registry (including verdict='FAIL'
+    rows — deletion-drift reconciliation needs the true row set, not just the
+    queryable subset). Returns ``None`` on any Postgres error so the caller can
+    treat "unknown" distinctly from "empty" and skip a destructive sync.
+    """
+    pool = get_pool()
+    if pool is None:
+        return None
+    try:
+        rows = await pool.fetch(_LIST_ALL_DOC_IDS_SQL)
+        return {r["doc_id"] for r in rows}
+    except Exception as exc:
+        logger.error("registry: list_all_doc_ids failed: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -305,7 +305,10 @@ async def _rag_inner(query: str, doc_ids: list[str]) -> str:
     # for up to catalog_topk (default 200) docs. Fan out via to_thread + Semaphore
     # so the wall-clock is dominated by the slowest single load, not the sum.
     phase1_t0 = time.monotonic()
-    doc_load_semaphore = asyncio.Semaphore(settings.registry_query_concurrency)
+    # max(1, ...) defends against a misconfigured 0/negative value even though
+    # config._load_settings() already clamps it — a non-positive semaphore
+    # would deadlock every document load forever.
+    doc_load_semaphore = asyncio.Semaphore(max(1, settings.registry_query_concurrency))
 
     async def _load_one(doc_id: str) -> tuple[str, dict] | None:
         t = time.monotonic()

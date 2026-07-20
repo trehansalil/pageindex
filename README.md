@@ -168,6 +168,8 @@ All settings are loaded in [`config.py`](src/pageindex_mcp/config.py).
 | `PAGEINDEX_SEARCH_MODEL`               | `gpt-4o-mini`                 | Model for tree search                                                       |
 | `PAGEINDEX_SEARCH_CONCURRENCY`         | `3`                           | Concurrent tree-search tasks                                                |
 | `PAGEINDEX_CATALOG_TOPK`              | `200`                         | Max documents considered during catalog pre-filter                          |
+| `PAGEINDEX_REGISTRY_QUERY_CONCURRENCY` | `15`                          | Bound on concurrent `get_doc()` fan-out during RAG search; clamped to >=1   |
+| `PAGEINDEX_REGISTRY_RECONCILE_INTERVAL_S` | `1200`                     | Cadence of the registry drift-reconciliation cron job; clamped to [60, 86400]s |
 
 > **PII routing (HR3).** Route documents containing personal data only through a
 > no-training + zero-retention LLM tier (OpenAI ZDR / Anthropic ZDR / Azure
@@ -179,8 +181,8 @@ All settings are loaded in [`config.py`](src/pageindex_mcp/config.py).
 
 | Variable                     | Default       | Description                                                                 |
 | ---------------------------- | ------------- | --------------------------------------------------------------------------- |
-| `MCP_BEARER_TOKEN`           | `dev-api-key` | `Authorization: Bearer <token>` on `/mcp`; empty = auth disabled           |
-| `UPLOAD_API_KEY`             | `dev-api-key` | Required by `POST /upload/files` via `X-API-Key` header                    |
+| `MCP_BEARER_TOKEN`           | —             | `Authorization: Bearer <token>` on `/mcp`; empty = 503 unless `MCP_ALLOW_UNAUTHENTICATED=true` |
+| `UPLOAD_API_KEY`             | —             | Required by `POST /upload/files` via `X-API-Key` header; empty = uploads always 401 |
 | `MCP_ALLOW_UNAUTHENTICATED`  | `false`       | Explicit opt-in for unauthenticated dev mode (fail-closed by default)      |
 | `PII_CORPUS`                 | `false`       | When `true`, refuses startup unless a ZDR-compliant endpoint is configured |
 
@@ -450,9 +452,12 @@ documents with metadata, used by `recent_documents` for fast paginated listing.
 `doc_id` values are 8-character UUID prefixes generated at processing time.
 
 > **Right-to-erasure (HR2).** Deleting the raw upload does **not** auto-remove
-> derivatives. Erasure must cascade across every derived store — MinIO
-> `uploads/`, `processed/*.json`, `processed/*.flat.json`, `processed/*.meta.json`,
-> Postgres registry row, Redis cache key, hash-cache entry — in that order.
+> derivatives. Erasure must cascade across every derived store, in this order:
+> (1) MinIO `uploads/<doc_id>/*`, (2) `processed/<doc_id>.json`,
+> (2b) `processed/<doc_id>.flat.json`, (3) `processed/<doc_id>.meta.json`,
+> (4) Redis cache key, (5) hash-cache entry, (6) Postgres registry row,
+> (7) `preloaded/<doc_name>` raw object. Idempotent and best-effort per step —
+> every individual store failure is reported back to the caller, never raised.
 
 ## Quality Gates
 
