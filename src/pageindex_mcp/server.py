@@ -12,7 +12,7 @@ from . import tools as _tools
 from .auth import BearerAuthMiddleware
 from .cache import get_async_redis
 from .config import settings
-from .metrics import metrics_response
+from .metrics import metrics_response, registry_metrics_sync_loop
 from .upload_app import create_upload_app
 
 logging.basicConfig(
@@ -60,6 +60,10 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
 
     redis = await get_async_redis()
     scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))
+    # Phase 3 audit Issue A follow-up: sync the Redis-mirrored registry write
+    # metrics on a background cadence instead of inline in metrics_response(),
+    # so a Redis outage/slow connection never delays a /metrics scrape.
+    registry_metrics_task = asyncio.create_task(registry_metrics_sync_loop())
     # RFC-006: open the Postgres registry pool so the query read path
     # (_registry_narrow / _list_docs_with_fallback) can actually use it. Without
     # this, get_pool() stays None and every query silently falls back to MinIO.
@@ -92,6 +96,9 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
         scrape_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await scrape_task
+        registry_metrics_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await registry_metrics_task
         if settings.registry_enabled and settings.postgres_dsn:
             from .registry import close_registry
 

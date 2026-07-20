@@ -32,6 +32,10 @@ from .metrics import (
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_CHILD_TIMEOUT_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
+    REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP,
+    REGISTRY_WRITE_FAILURES_TOTAL,
+    _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY,
+    _REGISTRY_WRITE_FAILURES_REDIS_KEY,
     UPLOAD_DURATION,
     UPLOADS,
 )
@@ -497,9 +501,38 @@ async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
         fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
         if fields:
             await upsert_doc(fields)
+            REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()
             logger.info("registry: dual-write upserted doc_id=%s", doc_id)
+            await _mirror_registry_metric_to_redis(
+                _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY, str(int(time.time()))
+            )
     except Exception as exc:
+        REGISTRY_WRITE_FAILURES_TOTAL.inc()
         logger.warning("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc)
+        await _mirror_registry_write_failure_to_redis()
+
+
+async def _mirror_registry_metric_to_redis(key: str, value: str) -> None:
+    """Best-effort SET, isolated from the caller's own try/except so a Redis
+    hiccup here is never mistaken for the dual-write failure it's reporting
+    on. This exists because these Gauges live in the worker process, which has
+    its own in-memory prometheus_client registry never scraped by /metrics —
+    Redis is the only channel back to the server process (metrics.py's
+    _sync_registry_metrics_from_redis()).
+    """
+    try:
+        redis_client = await get_async_redis()
+        await redis_client.set(key, value)
+    except Exception as exc:
+        logger.debug("registry: failed to mirror metric %s to Redis: %s", key, exc)
+
+
+async def _mirror_registry_write_failure_to_redis() -> None:
+    try:
+        redis_client = await get_async_redis()
+        await redis_client.incr(_REGISTRY_WRITE_FAILURES_REDIS_KEY)
+    except Exception as exc:
+        logger.debug("registry: failed to mirror write-failure count to Redis: %s", exc)
 
 
 async def startup(ctx: dict) -> None:
@@ -533,6 +566,36 @@ async def shutdown(ctx: dict) -> None:
         await close_registry()
 
 
+async def _reconcile_registry_drift_cron(ctx: dict) -> None:
+    """arq cron wrapper for registry_backfill.reconcile_registry_drift.
+
+    Phase 3 audit Issue A #3/#4: run_auto_backfill() only ever does useful work
+    once (short-circuits once pageindex:registry:complete is set), so it never
+    catches post-completion drift — e.g. a worker._upsert_registry_row dual-write
+    failure that left a doc's row stale. This periodic cron entry calls the
+    non-short-circuiting sibling on a schedule instead.
+    """
+    from .registry_backfill import reconcile_registry_drift
+
+    await reconcile_registry_drift()
+
+
+# arq's cron() only supports crontab-style (fixed minute/hour/...) scheduling,
+# not a raw "every N seconds" repeat — so a configurable interval is expressed
+# as a set of minute-of-hour (and, past 60 minutes, hour-of-day) ticks.
+# settings.registry_reconcile_interval_s is already clamped to [60, 86400]
+# (config.py), so this always resolves to a whole-minute cadence between
+# 1 minute and 24 hours; non-divisors of 60/24 round down via floor-division.
+_RECONCILE_INTERVAL_MIN = max(1, settings.registry_reconcile_interval_s // 60)
+if _RECONCILE_INTERVAL_MIN < 60:
+    _RECONCILE_MINUTES = set(range(0, 60, _RECONCILE_INTERVAL_MIN))
+    _RECONCILE_HOURS = None  # every hour
+else:
+    _RECONCILE_HOUR_STEP = max(1, _RECONCILE_INTERVAL_MIN // 60)
+    _RECONCILE_MINUTES = {0}
+    _RECONCILE_HOURS = set(range(0, 24, _RECONCILE_HOUR_STEP))
+
+
 class WorkerSettings:
     functions: ClassVar = [process_document_job]
     on_startup = startup
@@ -553,5 +616,18 @@ class WorkerSettings:
             unique=True,
             max_tries=1,
             timeout=30,
+        ),
+        # Phase 3 audit Issue A #4: PAGEINDEX_REGISTRY_RECONCILE_INTERVAL_S
+        # (default 1200s / 20min) controls the cadence. Not run_at_startup —
+        # startup() already calls run_auto_backfill() once; this only needs to
+        # catch drift introduced afterwards.
+        cron(
+            _reconcile_registry_drift_cron,
+            hour=_RECONCILE_HOURS,
+            minute=_RECONCILE_MINUTES,
+            second=0,
+            unique=True,
+            max_tries=1,
+            timeout=300,
         ),
     ]

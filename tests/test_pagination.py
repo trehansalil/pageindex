@@ -17,6 +17,8 @@ Contract:
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from pageindex_mcp.tools import documents
 
 
@@ -127,8 +129,10 @@ async def test_pagination_integration_20_docs():
 
 async def test_registry_count_failure_returns_error():
     """If list_docs succeeds but count_docs errors (None), the paginated path
-    raises RegistryUnavailableError -> recent_documents returns an explicit error
-    (D6: no MinIO fallback to a possibly-wrong total)."""
+    raises RegistryUnavailableError -> recent_documents raises isError:true
+    (Phase 3 audit Issue B) (D6: no MinIO fallback to a possibly-wrong total)."""
+    from fastmcp.exceptions import ToolError
+
     list_docs = AsyncMock(return_value=[_row(i) for i in range(1, 6)])
     count_docs = AsyncMock(return_value=None)
     minio = MagicMock()
@@ -138,19 +142,19 @@ async def test_registry_count_failure_returns_error():
         patch("pageindex_mcp.registry.list_docs", new=list_docs),
         patch("pageindex_mcp.registry.count_docs", new=count_docs),
         patch("pageindex_mcp.storage.list_processed_docs", new=minio),
+        pytest.raises(ToolError, match="registry unavailable"),
     ):
-        result = await documents.recent_documents(page=1, page_size=5)
+        await documents.recent_documents(page=1, page_size=5)
 
-    payload = json.loads(result)
-    assert "error" in payload
-    assert "registry unavailable" in payload["error"].lower()
     minio.assert_not_called()
 
 
 async def test_postgres_down_returns_error():
     """Postgres unavailable (registry ready, but list_docs returns None on a query
-    failure) must surface an explicit error from both listing tools — never a
-    MinIO-derived result, never an unhandled crash."""
+    failure) must surface isError:true from both listing tools (Phase 3 audit
+    Issue B) — never a MinIO-derived result, never an unhandled crash."""
+    from fastmcp.exceptions import ToolError
+
     minio = MagicMock()
 
     with (
@@ -159,11 +163,11 @@ async def test_postgres_down_returns_error():
         patch("pageindex_mcp.registry.count_docs", new=AsyncMock(return_value=None)),
         patch("pageindex_mcp.storage.list_processed_docs", new=minio),
     ):
-        recent = json.loads(await documents.recent_documents(page=1, page_size=5))
-        find = json.loads(await documents.find_relevant_documents("q"))
+        with pytest.raises(ToolError, match="registry unavailable"):
+            await documents.recent_documents(page=1, page_size=5)
+        with pytest.raises(ToolError, match="registry unavailable"):
+            await documents.find_relevant_documents("q")
 
-    assert "error" in recent and "registry unavailable" in recent["error"].lower()
-    assert "error" in find and "registry unavailable" in find["error"].lower()
     minio.assert_not_called()
 
 
@@ -188,6 +192,8 @@ async def test_no_list_processed_docs_calls():
     """Under every registry-unavailable condition, neither listing function may
     call storage.list_processed_docs() (D6: no O(N) MinIO fallback). The registry
     is mocked as unavailable (returning the standard disabled error shape)."""
+    from fastmcp.exceptions import ToolError
+
     import pageindex_mcp.storage as storage_mod
     from pageindex_mcp.tools.documents import RegistryUnavailableError
 
@@ -198,10 +204,12 @@ async def test_no_list_processed_docs_calls():
         patch.object(documents, "_require_registry_ready", side_effect=_registry_disabled),
         patch.object(storage_mod, "list_processed_docs") as minio,
     ):
-        recent = json.loads(await documents.recent_documents(page=1, page_size=5))
-        find = json.loads(await documents.find_relevant_documents("q"))
+        # Phase 3 audit Issue B: both tools now raise isError:true rather than
+        # returning a clean JSON error, so the calling LLM can distinguish a
+        # refusal from a legitimate empty result.
+        with pytest.raises(ToolError):
+            await documents.recent_documents(page=1, page_size=5)
+        with pytest.raises(ToolError):
+            await documents.find_relevant_documents("q")
 
     minio.assert_not_called()
-    # Both tools returned a clean JSON error rather than crashing.
-    assert "error" in recent
-    assert "error" in find

@@ -4,6 +4,8 @@ import json
 import logging
 import time
 
+from fastmcp.exceptions import ToolError
+
 from ..cache import get_doc
 from ..config import settings
 from ..helpers import (
@@ -34,15 +36,37 @@ class RegistryUnavailableError(RuntimeError):
     initialised, the backfill is not yet complete, or a Postgres query fails, the
     read path raises this instead of silently degrading to an O(N) MinIO bucket
     scan (ISS-05). The MCP tool boundary (``find_relevant_documents`` /
-    ``recent_documents``) turns it into a clean JSON error envelope.
+    ``recent_documents``) turns it into a ``ToolError`` (``isError: true``).
 
     ``reason`` mirrors the REGISTRY_FALLBACK_TOTAL 'reason' label so the failure
     mode is observable in both metrics and the error surfaced to the caller.
+
+    Reason vocabulary: ``disabled | pool_not_ready | backfill_incomplete |
+    postgres_error | verdict_fail``. ``verdict_fail`` (Phase 3 audit Issue B)
+    covers the case where the registry query *succeeded* but returned zero
+    candidates because every match was filtered out as verdict='FAIL' (or the
+    corpus itself is empty) — a healthy-but-empty corpus, not an outage. Tool
+    boundaries give it a distinct message from the other (true-outage) reasons.
     """
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"Document registry unavailable (reason={reason})")
+
+
+def _tool_error_message(reason: str) -> str:
+    """Build the caller-facing ToolError message for a RegistryUnavailableError.
+
+    ``verdict_fail`` is a successful, healthy query that found zero queryable
+    (non-FAIL-verdict) documents — not an outage — so it gets separate wording
+    from the other (true-outage) reasons to avoid misleading callers/logs.
+    """
+    if reason == "verdict_fail":
+        return (
+            "No queryable documents in the registry (reason=verdict_fail): "
+            "all candidates are verdict=FAIL, or the corpus is empty"
+        )
+    return f"Document registry unavailable (reason={reason})"
 
 
 async def _require_registry_ready() -> None:
@@ -107,6 +131,14 @@ async def _list_docs_with_fallback() -> tuple[list[dict], bool]:
         logger.error("_list_docs_with_fallback: registry query failed")
         raise RegistryUnavailableError("postgres_error")
 
+    if not docs:
+        # Phase 3 audit Issue B: list_docs already excludes verdict='FAIL' rows
+        # at the SQL layer, so an empty result here means either an empty corpus
+        # or every candidate was filtered out as FAIL-verdict. Refuse cleanly via
+        # isError:true rather than the old silent "available": [] envelope.
+        REGISTRY_FALLBACK_TOTAL.labels(reason="verdict_fail").inc()
+        raise RegistryUnavailableError("verdict_fail")
+
     return docs, True
 
 
@@ -147,11 +179,12 @@ async def recent_documents(page: int = 1, page_size: int = 10) -> str:
     try:
         page_docs, total, used_registry = await _list_docs_paginated(page, page_size)
     except RegistryUnavailableError as e:
-        # RFC-009 D6: registry-only listing — no MinIO fallback. Surface an
-        # explicit error instead of degrading to an O(N) bucket scan.
+        # RFC-009 D6: registry-only listing — no MinIO fallback. Phase 3 audit
+        # Issue B: real isError:true instead of a success-envelope "error" field,
+        # so the calling LLM can distinguish refusal from an empty result set.
         TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents: registry unavailable (reason=%s)", e.reason)
-        return json.dumps({"error": f"Document registry unavailable: {e.reason}"})
+        raise ToolError(_tool_error_message(e.reason)) from e
     except Exception as e:
         TOOL_ERRORS.labels(tool="recent_documents").inc()
         logger.error("recent_documents failed to list docs: %s", e)
@@ -216,22 +249,17 @@ async def find_relevant_documents(query: str) -> str:
                 time.monotonic() - list_t0,
                 len(documents),
             )
-            if not documents:
-                logger.warning("find_relevant_documents: no documents indexed")
-                TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
-                return json.dumps(
-                    {
-                        "error": "No documents are indexed. Process documents first.",
-                        "available": [],
-                    }
-                )
+            # _list_docs_with_fallback() now raises RegistryUnavailableError(
+            # "verdict_fail") itself when the SQL query returns zero candidates,
+            # so `documents` is always non-empty here (Phase 3 audit Issue B).
             return await _rag(query, [d["doc_id"] for d in documents])
     except RegistryUnavailableError as e:
-        # RFC-009 D6: registry-only listing — no MinIO fallback. Return a clean
-        # JSON error envelope rather than letting the outage crash the tool.
+        # RFC-009 D6: registry-only listing — no MinIO fallback. Phase 3 audit
+        # Issue B: real isError:true instead of a success-envelope "error" field,
+        # so the calling LLM can distinguish refusal from an empty result set.
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents: registry unavailable (reason=%s)", e.reason)
-        return json.dumps({"error": f"Document registry unavailable: {e.reason}", "available": []})
+        raise ToolError(_tool_error_message(e.reason)) from e
     except Exception as e:
         TOOL_ERRORS.labels(tool="find_relevant_documents").inc()
         logger.error("find_relevant_documents failed: %s", e, exc_info=True)

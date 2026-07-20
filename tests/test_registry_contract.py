@@ -121,8 +121,17 @@ async def test_upsert_maps_all_fields_in_order():
     # args[0] is the SQL; args[1:] are the positional params in column order.
     assert args[0] is registry._UPSERT_SQL
     assert args[1:] == (
-        "abc123", "AKB.pdf", "s3://x", "2026-07-10T00:00:00", "flat_table",
-        "deadbeef", "huk", "komfort", "phv", "2026-01-01", "liability terms",
+        "abc123",
+        "AKB.pdf",
+        "s3://x",
+        "2026-07-10T00:00:00",
+        "flat_table",
+        "deadbeef",
+        "huk",
+        "komfort",
+        "phv",
+        "2026-01-01",
+        "liability terms",
         42,  # D2 (RFC-009): node_count
         "",  # RFC-014 D2: verdict (default empty)
         None,  # RFC-014 D2: pipeline_version (default None)
@@ -141,7 +150,7 @@ async def test_upsert_defaults_missing_keys_to_empty_string():
     # Text columns default to ""; node_count defaults to None; verdict fields
     # default to ("", None, False) per RFC-014 D2.
     assert args[12] is None  # node_count
-    assert args[13] == ""    # verdict
+    assert args[13] == ""  # verdict
     assert args[14] is None  # pipeline_version
     assert args[15] is False  # permanent_marginal
     assert all(a == "" for a in args[3:12])
@@ -162,15 +171,27 @@ async def test_upsert_skips_row_with_empty_doc_id():
 async def test_list_docs_maps_rows_to_legacy_shape():
     pool = _mock_pool()
     pool.fetch.return_value = [
-        {"doc_id": "d1", "doc_name": "a.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": "", "node_count": 7},
+        {
+            "doc_id": "d1",
+            "doc_name": "a.pdf",
+            "source_url": "",
+            "processed_at": "2026-07-10",
+            "content_class": "",
+            "node_count": 7,
+        },
     ]
     with patch.object(registry, "get_pool", return_value=pool):
         rows = await registry.list_docs(limit=5, offset=0)
 
     assert rows == [
-        {"doc_id": "d1", "doc_name": "a.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": "", "node_count": 7},
+        {
+            "doc_id": "d1",
+            "doc_name": "a.pdf",
+            "source_url": "",
+            "processed_at": "2026-07-10",
+            "content_class": "",
+            "node_count": 7,
+        },
     ]
     pool.fetch.assert_awaited_once_with(registry._LIST_SQL, 5, 0)
 
@@ -197,8 +218,13 @@ async def test_count_docs_returns_none_on_error():
 async def test_stage_b_returns_ranked_matches():
     pool = _mock_pool()
     pool.fetch.return_value = [
-        {"doc_id": "d1", "doc_name": "hit.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": ""},
+        {
+            "doc_id": "d1",
+            "doc_name": "hit.pdf",
+            "source_url": "",
+            "processed_at": "2026-07-10",
+            "content_class": "",
+        },
     ]
     with patch.object(registry, "get_pool", return_value=pool):
         rows = await registry.stage_b_candidates("liability", 200)
@@ -212,8 +238,13 @@ async def test_stage_b_returns_ranked_matches():
 async def test_stage_b_falls_back_to_recency_on_no_match():
     pool = _mock_pool()
     recent = [
-        {"doc_id": "r1", "doc_name": "recent.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": ""},
+        {
+            "doc_id": "r1",
+            "doc_name": "recent.pdf",
+            "source_url": "",
+            "processed_at": "2026-07-10",
+            "content_class": "",
+        },
     ]
     # First fetch (ts_rank) → empty; second fetch (recency fallback) → recent.
     pool.fetch.side_effect = [[], recent]
@@ -250,8 +281,13 @@ async def test_stage_a_resolves_facet_from_query_and_filters():
     registry.refresh_known_facets({"product": {"HUK"}})
     pool = _mock_pool()
     pool.fetch.return_value = [
-        {"doc_id": "d1", "doc_name": "a.pdf", "source_url": "",
-         "processed_at": "2026-07-10", "content_class": ""},
+        {
+            "doc_id": "d1",
+            "doc_name": "a.pdf",
+            "source_url": "",
+            "processed_at": "2026-07-10",
+            "content_class": "",
+        },
     ]
     with patch.object(registry, "get_pool", return_value=pool):
         rows = await registry.stage_a_filter("please find the huk policy")
@@ -287,9 +323,7 @@ async def test_stage_a_honours_caller_facet_hints():
 
 
 def test_refresh_known_facets_casefolds_and_ignores_unknown_columns():
-    registry.refresh_known_facets(
-        {"product": {"HUK", "Allianz"}, "not_a_column": {"x"}}
-    )
+    registry.refresh_known_facets({"product": {"HUK", "Allianz"}, "not_a_column": {"x"}})
     assert registry._KNOWN_FACETS["product"] == {"huk", "allianz"}
     assert "not_a_column" not in registry._KNOWN_FACETS
 
@@ -368,10 +402,12 @@ async def test_upsert_insert_then_update_roundtrip(reg):
 
 @pytest.mark.integration
 async def test_list_docs_newest_first_and_paginates(reg):
-    await registry.upsert_doc({"doc_id": "old", "doc_name": "old.pdf",
-                               "processed_at": "2026-01-01T00:00:00"})
-    await registry.upsert_doc({"doc_id": "new", "doc_name": "new.pdf",
-                               "processed_at": "2026-07-10T00:00:00"})
+    await registry.upsert_doc(
+        {"doc_id": "old", "doc_name": "old.pdf", "processed_at": "2026-01-01T00:00:00"}
+    )
+    await registry.upsert_doc(
+        {"doc_id": "new", "doc_name": "new.pdf", "processed_at": "2026-07-10T00:00:00"}
+    )
 
     rows = await registry.list_docs(limit=10)
     assert [r["doc_id"] for r in rows] == ["new", "old"]
@@ -382,12 +418,20 @@ async def test_list_docs_newest_first_and_paginates(reg):
 
 @pytest.mark.integration
 async def test_stage_b_ranks_relevant_and_excludes_irrelevant(reg):
-    await registry.upsert_doc({
-        "doc_id": "liab", "doc_name": "AVB-PHV.pdf",
-        "doc_description": "private liability insurance Haftpflicht terms"})
-    await registry.upsert_doc({
-        "doc_id": "motor", "doc_name": "AKB.pdf",
-        "doc_description": "motor vehicle Kfz insurance conditions"})
+    await registry.upsert_doc(
+        {
+            "doc_id": "liab",
+            "doc_name": "AVB-PHV.pdf",
+            "doc_description": "private liability insurance Haftpflicht terms",
+        }
+    )
+    await registry.upsert_doc(
+        {
+            "doc_id": "motor",
+            "doc_name": "AKB.pdf",
+            "doc_description": "motor vehicle Kfz insurance conditions",
+        }
+    )
 
     rows = await registry.stage_b_candidates("Haftpflicht liability", topk=10)
     ids = [r["doc_id"] for r in rows]
@@ -397,12 +441,22 @@ async def test_stage_b_ranks_relevant_and_excludes_irrelevant(reg):
 
 @pytest.mark.integration
 async def test_stage_b_recency_fallback_when_no_lexical_match(reg):
-    await registry.upsert_doc({"doc_id": "a", "doc_name": "a.pdf",
-                               "processed_at": "2026-01-01T00:00:00",
-                               "doc_description": "alpha"})
-    await registry.upsert_doc({"doc_id": "b", "doc_name": "b.pdf",
-                               "processed_at": "2026-07-10T00:00:00",
-                               "doc_description": "beta"})
+    await registry.upsert_doc(
+        {
+            "doc_id": "a",
+            "doc_name": "a.pdf",
+            "processed_at": "2026-01-01T00:00:00",
+            "doc_description": "alpha",
+        }
+    )
+    await registry.upsert_doc(
+        {
+            "doc_id": "b",
+            "doc_name": "b.pdf",
+            "processed_at": "2026-07-10T00:00:00",
+            "doc_description": "beta",
+        }
+    )
 
     # A query that matches nothing lexically → recency-ordered fallback.
     rows = await registry.stage_b_candidates("zzzznomatchtoken", topk=10)
@@ -423,6 +477,7 @@ async def test_delete_doc_is_idempotent(reg):
 
 
 # ── RFC-014 D2 — verdict fields in upsert_doc ───────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_upsert_maps_verdict_fields_when_present():
@@ -448,6 +503,7 @@ async def test_upsert_maps_verdict_fields_when_present():
 
 
 # ── RFC-014 D2 — migration SQL shape ────────────────────────────────────────
+
 
 def test_migrate_verdict_sql_is_idempotent():
     """RFC-014 D2: migration DDL uses IF NOT EXISTS so it's re-runnable."""

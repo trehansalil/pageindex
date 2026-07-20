@@ -10,6 +10,7 @@ RFC-NNN with no matching design-rfcNNN/tasks-rfcNNN file either breaks `mark`
 This script is idempotent: files that already have headers / companions are
 left untouched. Run before every `mark` invocation (see scripts/confluence_sync.sh).
 """
+
 from __future__ import annotations
 
 import re
@@ -50,11 +51,7 @@ def inject_headers(path: Path, parent: str, title: str) -> None:
     this workspace).
     """
     text = read(path)
-    header = (
-        f"<!-- Space: {SPACE} -->\n\n"
-        f"<!-- Title: {title} -->\n\n"
-        f"<!-- Folder: {parent} -->\n\n"
-    )
+    header = f"<!-- Space: {SPACE} -->\n\n<!-- Title: {title} -->\n\n<!-- Folder: {parent} -->\n\n"
     path.write_text(header + text, encoding="utf-8")
     print(f"[headers] added mark metadata to {path.relative_to(AGENTS_DIR.parent)}")
 
@@ -127,8 +124,16 @@ RECENT_RFC_FLOOR = 11  # RFC-007..010 already have hand-written companions;
 # that's still missing a companion only gets a warning.
 
 
-def ensure_companion(directory: Path, glob_pattern: str, stub_path: Path, template: str,
-                      rfc_id: str, slug: str, readable: str, auto_create: bool) -> None:
+def ensure_companion(
+    directory: Path,
+    glob_pattern: str,
+    stub_path: Path,
+    template: str,
+    rfc_id: str,
+    slug: str,
+    readable: str,
+    auto_create: bool,
+) -> None:
     # Match by RFC id only: existing companions may use a shorter/different
     # slug than the RFC file itself (e.g. rfcs/007-docstore-data-integrity-
     # hardening.md -> designs/design-rfc007-docstore-integrity.md), so an
@@ -136,9 +141,11 @@ def ensure_companion(directory: Path, glob_pattern: str, stub_path: Path, templa
     if any(directory.glob(glob_pattern.format(rfc_id=rfc_id))):
         return
     if not auto_create:
-        print(f"[WARN] no companion matching {glob_pattern.format(rfc_id=rfc_id)!r} in "
-              f"{directory.relative_to(AGENTS_DIR.parent)}/ — create by hand if one is needed",
-              file=sys.stderr)
+        print(
+            f"[WARN] no companion matching {glob_pattern.format(rfc_id=rfc_id)!r} in "
+            f"{directory.relative_to(AGENTS_DIR.parent)}/ — create by hand if one is needed",
+            file=sys.stderr,
+        )
         return
     stub_path.write_text(
         template.format(space=SPACE, rfc_id=rfc_id, slug=slug, readable=readable),
@@ -161,10 +168,26 @@ def ensure_companions() -> None:
         design_path = DESIGNS_DIR / f"design-rfc{rfc_id}-{slug}.md"
         tasks_path = TASKS_DIR / f"tasks-rfc{rfc_id}-{slug}.md"
 
-        ensure_companion(DESIGNS_DIR, "design-rfc{rfc_id}-*.md", design_path, DESIGN_STUB,
-                          rfc_id, slug, readable, auto_create)
-        ensure_companion(TASKS_DIR, "tasks-rfc{rfc_id}-*.md", tasks_path, TASKS_STUB,
-                          rfc_id, slug, readable, auto_create)
+        ensure_companion(
+            DESIGNS_DIR,
+            "design-rfc{rfc_id}-*.md",
+            design_path,
+            DESIGN_STUB,
+            rfc_id,
+            slug,
+            readable,
+            auto_create,
+        )
+        ensure_companion(
+            TASKS_DIR,
+            "tasks-rfc{rfc_id}-*.md",
+            tasks_path,
+            TASKS_STUB,
+            rfc_id,
+            slug,
+            readable,
+            auto_create,
+        )
 
 
 def rfc_title_for_path(path: Path, text: str) -> str:

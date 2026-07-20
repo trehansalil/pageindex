@@ -24,7 +24,6 @@ child) — unchanged files are skipped automatically. The cache is stored in Min
 hashes/processed_hashes.json and is shared with the rest of the document store.
 """
 
-
 import asyncio
 import os
 import subprocess
@@ -104,6 +103,7 @@ class _FilteredStderr:
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
+
 from dotenv import load_dotenv
 
 from pageindex_mcp.client import _SUPPORTED as SUPPORTED
@@ -111,7 +111,7 @@ from pageindex_mcp.client import _SUPPORTED as SUPPORTED
 load_dotenv()
 
 DOC_STORE = Path(__file__).parent / "doc_store"
-LOG_FILE  = Path(__file__).parent / "preprocess.log"
+LOG_FILE = Path(__file__).parent / "preprocess.log"
 
 
 def _files_to_process(arg: str | None) -> list[Path]:
@@ -195,7 +195,11 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
         doc_ids = []
         for obj in objects:
             name = obj.object_name or ""
-            if name.endswith(".json") and not name.endswith(".meta.json") and not name.endswith(".flat.json"):
+            if (
+                name.endswith(".json")
+                and not name.endswith(".meta.json")
+                and not name.endswith(".flat.json")
+            ):
                 did = name.replace("processed/", "").replace(".json", "")
                 doc_ids.append(did)
 
@@ -246,7 +250,11 @@ if __name__ == "__main__":
     # RFC-014 D3: recompute verdicts without re-ingestion
     if "--recompute-verdicts" in sys.argv:
         idx = sys.argv.index("--recompute-verdicts")
-        rv_doc_id = sys.argv[idx + 1] if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("--") else None
+        rv_doc_id = (
+            sys.argv[idx + 1]
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("--")
+            else None
+        )
         asyncio.run(recompute_verdicts(rv_doc_id))
         sys.exit(0)
 
@@ -293,8 +301,10 @@ if __name__ == "__main__":
                 if (
                     any(s in msg for s in _NOISE_TRIGGERS)
                     or any(s in repr(task) for s in _NOISE_TRIGGERS)
-                    or (isinstance(exc, (ValueError, RuntimeError))
-                        and any(s in str(exc) for s in _NOISE_TRIGGERS))
+                    or (
+                        isinstance(exc, (ValueError, RuntimeError))
+                        and any(s in str(exc) for s in _NOISE_TRIGGERS)
+                    )
                 ):
                     return
                 _orig(ctx)

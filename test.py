@@ -15,20 +15,22 @@ MCP_BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN", "local-test-token")
 
 
 async def main():
-    client = MultiServerMCPClient({
-        "pageindex": {
-            "transport": "streamable_http",
-            "url": os.environ.get("TEST_MCP_URL", "http://localhost:8201/mcp"),
-            "headers": {
-                "Authorization": f"Bearer {MCP_BEARER_TOKEN}"
+    client = MultiServerMCPClient(
+        {
+            "pageindex": {
+                "transport": "streamable_http",
+                "url": os.environ.get("TEST_MCP_URL", "http://localhost:8201/mcp"),
+                "headers": {"Authorization": f"Bearer {MCP_BEARER_TOKEN}"},
             }
         }
-    })
+    )
 
     tools = await client.get_tools()
     print(f"Available tools: {[t.name for t in tools]}\n")
 
-    llm_kwargs = dict(model=TEST_MODEL, api_key=OPENAI_API_KEY, streaming=True, temperature=0.1, top_p=0.1)
+    llm_kwargs = dict(
+        model=TEST_MODEL, api_key=OPENAI_API_KEY, streaming=True, temperature=0.1, top_p=0.1
+    )
     if OPENAI_BASE_URL:
         llm_kwargs["base_url"] = OPENAI_BASE_URL
     llm = ChatOpenAI(**llm_kwargs)
@@ -39,19 +41,22 @@ async def main():
     print(f"Sending at: {time.strftime('%H:%M:%S')}\n")
 
     messages = [
-        {"role": "system", "content": (
-            "You are a helpful document assistant. Always use the available tools to search "
-            "before answering. When tools return results, present the information directly "
-            "and confidently. Names in queries may be partial or approximate — treat close "
-            "matches (e.g. surname matches) as the intended result and present the findings "
-            "without hedging or disclaimers about name mismatches."
-        )},
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful document assistant. Always use the available tools to search "
+                "before answering. When tools return results, present the information directly "
+                "and confidently. Names in queries may be partial or approximate — treat close "
+                "matches (e.g. surname matches) as the intended result and present the findings "
+                "without hedging or disclaimers about name mismatches."
+            ),
+        },
         {"role": "user", "content": query},
     ]
 
     t0 = time.perf_counter()
-    ttft = None           # time to first token of final answer
-    stream_start = None   # time streaming began (first chunk of any kind)
+    ttft = None  # time to first token of final answer
+    stream_start = None  # time streaming began (first chunk of any kind)
     call_num = 0
     token_count = 0
     final_answer = ""
@@ -61,9 +66,7 @@ async def main():
     print("STREAMING TIMELINE")
     print("=" * 60)
 
-    async for event in agent.astream_events(
-        {"messages": messages}, version="v2"
-    ):
+    async for event in agent.astream_events({"messages": messages}, version="v2"):
         kind = event["event"]
         elapsed = time.perf_counter() - t0
 
@@ -76,7 +79,11 @@ async def main():
             call_num += 1
             name = event.get("name", "?")
             inputs = event.get("data", {}).get("input", {})
-            args_summary = ", ".join(f"{k}={v!r}" for k, v in inputs.items()) if isinstance(inputs, dict) else str(inputs)
+            args_summary = (
+                ", ".join(f"{k}={v!r}" for k, v in inputs.items())
+                if isinstance(inputs, dict)
+                else str(inputs)
+            )
             print(f"\n[{elapsed:7.2f}s] TOOL CALL #{call_num}: {name}({args_summary})")
 
         # Tool call ends
@@ -109,14 +116,23 @@ async def main():
     print("=" * 60)
     print("TIMING SUMMARY")
     print("=" * 60)
-    print(f"  Stream start:          {stream_start:.2f}s" if stream_start else "  Stream start:          N/A")
+    print(
+        f"  Stream start:          {stream_start:.2f}s"
+        if stream_start
+        else "  Stream start:          N/A"
+    )
     print(f"  Time to first token:   {ttft:.2f}s" if ttft else "  Time to first token:   N/A")
     print(f"  Total response time:   {total:.2f}s")
-    print(f"  Streaming duration:    {(total - ttft):.2f}s" if ttft else "  Streaming duration:    N/A")
+    print(
+        f"  Streaming duration:    {(total - ttft):.2f}s"
+        if ttft
+        else "  Streaming duration:    N/A"
+    )
     print(f"  Tokens streamed:       {token_count}")
     if ttft and token_count > 1:
         streaming_dur = total - ttft
         print(f"  Avg token interval:    {(streaming_dur / token_count * 1000):.1f}ms")
     print(f"  Tool calls:            {call_num}")
+
 
 asyncio.run(main())

@@ -52,12 +52,15 @@ async def test_happy_path_reads_doc_id_from_child(fake_redis):
         "peak_rss_kib": 1_900_000,
         "duration_ms": 60_000,
     }
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(return_value=child_result),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         result = await process_document_job(ctx, staging_key, "job-ok")
 
     assert result == "abc12345"
@@ -71,12 +74,15 @@ async def test_oom_writes_converter_oom_reason_and_reraises(fake_redis):
     staging_key = "uploads/staging/job-oom/big.pdf"
     ctx = {"redis": fake_redis}
     err = ConverterOOMError(-9, "MemoryError stack tail at top of frame")
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=err),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         with pytest.raises(ConverterOOMError):
             await process_document_job(ctx, staging_key, "job-oom")
 
@@ -90,12 +96,15 @@ async def test_oom_writes_converter_oom_reason_and_reraises(fake_redis):
 async def test_timeout_writes_converter_timeout_reason_and_reraises(fake_redis):
     staging_key = "uploads/staging/job-to/slow.pdf"
     ctx = {"redis": fake_redis}
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=asyncio.TimeoutError()),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=asyncio.TimeoutError()),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await process_document_job(ctx, staging_key, "job-to")
 
@@ -109,12 +118,15 @@ async def test_child_failure_writes_converter_child_failed_and_reraises(fake_red
     staging_key = "uploads/staging/job-fail/bad.pdf"
     ctx = {"redis": fake_redis}
     err = ConverterChildError(2, "boom")
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=err),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         with pytest.raises(ConverterChildError):
             await process_document_job(ctx, staging_key, "job-fail")
 
@@ -141,12 +153,15 @@ async def test_low_quality_tree_error_is_terminal_with_stable_reason(fake_redis)
     ctx = {"redis": fake_redis, "job_try": 1}
     err = ConverterChildError(1, "tree rejected", error_class="LowQualityTreeError")
     delete_mock = MagicMock()
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=err),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging", delete_mock), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging", delete_mock),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         # Terminal: handler returns "" instead of re-raising. arq sees no
         # exception and does NOT requeue or push to DLQ.
         result = await process_document_job(ctx, staging_key, "job-lqt")
@@ -170,10 +185,13 @@ async def test_reaper_still_flips_stale_processing_after_subprocess_refactor(fak
     canonical reason text after the subprocess refactor."""
     now = int(time.time())
     stale_age = JOB_TIMEOUT + REAP_GRACE + 60
-    await fake_redis.hset("pageindex:job:stale-after", mapping={
-        "status": "processing",
-        "processing_started_at": str(now - stale_age),
-    })
+    await fake_redis.hset(
+        "pageindex:job:stale-after",
+        mapping={
+            "status": "processing",
+            "processing_started_at": str(now - stale_age),
+        },
+    )
 
     await reap_stale_jobs({"redis": fake_redis})
 

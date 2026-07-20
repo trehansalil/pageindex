@@ -55,15 +55,11 @@ def _write_html(tmp_path, img_src: str = "https://example.com/pic.png") -> str:
 
 async def test_rate_limit_error_retries_then_succeeds(tmp_path, monkeypatch):
     """(a) RateLimitError -> retry once -> success; no fallback, no counter bump."""
-    rate_limit_exc = openai.RateLimitError(
-        "rate limited", response=_fake_response(429), body=None
-    )
+    rate_limit_exc = openai.RateLimitError("rate limited", response=_fake_response(429), body=None)
     create_mock = AsyncMock(side_effect=[rate_limit_exc, _success_response("a cat photo")])
     fake_client = _make_client(create_mock)
     monkeypatch.setattr(converters_mod, "asyncio", converters_mod.asyncio)
-    monkeypatch.setattr(
-        "pageindex_mcp.client.get_openai_client", lambda: fake_client
-    )
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
     sleep_mock = AsyncMock()
     monkeypatch.setattr(converters_mod.asyncio, "sleep", sleep_mock)
 
@@ -84,9 +80,7 @@ async def test_rate_limit_error_retry_exhausted_falls_back(tmp_path, monkeypatch
     exc2 = openai.RateLimitError("rate limited again", response=_fake_response(429), body=None)
     create_mock = AsyncMock(side_effect=[exc1, exc2])
     fake_client = _make_client(create_mock)
-    monkeypatch.setattr(
-        "pageindex_mcp.client.get_openai_client", lambda: fake_client
-    )
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
     sleep_mock = AsyncMock()
     monkeypatch.setattr(converters_mod.asyncio, "sleep", sleep_mock)
 
@@ -107,9 +101,7 @@ async def test_api_connection_error_retries_then_succeeds(tmp_path, monkeypatch)
     conn_exc = openai.APIConnectionError(message="connection failed", request=_fake_request())
     create_mock = AsyncMock(side_effect=[conn_exc, _success_response("a dog photo")])
     fake_client = _make_client(create_mock)
-    monkeypatch.setattr(
-        "pageindex_mcp.client.get_openai_client", lambda: fake_client
-    )
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
     sleep_mock = AsyncMock()
     monkeypatch.setattr(converters_mod.asyncio, "sleep", sleep_mock)
 
@@ -129,9 +121,7 @@ async def test_generic_api_error_logs_without_leaking_image_content(tmp_path, mo
     )
     create_mock = AsyncMock(side_effect=auth_exc)
     fake_client = _make_client(create_mock)
-    monkeypatch.setattr(
-        "pageindex_mcp.client.get_openai_client", lambda: fake_client
-    )
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
     sleep_mock = AsyncMock()
     monkeypatch.setattr(converters_mod.asyncio, "sleep", sleep_mock)
 
@@ -160,9 +150,7 @@ async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
     """(d) A non-OpenAI exception (TypeError) is NOT caught / turned into 'image'."""
     create_mock = AsyncMock(side_effect=TypeError("boom - code bug, not an API failure"))
     fake_client = _make_client(create_mock)
-    monkeypatch.setattr(
-        "pageindex_mcp.client.get_openai_client", lambda: fake_client
-    )
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
 
     html_path = _write_html(tmp_path)
     with pytest.raises(TypeError, match="boom"):
@@ -171,14 +159,10 @@ async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
 
 async def test_counter_label_matches_exception_class_name(tmp_path, monkeypatch):
     """(e) IMAGE_DESCRIBE_FAILURES is labelled with the exception's class name."""
-    exc = openai.PermissionDeniedError(
-        "forbidden", response=_fake_response(403), body=None
-    )
+    exc = openai.PermissionDeniedError("forbidden", response=_fake_response(403), body=None)
     create_mock = AsyncMock(side_effect=exc)
     fake_client = _make_client(create_mock)
-    monkeypatch.setattr(
-        "pageindex_mcp.client.get_openai_client", lambda: fake_client
-    )
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
 
     before = _counter_value("PermissionDeniedError")
     html_path = _write_html(tmp_path)

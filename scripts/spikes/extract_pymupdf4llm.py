@@ -4,6 +4,7 @@ Spike: Extract German insurance T&C PDFs using pymupdf4llm.
 Outputs markdown to /tmp/docling_spike/pymupdf/
 This is a throwaway investigation script — do NOT import from src/.
 """
+
 import sys
 import os
 import time

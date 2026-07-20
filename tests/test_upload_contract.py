@@ -59,9 +59,7 @@ def app(fake_redis, mock_arq_pool, staging_calls):
         staging_calls.append(key)
         return key
 
-    with patch(
-        "pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)
-    ):
+    with patch("pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)):
         with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
             with patch("pageindex_mcp.upload_app.upload_staging", side_effect=_record_staging):
                 yield _app
@@ -69,9 +67,7 @@ def app(fake_redis, mock_arq_pool, staging_calls):
 
 @pytest_asyncio.fixture
 async def client(app):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
 
@@ -86,9 +82,7 @@ async def test_upload_01_c1_valid_upload_stages_and_enqueues(
     """UPLOAD-01-C1: a valid multipart upload with a correct X-API-Key returns
     202 + job_id, stages the file in MinIO uploads/staging/<job_id>/, enqueues a
     process_document_job, and sets pageindex:job:<job_id> status=pending."""
-    resp = await client.post(
-        "/files", files=[_pdf_file()], headers={"X-API-Key": TEST_API_KEY}
-    )
+    resp = await client.post("/files", files=[_pdf_file()], headers={"X-API-Key": TEST_API_KEY})
     assert resp.status_code == 202
     job_id = resp.json()[0]["job_id"]
 
@@ -114,9 +108,7 @@ async def test_upload_01_c2_bad_api_key_rejected_before_side_effects(
     missing = await client.post("/files", files=[_pdf_file()])
     assert missing.status_code == 401
     # Wrong key.
-    wrong = await client.post(
-        "/files", files=[_pdf_file()], headers={"X-API-Key": "nope"}
-    )
+    wrong = await client.post("/files", files=[_pdf_file()], headers={"X-API-Key": "nope"})
     assert wrong.status_code == 401
 
     # No staging write and no enqueue happened on the rejected requests.
@@ -133,9 +125,7 @@ async def test_upload_01_c3_status_poll_returns_current_status(client, fake_redi
         f"pageindex:job:{job_id}",
         mapping={"status": "processing", "filename": "policy.pdf"},
     )
-    resp = await client.get(
-        f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
-    )
+    resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "processing"

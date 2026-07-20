@@ -13,12 +13,7 @@ import pytest
 
 def test_no_direct_aioredis_from_url_in_worker():
     """worker.py must have exactly one aioredis.from_url call (the startup site)."""
-    worker_src = (
-        Path(__file__).resolve().parent.parent
-        / "src"
-        / "pageindex_mcp"
-        / "worker.py"
-    )
+    worker_src = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "worker.py"
     text = worker_src.read_text()
     matches = list(re.finditer(r"aioredis\.from_url\(", text))
     assert len(matches) == 1, (

@@ -19,6 +19,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
 # P1: Bounded concurrency (D4 / ISS-05)
 # ---------------------------------------------------------------------------
 
+
 def test_list_processed_docs_uses_semaphore():
     """The bounded-concurrency fetch in list_processed_docs must create an
     asyncio.Semaphore — proving concurrency is capped, not unbounded."""
@@ -39,6 +40,7 @@ def test_list_processed_docs_gather_filters_exceptions():
 # ---------------------------------------------------------------------------
 # P2: Shared page-hit extraction parity (D5 / ISS-44)
 # ---------------------------------------------------------------------------
+
 
 def test_extract_page_hits_single_page():
     """_extract_page_hits returns nodes whose page range overlaps the request."""
@@ -83,10 +85,19 @@ def test_extract_page_hits_nested():
 
     structure = [
         {
-            "node_id": "n1", "title": "Parent", "start_index": 1, "end_index": 5,
+            "node_id": "n1",
+            "title": "Parent",
+            "start_index": 1,
+            "end_index": 5,
             "text": "parent",
             "nodes": [
-                {"node_id": "n2", "title": "Child", "start_index": 2, "end_index": 3, "text": "child"},
+                {
+                    "node_id": "n2",
+                    "title": "Child",
+                    "start_index": 2,
+                    "end_index": 3,
+                    "text": "child",
+                },
             ],
         },
     ]
@@ -98,6 +109,7 @@ def test_extract_page_hits_nested():
 # ---------------------------------------------------------------------------
 # P3: Non-Latin tessdata raise (D6 / ISS-34)
 # ---------------------------------------------------------------------------
+
 
 def test_tessdata_unavailable_raises_for_arabic(monkeypatch, tmp_path):
     """ensure_tessdata must raise TessdataUnavailableError when non-Latin
@@ -138,6 +150,7 @@ def test_tessdata_available_no_raise(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # P4: Unified garble detection (D7 / ISS-36)
 # ---------------------------------------------------------------------------
+
 
 def test_garble_functions_delegate_to_shared_impl():
     """Both _tree_is_garbled and _flat_text_is_garbled must delegate to

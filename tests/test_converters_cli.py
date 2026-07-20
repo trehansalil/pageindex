@@ -80,6 +80,7 @@ def _last_stdout_json(proc) -> dict:
 # Test 1 — fast happy path (monkeypatched index, subprocess)
 # ---------------------------------------------------------------------------
 
+
 def test_happy_path_monkeypatched_subprocess(tmp_pdf: Path, tmp_path: Path):
     """Fast happy path: CLI subprocess with monkeypatched client.index via
     env var injection is impractical cross-process; instead we use a real
@@ -104,6 +105,7 @@ def test_happy_path_monkeypatched_subprocess(tmp_pdf: Path, tmp_path: Path):
         "    sys.exit(asyncio.run(main()))\n"
     )
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(shim), str(tmp_pdf)],
         capture_output=True,
@@ -123,6 +125,7 @@ def test_happy_path_monkeypatched_subprocess(tmp_pdf: Path, tmp_path: Path):
 # Test 2 — missing input path → exit 1
 # ---------------------------------------------------------------------------
 
+
 def test_missing_input_file_exits_1_with_json_error(tmp_path: Path):
     """Missing input → exit code 1, JSON {ok: false, error: FileNotFoundError}."""
     nonexistent = str(tmp_path / "does_not_exist.pdf")
@@ -137,6 +140,7 @@ def test_missing_input_file_exits_1_with_json_error(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # Test 3 — RuntimeError from client.index → exit 1 (in-process)
 # ---------------------------------------------------------------------------
+
 
 async def test_runtime_error_from_index_exits_1_in_process(tmp_pdf: Path, monkeypatch):
     """RuntimeError raised by client.index → JSON {ok: false, error: RuntimeError}."""
@@ -174,6 +178,7 @@ async def test_runtime_error_from_index_exits_1_in_process(tmp_pdf: Path, monkey
 # ---------------------------------------------------------------------------
 # Test 4 — JSON shape / structural test (in-process)
 # ---------------------------------------------------------------------------
+
 
 async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
     """Success JSON has exactly the required keys with correct types."""
@@ -216,6 +221,7 @@ async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
 # Test 5 — No stdout pollution from logging/stray prints (subprocess)
 # ---------------------------------------------------------------------------
 
+
 def test_no_stdout_pollution_from_logs(tmp_pdf: Path, tmp_path: Path):
     """Stdout must be exactly one JSON line even if client.index emits logs and prints."""
     shim = tmp_path / "noisy_shim.py"
@@ -252,6 +258,7 @@ def test_no_stdout_pollution_from_logs(tmp_pdf: Path, tmp_path: Path):
 # ---------------------------------------------------------------------------
 # Test 1b — Integration test (real Docling, skipped by default)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 def test_happy_path_real_docling_integration(tmp_pdf: Path):
