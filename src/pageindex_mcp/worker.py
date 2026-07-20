@@ -503,7 +503,9 @@ async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
             await upsert_doc(fields)
             REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()
             logger.info("registry: dual-write upserted doc_id=%s", doc_id)
-            await _mirror_registry_metric_to_redis(_REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY, str(int(time.time())))
+            await _mirror_registry_metric_to_redis(
+                _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY, str(int(time.time()))
+            )
     except Exception as exc:
         REGISTRY_WRITE_FAILURES_TOTAL.inc()
         logger.warning("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc)

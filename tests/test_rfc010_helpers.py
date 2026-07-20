@@ -132,8 +132,16 @@ def test_flat_text_glyph_marker_garbled():
 def test_tree_no_glyph_marker_clean():
     """Text mentioning 'GLYPH' as a normal word doesn't false-positive."""
     nodes = [
-        {"title": "Heading", "text": "The word glyph appears in typography discussions.", "nodes": []},
-        {"title": "Heading 2", "text": "Multiple glyphs can be rendered from a single font.", "nodes": []},
+        {
+            "title": "Heading",
+            "text": "The word glyph appears in typography discussions.",
+            "nodes": [],
+        },
+        {
+            "title": "Heading 2",
+            "text": "Multiple glyphs can be rendered from a single font.",
+            "nodes": [],
+        },
     ]
     assert _tree_is_garbled(nodes) is False
 

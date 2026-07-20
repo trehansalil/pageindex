@@ -450,7 +450,9 @@ async def _delete_stale_rows(minio_doc_ids: set[str]) -> None:
 
     registry_doc_ids = await list_all_doc_ids()
     if registry_doc_ids is None:
-        logger.warning("reconcile_registry_drift: could not list registry doc_ids, skipping delete-drift check")
+        logger.warning(
+            "reconcile_registry_drift: could not list registry doc_ids, skipping delete-drift check"
+        )
         return
 
     stale = registry_doc_ids - minio_doc_ids
@@ -471,7 +473,9 @@ async def _delete_stale_rows(minio_doc_ids: set[str]) -> None:
         try:
             await delete_doc(doc_id)
         except Exception as exc:
-            logger.warning("reconcile_registry_drift: failed to delete stale doc_id=%s: %s", doc_id, exc)
+            logger.warning(
+                "reconcile_registry_drift: failed to delete stale doc_id=%s: %s", doc_id, exc
+            )
     logger.info("reconcile_registry_drift: deleted %d stale registry row(s)", len(stale))
 
 

@@ -16,6 +16,7 @@ from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
 
 # ── Property 7: CURRENT_PIPELINE_VERSION exists and is a positive int ────────
 
+
 def test_current_pipeline_version_is_positive_int():
     """D3: CURRENT_PIPELINE_VERSION is a module-level int >= 1."""
     assert isinstance(CURRENT_PIPELINE_VERSION, int)
@@ -23,6 +24,7 @@ def test_current_pipeline_version_is_positive_int():
 
 
 # ── Property 4 + 7: sweep_candidates SQL shape ──────────────────────────────
+
 
 def test_sweep_candidates_sql_filters_by_version_and_marginal():
     """D3: sweep SQL selects rows where pipeline_version < $1 AND NOT permanent_marginal."""
@@ -46,6 +48,7 @@ async def test_sweep_candidates_returns_empty_without_pool():
 
 # ── Property 4: Sweep idempotence ───────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_sweep_idempotence():
     """Property 4: running sweep twice produces no net change on the second run.
@@ -61,10 +64,14 @@ async def test_sweep_idempotence():
         "source_url": "",
         "processed_at": "2026-07-16",
         "structure": [
-            {"title": "A", "text": "x" * 100, "nodes": [
-                {"title": "B", "text": "y" * 100, "nodes": []},
-                {"title": "C", "text": "z" * 100, "nodes": []},
-            ]},
+            {
+                "title": "A",
+                "text": "x" * 100,
+                "nodes": [
+                    {"title": "B", "text": "y" * 100, "nodes": []},
+                    {"title": "C", "text": "z" * 100, "nodes": []},
+                ],
+            },
         ],
     }
     doc_bytes = json.dumps(fake_doc).encode()
@@ -109,6 +116,7 @@ async def test_sweep_idempotence():
 
 # ── Property 5: Permanent-marginal exclusion ────────────────────────────────
 
+
 def test_permanent_marginal_excluded_by_sql():
     """Property 5: the SQL query unconditionally excludes permanent_marginal=true rows.
     This is a structural test — the SQL predicate makes exclusion unconditional."""
@@ -118,6 +126,7 @@ def test_permanent_marginal_excluded_by_sql():
 
 
 # ── D3: classify_verdict stamps pipeline_version in client.py ────────────────
+
 
 def test_classify_verdict_called_on_tree_success_path():
     """D3: client.py imports classify_verdict and CURRENT_PIPELINE_VERSION for
@@ -131,6 +140,7 @@ def test_classify_verdict_called_on_tree_success_path():
 
 # ── D3: --recompute-verdicts does NOT stamp pipeline_version ────────────────
 
+
 def test_recompute_verdicts_omits_pipeline_version():
     """D3: recompute_verdicts deliberately omits pipeline_version from meta
     (pre-bump validation tool, per design spec)."""
@@ -138,7 +148,9 @@ def test_recompute_verdicts_omits_pipeline_version():
     from preprocess_client import recompute_verdicts
 
     source = inspect.getsource(recompute_verdicts)
-    assert "pipeline_version" not in source, "recompute_verdicts must not add pipeline_version to meta"
+    assert "pipeline_version" not in source, (
+        "recompute_verdicts must not add pipeline_version to meta"
+    )
     # The key property: meta dict in recompute_verdicts does NOT include
     # pipeline_version. We verify by checking the function exists and its
     # docstring mentions "without re-ingestion".
@@ -146,6 +158,7 @@ def test_recompute_verdicts_omits_pipeline_version():
 
 
 # ── D3: promotion_sweep stamps pipeline_version ─────────────────────────────
+
 
 def test_promotion_sweep_stamps_pipeline_version():
     """D3: promotion_sweep's meta dict includes pipeline_version=CURRENT."""
@@ -158,6 +171,7 @@ def test_promotion_sweep_stamps_pipeline_version():
 
 
 # ── D3: sweep handles MinIO errors gracefully ──────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_sweep_skips_on_minio_error():
@@ -185,6 +199,7 @@ async def test_sweep_skips_on_minio_error():
 
 
 # ── D3: sweep without postgres_dsn returns empty summary ───────────────────
+
 
 @pytest.mark.asyncio
 async def test_sweep_no_postgres_returns_empty():

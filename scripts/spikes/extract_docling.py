@@ -5,16 +5,13 @@ Outputs markdown to /tmp/docling_spike/docling/
 This is a throwaway investigation script — do NOT import from src/.
 Run with: /tmp/docling_venv/bin/python scripts/spikes/extract_docling.py
 """
+
 import os
 import sys
 import time
 
 # Accept the data dir as the first CLI arg, then $DATA_DIR, else a repo-relative default.
-DATA_DIR = (
-    sys.argv[1]
-    if len(sys.argv) > 1
-    else os.environ.get("DATA_DIR", "issue/data")
-)
+DATA_DIR = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DATA_DIR", "issue/data")
 OUT_DIR = "/tmp/docling_spike/docling"
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -39,9 +36,7 @@ pipeline_options.do_ocr = False  # Use native PDF text extraction first
 pipeline_options.do_table_structure = True
 
 converter = DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-    }
+    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
 )
 print(f"Converter initialized in {time.time() - t_init:.2f}s", flush=True)
 
@@ -60,9 +55,13 @@ for pdf_name in PDFS:
             f.write(md_text)
         word_count = len(md_text.split())
         char_count = len(md_text)
-        print(f"  -> OK: {char_count} chars, {word_count} words, {elapsed:.2f}s => {out_path}", flush=True)
+        print(
+            f"  -> OK: {char_count} chars, {word_count} words, {elapsed:.2f}s => {out_path}",
+            flush=True,
+        )
     except Exception as e:
         import traceback
+
         print(f"  -> ERROR: {e}", flush=True)
         traceback.print_exc()
 

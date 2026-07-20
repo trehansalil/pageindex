@@ -48,9 +48,7 @@ def app(fake_redis, mock_arq_pool):
     async def _fake_get_arq_pool():
         return mock_arq_pool
 
-    with patch(
-        "pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)
-    ):
+    with patch("pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)):
         with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
             with patch(
                 "pageindex_mcp.upload_app.upload_staging",
@@ -61,9 +59,7 @@ def app(fake_redis, mock_arq_pool):
 
 @pytest_asyncio.fixture
 async def client(app):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
 

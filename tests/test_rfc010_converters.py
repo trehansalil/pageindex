@@ -443,9 +443,12 @@ class TestMaybeSplicePictureOcr:
         pictures = [{"page": 1, "bbox": bbox}]
         # Gate short-circuits before _collect_picture_regions is even reached, so
         # a non-empty "pictures" stand-in and a dummy document/pdf_path suffice.
-        with mock.patch.object(
-            converters, "_collect_picture_regions", return_value=pictures
-        ) as mock_collect, mock.patch.object(converters, "_recover_picture_text") as mock_recover:
+        with (
+            mock.patch.object(
+                converters, "_collect_picture_regions", return_value=pictures
+            ) as mock_collect,
+            mock.patch.object(converters, "_recover_picture_text") as mock_recover,
+        ):
             out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
 
         mock_collect.assert_not_called()

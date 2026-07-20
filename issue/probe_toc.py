@@ -1,20 +1,23 @@
 """Probe the non-numbering hierarchy signals available for Katzen-Kranken:
-   (1) the PyMuPDF PDF outline/bookmarks, (2) Docling SectionHeaderItem.level,
-   (3) the hierarchical add-on's _extract_toc() heading_to_level.
+(1) the PyMuPDF PDF outline/bookmarks, (2) Docling SectionHeaderItem.level,
+(3) the hierarchical add-on's _extract_toc() heading_to_level.
 """
+
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 PDF = os.path.join(
-    os.path.dirname(__file__), "data",
+    os.path.dirname(__file__),
+    "data",
     "Katzen-Kranken-Besondere-Bedingungen-2024-002.pdf.pdf",
 )
 
 
 def probe_pymupdf_outline():
     import pymupdf
+
     doc = pymupdf.open(PDF)
     toc = doc.get_toc(simple=False)
     print(f"\n===== PyMuPDF get_toc(): {len(toc)} entries")
@@ -26,6 +29,7 @@ def probe_pymupdf_outline():
 
 def probe_docling_levels(result):
     from docling_core.types.doc.document import SectionHeaderItem
+
     print("\n===== Docling SectionHeaderItem.level (raw):")
     for item, _ in result.document.iterate_items(with_groups=False):
         if isinstance(item, SectionHeaderItem):
@@ -35,6 +39,7 @@ def probe_docling_levels(result):
 
 def probe_addon_toc(result):
     from hierarchical.hierarchy_builder_metadata import HierarchyBuilderMetadata
+
     try:
         hbm = HierarchyBuilderMetadata(result, raise_on_error=False)
     except TypeError:

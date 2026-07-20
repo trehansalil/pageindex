@@ -8,7 +8,13 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from pageindex_mcp.metrics import metrics_response, TOOL_CALLS, TOOL_ERRORS, TOOL_DURATION, DOCUMENTS_TOTAL
+from pageindex_mcp.metrics import (
+    metrics_response,
+    TOOL_CALLS,
+    TOOL_ERRORS,
+    TOOL_DURATION,
+    DOCUMENTS_TOTAL,
+)
 
 
 @pytest.fixture
@@ -19,9 +25,7 @@ def metrics_app():
 
 @pytest.fixture
 async def client(metrics_app):
-    async with AsyncClient(
-        transport=ASGITransport(app=metrics_app), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=metrics_app), base_url="http://test") as c:
         yield c
 
 
@@ -75,6 +79,7 @@ class TestToolInstrumentation:
         before = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
         with patch("pageindex_mcp.storage.list_processed_docs", return_value=[]):
             from pageindex_mcp.tools.documents import recent_documents
+
             with pytest.raises(ToolError):
                 await recent_documents()
         after = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
@@ -86,17 +91,22 @@ class TestToolInstrumentation:
         fake_docs = [{"doc_id": "a", "doc_name": "a"}, {"doc_id": "b", "doc_name": "b"}]
         from pageindex_mcp.tools import documents
 
-        with patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)), \
-             patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=fake_docs)), \
-             patch("pageindex_mcp.registry.count_docs", new=AsyncMock(return_value=2)):
+        with (
+            patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)),
+            patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=fake_docs)),
+            patch("pageindex_mcp.registry.count_docs", new=AsyncMock(return_value=2)),
+        ):
             await documents.recent_documents()
         assert _gauge_value(DOCUMENTS_TOTAL) == 2
 
     def test_get_document_increments_error_counter_on_failure(self):
         before = _counter_value(TOOL_ERRORS, {"tool": "get_document"})
-        with patch("pageindex_mcp.tools.documents.get_doc", side_effect=Exception("boom")), \
-             patch("pageindex_mcp.storage.list_processed_docs", return_value=[]):
+        with (
+            patch("pageindex_mcp.tools.documents.get_doc", side_effect=Exception("boom")),
+            patch("pageindex_mcp.storage.list_processed_docs", return_value=[]),
+        ):
             from pageindex_mcp.tools.documents import get_document
+
             get_document("nonexistent")
         after = _counter_value(TOOL_ERRORS, {"tool": "get_document"})
         assert after == before + 1
@@ -129,10 +139,9 @@ class TestLLMInstrumentation:
         mock_response.choices[0].message.content = "test answer"
 
         with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
-            MockFactory.return_value.chat.completions.create = AsyncMock(
-                return_value=mock_response
-            )
+            MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
             from pageindex_mcp.helpers import _llm
+
             asyncio.get_event_loop().run_until_complete(_llm("test prompt"))
 
         after = _counter_value(LLM_CALLS)
@@ -149,6 +158,7 @@ class TestStorageInstrumentation:
         mock_minio.list_objects.return_value = []
         with patch("pageindex_mcp.storage.get_minio", return_value=mock_minio):
             from pageindex_mcp.storage import list_processed_docs
+
             list_processed_docs()
         after = _counter_value(MINIO_OPS, {"operation": "list"})
         assert after == before + 1
@@ -159,10 +169,13 @@ class TestStorageInstrumentation:
         mock_response.read.return_value = b'{"structure": []}'
         mock_minio = MagicMock()
         mock_minio.get_object.return_value = mock_response
-        with patch("pageindex_mcp.storage.get_minio", return_value=mock_minio), \
-             patch("pageindex_mcp.storage.settings") as mock_settings:
+        with (
+            patch("pageindex_mcp.storage.get_minio", return_value=mock_minio),
+            patch("pageindex_mcp.storage.settings") as mock_settings,
+        ):
             mock_settings.minio_bucket = "test"
             from pageindex_mcp.storage import load_doc
+
             load_doc("abc123")
         after = _counter_value(MINIO_OPS, {"operation": "get"})
         assert after == before + 1

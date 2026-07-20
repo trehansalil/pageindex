@@ -3,6 +3,7 @@
 Runs the full Docling pipeline once, dumping markdown at each stage to /tmp so the
 pure depth-recovery functions can be iterated on cheaply afterward.
 """
+
 import os
 import re
 import sys
@@ -12,7 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from pageindex_mcp import converters as C  # noqa: E402
 
 PDF = os.path.join(
-    os.path.dirname(__file__), "data",
+    os.path.dirname(__file__),
+    "data",
     "Katzen-Kranken-Besondere-Bedingungen-2024-002.pdf.pdf",
 )
 
@@ -29,9 +31,11 @@ def dump(tag: str, md: str):
         f.write(md)
     hs = heads(md)
     levels = sorted({lv for lv, _ in hs})
-    print(f"\n===== {tag}: {len(hs)} headings, levels={levels}, max={max([lv for lv,_ in hs] or [0])} -> {path}")
+    print(
+        f"\n===== {tag}: {len(hs)} headings, levels={levels}, max={max([lv for lv, _ in hs] or [0])} -> {path}"
+    )
     for lv, t in hs:
-        print(f"  {'#'*lv} {t!r}")
+        print(f"  {'#' * lv} {t!r}")
 
 
 def main():
@@ -51,6 +55,7 @@ def main():
     # add-on (with the suffix-match patch) + re-promotion, mirroring production
     try:
         from hierarchical.postprocessor import ResultPostprocessor
+
         try:
             C._patch_hierarchical_infer()
         except Exception as exc:

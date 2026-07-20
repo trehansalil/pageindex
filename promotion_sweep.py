@@ -92,9 +92,7 @@ async def run_sweep() -> dict:
                 await upsert_doc(meta)
 
                 updated += 1
-                logger.info(
-                    "Sweep: %s -> %s (%s)", doc_id, verdict, verdict_reason or "clean"
-                )
+                logger.info("Sweep: %s -> %s (%s)", doc_id, verdict, verdict_reason or "clean")
 
             except Exception as e:
                 errors += 1

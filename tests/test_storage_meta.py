@@ -41,12 +41,14 @@ def test_list_processed_docs_reads_meta_files(mock_minio):
 
     mock_minio.list_objects.return_value = [meta_obj, full_obj]
 
-    meta_content = json.dumps({
-        "doc_id": "abcd1234",
-        "doc_name": "report.pdf",
-        "source_url": "",
-        "processed_at": "2026-04-08T00:00:00+00:00",
-    }).encode()
+    meta_content = json.dumps(
+        {
+            "doc_id": "abcd1234",
+            "doc_name": "report.pdf",
+            "source_url": "",
+            "processed_at": "2026-04-08T00:00:00+00:00",
+        }
+    ).encode()
     response = MagicMock()
     response.read.return_value = meta_content
     mock_minio.get_object.return_value = response
@@ -67,13 +69,15 @@ def test_list_processed_docs_falls_back_to_full_json(mock_minio):
     full_obj.object_name = "processed/old12345.json"
     mock_minio.list_objects.return_value = [full_obj]
 
-    full_content = json.dumps({
-        "doc_id": "old12345",
-        "doc_name": "legacy.pdf",
-        "source_url": "",
-        "processed_at": "2026-01-01T00:00:00+00:00",
-        "structure": [{"node_id": "n1", "title": "Ch1", "text": "lots of text..."}],
-    }).encode()
+    full_content = json.dumps(
+        {
+            "doc_id": "old12345",
+            "doc_name": "legacy.pdf",
+            "source_url": "",
+            "processed_at": "2026-01-01T00:00:00+00:00",
+            "structure": [{"node_id": "n1", "title": "Ch1", "text": "lots of text..."}],
+        }
+    ).encode()
     response = MagicMock()
     response.read.return_value = full_content
     mock_minio.get_object.return_value = response
@@ -121,12 +125,14 @@ def test_backward_compat_missing_node_count(mock_minio):
     mock_minio.list_objects.return_value = [meta_obj]
 
     # Legacy sidecar: no node_count key at all.
-    legacy_meta = json.dumps({
-        "doc_id": "legacy01",
-        "doc_name": "old.pdf",
-        "source_url": "",
-        "processed_at": "2026-01-01T00:00:00+00:00",
-    }).encode()
+    legacy_meta = json.dumps(
+        {
+            "doc_id": "legacy01",
+            "doc_name": "old.pdf",
+            "source_url": "",
+            "processed_at": "2026-01-01T00:00:00+00:00",
+        }
+    ).encode()
     response = MagicMock()
     response.read.return_value = legacy_meta
     mock_minio.get_object.return_value = response
@@ -179,9 +185,15 @@ def test_save_doc_meta_verdict_fields_absent_legacy_compat(mock_minio):
     written = mock_minio.put_object.call_args[0][2].read()
     sidecar = json.loads(written)
     assert set(sidecar.keys()) == {"doc_id", "doc_name", "source_url", "processed_at"}
-    for vf in ("verdict", "verdict_reason", "max_leaf_ratio",
-               "pipeline_version", "permanent_marginal",
-               "promotion_eligible", "verdict_computed_at"):
+    for vf in (
+        "verdict",
+        "verdict_reason",
+        "max_leaf_ratio",
+        "pipeline_version",
+        "permanent_marginal",
+        "promotion_eligible",
+        "verdict_computed_at",
+    ):
         assert vf not in sidecar
 
 

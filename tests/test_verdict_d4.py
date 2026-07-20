@@ -16,6 +16,7 @@ from pageindex_mcp.helpers import (
 
 # ── Helpers: build synthetic trees with controlled max_leaf_ratio ─────────────
 
+
 def _make_tree(leaf_sizes: list[int]) -> list:
     """Build a flat tree where each leaf has exactly `n` chars of text."""
     return [{"title": "", "text": "x" * n, "nodes": []} for n in leaf_sizes]
@@ -46,10 +47,13 @@ class TestThresholdPromotion:
     @pytest.mark.parametrize(
         "ratio, expected_verdict",
         [
-            (0.165, "PASS"),   # سياسة حوكمة-like: below 0.17 → promoted
-            (0.160, "PASS"),   # Haftpflicht-Besondere-like: below 0.17 → promoted
-            (0.149, "PASS"),   # Well below threshold
-            (0.170, "MARGINAL"),   # Exactly at threshold — NOT promoted (strict < not <=), stays MARGINAL
+            (0.165, "PASS"),  # سياسة حوكمة-like: below 0.17 → promoted
+            (0.160, "PASS"),  # Haftpflicht-Besondere-like: below 0.17 → promoted
+            (0.149, "PASS"),  # Well below threshold
+            (
+                0.170,
+                "MARGINAL",
+            ),  # Exactly at threshold — NOT promoted (strict < not <=), stays MARGINAL
         ],
     )
     def test_cat_c_below_017_promotes(self, ratio, expected_verdict):
@@ -109,19 +113,31 @@ class TestThresholdPromotion:
         0.15 threshold path, per its name and docstring.
         """
         tree = [
-            {"title": "Root", "text": "a" * 10, "nodes": [
-                {"title": "Ch1", "text": "b" * 100, "nodes": [
-                    {"title": "L1", "text": "c" * 100, "nodes": []},
-                    {"title": "L2", "text": "d" * 100, "nodes": []},
-                    {"title": "L3", "text": "e" * 100, "nodes": []},
-                ]},
-                {"title": "Ch2", "text": "f" * 100, "nodes": [
-                    {"title": "L4", "text": "g" * 100, "nodes": []},
-                    {"title": "L5", "text": "h" * 100, "nodes": []},
-                    {"title": "L6", "text": "i" * 100, "nodes": []},
-                    {"title": "L7", "text": "j" * 100, "nodes": []},
-                ]},
-            ]},
+            {
+                "title": "Root",
+                "text": "a" * 10,
+                "nodes": [
+                    {
+                        "title": "Ch1",
+                        "text": "b" * 100,
+                        "nodes": [
+                            {"title": "L1", "text": "c" * 100, "nodes": []},
+                            {"title": "L2", "text": "d" * 100, "nodes": []},
+                            {"title": "L3", "text": "e" * 100, "nodes": []},
+                        ],
+                    },
+                    {
+                        "title": "Ch2",
+                        "text": "f" * 100,
+                        "nodes": [
+                            {"title": "L4", "text": "g" * 100, "nodes": []},
+                            {"title": "L5", "text": "h" * 100, "nodes": []},
+                            {"title": "L6", "text": "i" * 100, "nodes": []},
+                            {"title": "L7", "text": "j" * 100, "nodes": []},
+                        ],
+                    },
+                ],
+            },
         ]
         verdict, reason = classify_verdict(tree, "hierarchical", None)
         assert verdict == "PASS"

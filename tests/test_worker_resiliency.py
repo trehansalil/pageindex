@@ -61,12 +61,15 @@ async def test_worker_02_c2_stamps_processing_started_at(fake_redis):
         return {"ok": True, "doc_id": "doc-ts", "peak_rss_kib": 0, "duration_ms": 0}
 
     before = int(time.time())
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=capture_then_return),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=capture_then_return),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         await process_document_job(ctx, staging_key, "job-ts")
     after = int(time.time())
 
@@ -88,14 +91,24 @@ async def test_worker_02_c3_reaps_only_stale_processing_jobs(fake_redis):
     start time untouched (never reap what we cannot prove is stale)."""
     now = int(time.time())
     stale_age = JOB_TIMEOUT + REAP_GRACE + 60
-    await _seed(fake_redis, "stale", {
-        "status": "processing", "filename": "a.pdf",
-        "processing_started_at": str(now - stale_age),
-    })
-    await _seed(fake_redis, "fresh", {
-        "status": "processing", "filename": "b.pdf",
-        "processing_started_at": str(now - 5),
-    })
+    await _seed(
+        fake_redis,
+        "stale",
+        {
+            "status": "processing",
+            "filename": "a.pdf",
+            "processing_started_at": str(now - stale_age),
+        },
+    )
+    await _seed(
+        fake_redis,
+        "fresh",
+        {
+            "status": "processing",
+            "filename": "b.pdf",
+            "processing_started_at": str(now - 5),
+        },
+    )
     await _seed(fake_redis, "done", {"status": "done", "doc_id": "d1"})
     await _seed(fake_redis, "no-ts", {"status": "processing", "filename": "c.pdf"})
 
@@ -114,9 +127,14 @@ async def test_worker_02_c3_reaper_noop_when_nothing_stale(fake_redis):
     """WORKER-02-C3 (boundary): a reaper pass over only fresh/done jobs changes
     nothing and does not raise."""
     now = int(time.time())
-    await _seed(fake_redis, "fresh", {
-        "status": "processing", "processing_started_at": str(now - 10),
-    })
+    await _seed(
+        fake_redis,
+        "fresh",
+        {
+            "status": "processing",
+            "processing_started_at": str(now - 10),
+        },
+    )
     await _seed(fake_redis, "done", {"status": "done", "doc_id": "d1"})
 
     await reap_stale_jobs({"redis": fake_redis})

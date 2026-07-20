@@ -35,12 +35,15 @@ async def test_worker_01_c1_success_writes_done_status(fake_redis):
     ctx = {"redis": fake_redis}
     child_result = {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(return_value=child_result),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         result = await process_document_job(ctx, staging_key, "job-ok")
 
     assert result == "abc12345"
@@ -73,12 +76,15 @@ async def test_worker_01_c3_final_failure_pushed_to_dlq(fake_redis):
     ctx = {"redis": fake_redis, "job_try": MAX_TRIES}
     err = ConverterChildError(1, "boom")
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=err),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         with pytest.raises(ConverterChildError):
             await process_document_job(ctx, staging_key, "job-dlq")
 
@@ -99,12 +105,15 @@ async def test_worker_01_c3_non_final_failure_not_dlq_yet(fake_redis):
     ctx = {"redis": fake_redis, "job_try": 1}
     assert MAX_TRIES >= 2  # boundary only meaningful with >1 try
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=ConverterChildError(1, "transient")),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=ConverterChildError(1, "transient")),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         with pytest.raises(ConverterChildError):
             await process_document_job(ctx, staging_key, "job-retry")
 
@@ -126,12 +135,15 @@ async def test_flat_04_c1_flat_result_done_with_content_class(fake_redis):
         "duration_ms": 1,
     }
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(return_value=child_result),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         result = await process_document_job(ctx, staging_key, "job-flat")
 
     assert result == "flat1234"
@@ -152,12 +164,15 @@ async def test_flat_04_c1_normal_result_writes_no_content_class(fake_redis):
     ctx = {"redis": fake_redis}
     child_result = {"ok": True, "doc_id": "tree5678", "peak_rss_kib": 0, "duration_ms": 1}
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(return_value=child_result),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         result = await process_document_job(ctx, staging_key, "job-tree")
 
     assert result == "tree5678"
@@ -177,12 +192,15 @@ async def test_flat_04_c2_low_quality_tree_terminal_no_dlq(fake_redis):
     ctx = {"redis": fake_redis, "job_try": 1}
     err = ConverterChildError(1, "garbled", error_class="LowQualityTreeError")
 
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=err),
-    ), patch("pageindex_mcp.worker.download_staging"), \
-       patch("pageindex_mcp.worker.delete_staging"), \
-       patch("pageindex_mcp.worker.shutil"):
+    with (
+        patch(
+            "pageindex_mcp.worker._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.delete_staging"),
+        patch("pageindex_mcp.worker.shutil"),
+    ):
         # Terminal reason -> handler swallows and returns "" (does NOT re-raise).
         result = await process_document_job(ctx, staging_key, "job-lqt")
 

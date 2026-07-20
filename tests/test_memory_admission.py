@@ -50,7 +50,9 @@ def test_has_headroom_fails_open_when_available_is_none():
 async def test_wait_for_memory_proceeds_immediately_when_headroom(monkeypatch):
     # Arrange
     redis = fakeredis.aioredis.FakeRedis()
-    monkeypatch.setattr(ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000)
+    monkeypatch.setattr(
+        ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000
+    )
 
     # Act
     waited = await ma.wait_for_memory(redis)
@@ -62,7 +64,9 @@ async def test_wait_for_memory_proceeds_immediately_when_headroom(monkeypatch):
 async def test_wait_for_memory_waits_then_proceeds_when_memory_frees(monkeypatch):
     # Arrange: first reads are below floor, then jumps above
     reads = iter([1_000_000_000, 1_000_000_000, 3_000_000_000])
-    monkeypatch.setattr(ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": next(reads, 3_000_000_000))
+    monkeypatch.setattr(
+        ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": next(reads, 3_000_000_000)
+    )
     monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", 0.01)
     redis = fakeredis.aioredis.FakeRedis()
 
@@ -75,7 +79,9 @@ async def test_wait_for_memory_waits_then_proceeds_when_memory_frees(monkeypatch
 
 async def test_wait_for_memory_fails_open_after_max_wait(monkeypatch):
     # Arrange: always below floor; cap is tiny
-    monkeypatch.setattr(ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 1_000_000_000)
+    monkeypatch.setattr(
+        ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 1_000_000_000
+    )
     monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", 0.01)
     monkeypatch.setattr(ma, "MEM_ADMISSION_MAX_WAIT_S", 0.05)
     redis = fakeredis.aioredis.FakeRedis()
@@ -96,7 +102,9 @@ async def test_wait_for_memory_fails_open_on_redis_error(monkeypatch):
         async def delete(self, *a, **k):
             raise RuntimeError("redis down")
 
-    monkeypatch.setattr(ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000)
+    monkeypatch.setattr(
+        ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000
+    )
 
     # Act
     waited = await ma.wait_for_memory(_BrokenRedis())

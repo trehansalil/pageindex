@@ -25,9 +25,9 @@ from pageindex_mcp.converters import (
 # ── CONV-01-C2 — dash normalization ──────────────────────────────────────────
 def test_normalize_dashes_maps_en_em_minus_to_ascii_hyphen():
     """CONV-01-C2: U+2013 en-dash, U+2014 em-dash, U+2212 minus -> ASCII '-'."""
-    assert normalize_dashes("–") == "-"      # en-dash
-    assert normalize_dashes("—") == "-"      # em-dash
-    assert normalize_dashes("−") == "-"      # minus sign
+    assert normalize_dashes("–") == "-"  # en-dash
+    assert normalize_dashes("—") == "-"  # em-dash
+    assert normalize_dashes("−") == "-"  # minus sign
     # Mixed clause-code text "A – 1" normalizes to a matchable "A - 1"
     assert normalize_dashes("§ 5 – 1") == "§ 5 - 1"
     # ASCII hyphen and ordinary text are left untouched
@@ -79,6 +79,7 @@ def _classify_extension(filename: str) -> str:
     so CONV-01-C3 is asserted without booting LibreOffice or an LLM."""
     supported = {".pdf", ".docx", ".pptx", ".html"}
     import os
+
     ext = os.path.splitext(filename)[1].lower()
     if ext not in supported:
         raise ValueError("unsupported_format")
@@ -103,8 +104,8 @@ def test_index_01_c1_pdf_relevels_min_h2_doc_to_h1():
     md = "## Section One\n\nbody\n\n### Sub A\n\nmore\n"
     releveled = _relevel_headings(md)
     lines = releveled.splitlines()
-    assert lines[0] == "# Section One"           # H2 promoted to H1
-    assert "## Sub A" in releveled               # H3 promoted to H2 (depth preserved)
+    assert lines[0] == "# Section One"  # H2 promoted to H1
+    assert "## Sub A" in releveled  # H3 promoted to H2 (depth preserved)
 
 
 @pytest.mark.parametrize("_id", ["INDEX-01-C1"])

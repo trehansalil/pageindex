@@ -31,12 +31,17 @@ def mock_minio():
 # ── STORE-01-C1 — save_doc persists the tree to its canonical path ───────────
 def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
     """STORE-01-C1: save_doc PUTs the serialized tree to processed/<doc_id>.json."""
-    tree = {"doc_id": "abc12345", "doc_name": "t.pdf",
-            "structure": [{"title": "Root", "nodes": [{"title": "C"}]}]}
+    tree = {
+        "doc_id": "abc12345",
+        "doc_name": "t.pdf",
+        "structure": [{"title": "Root", "nodes": [{"title": "C"}]}],
+    }
     # save_doc lazily imports doc_cache_delete; patch the source so no Redis
     # is touched while we assert the MinIO write.
-    with patch("pageindex_mcp.storage.doc_cache_delete", create=True), \
-         patch("pageindex_mcp.cache.doc_cache_delete"):
+    with (
+        patch("pageindex_mcp.storage.doc_cache_delete", create=True),
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+    ):
         save_doc("abc12345", tree)
 
     mock_minio.put_object.assert_called_once()
@@ -50,8 +55,11 @@ def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
 def test_store_01_c3_load_doc_returns_persisted_bytes(mock_minio):
     """STORE-01-C3: load_doc(doc_id) returns byte-for-byte what was persisted to
     processed/<doc_id>.json."""
-    persisted = {"doc_id": "abc12345", "doc_name": "t.pdf",
-                 "structure": [{"title": "Root", "text": "body"}]}
+    persisted = {
+        "doc_id": "abc12345",
+        "doc_name": "t.pdf",
+        "structure": [{"title": "Root", "text": "body"}],
+    }
     response = MagicMock()
     response.read.return_value = json.dumps(persisted, indent=2).encode()
     mock_minio.get_object.return_value = response
@@ -79,8 +87,8 @@ def test_store_01_c2_sha256_dedup_detects_unchanged_bytes():
 
     # Reference of the dedup decision the hash-cache makes on save_doc:
     hash_cache = {"report.pdf": h1}
-    assert hash_cache.get("report.pdf") == h2          # unchanged -> skip write
-    assert hash_cache.get("report.pdf") != h3          # changed   -> re-write
+    assert hash_cache.get("report.pdf") == h2  # unchanged -> skip write
+    assert hash_cache.get("report.pdf") != h3  # changed   -> re-write
 
 
 # ── ERASE-01-C1 — cascade order across all derived stores ────────────────────
@@ -104,8 +112,10 @@ async def test_erase_01_c1_cascade_order_across_stores(mock_minio):
     order = []
     mock_minio.remove_object.side_effect = lambda bucket, name: order.append(("minio", name))
 
-    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del, \
-         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del:
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
+        patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
+    ):
         mock_cache_del.side_effect = lambda did: order.append(("redis", did))
         mock_hash_del.side_effect = lambda filename: order.append(("hash-cache", filename))
         result = await delete_doc("abc12345")
@@ -142,8 +152,10 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
     mock_minio.list_objects.return_value = []
     mock_minio.remove_object.side_effect = _nosuchkey()
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"), \
-         patch("pageindex_mcp.storage.hash_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+    ):
         # Must NOT raise — idempotent no-op success.
         result = await delete_doc("ghost9999")
     assert result == {"errors": []}
@@ -162,9 +174,10 @@ async def test_erase_01_c3_partial_failure_is_surfaced(mock_minio):
     mock_minio.get_object.return_value = load_resp
     mock_minio.list_objects.return_value = []  # no staged uploads
 
-    with patch("pageindex_mcp.cache.doc_cache_delete",
-               side_effect=RuntimeError("redis down")), \
-         patch("pageindex_mcp.storage.hash_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete", side_effect=RuntimeError("redis down")),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+    ):
         result = await delete_doc("abc12345")
 
     # The surfaced error names which store was not purged (the Redis cache).
@@ -197,14 +210,20 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_and_meta(mock_minio):
     assert "processed/flat0001.json" not in put_keys
 
     # The .flat.json body is the persisted flat data.
-    flat_put = next(c for c in mock_minio.put_object.call_args_list
-                    if c.args[1] == "processed/flat0001.flat.json")
+    flat_put = next(
+        c
+        for c in mock_minio.put_object.call_args_list
+        if c.args[1] == "processed/flat0001.flat.json"
+    )
     written = json.loads(flat_put.args[2].read())
     assert written == flat
 
     # The meta sidecar carries content_class.
-    meta_put = next(c for c in mock_minio.put_object.call_args_list
-                    if c.args[1] == "processed/flat0001.meta.json")
+    meta_put = next(
+        c
+        for c in mock_minio.put_object.call_args_list
+        if c.args[1] == "processed/flat0001.meta.json"
+    )
     meta_written = json.loads(meta_put.args[2].read())
     assert meta_written.get("content_class") == "flat_prose"
 
@@ -235,8 +254,10 @@ async def test_flat_02_c2_delete_doc_purges_flat_json(mock_minio):
     order = []
     mock_minio.remove_object.side_effect = lambda bucket, name: order.append(name)
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"), \
-         patch("pageindex_mcp.storage.hash_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+    ):
         await delete_doc("flat0001")
 
     # The flat artifact is removed, ordered after .json and before .meta.json.
@@ -262,8 +283,10 @@ async def test_flat_02_c2_flat_json_nosuchkey_tolerated(mock_minio):
     mock_minio.list_objects.return_value = []
     mock_minio.remove_object.side_effect = _nosuchkey()
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"), \
-         patch("pageindex_mcp.storage.hash_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+    ):
         await delete_doc("ghostflat")  # must NOT raise
 
 
@@ -276,11 +299,13 @@ def test_flat_02_c3_list_processed_docs_surfaces_flat_content_class(mock_minio):
     mock_minio.list_objects.return_value = [meta_obj]
 
     meta_resp = MagicMock()
-    meta_resp.read.return_value = json.dumps({
-        "doc_id": "flat0001",
-        "doc_name": "katzen.pdf",
-        "content_class": "flat_prose",
-    }).encode()
+    meta_resp.read.return_value = json.dumps(
+        {
+            "doc_id": "flat0001",
+            "doc_name": "katzen.pdf",
+            "content_class": "flat_prose",
+        }
+    ).encode()
     mock_minio.get_object.return_value = meta_resp
 
     docs = list_processed_docs()
@@ -302,10 +327,14 @@ def test_flat_02_c3_list_processed_docs_surfaces_flat_content_class(mock_minio):
 # (content_class=flat_prose) add NO new un-purgeable derived store beyond the
 # four standard keys already covered by the cascade.
 
-@pytest.mark.parametrize("doc_id,doc_name,content_class", [
-    ("xlsx0001", "NAS_network_September_2024.xlsx", "flat_table"),
-    ("img0001",  "scan_page_001.png",               "flat_prose"),
-])
+
+@pytest.mark.parametrize(
+    "doc_id,doc_name,content_class",
+    [
+        ("xlsx0001", "NAS_network_September_2024.xlsx", "flat_table"),
+        ("img0001", "scan_page_001.png", "flat_prose"),
+    ],
+)
 async def test_fix4_hr2_xlsx_and_image_flat_doc_cascade_is_complete(
     mock_minio, doc_id, doc_name, content_class
 ):
@@ -326,8 +355,10 @@ async def test_fix4_hr2_xlsx_and_image_flat_doc_cascade_is_complete(
     removed = []
     mock_minio.remove_object.side_effect = lambda bucket, name: removed.append(name)
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"), \
-         patch("pageindex_mcp.storage.hash_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+    ):
         await delete_doc(doc_id)
 
     # Exactly the four standard derived stores are removed — cascade is complete.
@@ -470,8 +501,10 @@ async def test_erasure_cascade_all_stores_healthy_reports_no_errors(mock_minio):
     mock_minio.get_object.return_value = load_resp
     mock_minio.list_objects.return_value = []
 
-    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del, \
-         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del:
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
+        patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
+    ):
         result = await delete_doc("cascade001")
 
     mock_cache_del.assert_called_once_with("cascade001")
@@ -482,7 +515,9 @@ async def test_erasure_cascade_all_stores_healthy_reports_no_errors(mock_minio):
     assert result == {"errors": []}
 
 
-async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(monkeypatch, mock_minio):
+async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(
+    monkeypatch, mock_minio
+):
     """Scenario 2: Postgres registry delete fails — the error is reported, but
     MinIO objects and the Redis cache key are still purged (HR2: partial
     failure never blocks the stores that *can* succeed)."""
@@ -500,8 +535,10 @@ async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(mon
 
     _wire_registry(monkeypatch, registry_delete_doc=_registry_raises)
 
-    with patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del, \
-         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del:
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
+        patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
+    ):
         result = await delete_doc("cascade002")
 
     # MinIO, Redis cache, and hash-cache were still purged despite the Postgres failure.
@@ -527,8 +564,10 @@ async def test_erasure_cascade_purges_preloaded_object(mock_minio):
     mock_minio.get_object.return_value = load_resp
     mock_minio.list_objects.return_value = []
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"), \
-         patch("pageindex_mcp.storage.hash_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+    ):
         result = await delete_doc("preload001")
 
     mock_minio.remove_object.assert_any_call(settings.minio_bucket, "preloaded/report.pdf")
@@ -549,9 +588,11 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
         MagicMock(), "NoSuchKey", "missing", "res", "req", "host"
     )
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"), \
-         patch("pageindex_mcp.storage.hash_cache_delete"), \
-         caplog.at_level("WARNING"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+        caplog.at_level("WARNING"),
+    ):
         result = await delete_doc("nodocname001")
 
     assert any(
@@ -559,8 +600,7 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
         for rec in caplog.records
     )
     preloaded_calls = [
-        c for c in mock_minio.remove_object.call_args_list
-        if c.args[1].startswith("preloaded/")
+        c for c in mock_minio.remove_object.call_args_list if c.args[1].startswith("preloaded/")
     ]
     assert preloaded_calls == []
     assert result["errors"] == []

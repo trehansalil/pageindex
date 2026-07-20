@@ -44,9 +44,7 @@ def app(fake_redis, mock_arq_pool):
     async def _fake_get_arq_pool():
         return mock_arq_pool
 
-    with patch(
-        "pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)
-    ):
+    with patch("pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=fake_redis)):
         with patch("pageindex_mcp.upload_app._get_arq_pool", _fake_get_arq_pool):
             with patch(
                 "pageindex_mcp.upload_app.upload_staging",
@@ -57,9 +55,7 @@ def app(fake_redis, mock_arq_pool):
 
 @pytest_asyncio.fixture
 async def client(app):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
 
@@ -75,15 +71,14 @@ def _txt_file(name: str = "notes.txt") -> tuple[str, bytes, str]:
 # Auth tests
 # ---------------------------------------------------------------------------
 
+
 async def test_missing_api_key_returns_401(client):
     response = await client.post("/files", files=[_pdf_file()])
     assert response.status_code == 401
 
 
 async def test_wrong_api_key_returns_401(client):
-    response = await client.post(
-        "/files", files=[_pdf_file()], headers={"X-API-Key": "wrong"}
-    )
+    response = await client.post("/files", files=[_pdf_file()], headers={"X-API-Key": "wrong"})
     assert response.status_code == 401
 
 
@@ -96,18 +91,15 @@ async def test_unconfigured_api_key_returns_503(app):
     empty_settings = MagicMock()
     empty_settings.upload_api_key = ""
     with patch("pageindex_mcp.upload_app.settings", empty_settings):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
-            response = await c.post(
-                "/files", files=[_pdf_file()], headers={"X-API-Key": "any"}
-            )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post("/files", files=[_pdf_file()], headers={"X-API-Key": "any"})
     assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
 # Validation tests
 # ---------------------------------------------------------------------------
+
 
 async def test_unsupported_extension_returns_400(client):
     response = await client.post(
@@ -133,6 +125,7 @@ async def test_path_traversal_filename_is_sanitized(client):
 # ---------------------------------------------------------------------------
 # Upload + status flow tests
 # ---------------------------------------------------------------------------
+
 
 async def test_single_upload_returns_job_id(client):
     response = await client.post(
@@ -179,9 +172,7 @@ async def test_status_pending_after_upload(client, fake_redis):
         headers={"X-API-Key": TEST_API_KEY},
     )
     job_id = response.json()[0]["job_id"]
-    status_resp = await client.get(
-        f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
-    )
+    status_resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
     assert status_resp.status_code == 200
     assert status_resp.json()["status"] == "pending"
 
@@ -196,11 +187,11 @@ async def test_status_done_when_worker_completes(client, fake_redis):
     job_id = response.json()[0]["job_id"]
 
     # Simulate worker writing done status
-    await fake_redis.hset(f"pageindex:job:{job_id}", mapping={"status": "done", "doc_id": "deadbeef"})
-
-    status_resp = await client.get(
-        f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
+    await fake_redis.hset(
+        f"pageindex:job:{job_id}", mapping={"status": "done", "doc_id": "deadbeef"}
     )
+
+    status_resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
     data = status_resp.json()
     assert data["status"] == "done"
     assert data["doc_id"] == "deadbeef"
@@ -215,26 +206,25 @@ async def test_status_error_when_worker_fails(client, fake_redis):
     )
     job_id = response.json()[0]["job_id"]
 
-    await fake_redis.hset(f"pageindex:job:{job_id}", mapping={"status": "error", "error": "indexing failed"})
-
-    status_resp = await client.get(
-        f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY}
+    await fake_redis.hset(
+        f"pageindex:job:{job_id}", mapping={"status": "error", "error": "indexing failed"}
     )
+
+    status_resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
     data = status_resp.json()
     assert data["status"] == "error"
     assert "indexing failed" in data["error"]
 
 
 async def test_unknown_job_id_returns_404(client):
-    response = await client.get(
-        "/status/nonexistent-job-id", headers={"X-API-Key": TEST_API_KEY}
-    )
+    response = await client.get("/status/nonexistent-job-id", headers={"X-API-Key": TEST_API_KEY})
     assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
 # RFC-007 Batch 0 correctness properties (P1, P2)
 # ---------------------------------------------------------------------------
+
 
 async def test_upload_mixed_invalid_no_staging(client, fake_redis, mock_arq_pool):
     """Property 2 (D4): a batch with one invalid file rejects the WHOLE batch —

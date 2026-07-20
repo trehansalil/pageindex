@@ -41,9 +41,9 @@ def test_read_pdf_outline_applies_one_based_offsets(tmp_path):
     path = _pdf_with_outline(
         tmp_path,
         [
-            ("Chapter A", 0, False),   # level 1, page 1
+            ("Chapter A", 0, False),  # level 1, page 1
             ("Section A.1", 2, True),  # level 2, page 3
-            ("Chapter B", 4, False),   # level 1, page 5
+            ("Chapter B", 4, False),  # level 1, page 5
         ],
     )
     toc, total_pages = _read_pdf_outline(path)
@@ -61,9 +61,9 @@ def test_read_pdf_outline_preserves_outline_order_not_page_order(tmp_path):
     path = _pdf_with_outline(
         tmp_path,
         [
-            ("First", 1, False),   # page 2
+            ("First", 1, False),  # page 2
             ("Second", 0, False),  # page 1 (earlier page, later in outline)
-            ("Third", 3, False),   # page 4
+            ("Third", 3, False),  # page 4
         ],
     )
     toc, _ = _read_pdf_outline(path)
