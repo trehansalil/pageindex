@@ -3,7 +3,7 @@
 # Phase 1 Audit — Verification of Postprocess/Registry Findings
 
 **Status:** Verification complete (Phase 1 of 4). All 4 open items from Phase 0 resolved — 3 confirmed as claimed, 1 confirmed-but-reclassified to a more severe risk than originally framed. No fixes applied yet; that is Phase 2/3.
-**Method:** 4 parallel sub-agents, one per open item, each required to run mcp__codebase-memory-mcp__* (CodeGraph) and Serena MCP tools strictly in parallel (plus mem-search/claude-mem work-history tools for the historical/RFC question), cross-checked against each other. Model tier routing per project convention: Opus for the two call-chain/history-tracing items (complex), Sonnet for the caller-graph check (medium), Haiku for the static config lookup (easy).
+**Method:** 4 parallel sub-agents, one per open item, each required to run `mcp__codebase-memory-mcp__*` (CodeGraph) and Serena MCP tools strictly in parallel (plus mem-search/claude-mem work-history tools for the historical/RFC question), cross-checked against each other. Model tier routing per project convention: Opus for the two call-chain/history-tracing items (complex), Sonnet for the caller-graph check (medium), Haiku for the static config lookup (easy).
 **Date:** 2026-07-20
 **Series:** [Phase 0](PHASE0_POSTPROCESS_REGISTRY_LATENCY_AUDIT.md) (source of these 4 items) · Part 2 of 4 · [Phase 2](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md) (fixes researched) · [Phase 3](PHASE3_POSTPROCESS_REGISTRY_REMEDIATION_STRATEGY.md) (remediation strategy, final)
 **Related project docs:** `ARCHITECTURE.md` § Tree Quality Gate, § Cross-Document Graph & Versioning · `CLAUDE.md` Hard Rule #5 (`validate_tree()` gate) · RFC-006, RFC-009 D6, PR #15 (commit 903031e)
@@ -16,10 +16,10 @@
 
 | #           | Phase 0 claim                                        | Verdict                                                | Severity change                                                     |
 | ----------- | ---------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------- |
-| [1](#item-1) | Flat-doc branch reaches`_upsert_registry_row`      | ✅ Confirmed TRUE                                      | none — matches Phase 0                                             |
+| [1](#item-1) | Flat-doc branch reaches `_upsert_registry_row`     | ✅ Confirmed TRUE                                      | none — matches Phase 0                                             |
 | [2](#item-2) | `save_doc` has zero callers                        | ✅ Confirmed FALSE (1 live caller; tooling blind spot) | none — matches Phase 0 hypothesis                                  |
 | [3](#item-3) | `registry:complete` flag can go stale              | ⚠️ Confirmed but **reclassified**             | **worse** — not a flag bug, a silent invisible data-gap risk |
-| [4](#item-4) | Runtime`registry_enabled`/`postgres_dsn` unknown | ✅ Confirmed: enabled by default everywhere shipped    | clarifies — dual-write should be active out of the box             |
+| [4](#item-4) | Runtime `registry_enabled`/`postgres_dsn` unknown | ✅ Confirmed: enabled by default everywhere shipped   | clarifies — dual-write should be active out of the box             |
 
 ---
 

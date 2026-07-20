@@ -18,9 +18,9 @@
 
 RFC-006 introduced the Postgres registry to avoid an O(N) MinIO scan on every listing/search call at scale. Historical documents only had MinIO `.meta.json` sidecars — no registry rows. RFC-006's locked ordering (2026-07-03) was: ship the dual-write first (new docs write MinIO **and** registry inline going forward), then run `registry_backfill.py` once as a **migration** job to backfill the *pre-existing* corpus into Postgres — deliberately separated to avoid racing new writes against the migration. That script isn't a permanent operational dependency by design; it was meant to run once, then the `pageindex:registry:complete` Redis flag latches true and gates all registry reads (RFC-009 D6, no MinIO fallback). PR #15 (903031e) added `run_auto_backfill()` at server/worker startup specifically so this manual step stops being a footgun on every fresh deploy.
 
-<a id="q2-postpress-populated"></a>
+<a id="q2-postprocess-populated"></a>
 
-### Q2: "Why aren't we populating the postpress fields properly?"
+### Q2: "Why aren't we populating the postprocess fields properly?"
 
 Two separate things are happening, and they explain different symptoms:
 
@@ -29,7 +29,7 @@ Two separate things are happening, and they explain different symptoms:
    - The registry dual-write (`worker._upsert_registry_row`, worker.py:480-502) happens in the **parent** process, strictly **after** the child process has already written to MinIO and Redis job status is already `done`. It is not atomic with the MinIO write.
    - It is **double-gated**: silently no-ops if `settings.registry_enabled`, `settings.postgres_dsn`, or `get_pool()` aren't all present — and if `init_registry` throws once at worker startup, dual-write is disabled for that worker's entire lifetime with no retry.
    - On any exception it **swallows and logs** (`"registry: dual-write failed ... (non-fatal)"`) — the job still reports success. So a document can be fully processed and stored in MinIO while its registry row silently never exists.
-   - Separately, `run_auto_backfill()` only sets the `registry:complete` flag if the backfill migration reports **zero failures**; if even one legacy doc fails to migrate, the flag stays unset and — because RFC-009 D6 removed the MinIO fallback — **every single read from all 5 MCP tools then raises `backfill_incomplete`**, which is likely what you're actually observing as "postpress/registry looks empty": it's not empty, reads are being refused outright.
+   - Separately, `run_auto_backfill()` only sets the `registry:complete` flag if the backfill migration reports **zero failures**; if even one legacy doc fails to migrate, the flag stays unset and — because RFC-009 D6 removed the MinIO fallback — **every single read from all 5 MCP tools then raises `backfill_incomplete`**, which is likely what you're actually observing as "postprocess/registry looks empty": it's not empty, reads are being refused outright.
 
 ---
 
