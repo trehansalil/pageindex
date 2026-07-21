@@ -57,7 +57,7 @@ from pageindex_mcp.registry import (  # noqa: E402
     set_registry_complete,
     upsert_doc,
 )
-from pageindex_mcp.storage import get_minio  # noqa: E402
+from pageindex_mcp.storage import get_minio, read_registry_fields  # noqa: E402
 
 # Phase 3 audit Issue A #2/#3: tracks the reconciliation job's own last-run time,
 # separate from ``pageindex:registry:complete`` (a one-shot boolean, not a
@@ -187,6 +187,22 @@ async def _upsert_all(
 
     if not prepared:
         return failed
+
+    # Enrich lean .meta.json dicts with richer fields (sha256, doc_description,
+    # node_count, Tier-1 facets) from the full processed JSON.
+    enrich_sem = asyncio.Semaphore(10)
+
+    async def _bounded_enrich(key: str, meta: dict) -> tuple[str, dict]:
+        async with enrich_sem:
+            doc_id = meta.get("doc_id", "")
+            content_class = meta.get("content_class")
+            rich = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+            if rich:
+                meta.update(rich)
+            return key, meta
+
+    enriched = await asyncio.gather(*(_bounded_enrich(k, m) for k, m in prepared))
+    prepared = list(enriched)
 
     sem = asyncio.Semaphore(10)
 

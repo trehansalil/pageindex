@@ -62,6 +62,40 @@ from .storage import (
 
 logger = logging.getLogger(__name__)
 
+_MAX_DESC_CHARS = 4000
+
+
+def _generate_flat_doc_description(text: str, model: str | None = None) -> str:
+    """Generate an LLM description for a flat document from its markdown text."""
+    from litellm import completion
+
+    if not model:
+        model = settings.llm_model
+    snippet = text[:_MAX_DESC_CHARS]
+    try:
+        resp = completion(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "You are an expert in generating descriptions of a document. "
+                        "You are given the text of a document. Your task is to generate "
+                        "one-sentence description of the document, that makes it easy to "
+                        "distinguish this document from other documents.\n\n"
+                        f"Document Text:\n{snippet}\n\n"
+                        "Directly return the description, do not include any other text."
+                    ),
+                }
+            ],
+            max_tokens=200,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.warning("flat doc description generation failed: %s", exc)
+        return ""
+
+
 # Image inputs route through OCR (Fix 4); .xlsx routes through openpyxl -> flat tables.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
@@ -729,6 +763,10 @@ class CustomPageIndexClient(PageIndexClient):
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
+                            flat_desc = await asyncio.to_thread(
+                                _generate_flat_doc_description, flat_md,
+                            )
+
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
                             # un-cascaded derivative).
@@ -743,6 +781,7 @@ class CustomPageIndexClient(PageIndexClient):
                                     "sha256": sha256,
                                     "content_class": content_class,
                                     "blocks": blocks,
+                                    "doc_description": flat_desc,
                                     "verdict": f_verdict,
                                     "verdict_reason": f_verdict_reason,
                                     "max_leaf_ratio": round(f_mlr, 4),
