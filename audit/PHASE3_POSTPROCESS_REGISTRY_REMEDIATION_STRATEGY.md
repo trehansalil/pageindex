@@ -1,7 +1,8 @@
 <a id="phase3-top"></a>
+
 # Phase 3 Audit — Remediation Strategy & Scope
 
-**Status:** Scoping complete (Phase 3 of 4 — final phase as originally defined). No code changes applied. This document defines *what* to build and *how big* each fix is, not the implementation itself.
+**Status:** **COMPLETE** (Phase 3 of 4 — final phase). All three issues (A, B, C) implemented and landed on `master` as of 2026-07-20 (PR #16 batch + commit `84614b6`).
 **Method:** 4 parallel sub-agents, one per Phase 2 open question, each required to run `mcp__codebase-memory-mcp__*` (CodeGraph) and Serena MCP strictly in parallel (plus mem-search/claude-mem work-history for the design-precedent question). Model tier routing: Sonnet for the two live-infra checks (medium), Haiku for the static schema/cardinality lookup (easy), Opus for the cross-session precedent search (complex).
 **Date:** 2026-07-20
 **Series:** [Phase 0](PHASE0_POSTPROCESS_REGISTRY_LATENCY_AUDIT.md) · [Phase 1](PHASE1_POSTPROCESS_REGISTRY_VERIFICATION.md) · [Phase 2](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md) (fixes researched) · **Part 4 of 4 (final)**
@@ -10,6 +11,7 @@
 ---
 
 <a id="scope-a"></a>
+
 ## Issue A scope — Silent registry dual-write failures
 
 Source: [Phase 2 Issue A](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-a) (reconciliation job + staleness alerting, recommended over a standalone outbox).
@@ -19,6 +21,7 @@ Source: [Phase 2 Issue A](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-a)
 **Agent 2 finding (arq cron infra):** `WorkerSettings.cron_jobs` (worker.py:536-557) already has a live entry (`reap_stale_jobs`, `unique=True`) — adding a second cron entry is mechanically trivial. But `run_auto_backfill()` (registry_backfill.py:259-318), the natural reconciliation-logic source, **short-circuits to a no-op once `pageindex:registry:complete` is true** (lines 277-279). As written it only ever does useful work once. A periodic cron pointed at it verbatim would never catch post-completion drift — the exact failure mode Item 3 identified.
 
 **Scope (concrete, ranked):**
+
 1. **New Prometheus Counter** `pageindex_registry_write_failures_total` in `metrics.py`, incremented in `_upsert_registry_row`'s except block (worker.py:496-502) alongside the existing warning log. Small, contained, no schema/infra change.
 2. **New Gauge** `pageindex_registry_last_write_success_timestamp` (or reuse pattern: set to current time on every successful `_upsert_registry_row`), plus a new Redis key `pageindex:registry:last_reconcile_at` for the reconciliation job's own last-run timestamp (no existing key to reuse — the only current key, `registry:complete`, is a one-shot boolean, not a timestamp).
 3. **New reconciliation entrypoint** — do not reuse `run_auto_backfill()` directly. Add a sibling function (e.g. `reconcile_registry_drift()`) that performs the same MinIO-vs-Postgres diff/upsert logic but *without* the `registry:complete` short-circuit, callable both by the existing startup path and a new arq cron entry.
@@ -34,6 +37,7 @@ Source: [Phase 2 Issue A](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-a)
 ---
 
 <a id="scope-b"></a>
+
 ## Issue B scope — Filter-then-retrieve refusal gate
 
 Source: [Phase 2 Issue B](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-b) (SQL `verdict` predicate + `isError:true` refusal; payload content flagged open).
@@ -41,6 +45,7 @@ Source: [Phase 2 Issue B](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-b)
 **Agent 4 finding (work-history precedent):** The existing convention in `find_relevant_documents` (`src/pageindex_mcp/tools/documents.py:219-234`) is **not** `isError:true` today — it's a plain JSON string inside a normal success result: `{"error": "<message>", "available": [...]}`, with `reason` codes already established for registry-unavailable cases (`disabled | pool_not_ready | backfill_incomplete | postgres_error`, obs #4612). This is the exact "silent" pattern Phase 0/2 want replaced. Separately, obs #4935 (this audit, same day) already decided the *shape*: switch to real `isError:true` + a `WHERE verdict != 'FAIL'` SQL pre-filter — but explicitly left the *payload content* open (verdict value? suggested next call? partial PASS/MARGINAL results alongside the refusal?). No RFC (007-016) locks a tool-error-payload contract; RFC-008 is design-doc-only.
 
 **Scope (concrete, ranked):**
+
 1. **SQL predicate**: add `WHERE verdict != 'FAIL'` to the registry query path ahead of `_prefilter_docs` (helpers.py) — contained, `verdict` is already indexed (`(verdict, pipeline_version)` composite index, Phase 1 Item confirmed).
 2. **Switch to true `isError:true`**: when the SQL predicate excludes all candidates (or a specifically-requested doc is FAIL-verdict), return the MCP `isError:true` envelope instead of the current `{"error": ..., "available": [...]}` success-envelope pattern, per MCP spec (obs #4897/#4901) so the calling LLM can self-correct instead of silently getting an empty/wrong result.
 3. **Payload content — reuse the existing envelope shape as the base**, extended with a `reason` code consistent with the already-shipped `disabled | pool_not_ready | backfill_incomplete | postgres_error` set (e.g. add `verdict_fail`). This keeps one consistent error-reason vocabulary across the tool surface rather than inventing a second one.
@@ -53,6 +58,7 @@ Source: [Phase 2 Issue B](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-b)
 ---
 
 <a id="scope-c"></a>
+
 ## Issue C scope — Query-path latency
 
 Source: [Phase 2 Issue C](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-c) (SQL pushdown/indexing + `asyncio.gather` fan-out; cardinality flagged open).
@@ -60,6 +66,7 @@ Source: [Phase 2 Issue C](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-c)
 **Agent 3 finding (facet cardinality):** Confirmed via `registry.py:55-110`. `tier` is a hardcoded 3-value enum (Basis/Komfort/Premium, PRD FR-1.5) — very low cardinality. `product` is currently 2-3 observed values (AKB, AVB-PHV) — very low cardinality. `doc_family`/`effective_date` are not statically constrained (no CHECK/ENUM, matches Phase 2's proactive-evidence expectation) — assumed medium cardinality, not confirmed by data. Existing indexes: GIN(`search_text`), B-tree(`processed_at DESC`), composite B-tree(`verdict`, `pipeline_version`). **No index exists yet on any of `product`/`tier`/`doc_family`/`effective_date`.** `stage_a_filter()` (registry.py:413-486) is real code, not a stub — it's a no-op only because `_KNOWN_FACETS` in-memory sets are currently empty (Tier-1 metadata population hasn't shipped).
 
 **Scope (concrete, ranked):**
+
 1. **`asyncio.gather` + `Semaphore` fan-out** for the sequential `get_doc` loop (up to `catalog_topk`=200) — independent of facet-cardinality question, safe to implement now. Concurrency limit needs load-testing against real Redis/MinIO connection ceilings (Agent from Phase 2 flagged no citable number) — start conservative (e.g. semaphore=10-20) and tune from observed latency/error rate.
 2. **Composite index, scoped small**: given `tier`/`product` are confirmed very-low-cardinality, a full 4-column composite index is *not* well justified yet — low-cardinality leading columns don't buy much selectivity, and `doc_family`/`effective_date` cardinality is unconfirmed. Recommend: **defer the composite index until Tier-1 ships and `_KNOWN_FACETS` is actually populated with real data** (matches Agent 3's own recommendation: "start with a partial index scoped to non-empty product values, pending Tier-1 query analysis"). Building it now against empty/placeholder data risks guessing wrong.
 3. **SQL predicate pushdown** (replace `list_docs(limit=100_000)` Python-side narrowing with SQL predicates) — do this now regardless of the index question; it's correct even without a composite index, since Postgres will fall back to the existing indexes or a scan, but at least stops materializing 100k rows in Python.
@@ -72,23 +79,26 @@ Source: [Phase 2 Issue C](PHASE2_POSTPROCESS_REGISTRY_FIXES_RESEARCH.md#issue-c)
 ---
 
 <a id="phase3-summary"></a>
+
 ## Cross-issue remediation summary
 
-| Issue | Concrete next PR-sized units of work | Blocked on a decision? |
-|---|---|---|
-| [A](#scope-a) | (1) failure counter, (2) staleness gauge + last-write/reconcile timestamps, (3) new non-short-circuiting reconciliation entrypoint, (4) arq cron entry, (5) alert rule | Yes — reconcile interval + page ownership |
-| [B](#scope-b) | (1) SQL `verdict != 'FAIL'` predicate, (2) switch to real `isError:true`, (3) extend existing `reason`-code vocabulary | Yes — payload richness (verdict value/next-call hint/partial results); recommend simplest option as default |
-| [C](#scope-c) | (1) `asyncio.gather`+`Semaphore` fan-out, (2) SQL predicate pushdown for the 100k-row prefetch | No — safe to build now |
-| [C — deferred] | Composite facet index | Explicitly deferred until Tier-1 metadata populates `_KNOWN_FACETS` with real data |
+| Issue           | Work items                                                                                                                                                                                         | Status (2026-07-21)                                                                                                                                                                                                                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [A](#scope-a)    | (1) failure counter, (2) staleness gauge + last-write/reconcile timestamps, (3) new non-short-circuiting reconciliation entrypoint, (4) arq cron entry, (5) alert rule (policy/infra, out of repo) | **DONE** — `REGISTRY_WRITE_FAILURES_TOTAL` (metrics.py:126), `REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP` (metrics.py:134), `reconcile_registry_drift()` (registry_backfill.py), `_reconcile_registry_drift_cron` (worker.py:569, cron_jobs:635). Alert rule is an ops/infra deliverable. |
+| [B](#scope-b)    | (1) SQL`verdict != 'FAIL'` predicate, (2) switch to real `isError:true`, (3) extend existing `reason`-code vocabulary                                                                        | **DONE** — `_LIST_SQL` / `_COUNT_SQL` / `stage_a_filter` all filter `verdict != 'FAIL'`. `RegistryUnavailableError("verdict_fail")` → `ToolError` (MCP `isError:true`). `verdict_fail` added to reason vocabulary (documents.py:45,64).                                     |
+| [C](#scope-c)    | (1)`asyncio.gather`+`Semaphore` fan-out, (2) SQL predicate pushdown for the 100k-row prefetch                                                                                                  | **DONE** — `_rag_inner` (helpers.py:308-327) uses `asyncio.gather` + `Semaphore(settings.registry_query_concurrency)`. SQL pushdown via `WHERE verdict != 'FAIL'` in all registry queries.                                                                                           |
+| [C — deferred] | Composite facet index                                                                                                                                                                              | **Still deferred** — Tier-1 metadata (`_KNOWN_FACETS`) not yet populated with real data                                                                                                                                                                                                    |
 
-**Suggested build order** (smallest blast-radius / least decision-dependent first): C's fan-out + pushdown → B's SQL predicate + envelope reuse → B's isError switch → A's counter/gauge → A's reconciliation entrypoint + cron → A's alert rule (once interval/ownership is decided) → defer C's composite index to Tier-1.
+**Original build order was:** C's fan-out + pushdown → B's SQL predicate + envelope reuse → B's isError switch → A's counter/gauge → A's reconciliation entrypoint + cron → A's alert rule. All code items completed; composite facet index remains intentionally deferred to Tier-1.
 
 **Minor cross-cutting note (not actionable, informational only):** [Phase 1 Item 2](PHASE1_POSTPROCESS_REGISTRY_VERIFICATION.md#item-2) found CodeGraph misses call edges through `asyncio.to_thread(fn, ...)` dispatch — will keep producing false "unused function" signals for this codebase's async-dispatch pattern. Out of scope for this remediation; worth a one-line mention if/when the CodeGraph indexer itself gets revisited.
 
 ---
 
 <a id="phase3-sources"></a>
+
 ## Sources
+
 - Agent 1 (observability): `src/pageindex_mcp/metrics.py` (Counter/Gauge/Histogram inventory, ~28 series), `server.py:15,40`, `auth.py:16`.
 - Agent 2 (arq cron): `worker.py:432-557` (`reap_stale_jobs`, `cron_jobs`), `registry_backfill.py:259-318` (`run_auto_backfill`, short-circuit at 277-279), `pyproject.toml:44` (arq `>=0.27.0`).
 - Agent 3 (facet cardinality): `registry.py:55-110` (schema), `registry.py:81-110` (indexes), `registry.py:413-486` (`stage_a_filter`), `PRD.md` FR-1.5/FR-2.2 (tier enum).
