@@ -105,9 +105,16 @@ async def test_erase_01_c1_cascade_order_across_stores(mock_minio):
     mock_minio.get_object.return_value = load_resp
 
     # uploads/<id>/ listing yields one staged object to remove (step 1).
+    # figures/<id>/ listing yields nothing (step 2c).
     upload_obj = MagicMock()
     upload_obj.object_name = "uploads/abc12345/report.pdf"
-    mock_minio.list_objects.return_value = [upload_obj]
+
+    def _list_objects(_bucket, prefix="", **_kw):
+        if prefix.startswith("uploads/"):
+            return [upload_obj]
+        return []  # figures/ and any other prefix
+
+    mock_minio.list_objects.side_effect = _list_objects
 
     order = []
     mock_minio.remove_object.side_effect = lambda bucket, name: order.append(("minio", name))
@@ -249,7 +256,13 @@ async def test_flat_02_c2_delete_doc_purges_flat_json(mock_minio):
 
     upload_obj = MagicMock()
     upload_obj.object_name = "uploads/flat0001/katzen.pdf"
-    mock_minio.list_objects.return_value = [upload_obj]
+
+    def _list_objects(_b, prefix="", **_kw):
+        if prefix.startswith("uploads/"):
+            return [upload_obj]
+        return []
+
+    mock_minio.list_objects.side_effect = _list_objects
 
     order = []
     mock_minio.remove_object.side_effect = lambda bucket, name: order.append(name)
@@ -350,7 +363,13 @@ async def test_fix4_hr2_xlsx_and_image_flat_doc_cascade_is_complete(
 
     upload_obj = MagicMock()
     upload_obj.object_name = f"uploads/{doc_id}/{doc_name}"
-    mock_minio.list_objects.return_value = [upload_obj]
+
+    def _list_objects(_b, prefix="", **_kw):
+        if prefix.startswith("uploads/"):
+            return [upload_obj]
+        return []
+
+    mock_minio.list_objects.side_effect = _list_objects
 
     removed = []
     mock_minio.remove_object.side_effect = lambda bucket, name: removed.append(name)
@@ -361,7 +380,7 @@ async def test_fix4_hr2_xlsx_and_image_flat_doc_cascade_is_complete(
     ):
         await delete_doc(doc_id)
 
-    # Exactly the four standard derived stores are removed — cascade is complete.
+    # Exactly the five standard derived stores are removed — cascade is complete.
     expected = [
         f"uploads/{doc_id}/{doc_name}",
         f"processed/{doc_id}.json",

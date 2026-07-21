@@ -19,6 +19,7 @@ from .converters import (
     detect_ocr_langs,
     docx_to_markdown,
     ensure_tessdata,
+    get_last_picture_results,
     html_to_markdown_with_images,
     image_to_markdown,
     libreoffice_to_pdf,
@@ -54,6 +55,7 @@ from .storage import (
     list_processed_docs,
     save_doc,
     save_doc_meta,
+    save_figure,
     save_flat_doc,
     save_raw,
 )
@@ -222,6 +224,37 @@ def validate_llm_config() -> None:
         raise ValueError(
             f"LLM_PROVIDER={resolve_llm_provider()} requires OPENAI_BASE_URL to be set."
         )
+
+
+def _enrich_image_blocks(
+    blocks: list[dict], pic_results: list, doc_id: str,
+) -> None:
+    """Enrich ``{"role": "image"}`` blocks with figure metadata and persist PNGs.
+
+    Each image block's ``index`` is matched against the ordered ``pic_results``
+    list. Matching results get ``figure_path``, ``page``, ``bbox``, ``ocr_text``,
+    and optionally ``description`` written into the block dict, and the cropped
+    PNG is uploaded to MinIO at ``figures/<doc_id>/fig-<index>.png``."""
+    if not pic_results:
+        return
+    for block in blocks:
+        if block.get("role") != "image":
+            continue
+        idx = block.get("index")
+        if idx is None or idx >= len(pic_results):
+            continue
+        pr = pic_results[idx]
+        png = pr.get("png_bytes")
+        if png:
+            fig_key = save_figure(doc_id, idx, png)
+            block["figure_path"] = fig_key
+        block["page"] = pr.get("page", 0)
+        block["bbox"] = pr.get("bbox", {})
+        if not block.get("ocr_text"):
+            block["ocr_text"] = pr.get("ocr_text", "")
+        desc = pr.get("description")
+        if desc:
+            block["description"] = desc
 
 
 class CustomPageIndexClient(PageIndexClient):
@@ -673,6 +706,12 @@ class CustomPageIndexClient(PageIndexClient):
                             )
 
                             doc_id = str(uuid.uuid4())
+
+                            pic_results = get_last_picture_results()
+                            if pic_results:
+                                _enrich_image_blocks(
+                                    blocks, pic_results, doc_id,
+                                )
 
                             protocol = "https" if settings.minio_secure else "http"
                             source_url = (

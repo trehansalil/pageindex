@@ -198,9 +198,13 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
             if (
                 name.endswith(".json")
                 and not name.endswith(".meta.json")
-                and not name.endswith(".flat.json")
             ):
-                did = name.replace("processed/", "").replace(".json", "")
+                did = name.replace("processed/", "")
+                # Strip .flat.json or .json to get pure doc_id
+                if did.endswith(".flat.json"):
+                    did = did[: -len(".flat.json")]
+                else:
+                    did = did[: -len(".json")]
                 doc_ids.append(did)
 
     print(f"Recomputing verdicts for {len(doc_ids)} doc(s)...", flush=True)
@@ -210,14 +214,18 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     for did in doc_ids:
         try:
             key = f"processed/{did}.json"
-            response = mc.get_object(settings.minio_bucket, key)
+            try:
+                response = mc.get_object(settings.minio_bucket, key)
+            except Exception:
+                key = f"processed/{did}.flat.json"
+                response = mc.get_object(settings.minio_bucket, key)
             try:
                 data = json.loads(response.read())
             finally:
                 response.close()
                 response.release_conn()
 
-            structure = data.get("structure") or []
+            structure = data.get("structure") or data.get("blocks") or []
             content_class = data.get("content_class", "")
 
             verdict, verdict_reason = classify_verdict(structure, content_class, None)

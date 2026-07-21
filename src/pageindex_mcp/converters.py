@@ -8,8 +8,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
@@ -1241,6 +1242,25 @@ _IMAGE_MARKER = "<!-- image -->"
 _PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
 
 
+class PictureResult(TypedDict, total=False):
+    """Structured result from per-picture OCR/crop recovery."""
+
+    ocr_text: str
+    png_bytes: bytes
+    page: int
+    bbox: dict
+    description: str
+
+
+_picture_results_tls = threading.local()
+
+
+def get_last_picture_results() -> list[PictureResult]:
+    """Retrieve picture results stashed by the most recent ``pdf_to_markdown_docling``
+    call in this thread. Returns an empty list if none were stashed."""
+    return getattr(_picture_results_tls, "results", [])
+
+
 def _collect_picture_regions(doc) -> list[dict]:
     """List each PictureItem's 1-indexed page + bbox in document iteration order (D6).
 
@@ -1301,33 +1321,30 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
         return ""
 
 
-def _recover_picture_text(pdf_path: str, regions: list[dict], langs: list[str]) -> dict[int, str]:
-    """Crop each picture bbox from the PDF and OCR it locally (RFC-015 D6).
+def _recover_picture_text(
+    pdf_path: str, regions: list[dict], langs: list[str],
+) -> dict[int, PictureResult]:
+    """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
 
-    Returns ``{picture_index: recovered_text}`` for pictures whose OCR yields more than
-    ``_PICTURE_OCR_MIN_CHARS`` characters. Docling's layout model buckets chart
-    data-labels / axis text into a Picture cluster, so ``export_to_markdown()`` renders
-    the whole cluster as a bare ``<!-- image -->`` and that co-located text is lost;
-    region-scoped OCR recovers it regardless of the page-level image ratio that gates
-    the existing D1 escalation (RFC-010).
+    Returns ``{picture_index: PictureResult}`` for every picture region. Each
+    result carries ``png_bytes`` (the cropped 300-DPI image), ``ocr_text``
+    (Tesseract output, empty if below ``_PICTURE_OCR_MIN_CHARS``), ``page``
+    (1-indexed), and ``bbox`` (``{l, t, r, b}``).
 
-    HR3: OCR runs entirely through the LOCAL tesseract binary — no LLM, no network
-    egress — so PII rendered inside a chart never leaves the host.
+    HR3: OCR runs entirely through the LOCAL tesseract binary — no LLM, no
+    network egress — so PII rendered inside a chart never leaves the host.
 
-    HR4: this imports ``fitz`` (PyMuPDF, AGPL-3.0) directly for bbox cropping. Unlike
-    the pypdfium2 outline read (``_read_pdf_outline``), this is a FIRST-PARTY AGPL
-    import on the DEFAULT (``PDF_CONVERTER=docling``) path — not merely a transitive
-    dependency, and NOT the ``agpl-fallback``-gated pymupdf4llm route. Reconciled with
-    the user for RFC-015 (2026-07-17); see the [GAP] in ``.agents/state/PENDING_DECISIONS.md``
-    flagging the AGPL legal-review follow-up. The import is function-scoped and only
-    fires when the document actually contains pictures."""
-    import fitz  # PyMuPDF, AGPL-3.0 — first-party import on the DEFAULT path; see HR4 note above
+    HR4: this imports ``fitz`` (PyMuPDF, AGPL-3.0) directly for bbox cropping.
+    First-party AGPL import on the DEFAULT path; reconciled with the user for
+    RFC-015 (2026-07-17). The import is function-scoped and only fires when
+    the document actually contains pictures."""
+    import fitz  # PyMuPDF, AGPL-3.0
 
-    recovered: dict[int, str] = {}
+    recovered: dict[int, PictureResult] = {}
     pdf = fitz.open(pdf_path)
     try:
         for i, region in enumerate(regions):
-            page_index = region["page"] - 1  # PyMuPDF pages are 0-indexed
+            page_index = region["page"] - 1
             if page_index < 0 or page_index >= pdf.page_count:
                 continue
             page = pdf[page_index]
@@ -1335,24 +1352,41 @@ def _recover_picture_text(pdf_path: str, regions: list[dict], langs: list[str]) 
             if rect is None:
                 continue
             pix = page.get_pixmap(clip=rect, dpi=300)
+            png_bytes = pix.tobytes("png")
+
+            ocr_text = ""
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp_path = tmp.name
             try:
                 pix.save(tmp_path)
-                text = _tesseract_ocr_image(tmp_path, langs)
+                raw = _tesseract_ocr_image(tmp_path, langs)
+                if len(raw.strip()) > _PICTURE_OCR_MIN_CHARS:
+                    ocr_text = " ".join(raw.split())
             finally:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-            if len(text.strip()) > _PICTURE_OCR_MIN_CHARS:
-                recovered[i] = " ".join(text.split())
+
+            bbox = region["bbox"]
+            recovered[i] = PictureResult(
+                ocr_text=ocr_text,
+                png_bytes=png_bytes,
+                page=region["page"],
+                bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
+            )
     finally:
         pdf.close()
     return recovered
 
 
-def _splice_picture_text(md: str, recovered: dict[int, str]) -> str:
-    """Append recovered chart text as a ``> [Chart text]: ...`` blockquote after the
-    i-th ``<!-- image -->`` marker whose picture yielded text (RFC-015 D6)."""
+def _splice_picture_text(
+    md: str, recovered: dict[int, PictureResult],
+) -> str:
+    """Replace ``<!-- image -->`` markers with ``[Figure: fig-<i>]`` and append
+    recovered chart text as a ``> [Chart text]: ...`` blockquote (RFC-015 D6).
+
+    Every marker is replaced regardless of whether OCR yielded text — the figure
+    reference is always useful for VLM consumers that can resolve the persisted
+    PNG via the flat-block's ``figure_path``."""
     if not recovered:
         return md
     counter = {"i": 0}
@@ -1360,10 +1394,14 @@ def _splice_picture_text(md: str, recovered: dict[int, str]) -> str:
     def _repl(m: "re.Match[str]") -> str:
         i = counter["i"]
         counter["i"] += 1
-        text = recovered.get(i)
-        if text:
-            return m.group(0) + "\n\n> [Chart text]: " + text
-        return m.group(0)
+        result = recovered.get(i)
+        if result is None:
+            return m.group(0)
+        marker = f"[Figure: fig-{i}]"
+        ocr = result.get("ocr_text", "")
+        if ocr:
+            return marker + "\n\n> [Chart text]: " + ocr
+        return marker
 
     return re.sub(re.escape(_IMAGE_MARKER), _repl, md)
 
@@ -1380,35 +1418,109 @@ def _pre_inference_normalize(text: str) -> str:
     return reconstruct_bidi_order(text)  # D7
 
 
-def _maybe_splice_picture_ocr(md: str, document, pdf_path: str) -> str:
+def _maybe_splice_picture_ocr(
+    md: str, document, pdf_path: str,
+    *, vlm_describe: bool = False, doc_id: str = "",
+) -> tuple[str, list[PictureResult]]:
     """Recover chart/infographic text Docling bucketed into a Picture bbox (RFC-015 D6).
+
+    Returns ``(modified_markdown, picture_results)`` where ``picture_results`` carries
+    the cropped PNG bytes, OCR text, page number and bbox for each detected picture.
 
     Docling drops picture clusters as a bare ``<!-- image -->``, discarding co-located
     chart text. Region-scoped local OCR (HR3) fires per picture regardless of the
     page-level image ratio that gates the D1 escalation. Gated on ``_OCR_ESCALATION``
-    (mirrors client.py:66) and never fatal — any failure leaves the markdown as-is."""
+    (mirrors client.py:66) and never fatal — any failure leaves the markdown as-is.
+
+    When ``vlm_describe=True`` AND the endpoint passes the HR3/ZDR gate, each picture
+    is described via the vision API (pattern from ``html_to_markdown_with_images``)."""
     if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
-        return md
+        return md, []
     try:
         regions = _collect_picture_regions(document)
         if not regions:
-            return md
+            return md, []
         langs = ensure_tessdata(detect_ocr_langs(md))
         recovered = _recover_picture_text(pdf_path, regions, langs)
-        if recovered:
-            md = _splice_picture_text(md, recovered)
-            logger.info(
-                "recovered per-picture chart text for %d image(s) in %s",
-                len(recovered),
-                pdf_path,
-            )
+        if not recovered:
+            return md, []
+
+        if vlm_describe:
+            _add_vlm_descriptions(recovered, doc_id)
+
+        md = _splice_picture_text(md, recovered)
+        logger.info(
+            "recovered per-picture chart text for %d image(s) in %s",
+            len(recovered),
+            pdf_path,
+        )
+        return md, list(recovered.values())
     except Exception as exc:
         logger.warning(
             "per-picture OCR recovery failed for %s (%s); leaving markdown as-is",
             pdf_path,
             exc,
         )
-    return md
+    return md, []
+
+
+def _add_vlm_descriptions(
+    recovered: dict[int, PictureResult], doc_id: str,
+) -> None:
+    """Add VLM-generated descriptions to picture results (HR3-gated).
+
+    Skips silently when ``pii_corpus=True`` and the endpoint is not on the ZDR
+    allow-list — PII-bearing image crops must never leave a non-ZDR endpoint.
+    Follows the ``html_to_markdown_with_images._describe`` pattern."""
+    from .config import _is_zdr_allowlisted, settings
+
+    if settings.pii_corpus and not _is_zdr_allowlisted(settings.openai_base_url):
+        logger.info(
+            "VLM image descriptions skipped for %s: pii_corpus=True, "
+            "endpoint not ZDR-allowlisted",
+            doc_id,
+        )
+        return
+
+    import base64
+
+    from litellm import completion
+
+    model = settings.vlm_model
+    for idx, result in recovered.items():
+        png_b64 = base64.b64encode(result["png_bytes"]).decode()
+        try:
+            resp = completion(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{png_b64}",
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Describe this figure concisely in one sentence. "
+                                    "Focus on chart type, data series, and key values."
+                                ),
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=150,
+            )
+            desc = (resp.choices[0].message.content or "").strip()
+            if desc:
+                result["description"] = desc
+        except Exception as exc:
+            logger.warning(
+                "VLM description failed for fig-%d of %s: %s", idx, doc_id, exc,
+            )
 
 
 def pdf_to_markdown_docling(
@@ -1561,7 +1673,13 @@ def pdf_to_markdown_docling(
             )
             md = md_raw
     md = _normalize_indented_headings(md)
-    md = _maybe_splice_picture_ocr(md, result.document, pdf_path)  # RFC-015 D6
+    from .config import settings
+
+    md, pic_results = _maybe_splice_picture_ocr(
+        md, result.document, pdf_path,
+        vlm_describe=settings.vlm_describe_images,
+    )
+    _picture_results_tls.results = pic_results
     return md
 
 

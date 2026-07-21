@@ -91,6 +91,7 @@ class Settings:
     pii_corpus: bool
     vlm_fallback: bool
     vlm_model: str
+    vlm_describe_images: bool
 
 
 # HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
@@ -173,6 +174,10 @@ def _load_settings() -> Settings:
         vlm_fallback=os.environ.get("VLM_FALLBACK", "false").strip().lower()
         in ("1", "true", "yes"),
         vlm_model=os.environ.get("VLM_MODEL", "gpt-4.1"),
+        vlm_describe_images=os.environ.get(
+            "VLM_DESCRIBE_IMAGES", "false"
+        ).strip().lower()
+        in ("1", "true", "yes"),
     )
 
 

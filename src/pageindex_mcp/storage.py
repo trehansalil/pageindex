@@ -221,6 +221,24 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
             if getattr(e, "code", "") != "NoSuchKey":
                 errors.append(f"processed.flat.json: {e}")
 
+        # 2c. figures/<doc_id>/* (image crops)
+        try:
+            fig_removed = 0
+            for obj in mc.list_objects(
+                settings.minio_bucket,
+                prefix=f"figures/{doc_id}/",
+                recursive=True,
+            ):
+                if obj.object_name:
+                    mc.remove_object(settings.minio_bucket, obj.object_name)
+                    fig_removed += 1
+            if fig_removed:
+                logger.info(
+                    "ERASE %s step2c: removed %d figure(s)", doc_id, fig_removed
+                )
+        except S3Error as e:
+            errors.append(f"figures/: {e}")
+
         # 3. processed/<doc_id>.meta.json
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.meta.json")
@@ -542,6 +560,31 @@ def save_raw(doc_id: str, filename: str, data: bytes) -> None:
         )
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+
+
+# ---------------------------------------------------------------------------
+# Figure crop storage  (MinIO: figures/<doc_id>/fig-<index>.png)
+# ---------------------------------------------------------------------------
+
+
+def save_figure(doc_id: str, index: int, png_bytes: bytes) -> str:
+    """Store a cropped figure PNG at figures/<doc_id>/fig-<index>.png.
+    Returns the MinIO object key."""
+    key = f"figures/{doc_id}/fig-{index}.png"
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
+    mc = get_minio()
+    try:
+        mc.put_object(
+            settings.minio_bucket,
+            key,
+            BytesIO(png_bytes),
+            len(png_bytes),
+            content_type="image/png",
+        )
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+    return key
 
 
 # ---------------------------------------------------------------------------

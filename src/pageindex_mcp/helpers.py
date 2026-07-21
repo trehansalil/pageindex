@@ -812,6 +812,8 @@ _FLAT_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 # A numbered clause: '1', '1.1', '2.1.3', optionally with a trailing dot/paren and
 # an optional title on the same line (e.g. '1.1 Geltungsbereich').
 _FLAT_NUMBERED_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]?(?:\s+\S.*)?$")
+_FLAT_FIGURE_RE = re.compile(r"^\[Figure:\s*fig-(\d+)(?:\s*\|\s*(.*?))?\]$")
+_FLAT_CHART_TEXT_RE = re.compile(r"^>\s*\[Chart text\]:\s*(.+)$")
 
 
 def _flat_split_pipe_row(line: str) -> list[str]:
@@ -1476,6 +1478,35 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
                 signals.add("table")
             continue
 
+        # Figure marker -> image block. Consumes an optional [Chart text]
+        # blockquote on the following non-blank line.
+        m_fig = _FLAT_FIGURE_RE.match(stripped)
+        if m_fig:
+            flush_prose()
+            fig_index = int(m_fig.group(1))
+            fig_desc = (m_fig.group(2) or "").strip()
+            ocr_text = ""
+            # Peek ahead for > [Chart text]: ...
+            j = i + 1
+            while j < n and lines[j].strip() == "":
+                j += 1
+            if j < n:
+                m_ct = _FLAT_CHART_TEXT_RE.match(lines[j].strip())
+                if m_ct:
+                    ocr_text = m_ct.group(1).strip()
+                    i = j + 1
+                else:
+                    i += 1
+            else:
+                i += 1
+            img_block: dict = {"role": "image", "index": fig_index}
+            if ocr_text:
+                img_block["ocr_text"] = ocr_text
+            if fig_desc:
+                img_block["description"] = fig_desc
+            blocks.append(img_block)
+            continue
+
         # Heading -> title block (does not by itself decide the content class).
         m_head = _FLAT_HEADING_RE.match(line)
         if m_head:
@@ -1524,8 +1555,16 @@ def _flat_search_text(data: dict) -> str:
     retrieval string — table row_records plus role-typed block text. Pure."""
     parts: list[str] = []
     for block in data.get("blocks", []) or []:
-        if block.get("role") == "table":
+        role = block.get("role")
+        if role == "table":
             parts.extend(block.get("row_records", []) or [])
+        elif role == "image":
+            ocr = block.get("ocr_text")
+            if ocr:
+                parts.append(ocr)
+            desc = block.get("description")
+            if desc:
+                parts.append(desc)
         else:
             txt = block.get("text")
             if txt:

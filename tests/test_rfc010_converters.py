@@ -307,20 +307,27 @@ class TestIsNumericExtension:
 
 
 class TestSplicePictureText:
-    """RFC-015 D6: _splice_picture_text() attaches recovered text to the i-th image marker."""
+    """RFC-015 D6: _splice_picture_text() replaces markers with [Figure: fig-N] and
+    appends recovered chart text as a blockquote."""
+
+    @staticmethod
+    def _pr(ocr: str = "", **kw):
+        """Build a minimal PictureResult dict for testing."""
+        return {"ocr_text": ocr, "png_bytes": b"", "page": 1, "bbox": {}, **kw}
 
     def test_single_marker_spliced(self):
         md = "Intro\n\n<!-- image -->\n\nOutro"
-        out = _splice_picture_text(md, {0: "Revenue 2024 42%"})
+        out = _splice_picture_text(md, {0: self._pr("Revenue 2024 42%")})
+        assert "[Figure: fig-0]" in out
         assert "> [Chart text]: Revenue 2024 42%" in out
-        assert "<!-- image -->" in out  # original marker retained
+        assert "<!-- image -->" not in out
 
     def test_positional_matching(self):
         md = "<!-- image -->\ntext\n<!-- image -->"
-        out = _splice_picture_text(md, {1: "second chart"})
-        # Only the SECOND marker gets a caption.
+        out = _splice_picture_text(md, {1: self._pr("second chart")})
         assert out.count("> [Chart text]:") == 1
-        assert out.endswith("second chart")
+        assert "second chart" in out
+        assert "[Figure: fig-1]" in out
 
     def test_no_recovered_returns_unchanged(self):
         md = "<!-- image -->"
@@ -328,8 +335,16 @@ class TestSplicePictureText:
 
     def test_marker_without_recovery_untouched(self):
         md = "<!-- image -->\n<!-- image -->"
-        out = _splice_picture_text(md, {0: "only first has text"})
+        out = _splice_picture_text(md, {0: self._pr("only first has text")})
         assert out.count("> [Chart text]:") == 1
+        assert "[Figure: fig-0]" in out
+
+    def test_no_ocr_still_replaces_marker(self):
+        md = "<!-- image -->"
+        out = _splice_picture_text(md, {0: self._pr()})
+        assert "[Figure: fig-0]" in out
+        assert "<!-- image -->" not in out
+        assert "[Chart text]" not in out
 
 
 class TestBboxToFitzRect:
@@ -374,6 +389,9 @@ class TestRecoverPictureText:
                 with open(path, "wb") as fh:
                     fh.write(b"\x89PNG")
 
+            def tobytes(self, fmt="png"):
+                return b"\x89PNG fake image bytes"
+
         class _Page:
             rect = types.SimpleNamespace(height=800.0)
 
@@ -405,18 +423,25 @@ class TestRecoverPictureText:
         ]
         out = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert 0 in out
-        assert "Revenue" in out[0]
+        result = out[0]
+        assert "Revenue" in result["ocr_text"]
+        assert isinstance(result["png_bytes"], bytes)
+        assert result["page"] == 1
+        assert "l" in result["bbox"]
 
-    def test_short_ocr_dropped(self, monkeypatch):
+    def test_short_ocr_has_empty_text_but_keeps_png(self, monkeypatch):
         self._install_fake_fitz(monkeypatch)
         monkeypatch.setattr(
             "pageindex_mcp.converters._tesseract_ocr_image",
-            lambda png, langs: "short",  # <= 20 chars -> dropped as noise
+            lambda png, langs: "short",  # <= 20 chars -> ocr_text empty
         )
         regions = [
             {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
+        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        assert 0 in out
+        assert out[0]["ocr_text"] == ""
+        assert isinstance(out[0]["png_bytes"], bytes)
 
     def test_page_out_of_range_skipped(self, monkeypatch):
         self._install_fake_fitz(monkeypatch)
@@ -441,25 +466,28 @@ class TestMaybeSplicePictureOcr:
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
-        # Gate short-circuits before _collect_picture_regions is even reached, so
-        # a non-empty "pictures" stand-in and a dummy document/pdf_path suffice.
         with (
             mock.patch.object(
                 converters, "_collect_picture_regions", return_value=pictures
             ) as mock_collect,
             mock.patch.object(converters, "_recover_picture_text") as mock_recover,
         ):
-            out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
+            out, pics = converters._maybe_splice_picture_ocr(
+                md, document=object(), pdf_path="dummy.pdf",
+            )
 
         mock_collect.assert_not_called()
         mock_recover.assert_not_called()
         assert out == md
+        assert pics == []
 
     def test_escalation_enabled_invokes_recovery(self, monkeypatch):
         monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
+        pr = {"ocr_text": "Revenue 2024 recovered chart text",
+              "png_bytes": b"fake", "page": 1, "bbox": {}}
         with (
             mock.patch.object(converters, "_collect_picture_regions", return_value=pictures),
             mock.patch.object(converters, "detect_ocr_langs", return_value=["eng"]),
@@ -467,10 +495,14 @@ class TestMaybeSplicePictureOcr:
             mock.patch.object(
                 converters,
                 "_recover_picture_text",
-                return_value={0: "Revenue 2024 recovered chart text"},
+                return_value={0: pr},
             ) as mock_recover,
         ):
-            out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
+            out, pics = converters._maybe_splice_picture_ocr(
+                md, document=object(), pdf_path="dummy.pdf",
+            )
 
         assert mock_recover.call_count >= 1
         assert "Revenue 2024 recovered chart text" in out
+        assert "[Figure: fig-0]" in out
+        assert len(pics) == 1
