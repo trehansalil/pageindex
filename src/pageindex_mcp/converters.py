@@ -1341,6 +1341,7 @@ class PictureResult(TypedDict, total=False):
     page: int
     bbox: dict
     description: str
+    skipped_reason: str  # RFC-019 D3: deliberate-skip tag (e.g. "page_coverage")
 
 
 def zdr_egress_gate(purpose: str, doc_id: str = "") -> tuple[bool, str | None]:
@@ -1565,6 +1566,10 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         ocr = result.get("ocr_text", "")
         desc = result.get("description", "")
         if not (ocr or desc or result.get("png_bytes")):
+            if result.get("skipped_reason") or result.get("decorative"):
+                strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
+                if strip_env != "false":
+                    return ""
             return m.group(0)
         if desc:
             marker = f"[Figure: fig-{k} | {_figure_desc_inline(desc)}]"
@@ -1619,7 +1624,10 @@ def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureRe
             len(regions),
             pdf_path,
         )
-        return [recovered.get(i, PictureResult()) for i in range(len(regions))]
+        return [
+            recovered.get(i, PictureResult(skipped_reason="page_coverage"))
+            for i in range(len(regions))
+        ]
     except Exception as exc:
         logger.warning(
             "per-picture OCR recovery failed for %s (%s); continuing without figures",
