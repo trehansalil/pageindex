@@ -6,15 +6,15 @@
 
 ## Traceability
 
-| Artifact | Reference |
-|---|---|
-| Governing RFC | [RFC-019: Corpus Reingestion Audit Remediation — Phase 2](../rfcs/019-corpus-reingestion-phase2.md) |
-| Design Document | [Design: RFC-019 Corpus Reingestion Phase 2](../designs/design-rfc019-corpus-reingestion-phase2.md) |
-| PRD / Requirements | `PRD.md` |
-| Hard Rules | [CLAUDE.md HR2](../../CLAUDE.md) (erasure cascade), [CLAUDE.md HR3](../../CLAUDE.md) (ZDR routing), [CLAUDE.md HR5](../../CLAUDE.md) (no silent low-quality tree) |
-| Implementation Order | [RFC-019 §Implementation Plan](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan) |
-| Test Strategy | [RFC-019 §Test Strategy (per-fix)](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) |
-| Correctness Properties | [Design §Correctness Properties](../designs/design-rfc019-corpus-reingestion-phase2.md#correctness-properties) |
+| Artifact               | Reference                                                                                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Governing RFC          | [RFC-019: Corpus Reingestion Audit Remediation — Phase 2](../rfcs/019-corpus-reingestion-phase2.md)                                                            |
+| Design Document        | [Design: RFC-019 Corpus Reingestion Phase 2](../designs/design-rfc019-corpus-reingestion-phase2.md)                                                             |
+| PRD / Requirements     | `PRD.md`                                                                                                                                                     |
+| Hard Rules             | [CLAUDE.md HR2](../../CLAUDE.md) (erasure cascade), [CLAUDE.md HR3](../../CLAUDE.md) (ZDR routing), [CLAUDE.md HR5](../../CLAUDE.md) (no silent low-quality tree) |
+| Implementation Order   | [RFC-019 §Implementation Plan](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan)                                                                   |
+| Test Strategy          | [RFC-019 §Test Strategy (per-fix)](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed)                                 |
+| Correctness Properties | [Design §Correctness Properties](../designs/design-rfc019-corpus-reingestion-phase2.md#correctness-properties)                                                 |
 
 ## Overview
 
@@ -22,33 +22,30 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
 
 ## Tasks
 
-- [ ] <a id="1-phase-1--commit-staged-work-d0-d1"></a>1. Phase 1 — Commit staged work ([D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed), [D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted)) (0.5 d)
+- [x] <a id="1-phase-1--commit-staged-work-d0-d1"></a>1. Phase 1 — Commit staged work ([D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed), [D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted)) (0.5 d)
 
   *[RFC-019 §Implementation Plan — Phase 1](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan): commit working-tree D1 probe + RFC-018 D2 RTL fix + tests. Zero new code.*
 
-  - [ ] <a id="11-verify-d0-marker-count-guard"></a>1.1 Verify [D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) marker-count guard fix (P0, effort: S)
+  - [x] <a id="11-verify-d0-marker-count-guard"></a>1.1 Verify [D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) marker-count guard fix (P0, effort: S)
 
     - Confirm commit `cad3f63` matches RFC's documented before/after at `client.py:555-580`
     - Verify `max(1, marker_count)` duplication logic present in standalone-image branch
     - Run existing `TestStandaloneImageEnrichment` and `TestFinding4And7DenseKeyingAndCountGuard` — assert pass
     - _Requirements:_ [RFC-019 D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) | [Design Property 1](../designs/design-rfc019-corpus-reingestion-phase2.md#property-1-marker-count-alignment) | [Design Service: client.py](../designs/design-rfc019-corpus-reingestion-phase2.md#1-clientpy) | [Design AD1](../designs/design-rfc019-corpus-reingestion-phase2.md#ad1-fix-producer-not-guard-d0)
-
-  - [ ] <a id="12-add-multi-marker-raster-test"></a>1.2 Add multi-marker raster test case for [D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) (P0, effort: S)
+  - [x] <a id="12-add-multi-marker-raster-test"></a>1.2 Add multi-marker raster test case for [D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) (P0, effort: S)
 
     - In `tests/test_image_blocks.py::TestStandaloneImageEnrichment`: add `test_multi_marker_raster`
     - Docling emits 3 `<!-- image -->` markers for one JPG; assert 3 `PictureResult`s built, all with identical `png_bytes`, guard passes, all markers resolve to `[Figure: fig-N]`
     - Assert test fails on pre-`cad3f63` code
     - **Validates:** [Design Property 1](../designs/design-rfc019-corpus-reingestion-phase2.md#property-1-marker-count-alignment) | [RFC-019 D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed)
     - _Requirements:_ [RFC-019 D0](../rfcs/019-corpus-reingestion-phase2.md#d0-splicefiguremarkers-count-guard-fix-p0--landed) | [Design Property 1](../designs/design-rfc019-corpus-reingestion-phase2.md#property-1-marker-count-alignment) | [Design Service: client.py](../designs/design-rfc019-corpus-reingestion-phase2.md#1-clientpy)
-
-  - [ ] <a id="13-commit-d1-text-layer-probe"></a>1.3 Commit [D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted) text-layer probe + RFC-018 D2 RTL fix (P0, effort: S)
+  - [~] <a id="13-commit-d1-text-layer-probe"></a>1.3 ~~Commit [D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted) text-layer probe + RFC-018 D2 RTL fix~~ (P0, effort: S) — **SKIPPED**: no commits per swarm-builder rule #10; changes left in working tree
 
     - Commit working-tree changes: `src/pageindex_mcp/converters.py:1474-1478` (vector-text probe), `src/pageindex_mcp/helpers.py` (RFC-018 D2 RTL), associated test files
     - Verify diff matches [RFC-019 D1 before/after](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted)
     - Run `uv run pytest` — assert fully green (238+ tests)
     - _Requirements:_ [RFC-019 D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted) | [Design Property 2](../designs/design-rfc019-corpus-reingestion-phase2.md#property-2-vector-text-ocr-suppression) | [Design Service: converters.py](../designs/design-rfc019-corpus-reingestion-phase2.md#2-converterspy) | [Design AD2](../designs/design-rfc019-corpus-reingestion-phase2.md#ad2-vector-text-probe-before-ocr-d1) | [Design Sequence: Per-picture OCR flow](../designs/design-rfc019-corpus-reingestion-phase2.md#per-picture-ocr-flow--d1)
-
-  - [ ] <a id="14-d1-boundary-and-env-override-tests"></a>1.4 [D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted) boundary and env-override test cases (P0, effort: S)
+  - [x] <a id="14-d1-boundary-and-env-override-tests"></a>1.4 [D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted) boundary and env-override test cases (P0, effort: S)
 
     - In `tests/test_image_blocks.py`: add four cases:
       - (a) >20 chars vector text under bbox — assert `_recover_picture_text` returns no entry (OCR skipped)
@@ -57,26 +54,23 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
       - (d) `_PICTURE_OCR_MIN_CHARS` env override — assert threshold changes behavior
     - **Validates:** [Design Property 2](../designs/design-rfc019-corpus-reingestion-phase2.md#property-2-vector-text-ocr-suppression) | [RFC-019 D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted)
     - _Requirements:_ [RFC-019 D1](../rfcs/019-corpus-reingestion-phase2.md#d1-text-layer-availability-probe-before-ocr-p0--implemented-uncommitted) | [Design Property 2](../designs/design-rfc019-corpus-reingestion-phase2.md#property-2-vector-text-ocr-suppression) | [Design Service: converters.py](../designs/design-rfc019-corpus-reingestion-phase2.md#2-converterspy) | [Design Sequence: Per-picture OCR flow](../designs/design-rfc019-corpus-reingestion-phase2.md#per-picture-ocr-flow--d1)
-
-  - [ ] <a id="15-checkpoint--phase-1"></a>1.5 Checkpoint — Phase 1
+  - [x] <a id="15-checkpoint--phase-1"></a>1.5 Checkpoint — Phase 1
 
     - Run `uv run pytest` and verify all tests pass (238+ tests)
     - Verify [Property 1](../designs/design-rfc019-corpus-reingestion-phase2.md#property-1-marker-count-alignment) and [Property 2](../designs/design-rfc019-corpus-reingestion-phase2.md#property-2-vector-text-ocr-suppression) validated by [Task 1.2](#12-add-multi-marker-raster-test) and [Task 1.4](#14-d1-boundary-and-env-override-tests) respectively
     - Cross-ref: [RFC-019 §Implementation Plan checkpoint 1](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan)
     - Ask the user if questions arise before proceeding to [Phase 2](#2-phase-2--d3-marker-strip)
-
-- [ ] <a id="2-phase-2--d3-marker-strip"></a>2. Phase 2 — [D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) marker-strip (0.5 d)
+- [x] <a id="2-phase-2--d3-marker-strip"></a>2. Phase 2 — [D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) marker-strip (0.5 d)
 
   *[RFC-019 §Implementation Plan — Phase 2](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan): ~15 LOC, smallest risk, immediate user-visible cleanup.*
 
-  - [ ] <a id="21-implement-d3-marker-strip"></a>2.1 Implement [D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) scanned-page marker-strip (P1, effort: S)
+  - [x] <a id="21-implement-d3-marker-strip"></a>2.1 Implement [D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) scanned-page marker-strip (P1, effort: S)
 
     - In `src/pageindex_mcp/converters.py` (~line 1620): tag deliberate skips with `PictureResult(skipped_reason="page_coverage")`
     - In `src/pageindex_mcp/converters.py` (~line 1560): branch `splice_figure_markers` to strip on `skipped_reason`/`decorative`, preserve on genuine failure
     - Add `STRIP_SKIPPED_IMAGE_MARKERS` env var toggle (default: on)
     - _Requirements:_ [RFC-019 D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) | [Design Property 4](../designs/design-rfc019-corpus-reingestion-phase2.md#property-4-deliberate-skip-marker-strip) | [Design Service: converters.py](../designs/design-rfc019-corpus-reingestion-phase2.md#2-converterspy) | [Design AD4](../designs/design-rfc019-corpus-reingestion-phase2.md#ad4-tagged-skip-reason-d3) | [Design Sequence: Marker resolution flow](../designs/design-rfc019-corpus-reingestion-phase2.md#marker-resolution-flow--d3)
-
-  - [ ] <a id="22-d3-test-coverage"></a>2.2 [D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) test coverage (P1, effort: S)
+  - [x] <a id="22-d3-test-coverage"></a>2.2 [D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) test coverage (P1, effort: S)
 
     - In `tests/test_image_blocks.py::TestPageCoverageFilter`:
       - (a) Coverage-skipped region — assert `skipped_reason="page_coverage"` in dense list
@@ -85,26 +79,23 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
       - (d) `STRIP_SKIPPED_IMAGE_MARKERS=false` — assert marker preserved even for skipped results
     - **Validates:** [Design Property 4](../designs/design-rfc019-corpus-reingestion-phase2.md#property-4-deliberate-skip-marker-strip) | [RFC-019 D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion)
     - _Requirements:_ [RFC-019 D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) | [Design Property 4](../designs/design-rfc019-corpus-reingestion-phase2.md#property-4-deliberate-skip-marker-strip) | [Design Service: converters.py](../designs/design-rfc019-corpus-reingestion-phase2.md#2-converterspy) | [Design Sequence: Marker resolution flow](../designs/design-rfc019-corpus-reingestion-phase2.md#marker-resolution-flow--d3)
-
   - [ ] <a id="23-spot-reingestion-checkpoint-2"></a>2.3 Spot reingestion — checkpoint 2 (P1, effort: S)
 
     - Reingest 3 scanned-page docs via `preprocess_client.py`
     - Assert zero bare `<!-- image -->` markers in flat output
     - Cross-ref: [RFC-019 §Implementation Plan checkpoint 2](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan)
     - _Requirements:_ [RFC-019 D3](../rfcs/019-corpus-reingestion-phase2.md#d3-scanned-page-background-pictureitem-filter-p1--marker-strip-completion) | [Design Property 4](../designs/design-rfc019-corpus-reingestion-phase2.md#property-4-deliberate-skip-marker-strip)
-
-  - [ ] <a id="24-checkpoint--phase-2"></a>2.4 Checkpoint — Phase 2
+  - [x] <a id="24-checkpoint--phase-2"></a>2.4 Checkpoint — Phase 2
 
     - Run `uv run pytest` — all tests green
     - Verify [Property 4](../designs/design-rfc019-corpus-reingestion-phase2.md#property-4-deliberate-skip-marker-strip) validated by [Task 2.2](#22-d3-test-coverage) and confirmed operationally by [Task 2.3](#23-spot-reingestion-checkpoint-2)
     - Cross-ref: [Phase 1 checkpoint](#15-checkpoint--phase-1) passed
     - Ask the user if questions arise before proceeding to [Phase 3](#3-phase-3--d2-garble-gate)
-
-- [ ] <a id="3-phase-3--d2-garble-gate"></a>3. Phase 3 — [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) garble gate (1.5 d)
+- [x] <a id="3-phase-3--d2-garble-gate"></a>3. Phase 3 — [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) garble gate (1.5 d)
 
   *[RFC-019 §Implementation Plan — Phase 3](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan): ~40 LOC + `_COMMON_WORDS` set + `expected_script` inference + fixture tests. Independent of Phases 1–2.*
 
-  - [ ] <a id="31-implement-common-words-latin-detection"></a>3.1 Implement `_COMMON_WORDS` and Latin-token detection for [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) (P1, effort: M)
+  - [x] <a id="31-implement-common-words-latin-detection"></a>3.1 Implement `_COMMON_WORDS` and Latin-token detection for [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) (P1, effort: M)
 
     - In `src/pageindex_mcp/helpers.py`:
       - Add `_LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")`
@@ -115,8 +106,7 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
     - Add `GARBLE_LATIN_GIBBERISH_ENABLED` env toggle (default: on)
     - Add `GARBLE_LATIN_RATIO` and `GARBLE_NONSENSE_RATIO` env overrides
     - _Requirements:_ [RFC-019 D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) | [Design Property 3](../designs/design-rfc019-corpus-reingestion-phase2.md#property-3-latin-gibberish-detection) | [Design Service: helpers.py](../designs/design-rfc019-corpus-reingestion-phase2.md#3-helperspy) | [Design AD3](../designs/design-rfc019-corpus-reingestion-phase2.md#ad3-script-context-dictionary-garble-d2) | [Design Sequence: Garble detection flow](../designs/design-rfc019-corpus-reingestion-phase2.md#garble-detection-flow--d2)
-
-  - [ ] <a id="32-implement-expected-script-inference"></a>3.2 Implement `expected_script` inference threading for [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) (P1, effort: M)
+  - [x] <a id="32-implement-expected-script-inference"></a>3.2 Implement `expected_script` inference threading for [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) (P1, effort: M)
 
     - In `src/pageindex_mcp/helpers.py`:
       - Infer majority Unicode-block script per node (U+0600–U+06FF for Arabic)
@@ -124,8 +114,7 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
       - Thread `expected_script` through `_garble_check_nodes` → `_is_garbled_blob` calls
     - No signature breaks to existing call sites (parameter is optional)
     - _Requirements:_ [RFC-019 D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) | [Design Property 3](../designs/design-rfc019-corpus-reingestion-phase2.md#property-3-latin-gibberish-detection) | [Design Service: helpers.py](../designs/design-rfc019-corpus-reingestion-phase2.md#3-helperspy) | [Design Sequence: Garble detection flow](../designs/design-rfc019-corpus-reingestion-phase2.md#garble-detection-flow--d2)
-
-  - [ ] <a id="33-d2-fixture-and-regression-tests"></a>3.3 [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) fixture and regression tests (P1, effort: M)
+  - [x] <a id="33-d2-fixture-and-regression-tests"></a>3.3 [D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) fixture and regression tests (P1, effort: M)
 
     - **Positive (garble detected):** fixture strings from MOU MOHRE, qarar 106/2022, warid 597 false-Latin output, with `expected_script="Arab"` — assert `_is_garbled_blob` returns `True`
     - **Negative (no false positive):**
@@ -138,7 +127,6 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
     - **Regression:** all 12 PASS docs' baseline assertions hold
     - **Validates:** [Design Property 3](../designs/design-rfc019-corpus-reingestion-phase2.md#property-3-latin-gibberish-detection) | [RFC-019 D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1)
     - _Requirements:_ [RFC-019 D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) | [Design Property 3](../designs/design-rfc019-corpus-reingestion-phase2.md#property-3-latin-gibberish-detection) | [Design Service: helpers.py](../designs/design-rfc019-corpus-reingestion-phase2.md#3-helperspy)
-
   - [ ] <a id="34-targeted-reingestion-checkpoint-3"></a>3.4 Targeted reingestion — checkpoint 3 (P1, effort: M)
 
     - Reingest 3 FAIL Arabic docs (MOU MOHRE, qarar 106/2022, warid 597) via `preprocess_client.py`
@@ -146,19 +134,17 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
     - Reingest 12 PASS docs — zero regressions
     - Cross-ref: [RFC-019 §Implementation Plan checkpoint 3](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan)
     - _Requirements:_ [RFC-019 D2](../rfcs/019-corpus-reingestion-phase2.md#d2-two-pronged-garble-gate-latin-gibberish--pua-p1) | [Design Property 3](../designs/design-rfc019-corpus-reingestion-phase2.md#property-3-latin-gibberish-detection) | [RFC-019 §Risks](../rfcs/019-corpus-reingestion-phase2.md#risks--mitigations)
-
-  - [ ] <a id="35-checkpoint--phase-3"></a>3.5 Checkpoint — Phase 3
+  - [x] <a id="35-checkpoint--phase-3"></a>3.5 Checkpoint — Phase 3
 
     - Run `uv run pytest` — all tests green
     - Verify [Property 3](../designs/design-rfc019-corpus-reingestion-phase2.md#property-3-latin-gibberish-detection) validated by [Task 3.3](#33-d2-fixture-and-regression-tests) and confirmed operationally by [Task 3.4](#34-targeted-reingestion-checkpoint-3)
     - Cross-ref: [Phase 2 checkpoint](#24-checkpoint--phase-2) passed
     - Ask the user if questions arise before proceeding to [Phase 4](#4-phase-4--d4-llm-retry)
-
-- [ ] <a id="4-phase-4--d4-llm-retry"></a>4. Phase 4 — [D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) LLM retry (1 d)
+- [x] <a id="4-phase-4--d4-llm-retry"></a>4. Phase 4 — [D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) LLM retry (1 d)
 
   *[RFC-019 §Implementation Plan — Phase 4](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan): independent; land last.*
 
-  - [ ] <a id="41-implement-d4-retry-backoff"></a>4.1 Implement [D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) Azure LLM retry/backoff (P2, effort: M)
+  - [x] <a id="41-implement-d4-retry-backoff"></a>4.1 Implement [D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) Azure LLM retry/backoff (P2, effort: M)
 
     - In `src/pageindex_mcp/client.py`: wrap tree-generation LLM calls with bounded exponential-backoff retry
       - Max attempts: 3 (configurable via `LLM_TREE_MAX_RETRIES`, default 3)
@@ -172,8 +158,7 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
     - Log each retry at WARNING with attempt number, status code, backoff duration
     - Record `retry_attempt` and `retry_reason` on Langfuse LLM generation spans
     - _Requirements:_ [RFC-019 D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) | [Design Property 5](../designs/design-rfc019-corpus-reingestion-phase2.md#property-5-llm-retry-bounded) | [Design Service: client.py](../designs/design-rfc019-corpus-reingestion-phase2.md#1-clientpy) | [Design AD5](../designs/design-rfc019-corpus-reingestion-phase2.md#ad5-bounded-retry-with-typed-failure-d4) | [Design Sequence: LLM retry flow](../designs/design-rfc019-corpus-reingestion-phase2.md#llm-retry-flow--d4)
-
-  - [ ] <a id="42-d4-retry-unit-tests"></a>4.2 [D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) retry unit tests (P2, effort: S)
+  - [x] <a id="42-d4-retry-unit-tests"></a>4.2 [D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) retry unit tests (P2, effort: S)
 
     - **Retry success:** mock LLM client raises 429 on attempt 1, succeeds on attempt 2 — assert result returned, attempt count is 2, Langfuse span records `retry_attempt=1`
     - **Retry exhaustion:** mock raises 500 on all 3 attempts — assert `LLMTransientFailure` raised, arq job status is `llm_transient_failure`
@@ -182,14 +167,12 @@ This plan implements five defect fixes ([D0](../rfcs/019-corpus-reingestion-phas
     - **`LLM_TREE_MAX_RETRIES=1`:** assert single attempt, no retry
     - **Validates:** [Design Property 5](../designs/design-rfc019-corpus-reingestion-phase2.md#property-5-llm-retry-bounded) | [RFC-019 D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2)
     - _Requirements:_ [RFC-019 D4](../rfcs/019-corpus-reingestion-phase2.md#d4-azure-llm-retryfallback-hardening-p2) | [Design Property 5](../designs/design-rfc019-corpus-reingestion-phase2.md#property-5-llm-retry-bounded) | [Design Service: client.py](../designs/design-rfc019-corpus-reingestion-phase2.md#1-clientpy) | [Design Sequence: LLM retry flow](../designs/design-rfc019-corpus-reingestion-phase2.md#llm-retry-flow--d4)
-
-  - [ ] <a id="43-checkpoint--phase-4"></a>4.3 Checkpoint — Phase 4
+  - [x] <a id="43-checkpoint--phase-4"></a>4.3 Checkpoint — Phase 4
 
     - Run `uv run pytest` — all tests green
     - Verify [Property 5](../designs/design-rfc019-corpus-reingestion-phase2.md#property-5-llm-retry-bounded) validated by [Task 4.2](#42-d4-retry-unit-tests)
     - Cross-ref: [Phase 3 checkpoint](#35-checkpoint--phase-3) passed
     - Ask the user if questions arise before proceeding to [Phase 5](#5-phase-5--final-validation)
-
 - [ ] <a id="5-phase-5--final-validation"></a>5. Phase 5 — Final validation (0.5 d)
 
   *[RFC-019 §Implementation Plan — Phase 5](../rfcs/019-corpus-reingestion-phase2.md#implementation-plan): full 25-doc batch reingestion; produce final scorecard.*
