@@ -1201,6 +1201,37 @@ def _fix_fi_hash_substitution(md: str) -> str:
     return "".join(out)
 
 
+def _text_is_logical_order(text: str) -> bool:
+    """Detect whether Arabic text is already in correct logical reading order.
+
+    Samples Arabic-heavy lines and compares readability scores of the original
+    vs get_display() output. If the original scores equal or higher, the text
+    is already logical order and get_display() would double-reverse it."""
+    from bidi.algorithm import get_display
+
+    sampled = 0
+    orig_total = 0
+    disp_total = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or len(stripped) < 10:
+            continue
+        ar_count = sum(1 for c in stripped if _is_arabic_char(c))
+        if ar_count / len(stripped) <= 0.3:
+            continue
+        orig_words = stripped.split()
+        disp_line = get_display(stripped)
+        disp_words = disp_line.split()
+        orig_total += _arabic_readability_score(orig_words)
+        disp_total += _arabic_readability_score(disp_words)
+        sampled += 1
+        if sampled >= 8:
+            break
+    if sampled == 0:
+        return False
+    return orig_total >= disp_total
+
+
 def reconstruct_bidi_order(text: str) -> str:
     """Reorder visual-order Arabic runs into logical reading order (RFC-015 D7).
 
@@ -1211,11 +1242,16 @@ def reconstruct_bidi_order(text: str) -> str:
     documents are byte-for-byte untouched (zero false-positive risk). A leading markdown
     heading marker is split off and re-prefixed so BiDi reordering never moves the
     ``#`` prefix — heading-depth inference runs right after D7 and must still see it.
+    Includes a logical-vs-visual order probe: if the text already reads correctly
+    (docling outputs logical order for modern PDFs), get_display() is skipped to
+    prevent double-reversal.
     Pure local computation — no LLM, no network (HR3)."""
     if not text:
         return text
     arabic = len(_AR_SCRIPT_RE.findall(text))
     if arabic / len(text) <= 0.15:
+        return text
+    if _text_is_logical_order(text):
         return text
     from bidi.algorithm import get_display
 
@@ -1232,6 +1268,53 @@ def reconstruct_bidi_order(text: str) -> str:
 # Split a leading markdown heading marker off a line so reconstruct_bidi_order reorders
 # only the title text, leaving the '#' prefix in place for depth inference.
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
+
+_AR_COMMON_WORDS = frozenset([
+    "في", "من", "على", "إلى", "أن", "هذا", "هذه",
+    "التي", "الذي", "عن", "مع", "بين", "كان", "ما",
+])
+_AR_DEFINITE_RE = re.compile(r"\bال\w+")
+
+
+def _is_arabic_char(c: str) -> bool:
+    cp = ord(c)
+    return 0x0600 <= cp <= 0x06FF or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF
+
+
+def _arabic_readability_score(words: list[str]) -> int:
+    score = 0
+    for w in words:
+        if w in _AR_COMMON_WORDS:
+            score += 2
+        if _AR_DEFINITE_RE.match(w):
+            score += 1
+    return score
+
+
+def _fix_residual_rtl_reversal(text: str) -> str:
+    if not text:
+        return text
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+        arabic = sum(1 for c in stripped if _is_arabic_char(c))
+        if arabic / len(stripped) <= 0.5:
+            out.append(line)
+            continue
+        words = stripped.split()
+        reversed_words = list(reversed(words))
+        fwd_score = _arabic_readability_score(words)
+        rev_score = _arabic_readability_score(reversed_words)
+        if rev_score > fwd_score:
+            indent = line[:len(line) - len(line.lstrip())]
+            trail = line[len(line.rstrip()):]
+            out.append(indent + " ".join(reversed_words) + trail)
+        else:
+            out.append(line)
+    return "".join(out)
 
 
 # RFC-015 D6 gate. Mirrors client.py:66 VERBATIM — two independent module-level copies
@@ -1388,6 +1471,11 @@ def _recover_picture_text(
             page_area = page.rect.width * page.rect.height
             if page_area > 0 and (rect.width * rect.height) / page_area > _PICTURE_PAGE_COVERAGE_THRESHOLD:
                 continue
+            # D1 (RFC-018): skip per-picture OCR when clean text already exists under
+            # this bbox — Docling already extracted it into the markdown body.
+            clip_text = page.get_text("text", clip=rect).strip()
+            if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
+                continue
             pix = page.get_pixmap(clip=rect, dpi=300)
             crops[i] = {"png_bytes": pix.tobytes("png"), "region": region}
     finally:
@@ -1498,7 +1586,9 @@ def _pre_inference_normalize(text: str) -> str:
     single token by the time the heading regex parses it)."""
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
-    return reconstruct_bidi_order(text)  # D7
+    text = reconstruct_bidi_order(text)  # D7
+    text = _fix_residual_rtl_reversal(text)  # D2 (RFC-018)
+    return text
 
 
 def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureResult]:

@@ -415,15 +415,40 @@ class CustomPageIndexClient(PageIndexClient):
                 # (pymupdf4llm / docling, per PDF_CONVERTER), then fall back to
                 # the legacy page_index route only if every converter fails.
                 md_content = None
+
+                # D3a (RFC-018): pre-conversion text-layer probe. If the raw PDF text
+                # layer is garbled, skip straight to force_full_page_ocr=True instead of
+                # wasting a non-OCR conversion attempt.
+                pre_garbled = False
+                try:
+                    import fitz
+                    with fitz.open(file_path) as probe_pdf:
+                        if probe_pdf.page_count > 0:
+                            raw_text = probe_pdf[0].get_text()
+                            if raw_text.strip() and _flat_text_is_garbled(raw_text):
+                                pre_garbled = True
+                                logger.info(
+                                    "D3a: raw text layer garbled for %s, forcing full-page "
+                                    "OCR upfront",
+                                    filename,
+                                )
+                except Exception:
+                    pass  # probe failure is non-fatal — fall through to the normal chain
+
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
                 for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        md_content, pic_results = _split_converter_output(
-                            await asyncio.to_thread(conv_fn, file_path)
-                        )
+                        if pre_garbled and "docling" in conv_name:
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(conv_fn, file_path, True)
+                            )
+                        else:
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(conv_fn, file_path)
+                            )
                         used_converter = conv_name
                         break
                     except Exception as conv_exc:
@@ -534,15 +559,19 @@ class CustomPageIndexClient(PageIndexClient):
                 logger.info("OCR image to markdown: %s", filename)
                 img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
                 md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
-                # D1: standalone image IS the picture — synthetic PictureResult
-                # lets splice_figure_markers + _enrich_image_blocks run normally.
+                # D0 (RFC-018): standalone image IS the picture — synthetic
+                # PictureResult(s).  Count <!-- image --> markers so
+                # splice_figure_markers + _enrich_image_blocks get one
+                # PictureResult per marker (max(1, …) preserves the pre-D0
+                # single-result behaviour when zero markers are present).
                 img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
+                marker_count = md_content.count("<!-- image -->")
                 pic_results = [PictureResult(
                     ocr_text="",
                     page=1,
                     bbox={"l": 0, "t": 0, "r": 0, "b": 0},
                     png_bytes=img_bytes,
-                )]
+                )] * max(1, marker_count)
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
                 ) as md_tmp:

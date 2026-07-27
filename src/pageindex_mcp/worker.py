@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400
 MAX_TRIES = 2
-JOB_TIMEOUT = 900
+JOB_TIMEOUT = 1800
 # The inner timeout we apply around the converter child must be strictly
 # *shorter* than arq's outer ``job_timeout`` (JOB_TIMEOUT). Otherwise the two
 # can race: arq cancels the task before our ``asyncio.timeout()`` fires and we

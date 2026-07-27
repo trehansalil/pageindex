@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import unicodedata
@@ -633,6 +634,21 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
     return (len(matches) / max(len(text.split()), 1)) > threshold
 
 
+_GARBLE_NODE_RATIO_THRESHOLD = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
+
+
+def _garble_check_nodes(nodes: list[dict]) -> int:
+    """Recursively count nodes whose text is individually garbled."""
+    garbled = 0
+    for node in nodes:
+        text = node.get("text", "")
+        if text.strip() and _is_garbled_blob(text):
+            garbled += 1
+        children = node.get("nodes") or []
+        garbled += _garble_check_nodes(children)
+    return garbled
+
+
 def _tree_is_garbled(nodes: list) -> bool:
     blob = _flatten_tree_text(nodes)
     # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
@@ -652,6 +668,11 @@ def validate_tree(structure: list) -> tuple[bool, str]:
         return False, "depth<2"
     if _tree_is_garbled(structure):
         return False, "garbling"
+    # RFC-018 D3b: per-node garble ratio — catches documents where a minority of
+    # nodes are garbled but the flattened full-text dilutes below the bulk gate.
+    total_nodes = _tree_node_count(structure)
+    if total_nodes > 0 and (_garble_check_nodes(structure) / total_nodes) > _GARBLE_NODE_RATIO_THRESHOLD:
+        return False, "node_garbling"
     # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
     # surfaces this reason as a low_quality_tree error rather than persisting.
     if _tree_is_reordered(structure):

@@ -29,8 +29,9 @@ for arg in "$@"; do
 done
 
 if ! command -v mark >/dev/null 2>&1; then
-  echo "ERROR: mark CLI not found. Install: brew install mark (or go install github.com/kovetskiy/mark@latest)" >&2
-  exit 1
+  echo "WARN: mark CLI not found. Install: brew install mark (or go install github.com/kovetskiy/mark@latest)" >&2
+  echo "==> Skipping Confluence sync (mark not installed)"
+  exit 0
 fi
 
 # Load CONFLUENCE_* from .env if not already present in the environment, so
