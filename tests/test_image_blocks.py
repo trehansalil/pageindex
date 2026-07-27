@@ -307,6 +307,9 @@ def _make_fake_fitz(page_width: float, page_height: float):
         def __init__(self):
             self.rect = types.SimpleNamespace(height=page_height, width=page_width)
 
+        def get_text(self, mode="text", *, clip=None):
+            return ""
+
         def get_pixmap(self, *, clip=None, dpi=300):
             return types.SimpleNamespace(tobytes=lambda fmt: b"PNG_FAKE")
 
@@ -462,3 +465,169 @@ class TestStandaloneImageEnrichment:
         finally:
             if os.path.exists(jpg_path):
                 os.unlink(jpg_path)
+
+    @staticmethod
+    def _fake_settings():
+        return SimpleNamespace(
+            openai_api_key="k",
+            openai_base_url="https://api.openai.com/v1",
+            azure_api_version=None,
+            llm_model="gpt-test",
+            minio_secure=False,
+            minio_endpoint="localhost:9000",
+            minio_bucket="pageindex",
+            flat_doc_routing=True,
+            vlm_fallback=False,
+            vlm_model="gpt-4.1",
+            vlm_describe_images=False,
+            pii_corpus=False,
+        )
+
+    async def _run_index_with_markdown(self, monkeypatch, markdown: str, source_bytes: bytes):
+        """Drive CustomPageIndexClient.index() over a fake .jpg, capturing the
+        pic_results list passed to splice_figure_markers, exactly as the
+        RFC-017 D1 harness above does."""
+        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(source_bytes)
+
+            monkeypatch.setattr(client_mod, "settings", self._fake_settings())
+            monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
+            monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
+            monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
+            monkeypatch.setattr(client_mod, "validate_tree", lambda s: (False, "depth<2"))
+            monkeypatch.setattr(client_mod, "route_and_extract_flat", MagicMock(
+                return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+            ))
+            monkeypatch.setattr(client_mod, "save_flat_doc", MagicMock())
+            monkeypatch.setattr(client_mod, "save_doc", MagicMock())
+            monkeypatch.setattr(client_mod, "save_raw", MagicMock())
+            monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
+            monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
+            monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+            monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: markdown)
+
+            captured_pics = []
+            orig_splice = splice_figure_markers
+
+            def spy_splice(md, pics):
+                captured_pics.extend(pics)
+                return orig_splice(md, pics)
+
+            monkeypatch.setattr(client_mod, "splice_figure_markers", spy_splice)
+
+            c = CustomPageIndexClient(api_key="test-key")
+
+            async def _fake_tree(md_path):
+                return {"structure": [{"node_id": "n1", "text": "x", "nodes": []}], "doc_description": ""}
+
+            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
+
+            await c.index(jpg_path)
+            return captured_pics
+        finally:
+            if os.path.exists(jpg_path):
+                os.unlink(jpg_path)
+
+    @pytest.mark.asyncio
+    async def test_standalone_image_marker_count_match(self, monkeypatch):
+        """3 <!-- image --> markers -> exactly 3 PictureResults, same png_bytes (D0)."""
+        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_3MARKERS"
+        markdown = (
+            "# Title\n\n<!-- image -->\n\nMiddle\n\n<!-- image -->\n\nEnd\n\n<!-- image -->"
+        )
+        captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
+
+        assert len(captured_pics) == 3
+        assert all(p["png_bytes"] == source_bytes for p in captured_pics)
+
+    @pytest.mark.asyncio
+    async def test_standalone_image_single_marker(self, monkeypatch):
+        """1 <!-- image --> marker -> exactly 1 PictureResult (pre-D0 regression)."""
+        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_1MARKER"
+        markdown = "# Title\n\n<!-- image -->\n\nSome caption text"
+        captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
+
+        assert len(captured_pics) == 1
+        assert captured_pics[0]["png_bytes"] == source_bytes
+
+
+def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
+    """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
+    for RFC-018 D1 text-layer-probe tests on _recover_picture_text."""
+    fake = types.ModuleType("fitz")
+    fake.Rect = lambda *a: types.SimpleNamespace(
+        coords=a,
+        width=a[2] - a[0] if len(a) >= 4 else 0,
+        height=a[3] - a[1] if len(a) >= 4 else 0,
+    )
+
+    class _FakePage:
+        def __init__(self):
+            self.rect = types.SimpleNamespace(height=page_height, width=page_width)
+
+        def get_text(self, kind, *, clip=None):
+            assert kind == "text"
+            return clip_text
+
+        def get_pixmap(self, *, clip=None, dpi=300):
+            return types.SimpleNamespace(tobytes=lambda fmt: b"PNG_FAKE")
+
+    class _FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, idx):
+            return _FakePage()
+
+        def close(self):
+            pass
+
+    fake.open = lambda path: _FakeDoc()
+    return fake
+
+
+class TestTextLayerProbe:
+    """RFC-018 D1: _recover_picture_text skips per-picture OCR when the PDF
+    text layer already has clean text under the picture's bbox."""
+
+    def _make_region(self, l, t, r, b):
+        return {
+            "page": 1,
+            "bbox": types.SimpleNamespace(l=l, t=t, r=r, b=b, coord_origin=None),
+        }
+
+    def test_text_layer_skips_picture_ocr(self, monkeypatch):
+        """get_text(clip=rect) returns >20 chars -> region NOT in crops dict."""
+        long_clip_text = "This is more than twenty characters of extracted text."
+        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, long_clip_text)
+        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+
+        region = self._make_region(0, 0, 100, 100)
+
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+
+        assert 0 not in result
+        assert len(result) == 0
+
+    def test_no_text_layer_allows_picture_ocr(self, monkeypatch):
+        """get_text(clip=rect) returns "" -> region IS in crops dict, OCR proceeds."""
+        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, "")
+        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+
+        region = self._make_region(0, 0, 100, 100)
+        long_ocr_text = "Chart text recovered via OCR with enough characters to pass"
+
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            monkeypatch.setattr(
+                converters, "_tesseract_ocr_image", lambda path, langs: long_ocr_text
+            )
+            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+
+        assert 0 in result
+        assert len(result) == 1
+        assert "png_bytes" in result[0]

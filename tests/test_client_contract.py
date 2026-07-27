@@ -616,6 +616,87 @@ async def test_CONV_01_C5_image_dispatches_to_ocr_only_no_llm_vision(monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# D3a: pre-conversion garble probe (RFC-018) — raw text-layer digit-junk
+# detection forces force_full_page_ocr=True on the FIRST docling call,
+# instead of wasting a non-OCR conversion attempt and relying on the
+# after-the-fact OCR-01 retry.
+# ---------------------------------------------------------------------------
+def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
+    """Wire index() up to the .pdf branch with a mocked fitz probe and a
+    single mocked docling converter, so the D3a pre-conversion garble probe
+    can be exercised without any real PDF/Docling/Tesseract dependency."""
+    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing=True))
+    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
+    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+
+    mock_page = MagicMock()
+    mock_page.get_text.return_value = page_text
+    mock_doc = MagicMock()
+    mock_doc.page_count = 1
+    mock_doc.__enter__ = MagicMock(return_value=mock_doc)
+    mock_doc.__exit__ = MagicMock(return_value=False)
+    mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+    monkeypatch.setattr("fitz.open", MagicMock(return_value=mock_doc))
+
+    conv_mock = MagicMock(return_value="# converted md")
+    monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_mock)])
+
+    mocks = {
+        "save_doc": MagicMock(),
+        "save_flat_doc": MagicMock(),
+        "save_raw": MagicMock(),
+        "save_doc_meta": MagicMock(),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+        "OCR_ESCALATION_TOTAL": MagicMock(),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(client_mod, name, m)
+    return mocks, conv_mock
+
+
+async def test_garble_probe_numeric_junk(monkeypatch, pdf_file_with_content):
+    """D3a: a first-page text layer that is >60% digit-junk (>500 chars) is
+    caught by the pre-conversion probe, so the docling converter is invoked
+    with force_full_page_ocr=True on the FIRST (and only) call — no wasted
+    non-OCR attempt."""
+    numeric_junk = "1651001429" * 60  # 600 chars, 100% digits
+    mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=numeric_junk)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    conv_mock.assert_called_once_with(pdf_file_with_content, True)
+    mocks["save_doc"].assert_called_once()
+
+
+async def test_garble_probe_clean_text(monkeypatch, pdf_file_with_content):
+    """D3a: a clean first-page text layer does NOT trip the pre-conversion
+    probe, so the docling converter runs the normal (non-OCR) path —
+    force_full_page_ocr stays False / pre_garbled stays False."""
+    clean_text = (
+        "Allgemeine Versicherungsbedingungen fuer die Kfz-Haftpflichtversicherung. "
+        "This is ordinary German and English prose describing insurance terms and "
+        "conditions across several clauses and sections of the policy document."
+    )
+    mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=clean_text)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    conv_mock.assert_called_once_with(pdf_file_with_content)
+    mocks["save_doc"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 async def _coro_result():

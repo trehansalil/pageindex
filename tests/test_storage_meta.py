@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pageindex_mcp.storage import save_doc_meta, list_processed_docs, delete_doc
+from pageindex_mcp.helpers import _garble_check_nodes, validate_tree
 
 
 @pytest.fixture
@@ -337,3 +338,66 @@ async def test_delete_doc_removes_meta_sidecar(mock_minio):
     await delete_doc("abcd1234")
     calls = [c[0][1] for c in mock_minio.remove_object.call_args_list]
     assert "processed/abcd1234.meta.json" in calls
+
+
+# ── RFC-018 D3b: per-node garble ratio gate ─────────────────────────────────
+
+
+def _pua_heavy_text() -> str:
+    """4 PUA chars (U+E000-U+E003) in a 16-char blob = 25% PUA ratio, well
+    above the 3% per-blob PUA threshold used by ``_is_garbled_blob``."""
+    return " normal text"
+
+
+def _clean_node(i: int) -> dict:
+    return {"title": f"Section {i}", "text": f"This is section {i} content"}
+
+
+def test_per_node_garble_catches_pua_node():
+    """RFC-018 D3b: a single PUA-heavy node among 99 clean siblings is counted
+    exactly once by _garble_check_nodes, even though the bulk/flattened text
+    ratio would dilute the PUA signal well under the 3% blob-level gate."""
+    garbled_node = {"title": "Bad", "text": _pua_heavy_text()}
+    tree = [garbled_node] + [_clean_node(i) for i in range(99)]
+
+    assert _garble_check_nodes(tree) == 1
+
+
+def test_validate_tree_node_garbling_exceeds_threshold():
+    """RFC-018 D3b: when the per-node garbled ratio exceeds the 10% default
+    threshold (GARBLE_NODE_RATIO_THRESHOLD), validate_tree rejects the tree
+    with reason "node_garbling" — even though the flattened whole-document
+    text stays well under the bulk garble gates.
+
+    1 garbled node out of 9 total (root + 8 children) is ~11.1%, which
+    exceeds the threshold (the gate uses a strict ">" comparison, so an
+    exact 10% ratio does not itself trip the gate)."""
+    garbled_node = {"title": "Bad", "text": _pua_heavy_text()}
+    tree = [
+        {
+            "title": "Root",
+            "text": "root section text",
+            "nodes": [garbled_node] + [_clean_node(i) for i in range(7)],
+        }
+    ]
+
+    ok, reason = validate_tree(tree)
+    assert ok is False
+    assert reason == "node_garbling"
+
+
+def test_validate_tree_node_garbling_below_threshold_passes():
+    """RFC-018 D3b: 1 garbled node out of 100 total (root + 99 children) is a
+    1% ratio, well under the 10% default threshold, so validate_tree passes."""
+    garbled_node = {"title": "Bad", "text": _pua_heavy_text()}
+    tree = [
+        {
+            "title": "Root",
+            "text": "root section text",
+            "nodes": [garbled_node] + [_clean_node(i) for i in range(98)],
+        }
+    ]
+
+    ok, reason = validate_tree(tree)
+    assert ok is True
+    assert reason == ""

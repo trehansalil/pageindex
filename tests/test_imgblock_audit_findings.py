@@ -65,6 +65,9 @@ def _install_fake_fitz(monkeypatch):
     class _Page:
         rect = types.SimpleNamespace(height=800.0, width=600.0)
 
+        def get_text(self, mode="text", *, clip=None):
+            return ""
+
         def get_pixmap(self, clip, dpi):
             return _Pix()
 
