@@ -211,7 +211,9 @@ class TestFinding4And7DenseKeyingAndCountGuard:
         assert len(pics) == 3
         assert pics[0] is pr0
         assert pics[2] is pr2
-        assert not pics[1]  # empty placeholder keeps ordinal alignment
+        assert pics[1].get("skipped_reason") == "page_coverage"
+        assert not pics[1].get("ocr_text")
+        assert not pics[1].get("png_bytes")
 
         md = "<!-- image -->\n\n<!-- image -->\n\n<!-- image -->"
         out = splice_figure_markers(md, pics)
@@ -219,7 +221,7 @@ class TestFinding4And7DenseKeyingAndCountGuard:
         assert "third chart text here" in out
         assert "[Figure: fig-2]" in out
         assert "[Figure: fig-1]" not in out
-        assert out.count("<!-- image -->") == 1  # failed crop stays neutral
+        assert "<!-- image -->" not in out  # skipped marker stripped by D3
 
     def test_finding7_count_mismatch_degrades_to_neutral(self):
         md = "<!-- image -->\n\n<!-- image -->"

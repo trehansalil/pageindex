@@ -383,6 +383,57 @@ class TestPageCoverageFilter:
 
         assert len(result) == 1
 
+    def test_coverage_skip_tags_skipped_reason(self):
+        """splice_figure_markers: skipped_reason='page_coverage' → marker stripped
+        (mirrors the tag _recover_picture_results attaches for deliberate skips)."""
+        md = "# Title\n\n<!-- image -->\n\nMore text"
+        pics = [PictureResult(skipped_reason="page_coverage")]
+        result = splice_figure_markers(md, pics)
+        assert "<!-- image -->" not in result
+
+    def test_splice_strips_skipped_marker(self):
+        """splice_figure_markers: skipped_reason → marker stripped."""
+        md = "Before\n<!-- image -->\nAfter"
+        pics = [PictureResult(skipped_reason="page_coverage")]
+        result = splice_figure_markers(md, pics)
+        assert "<!-- image -->" not in result
+
+    def test_splice_strips_decorative_marker(self):
+        """splice_figure_markers: decorative=True → marker stripped."""
+        md = "Before\n<!-- image -->\nAfter"
+        pics = [PictureResult(decorative=True)]
+        result = splice_figure_markers(md, pics)
+        assert "<!-- image -->" not in result
+
+    def test_splice_preserves_genuine_failure_marker(self):
+        """splice_figure_markers: empty PictureResult (no reason) → marker preserved."""
+        md = "Before\n<!-- image -->\nAfter"
+        pics = [PictureResult()]
+        result = splice_figure_markers(md, pics)
+        assert "<!-- image -->" in result
+
+    def test_splice_strip_env_disabled(self, monkeypatch):
+        """STRIP_SKIPPED_IMAGE_MARKERS=false → even skipped markers are preserved."""
+        monkeypatch.setenv("STRIP_SKIPPED_IMAGE_MARKERS", "false")
+        md = "Before\n<!-- image -->\nAfter"
+        pics = [PictureResult(skipped_reason="page_coverage")]
+        result = splice_figure_markers(md, pics)
+        assert "<!-- image -->" in result
+
+    def test_splice_mixed_skipped_and_real(self):
+        """Mix of skipped and real results: skipped stripped, real kept as [Figure]."""
+        md = "A\n<!-- image -->\nB\n<!-- image -->\nC"
+        pics = [
+            PictureResult(skipped_reason="page_coverage"),
+            PictureResult(
+                ocr_text="Revenue chart", page=1, bbox={"l": 0, "t": 0, "r": 0, "b": 0}
+            ),
+        ]
+        result = splice_figure_markers(md, pics)
+        assert "<!-- image -->" not in result
+        assert "[Figure: fig-1]" in result
+        assert "Revenue chart" in result
+
 
 # ---------------------------------------------------------------------------
 # RFC-017 D1: Standalone image enrichment
@@ -553,6 +604,21 @@ class TestStandaloneImageEnrichment:
         assert len(captured_pics) == 1
         assert captured_pics[0]["png_bytes"] == source_bytes
 
+    @pytest.mark.asyncio
+    async def test_multi_marker_raster_five_markers(self, monkeypatch):
+        """5 <!-- image --> markers → exactly 5 PictureResults, all same png_bytes (D0 edge)."""
+        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_5MARKERS"
+        markdown = (
+            "# Title\n\n<!-- image -->\n\nA\n\n<!-- image -->\n\nB\n\n"
+            "<!-- image -->\n\nC\n\n<!-- image -->\n\nD\n\n<!-- image -->"
+        )
+        captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
+
+        assert len(captured_pics) == 5
+        assert all(p["png_bytes"] == source_bytes for p in captured_pics)
+        assert all(p["page"] == 1 for p in captured_pics)
+        assert all(p["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0} for p in captured_pics)
+
 
 def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
     """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
@@ -630,4 +696,51 @@ class TestTextLayerProbe:
 
         assert 0 in result
         assert len(result) == 1
+
+    def test_text_layer_boundary_exactly_20_chars(self, monkeypatch):
+        """Exactly 20 chars (== threshold) → does NOT skip, OCR proceeds."""
+        clip_text = "A" * 20  # exactly at threshold
+        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
+        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+
+        region = self._make_region(0, 0, 100, 100)
+        long_ocr = "Recovered OCR text that is long enough to pass the gate"
+
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_ocr)
+            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+
+        assert 0 in result  # OCR fires — boundary NOT exceeded
+
+    def test_text_layer_boundary_21_chars_skips(self, monkeypatch):
+        """21 chars (> threshold) → skip OCR."""
+        clip_text = "A" * 21  # just above threshold
+        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
+        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+
+        region = self._make_region(0, 0, 100, 100)
+
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+
+        assert len(result) == 0  # OCR skipped
+
+    def test_text_layer_env_override(self, monkeypatch):
+        """_PICTURE_OCR_MIN_CHARS env override: set to 50 → 30 chars should NOT skip."""
+        clip_text = "A" * 30  # 30 chars, above default 20 but below custom 50
+        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
+        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+        monkeypatch.setattr(converters, "_PICTURE_OCR_MIN_CHARS", 50)
+
+        region = self._make_region(0, 0, 100, 100)
+        long_ocr = "Recovered OCR text that is long enough to pass the gate"
+
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_ocr)
+            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+
+        assert 0 in result  # OCR fires because 30 < 50
         assert "png_bytes" in result[0]
