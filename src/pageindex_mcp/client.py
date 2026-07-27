@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import shutil
 import tempfile
 import uuid
@@ -66,6 +67,117 @@ from .storage import (
 logger = logging.getLogger(__name__)
 
 _MAX_DESC_CHARS = 4000
+
+
+class LLMTransientFailure(Exception):
+    """Raised when LLM tree-generation retries are exhausted on transient errors."""
+
+    def __init__(self, attempts: int, last_status: int | None, last_error: str):
+        self.attempts = attempts
+        self.last_status = last_status
+        self.last_error = last_error
+        super().__init__(f"LLM tree generation failed after {attempts} attempt(s): {last_error}")
+
+
+# D4: bounded retry/backoff for the Azure/OpenAI tree-generation LLM call.
+_LLM_TREE_MAX_RETRIES = int(os.environ.get("LLM_TREE_MAX_RETRIES", "3"))
+_LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
+_RETRY_AFTER_CAP = 60  # seconds
+
+
+def _is_retryable_llm_error(exc: Exception) -> tuple[bool, int | None]:
+    """Classify an LLM error as retryable or not. Returns (retryable, status_code)."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True, None
+    if status is not None:
+        if status == 429 or status >= 500:
+            return True, status
+        return False, status  # 4xx (except 429) — not retryable
+    # litellm wraps errors — check for common retryable patterns
+    err_str = str(exc).lower()
+    if any(k in err_str for k in ("timeout", "connection", "rate_limit", "529")):
+        return True, None
+    return False, None
+
+
+async def _llm_with_retry(
+    call_fn,
+    *,
+    max_retries: int = _LLM_TREE_MAX_RETRIES,
+    fallback_base_url: str = _LLM_FALLBACK_BASE_URL,
+):
+    """Call ``call_fn()`` with bounded exponential-backoff retry.
+
+    ``call_fn`` is an async callable that makes the LLM request and accepts an
+    optional ``base_url`` kwarg for fallback routing. On transient failures,
+    retries up to ``max_retries`` times with 2**attempt + jitter backoff
+    (or the server's Retry-After header, capped). If all retries fail and
+    ``fallback_base_url`` is set, tries once more against the fallback.
+    Raises ``LLMTransientFailure`` on exhaustion; non-transient errors
+    propagate immediately.
+    """
+    last_exc: Exception | None = None
+    last_status: int | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await call_fn()
+            if attempt > 1:
+                logger.info("LLM call succeeded on attempt %d", attempt)
+            return result
+        except Exception as exc:
+            retryable, status = _is_retryable_llm_error(exc)
+            last_exc = exc
+            last_status = status
+
+            if not retryable:
+                raise
+
+            if attempt == max_retries:
+                break
+
+            # Respect Retry-After header if present
+            retry_after = getattr(exc, "headers", {})
+            if hasattr(retry_after, "get"):
+                retry_after = retry_after.get("retry-after", None)
+            else:
+                retry_after = None
+
+            if retry_after is not None:
+                try:
+                    delay = min(float(retry_after), _RETRY_AFTER_CAP)
+                except (ValueError, TypeError):
+                    delay = 2**attempt + random.random()
+            else:
+                delay = 2**attempt + random.random()
+
+            logger.warning(
+                "LLM transient error (attempt %d/%d, status=%s): %s — retrying in %.1fs",
+                attempt,
+                max_retries,
+                status,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    # All retries exhausted — try fallback if configured
+    if fallback_base_url:
+        logger.warning(
+            "Primary LLM exhausted %d retries; trying fallback at %s", max_retries, fallback_base_url
+        )
+        try:
+            return await call_fn(base_url=fallback_base_url)
+        except Exception as fallback_exc:
+            logger.error("Fallback LLM also failed: %s", fallback_exc)
+            last_exc = fallback_exc
+
+    raise LLMTransientFailure(
+        attempts=max_retries,
+        last_status=last_status,
+        last_error=str(last_exc),
+    )
 
 
 def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_id: str = "") -> str:
@@ -507,7 +619,7 @@ class CustomPageIndexClient(PageIndexClient):
                         "page_index. Investigate converter availability in this image.",
                         filename,
                     )
-                    result = await asyncio.to_thread(self._run_page_index, file_path)
+                    result = await self._run_page_index_retrying(file_path)
 
             elif ext in (".md", ".markdown", ".txt"):
                 logger.info("Running md_to_tree on: %s", filename)
@@ -519,7 +631,7 @@ class CustomPageIndexClient(PageIndexClient):
                     pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
                     tmp_lo_dir = os.path.dirname(pdf_path)
                     logger.info("Running page_index on converted PDF: %s", pdf_path)
-                    result = await asyncio.to_thread(self._run_page_index, pdf_path)
+                    result = await self._run_page_index_retrying(pdf_path)
                 except Exception as lo_exc:
                     logger.warning(
                         "LibreOffice/page_index failed for %s (%s), falling back to "
@@ -1055,26 +1167,58 @@ class CustomPageIndexClient(PageIndexClient):
             if_add_doc_description="yes",
         )
 
+    async def _run_page_index_retrying(self, pdf_path: str) -> dict:
+        """D4: bounded retry/backoff wrapper around the blocking page_index() LLM call."""
+
+        async def call_fn(base_url: str | None = None):
+            prev_base = None
+            if base_url:
+                import litellm
+
+                prev_base = litellm.api_base
+                litellm.api_base = base_url
+            try:
+                return await asyncio.to_thread(self._run_page_index, pdf_path)
+            finally:
+                if base_url:
+                    litellm.api_base = prev_base
+
+        return await _llm_with_retry(call_fn)
+
     async def _run_md_to_tree(self, md_path: str) -> dict:
         from pageindex.page_index_md import md_to_tree
 
-        coro = md_to_tree(
-            md_path=md_path,
-            if_thinning=False,
-            if_add_node_summary="yes",
-            summary_token_threshold=200,
-            model=self.model,
-            if_add_doc_description="yes",
-            if_add_node_text="yes",
-            if_add_node_id="yes",
-        )
-        # md_to_tree is a coroutine; if we're already in an event loop, await directly.
-        # If called from a thread (asyncio.to_thread), spin a new loop.
-        try:
-            asyncio.get_running_loop()
-            result = await coro
-        except RuntimeError:
-            result = asyncio.run(coro)
+        # D4: bounded retry/backoff around the tree-generation LLM call.
+        async def call_fn(base_url: str | None = None):
+            prev_base = None
+            if base_url:
+                import litellm
+
+                prev_base = litellm.api_base
+                litellm.api_base = base_url
+            try:
+                coro = md_to_tree(
+                    md_path=md_path,
+                    if_thinning=False,
+                    if_add_node_summary="yes",
+                    summary_token_threshold=200,
+                    model=self.model,
+                    if_add_doc_description="yes",
+                    if_add_node_text="yes",
+                    if_add_node_id="yes",
+                )
+                # md_to_tree is a coroutine; if we're already in an event loop, await
+                # directly. If called from a thread (asyncio.to_thread), spin a new loop.
+                try:
+                    asyncio.get_running_loop()
+                    return await coro
+                except RuntimeError:
+                    return asyncio.run(coro)
+            finally:
+                if base_url:
+                    litellm.api_base = prev_base
+
+        result = await _llm_with_retry(call_fn)
 
         # RFC-015 D10: splice in any preamble content the fork's tree-builder
         # silently drops (content before the first heading in the source md).
