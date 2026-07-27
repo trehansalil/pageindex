@@ -15,9 +15,9 @@ from pageindex_mcp.converters import (
     _is_numeric_extension,
     _normalize_indented_headings,
     _recover_picture_text,
-    _splice_picture_text,
     _split_run_together_headings,
     reconstruct_bidi_order,
+    splice_figure_markers,
 )
 
 
@@ -306,45 +306,60 @@ class TestIsNumericExtension:
         assert _is_numeric_extension(("F", "hren"), {("F",)}) is False
 
 
-class TestSplicePictureText:
-    """RFC-015 D6: _splice_picture_text() replaces markers with [Figure: fig-N] and
-    appends recovered chart text as a blockquote."""
+class TestSpliceFigureMarkers:
+    """RFC-015 D6 / audit findings 4+7+12: splice_figure_markers() replaces markers
+    with [Figure: fig-N] refs from a DENSE ordinal-keyed list, appends recovered
+    chart text as a blockquote, count-guards marker↔region alignment, and leaves
+    decorative (content-free) pictures neutral."""
 
     @staticmethod
     def _pr(ocr: str = "", **kw):
-        """Build a minimal PictureResult dict for testing."""
-        return {"ocr_text": ocr, "png_bytes": b"", "page": 1, "bbox": {}, **kw}
+        """Build a content-bearing PictureResult dict for testing."""
+        return {"ocr_text": ocr, "png_bytes": b"png", "page": 1, "bbox": {}, **kw}
+
+    @staticmethod
+    def _empty():
+        """A failed-crop / decorative placeholder (no png, no ocr, no desc)."""
+        return {}
 
     def test_single_marker_spliced(self):
         md = "Intro\n\n<!-- image -->\n\nOutro"
-        out = _splice_picture_text(md, {0: self._pr("Revenue 2024 42%")})
+        out = splice_figure_markers(md, [self._pr("Revenue 2024 42%")])
         assert "[Figure: fig-0]" in out
         assert "> [Chart text]: Revenue 2024 42%" in out
         assert "<!-- image -->" not in out
 
     def test_positional_matching(self):
         md = "<!-- image -->\ntext\n<!-- image -->"
-        out = _splice_picture_text(md, {1: self._pr("second chart")})
+        out = splice_figure_markers(md, [self._empty(), self._pr("second chart")])
         assert out.count("> [Chart text]:") == 1
         assert "second chart" in out
         assert "[Figure: fig-1]" in out
 
-    def test_no_recovered_returns_unchanged(self):
+    def test_no_pics_returns_unchanged(self):
         md = "<!-- image -->"
-        assert _splice_picture_text(md, {}) == md
+        assert splice_figure_markers(md, []) == md
 
     def test_marker_without_recovery_untouched(self):
         md = "<!-- image -->\n<!-- image -->"
-        out = _splice_picture_text(md, {0: self._pr("only first has text")})
+        out = splice_figure_markers(md, [self._pr("only first has text"), self._empty()])
         assert out.count("> [Chart text]:") == 1
         assert "[Figure: fig-0]" in out
+        assert out.count("<!-- image -->") == 1
 
-    def test_no_ocr_still_replaces_marker(self):
+    def test_no_ocr_but_png_still_replaces_marker(self):
         md = "<!-- image -->"
-        out = _splice_picture_text(md, {0: self._pr()})
+        out = splice_figure_markers(md, [self._pr()])
         assert "[Figure: fig-0]" in out
         assert "<!-- image -->" not in out
         assert "[Chart text]" not in out
+
+    def test_count_mismatch_keeps_all_markers_neutral(self):
+        # Finding 7: marker↔region ordinal correspondence is unverified — on a
+        # count mismatch nothing is spliced rather than risking misattachment.
+        md = "<!-- image -->\n<!-- image -->\n<!-- image -->"
+        out = splice_figure_markers(md, [self._pr("some chart"), self._pr("other")])
+        assert out == md
 
 
 class TestBboxToFitzRect:
@@ -393,7 +408,7 @@ class TestRecoverPictureText:
                 return b"\x89PNG fake image bytes"
 
         class _Page:
-            rect = types.SimpleNamespace(height=800.0)
+            rect = types.SimpleNamespace(height=800.0, width=600.0)
 
             def get_pixmap(self, clip, dpi):
                 return _Pix()
@@ -408,7 +423,9 @@ class TestRecoverPictureText:
                 pass
 
         fake = types.ModuleType("fitz")
-        fake.Rect = lambda *a: types.SimpleNamespace(coords=a)
+        fake.Rect = lambda *a: types.SimpleNamespace(
+            coords=a, width=a[2] - a[0] if len(a) >= 4 else 0, height=a[3] - a[1] if len(a) >= 4 else 0,
+        )
         fake.open = lambda path: _Pdf()
         monkeypatch.setitem(sys.modules, "fitz", fake)
 
@@ -429,7 +446,13 @@ class TestRecoverPictureText:
         assert result["page"] == 1
         assert "l" in result["bbox"]
 
-    def test_short_ocr_has_empty_text_but_keeps_png(self, monkeypatch):
+    def test_short_ocr_has_empty_text_and_drops_png_when_vlm_off(self, monkeypatch):
+        # Audit finding 12: decorative image (OCR below threshold) with the VLM
+        # describe route disabled -> crop bytes dropped, nothing to persist.
+        monkeypatch.setattr(
+            "pageindex_mcp.config.settings",
+            types.SimpleNamespace(vlm_describe_images=False),
+        )
         self._install_fake_fitz(monkeypatch)
         monkeypatch.setattr(
             "pageindex_mcp.converters._tesseract_ocr_image",
@@ -440,6 +463,25 @@ class TestRecoverPictureText:
         ]
         out = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert 0 in out
+        assert out[0]["ocr_text"] == ""
+        assert "png_bytes" not in out[0]
+
+    def test_short_ocr_keeps_png_when_vlm_on(self, monkeypatch):
+        # Finding 12 counterpart: with VLM describe enabled the crop is kept so
+        # the vision call may re-mark the image as content-bearing.
+        monkeypatch.setattr(
+            "pageindex_mcp.config.settings",
+            types.SimpleNamespace(vlm_describe_images=True),
+        )
+        self._install_fake_fitz(monkeypatch)
+        monkeypatch.setattr(
+            "pageindex_mcp.converters._tesseract_ocr_image",
+            lambda png, langs: "short",
+        )
+        regions = [
+            {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
+        ]
+        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert out[0]["ocr_text"] == ""
         assert isinstance(out[0]["png_bytes"], bytes)
 
@@ -455,11 +497,11 @@ class TestRecoverPictureText:
         assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
 
 
-class TestMaybeSplicePictureOcr:
-    """RFC-015 D6: _maybe_splice_picture_ocr() gates the first-party AGPL ``fitz``
-    import (via _recover_picture_text) behind the module-level _OCR_ESCALATION
-    constant. Existing TestRecoverPictureText tests call _recover_picture_text
-    directly and never exercise this gate."""
+class TestRecoverPictureResults:
+    """RFC-015 D6 / audit finding 6: _recover_picture_results() gates the
+    first-party AGPL ``fitz`` import (via _recover_picture_text) behind the
+    module-level _OCR_ESCALATION constant, and NEVER mutates the markdown —
+    the figure splice happens only in client.index()'s flat branch."""
 
     def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
         monkeypatch.setattr(converters, "_OCR_ESCALATION", False)
@@ -472,13 +514,10 @@ class TestMaybeSplicePictureOcr:
             ) as mock_collect,
             mock.patch.object(converters, "_recover_picture_text") as mock_recover,
         ):
-            out, pics = converters._maybe_splice_picture_ocr(
-                md, document=object(), pdf_path="dummy.pdf",
-            )
+            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
 
         mock_collect.assert_not_called()
         mock_recover.assert_not_called()
-        assert out == md
         assert pics == []
 
     def test_escalation_enabled_invokes_recovery(self, monkeypatch):
@@ -486,8 +525,12 @@ class TestMaybeSplicePictureOcr:
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
-        pr = {"ocr_text": "Revenue 2024 recovered chart text",
-              "png_bytes": b"fake", "page": 1, "bbox": {}}
+        pr = {
+            "ocr_text": "Revenue 2024 recovered chart text",
+            "png_bytes": b"fake",
+            "page": 1,
+            "bbox": {},
+        }
         with (
             mock.patch.object(converters, "_collect_picture_regions", return_value=pictures),
             mock.patch.object(converters, "detect_ocr_langs", return_value=["eng"]),
@@ -498,11 +541,14 @@ class TestMaybeSplicePictureOcr:
                 return_value={0: pr},
             ) as mock_recover,
         ):
-            out, pics = converters._maybe_splice_picture_ocr(
-                md, document=object(), pdf_path="dummy.pdf",
-            )
+            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
 
         assert mock_recover.call_count >= 1
-        assert "Revenue 2024 recovered chart text" in out
-        assert "[Figure: fig-0]" in out
-        assert len(pics) == 1
+        assert pics == [pr]
+
+    def test_no_marker_skips_recovery(self, monkeypatch):
+        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        with mock.patch.object(converters, "_collect_picture_regions") as mock_collect:
+            pics = converters._recover_picture_results("no images here", object(), "d.pdf")
+        mock_collect.assert_not_called()
+        assert pics == []

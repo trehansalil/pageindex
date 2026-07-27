@@ -31,6 +31,8 @@ def _fake_settings(*, vlm_fallback: bool = True, vlm_model: str = "gpt-4.1-test"
         flat_doc_routing=True,
         vlm_fallback=vlm_fallback,
         vlm_model=vlm_model,
+        vlm_describe_images=False,
+        pii_corpus=False,
     )
 
 

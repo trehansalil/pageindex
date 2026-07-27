@@ -8,8 +8,9 @@
 # this script is always safe.
 #
 # Usage:
-#   scripts/confluence_sync.sh            # scaffold + push changed/new docs
-#   scripts/confluence_sync.sh --dry-run  # scaffold + show what would push, no write
+#   scripts/confluence_sync.sh              # scaffold + push all docs (CI mode)
+#   scripts/confluence_sync.sh --dry-run    # scaffold + show what would push, no write
+#   scripts/confluence_sync.sh --local-diff # scaffold + push only locally changed docs
 #
 # Required env (see .env.example):
 #   CONFLUENCE_URL, CONFLUENCE_USER, CONFLUENCE_API_TOKEN
@@ -19,9 +20,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENTS_DIR="$ROOT_DIR/.agents"
 
 DRY_RUN=0
-if [[ "${1:-}" == "--dry-run" ]]; then
-  DRY_RUN=1
-fi
+LOCAL_DIFF=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)    DRY_RUN=1 ;;
+    --local-diff) LOCAL_DIFF=1 ;;
+  esac
+done
 
 if ! command -v mark >/dev/null 2>&1; then
   echo "ERROR: mark CLI not found. Install: brew install mark (or go install github.com/kovetskiy/mark@latest)" >&2
@@ -76,12 +81,36 @@ else
 fi
 
 FILES=()
-for dir in rfcs designs tasks; do
-  for f in "$AGENTS_DIR/$dir"/*.md; do
-    [[ "$(basename "$f")" == *-metadata.md ]] && continue
-    FILES+=("$f")
+if [[ "$LOCAL_DIFF" == "1" ]]; then
+  # Only sync files with uncommitted local changes (staged + unstaged + untracked)
+  # in the three prescribed directories.
+  while IFS= read -r rel_path; do
+    [[ -z "$rel_path" ]] && continue
+    [[ "$rel_path" == *-metadata.md ]] && continue
+    abs_path="$ROOT_DIR/$rel_path"
+    [[ -f "$abs_path" ]] || continue
+    FILES+=("$abs_path")
+  done < <(
+    cd "$ROOT_DIR"
+    {
+      git diff --name-only HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ 2>/dev/null
+      git diff --name-only --cached HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ 2>/dev/null
+      git ls-files --others --exclude-standard -- .agents/rfcs/ .agents/designs/ .agents/tasks/ 2>/dev/null
+    } | grep '\.md$' | sort -u
+  )
+  if [[ ${#FILES[@]} -eq 0 ]]; then
+    echo "==> No local changes in .agents/{rfcs,designs,tasks}/ — nothing to sync"
+    exit 0
+  fi
+  echo "==> Local diff mode: ${#FILES[@]} changed file(s)"
+else
+  for dir in rfcs designs tasks; do
+    for f in "$AGENTS_DIR/$dir"/*.md; do
+      [[ "$(basename "$f")" == *-metadata.md ]] && continue
+      FILES+=("$f")
+    done
   done
-done
+fi
 
 # Each mark call only reads/writes its own file and targets its own
 # Confluence page, so calls are independent and safe to run concurrently.

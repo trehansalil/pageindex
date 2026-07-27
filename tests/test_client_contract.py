@@ -36,6 +36,8 @@ def _fake_settings(flat_doc_routing: bool):
         flat_doc_routing=flat_doc_routing,
         vlm_fallback=False,
         vlm_model="gpt-4.1",
+        vlm_describe_images=False,
+        pii_corpus=False,
     )
 
 
@@ -138,6 +140,22 @@ async def test_doc_id_full_uuid(monkeypatch, md_file):
     doc_id = mocks["save_doc"].call_args.args[0]
     assert isinstance(doc_id, str) and len(doc_id) == 36
     uuid.UUID(doc_id)  # raises ValueError if not a valid UUID
+
+
+async def test_client_tree_meta_carries_sha256_and_description(monkeypatch, md_file):
+    """C-3 / Finding 9: the tree ingest path passes sha256 AND doc_description
+    into save_doc_meta so the reconcile cron never GETs the full processed JSON
+    to enrich a freshly ingested tree doc's registry row."""
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(md_file)
+
+    mocks["save_doc_meta"].assert_called_once()
+    meta = mocks["save_doc_meta"].call_args.args[1]
+    assert meta["sha256"]  # non-empty content hash flows into the sidecar
+    assert "doc_description" in meta  # present by key (empty string is valid)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 """Additional coverage for pageindex_mcp.storage error branches, the legacy
-hash-cache migration path, upload-staging helpers, and sync_preloaded_to_minio,
+hash-cache migration path and upload-staging helpers,
 that the behavioral-contract test files (test_storage_contract.py,
 test_storage_meta.py) don't already exercise."""
 
@@ -22,7 +22,6 @@ from pageindex_mcp.storage import (
     load_doc,
     read_registry_fields,
     save_raw,
-    sync_preloaded_to_minio,
     upload_staging,
 )
 
@@ -497,43 +496,3 @@ def test_download_staging_calls_fget_object(mock_minio):
     )
 
 
-# ── sync_preloaded_to_minio (lines 673-684) ─────────────────────────────────
-def test_sync_preloaded_to_minio_uploads_new_files_only(tmp_path, mock_minio, monkeypatch):
-    import dataclasses
-
-    monkeypatch.setattr(
-        storage_mod, "settings", dataclasses.replace(storage_mod.settings, doc_store_path=tmp_path)
-    )
-
-    (tmp_path / "new.pdf").write_bytes(b"new content")
-    (tmp_path / "existing.pdf").write_bytes(b"existing content")
-    (tmp_path / "subdir").mkdir()
-
-    existing_obj = MagicMock()
-    existing_obj.object_name = "preloaded/existing.pdf"
-    mock_minio.list_objects.return_value = [existing_obj]
-
-    synced = sync_preloaded_to_minio()
-
-    assert synced == ["new.pdf"]
-    mock_minio.fput_object.assert_called_once_with(
-        storage_mod.settings.minio_bucket, "preloaded/new.pdf", str(tmp_path / "new.pdf")
-    )
-
-
-def test_sync_preloaded_to_minio_no_new_files(tmp_path, mock_minio, monkeypatch):
-    import dataclasses
-
-    monkeypatch.setattr(
-        storage_mod, "settings", dataclasses.replace(storage_mod.settings, doc_store_path=tmp_path)
-    )
-    (tmp_path / "already.pdf").write_bytes(b"data")
-
-    existing_obj = MagicMock()
-    existing_obj.object_name = "preloaded/already.pdf"
-    mock_minio.list_objects.return_value = [existing_obj]
-
-    synced = sync_preloaded_to_minio()
-
-    assert synced == []
-    mock_minio.fput_object.assert_not_called()

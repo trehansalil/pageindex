@@ -164,6 +164,44 @@ async def _process_one(sem: asyncio.Semaphore, file: Path) -> None:
     cls = f" class={content_class}" if content_class else ""
     print(f"  [{file.name}] doc_id: {doc_id}{cls} (child peak {peak_mb:.0f} MB)", flush=True)
 
+    if doc_id:
+        from pageindex_mcp.worker import _upsert_registry_row
+
+        try:
+            await _upsert_registry_row(doc_id, content_class)
+        except Exception as exc:
+            print(f"  [{file.name}] registry upsert failed (non-fatal): {exc}", flush=True)
+
+
+async def _init_registry_pool() -> None:
+    """Open the Postgres registry pool (mirrors worker.startup)."""
+    from pageindex_mcp.config import _load_settings
+
+    settings = _load_settings()
+    if not (settings.registry_enabled and settings.postgres_dsn):
+        return
+    from pageindex_mcp.registry import init_registry
+
+    try:
+        await init_registry(settings.postgres_dsn)
+        print("  Registry pool initialised", flush=True)
+    except Exception as exc:
+        print(f"  Registry pool init failed (dual-write disabled): {exc}", flush=True)
+
+
+async def _close_registry_pool() -> None:
+    from pageindex_mcp.config import _load_settings
+
+    settings = _load_settings()
+    if not (settings.registry_enabled and settings.postgres_dsn):
+        return
+    from pageindex_mcp.registry import close_registry
+
+    try:
+        await close_registry()
+    except Exception:
+        pass
+
 
 async def preprocess(files: list[Path]) -> None:
     concurrency = _concurrency()
@@ -172,8 +210,12 @@ async def preprocess(files: list[Path]) -> None:
         f"(concurrency={concurrency})...",
         flush=True,
     )
+    await _init_registry_pool()
     sem = asyncio.Semaphore(concurrency)
-    await asyncio.gather(*(_process_one(sem, f) for f in files))
+    try:
+        await asyncio.gather(*(_process_one(sem, f) for f in files))
+    finally:
+        await _close_registry_pool()
 
 
 async def recompute_verdicts(doc_id: str | None = None) -> None:
@@ -225,11 +267,30 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
                 response.close()
                 response.release_conn()
 
-            structure = data.get("structure") or data.get("blocks") or []
             content_class = data.get("content_class", "")
+            # Finding 5 (audit 2026-07-21): a flat doc's persisted JSON has a
+            # "blocks" list of role-typed dicts and NO "structure" key (see
+            # save_flat_doc, client.py:773-791) — those blocks don't have the
+            # "nodes"/"title"/"text" shape classify_verdict/_tree_max_leaf_ratio
+            # expect, so walking them as a tree produced nonsense metrics and
+            # persisted verdict drift. client.py computes a flat doc's verdict
+            # exactly once, at ingest time, from a pre-flat-routing tree that is
+            # never persisted (client.py:757-764) — that computation cannot be
+            # reproduced here. Mirror ingest instead: a flat doc already carries
+            # its own verdict/verdict_reason/max_leaf_ratio on `data`
+            # (client.py:785-787), so reuse those verbatim rather than inventing
+            # a new heuristic over the block list. Tree docs (which always carry
+            # a "structure" key, even an empty one) keep the existing path.
+            is_flat = "structure" not in data and "blocks" in data
 
-            verdict, verdict_reason = classify_verdict(structure, content_class, None)
-            _, _, mlr = _tree_max_leaf_ratio(structure)
+            if is_flat:
+                verdict = data.get("verdict", "")
+                verdict_reason = data.get("verdict_reason", "")
+                mlr = data.get("max_leaf_ratio", 0.0)
+            else:
+                structure = data.get("structure") or []
+                verdict, verdict_reason = classify_verdict(structure, content_class, None)
+                _, _, mlr = _tree_max_leaf_ratio(structure)
 
             meta = {
                 "doc_id": did,

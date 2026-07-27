@@ -1601,4 +1601,10 @@ def flat_doc_view(data: dict) -> dict | None:
         "blocks": blocks,
         "row_records": row_records,
         "structure": [],
+        # Finding 13 (audit 2026-07-21): flat docs are saved with a
+        # doc_description (client.py:784, _generate_flat_doc_description);
+        # surface it here under the same key tree docs use (client.py:848/
+        # 910, helpers.py:336) so callers of flat_doc_view get a consistent
+        # field across both doc shapes instead of silently dropping it.
+        "doc_description": data.get("doc_description", ""),
     }

@@ -162,7 +162,8 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
 async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
     """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
        1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
-       4. Redis pageindex:doc:<doc_id>  5. hash-cache entry for the doc filename
+       4. Redis pageindex:doc:<doc_id>  4b. reconcile-etag map entry (C-3 derived store)
+       5. hash-cache entry for the doc filename
        6. Postgres registry row (D2: awaited with a timeout, never fire-and-forget).
        7. preloaded/<doc_name> raw object (D2: not all docs have one; NoSuchKey tolerated).
     Idempotent (C2: missing objects tolerated). Returns {"errors": [...]} — every
@@ -233,9 +234,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                     mc.remove_object(settings.minio_bucket, obj.object_name)
                     fig_removed += 1
             if fig_removed:
-                logger.info(
-                    "ERASE %s step2c: removed %d figure(s)", doc_id, fig_removed
-                )
+                logger.info("ERASE %s step2c: removed %d figure(s)", doc_id, fig_removed)
         except S3Error as e:
             errors.append(f"figures/: {e}")
 
@@ -255,6 +254,14 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
             logger.info("ERASE %s step4: invalidated Redis cache", doc_id)
         except Exception as e:
             errors.append(f"redis-cache: {e}")
+
+        # 4b. reconcile-etag map entry (C-3 derived store — HR2: every derived
+        # store joins the cascade). Best-effort like the other Redis steps.
+        try:
+            reconcile_etag_delete(doc_id)
+            logger.info("ERASE %s step4b: cleared reconcile-etag entry", doc_id)
+        except Exception as e:
+            errors.append(f"reconcile-etag: {e}")
 
         # 5. hash-cache entry (filename -> sha256)
         if doc_name:
@@ -315,11 +322,26 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
 
+# C-3 sidecar v2 marker. Bumped from the implicit v1 (no marker) when the
+# sidecar gained sha256 + doc_description + Tier-1 facets so the reconcile cron
+# no longer has to GET the full processed JSON to enrich a registry row
+# (audit Finding 9 / registry_backfill._bounded_enrich). The fat-vs-thin
+# decision is made by FIELD PRESENCE (see registry_backfill._is_fat), never by
+# this integer — the marker exists for telemetry/documentation only.
+SIDECAR_VERSION = 2
+
+# C-3: forward-compat Tier-1 facet fields. Omit-when-absent today (nobody
+# generates them yet — C-1, P2), so writing them is a no-op until C-1 lands;
+# listed here so the fat path stays lossless the moment they appear in `meta`.
+_FACET_FIELDS = ("product", "tier", "doc_family", "effective_date")
+
 _META_FIELDS = (
     "doc_id",
     "doc_name",
     "source_url",
     "processed_at",
+    "sha256",
+    "doc_description",
     "verdict",
     "verdict_reason",
     "max_leaf_ratio",
@@ -327,6 +349,7 @@ _META_FIELDS = (
     "permanent_marginal",
     "promotion_eligible",
     "verdict_computed_at",
+    *_FACET_FIELDS,
 )
 
 
@@ -382,6 +405,23 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         ):
             if vf in meta:
                 sidecar[vf] = meta[vf]
+        # C-3 (audit Finding 9): fatten the sidecar with the two registry-critical
+        # fields that previously lived ONLY in the full processed JSON, so the
+        # reconcile cron can enrich a registry row without a whole-tree GET.
+        #   * sha256 — omit-when-absent (legacy/thin callers stay minimal).
+        #   * doc_description — written by KEY PRESENCE, not truthiness: an empty
+        #     string is a valid description and must persist so _is_fat sees it.
+        if "sha256" in meta:
+            sidecar["sha256"] = meta["sha256"]
+        if "doc_description" in meta:
+            sidecar["doc_description"] = meta["doc_description"]
+        # C-3 forward-compat: Tier-1 facets, omit-when-absent (no-op until C-1).
+        for ff in _FACET_FIELDS:
+            if ff in meta:
+                sidecar[ff] = meta[ff]
+        # Always stamp the generation marker so telemetry/backfill can tell a
+        # freshly written v2 sidecar from a legacy one (which carries no marker).
+        sidecar["sidecar_version"] = SIDECAR_VERSION
         content = json.dumps(sidecar, indent=2).encode()
         mc.put_object(
             settings.minio_bucket,
@@ -432,7 +472,10 @@ def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict 
         fields = {k: data.get(k, "") for k in _REGISTRY_FIELDS}
         fields["doc_id"] = doc_id
         if content_class:
-            fields["content_class"] = content_class
+            # Prefer the doc's own content_class (present in the .flat.json body)
+            # over the passed marker so a reconcile orphan-heal — which only knows
+            # "this is a flat doc" from the listing — still records the true value.
+            fields["content_class"] = data.get("content_class") or content_class
         # D2 (RFC-009 / ISS-05): compute node_count from the tree structure here —
         # the processed doc is already loaded, so this is free — and dual-write it
         # into the registry's node_count column. Flat docs have no tree → 0.
@@ -652,6 +695,65 @@ def hash_cache_delete(filename: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Reconcile-etag map  (Redis HSET: pageindex:registry:reconcile_etags)
+# ---------------------------------------------------------------------------
+
+# C-3 (audit Finding 9): the incremental registry reconcile compares each
+# processed/*.meta.json object's listing etag against the last etag it upserted,
+# stored per doc_id here. This is a DERIVED store built from MinIO sidecars, so
+# it MUST join the HR2 erasure cascade (delete_doc step 4b) and a Redis flush
+# only costs one bounded self-healing pass (sidecar-only GETs), never data loss.
+# Mirrors the hash_cache_* Redis pattern; called via asyncio.to_thread from the
+# async reconcile path since redis.Redis is synchronous.
+RECONCILE_ETAG_KEY = "pageindex:registry:reconcile_etags"
+
+
+def reconcile_etag_get_all() -> dict[str, str]:
+    """Return the full {doc_id: etag} last-seen map (HGETALL, str-normalized)."""
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    raw = get_cache_redis().hgetall(RECONCILE_ETAG_KEY) or {}
+
+    def _s(v: object) -> str:
+        return v.decode() if isinstance(v, bytes) else str(v)
+
+    return {_s(k): _s(v) for k, v in raw.items()}
+
+
+def reconcile_etag_set_many(mapping: dict[str, str]) -> None:
+    """Record etags for the given doc_ids atomically (HSET). No-op when empty."""
+    if not mapping:
+        return
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    get_cache_redis().hset(RECONCILE_ETAG_KEY, mapping=mapping)
+
+
+def reconcile_etag_delete(doc_id: str) -> None:
+    """Remove one doc's reconcile-etag entry (HR2 erasure cascade step 4b)."""
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    get_cache_redis().hdel(RECONCILE_ETAG_KEY, doc_id)
+
+
+def reconcile_etag_prune(live_doc_ids: set[str]) -> None:
+    """Drop reconcile-etag entries for doc_ids no longer present in MinIO, so a
+    doc deleted outside the HR2 flow (e.g. a manual bucket cleanup) doesn't
+    linger in the map and mask a future re-ingest under the same doc_id."""
+    from .cache import get_cache_redis  # lazy: no top-level storage->cache edge
+
+    r = get_cache_redis()
+    stored = r.hgetall(RECONCILE_ETAG_KEY) or {}
+    stale = [
+        (k.decode() if isinstance(k, bytes) else str(k))
+        for k in stored
+        if (k.decode() if isinstance(k, bytes) else str(k)) not in live_doc_ids
+    ]
+    if stale:
+        r.hdel(RECONCILE_ETAG_KEY, *stale)
+
+
+# ---------------------------------------------------------------------------
 # Upload staging  (MinIO: uploads/staging/<job_id>/<filename>)
 # ---------------------------------------------------------------------------
 
@@ -706,22 +808,3 @@ def delete_staging(staging_key: str) -> bool:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
 
-# ---------------------------------------------------------------------------
-# Pre-loaded document sync  (MinIO: preloaded/<filename>)
-# ---------------------------------------------------------------------------
-
-
-def sync_preloaded_to_minio() -> list[str]:
-    """Upload new files from doc_store/ to preloaded/ prefix. Returns synced filenames."""
-    settings.doc_store_path.mkdir(exist_ok=True)
-    mc = get_minio()
-    existing = {
-        Path(obj.object_name).name
-        for obj in mc.list_objects(settings.minio_bucket, prefix="preloaded/", recursive=True)
-    }
-    synced = []
-    for f in settings.doc_store_path.iterdir():
-        if f.is_file() and f.name not in existing:
-            mc.fput_object(settings.minio_bucket, f"preloaded/{f.name}", str(f))
-            synced.append(f.name)
-    return synced

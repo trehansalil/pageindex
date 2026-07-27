@@ -121,9 +121,11 @@ async def test_erase_01_c1_cascade_order_across_stores(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
+        patch("pageindex_mcp.storage.reconcile_etag_delete") as mock_etag_del,
         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
     ):
         mock_cache_del.side_effect = lambda did: order.append(("redis", did))
+        mock_etag_del.side_effect = lambda did: order.append(("etag", did))
         mock_hash_del.side_effect = lambda filename: order.append(("hash-cache", filename))
         result = await delete_doc("abc12345")
     assert result == {"errors": []}
@@ -137,10 +139,13 @@ async def test_erase_01_c1_cascade_order_across_stores(mock_minio):
         "processed/abc12345.meta.json",
         "preloaded/report.pdf",  # RFC-011 D2: preloaded object joins cascade (step 7)
     ]
-    # MinIO purge precedes Redis purge precedes hash-cache clear.
+    # MinIO purge precedes Redis cache purge precedes the reconcile-etag purge
+    # (C-3 step 4b, HR2) precedes the hash-cache clear.
     kinds = [kind for kind, _ in order]
     assert kinds.index("minio") < kinds.index("redis")
-    assert kinds.index("redis") < kinds.index("hash-cache")
+    assert kinds.index("redis") < kinds.index("etag")
+    assert kinds.index("etag") < kinds.index("hash-cache")
+    mock_etag_del.assert_called_once_with("abc12345")
 
 
 # ── ERASE-01-C2 — idempotent: deleting an absent doc is a no-op success ───────

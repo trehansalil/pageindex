@@ -16,17 +16,20 @@ from pageindex import PageIndexClient
 from .cache import get_doc
 from .config import CURRENT_PIPELINE_VERSION, settings
 from .converters import (
+    PictureResult,
+    _add_vlm_descriptions,
     detect_ocr_langs,
     docx_to_markdown,
     ensure_tessdata,
-    get_last_picture_results,
     html_to_markdown_with_images,
     image_to_markdown,
     libreoffice_to_pdf,
     pdf_markdown_converters,
     pdf_to_markdown_docling,
     pptx_to_markdown,
+    splice_figure_markers,
     xlsx_to_markdown,
+    zdr_egress_gate,
 )
 from .helpers import (
     LowQualityTreeError,
@@ -65,8 +68,17 @@ logger = logging.getLogger(__name__)
 _MAX_DESC_CHARS = 4000
 
 
-def _generate_flat_doc_description(text: str, model: str | None = None) -> str:
-    """Generate an LLM description for a flat document from its markdown text."""
+def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_id: str = "") -> str:
+    """Generate an LLM description for a flat document from its markdown text.
+
+    HR3 (audit findings 2/3): rides ``zdr_egress_gate`` — when ``pii_corpus`` is
+    set and the endpoint is not ZDR-allowlisted, NO document text egresses and
+    the description is empty. The gated ``api_base`` is passed explicitly to
+    ``litellm.completion`` so the inspected endpoint is the one used."""
+    allowed, api_base = zdr_egress_gate("flat doc description", doc_id=doc_id)
+    if not allowed:
+        return ""
+
     from litellm import completion
 
     if not model:
@@ -75,6 +87,7 @@ def _generate_flat_doc_description(text: str, model: str | None = None) -> str:
     try:
         resp = completion(
             model=model,
+            api_base=api_base,
             messages=[
                 {
                     "role": "user",
@@ -260,15 +273,33 @@ def validate_llm_config() -> None:
         )
 
 
-def _enrich_image_blocks(
-    blocks: list[dict], pic_results: list, doc_id: str,
+def _split_converter_output(out) -> tuple[str, list]:
+    """Normalize a PDF-converter result to ``(markdown, pic_results)``.
+
+    Chain callables return ``(md, pics)`` (audit finding 1); a bare string from a
+    legacy/test double is tolerated and mapped to an empty pic_results list."""
+    if isinstance(out, tuple):
+        md, pics = out
+        return md, list(pics or [])
+    return out, []
+
+
+async def _enrich_image_blocks(
+    blocks: list[dict],
+    pic_results: list,
+    doc_id: str,
 ) -> None:
     """Enrich ``{"role": "image"}`` blocks with figure metadata and persist PNGs.
 
     Each image block's ``index`` is matched against the ordered ``pic_results``
     list. Matching results get ``figure_path``, ``page``, ``bbox``, ``ocr_text``,
     and optionally ``description`` written into the block dict, and the cropped
-    PNG is uploaded to MinIO at ``figures/<doc_id>/fig-<index>.png``."""
+    PNG is uploaded to MinIO at ``figures/<doc_id>/fig-<index>.png`` — inside the
+    per-doc prefix ``delete_doc`` purges (HR2, storage.py step 2c).
+
+    Audit finding 14: the blocking MinIO put runs via ``asyncio.to_thread`` so a
+    many-figure doc never stalls the event loop. Finding 11: ``png_bytes`` is
+    released from the result as soon as the PNG is persisted."""
     if not pic_results:
         return
     for block in blocks:
@@ -280,8 +311,9 @@ def _enrich_image_blocks(
         pr = pic_results[idx]
         png = pr.get("png_bytes")
         if png:
-            fig_key = save_figure(doc_id, idx, png)
+            fig_key = await asyncio.to_thread(save_figure, doc_id, idx, png)
             block["figure_path"] = fig_key
+            pr.pop("png_bytes", None)
         block["page"] = pr.get("page", 0)
         block["bbox"] = pr.get("bbox", {})
         if not block.get("ocr_text"):
@@ -372,6 +404,10 @@ class CustomPageIndexClient(PageIndexClient):
         tmp_lo_dir = None  # LibreOffice temp dir
         tmp_md_path = None  # HTML → markdown temp file
         md_content = None  # FLAT-03: converter markdown for the flat-routing branch
+        # Audit finding 1/11: per-picture OCR/crop results travel as a function
+        # local (converter return value), never a thread-local; the frame drops
+        # on return so crop bytes are never pinned process-wide.
+        pic_results: list = []
 
         try:
             if ext == ".pdf":
@@ -385,11 +421,14 @@ class CustomPageIndexClient(PageIndexClient):
                 for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        md_content = await asyncio.to_thread(conv_fn, file_path)
+                        md_content, pic_results = _split_converter_output(
+                            await asyncio.to_thread(conv_fn, file_path)
+                        )
                         used_converter = conv_name
                         break
                     except Exception as conv_exc:
                         md_content = None
+                        pic_results = []
                         if idx == 0:
                             # The CONFIGURED PRIMARY converter failed. Never let this be
                             # masked downstream as a generic "depth<2": log it loudly with
@@ -495,6 +534,15 @@ class CustomPageIndexClient(PageIndexClient):
                 logger.info("OCR image to markdown: %s", filename)
                 img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
                 md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
+                # D1: standalone image IS the picture — synthetic PictureResult
+                # lets splice_figure_markers + _enrich_image_blocks run normally.
+                img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
+                pic_results = [PictureResult(
+                    ocr_text="",
+                    page=1,
+                    bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                    png_bytes=img_bytes,
+                )]
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
                 ) as md_tmp:
@@ -546,8 +594,8 @@ class CustomPageIndexClient(PageIndexClient):
                         filename,
                         langs,
                     )
-                    md_content = await asyncio.to_thread(
-                        pdf_to_markdown_docling, file_path, True, langs
+                    md_content, pic_results = _split_converter_output(
+                        await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                     )
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
@@ -579,6 +627,9 @@ class CustomPageIndexClient(PageIndexClient):
                         settings.vlm_model,
                     )
                     md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
+                    # New markdown source: prior converter's picture ordinals no
+                    # longer correspond to its markers (finding 4/7 alignment).
+                    pic_results = []
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -631,8 +682,8 @@ class CustomPageIndexClient(PageIndexClient):
                             filename,
                             langs,
                         )
-                        md_content = await asyncio.to_thread(
-                            pdf_to_markdown_docling, file_path, True, langs
+                        md_content, pic_results = _split_converter_output(
+                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                         )
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
@@ -716,6 +767,9 @@ class CustomPageIndexClient(PageIndexClient):
                                     )
                                     if not _flat_text_is_garbled(vlm_md):
                                         flat_md = vlm_md
+                                        # New markdown source — converter picture
+                                        # ordinals no longer apply (finding 4/7).
+                                        pic_results = []
                                         reason = "node_count<3"
                                         VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
                                     else:
@@ -729,6 +783,21 @@ class CustomPageIndexClient(PageIndexClient):
                                         exc_info=True,
                                     )
                         if reason != "garbling":
+                            doc_id = str(uuid.uuid4())
+
+                            # RFC-004 user-locked: VLM describe stays OFF by default;
+                            # when enabled it runs HERE (flat branch, the only
+                            # consumer — finding 8) with the real doc_id, HR3-gated
+                            # and off the event loop (findings 2/3/10).
+                            if pic_results and settings.vlm_describe_images:
+                                await asyncio.to_thread(_add_vlm_descriptions, pic_results, doc_id)
+
+                            # Findings 4/6/7: figure references exist ONLY in flat
+                            # markdown; splice_figure_markers count-guards the
+                            # marker↔region alignment and degrades to neutral
+                            # markers on mismatch.
+                            flat_md = splice_figure_markers(flat_md, pic_results)
+
                             content_class, blocks = await asyncio.to_thread(
                                 route_and_extract_flat, flat_md
                             )
@@ -739,13 +808,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 content_class,
                             )
 
-                            doc_id = str(uuid.uuid4())
-
-                            pic_results = get_last_picture_results()
-                            if pic_results:
-                                _enrich_image_blocks(
-                                    blocks, pic_results, doc_id,
-                                )
+                            await _enrich_image_blocks(blocks, pic_results, doc_id)
 
                             protocol = "https" if settings.minio_secure else "http"
                             source_url = (
@@ -764,7 +827,9 @@ class CustomPageIndexClient(PageIndexClient):
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
                             flat_desc = await asyncio.to_thread(
-                                _generate_flat_doc_description, flat_md,
+                                _generate_flat_doc_description,
+                                flat_md,
+                                doc_id=doc_id,
                             )
 
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
@@ -858,6 +923,8 @@ class CustomPageIndexClient(PageIndexClient):
                 "doc_name": filename,
                 "source_url": source_url,
                 "processed_at": processed_at,
+                "sha256": sha256,  # C-3: fatten sidecar so reconcile skips full-JSON GET
+                "doc_description": result.get("doc_description", ""),  # C-3
                 "verdict": verdict,
                 "verdict_reason": verdict_reason,
                 "max_leaf_ratio": round(mlr, 4),

@@ -57,7 +57,14 @@ from pageindex_mcp.registry import (  # noqa: E402
     set_registry_complete,
     upsert_doc,
 )
-from pageindex_mcp.storage import get_minio, read_registry_fields  # noqa: E402
+from pageindex_mcp.storage import (  # noqa: E402
+    get_minio,
+    read_registry_fields,
+    reconcile_etag_get_all,
+    reconcile_etag_prune,
+    reconcile_etag_set_many,
+    save_doc_meta,
+)
 
 # Phase 3 audit Issue A #2/#3: tracks the reconciliation job's own last-run time,
 # separate from ``pageindex:registry:complete`` (a one-shot boolean, not a
@@ -86,6 +93,55 @@ def _list_meta_keys() -> list[str]:
         if name.endswith(".meta.json"):
             keys.append(name)
     return keys
+
+
+def _list_meta_entries() -> tuple[list[tuple[str, str, str]], dict[str, str | None]]:
+    """Return ``(meta_entries, orphans)`` for the incremental reconcile (C-3).
+
+    ``meta_entries`` is ``[(object_key, etag, doc_id), …]`` for every
+    ``processed/*.meta.json``. The ``etag`` comes free in the MinIO listing (no
+    per-object GET) and is the change decider — a sidecar's etag only moves when
+    the sidecar is rewritten, i.e. the doc was re-ingested. Quotes are stripped
+    (S3 wraps etags in ``"``).
+
+    ``orphans`` is ``{doc_id: content_class_marker}`` for docs that have a
+    ``processed/<id>.json`` or ``.flat.json`` but **no** ``.meta.json`` (§2b) —
+    value is a truthy ``"flat"`` marker for a flat doc, ``None`` for a tree doc —
+    so reconcile can self-heal them into fat v2 sidecars. Mirrors
+    ``list_processed_docs``' meta-preference logic (flat beats tree).
+    """
+    mc = get_minio()
+    entries: list[tuple[str, str, str]] = []
+    meta_ids: set[str] = set()
+    tree_ids: dict[str, str | None] = {}
+    flat_ids: dict[str, str | None] = {}
+    for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
+        name = obj.object_name or ""
+        if name.endswith(".meta.json"):
+            doc_id = Path(name).stem.removesuffix(".meta")
+            etag = (getattr(obj, "etag", None) or "").strip('"')
+            entries.append((name, etag, doc_id))
+            meta_ids.add(doc_id)
+        elif name.endswith(".flat.json"):
+            flat_ids[Path(name).stem.removesuffix(".flat")] = "flat"
+        elif name.endswith(".json"):
+            tree_ids[Path(name).stem] = None
+
+    orphans: dict[str, str | None] = {
+        # flat_ids second so a flat marker wins if both artifacts exist.
+        doc_id: marker
+        for doc_id, marker in {**tree_ids, **flat_ids}.items()
+        if doc_id not in meta_ids
+    }
+    return entries, orphans
+
+
+def _is_fat(meta: dict) -> bool:
+    """A fattened v2 sidecar carries both registry-critical fields, so it can be
+    upserted WITHOUT a full-JSON GET (audit Finding 9 / C-3). The decision is by
+    field presence, not the ``sidecar_version`` int, so it survives version drift.
+    """
+    return "sha256" in meta and "doc_description" in meta
 
 
 def _load_meta(object_key: str) -> dict | None:
@@ -128,10 +184,68 @@ async def _preflight_checks() -> None:
         sys.exit(1)
 
 
+async def _enrich_one(key: str, meta: dict, sem: asyncio.Semaphore) -> tuple[str, dict, bool]:
+    """Conditionally enrich one sidecar; return ``(key, meta, did_full_json_get)``.
+
+    Fat v2 sidecars (``_is_fat``) take the fast path — **no ``read_registry_fields``
+    GET** (this is the audit Finding 9 fix). A thin/legacy sidecar falls back to
+    the full processed JSON once, then **self-heals** by rewriting a fat v2
+    sidecar via ``save_doc_meta`` so the next reconcile tick is O(Δ).
+    """
+    async with sem:
+        if _is_fat(meta):
+            return key, meta, False  # fast path — no full-JSON GET
+        doc_id = meta.get("doc_id", "")
+        rich = await asyncio.to_thread(read_registry_fields, doc_id, meta.get("content_class"))
+        if rich:
+            meta.update(rich)  # now carries sha256, doc_description, node_count, facets
+            await asyncio.to_thread(save_doc_meta, doc_id, meta)  # SELF-HEAL → v2 fat sidecar
+            return key, meta, True
+        return key, meta, False
+
+
+def _prepare_metas(
+    loaded: list[tuple[str, dict | None]],
+    dry_run: bool,
+    total: int,
+    failed: list[str],
+    collect_doc_ids: set[str] | None,
+) -> list[tuple[str, dict]]:
+    """Validate loaded sidecars, defaulting doc_id from the object key when the
+    body omits it. Appends unreadable keys to ``failed`` and (when requested)
+    records every encountered doc_id in ``collect_doc_ids``. Returns the
+    ``(key, meta)`` pairs ready to enrich/upsert (empty on a dry run)."""
+    prepared: list[tuple[str, dict]] = []
+    for i, (key, meta) in enumerate(loaded, 1):
+        if meta is None:
+            failed.append(key)
+            if collect_doc_ids is not None:
+                collect_doc_ids.add(Path(key).stem.removesuffix(".meta"))
+            continue
+        doc_id = meta.get("doc_id", "")
+        if not doc_id:
+            doc_id = Path(key).stem.removesuffix(".meta")
+            meta["doc_id"] = doc_id
+        if collect_doc_ids is not None:
+            collect_doc_ids.add(doc_id)
+        if dry_run:
+            logger.info(
+                "[DRY-RUN] %d/%d  would upsert doc_id=%s  doc_name=%r",
+                i,
+                total,
+                doc_id,
+                meta.get("doc_name", ""),
+            )
+            continue
+        prepared.append((key, meta))
+    return prepared
+
+
 async def _upsert_all(
     meta_keys: list[str],
     dry_run: bool,
     collect_doc_ids: set[str] | None = None,
+    collect_fallbacks: list[str] | None = None,
 ) -> list[str]:
     """Upsert every meta.json sidecar.  Returns a list of failed object keys.
 
@@ -139,6 +253,11 @@ async def _upsert_all(
     sidecar loaded successfully or not — is added to it. reconcile_registry_
     drift() uses this to build the "current MinIO doc set" for deletion-drift
     detection without a second full MinIO GET pass.
+
+    If ``collect_fallbacks`` is given, every object key that required a full-JSON
+    GET (thin/legacy sidecar self-heal) is appended to it, so the reconcile cron
+    can log how many docs still needed enriching (C-3 observability, log-only —
+    metrics.py is read-only, no fitting metric exists).
     """
     failed: list[str] = []
     total = len(meta_keys)
@@ -154,55 +273,17 @@ async def _upsert_all(
             return key, await asyncio.to_thread(_load_meta, key)
 
     loaded = await asyncio.gather(*(_bounded_load(key) for key in meta_keys))
-
-    prepared: list[tuple[str, dict]] = []
-    for i, (key, meta) in enumerate(loaded, 1):
-        if meta is None:
-            failed.append(key)
-            if collect_doc_ids is not None:
-                stem = Path(key).stem
-                collect_doc_ids.add(stem.removesuffix(".meta"))
-            continue
-
-        doc_id = meta.get("doc_id", "")
-        if not doc_id:
-            stem = Path(key).stem
-            doc_id = stem.removesuffix(".meta")
-            meta["doc_id"] = doc_id
-
-        if collect_doc_ids is not None:
-            collect_doc_ids.add(doc_id)
-
-        if dry_run:
-            logger.info(
-                "[DRY-RUN] %d/%d  would upsert doc_id=%s  doc_name=%r",
-                i,
-                total,
-                doc_id,
-                meta.get("doc_name", ""),
-            )
-            continue
-
-        prepared.append((key, meta))
+    prepared = _prepare_metas(loaded, dry_run, total, failed, collect_doc_ids)
 
     if not prepared:
         return failed
 
-    # Enrich lean .meta.json dicts with richer fields (sha256, doc_description,
-    # node_count, Tier-1 facets) from the full processed JSON.
+    # Conditionally enrich (fat sidecars skip the full-JSON GET — Finding 9).
     enrich_sem = asyncio.Semaphore(10)
-
-    async def _bounded_enrich(key: str, meta: dict) -> tuple[str, dict]:
-        async with enrich_sem:
-            doc_id = meta.get("doc_id", "")
-            content_class = meta.get("content_class")
-            rich = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
-            if rich:
-                meta.update(rich)
-            return key, meta
-
-    enriched = await asyncio.gather(*(_bounded_enrich(k, m) for k, m in prepared))
-    prepared = list(enriched)
+    enriched = await asyncio.gather(*(_enrich_one(k, m, enrich_sem) for k, m in prepared))
+    prepared = [(k, m) for k, m, _ in enriched]
+    if collect_fallbacks is not None:
+        collect_fallbacks.extend(k for k, _, did_fallback in enriched if did_fallback)
 
     sem = asyncio.Semaphore(10)
 
@@ -233,6 +314,40 @@ async def _upsert_all(
 
     logger.info("Upserted %d/%d (failed: %d)", total - len(failed), total, len(failed))
     return failed
+
+
+async def _heal_orphans(orphans: dict[str, str | None]) -> tuple[int, int]:
+    """§2b: reconcile docs that have a processed/<id>.json|.flat.json but NO
+    .meta.json (the "no sidecar → same legacy fallback" case). Each orphan is
+    treated as thin: one ``read_registry_fields`` GET → ``save_doc_meta`` writes
+    a fresh fat v2 sidecar → upsert. Bounded one-time cost; the next tick then
+    treats each as a normal O(Δ) fat entry.
+
+    Returns ``(failed_count, full_json_fallback_count)``.
+    """
+    if not orphans:
+        return 0, 0
+
+    sem = asyncio.Semaphore(10)
+
+    async def _heal_one(doc_id: str, content_class: str | None) -> tuple[str | None, bool]:
+        async with sem:
+            rich = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+            if not rich:
+                # Unreadable full JSON — can't heal this tick; retried next tick.
+                return doc_id, False
+            await asyncio.to_thread(save_doc_meta, doc_id, rich)  # write fat v2 sidecar
+            try:
+                await upsert_doc(rich)
+                return None, True
+            except Exception as exc:
+                logger.error("reconcile: orphan heal upsert failed doc_id=%s: %s", doc_id, exc)
+                return doc_id, True
+
+    results = await asyncio.gather(*(_heal_one(d, c) for d, c in orphans.items()))
+    failed = sum(1 for failed_id, _ in results if failed_id is not None)
+    fallbacks = sum(1 for _, did_fallback in results if did_fallback)
+    return failed, fallbacks
 
 
 async def _backfill(dry_run: bool, force: bool) -> None:
@@ -407,29 +522,67 @@ async def reconcile_registry_drift() -> None:
         logger.warning("reconcile_registry_drift: Redis connect failed, skipping: %s", exc)
         return
 
+    # C-3 (audit Finding 9): incremental O(Δ) reconcile. The listing carries each
+    # sidecar's etag for free (no per-object GET); we only touch docs whose etag
+    # differs from the last one we upserted (stored in Redis), turning each tick
+    # from O(N full-JSON GETs) into O(Δ small-sidecar GETs).
     try:
-        meta_keys = await asyncio.to_thread(_list_meta_keys)
+        entries, orphans = await asyncio.to_thread(_list_meta_entries)
     except Exception as exc:
         logger.warning("reconcile_registry_drift: MinIO listing failed, skipping: %s", exc)
         return
 
-    if not meta_keys:
-        logger.debug("reconcile_registry_drift: no MinIO meta sidecars found, nothing to sync")
+    if not entries and not orphans:
+        logger.debug("reconcile_registry_drift: no MinIO docs found, nothing to sync")
         await _record_reconcile_heartbeat(redis_client)
         return
 
-    minio_doc_ids: set[str] = set()
-    failed = await _upsert_all(meta_keys, dry_run=False, collect_doc_ids=minio_doc_ids)
-    if failed:
-        logger.warning(
-            "reconcile_registry_drift: %d/%d doc(s) failed to upsert",
-            len(failed),
-            len(meta_keys),
-        )
-    else:
-        logger.info("reconcile_registry_drift: %d doc(s) reconciled", len(meta_keys))
+    stored = await asyncio.to_thread(reconcile_etag_get_all)
+    # Built from the LISTING (not just the delta) so it stays the complete live
+    # doc set for deletion detection even though we GET only changed sidecars.
+    full_minio_doc_ids = {doc_id for _, _, doc_id in entries} | set(orphans)
 
-    await _delete_stale_rows(minio_doc_ids)
+    # Δ = new docs (absent from `stored`) + re-ingested docs (etag differs).
+    changed = [(k, etag, did) for (k, etag, did) in entries if stored.get(did) != etag]
+
+    upsert_failed = 0
+    n_fallbacks = 0
+    if changed:
+        fallbacks: list[str] = []
+        failed = await _upsert_all(
+            [k for k, _, _ in changed], dry_run=False, collect_fallbacks=fallbacks
+        )
+        failed_set = set(failed)
+        upsert_failed = len(failed)
+        n_fallbacks = len(fallbacks)
+        # Persist etags ONLY for docs that upserted cleanly — a failed doc keeps
+        # its old/missing etag so it is retried on the next tick.
+        to_store = {did: etag for (k, etag, did) in changed if k not in failed_set}
+        if to_store:
+            await asyncio.to_thread(reconcile_etag_set_many, to_store)
+
+    # §2b: heal no-sidecar orphans (processed/<id>.json|.flat.json with no
+    # .meta.json) — one full-JSON GET each, then a fat sidecar is written so the
+    # next tick treats them as normal O(Δ) fat entries.
+    orphan_failed = 0
+    if orphans:
+        orphan_failed, orphan_fb = await _heal_orphans(orphans)
+        n_fallbacks += orphan_fb
+
+    logger.info(
+        "reconcile: %d listed, %d orphan(s), %d changed, %d upsert-failed, "
+        "%d full-json-fallback(s)",
+        len(entries),
+        len(orphans),
+        len(changed),
+        upsert_failed + orphan_failed,
+        n_fallbacks,
+    )
+
+    await _delete_stale_rows(full_minio_doc_ids)
+    # Prune reconcile-etag entries for docs that vanished from MinIO so a
+    # re-ingest under the same doc_id isn't masked by a stale etag.
+    await asyncio.to_thread(reconcile_etag_prune, full_minio_doc_ids)
 
     # Recorded regardless of per-doc failures — this timestamp answers "is the
     # reconcile job itself still running on schedule?", not "did every doc

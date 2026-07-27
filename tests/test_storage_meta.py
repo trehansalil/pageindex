@@ -29,7 +29,11 @@ def test_save_doc_meta_writes_sidecar(mock_minio):
     call_args = mock_minio.put_object.call_args
     assert call_args[0][1] == "processed/abcd1234.meta.json"
     written = call_args[0][2].read()
-    assert json.loads(written) == meta
+    sidecar = json.loads(written)
+    # C-3 sidecar v2: the 4 base fields are still present verbatim …
+    assert {k: sidecar[k] for k in meta} == meta
+    # … and every sidecar now carries the explicit v2 generation marker.
+    assert sidecar["sidecar_version"] == 2
 
 
 def test_list_processed_docs_reads_meta_files(mock_minio):
@@ -184,7 +188,16 @@ def test_save_doc_meta_verdict_fields_absent_legacy_compat(mock_minio):
 
     written = mock_minio.put_object.call_args[0][2].read()
     sidecar = json.loads(written)
-    assert set(sidecar.keys()) == {"doc_id", "doc_name", "source_url", "processed_at"}
+    # C-3 sidecar v2: a thin-input sidecar carries only the 4 base fields plus
+    # the always-present sidecar_version marker — no verdict/sha256/description.
+    assert set(sidecar.keys()) == {
+        "doc_id",
+        "doc_name",
+        "source_url",
+        "processed_at",
+        "sidecar_version",
+    }
+    assert sidecar["sidecar_version"] == 2
     for vf in (
         "verdict",
         "verdict_reason",
@@ -193,8 +206,121 @@ def test_save_doc_meta_verdict_fields_absent_legacy_compat(mock_minio):
         "permanent_marginal",
         "promotion_eligible",
         "verdict_computed_at",
+        "sha256",
+        "doc_description",
+        "product",
+        "tier",
+        "doc_family",
+        "effective_date",
     ):
         assert vf not in sidecar
+
+
+# ── C-3 sidecar v2: sha256 + doc_description fattening ───────────────────────
+def test_save_doc_meta_persists_sha256_and_doc_description(mock_minio):
+    """C-3 / Finding 9: the fattened sidecar carries sha256 AND doc_description so
+    the reconcile cron never has to GET the full processed JSON for a new doc."""
+    meta = {
+        "doc_id": "fat00001",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-07-21T00:00:00+00:00",
+        "sha256": "deadbeefcafef00d",
+        "doc_description": "A one-sentence summary of the document.",
+    }
+    save_doc_meta("fat00001", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar["sha256"] == "deadbeefcafef00d"
+    assert sidecar["doc_description"] == "A one-sentence summary of the document."
+    assert sidecar["sidecar_version"] == 2
+
+
+def test_save_doc_meta_doc_description_empty_string_kept(mock_minio):
+    """C-3: doc_description is written by KEY PRESENCE, not truthiness — an empty
+    string is a valid description and must be persisted (so _is_fat sees it)."""
+    meta = {
+        "doc_id": "fat00002",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-07-21T00:00:00+00:00",
+        "sha256": "abc",
+        "doc_description": "",
+    }
+    save_doc_meta("fat00002", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert "doc_description" in sidecar
+    assert sidecar["doc_description"] == ""
+
+
+def test_save_doc_meta_omits_sha256_when_absent(mock_minio):
+    """C-3: sha256 is omit-when-absent so legacy callers that never supply it
+    produce a thin (v1-shaped payload + version marker) sidecar."""
+    meta = {
+        "doc_id": "fat00003",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-07-21T00:00:00+00:00",
+    }
+    save_doc_meta("fat00003", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert "sha256" not in sidecar
+    assert sidecar["sidecar_version"] == 2
+
+
+def test_save_doc_meta_persists_forward_compat_facets(mock_minio):
+    """C-3 (forward-compat): C-1 facet fields are lossless on the fat path when
+    present, and omit-when-absent so they are a no-op until C-1 lands."""
+    meta = {
+        "doc_id": "fat00004",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-07-21T00:00:00+00:00",
+        "sha256": "x",
+        "doc_description": "d",
+        "product": "prod-a",
+        "tier": "1",
+        "doc_family": "fam",
+        "effective_date": "2026-01-01",
+    }
+    save_doc_meta("fat00004", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar["product"] == "prod-a"
+    assert sidecar["tier"] == "1"
+    assert sidecar["doc_family"] == "fam"
+    assert sidecar["effective_date"] == "2026-01-01"
+
+
+async def test_delete_doc_purges_reconcile_etag(mock_minio):
+    """HR2 / step 4b: the reconcile-etag Redis map is a derived store, so
+    delete_doc must purge the doc's etag entry — while still removing the
+    processed/<id>.meta.json sidecar (keeps test_delete_doc_removes_meta_sidecar
+    green)."""
+    mock_minio.list_objects.return_value = []
+    doc_json = json.dumps(
+        {"doc_id": "purge001", "doc_name": "report.pdf", "structure": []}
+    ).encode()
+    response = MagicMock()
+    response.read.return_value = doc_json
+    mock_minio.get_object.return_value = response
+
+    with (
+        patch("pageindex_mcp.storage.reconcile_etag_delete") as mock_etag_del,
+        patch("pageindex_mcp.storage.hash_cache_delete"),
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+    ):
+        await delete_doc("purge001")
+
+    mock_etag_del.assert_called_once_with("purge001")
+    calls = [c[0][1] for c in mock_minio.remove_object.call_args_list]
+    assert "processed/purge001.meta.json" in calls
 
 
 async def test_delete_doc_removes_meta_sidecar(mock_minio):
