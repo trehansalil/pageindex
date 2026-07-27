@@ -565,12 +565,61 @@ def _flatten_tree_text(nodes: list) -> str:
     return "".join(parts)
 
 
-def _is_garbled_blob(blob: str) -> bool:
+_LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
+
+_COMMON_WORDS: frozenset[str] = frozenset({
+    # English stopwords + common short words
+    "the", "be", "to", "of", "and", "in", "that", "have", "it", "for",
+    "not", "on", "with", "he", "as", "you", "do", "at", "this", "but",
+    "his", "by", "from", "they", "we", "say", "her", "she", "or", "an",
+    "will", "my", "one", "all", "would", "there", "their", "what", "so",
+    "up", "out", "if", "about", "who", "get", "which", "go", "me",
+    "when", "make", "can", "like", "time", "no", "just", "him", "know",
+    "take", "people", "into", "year", "your", "good", "some", "could",
+    "them", "see", "other", "than", "then", "now", "look", "only",
+    "come", "its", "over", "think", "also", "back", "after", "use",
+    "two", "how", "our", "work", "first", "well", "way", "even", "new",
+    "want", "because", "any", "these", "give", "day", "most", "us",
+    "is", "are", "was", "were", "been", "has", "had", "did", "does",
+    "may", "must", "shall", "should", "might", "need",
+    "very", "more", "much", "own", "such", "here", "where", "why",
+    "each", "few", "both", "between", "under", "same", "still",
+    "before", "after", "through", "during", "without", "within",
+    "per", "de", "re",
+    # German stopwords
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer",
+    "einem", "einen", "eines", "und", "ist", "sind", "war", "hat",
+    "mit", "auf", "für", "von", "aus", "bei", "nach", "zum", "zur",
+    "sich", "nicht", "auch", "als", "nur", "noch", "oder", "aber",
+    "wenn", "wird", "über", "ich", "wir", "sie", "man", "kann",
+    "diese", "dieser", "diesem", "diesen", "dieses", "werden",
+    "durch", "unter", "zwischen", "gegen", "ohne", "bis",
+    "sein", "seine", "seinem", "seinen", "seiner",
+    "ihre", "ihrem", "ihren", "ihrer", "mehr", "vor",
+    "haben", "dass", "schon", "immer", "wieder",
+    # Common technical/insurance terms that appear in bilingual docs
+    "gmbh", "ag", "nr", "abs", "bzw", "etc", "max", "min",
+    "pdf", "doc", "page", "file", "text", "data", "type",
+    "article", "section", "paragraph", "clause", "item",
+})
+
+
+def _latin_token_ratio(text: str) -> tuple[float, list[str]]:
+    """Return (ratio_of_latin_tokens, latin_token_list) for garble scoring."""
+    tokens = text.split()
+    if not tokens:
+        return 0.0, []
+    latin_tokens = _LATIN_TOKEN_RE.findall(text)
+    return len(latin_tokens) / len(tokens), latin_tokens
+
+
+def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     """Unified garble-detection heuristics (D7 / RFC-013).
 
     Checks (in order): empty, null/replacement bytes, GLYPH< markers,
     control-char ratio >5%, PUA ratio >3%, digit ratio >60% (blobs >500 chars),
-    token repetition >30% (>20 alnum tokens, excluding symbolic tokens)."""
+    token repetition >30% (>20 alnum tokens, excluding symbolic tokens),
+    Latin-gibberish in non-Latin script context (D2 / RFC-019, optional)."""
     if not blob.strip():
         return True
     if "\x00" in blob or "\ufffd" in blob:
@@ -598,6 +647,19 @@ def _is_garbled_blob(blob: str) -> bool:
         most_common_count = Counter(tokens).most_common(1)[0][1]
         if (most_common_count / len(tokens)) > 0.30:
             return True
+    # Latin-gibberish in non-Latin script context (D2 / RFC-019)
+    if (
+        expected_script
+        and expected_script != "Latn"
+        and os.environ.get("GARBLE_LATIN_GIBBERISH_ENABLED", "true").lower() != "false"
+    ):
+        latin_ratio_threshold = float(os.environ.get("GARBLE_LATIN_RATIO", "0.4"))
+        nonsense_threshold = float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7"))
+        ratio, latin_tokens = _latin_token_ratio(blob)
+        if ratio > latin_ratio_threshold and len(latin_tokens) >= 5:
+            nonsense = sum(1 for t in latin_tokens if t.lower() not in _COMMON_WORDS)
+            if nonsense / len(latin_tokens) > nonsense_threshold:
+                return True
     return False
 
 
@@ -637,15 +699,40 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
 _GARBLE_NODE_RATIO_THRESHOLD = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
 
 
-def _garble_check_nodes(nodes: list[dict]) -> int:
+def _infer_script(text: str) -> str | None:
+    """Infer the dominant Unicode script of text by character-block majority.
+    Returns 'Arab', 'Latn', or None if ambiguous/empty."""
+    if len(text.strip()) < 10:
+        return None
+    arab_count = 0
+    latn_count = 0
+    for ch in text:
+        cp = ord(ch)
+        if 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF:
+            arab_count += 1
+        elif (0x0041 <= cp <= 0x005A) or (0x0061 <= cp <= 0x007A) or (0x00C0 <= cp <= 0x024F):
+            latn_count += 1
+    total = arab_count + latn_count
+    if total < 5:
+        return None
+    if arab_count / total > 0.5:
+        return "Arab"
+    if latn_count / total > 0.5:
+        return "Latn"
+    return None
+
+
+def _garble_check_nodes(nodes: list[dict], page_script: str | None = None) -> int:
     """Recursively count nodes whose text is individually garbled."""
     garbled = 0
     for node in nodes:
         text = node.get("text", "")
-        if text.strip() and _is_garbled_blob(text):
-            garbled += 1
+        if text.strip():
+            node_script = _infer_script(text) if len(text) >= 50 else page_script
+            if _is_garbled_blob(text, expected_script=node_script):
+                garbled += 1
         children = node.get("nodes") or []
-        garbled += _garble_check_nodes(children)
+        garbled += _garble_check_nodes(children, page_script=page_script)
     return garbled
 
 
@@ -671,7 +758,9 @@ def validate_tree(structure: list) -> tuple[bool, str]:
     # RFC-018 D3b: per-node garble ratio — catches documents where a minority of
     # nodes are garbled but the flattened full-text dilutes below the bulk gate.
     total_nodes = _tree_node_count(structure)
-    if total_nodes > 0 and (_garble_check_nodes(structure) / total_nodes) > _GARBLE_NODE_RATIO_THRESHOLD:
+    full_text = _flatten_tree_text(structure)
+    doc_script = _infer_script(full_text)
+    if total_nodes > 0 and (_garble_check_nodes(structure, page_script=doc_script) / total_nodes) > _GARBLE_NODE_RATIO_THRESHOLD:
         return False, "node_garbling"
     # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
     # surfaces this reason as a low_quality_tree error rather than persisting.
