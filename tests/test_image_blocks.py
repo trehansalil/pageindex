@@ -168,7 +168,7 @@ class TestVlmDescribeGating:
         )
         monkeypatch.setattr(converters, "detect_ocr_langs", lambda s: ["eng"])
         monkeypatch.setattr(converters, "ensure_tessdata", lambda langs: langs)
-        monkeypatch.setattr(converters, "_recover_picture_text", lambda *a, **k: {0: pr})
+        monkeypatch.setattr(converters, "_recover_picture_text", lambda *a, **k: ({0: pr}, {}))
         with mock.patch.object(converters, "_add_vlm_descriptions") as mock_vlm:
             pics = converters._recover_picture_results("<!-- image -->", object(), "dummy.pdf")
         mock_vlm.assert_not_called()
@@ -336,15 +336,19 @@ class TestPageCoverageFilter:
         }
 
     def test_page_coverage_filter_skips_large_region(self, monkeypatch):
-        """Region at 80% page area → not in crops dict."""
+        """Region at 80% page area → not in crops dict (page HAS text layer)."""
         fake_fitz = _make_fake_fitz(600.0, 800.0)
         monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+        # F1: coverage skip is exempt when page has NO text layer (default);
+        # disable exemption so the coverage filter fires on the empty-text-layer
+        # fake page, preserving the pre-F1 test intent.
+        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
 
         region = self._make_region(0, 0, 560, 700)
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert len(result) == 0
 
@@ -361,7 +365,7 @@ class TestPageCoverageFilter:
                 converters, "_tesseract_ocr_image", lambda path, langs: long_text
             )
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert len(result) == 1
         assert "png_bytes" in result[0]
@@ -379,7 +383,7 @@ class TestPageCoverageFilter:
                 converters, "_tesseract_ocr_image", lambda path, langs: long_text
             )
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert len(result) == 1
 
@@ -477,7 +481,7 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
             monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
             monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(client_mod, "validate_tree", lambda s: (False, "depth<2"))
+            monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
             monkeypatch.setattr(client_mod, "route_and_extract_flat", MagicMock(
                 return_value=("flat_prose", [{"role": "prose", "text": "x"}])
             ))
@@ -547,7 +551,7 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
             monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
             monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(client_mod, "validate_tree", lambda s: (False, "depth<2"))
+            monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
             monkeypatch.setattr(client_mod, "route_and_extract_flat", MagicMock(
                 return_value=("flat_prose", [{"role": "prose", "text": "x"}])
             ))
@@ -674,7 +678,7 @@ class TestTextLayerProbe:
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert 0 not in result
         assert len(result) == 0
@@ -692,7 +696,7 @@ class TestTextLayerProbe:
                 converters, "_tesseract_ocr_image", lambda path, langs: long_ocr_text
             )
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert 0 in result
         assert len(result) == 1
@@ -709,7 +713,7 @@ class TestTextLayerProbe:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_ocr)
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert 0 in result  # OCR fires — boundary NOT exceeded
 
@@ -723,7 +727,7 @@ class TestTextLayerProbe:
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert len(result) == 0  # OCR skipped
 
@@ -740,7 +744,94 @@ class TestTextLayerProbe:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_ocr)
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert 0 in result  # OCR fires because 30 < 50
         assert "png_bytes" in result[0]
+
+
+# ---------------------------------------------------------------------------
+# RFC-020 Task 4.1 / F4: independent PictureResult copies (standalone path)
+# ---------------------------------------------------------------------------
+
+
+class TestF4IndependentPictureResults:
+    """RFC-020 F4: the standalone-image branch must build pic_results with a
+    list comprehension (independent dict copies), never ``[PictureResult(...)] * N``
+    (shared references) — mutating one entry must not affect the others."""
+
+    def test_pic_results_not_shared_references(self):
+        marker_count = 3
+        img_bytes = b"fake-png"
+        pic_results = [
+            PictureResult(
+                ocr_text="",
+                page=1,
+                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                png_bytes=img_bytes,
+            )
+            for _ in range(max(1, marker_count))
+        ]
+
+        pic_results[0].pop("png_bytes")
+
+        assert "png_bytes" not in pic_results[0]
+        assert "png_bytes" in pic_results[1]
+        assert "png_bytes" in pic_results[2]
+
+    def test_multi_marker_all_independent(self):
+        marker_count = 5
+        img_bytes = b"fake-png"
+        pic_results = [
+            PictureResult(
+                ocr_text="",
+                page=1,
+                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                png_bytes=img_bytes,
+            )
+            for _ in range(max(1, marker_count))
+        ]
+
+        pic_results[2]["bbox"] = {"l": 99}
+
+        assert pic_results[2]["bbox"] == {"l": 99}
+        for i in (0, 1, 3, 4):
+            assert pic_results[i]["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0}
+
+    def test_single_marker_parity(self):
+        marker_count = 1
+        img_bytes = b"fake-png"
+        pic_results = [
+            PictureResult(
+                ocr_text="",
+                page=1,
+                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                png_bytes=img_bytes,
+            )
+            for _ in range(max(1, marker_count))
+        ]
+
+        assert len(pic_results) == 1
+        assert pic_results[0]["ocr_text"] == ""
+        assert pic_results[0]["page"] == 1
+        assert pic_results[0]["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0}
+        assert pic_results[0]["png_bytes"] == img_bytes
+
+    def test_shared_reference_mutation_would_fail(self):
+        """Demonstrates the OLD (buggy) pattern: [PictureResult(...)] * 3 shares
+        the SAME dict object across all list slots, so a mutation to one entry
+        leaks into every other entry."""
+        img_bytes = b"fake-png"
+        pic_results = [
+            PictureResult(
+                ocr_text="",
+                page=1,
+                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                png_bytes=img_bytes,
+            )
+        ] * 3
+
+        pic_results[0].pop("png_bytes")
+
+        assert "png_bytes" not in pic_results[0]
+        assert "png_bytes" not in pic_results[1]

@@ -260,7 +260,7 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
     # False for the VLM-recovered markdown.
     garble_calls = []
 
-    def _fake_flat_garble(text):
+    def _fake_flat_garble(text, **kw):
         garble_calls.append(text)
         return "VLM recovered" not in text
 
@@ -290,7 +290,7 @@ async def test_VLM_C7_flat_path_garble_still_garbled(monkeypatch, pdf_file):
             (False, "node_count<3"),
         ],
     )
-    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda text: True)
+    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda text, **kw: True)
 
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))

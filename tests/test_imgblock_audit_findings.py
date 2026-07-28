@@ -204,7 +204,8 @@ class TestFinding4And7DenseKeyingAndCountGuard:
         pr0 = PictureResult(ocr_text="first chart text here", png_bytes=b"a", page=1, bbox={})
         pr2 = PictureResult(ocr_text="third chart text here", png_bytes=b"c", page=1, bbox={})
         # Region 1's crop failed -> sparse dict; the dense list must NOT collapse.
-        monkeypatch.setattr(converters, "_recover_picture_text", lambda *a, **k: {0: pr0, 2: pr2})
+        # skip_reasons records region 1 as "page_coverage" (F5 plumbing).
+        monkeypatch.setattr(converters, "_recover_picture_text", lambda *a, **k: ({0: pr0, 2: pr2}, {1: "page_coverage"}))
 
         pics = converters._recover_picture_results("x <!-- image --> y", object(), "d.pdf")
 
@@ -291,7 +292,7 @@ class TestFinding10BoundedConcurrency:
             lambda png, langs: "Recovered chart text long enough to keep",
         )
         regions = [_region() for _ in range(6)]
-        out = converters._recover_picture_text("dummy.pdf", regions, ["eng"])
+        out, _skip = converters._recover_picture_text("dummy.pdf", regions, ["eng"])
         assert len(out) == 6
         assert captured, "per-picture OCR must run through a ThreadPoolExecutor"
         assert all(w is not None and w <= converters._IMAGE_ENRICH_CONCURRENCY for w in captured)
@@ -337,7 +338,7 @@ class TestFinding12DecorativeGate:
         monkeypatch.setattr(
             "pageindex_mcp.converters._tesseract_ocr_image", lambda png, langs: "short"
         )
-        out = converters._recover_picture_text("dummy.pdf", [_region()], ["eng"])
+        out, _skip = converters._recover_picture_text("dummy.pdf", [_region()], ["eng"])
         assert out[0]["ocr_text"] == ""
         assert "png_bytes" not in out[0]
 
@@ -347,7 +348,7 @@ class TestFinding12DecorativeGate:
         monkeypatch.setattr(
             "pageindex_mcp.converters._tesseract_ocr_image", lambda png, langs: "short"
         )
-        out = converters._recover_picture_text("dummy.pdf", [_region()], ["eng"])
+        out, _skip = converters._recover_picture_text("dummy.pdf", [_region()], ["eng"])
         assert out[0]["ocr_text"] == ""
         assert out[0]["png_bytes"]
 
@@ -439,7 +440,7 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
     monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure: (False, "depth<2"))
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (False, "depth<2"))
     monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION", False)
     monkeypatch.setattr(

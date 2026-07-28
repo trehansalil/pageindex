@@ -59,7 +59,7 @@ def _wire_common(monkeypatch, *, validate_return, **settings_overrides):
     monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
     monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
     mocks = {
         "save_doc": MagicMock(),
@@ -321,7 +321,7 @@ async def test_flat_path_garble_gate_vlm_exception(monkeypatch, pdf_file):
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
     )
-    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda text: True)
+    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda text, **kw: True)
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
 

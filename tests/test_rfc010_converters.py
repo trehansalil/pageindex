@@ -537,7 +537,7 @@ class TestRecoverPictureText:
         regions = [
             {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert 0 in out
         result = out[0]
         assert "Revenue" in result["ocr_text"]
@@ -560,7 +560,7 @@ class TestRecoverPictureText:
         regions = [
             {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert 0 in out
         assert out[0]["ocr_text"] == ""
         assert "png_bytes" not in out[0]
@@ -580,7 +580,7 @@ class TestRecoverPictureText:
         regions = [
             {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert out[0]["ocr_text"] == ""
         assert isinstance(out[0]["png_bytes"], bytes)
 
@@ -593,7 +593,8 @@ class TestRecoverPictureText:
         regions = [
             {"page": 99, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        assert out == {}
 
 
 class TestRecoverPictureResults:
@@ -637,7 +638,7 @@ class TestRecoverPictureResults:
             mock.patch.object(
                 converters,
                 "_recover_picture_text",
-                return_value={0: pr},
+                return_value=({0: pr}, {}),
             ) as mock_recover,
         ):
             pics = converters._recover_picture_results(md, object(), "dummy.pdf")

@@ -62,7 +62,7 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return):
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
 
     # validate_tree is HR5-frozen in helpers; we only stub its RETURN at the branch.
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
 
     mocks = {
         "route_and_extract_flat": MagicMock(
@@ -629,7 +629,7 @@ def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
     monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
     monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
 
     mock_page = MagicMock()
@@ -673,7 +673,9 @@ async def test_garble_probe_numeric_junk(monkeypatch, pdf_file_with_content):
 
     await c.index(pdf_file_with_content)
 
-    conv_mock.assert_called_once_with(pdf_file_with_content, True)
+    conv_mock.assert_called_once_with(
+        pdf_file_with_content, True, ocr_lang_override=["eng"],
+    )
     mocks["save_doc"].assert_called_once()
 
 
