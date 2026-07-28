@@ -1331,6 +1331,9 @@ _PICTURE_PAGE_COVERAGE_THRESHOLD = float(
 # Keeps a many-figure document from spawning unbounded tesseract subprocesses or
 # parallel paid vision calls inside one conversion.
 _IMAGE_ENRICH_CONCURRENCY = max(1, int(os.getenv("IMAGE_ENRICH_CONCURRENCY", "4") or "4"))
+# F1 (RFC-020): when True, pages with no text layer are exempt from the coverage
+# skip — the full-page picture IS the content and must be OCR'd.
+_COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv("COVERAGE_EXEMPT_NO_TEXT_LAYER", "true").strip().lower() in ("1", "true", "yes")
 
 
 class PictureResult(TypedDict, total=False):
@@ -1425,11 +1428,20 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
         return ""
 
 
+def _text_layer_has_content(page) -> bool:
+    """Return True when the page's native text layer has meaningful content.
+
+    Used by F1 (RFC-020) to exempt scanned pages from the coverage skip —
+    when a page has NO text layer the full-page picture IS the content."""
+    text = page.get_text("text").strip()
+    return len(text) > _PICTURE_OCR_MIN_CHARS
+
+
 def _recover_picture_text(
     pdf_path: str,
     regions: list[dict],
     langs: list[str],
-) -> dict[int, PictureResult]:
+) -> tuple[dict[int, PictureResult], dict[int, str]]:
     """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
 
     Returns ``{picture_index: PictureResult}`` for every picture region. Each
@@ -1458,6 +1470,7 @@ def _recover_picture_text(
 
     # Phase 1 (serial, single fitz.Document): crop every valid region.
     crops: dict[int, dict] = {}
+    skip_reasons: dict[int, str] = {}
     pdf = fitz.open(pdf_path)
     try:
         for i, region in enumerate(regions):
@@ -1470,12 +1483,23 @@ def _recover_picture_text(
                 continue
             # D0: skip regions covering >60% of page — full scanned pages, not charts.
             page_area = page.rect.width * page.rect.height
-            if page_area > 0 and (rect.width * rect.height) / page_area > _PICTURE_PAGE_COVERAGE_THRESHOLD:
-                continue
+            coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
+            if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
+                if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not _text_layer_has_content(page):
+                    logger.warning(
+                        "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
+                        "exempting from skip (picture IS the page content)",
+                        coverage * 100,
+                        page_index + 1,
+                    )
+                else:
+                    skip_reasons[i] = "page_coverage"
+                    continue
             # D1 (RFC-018): skip per-picture OCR when clean text already exists under
             # this bbox — Docling already extracted it into the markdown body.
             clip_text = page.get_text("text", clip=rect).strip()
             if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
+                skip_reasons[i] = "clip_text"
                 continue
             pix = page.get_pixmap(clip=rect, dpi=300)
             crops[i] = {"png_bytes": pix.tobytes("png"), "region": region}
@@ -1484,7 +1508,7 @@ def _recover_picture_text(
 
     recovered: dict[int, PictureResult] = {}
     if not crops:
-        return recovered
+        return recovered, skip_reasons
 
     def _ocr_one(png_bytes: bytes) -> str:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -1525,13 +1549,53 @@ def _recover_picture_text(
         if ocr_text or keep_silent_png:
             result["png_bytes"] = crops[i]["png_bytes"]
         recovered[i] = result
-    return recovered
+    return recovered, skip_reasons
 
 
 def _figure_desc_inline(desc: str) -> str:
     """Sanitize a VLM description for the inline ``[Figure: fig-k | desc]`` form
     so it cannot break the single-line ``_FLAT_FIGURE_RE`` grammar."""
     return " ".join(desc.split()).replace("[", "(").replace("]", ")")
+
+
+def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
+    """Append OCR text after ``<!-- image -->`` markers for the tree branch.
+
+    Restores the ``_maybe_splice_picture_ocr`` semantics from master that were
+    lost when picture OCR was moved to the flat-only path (RFC-020 AD1).
+
+    The ``<!-- image -->`` markers are left **intact** so that the flat branch's
+    ``splice_figure_markers`` can still resolve them later if needed.
+
+    Guard: if the marker count differs from ``len(pics)`` the ordinal
+    correspondence is broken and we return ``md`` unchanged rather than
+    attaching OCR text to the wrong picture block.
+    """
+    if not pics:
+        return md
+    marker = _IMAGE_MARKER
+    marker_count = md.count(marker)
+    if marker_count != len(pics):
+        logger.warning(
+            "splice_picture_text_for_tree: marker/region count mismatch "
+            "(%d marker(s) vs %d picture result(s)); skipping OCR splice",
+            marker_count,
+            len(pics),
+        )
+        return md
+
+    parts: list[str] = []
+    remaining = md
+    for pic in pics:
+        idx = remaining.find(marker)
+        # idx should always be >= 0 given the count check above
+        parts.append(remaining[:idx + len(marker)])
+        remaining = remaining[idx + len(marker):]
+        ocr_text = pic.get("ocr_text", "")
+        if ocr_text:
+            parts.append("\n> [Chart text]: " + ocr_text + "\n")
+    parts.append(remaining)
+    return "".join(parts)
 
 
 def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
@@ -1615,8 +1679,8 @@ def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureRe
         if not regions:
             return []
         langs = ensure_tessdata(detect_ocr_langs(md))
-        recovered = _recover_picture_text(pdf_path, regions, langs)
-        if not recovered:
+        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs)
+        if not recovered and not skip_reasons:
             return []
         logger.info(
             "recovered per-picture chart text for %d of %d image(s) in %s",
@@ -1625,7 +1689,7 @@ def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureRe
             pdf_path,
         )
         return [
-            recovered.get(i, PictureResult(skipped_reason="page_coverage"))
+            recovered.get(i, PictureResult(skipped_reason=skip_reasons.get(i, "unknown")))
             for i in range(len(regions))
         ]
     except Exception as exc:

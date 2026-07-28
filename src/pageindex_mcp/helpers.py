@@ -722,28 +722,54 @@ def _infer_script(text: str) -> str | None:
     return None
 
 
-def _garble_check_nodes(nodes: list[dict], page_script: str | None = None) -> int:
+def _script_from_filename(filename: str) -> str | None:
+    """Derive expected Unicode script from filename via OCR-language detection.
+
+    Returns ``"Arab"`` when the filename signals Arabic content, else ``None``.
+    """
+    from .converters import detect_ocr_langs  # late import avoids adding a top-level dep
+
+    langs = detect_ocr_langs(filename)
+    if "ara" in langs:
+        return "Arab"
+    return None
+
+
+def _garble_check_nodes(nodes: list[dict], page_script: str | None = None, expected_script: str | None = None) -> int:
     """Recursively count nodes whose text is individually garbled."""
     garbled = 0
     for node in nodes:
         text = node.get("text", "")
         if text.strip():
-            node_script = _infer_script(text) if len(text) >= 50 else page_script
+            if expected_script is not None:
+                # Caller-supplied expected_script takes precedence; log when
+                # it disagrees with text-inferred script (F2 diagnostic).
+                inferred = _infer_script(text) if len(text) >= 50 else None
+                if inferred is not None and inferred != expected_script:
+                    logger.warning(
+                        "Script mismatch: filename-derived=%s, text-inferred=%s "
+                        "(using filename-derived)",
+                        expected_script,
+                        inferred,
+                    )
+                node_script = expected_script
+            else:
+                node_script = _infer_script(text) if len(text) >= 50 else page_script
             if _is_garbled_blob(text, expected_script=node_script):
                 garbled += 1
         children = node.get("nodes") or []
-        garbled += _garble_check_nodes(children, page_script=page_script)
+        garbled += _garble_check_nodes(children, page_script=page_script, expected_script=expected_script)
     return garbled
 
 
-def _tree_is_garbled(nodes: list) -> bool:
+def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
     blob = _flatten_tree_text(nodes)
     # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
     # mixed-script. Never narrows the existing gate.
-    return _is_garbled_blob(blob) or _has_sparse_mojibake(blob)
+    return _is_garbled_blob(blob, expected_script=expected_script) or _has_sparse_mojibake(blob)
 
 
-def validate_tree(structure: list) -> tuple[bool, str]:
+def validate_tree(structure: list, expected_script: str | None = None) -> tuple[bool, str]:
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
     Returns (ok, reason); reason is '' when ok. Fails (priority order) on
@@ -753,14 +779,14 @@ def validate_tree(structure: list) -> tuple[bool, str]:
         return False, "node_count<3"
     if _tree_depth(structure) < 2:
         return False, "depth<2"
-    if _tree_is_garbled(structure):
+    if _tree_is_garbled(structure, expected_script=expected_script):
         return False, "garbling"
     # RFC-018 D3b: per-node garble ratio — catches documents where a minority of
     # nodes are garbled but the flattened full-text dilutes below the bulk gate.
     total_nodes = _tree_node_count(structure)
     full_text = _flatten_tree_text(structure)
     doc_script = _infer_script(full_text)
-    if total_nodes > 0 and (_garble_check_nodes(structure, page_script=doc_script) / total_nodes) > _GARBLE_NODE_RATIO_THRESHOLD:
+    if total_nodes > 0 and (_garble_check_nodes(structure, page_script=doc_script, expected_script=expected_script) / total_nodes) > _GARBLE_NODE_RATIO_THRESHOLD:
         return False, "node_garbling"
     # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
     # surfaces this reason as a low_quality_tree error rather than persisting.
@@ -1517,11 +1543,11 @@ def flag_empty_cells(block: dict) -> dict:
 _TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
 
 
-def _flat_text_is_garbled(md: str) -> bool:
+def _flat_text_is_garbled(md: str, expected_script: str | None = None) -> bool:
     """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
     text = md or ""
     # Additive OR (RFC-015 D8): sparse mixed-script mojibake, same as the tree gate.
-    return _is_garbled_blob(text) or _has_sparse_mojibake(text)
+    return _is_garbled_blob(text, expected_script=expected_script) or _has_sparse_mojibake(text)
 
 
 def _looks_like_toc_page(block_text: str) -> bool:

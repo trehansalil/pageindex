@@ -29,6 +29,7 @@ from .converters import (
     pdf_to_markdown_docling,
     pptx_to_markdown,
     splice_figure_markers,
+    splice_picture_text_for_tree, 
     xlsx_to_markdown,
     zdr_egress_gate,
 )
@@ -36,6 +37,7 @@ from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
     _flat_text_is_garbled,
+    _script_from_filename,
     _strip_text,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
@@ -67,6 +69,10 @@ from .storage import (
 logger = logging.getLogger(__name__)
 
 _MAX_DESC_CHARS = 4000
+
+TREE_PATH_PICTURE_SPLICE_ENABLED = os.getenv(
+    "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
 
 
 class LLMTransientFailure(Exception):
@@ -485,6 +491,9 @@ class CustomPageIndexClient(PageIndexClient):
         ext = Path(filename).suffix.lower()
         logger.info("Indexing file: %s (ext=%s)", filename, ext)
 
+        # F2 (RFC-020): derive expected script from filename for garble-gate threading
+        expected_script = _script_from_filename(filename)
+
         if ext not in _SUPPORTED:
             raise ValueError(
                 f"Unsupported format '{ext}'. Supported: {', '.join(sorted(_SUPPORTED))}"
@@ -537,7 +546,7 @@ class CustomPageIndexClient(PageIndexClient):
                     with fitz.open(file_path) as probe_pdf:
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
-                            if raw_text.strip() and _flat_text_is_garbled(raw_text):
+                            if raw_text.strip() and _flat_text_is_garbled(raw_text, expected_script=expected_script):
                                 pre_garbled = True
                                 logger.info(
                                     "D3a: raw text layer garbled for %s, forcing full-page "
@@ -555,7 +564,10 @@ class CustomPageIndexClient(PageIndexClient):
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
                         if pre_garbled and "docling" in conv_name:
                             md_content, pic_results = _split_converter_output(
-                                await asyncio.to_thread(conv_fn, file_path, True)
+                                await asyncio.to_thread(
+                                    conv_fn, file_path, True,
+                                    ocr_lang_override=detect_ocr_langs(filename),
+                                )
                             )
                         else:
                             md_content, pic_results = _split_converter_output(
@@ -606,6 +618,8 @@ class CustomPageIndexClient(PageIndexClient):
                             used_converter,
                             primary_name,
                         )
+                    if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                        md_content = splice_picture_text_for_tree(md_content, pic_results)
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
@@ -678,12 +692,15 @@ class CustomPageIndexClient(PageIndexClient):
                 # single-result behaviour when zero markers are present).
                 img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
                 marker_count = md_content.count("<!-- image -->")
-                pic_results = [PictureResult(
-                    ocr_text="",
-                    page=1,
-                    bbox={"l": 0, "t": 0, "r": 0, "b": 0},
-                    png_bytes=img_bytes,
-                )] * max(1, marker_count)
+                pic_results = [
+                    PictureResult(
+                        ocr_text="",
+                        page=1,
+                        bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                        png_bytes=img_bytes,
+                    )
+                    for _ in range(max(1, marker_count))
+                ]
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
                 ) as md_tmp:
@@ -707,7 +724,7 @@ class CustomPageIndexClient(PageIndexClient):
             result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
-            ok, reason = validate_tree(result.get("structure", []))
+            ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
 
             # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
             # the Fix-5 detected language before any rejection — rescues the corrupt
@@ -747,7 +764,7 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(result.get("structure", []))
+                    ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
                     OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
@@ -780,7 +797,7 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(result.get("structure", []))
+                    ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
@@ -837,7 +854,7 @@ class CustomPageIndexClient(PageIndexClient):
                         result["structure"] = split_oversized_leaf_nodes(
                             result.get("structure", [])
                         )
-                        ok, reason = validate_tree(result.get("structure", []))
+                        ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
                         OCR_ESCALATION_TOTAL.labels(
                             result="recovered" if ok else "still_image_only"
                         ).inc()
@@ -883,7 +900,7 @@ class CustomPageIndexClient(PageIndexClient):
                         # D3B: flat-path garble gate — catch garbled text that
                         # passed the tree gate (e.g. numeric-junk docs routed
                         # here via node_count<3).
-                        if _flat_text_is_garbled(flat_md):
+                        if _flat_text_is_garbled(flat_md, expected_script=expected_script):
                             reason = "garbling"
                             logger.warning(
                                 "Flat-path garble gate triggered for %s; "
@@ -906,7 +923,7 @@ class CustomPageIndexClient(PageIndexClient):
                                     vlm_md = await vlm_extract_markdown(
                                         file_path, settings.vlm_model
                                     )
-                                    if not _flat_text_is_garbled(vlm_md):
+                                    if not _flat_text_is_garbled(vlm_md, expected_script=expected_script):
                                         flat_md = vlm_md
                                         # New markdown source — converter picture
                                         # ordinals no longer apply (finding 4/7).
