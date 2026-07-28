@@ -29,7 +29,7 @@ from .converters import (
     pdf_to_markdown_docling,
     pptx_to_markdown,
     splice_figure_markers,
-    splice_picture_text_for_tree, 
+    splice_picture_text_for_tree,
     xlsx_to_markdown,
     zdr_egress_gate,
 )
@@ -171,7 +171,9 @@ async def _llm_with_retry(
     # All retries exhausted — try fallback if configured
     if fallback_base_url:
         logger.warning(
-            "Primary LLM exhausted %d retries; trying fallback at %s", max_retries, fallback_base_url
+            "Primary LLM exhausted %d retries; trying fallback at %s",
+            max_retries,
+            fallback_base_url,
         )
         try:
             return await call_fn(base_url=fallback_base_url)
@@ -232,6 +234,11 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Fix 3 kill-switch (default on): one force_full_page_ocr retry when a PDF garbles.
 _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+# Task 6.1: dedicated image-standalone pipeline for PDFs whose content is all images.
+# When disabled, falls back to the existing QF2a image-enrichment promotion path.
+_IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
+    "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
 
 
 def _is_azure_url(url: str | None) -> bool:
@@ -543,10 +550,13 @@ class CustomPageIndexClient(PageIndexClient):
                 pre_garbled = False
                 try:
                     import fitz
+
                     with fitz.open(file_path) as probe_pdf:
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
-                            if raw_text.strip() and _flat_text_is_garbled(raw_text, expected_script=expected_script):
+                            if raw_text.strip() and _flat_text_is_garbled(
+                                raw_text, expected_script=expected_script
+                            ):
                                 pre_garbled = True
                                 logger.info(
                                     "D3a: raw text layer garbled for %s, forcing full-page "
@@ -556,20 +566,36 @@ class CustomPageIndexClient(PageIndexClient):
                 except Exception:
                     pass  # probe failure is non-fatal — fall through to the normal chain
 
+                # QF1 (RFC-021): forcing full-page OCR on the primary conversion
+                # attempt destroys Docling's PictureItem segmentation. Defer to the
+                # existing Fix-3 retry path (which already handles OCR escalation on
+                # validate_tree reason="garbling") unless explicitly re-enabled.
+                PRE_GARBLE_FORCE_OCR_ENABLED = (
+                    os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
+                )
+
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
                 for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        if pre_garbled and "docling" in conv_name:
+                        if pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED:
                             md_content, pic_results = _split_converter_output(
                                 await asyncio.to_thread(
-                                    conv_fn, file_path, True,
+                                    conv_fn,
+                                    file_path,
+                                    True,
                                     ocr_lang_override=detect_ocr_langs(filename),
                                 )
                             )
                         else:
+                            if pre_garbled and "docling" in conv_name:
+                                logger.info(
+                                    "D3a pre-garble probe fired for %s but OCR deferral "
+                                    "active; deferring to Fix-3 retry path",
+                                    filename,
+                                )
                             md_content, pic_results = _split_converter_output(
                                 await asyncio.to_thread(conv_fn, file_path)
                             )
@@ -755,6 +781,12 @@ class CustomPageIndexClient(PageIndexClient):
                     md_content, pic_results = _split_converter_output(
                         await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                     )
+                    # QF1 follow-up: the escalated OCR pass is where PictureItem
+                    # text actually gets produced (the primary pass deferred it).
+                    # Splice it into the tree markdown here — omitting this call
+                    # silently drops all picture-OCR text from the escalated tree.
+                    if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                        md_content = splice_picture_text_for_tree(md_content, pic_results)
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -764,7 +796,9 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
+                    ok, reason = validate_tree(
+                        result.get("structure", []), expected_script=expected_script
+                    )
                     OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
@@ -797,7 +831,9 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
+                    ok, reason = validate_tree(
+                        result.get("structure", []), expected_script=expected_script
+                    )
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
@@ -843,6 +879,11 @@ class CustomPageIndexClient(PageIndexClient):
                         md_content, pic_results = _split_converter_output(
                             await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                         )
+                        # QF1 follow-up: splice the escalated pass's picture-OCR
+                        # text into the tree markdown (see Fix-3 escalation above
+                        # for why this must not be skipped).
+                        if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                            md_content = splice_picture_text_for_tree(md_content, pic_results)
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
                         with tempfile.NamedTemporaryFile(
@@ -854,7 +895,9 @@ class CustomPageIndexClient(PageIndexClient):
                         result["structure"] = split_oversized_leaf_nodes(
                             result.get("structure", [])
                         )
-                        ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
+                        ok, reason = validate_tree(
+                            result.get("structure", []), expected_script=expected_script
+                        )
                         OCR_ESCALATION_TOTAL.labels(
                             result="recovered" if ok else "still_image_only"
                         ).inc()
@@ -923,7 +966,9 @@ class CustomPageIndexClient(PageIndexClient):
                                     vlm_md = await vlm_extract_markdown(
                                         file_path, settings.vlm_model
                                     )
-                                    if not _flat_text_is_garbled(vlm_md, expected_script=expected_script):
+                                    if not _flat_text_is_garbled(
+                                        vlm_md, expected_script=expected_script
+                                    ):
                                         flat_md = vlm_md
                                         # New markdown source — converter picture
                                         # ordinals no longer apply (finding 4/7).
@@ -959,6 +1004,19 @@ class CustomPageIndexClient(PageIndexClient):
                             content_class, blocks = await asyncio.to_thread(
                                 route_and_extract_flat, flat_md
                             )
+
+                            # Task 6.1: detect image-standalone PDFs — all blocks
+                            # have role="image".  Bare image files (.jpg/.png) are
+                            # already handled by the _IMAGE_EXTS route above; this
+                            # catches PDFs whose extracted content is entirely images.
+                            if (
+                                _IMAGE_STANDALONE_PIPELINE_ENABLED
+                                and content_class in ("flat_prose", "flat_mixed")
+                                and blocks
+                                and all(b.get("role") == "image" for b in blocks)
+                            ):
+                                content_class = "image_standalone"
+
                             logger.info(
                                 "Routing %s to flat success path: reason=%s content_class=%s",
                                 filename,
@@ -967,6 +1025,19 @@ class CustomPageIndexClient(PageIndexClient):
                             )
 
                             await _enrich_image_blocks(blocks, pic_results, doc_id)
+
+                            image_blocks = [b for b in blocks if b.get("role") == "image"]
+                            if image_blocks:
+                                enriched_count = sum(
+                                    1
+                                    for b in image_blocks
+                                    if b.get("ocr_text")
+                                    or b.get("description")
+                                    or b.get("figure_path")
+                                )
+                                image_enrichment_ratio = enriched_count / len(image_blocks)
+                            else:
+                                image_enrichment_ratio = None
 
                             protocol = "https" if settings.minio_secure else "http"
                             source_url = (
@@ -981,6 +1052,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 flat_structure,
                                 content_class,
                                 None,
+                                image_enrichment_ratio=image_enrichment_ratio,
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 

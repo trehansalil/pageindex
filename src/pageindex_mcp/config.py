@@ -174,9 +174,7 @@ def _load_settings() -> Settings:
         vlm_fallback=os.environ.get("VLM_FALLBACK", "false").strip().lower()
         in ("1", "true", "yes"),
         vlm_model=os.environ.get("VLM_MODEL", "gpt-4.1"),
-        vlm_describe_images=os.environ.get(
-            "VLM_DESCRIBE_IMAGES", "false"
-        ).strip().lower()
+        vlm_describe_images=os.environ.get("VLM_DESCRIBE_IMAGES", "false").strip().lower()
         in ("1", "true", "yes"),
     )
 

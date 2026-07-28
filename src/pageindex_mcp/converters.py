@@ -1269,10 +1269,24 @@ def reconstruct_bidi_order(text: str) -> str:
 # only the title text, leaving the '#' prefix in place for depth inference.
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
 
-_AR_COMMON_WORDS = frozenset([
-    "في", "من", "على", "إلى", "أن", "هذا", "هذه",
-    "التي", "الذي", "عن", "مع", "بين", "كان", "ما",
-])
+_AR_COMMON_WORDS = frozenset(
+    [
+        "في",
+        "من",
+        "على",
+        "إلى",
+        "أن",
+        "هذا",
+        "هذه",
+        "التي",
+        "الذي",
+        "عن",
+        "مع",
+        "بين",
+        "كان",
+        "ما",
+    ]
+)
 _AR_DEFINITE_RE = re.compile(r"\bال\w+")
 
 
@@ -1309,8 +1323,8 @@ def _fix_residual_rtl_reversal(text: str) -> str:
         fwd_score = _arabic_readability_score(words)
         rev_score = _arabic_readability_score(reversed_words)
         if rev_score > fwd_score:
-            indent = line[:len(line) - len(line.lstrip())]
-            trail = line[len(line.rstrip()):]
+            indent = line[: len(line) - len(line.lstrip())]
+            trail = line[len(line.rstrip()) :]
             out.append(indent + " ".join(reversed_words) + trail)
         else:
             out.append(line)
@@ -1324,16 +1338,16 @@ _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "tru
 
 _IMAGE_MARKER = "<!-- image -->"
 _PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
-_PICTURE_PAGE_COVERAGE_THRESHOLD = float(
-    os.getenv("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6")
-)
+_PICTURE_PAGE_COVERAGE_THRESHOLD = float(os.getenv("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6"))
 # Audit 2026-07-21 finding 10: bound for the per-picture OCR and VLM thread pools.
 # Keeps a many-figure document from spawning unbounded tesseract subprocesses or
 # parallel paid vision calls inside one conversion.
 _IMAGE_ENRICH_CONCURRENCY = max(1, int(os.getenv("IMAGE_ENRICH_CONCURRENCY", "4") or "4"))
 # F1 (RFC-020): when True, pages with no text layer are exempt from the coverage
 # skip — the full-page picture IS the content and must be OCR'd.
-_COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv("COVERAGE_EXEMPT_NO_TEXT_LAYER", "true").strip().lower() in ("1", "true", "yes")
+_COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
+    "COVERAGE_EXEMPT_NO_TEXT_LAYER", "true"
+).strip().lower() in ("1", "true", "yes")
 
 
 class PictureResult(TypedDict, total=False):
@@ -1589,8 +1603,8 @@ def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
     for pic in pics:
         idx = remaining.find(marker)
         # idx should always be >= 0 given the count check above
-        parts.append(remaining[:idx + len(marker)])
-        remaining = remaining[idx + len(marker):]
+        parts.append(remaining[: idx + len(marker)])
+        remaining = remaining[idx + len(marker) :]
         ocr_text = pic.get("ocr_text", "")
         if ocr_text:
             parts.append("\n> [Chart text]: " + ocr_text + "\n")

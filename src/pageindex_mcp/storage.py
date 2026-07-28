@@ -806,5 +806,3 @@ def delete_staging(staging_key: str) -> bool:
         return False
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
-
-

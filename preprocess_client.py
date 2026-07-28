@@ -237,10 +237,7 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
         doc_ids = []
         for obj in objects:
             name = obj.object_name or ""
-            if (
-                name.endswith(".json")
-                and not name.endswith(".meta.json")
-            ):
+            if name.endswith(".json") and not name.endswith(".meta.json"):
                 did = name.replace("processed/", "")
                 # Strip .flat.json or .json to get pure doc_id
                 if did.endswith(".flat.json"):

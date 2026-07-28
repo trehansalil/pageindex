@@ -567,41 +567,239 @@ def _flatten_tree_text(nodes: list) -> str:
 
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
 
-_COMMON_WORDS: frozenset[str] = frozenset({
-    # English stopwords + common short words
-    "the", "be", "to", "of", "and", "in", "that", "have", "it", "for",
-    "not", "on", "with", "he", "as", "you", "do", "at", "this", "but",
-    "his", "by", "from", "they", "we", "say", "her", "she", "or", "an",
-    "will", "my", "one", "all", "would", "there", "their", "what", "so",
-    "up", "out", "if", "about", "who", "get", "which", "go", "me",
-    "when", "make", "can", "like", "time", "no", "just", "him", "know",
-    "take", "people", "into", "year", "your", "good", "some", "could",
-    "them", "see", "other", "than", "then", "now", "look", "only",
-    "come", "its", "over", "think", "also", "back", "after", "use",
-    "two", "how", "our", "work", "first", "well", "way", "even", "new",
-    "want", "because", "any", "these", "give", "day", "most", "us",
-    "is", "are", "was", "were", "been", "has", "had", "did", "does",
-    "may", "must", "shall", "should", "might", "need",
-    "very", "more", "much", "own", "such", "here", "where", "why",
-    "each", "few", "both", "between", "under", "same", "still",
-    "before", "after", "through", "during", "without", "within",
-    "per", "de", "re",
-    # German stopwords
-    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer",
-    "einem", "einen", "eines", "und", "ist", "sind", "war", "hat",
-    "mit", "auf", "für", "von", "aus", "bei", "nach", "zum", "zur",
-    "sich", "nicht", "auch", "als", "nur", "noch", "oder", "aber",
-    "wenn", "wird", "über", "ich", "wir", "sie", "man", "kann",
-    "diese", "dieser", "diesem", "diesen", "dieses", "werden",
-    "durch", "unter", "zwischen", "gegen", "ohne", "bis",
-    "sein", "seine", "seinem", "seinen", "seiner",
-    "ihre", "ihrem", "ihren", "ihrer", "mehr", "vor",
-    "haben", "dass", "schon", "immer", "wieder",
-    # Common technical/insurance terms that appear in bilingual docs
-    "gmbh", "ag", "nr", "abs", "bzw", "etc", "max", "min",
-    "pdf", "doc", "page", "file", "text", "data", "type",
-    "article", "section", "paragraph", "clause", "item",
-})
+_COMMON_WORDS: frozenset[str] = frozenset(
+    {
+        # English stopwords + common short words
+        "the",
+        "be",
+        "to",
+        "of",
+        "and",
+        "in",
+        "that",
+        "have",
+        "it",
+        "for",
+        "not",
+        "on",
+        "with",
+        "he",
+        "as",
+        "you",
+        "do",
+        "at",
+        "this",
+        "but",
+        "his",
+        "by",
+        "from",
+        "they",
+        "we",
+        "say",
+        "her",
+        "she",
+        "or",
+        "an",
+        "will",
+        "my",
+        "one",
+        "all",
+        "would",
+        "there",
+        "their",
+        "what",
+        "so",
+        "up",
+        "out",
+        "if",
+        "about",
+        "who",
+        "get",
+        "which",
+        "go",
+        "me",
+        "when",
+        "make",
+        "can",
+        "like",
+        "time",
+        "no",
+        "just",
+        "him",
+        "know",
+        "take",
+        "people",
+        "into",
+        "year",
+        "your",
+        "good",
+        "some",
+        "could",
+        "them",
+        "see",
+        "other",
+        "than",
+        "then",
+        "now",
+        "look",
+        "only",
+        "come",
+        "its",
+        "over",
+        "think",
+        "also",
+        "back",
+        "after",
+        "use",
+        "two",
+        "how",
+        "our",
+        "work",
+        "first",
+        "well",
+        "way",
+        "even",
+        "new",
+        "want",
+        "because",
+        "any",
+        "these",
+        "give",
+        "day",
+        "most",
+        "us",
+        "is",
+        "are",
+        "was",
+        "were",
+        "been",
+        "has",
+        "had",
+        "did",
+        "does",
+        "may",
+        "must",
+        "shall",
+        "should",
+        "might",
+        "need",
+        "very",
+        "more",
+        "much",
+        "own",
+        "such",
+        "here",
+        "where",
+        "why",
+        "each",
+        "few",
+        "both",
+        "between",
+        "under",
+        "same",
+        "still",
+        "before",
+        "through",
+        "during",
+        "without",
+        "within",
+        "per",
+        "de",
+        "re",
+        # German stopwords
+        "der",
+        "die",
+        "das",
+        "den",
+        "dem",
+        "des",
+        "ein",
+        "eine",
+        "einer",
+        "einem",
+        "einen",
+        "eines",
+        "und",
+        "ist",
+        "sind",
+        "war",
+        "hat",
+        "mit",
+        "auf",
+        "für",
+        "von",
+        "aus",
+        "bei",
+        "nach",
+        "zum",
+        "zur",
+        "sich",
+        "nicht",
+        "auch",
+        "als",
+        "nur",
+        "noch",
+        "oder",
+        "aber",
+        "wenn",
+        "wird",
+        "über",
+        "ich",
+        "wir",
+        "sie",
+        "man",
+        "kann",
+        "diese",
+        "dieser",
+        "diesem",
+        "diesen",
+        "dieses",
+        "werden",
+        "durch",
+        "unter",
+        "zwischen",
+        "gegen",
+        "ohne",
+        "bis",
+        "sein",
+        "seine",
+        "seinem",
+        "seinen",
+        "seiner",
+        "ihre",
+        "ihrem",
+        "ihren",
+        "ihrer",
+        "mehr",
+        "vor",
+        "haben",
+        "dass",
+        "schon",
+        "immer",
+        "wieder",
+        # Common technical/insurance terms that appear in bilingual docs
+        "gmbh",
+        "ag",
+        "nr",
+        "abs",
+        "bzw",
+        "etc",
+        "max",
+        "min",
+        "pdf",
+        "doc",
+        "page",
+        "file",
+        "text",
+        "data",
+        "type",
+        "article",
+        "section",
+        "paragraph",
+        "clause",
+        "item",
+    }
+)
 
 
 def _latin_token_ratio(text: str) -> tuple[float, list[str]]:
@@ -611,6 +809,55 @@ def _latin_token_ratio(text: str) -> tuple[float, list[str]]:
         return 0.0, []
     latin_tokens = _LATIN_TOKEN_RE.findall(text)
     return len(latin_tokens) / len(tokens), latin_tokens
+
+
+_VOWELS = frozenset("aeiouAEIOU")
+
+
+def _is_morphologically_nonsense(token: str) -> bool:
+    """Return True if a Latin token looks like garble rather than a real word.
+
+    QF3 (RFC-021): hybrid morphological + whitelist approach.  The old
+    pure-whitelist approach (~160 stopwords) mis-classified legitimate
+    bilingual domain English as nonsense.  The fix:
+
+    * **Hard failures** (always nonsense regardless of length):
+      - digit-letter mixing ("xKjQ7", "mZpR3")
+      - no vowels at all ("xkjqz", "vbwm")
+    * **Long tokens (>=5 chars)** that survive the hard checks are treated
+      as morphologically plausible domain words (e.g. "service",
+      "infrastructure", "compliance") -- NOT nonsense.
+    * **Short tokens (3-4 chars)** that survive the hard checks fall back
+      to the ``_COMMON_WORDS`` whitelist.  This catches Tesseract
+      syllable garble ("Bab", "rel", "teb") which has vowels but isn't
+      a real word, while still passing common short words ("the", "for").
+    * Tokens <=2 chars and short all-caps acronyms (<=5 chars) are exempt.
+    """
+    if len(token) <= 2:
+        return False
+    # All-caps short acronyms get a pass (SLA, PDF, HTTP, ...)
+    if token.isupper() and len(token) <= 5:
+        return False
+    # Digits mixed with letters -> garble (e.g. "xKjQ7")
+    has_alpha = False
+    has_digit = False
+    for c in token:
+        if c.isalpha():
+            has_alpha = True
+        elif c.isdigit():
+            has_digit = True
+        if has_alpha and has_digit:
+            return True
+    # No vowels in a token of length >= 3 -> garble (e.g. "xkjqz", "vbwm")
+    if not any(c in _VOWELS for c in token):
+        return True
+    # Long tokens with vowels are plausible domain words -> NOT nonsense
+    if len(token) >= 5:
+        return False
+    # Short tokens (3-4 chars) with vowels: fall back to _COMMON_WORDS
+    # whitelist.  Catches Tesseract syllable garble ("Bab", "rel", "teb")
+    # while passing real short words ("the", "for", "can").
+    return token.lower() not in _COMMON_WORDS
 
 
 def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
@@ -648,6 +895,12 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
         if (most_common_count / len(tokens)) > 0.30:
             return True
     # Latin-gibberish in non-Latin script context (D2 / RFC-019)
+    # QF3 (RFC-021): replaced _COMMON_WORDS whitelist with morphological
+    # plausibility check.  The whitelist (~160 stopwords) mis-classified
+    # legitimate bilingual domain English (e.g. "service", "agreement",
+    # "infrastructure") as nonsense, false-FAILing Arabic+English SLAs.
+    # Morphological check: a Latin token is nonsense when it has NO vowels
+    # (len>=3, non-acronym) or mixes digits with letters ("xKjQ7").
     if (
         expected_script
         and expected_script != "Latn"
@@ -657,7 +910,7 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
         nonsense_threshold = float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7"))
         ratio, latin_tokens = _latin_token_ratio(blob)
         if ratio > latin_ratio_threshold and len(latin_tokens) >= 5:
-            nonsense = sum(1 for t in latin_tokens if t.lower() not in _COMMON_WORDS)
+            nonsense = sum(1 for t in latin_tokens if _is_morphologically_nonsense(t))
             if nonsense / len(latin_tokens) > nonsense_threshold:
                 return True
     return False
@@ -708,7 +961,12 @@ def _infer_script(text: str) -> str | None:
     latn_count = 0
     for ch in text:
         cp = ord(ch)
-        if 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF:
+        if (
+            0x0600 <= cp <= 0x06FF
+            or 0x0750 <= cp <= 0x077F
+            or 0xFB50 <= cp <= 0xFDFF
+            or 0xFE70 <= cp <= 0xFEFF
+        ):
             arab_count += 1
         elif (0x0041 <= cp <= 0x005A) or (0x0061 <= cp <= 0x007A) or (0x00C0 <= cp <= 0x024F):
             latn_count += 1
@@ -735,30 +993,39 @@ def _script_from_filename(filename: str) -> str | None:
     return None
 
 
-def _garble_check_nodes(nodes: list[dict], page_script: str | None = None, expected_script: str | None = None) -> int:
+def _garble_check_nodes(
+    nodes: list[dict], page_script: str | None = None, expected_script: str | None = None
+) -> int:
     """Recursively count nodes whose text is individually garbled."""
     garbled = 0
     for node in nodes:
         text = node.get("text", "")
         if text.strip():
             if expected_script is not None:
-                # Caller-supplied expected_script takes precedence; log when
-                # it disagrees with text-inferred script (F2 diagnostic).
+                # QF3 (RFC-021): when text-inferred script disagrees with
+                # filename-derived expected_script, use the INFERRED script
+                # for this node.  Previously expected_script always won,
+                # causing English-only nodes in bilingual docs to be checked
+                # as Arabic, which false-flagged legitimate English text.
                 inferred = _infer_script(text) if len(text) >= 50 else None
                 if inferred is not None and inferred != expected_script:
                     logger.warning(
                         "Script mismatch: filename-derived=%s, text-inferred=%s "
-                        "(using filename-derived)",
+                        "(using text-inferred for this node)",
                         expected_script,
                         inferred,
                     )
-                node_script = expected_script
+                    node_script = inferred
+                else:
+                    node_script = expected_script
             else:
                 node_script = _infer_script(text) if len(text) >= 50 else page_script
             if _is_garbled_blob(text, expected_script=node_script):
                 garbled += 1
         children = node.get("nodes") or []
-        garbled += _garble_check_nodes(children, page_script=page_script, expected_script=expected_script)
+        garbled += _garble_check_nodes(
+            children, page_script=page_script, expected_script=expected_script
+        )
     return garbled
 
 
@@ -786,7 +1053,14 @@ def validate_tree(structure: list, expected_script: str | None = None) -> tuple[
     total_nodes = _tree_node_count(structure)
     full_text = _flatten_tree_text(structure)
     doc_script = _infer_script(full_text)
-    if total_nodes > 0 and (_garble_check_nodes(structure, page_script=doc_script, expected_script=expected_script) / total_nodes) > _GARBLE_NODE_RATIO_THRESHOLD:
+    if (
+        total_nodes > 0
+        and (
+            _garble_check_nodes(structure, page_script=doc_script, expected_script=expected_script)
+            / total_nodes
+        )
+        > _GARBLE_NODE_RATIO_THRESHOLD
+    ):
         return False, "node_garbling"
     # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
     # surfaces this reason as a low_quality_tree error rather than persisting.
@@ -860,10 +1134,40 @@ def hash_pipe_ratio(text: str) -> float:
     return count / len(text)
 
 
-def classify_verdict(
+def _garble_ratio(text, expected_script=None):
+    """Dual full-text + windowed garble ratio. Returns max of both (additive-only)."""
+    full_garbled = (
+        1.0
+        if (_is_garbled_blob(text, expected_script=expected_script) or _has_sparse_mojibake(text))
+        else 0.0
+    )
+    window = 2000
+    if len(text) <= window:
+        return full_garbled
+    chunks = [text[i : i + window] for i in range(0, len(text), window)]
+    garbled_chunks = sum(
+        1
+        for c in chunks
+        if _is_garbled_blob(c, expected_script=expected_script) or _has_sparse_mojibake(c)
+    )
+    window_ratio = garbled_chunks / len(chunks)
+    return max(full_garbled, window_ratio)
+
+
+def _classify_image_verdict(image_enrichment_ratio: float | None) -> tuple[str, str]:
+    """Verdict for image-standalone documents."""
+    if image_enrichment_ratio is not None and image_enrichment_ratio >= 0.8:
+        return "PASS", "image_enrichment_complete"
+    if image_enrichment_ratio is not None and image_enrichment_ratio > 0:
+        return "MARGINAL", f"image_enrichment_partial(ratio={image_enrichment_ratio:.2f})"
+    return "FAIL", "no_image_enrichment"
+
+
+def classify_verdict(  # noqa: C901
     structure: list,
     content_class: str,
     validate_reason: str | None,
+    image_enrichment_ratio: float | None = None,
 ) -> tuple[str, str]:
     if validate_reason == "garbling":
         return "FAIL", "garbling"
@@ -871,6 +1175,10 @@ def classify_verdict(
     # (checks the structure directly) so it holds even when validate_reason is None.
     if validate_reason == "reordered" or _tree_is_reordered(structure):
         return "FAIL", "reordered"
+
+    # Task 6.3: image-standalone documents use their own verdict logic.
+    if content_class == "image_standalone":
+        return _classify_image_verdict(image_enrichment_ratio)
 
     _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
     if max_leaf_ratio > 0.75:
@@ -880,32 +1188,83 @@ def classify_verdict(
     depth = _tree_depth(structure)
     garbled = _tree_is_garbled(structure)
 
-    if node_count >= 3 and depth >= 2 and max_leaf_ratio < 0.15 and not garbled:
+    # QF4 (RFC-021): a small garbled prefix (e.g. cover-page OCR noise)
+    # should not condemn the whole document. `garbled` remains the binary
+    # gate (all existing _tree_is_garbled prongs, incl. sparse-mojibake,
+    # stay intact); `effectively_garbled` refines it with the fraction of
+    # text that is actually garbled. Hoisted here (flat_text is needed by
+    # both this check and the category-specific promotions below) so it is
+    # computed once and wired into every gate that previously used the
+    # binary `garbled` flag.
+    flat_text = _flatten_tree_text(structure)
+    _garble_threshold = float(os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05"))
+    if garbled:
+        garble_ratio = _garble_ratio(flat_text, expected_script=None)
+        effectively_garbled = garble_ratio >= _garble_threshold
+    else:
+        garble_ratio = 0.0
+        effectively_garbled = False
+
+    _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.17"))
+    if (
+        node_count >= 3
+        and depth >= 2
+        and max_leaf_ratio < _pass_max_leaf
+        and not effectively_garbled
+    ):
         return "PASS", ""
 
     # Base verdict is MARGINAL — try category-specific promotion.
     # Category B/C use the wider 0.17 threshold (RFC-014 D4).
     from .config import CATEGORY_BC_PROMOTION_THRESHOLD
 
-    flat_text = _flatten_tree_text(structure)
-
     if content_class.startswith("ocr_"):
         if max_leaf_ratio < 0.15 and ocr_noise_ratio(flat_text) < 0.005:
             return "PASS", "cat_a_promoted"
     elif content_class.startswith("flat_"):
-        if max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD and node_count >= 3:
+        if (
+            not effectively_garbled
+            and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
+            and node_count >= 3
+        ):
             return "PASS", "cat_b_promoted"
     else:
         if (
-            not garbled
+            not effectively_garbled
             and hash_pipe_ratio(flat_text) < 0.01
             and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
         ):
             return "PASS", "cat_c_promoted"
 
+    # QF2a: image-enrichment promotion for flat docs with rich image content
+    if (
+        content_class in ("flat_prose", "flat_mixed")
+        and image_enrichment_ratio is not None
+        and image_enrichment_ratio >= 0.8
+    ):
+        return "PASS", "image_enrichment_promoted"
+
+    # QF2c: small-doc exemption — well-formed tiny FLAT docs shouldn't be
+    # penalized. Scoped to content_class.startswith("flat_") per RFC-021
+    # audit correction — without this, hierarchical/cat_c docs with a
+    # handful of nodes and short text would also get swept into this
+    # promotion path, which is not what QF2c is for and breaks the
+    # existing cat_c threshold-boundary guardrails.
+    _small_doc_enabled = os.environ.get("SMALL_DOC_PROMOTION_ENABLED", "true").lower() == "true"
+    if (
+        _small_doc_enabled
+        and not effectively_garbled
+        and content_class.startswith("flat_")
+        and node_count >= 1
+        and node_count <= 10
+        and max_leaf_ratio < 0.20
+        and 100 <= len(flat_text.strip()) < 15000
+    ):
+        return "PASS", "small_doc_promoted"
+
     # Build descriptive reason for remaining MARGINAL
-    if garbled:
-        reason = "garbling"
+    if effectively_garbled:
+        reason = f"garbling(ratio={garble_ratio:.2f})"
     elif node_count < 3:
         reason = f"node_count={node_count}"
     elif depth < 2:
