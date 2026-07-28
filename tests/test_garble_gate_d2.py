@@ -1,4 +1,5 @@
 """Tests for D2 garble gate: Latin-gibberish detection in non-Latin contexts (RFC-019)."""
+
 import os
 from unittest.mock import patch
 
@@ -54,8 +55,7 @@ class TestLatinGibberishDetection:
     def test_legitimate_bilingual_not_flagged(self):
         """Arabic text with legitimate English words (company names, technical terms)."""
         bilingual = (
-            "شركة Google و Microsoft تعملان في مجال التكنولوجيا وتقدمان خدمات "
-            "the cloud computing"
+            "شركة Google و Microsoft تعملان في مجال التكنولوجيا وتقدمان خدمات the cloud computing"
         )
         assert _is_garbled_blob(bilingual, expected_script="Arab") is False
 
@@ -121,7 +121,10 @@ class TestGarbleCheckNodesWithScript:
     def test_clean_nodes_zero_garbled(self):
         """Clean Latin nodes with no page_script -> zero garbled."""
         nodes = [
-            {"text": "This is perfectly clean English text that should pass all checks", "nodes": []},
+            {
+                "text": "This is perfectly clean English text that should pass all checks",
+                "nodes": [],
+            },
             {"text": "Another clean node with normal content here too", "nodes": []},
         ]
         assert _garble_check_nodes(nodes) == 0
@@ -150,12 +153,22 @@ class TestValidateTreeWithD2:
             "الشروطوالأحكامالمرفقةبالعقد"
         )
         structure = [
-            {"node_id": "1", "title": "Root", "text": "عنوان الوثيقة الرسمية الكاملة", "nodes": [
-                {"node_id": "2", "title": "S1", "text": garbled_text, "nodes": [
-                    {"node_id": "3", "title": "S1.1", "text": garbled_text, "nodes": []},
-                ]},
-                {"node_id": "4", "title": "S2", "text": garbled_text, "nodes": []},
-            ]},
+            {
+                "node_id": "1",
+                "title": "Root",
+                "text": "عنوان الوثيقة الرسمية الكاملة",
+                "nodes": [
+                    {
+                        "node_id": "2",
+                        "title": "S1",
+                        "text": garbled_text,
+                        "nodes": [
+                            {"node_id": "3", "title": "S1.1", "text": garbled_text, "nodes": []},
+                        ],
+                    },
+                    {"node_id": "4", "title": "S2", "text": garbled_text, "nodes": []},
+                ],
+            },
         ]
         ok, reason = validate_tree(structure)
         # Most nodes carry Latin-gibberish-in-Arabic-context content, so the

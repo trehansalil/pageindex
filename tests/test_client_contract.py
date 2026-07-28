@@ -663,10 +663,31 @@ def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
 
 async def test_garble_probe_numeric_junk(monkeypatch, pdf_file_with_content):
     """D3a: a first-page text layer that is >60% digit-junk (>500 chars) is
-    caught by the pre-conversion probe, so the docling converter is invoked
-    with force_full_page_ocr=True on the FIRST (and only) call — no wasted
-    non-OCR attempt."""
+    caught by the pre-conversion probe (pre_garbled=True). QF1 (RFC-021):
+    with the default env (PRE_GARBLE_FORCE_OCR_ENABLED unset/false), the
+    probe firing no longer forces OCR on the primary conversion attempt —
+    forcing full-page OCR upfront destroyed Docling's PictureItem
+    segmentation. The docling converter is invoked with file_path only;
+    OCR escalation is deferred to the existing Fix-3 retry path (which
+    fires off validate_tree's reason='garbling'), not this probe."""
     numeric_junk = "1651001429" * 60  # 600 chars, 100% digits
+    monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
+    mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=numeric_junk)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    conv_mock.assert_called_once_with(pdf_file_with_content)
+    mocks["save_doc"].assert_called_once()
+
+
+async def test_garble_probe_numeric_junk_rollback_env(monkeypatch, pdf_file_with_content):
+    """QF1 rollback lever: PRE_GARBLE_FORCE_OCR_ENABLED=true restores the
+    pre-QF1 D3a behavior — the probe firing forces OCR on the primary
+    conversion attempt (force_full_page_ocr=True, ocr_lang_override=...)."""
+    numeric_junk = "1651001429" * 60  # 600 chars, 100% digits
+    monkeypatch.setenv("PRE_GARBLE_FORCE_OCR_ENABLED", "true")
     mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=numeric_junk)
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -674,7 +695,9 @@ async def test_garble_probe_numeric_junk(monkeypatch, pdf_file_with_content):
     await c.index(pdf_file_with_content)
 
     conv_mock.assert_called_once_with(
-        pdf_file_with_content, True, ocr_lang_override=["eng"],
+        pdf_file_with_content,
+        True,
+        ocr_lang_override=["eng"],
     )
     mocks["save_doc"].assert_called_once()
 

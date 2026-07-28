@@ -294,6 +294,7 @@ class TestEnrichImageBlocks:
 # RFC-017 D0: Page-coverage filter
 # ---------------------------------------------------------------------------
 
+
 def _make_fake_fitz(page_width: float, page_height: float):
     """Build a fake fitz module + document for _recover_picture_text tests."""
     fake = types.ModuleType("fitz")
@@ -361,9 +362,7 @@ class TestPageCoverageFilter:
         long_text = "Chart text with enough characters to pass the decorative gate"
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(
-                converters, "_tesseract_ocr_image", lambda path, langs: long_text
-            )
+            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_text)
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
@@ -379,9 +378,7 @@ class TestPageCoverageFilter:
         long_text = "Recovered text with enough characters to pass the decorative gate"
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(
-                converters, "_tesseract_ocr_image", lambda path, langs: long_text
-            )
+            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_text)
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
@@ -429,9 +426,7 @@ class TestPageCoverageFilter:
         md = "A\n<!-- image -->\nB\n<!-- image -->\nC"
         pics = [
             PictureResult(skipped_reason="page_coverage"),
-            PictureResult(
-                ocr_text="Revenue chart", page=1, bbox={"l": 0, "t": 0, "r": 0, "b": 0}
-            ),
+            PictureResult(ocr_text="Revenue chart", page=1, bbox={"l": 0, "t": 0, "r": 0, "b": 0}),
         ]
         result = splice_figure_markers(md, pics)
         assert "<!-- image -->" not in result
@@ -482,9 +477,11 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
             monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
             monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(client_mod, "route_and_extract_flat", MagicMock(
-                return_value=("flat_prose", [{"role": "prose", "text": "x"}])
-            ))
+            monkeypatch.setattr(
+                client_mod,
+                "route_and_extract_flat",
+                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+            )
             monkeypatch.setattr(client_mod, "save_flat_doc", MagicMock())
             monkeypatch.setattr(client_mod, "save_doc", MagicMock())
             monkeypatch.setattr(client_mod, "save_raw", MagicMock())
@@ -492,7 +489,9 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
             monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
             monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
-            monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: "<!-- image -->")
+            monkeypatch.setattr(
+                client_mod, "image_to_markdown", lambda path, langs: "<!-- image -->"
+            )
 
             captured_pics = []
             orig_splice = splice_figure_markers
@@ -506,7 +505,10 @@ class TestStandaloneImageEnrichment:
             c = CustomPageIndexClient(api_key="test-key")
 
             async def _fake_tree(md_path):
-                return {"structure": [{"node_id": "n1", "text": "x", "nodes": []}], "doc_description": ""}
+                return {
+                    "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
+                    "doc_description": "",
+                }
 
             monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
 
@@ -552,9 +554,11 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
             monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
             monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(client_mod, "route_and_extract_flat", MagicMock(
-                return_value=("flat_prose", [{"role": "prose", "text": "x"}])
-            ))
+            monkeypatch.setattr(
+                client_mod,
+                "route_and_extract_flat",
+                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+            )
             monkeypatch.setattr(client_mod, "save_flat_doc", MagicMock())
             monkeypatch.setattr(client_mod, "save_doc", MagicMock())
             monkeypatch.setattr(client_mod, "save_raw", MagicMock())
@@ -576,7 +580,10 @@ class TestStandaloneImageEnrichment:
             c = CustomPageIndexClient(api_key="test-key")
 
             async def _fake_tree(md_path):
-                return {"structure": [{"node_id": "n1", "text": "x", "nodes": []}], "doc_description": ""}
+                return {
+                    "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
+                    "doc_description": "",
+                }
 
             monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
 
@@ -590,9 +597,7 @@ class TestStandaloneImageEnrichment:
     async def test_standalone_image_marker_count_match(self, monkeypatch):
         """3 <!-- image --> markers -> exactly 3 PictureResults, same png_bytes (D0)."""
         source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_3MARKERS"
-        markdown = (
-            "# Title\n\n<!-- image -->\n\nMiddle\n\n<!-- image -->\n\nEnd\n\n<!-- image -->"
-        )
+        markdown = "# Title\n\n<!-- image -->\n\nMiddle\n\n<!-- image -->\n\nEnd\n\n<!-- image -->"
         captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
 
         assert len(captured_pics) == 3

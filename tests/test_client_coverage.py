@@ -161,9 +161,7 @@ def pdf_file(tmp_path):
     return str(path)
 
 
-async def test_pdf_primary_and_secondary_converter_fail_then_third_succeeds(
-    monkeypatch, pdf_file
-):
+async def test_pdf_primary_and_secondary_converter_fail_then_third_succeeds(monkeypatch, pdf_file):
     """Exercises: primary (idx 0) failure -> PDF_PRIMARY_CONVERTER_FAILURES +
     the loud error log; a NON-primary (idx 1) failure -> the generic warning
     log; and a third converter succeeding while != primary_name -> the
@@ -315,9 +313,7 @@ async def test_flat_path_garble_gate_vlm_exception(monkeypatch, pdf_file):
     gate; when the VLM last-resort call itself raises, VLM_FALLBACK_TOTAL
     {result=error} is incremented and the doc still terminally rejects as
     garbling (never silently persisted)."""
-    mocks = _wire_common(
-        monkeypatch, validate_return=(False, "node_count<3"), vlm_fallback=True
-    )
+    mocks = _wire_common(monkeypatch, validate_return=(False, "node_count<3"), vlm_fallback=True)
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
     )

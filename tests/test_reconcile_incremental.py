@@ -60,7 +60,9 @@ async def test_reconcile_fat_sidecar_avoids_full_json_get(reconcile_env, monkeyp
     """Finding-9 proof: a fat sidecar (sha256 + doc_description present) is
     upserted WITHOUT a single read_registry_fields (full-JSON) GET."""
     fat = {"doc_id": "d1", "doc_name": "x", "sha256": "h1", "doc_description": "d"}
-    monkeypatch.setattr(rb, "_list_meta_entries", lambda: ([("processed/d1.meta.json", "e1", "d1")], {}))
+    monkeypatch.setattr(
+        rb, "_list_meta_entries", lambda: ([("processed/d1.meta.json", "e1", "d1")], {})
+    )
     monkeypatch.setattr(rb, "reconcile_etag_get_all", MagicMock(return_value={}))
     monkeypatch.setattr(rb, "_load_meta", lambda k: dict(fat))
     read_rf = MagicMock()
@@ -81,7 +83,9 @@ async def test_reconcile_thin_sidecar_self_heals(reconcile_env, monkeypatch):
     rewritten as a fat sidecar (save_doc_meta) so subsequent ticks are O(Δ)."""
     thin = {"doc_id": "d2", "doc_name": "x"}
     rich = {"doc_id": "d2", "doc_name": "x", "sha256": "h2", "doc_description": "dd"}
-    monkeypatch.setattr(rb, "_list_meta_entries", lambda: ([("processed/d2.meta.json", "e2", "d2")], {}))
+    monkeypatch.setattr(
+        rb, "_list_meta_entries", lambda: ([("processed/d2.meta.json", "e2", "d2")], {})
+    )
     monkeypatch.setattr(rb, "reconcile_etag_get_all", MagicMock(return_value={}))
     monkeypatch.setattr(rb, "_load_meta", lambda k: dict(thin))
     read_rf = MagicMock(return_value=dict(rich))
@@ -124,7 +128,9 @@ async def test_reconcile_no_sidecar_legacy_orphan_heal(reconcile_env, monkeypatc
 async def test_reconcile_incremental_skips_unchanged(reconcile_env, monkeypatch):
     """Stored etag == listing etag → the doc is skipped entirely: no
     read_registry_fields, no upsert, no etag rewrite (O(Δ)=0)."""
-    monkeypatch.setattr(rb, "_list_meta_entries", lambda: ([("processed/d3.meta.json", "e3", "d3")], {}))
+    monkeypatch.setattr(
+        rb, "_list_meta_entries", lambda: ([("processed/d3.meta.json", "e3", "d3")], {})
+    )
     monkeypatch.setattr(rb, "reconcile_etag_get_all", MagicMock(return_value={"d3": "e3"}))
     read_rf = MagicMock()
     monkeypatch.setattr(rb, "read_registry_fields", read_rf)
@@ -144,7 +150,9 @@ async def test_reconcile_changed_etag_reprocessed(reconcile_env, monkeypatch):
     """Stored etag != listing etag (doc re-ingested) → upserted and the new etag
     is persisted."""
     fat = {"doc_id": "d4", "doc_name": "x", "sha256": "h", "doc_description": "d"}
-    monkeypatch.setattr(rb, "_list_meta_entries", lambda: ([("processed/d4.meta.json", "NEW", "d4")], {}))
+    monkeypatch.setattr(
+        rb, "_list_meta_entries", lambda: ([("processed/d4.meta.json", "NEW", "d4")], {})
+    )
     monkeypatch.setattr(rb, "reconcile_etag_get_all", MagicMock(return_value={"d4": "OLD"}))
     monkeypatch.setattr(rb, "_load_meta", lambda k: dict(fat))
     monkeypatch.setattr(rb, "read_registry_fields", MagicMock())
@@ -194,14 +202,18 @@ async def test_reconcile_deletion_detection(reconcile_env, monkeypatch):
     """A registry doc_id absent from the MinIO listing is deleted, and the full
     live doc-id set is passed to reconcile_etag_prune so its etag is pruned."""
     fat = {"doc_id": "d7", "doc_name": "x", "sha256": "h", "doc_description": "d"}
-    monkeypatch.setattr(rb, "_list_meta_entries", lambda: ([("processed/d7.meta.json", "e7", "d7")], {}))
+    monkeypatch.setattr(
+        rb, "_list_meta_entries", lambda: ([("processed/d7.meta.json", "e7", "d7")], {})
+    )
     monkeypatch.setattr(rb, "reconcile_etag_get_all", MagicMock(return_value={"d7": "e7"}))
     monkeypatch.setattr(rb, "_load_meta", lambda k: dict(fat))
     monkeypatch.setattr(rb, "read_registry_fields", MagicMock())
     monkeypatch.setattr(rb, "upsert_doc", AsyncMock())
     # Use the REAL _delete_stale_rows this time (fixture stubbed it out).
     monkeypatch.setattr(rb, "_delete_stale_rows", _REAL_DELETE_STALE)
-    monkeypatch.setattr("pageindex_mcp.registry.list_all_doc_ids", AsyncMock(return_value={"d7", "gone1"}))
+    monkeypatch.setattr(
+        "pageindex_mcp.registry.list_all_doc_ids", AsyncMock(return_value={"d7", "gone1"})
+    )
     reg_delete = AsyncMock()
     monkeypatch.setattr("pageindex_mcp.registry.delete_doc", reg_delete)
 

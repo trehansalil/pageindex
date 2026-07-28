@@ -523,7 +523,9 @@ class TestRecoverPictureText:
 
         fake = types.ModuleType("fitz")
         fake.Rect = lambda *a: types.SimpleNamespace(
-            coords=a, width=a[2] - a[0] if len(a) >= 4 else 0, height=a[3] - a[1] if len(a) >= 4 else 0,
+            coords=a,
+            width=a[2] - a[0] if len(a) >= 4 else 0,
+            height=a[3] - a[1] if len(a) >= 4 else 0,
         )
         fake.open = lambda path: _Pdf()
         monkeypatch.setitem(sys.modules, "fitz", fake)

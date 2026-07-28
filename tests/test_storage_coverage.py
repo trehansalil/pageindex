@@ -386,9 +386,7 @@ def test_list_processed_docs_response_close_exception_swallowed(mock_minio):
     mock_minio.list_objects.return_value = [meta_obj]
 
     response = MagicMock()
-    response.read.return_value = json.dumps(
-        {"doc_id": "closeerr001", "doc_name": "c.pdf"}
-    ).encode()
+    response.read.return_value = json.dumps({"doc_id": "closeerr001", "doc_name": "c.pdf"}).encode()
     response.release_conn.side_effect = RuntimeError("release boom")
     mock_minio.get_object.return_value = response
 
@@ -494,5 +492,3 @@ def test_download_staging_calls_fget_object(mock_minio):
         "uploads/staging/job-1/report.pdf",
         "/tmp/out.pdf",
     )
-
-

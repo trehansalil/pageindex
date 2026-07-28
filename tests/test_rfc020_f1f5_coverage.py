@@ -98,9 +98,7 @@ class TestF1CoverageExemption:
         not in ``skip_reasons``)."""
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text="", clip_text="")
-        monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
+        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -113,9 +111,7 @@ class TestF1CoverageExemption:
         (the picture is decorative background over real text, not content)."""
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text=_long_text(60))
-        monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
+        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -129,9 +125,7 @@ class TestF1CoverageExemption:
         # 100x100 box on a 612x792 page ~= 2% coverage.
         small_region = _region(l=0, t=0, r=100, b=100)
         _install_fake_fitz(monkeypatch, page_text="", clip_text="")
-        monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
+        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [small_region], ["eng"])
 
@@ -143,9 +137,7 @@ class TestF1CoverageExemption:
         STILL skipped as page_coverage (pre-F1 / legacy behavior)."""
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
         _install_fake_fitz(monkeypatch, page_text="", clip_text="")
-        monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
+        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -159,9 +151,7 @@ class TestF1CoverageExemption:
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         small_region = _region(l=0, t=0, r=100, b=100)
         _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(30))
-        monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
+        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [small_region], ["eng"])
 

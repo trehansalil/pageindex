@@ -82,7 +82,9 @@ def _install_fake_fitz(monkeypatch):
 
     fake = types.ModuleType("fitz")
     fake.Rect = lambda *a: types.SimpleNamespace(
-        coords=a, width=a[2] - a[0] if len(a) >= 4 else 0, height=a[3] - a[1] if len(a) >= 4 else 0,
+        coords=a,
+        width=a[2] - a[0] if len(a) >= 4 else 0,
+        height=a[3] - a[1] if len(a) >= 4 else 0,
     )
     fake.open = lambda path: _Pdf()
     monkeypatch.setitem(sys.modules, "fitz", fake)
@@ -205,7 +207,11 @@ class TestFinding4And7DenseKeyingAndCountGuard:
         pr2 = PictureResult(ocr_text="third chart text here", png_bytes=b"c", page=1, bbox={})
         # Region 1's crop failed -> sparse dict; the dense list must NOT collapse.
         # skip_reasons records region 1 as "page_coverage" (F5 plumbing).
-        monkeypatch.setattr(converters, "_recover_picture_text", lambda *a, **k: ({0: pr0, 2: pr2}, {1: "page_coverage"}))
+        monkeypatch.setattr(
+            converters,
+            "_recover_picture_text",
+            lambda *a, **k: ({0: pr0, 2: pr2}, {1: "page_coverage"}),
+        )
 
         pics = converters._recover_picture_results("x <!-- image --> y", object(), "d.pdf")
 
