@@ -184,6 +184,32 @@ if region_area / page_area > 0.6:  # full-page scan, not a chart
 
 ---
 
+## Addendum 2026-07-28: RFC-022 B3 Diagnosis (GHV-TKV-Tarif.pdf, Task 3.1)
+
+**Status:** Diagnosis complete — the three hypothesized causes in [RFC-022 B3](../.agents/rfcs/022-run5-verdict-bugfixes.md#b3-ghv-tkv-ocr-splice-regression) (P0b filter too aggressive / post-processing dropping OCR / OCR-escalation decoupling incomplete) are **all ruled out** for Doc 3. Root cause is a **fourth, previously undocumented mechanism**: table-block content is invisible to text-based char-count scoring.
+
+**Method:** Live trace against `doc_store/GHV-TKV-Tarif.pdf` (the actual corpus file) through `pdf_to_markdown_docling` → `splice_picture_text_for_tree` → `splice_figure_markers` → `route_and_extract_flat`, instrumented with debug logging added at each splice call site in `client.py` (`_log_pic_splice_trace`, RFC-022 Task 3.1).
+
+**Findings:**
+
+1. **P0b (page-coverage filter) does not engage.** Docling detects 4 `PictureItem` regions on the doc's single page. Their coverage is 5.4%, 0.9%, 0.1%, 0.1% of page area — all far under the 60% `_PICTURE_PAGE_COVERAGE_THRESHOLD` (converters.py:1341/1501). The filter never fires; it is not the cause.
+
+2. **The 4 regions are correctly handled, not lost:**
+   - Region 0 (5.4% coverage): `skipped_reason="clip_text"` — PyMuPDF finds 380 chars of raw text under this bbox, which is the pricing table Docling *already* extracted as a proper markdown table elsewhere in the output. Correctly skipped (D1, RFC-018); no content loss.
+   - Regions 1-3 (<1% coverage each): genuine tiny logo/footnote-marker crops. Tesseract OCR runs on each and returns text below `_PICTURE_OCR_MIN_CHARS` (20 chars) — correctly treated as decorative, `ocr_text=""`.
+   - Net: **zero genuine chart/infographic content is lost in the per-picture OCR pipeline** for this document. The pipeline is working as designed.
+
+3. **The real 4,267→375 char drop happens downstream in `route_and_extract_flat`, not in OCR splice.** Live trace: raw Docling markdown is 13,022 chars (single page, 3 well-formed markdown tables + prose). After `route_and_extract_flat`, `content_class="flat_mixed"`, 23 blocks, **but `sum(len(b.get("text","")))` across all blocks is exactly 375** — matching the audit's reported figure. Cause: `role="table"` blocks carry **no `"text"` key by design** (helpers.py:1393-1398) — parsed cell content lives in `headers` / `rows` / `row_records` instead, consumed separately by `_flat_search_text` (helpers.py:2055-2062) for retrieval. Any code that measures document content via `block.get("text", "")` — including the corpus audit's own char-count diagnostic — sees 0 chars for all 3 table blocks and silently misses ~180+ pricing figures that are present and correctly structured in the output.
+
+4. **Secondary, minor contributor:** of the 4 `<!-- image -->` markers, 1 (region 0) is correctly stripped by `splice_figure_markers` (`skipped_reason` set → `STRIP_SKIPPED_IMAGE_MARKERS=true` default removes it). The other 3 (regions 1-3) have no `ocr_text`/`description` **and** no `skipped_reason` (OCR genuinely ran, just returned nothing — that code path never sets `skipped_reason`), so they fall through `splice_figure_markers`'s `_repl` unresolved and survive into prose blocks as literal `"<!-- image -->"` text (14 chars × 3 = 42 chars of noise). This matches the investigation's P5 "correct fallback" behavior — it is cosmetic, not the source of the regression.
+
+5. **Cross-cutting risk for the RFC-022 B1-Fix:** the proposed synthetic-structure builder in `client.py` (`{"title": "", "text": b.get("text", "")}` for each block) inherits the exact same blind spot. For any table-heavy flat doc, B1's synthetic structure will still see near-empty content and fail to promote, because it does not fold `row_records` into node text either.
+
+**Recommended fix direction for Task 3.2 (not implemented here — diagnosis only):**
+- Primary: wherever flat-doc content is measured for scoring/promotion (the B1-Fix synthetic-structure builder, and any audit char-count tooling), include verbalized `row_records` text for `role=="table"` blocks alongside `block["text"]` — e.g. `b.get("text", "") or " ".join(b.get("row_records", []))`. Small, low-risk, mirrors the pattern `_flat_search_text` already uses.
+- Secondary (cosmetic, optional): also strip bare unresolved `<!-- image -->` markers in `splice_figure_markers` when OCR ran but returned nothing (not just when `skipped_reason` is set), to remove the ~42-char literal-marker noise from prose blocks.
+- None of the three RFC-022 B3 hypotheses (P0b too aggressive, post-processing dropping valid OCR, OCR-decoupling incomplete) apply to Doc 3 — no code change to the picture-OCR/escalation pipeline itself is needed for this document.
+
 ## Related Artifacts
 
 - [IMAGE_BLOCK_INGESTION_SCALING_AUDIT_2026-07-21](IMAGE_BLOCK_INGESTION_SCALING_AUDIT_2026-07-21.md) — 15 verified findings against the same branch
