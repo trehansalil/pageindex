@@ -1,0 +1,65 @@
+"""RFC-022 B1: flat-doc verdict blind spot (structure=[] -> all gates blocked).
+
+Validates Design Properties 1-2 (design-rfc022-run5-verdict-bugfixes.md):
+  Property 1 - synthetic structure for flat docs: for any flat document with
+  structure=[] and non-empty text blocks, classify_verdict receives a
+  synthetic structure with node_count > 0 and non-empty flat_text.
+  Property 2 - _tree_is_garbled empty guard: _tree_is_garbled([]) -> False.
+
+`_synthesize_flat_structure` below mirrors the inline synthesis in
+client.py's `index()` (client.py:1057-1062) verbatim, since that logic is
+not factored into a standalone function.
+"""
+
+from pageindex_mcp.helpers import _tree_is_garbled, classify_verdict
+
+
+def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
+    # B1 (RFC-022): mirrors client.py:1057-1062.
+    if not flat_structure and blocks:
+        flat_structure = [
+            {"title": "", "text": b.get("text", "")}
+            for b in blocks
+            if b.get("text", "").strip()
+        ]
+    return flat_structure
+
+
+def test_synthetic_structure_generated_from_blocks():
+    blocks = [{"text": "alpha content"}, {"text": "beta content"}, {"text": "gamma content"}]
+    structure = _synthesize_flat_structure([], blocks)
+    assert len(structure) == len(blocks)
+    assert all(node["text"] for node in structure)
+
+
+def test_synthetic_structure_promotes_cat_b():
+    blocks = [{"text": f"block number {i} has some prose content here"} for i in range(10)]
+    structure = _synthesize_flat_structure([], blocks)
+    assert len(structure) == 10
+    verdict, reason = classify_verdict(structure, "flat_prose", None)
+    assert (verdict, reason) == ("PASS", "cat_b_promoted")
+
+
+def test_empty_structure_and_empty_blocks_yields_marginal():
+    structure = _synthesize_flat_structure([], [])
+    assert structure == []
+    verdict, _ = classify_verdict(structure, "flat_prose", None)
+    assert verdict == "MARGINAL"
+
+
+def test_non_empty_garbled_structure_still_detected():
+    blocks = [{"text": "\x00" * 200}]
+    structure = _synthesize_flat_structure([], blocks)
+    assert structure
+    assert _tree_is_garbled(structure) is True
+    verdict, reason = classify_verdict(structure, "flat_prose", None)
+    assert verdict == "FAIL" or (verdict == "MARGINAL" and "garbl" in reason)
+
+
+def test_tree_is_garbled_empty_list_returns_false():
+    assert _tree_is_garbled([]) is False
+
+
+def test_tree_is_garbled_non_empty_unchanged():
+    assert _tree_is_garbled([{"text": "real content"}]) is False
+    assert _tree_is_garbled([{"text": "\x00" * 200}]) is True
