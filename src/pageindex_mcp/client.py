@@ -36,6 +36,7 @@ from .converters import (
 from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
+    _flat_block_text,
     _flat_text_is_garbled,
     _script_from_filename,
     _strip_text,
@@ -73,6 +74,37 @@ _MAX_DESC_CHARS = 4000
 TREE_PATH_PICTURE_SPLICE_ENABLED = os.getenv(
     "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
+
+
+def _log_pic_splice_trace(filename: str, stage: str, pic_results: list) -> None:
+    """B3 (RFC-022) diagnosis: trace OCR splice behavior per PictureResult.
+
+    Buckets each pic by outcome so a doc regressing to unenriched
+    `<!-- image -->` markers (e.g. GHV-TKV-Tarif.pdf) can be diagnosed from
+    logs alone — which of enriched / decorative(<min-chars) / skipped
+    (page_coverage, clip_text, ...) each region landed in, without a
+    manual repro script."""
+    if not pic_results:
+        return
+    enriched = sum(1 for p in pic_results if p.get("ocr_text") or p.get("description"))
+    skipped = {}
+    empty_unmarked = 0
+    for p in pic_results:
+        reason = p.get("skipped_reason")
+        if reason:
+            skipped[reason] = skipped.get(reason, 0) + 1
+        elif not (p.get("ocr_text") or p.get("description")):
+            empty_unmarked += 1
+    logger.debug(
+        "B3 pic-splice trace [%s/%s]: %d pic(s), enriched=%d, "
+        "skipped=%s, ocr_ran_but_empty=%d",
+        filename,
+        stage,
+        len(pic_results),
+        enriched,
+        skipped,
+        empty_unmarked,
+    )
 
 
 class LLMTransientFailure(Exception):
@@ -645,6 +677,7 @@ class CustomPageIndexClient(PageIndexClient):
                             primary_name,
                         )
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                        _log_pic_splice_trace(filename, "primary", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
@@ -786,6 +819,7 @@ class CustomPageIndexClient(PageIndexClient):
                     # Splice it into the tree markdown here — omitting this call
                     # silently drops all picture-OCR text from the escalated tree.
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                        _log_pic_splice_trace(filename, "garble_escalation", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
@@ -883,6 +917,7 @@ class CustomPageIndexClient(PageIndexClient):
                         # text into the tree markdown (see Fix-3 escalation above
                         # for why this must not be skipped).
                         if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                            _log_pic_splice_trace(filename, "image_dominant_escalation", pic_results)
                             md_content = splice_picture_text_for_tree(md_content, pic_results)
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
@@ -999,6 +1034,7 @@ class CustomPageIndexClient(PageIndexClient):
                             # markdown; splice_figure_markers count-guards the
                             # marker↔region alignment and degrades to neutral
                             # markers on mismatch.
+                            _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
                             flat_md = splice_figure_markers(flat_md, pic_results)
 
                             content_class, blocks = await asyncio.to_thread(
@@ -1048,6 +1084,28 @@ class CustomPageIndexClient(PageIndexClient):
 
                             # RFC-014 D3: compute verdict for flat doc.
                             flat_structure = result.get("structure", [])
+
+                            # B1 (RFC-022): flat docs may have structure=[] (failed tree or
+                            # no tree attempt). classify_verdict scores on structure — an
+                            # empty list yields node_count=0/depth=0/flat_text="" which
+                            # blocks every promotion gate. Build synthetic structure from
+                            # blocks so the verdict function has real content to assess.
+                            #
+                            # B3 (RFC-022): `role="table"` blocks carry no "text" key by
+                            # design (helpers.py FLAT-05-C1) — parsed cell content lives in
+                            # `row_records` instead. Measuring content via `b.get("text", "")`
+                            # alone sees 0 chars for every table block and starves
+                            # classify_verdict of real content on table-heavy docs (Doc 3
+                            # GHV-TKV-Tarif: 13,022 raw chars → 375 measured chars, all from
+                            # 3 tables with no "text" key). Fall back to verbalized
+                            # row_records, mirroring _flat_search_text's pattern.
+                            if not flat_structure and blocks:
+                                flat_structure = [
+                                    {"title": "", "text": _flat_block_text(b)}
+                                    for b in blocks
+                                    if _flat_block_text(b).strip()
+                                ]
+
                             f_verdict, f_verdict_reason = classify_verdict(
                                 flat_structure,
                                 content_class,

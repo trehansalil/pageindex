@@ -1030,6 +1030,8 @@ def _garble_check_nodes(
 
 
 def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
+    if not nodes:
+        return False
     blob = _flatten_tree_text(nodes)
     # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
     # mixed-script. Never narrows the existing gate.
@@ -1180,6 +1182,19 @@ def classify_verdict(  # noqa: C901
     if content_class == "image_standalone":
         return _classify_image_verdict(image_enrichment_ratio)
 
+    # B2-B (RFC-022): rescue gate for classification-changing promotions must
+    # fire BEFORE hard-exits based on pre-promotion state. Hoisted above the
+    # max_leaf_ratio hard-FAIL (defense-in-depth for when
+    # IMAGE_STANDALONE_PIPELINE_ENABLED=false) since image-enriched flat docs
+    # have their content captured in enriched image blocks, not tree nodes —
+    # the structural leaf-ratio metric is misleading for these docs.
+    if (
+        content_class in ("flat_prose", "flat_mixed")
+        and image_enrichment_ratio is not None
+        and image_enrichment_ratio >= 0.8
+    ):
+        return "PASS", "image_enrichment_promoted"
+
     _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
     if max_leaf_ratio > 0.75:
         return "FAIL", f"max_leaf_ratio={max_leaf_ratio:.2f}"
@@ -1235,14 +1250,6 @@ def classify_verdict(  # noqa: C901
             and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
         ):
             return "PASS", "cat_c_promoted"
-
-    # QF2a: image-enrichment promotion for flat docs with rich image content
-    if (
-        content_class in ("flat_prose", "flat_mixed")
-        and image_enrichment_ratio is not None
-        and image_enrichment_ratio >= 0.8
-    ):
-        return "PASS", "image_enrichment_promoted"
 
     # QF2c: small-doc exemption — well-formed tiny FLAT docs shouldn't be
     # penalized. Scoped to content_class.startswith("flat_") per RFC-021
@@ -2043,6 +2050,27 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
         content_class = "flat_prose"
 
     return content_class, blocks
+
+
+def _flat_block_text(block: dict) -> str:
+    """B3 (RFC-022): a single flat block's scoreable text, table-aware.
+
+    `role="table"` blocks carry no `"text"` key by design (FLAT-05-C1) —
+    parsed cell content lives in `row_records` instead. Callers that measure
+    content via `block.get("text", "")` alone see 0 chars for every table
+    block. Falls back to verbalized `row_records` for tables and
+    `ocr_text`/`description` for images (which also carry no `"text"` key),
+    mirroring `_flat_search_text`'s per-block handling. Pure."""
+    text = block.get("text", "")
+    if text:
+        return text
+    role = block.get("role")
+    if role == "table":
+        return "\n".join(block.get("row_records", []) or [])
+    if role == "image":
+        parts = [block.get("ocr_text") or "", block.get("description") or ""]
+        return "\n".join(p for p in parts if p)
+    return text
 
 
 def _flat_search_text(data: dict) -> str:
