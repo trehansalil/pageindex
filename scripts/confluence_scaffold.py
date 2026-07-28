@@ -51,7 +51,7 @@ def inject_headers(path: Path, parent: str, title: str) -> None:
     this workspace).
     """
     text = read(path)
-    header = f"<!-- Space: {SPACE} -->\n\n<!-- Title: {title} -->\n\n<!-- Folder: {parent} -->\n\n"
+    header = f"<!-- Space: {SPACE} -->\n<!-- Title: {title} -->\n<!-- Folder: {parent} -->\n\n"
     path.write_text(header + text, encoding="utf-8")
     print(f"[headers] added mark metadata to {path.relative_to(AGENTS_DIR.parent)}")
 
@@ -82,9 +82,7 @@ def rfc_title(rfc_id: str, slug: str, text: str) -> str:
 
 
 DESIGN_STUB = """<!-- Space: {space} -->
-
 <!-- Title: Design: {readable} -->
-
 <!-- Folder: Designs -->
 
 # Design: {readable}
@@ -100,9 +98,7 @@ DESIGN_STUB = """<!-- Space: {space} -->
 """
 
 TASKS_STUB = """<!-- Space: {space} -->
-
 <!-- Title: Implementation Plan: {readable} -->
-
 <!-- Folder: Tasks -->
 
 # Implementation Plan: {readable}
