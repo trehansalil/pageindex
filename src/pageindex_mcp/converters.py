@@ -1545,7 +1545,10 @@ def _recover_picture_text(
                 continue
             # D2 (RFC-023): sub-icon regions (both dims below threshold) are
             # decorative UI glyphs — skip crop+OCR entirely.
-            if rect.width < _DECORATIVE_ICON_MIN_DIM_PT and rect.height < _DECORATIVE_ICON_MIN_DIM_PT:
+            if (
+                rect.width < _DECORATIVE_ICON_MIN_DIM_PT
+                and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
+            ):
                 skip_reasons[i] = "decorative_icon"
                 continue
             # D6: zero page rotation before rendering so Tesseract receives a
@@ -1556,7 +1559,11 @@ def _recover_picture_text(
                 pix = page.get_pixmap(clip=rect, dpi=300)
             finally:
                 page.set_rotation(orig_rotation)
-            crops[i] = {"png_bytes": pix.tobytes("png"), "region": region, "rotation": orig_rotation}
+            crops[i] = {
+                "png_bytes": pix.tobytes("png"),
+                "region": region,
+                "rotation": orig_rotation,
+            }
     finally:
         pdf.close()
 
