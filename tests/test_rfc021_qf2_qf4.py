@@ -127,13 +127,15 @@ def test_qf2b_ratio_016_passes():
 
 
 def test_qf2b_ratio_018_marginal():
-    # 0.18 is above the new 0.17 threshold -> stays MARGINAL. content_class
-    # "default" also fails the (identical 0.17) cat_c promotion threshold,
-    # so no category-promotion path masks the base-gate result.
-    tree = _make_tree([180] + [10] * 82, depth=2)
+    # RFC-023 D10 widened PASS_MAX_LEAF_RATIO 0.17 -> 0.20, so 0.18 now
+    # clears the base gate. Recalibrated to 0.21, just above the new
+    # threshold -> stays MARGINAL. content_class "default" also fails the
+    # (unchanged, 0.17) cat_c promotion threshold, so no category-promotion
+    # path masks the base-gate result.
+    tree = _make_tree([210] + [10] * 79, depth=2)
     verdict, reason = classify_verdict(tree, "default", None)
     assert verdict == "MARGINAL"
-    assert reason == "leaf_concentration=0.18"
+    assert reason == "leaf_concentration=0.21"
 
 
 def test_qf2b_env_var_override():
@@ -172,26 +174,36 @@ def test_qf2b_existing_pass_docs_still_pass():
 
 def test_qf2c_small_doc_promoted():
     # node_count=8 (root + 7 leaves), ratio=0.18, flat_text len=1200 (in
-    # [100, 15000)), clean.
-    tree = _shared_root_tree([216, 164, 164, 164, 164, 164, 164])
-    verdict, reason = classify_verdict(tree, "flat_prose", None)
+    # [100, 15000)), clean. RFC-023 D10 widened the base
+    # PASS_MAX_LEAF_RATIO gate to 0.20 (same as QF2c's own threshold), so
+    # PASS_MAX_LEAF_RATIO is forced low here to reach the base MARGINAL
+    # tier and isolate the QF2c small-doc-exemption path specifically.
+    with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.10"}):
+        tree = _shared_root_tree([216, 164, 164, 164, 164, 164, 164])
+        verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert (verdict, reason) == ("PASS", "small_doc_promoted")
 
 
 def test_qf2c_too_many_nodes():
     # node_count=15 (root + 14 leaves, >10) -> exemption denied even though
-    # ratio (0.18) and length (13000) are both in range.
-    tree = _shared_root_tree([2340] + [820] * 13)
-    verdict, reason = classify_verdict(tree, "flat_prose", None)
+    # ratio (0.18) and length (13000) are both in range. PASS_MAX_LEAF_RATIO
+    # forced low (see test_qf2c_small_doc_promoted) so the base gate doesn't
+    # mask the node-count rejection.
+    with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.10"}):
+        tree = _shared_root_tree([2340] + [820] * 13)
+        verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert verdict == "MARGINAL"
     assert reason == "leaf_concentration=0.18"
 
 
 def test_qf2c_too_long_text():
     # node_count=10 (in range), ratio=0.18 (in range), but flat_text
-    # len=16000 (>=15000) -> exemption denied.
-    tree = _shared_root_tree([2880] + [1640] * 8)
-    verdict, reason = classify_verdict(tree, "flat_prose", None)
+    # len=16000 (>=15000) -> exemption denied. PASS_MAX_LEAF_RATIO forced
+    # low (see test_qf2c_small_doc_promoted) so the base gate doesn't mask
+    # the text-length rejection.
+    with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.10"}):
+        tree = _shared_root_tree([2880] + [1640] * 8)
+        verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert verdict == "MARGINAL"
     assert reason == "leaf_concentration=0.18"
 
@@ -208,8 +220,13 @@ def test_qf2c_garbled_no_exemption():
 
 
 def test_qf2c_disabled_via_env():
+    # PASS_MAX_LEAF_RATIO forced low (see test_qf2c_small_doc_promoted) so
+    # the base gate doesn't mask the disabled-flag rejection.
     tree = _shared_root_tree([216, 164, 164, 164, 164, 164, 164])
-    with patch.dict(os.environ, {"SMALL_DOC_PROMOTION_ENABLED": "false"}):
+    with patch.dict(
+        os.environ,
+        {"SMALL_DOC_PROMOTION_ENABLED": "false", "PASS_MAX_LEAF_RATIO": "0.10"},
+    ):
         verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert verdict == "MARGINAL"
     assert reason == "leaf_concentration=0.18"

@@ -49,6 +49,10 @@ def _install_fake_fitz(monkeypatch, *, page_text="", clip_text=None, width=612.0
 
     class _Page:
         rect = types.SimpleNamespace(width=width, height=height)
+        rotation = 0
+
+        def set_rotation(self, value):
+            self.rotation = value
 
         def get_text(self, mode="text", *, clip=None):
             if clip is not None:

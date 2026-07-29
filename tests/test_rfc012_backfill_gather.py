@@ -15,7 +15,17 @@ import pytest
 
 def _make_meta(key: str) -> dict:
     doc_id = key.removesuffix(".meta.json")
-    return {"doc_id": doc_id, "doc_name": f"test-{doc_id}"}
+    # Fat v2 sidecar (sha256 + doc_description present) so _enrich_one's
+    # _is_fat() fast path is taken and no full-JSON MinIO GET (via
+    # read_registry_fields) is attempted — these tests mock upsert_doc /
+    # _load_meta only, not the network calls behind the thin-sidecar
+    # self-heal path.
+    return {
+        "doc_id": doc_id,
+        "doc_name": f"test-{doc_id}",
+        "sha256": "0" * 64,
+        "doc_description": "test description",
+    }
 
 
 @pytest.mark.asyncio

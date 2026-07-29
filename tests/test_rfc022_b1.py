@@ -18,9 +18,7 @@ def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
     # B1 (RFC-022): mirrors client.py:1057-1062.
     if not flat_structure and blocks:
         flat_structure = [
-            {"title": "", "text": b.get("text", "")}
-            for b in blocks
-            if b.get("text", "").strip()
+            {"title": "", "text": b.get("text", "")} for b in blocks if b.get("text", "").strip()
         ]
     return flat_structure
 
@@ -33,7 +31,15 @@ def test_synthetic_structure_generated_from_blocks():
 
 
 def test_synthetic_structure_promotes_cat_b():
-    blocks = [{"text": f"block number {i} has some prose content here"} for i in range(10)]
+    # RFC-023 D4 added a MIN_FLAT_PROMOTION_CHARS=500 content-quality guard
+    # to the cat_b promotion path, so the blocks need enough text to clear
+    # it (below 500 chars, small_doc_promoted fires instead).
+    blocks = [
+        {
+            "text": f"block number {i} has some additional prose content padding here to exceed the minimum"
+        }
+        for i in range(10)
+    ]
     structure = _synthesize_flat_structure([], blocks)
     assert len(structure) == 10
     verdict, reason = classify_verdict(structure, "flat_prose", None)

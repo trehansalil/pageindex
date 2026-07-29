@@ -293,8 +293,16 @@ class TestLogicalOrderDetection:
         assert _text_is_logical_order(visual) is False
 
     def test_logical_order_skips_get_display(self):
+        # RFC-023 D9: heading-marker lines are now *always* passed through
+        # get_display(), independent of the whole-document logical-order
+        # early-return, to fix bilingual docs whose headings are stored
+        # visual-order even when the body is logical. So an already-logical
+        # heading gets flipped here; only the (non-heading) body line is
+        # skipped by the early-return and stays untouched.
         logical = "# قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل\nبشأن تنظيم علاقات العمل وتعديلاته"
-        assert reconstruct_bidi_order(logical) == logical
+        result = reconstruct_bidi_order(logical)
+        assert result != logical
+        assert result.splitlines()[1] == logical.splitlines()[1]
 
     def test_visual_order_still_reversed(self):
         visual = "# 2022 ةنسل مقر ءارزولا سلجم رارق\nلمعلا تاقالع ميظنت نأشب"
@@ -450,12 +458,15 @@ class TestSpliceFigureMarkers:
         assert "<!-- image -->" not in out
         assert "[Chart text]" not in out
 
-    def test_count_mismatch_keeps_all_markers_neutral(self):
-        # Finding 7: marker↔region ordinal correspondence is unverified — on a
-        # count mismatch nothing is spliced rather than risking misattachment.
+    def test_count_mismatch_splices_matched_ordinals_strips_excess(self):
+        # RFC-023 D1: count mismatch degrades gracefully — matched ordinals
+        # splice normally; excess markers past len(pics) are stripped.
         md = "<!-- image -->\n<!-- image -->\n<!-- image -->"
         out = splice_figure_markers(md, [self._pr("some chart"), self._pr("other")])
-        assert out == md
+        assert "[Figure: fig-0]" in out
+        assert "[Figure: fig-1]" in out
+        assert "[Figure: fig-2]" not in out
+        assert "<!-- image -->" not in out
 
 
 class TestBboxToFitzRect:
@@ -505,6 +516,10 @@ class TestRecoverPictureText:
 
         class _Page:
             rect = types.SimpleNamespace(height=800.0, width=600.0)
+            rotation = 0
+
+            def set_rotation(self, value):
+                self.rotation = value
 
             def get_text(self, mode="text", *, clip=None):
                 return ""

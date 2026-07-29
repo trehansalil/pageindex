@@ -20,9 +20,7 @@ from pageindex_mcp.client import _IMAGE_EXTS
 from pageindex_mcp.helpers import _classify_image_verdict, classify_verdict
 
 
-def _apply_extension_override(
-    content_class: str, ext: str, pipeline_enabled: bool = True
-) -> str:
+def _apply_extension_override(content_class: str, ext: str, pipeline_enabled: bool = True) -> str:
     # B2-A (RFC-022): mirrors client.py's post-route_and_extract_flat override.
     if pipeline_enabled and ext in _IMAGE_EXTS:
         content_class = "image_standalone"
@@ -49,30 +47,22 @@ def test_classify_image_verdict_none_fails():
 
 def test_hoisted_qf2a_promotes_despite_high_leaf_ratio():
     structure = _single_leaf_tree()
-    verdict, reason = classify_verdict(
-        structure, "flat_prose", None, image_enrichment_ratio=0.9
-    )
+    verdict, reason = classify_verdict(structure, "flat_prose", None, image_enrichment_ratio=0.9)
     assert (verdict, reason) == ("PASS", "image_enrichment_promoted")
 
 
 def test_non_image_enriched_doc_still_fails_on_max_leaf_ratio():
     structure = _single_leaf_tree()
-    verdict, reason = classify_verdict(
-        structure, "flat_prose", None, image_enrichment_ratio=None
-    )
+    verdict, reason = classify_verdict(structure, "flat_prose", None, image_enrichment_ratio=None)
     assert verdict == "FAIL"
     assert reason.startswith("max_leaf_ratio=")
 
 
 def test_pipeline_disabled_falls_back_to_flat_path():
-    content_class = _apply_extension_override(
-        "flat_prose", ".jpg", pipeline_enabled=False
-    )
+    content_class = _apply_extension_override("flat_prose", ".jpg", pipeline_enabled=False)
     assert content_class == "flat_prose"
     # Even with the override disabled, the hoisted QF2a rescue gate (B2-B) is
     # defense-in-depth and still promotes a well-enriched flat doc.
     structure = _single_leaf_tree()
-    verdict, reason = classify_verdict(
-        structure, content_class, None, image_enrichment_ratio=0.9
-    )
+    verdict, reason = classify_verdict(structure, content_class, None, image_enrichment_ratio=0.9)
     assert (verdict, reason) == ("PASS", "image_enrichment_promoted")

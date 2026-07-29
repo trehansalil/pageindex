@@ -64,6 +64,10 @@ def _install_fake_fitz(monkeypatch):
 
     class _Page:
         rect = types.SimpleNamespace(height=800.0, width=600.0)
+        rotation = 0
+
+        def set_rotation(self, value):
+            self.rotation = value
 
         def get_text(self, mode="text", *, clip=None):
             return ""
@@ -230,10 +234,16 @@ class TestFinding4And7DenseKeyingAndCountGuard:
         assert "[Figure: fig-1]" not in out
         assert "<!-- image -->" not in out  # skipped marker stripped by D3
 
-    def test_finding7_count_mismatch_degrades_to_neutral(self):
+    def test_finding7_count_mismatch_splices_matched_strips_excess(self):
+        # RFC-023 D1: count mismatch no longer bails out — the matched marker
+        # splices by ordinal; the excess marker (no PictureResult) is stripped.
         md = "<!-- image -->\n\n<!-- image -->"
         pics = [PictureResult(ocr_text="only one result here", png_bytes=b"a")]
-        assert splice_figure_markers(md, pics) == md
+        out = splice_figure_markers(md, pics)
+        assert "[Figure: fig-0]" in out
+        assert "only one result here" in out
+        assert "[Figure: fig-1]" not in out
+        assert "<!-- image -->" not in out
 
     def test_empty_pics_is_noop(self):
         assert splice_figure_markers("<!-- image -->", []) == "<!-- image -->"

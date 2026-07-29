@@ -307,6 +307,10 @@ def _make_fake_fitz(page_width: float, page_height: float):
     class _FakePage:
         def __init__(self):
             self.rect = types.SimpleNamespace(height=page_height, width=page_width)
+            self.rotation = 0
+
+        def set_rotation(self, value):
+            self.rotation = value
 
         def get_text(self, mode="text", *, clip=None):
             return ""
@@ -443,11 +447,15 @@ class TestStandaloneImageEnrichment:
     """RFC-017 D1: standalone images produce synthetic PictureResult."""
 
     def test_standalone_image_marker_mismatch_degrades(self):
-        """Image with 3 <!-- image --> markers + 1 PictureResult → markdown unchanged."""
+        """3 <!-- image --> markers + 1 empty PictureResult (RFC-023 D1): the
+        matched marker keeps its neutral form (empty result, no skip reason);
+        the two excess markers past len(pics) are stripped."""
         md = "# Title\n\n<!-- image -->\n\nMiddle\n\n<!-- image -->\n\nEnd\n\n<!-- image -->"
         pics = [PictureResult(ocr_text="", page=1, bbox={"l": 0, "t": 0, "r": 0, "b": 0})]
         result = splice_figure_markers(md, pics)
-        assert result == md
+        assert result.count("<!-- image -->") == 1
+        assert "[Figure:" not in result
+        assert "Middle" in result and "End" in result
 
     @pytest.mark.asyncio
     async def test_standalone_image_produces_synthetic_pic_result(self, monkeypatch):
@@ -642,6 +650,10 @@ def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: 
     class _FakePage:
         def __init__(self):
             self.rect = types.SimpleNamespace(height=page_height, width=page_width)
+            self.rotation = 0
+
+        def set_rotation(self, value):
+            self.rotation = value
 
         def get_text(self, kind, *, clip=None):
             assert kind == "text"
