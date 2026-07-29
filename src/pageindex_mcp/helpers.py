@@ -888,8 +888,11 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     # Single-token repetition > 30% on blobs with enough tokens. Purely
     # symbolic tokens ('|' table delimiters, '€'/currency signs) are excluded:
     # a wide price table legitimately produces dozens of these per row, which
-    # is not garbling.
-    tokens = [t for t in blob.split() if any(c.isalnum() for c in t)]
+    # is not garbling. Structural HTML comment markers (e.g. `<!-- image -->`)
+    # are stripped first (D3 / RFC-023) so their repetition doesn't falsely
+    # trip the check on image-only pages.
+    stripped = re.sub(r"<!--.*?-->", "", blob)
+    tokens = [t for t in stripped.split() if any(c.isalnum() for c in t)]
     if len(tokens) > 20:
         most_common_count = Counter(tokens).most_common(1)[0][1]
         if (most_common_count / len(tokens)) > 0.30:
@@ -1220,7 +1223,7 @@ def classify_verdict(  # noqa: C901
         garble_ratio = 0.0
         effectively_garbled = False
 
-    _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.17"))
+    _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.20"))
     if (
         node_count >= 3
         and depth >= 2
@@ -1237,10 +1240,20 @@ def classify_verdict(  # noqa: C901
         if max_leaf_ratio < 0.15 and ocr_noise_ratio(flat_text) < 0.005:
             return "PASS", "cat_a_promoted"
     elif content_class.startswith("flat_"):
+        _min_flat_promotion_chars = int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500"))
+        _stripped_flat_text = flat_text.strip()
+        _text_blocks = [b for b in _stripped_flat_text.splitlines() if b.strip()]
+        _placeholder_ratio = (
+            sum(1 for b in _text_blocks if b.strip() == "<!-- image -->") / len(_text_blocks)
+            if _text_blocks
+            else 0.0
+        )
         if (
             not effectively_garbled
             and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
             and node_count >= 3
+            and len(_stripped_flat_text) >= _min_flat_promotion_chars
+            and _placeholder_ratio <= 0.5
         ):
             return "PASS", "cat_b_promoted"
     else:
@@ -1315,6 +1328,9 @@ _FLAT_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 # an optional title on the same line (e.g. '1.1 Geltungsbereich').
 _FLAT_NUMBERED_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]?(?:\s+\S.*)?$")
 _FLAT_FIGURE_RE = re.compile(r"^\[Figure:\s*fig-(\d+)(?:\s*\|\s*(.*?))?\]$")
+# unresolved marker left by splice_figure_markers (RFC-023 D1): no matching
+# PictureResult, so it never became a `[Figure: fig-N]` reference.
+_FLAT_RAW_IMAGE_RE = re.compile(r"^<!--\s*image\s*-->$")
 _FLAT_CHART_TEXT_RE = re.compile(r"^>\s*\[Chart text\]:\s*(.+)$")
 
 
@@ -2007,6 +2023,14 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
             if fig_desc:
                 img_block["description"] = fig_desc
             blocks.append(img_block)
+            continue
+
+        # Unresolved raw <!-- image --> marker (RFC-023 D1) -> content-less
+        # image block; no matching PictureResult, so no "index" is set.
+        if _FLAT_RAW_IMAGE_RE.match(stripped):
+            flush_prose()
+            blocks.append({"role": "image"})
+            i += 1
             continue
 
         # Heading -> title block (does not by itself decide the content class).

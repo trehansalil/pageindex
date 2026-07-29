@@ -19,6 +19,7 @@ from .config import CURRENT_PIPELINE_VERSION, settings
 from .converters import (
     PictureResult,
     _add_vlm_descriptions,
+    _tesseract_ocr_image,
     detect_ocr_langs,
     docx_to_markdown,
     ensure_tessdata,
@@ -96,8 +97,7 @@ def _log_pic_splice_trace(filename: str, stage: str, pic_results: list) -> None:
         elif not (p.get("ocr_text") or p.get("description")):
             empty_unmarked += 1
     logger.debug(
-        "B3 pic-splice trace [%s/%s]: %d pic(s), enriched=%d, "
-        "skipped=%s, ocr_ran_but_empty=%d",
+        "B3 pic-splice trace [%s/%s]: %d pic(s), enriched=%d, skipped=%s, ocr_ran_but_empty=%d",
         filename,
         stage,
         len(pic_results),
@@ -270,6 +270,19 @@ _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "tru
 # When disabled, falls back to the existing QF2a image-enrichment promotion path.
 _IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
     "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+# RFC-023 D8a: skip the standalone-image Tesseract recovery below when Docling's
+# md_content already carries this many non-whitespace chars (avoids double-counting).
+MIN_STANDALONE_IMAGE_MD_CHARS = int(os.getenv("MIN_STANDALONE_IMAGE_MD_CHARS", "100"))
+# RFC-023 D11 kill-switch (default on): widen the image-dominant OCR escalation to
+# structural validate_tree failures (node_count<3 / depth<2), not just garbling.
+_IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = os.getenv(
+    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+# RFC-023 D7 kill-switch (default on): Tesseract-on-raster last resort when the
+# VLM fallback itself crashes (rate limit / content-policy / token overflow).
+_VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
+    "VLM_TESSERACT_FALLBACK_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
 
 
@@ -750,10 +763,19 @@ class CustomPageIndexClient(PageIndexClient):
                 # PictureResult per marker (max(1, …) preserves the pre-D0
                 # single-result behaviour when zero markers are present).
                 img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
+                # D8a (RFC-023): the standalone-image route bypasses
+                # _recover_picture_results, so the synthetic PictureResult never gets
+                # Tesseract-recovered text. Only run it when Docling's md_content
+                # didn't already extract meaningful text, to avoid double-counting.
+                standalone_ocr_text = ""
+                if len("".join(md_content.split())) <= MIN_STANDALONE_IMAGE_MD_CHARS:
+                    standalone_ocr_text = await asyncio.to_thread(
+                        _tesseract_ocr_image, file_path, img_langs
+                    )
                 marker_count = md_content.count("<!-- image -->")
                 pic_results = [
                     PictureResult(
-                        ocr_text="",
+                        ocr_text=standalone_ocr_text,
                         page=1,
                         bbox={"l": 0, "t": 0, "r": 0, "b": 0},
                         png_bytes=img_bytes,
@@ -877,21 +899,61 @@ class CustomPageIndexClient(PageIndexClient):
                         vlm_exc,
                         exc_info=True,
                     )
+                    # RFC-023 D7: the VLM crashed outright (rate limit / content-policy /
+                    # token overflow) rather than merely failing to recover the tree. Try
+                    # one last local-only Tesseract pass over the rasterized pages before
+                    # giving up. `reason` stays 'garbling' (never added to the flat-routing
+                    # check) unless the OCR text itself passes the garble gate -- so a
+                    # genuinely garbled, unrecovered document still raises
+                    # LowQualityTreeError (HR5).
+                    if _VLM_TESSERACT_FALLBACK_ENABLED:
+                        try:
+                            from .converters import tesseract_ocr_pdf_pages
 
-            # D1: image-dominant PDFs (>50% <!-- image --> lines) get one OCR retry
-            # before falling through to flat routing — rescues scanned PDFs whose
-            # text layer is empty placeholders.
+                            tess_langs = await asyncio.to_thread(
+                                ensure_tessdata, detect_ocr_langs(filename)
+                            )
+                            ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
+                            if ocr_text and not _flat_text_is_garbled(
+                                ocr_text, expected_script=expected_script
+                            ):
+                                md_content = ocr_text
+                                # New markdown source — the prior converter's
+                                # picture ordinals no longer apply (finding 4/7),
+                                # matching the VLM-recovery convention above.
+                                pic_results = []
+                                reason = "node_count<3"
+                                logger.warning(
+                                    "Tesseract-on-raster fallback recovered %s; "
+                                    "overriding reason to node_count<3",
+                                    filename,
+                                )
+                        except Exception as tess_exc:
+                            logger.error(
+                                "Tesseract-on-raster fallback failed for %s (%s)",
+                                filename,
+                                tess_exc,
+                                exc_info=True,
+                            )
+
+            # D1/RFC-023 D11: image-dominant PDFs (>50% <!-- image --> lines) get one
+            # OCR retry before falling through to flat routing — rescues scanned PDFs
+            # whose text layer is empty placeholders, and also the D0 case where a
+            # garbled text layer's coverage exemption fires but the resulting
+            # image-only markdown produces too few tree nodes (node_count<3/depth<2).
             if (
                 not ok
-                and reason != "garbling"
+                and reason in ("node_count<3", "depth<2")
                 and ext == ".pdf"
                 and _OCR_ESCALATION
+                and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
                 and settings.flat_doc_routing
                 and md_content
             ):
                 total_lines = md_content.splitlines()
-                image_lines = sum(1 for ln in total_lines if "<!-- image -->" in ln)
-                if total_lines and (image_lines / len(total_lines)) > 0.50:
+                non_empty_lines = [ln for ln in total_lines if ln.strip()]
+                image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
+                if non_empty_lines and (image_lines / len(non_empty_lines)) > 0.50:
                     try:
                         escalation_langs: list[str] = []
                         for src in (
@@ -903,10 +965,10 @@ class CustomPageIndexClient(PageIndexClient):
                                     escalation_langs.append(lg)
                         langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
                         logger.warning(
-                            "Image-dominant (%d/%d lines) on %s; "
+                            "Image-dominant (%d/%d non-empty lines) on %s; "
                             "escalating to force_full_page_ocr (lang=%s)",
                             image_lines,
-                            len(total_lines),
+                            len(non_empty_lines),
                             filename,
                             langs,
                         )
@@ -917,7 +979,9 @@ class CustomPageIndexClient(PageIndexClient):
                         # text into the tree markdown (see Fix-3 escalation above
                         # for why this must not be skipped).
                         if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                            _log_pic_splice_trace(filename, "image_dominant_escalation", pic_results)
+                            _log_pic_splice_trace(
+                                filename, "image_dominant_escalation", pic_results
+                            )
                             md_content = splice_picture_text_for_tree(md_content, pic_results)
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
@@ -1099,7 +1163,12 @@ class CustomPageIndexClient(PageIndexClient):
                             # GHV-TKV-Tarif: 13,022 raw chars → 375 measured chars, all from
                             # 3 tables with no "text" key). Fall back to verbalized
                             # row_records, mirroring _flat_search_text's pattern.
-                            if not flat_structure and blocks:
+                            #
+                            # D5 (RFC-023): flat_structure may be non-empty but rejected by
+                            # validate_tree (low node_count/depth). A rejected tree should
+                            # never be preferred over real block content for verdict
+                            # computation — always build synthetic structure when blocks exist.
+                            if blocks:
                                 flat_structure = [
                                     {"title": "", "text": _flat_block_text(b)}
                                     for b in blocks

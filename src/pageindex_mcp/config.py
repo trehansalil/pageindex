@@ -12,7 +12,7 @@ load_dotenv()
 # Pipeline version — bumped in the same commit as any splitter/garble/OCR fix
 # that could change corpus classification (RFC-014 D3).
 # ---------------------------------------------------------------------------
-CURRENT_PIPELINE_VERSION: int = 2
+CURRENT_PIPELINE_VERSION: int = 3
 CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 
 # ---------------------------------------------------------------------------
