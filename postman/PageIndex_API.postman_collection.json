@@ -48,6 +48,18 @@
       "value": "",
       "type": "string",
       "description": "MCP session ID — set automatically by the Initialize Session request"
+    },
+    {
+      "key": "DOCLING_SERVICE_URL",
+      "value": "",
+      "type": "string",
+      "description": "External Docling conversion service URL (e.g. https://your-service.example.com)"
+    },
+    {
+      "key": "DOCLING_SERVICE_BEARER_TOKEN",
+      "value": "",
+      "type": "string",
+      "description": "Bearer token for Docling service authentication"
     }
   ],
   "item": [
@@ -519,6 +531,237 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "Docling Service",
+      "description": "External document conversion service endpoints. Offloads heavy PDF/image conversion (~1.9 GB model weights) to a dedicated service.\n\nRequires `DOCLING_SERVICE_URL` and `DOCLING_SERVICE_BEARER_TOKEN` to be set in the environment.",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{DOCLING_SERVICE_URL}}/health",
+              "host": ["{{DOCLING_SERVICE_URL}}"],
+              "path": ["health"]
+            },
+            "description": "Readiness probe. Returns 200 when the service is up and the Docling model cache is warmed.\n\nNo authentication required.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 — Healthy",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/health",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["health"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"status\": \"ok\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Service is healthy', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.status).to.eql('ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Convert PDF",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Authorization", "value": "Bearer {{DOCLING_SERVICE_BEARER_TOKEN}}"}
+            ],
+            "url": {
+              "raw": "{{DOCLING_SERVICE_URL}}/convert/pdf",
+              "host": ["{{DOCLING_SERVICE_URL}}"],
+              "path": ["convert", "pdf"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"presigned_url\": \"https://your-minio/bucket/key?sig=...\",\n  \"force_full_page_ocr\": false,\n  \"ocr_lang_override\": null\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "description": "Convert a PDF to markdown via layout-aware Docling extraction.\n\nThe service downloads the PDF from the presigned URL, runs Docling conversion with RT-DETRv2 + TableFormer models, and returns structured markdown plus picture results.\n\nParameters:\n- `presigned_url` (string, required): Time-limited MinIO download URL for the PDF\n- `force_full_page_ocr` (bool, default false): Force OCR on all pages (used for garble escalation)\n- `ocr_lang_override` (list[string], optional): Override Tesseract language codes (e.g. [\"deu\", \"eng\"])\n\nPicture results include base64-encoded PNG crops at 300 DPI."
+          },
+          "response": [
+            {
+              "name": "200 — Conversion Success",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/convert/pdf",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["convert", "pdf"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"markdown\": \"# Document Title\\n\\nDocument content here...\",\n  \"picture_results\": [\n    {\n      \"ocr_text\": \"Figure 1 caption\",\n      \"png_bytes\": \"iVBORw0KGgo...\",\n      \"page\": 1,\n      \"bbox\": {\"l\": 72.0, \"t\": 200.0, \"r\": 540.0, \"b\": 400.0},\n      \"description\": \"\",\n      \"skipped_reason\": \"\",\n      \"decorative\": false\n    }\n  ]\n}"
+            },
+            {
+              "name": "401 — Missing Bearer Token",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/convert/pdf",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["convert", "pdf"]
+                }
+              },
+              "status": "Unauthorized",
+              "code": 401,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"detail\": \"Missing bearer token\"\n}"
+            },
+            {
+              "name": "403 — Invalid Bearer Token",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/convert/pdf",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["convert", "pdf"]
+                }
+              },
+              "status": "Forbidden",
+              "code": 403,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"detail\": \"Invalid bearer token\"\n}"
+            },
+            {
+              "name": "500 — Conversion Failed",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/convert/pdf",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["convert", "pdf"]
+                }
+              },
+              "status": "Internal Server Error",
+              "code": 500,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"detail\": \"Failed to download PDF from presigned URL\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has markdown and picture_results', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('markdown');",
+                  "    pm.expect(jsonData).to.have.property('picture_results');",
+                  "    pm.expect(jsonData.picture_results).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Convert Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Authorization", "value": "Bearer {{DOCLING_SERVICE_BEARER_TOKEN}}"}
+            ],
+            "url": {
+              "raw": "{{DOCLING_SERVICE_URL}}/convert/image",
+              "host": ["{{DOCLING_SERVICE_URL}}"],
+              "path": ["convert", "image"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"presigned_url\": \"https://your-minio/bucket/key.png?sig=...\",\n  \"ocr_lang_override\": null\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "description": "Convert an image to markdown via OCR.\n\nThe service downloads the image from the presigned URL and runs Tesseract OCR.\n\nParameters:\n- `presigned_url` (string, required): Time-limited MinIO download URL for the image\n- `ocr_lang_override` (list[string], optional): Override Tesseract language codes"
+          },
+          "response": [
+            {
+              "name": "200 — OCR Success",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/convert/image",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["convert", "image"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"markdown\": \"OCR extracted text from the image...\"\n}"
+            },
+            {
+              "name": "401 — Missing Bearer Token",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{DOCLING_SERVICE_URL}}/convert/image",
+                  "host": ["{{DOCLING_SERVICE_URL}}"],
+                  "path": ["convert", "image"]
+                }
+              },
+              "status": "Unauthorized",
+              "code": 401,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "body": "{\n  \"detail\": \"Missing bearer token\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has markdown', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('markdown');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
