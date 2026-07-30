@@ -1479,7 +1479,7 @@ def _text_layer_has_content(page) -> bool:
     return True
 
 
-def _recover_picture_text(
+def _recover_picture_text(  # noqa: PLR0915
     pdf_path: str,
     regions: list[dict],
     langs: list[str],

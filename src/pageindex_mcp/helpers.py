@@ -954,9 +954,7 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
 
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
 _GARBLE_NODE_RATIO_THRESHOLD = (
-    _GARBLE_NODE_RATIO_THRESHOLD_RAW
-    if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1
-    else 0.10
+    _GARBLE_NODE_RATIO_THRESHOLD_RAW if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1 else 0.10
 )
 
 
@@ -1947,7 +1945,7 @@ def _looks_like_toc_page(block_text: str) -> bool:
 
 
 # Complexity grandfathered (flat-doc router, FLAT-01); see pyproject [tool.ruff].
-def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: PLR0915
+def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PLR0915
     """FLAT-01-C1/C2/C3: classify a flat (no-hierarchy) markdown document and
     extract role-typed blocks.
 
