@@ -162,6 +162,7 @@ async def test_delete_doc_uploads_object_name_none_skipped(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete"),
     ):
         result = await delete_doc("blankobj001")

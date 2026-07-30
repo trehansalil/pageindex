@@ -166,6 +166,7 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete"),
     ):
         # Must NOT raise — idempotent no-op success.
@@ -188,6 +189,7 @@ async def test_erase_01_c3_partial_failure_is_surfaced(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete", side_effect=RuntimeError("redis down")),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete"),
     ):
         result = await delete_doc("abc12345")
@@ -452,7 +454,10 @@ async def test_delete_doc_awaits_registry(monkeypatch, mock_minio):
     registry_delete = AsyncMock()
     _wire_registry(monkeypatch, registry_delete_doc=registry_delete)
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
+    ):
         result = await delete_doc("registry-doc-1")
 
     registry_delete.assert_awaited_once_with("registry-doc-1")
@@ -470,7 +475,10 @@ async def test_delete_doc_registry_timeout(monkeypatch, mock_minio):
 
     _wire_registry(monkeypatch, registry_delete_doc=_hangs)
 
-    with patch("pageindex_mcp.cache.doc_cache_delete"):
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
+    ):
         result = await delete_doc("registry-doc-2")
 
     assert len(result["errors"]) == 1
@@ -527,6 +535,7 @@ async def test_erasure_cascade_all_stores_healthy_reports_no_errors(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
     ):
         result = await delete_doc("cascade001")
@@ -561,6 +570,7 @@ async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
     ):
         result = await delete_doc("cascade002")
@@ -590,6 +600,7 @@ async def test_erasure_cascade_purges_preloaded_object(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete"),
     ):
         result = await delete_doc("preload001")
@@ -614,6 +625,7 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache_delete"),
         caplog.at_level("WARNING"),
     ):
