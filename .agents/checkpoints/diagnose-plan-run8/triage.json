@@ -1,0 +1,148 @@
+{
+    "issues": [
+        {
+            "doc": "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE - Copy.pdf",
+            "category": "regression",
+            "domain": "splitter",
+            "symptom": "Depth collapse (3->2) and char loss (247k->220k) indicating hierarchical flattening of Book/Chapter/Section nesting into a flat article list",
+            "start_tracing_from": "md_to_tree, _extract_markers",
+            "complexity": "simple"
+        },
+        {
+            "doc": "Federal Decree-Law No. (47) of 2021 - Copy.pdf",
+            "category": "regression",
+            "domain": "splitter",
+            "symptom": "Depth collapse (2->1) with stable node count (69); chapter-level grouping stripped, articles now emitted as flat list",
+            "start_tracing_from": "md_to_tree, _extract_markers",
+            "complexity": "simple"
+        },
+        {
+            "doc": "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+            "category": "regression",
+            "domain": "text_layer",
+            "symptom": "61% of nodes (81/132) flagged garbled plus 30% char loss (80k->56.6k), consistent with German umlaut/scharfes-s corruption",
+            "start_tracing_from": "_probe_text_layer, garble gate functions (also check _maybe_splice_picture_ocr for OCR/text-layer conflation)",
+            "complexity": "complex"
+        },
+        {
+            "doc": "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+            "category": "regression",
+            "domain": "verdict_logic",
+            "symptom": "Near-identical chars/nodes (140k->138.6k, 34 nodes) between runs but verdict downgraded PASS->MARGINAL, indicating a threshold/classification change rather than an extraction change",
+            "start_tracing_from": "classify_verdict, _compute_verdict",
+            "complexity": "simple"
+        },
+        {
+            "doc": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+            "category": "regression",
+            "domain": "picture_ocr",
+            "symptom": "Scanned MOU lost all extracted text (14.6k->0 chars); 13 nodes present but no image enrichment/OCR ran to recover text from the image-based layer",
+            "start_tracing_from": "_enrich_pictures, _maybe_splice_picture_ocr",
+            "complexity": "complex"
+        },
+        {
+            "doc": "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf",
+            "category": "regression",
+            "domain": "text_layer",
+            "symptom": "44% of nodes (19/43) garbled plus 8% char loss (58k->53.3k), same special-character garbling pattern as the Haftpflicht docs",
+            "start_tracing_from": "_probe_text_layer, garble gate functions",
+            "complexity": "complex"
+        },
+        {
+            "doc": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+            "category": "regression",
+            "domain": "picture_ocr",
+            "symptom": "Complete content loss (38k->0 chars, 98->45 nodes) on a scanned signature-page SLA; Run 7's D3 image-marker garble exemption / image-OCR recovery path appears to have stopped firing",
+            "start_tracing_from": "_maybe_splice_picture_ocr, _enrich_pictures",
+            "complexity": "complex"
+        },
+        {
+            "doc": "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+            "category": "regression",
+            "domain": "worker",
+            "symptom": "Total extraction failure (0 nodes, 0 chars, 0 depth) on an Arabic PDF that previously produced 42 nodes/1.7k chars — pipeline produced no output at all, consistent with a converter subprocess crash rather than a quality issue",
+            "start_tracing_from": "_run_converter_subprocess, arq job handler (then pdf_to_markdown_docling for the underlying Arabic/CMap trigger)",
+            "complexity": "complex"
+        },
+        {
+            "doc": "uae_numbers_english_page_16_17_portrait - Copy.pdf",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "76 nodes but only 764 chars (~10 chars/node) for a scanned numeric/portrait doc, far below baseline and worse than Run 7's already-poor 38 chars/4 nodes",
+            "start_tracing_from": "pdf_to_markdown_docling, _maybe_splice_picture_ocr",
+            "complexity": "complex"
+        },
+        {
+            "doc": "world-stats-pocketbook-2023.pdf",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "Char density exploded 31x (204k->6.334M) across 2582 flat nodes (~21.7k chars/page vs 2000-4000 baseline), suggesting table row/cell duplication or over-expansion during conversion",
+            "start_tracing_from": "pdf_to_markdown_docling (table extraction path), then md_to_tree for the resulting flat splitter output",
+            "complexity": "complex"
+        },
+        {
+            "doc": "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+            "category": "regression",
+            "domain": "worker",
+            "symptom": "Total extraction failure (0 nodes, 0 chars), down from Run 7's MARGINAL (82 nodes, 41k chars) — matches the same zero-output crash signature seen in other Arabic decrees",
+            "start_tracing_from": "_run_converter_subprocess, arq job handler",
+            "complexity": "complex"
+        },
+        {
+            "doc": "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+            "category": "regression",
+            "domain": "text_layer",
+            "symptom": "99.3% content loss (8.4k->60 chars, 38->2 nodes); the sole remaining text is unintelligible OCR garbage, indicating text-layer/OCR corruption rather than a clean empty extraction",
+            "start_tracing_from": "_probe_text_layer, garble gate functions (cross-check _enrich_pictures for the OCR fallback that produced the garbage text)",
+            "complexity": "complex"
+        },
+        {
+            "doc": "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+            "category": "regression",
+            "domain": "worker",
+            "symptom": "Total extraction failure (0 nodes, 0 chars, 0 depth), down from Run 7's PASS (546 nodes, depth 5, 172k chars) — one of three Arabic docs with an identical zero-output crash signature",
+            "start_tracing_from": "_run_converter_subprocess, arq job handler",
+            "complexity": "complex"
+        },
+        {
+            "doc": "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+            "category": "regression",
+            "domain": "text_layer",
+            "symptom": "33% content loss (93k->60.5k chars, 609->536 nodes); this is the previously-logged وارد 597 garble-gate hole where numeric-junk Arabic text layer is not flagged as garbled, so OCR never escalates",
+            "start_tracing_from": "garble gate functions (the specific numeric-junk detection gap logged in RFC-018 D3)",
+            "complexity": "simple"
+        },
+        {
+            "doc": "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf",
+            "category": "regression",
+            "domain": "text_layer",
+            "symptom": "99.9% text loss (527k->382 chars) while structural hierarchy is fully preserved (347 nodes, same as before) — structure/splitter path is intact but text content extraction itself is failing on this Arabic doc",
+            "start_tracing_from": "_probe_text_layer, then pdf_to_markdown_docling for why per-node text came back empty despite structure surviving",
+            "complexity": "complex"
+        },
+        {
+            "doc": "Reitlehrer - Schäden am Berittpferd.pdf",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "Further content-loss regression within the FAIL bucket: Run 7 MARGINAL (4555 chars/10 nodes) -> Run 8 FAIL (497 chars/8 nodes, 89% loss); body text is being dropped, leaving only headings/titles",
+            "start_tracing_from": "pdf_to_markdown_docling, _maybe_splice_picture_ocr",
+            "complexity": "simple"
+        },
+        {
+            "doc": "uae_numbers_english_page_16_17_landscape - Copy.pdf",
+            "category": "persistent_fail",
+            "domain": "converter",
+            "symptom": "Remains FAIL across both runs with no garbling flagged, but content-loss severity shifted (Run 7: 28 chars/11 nodes -> Run 8: 748 chars/79 nodes) — still ~9.5 chars/node vs 2000-4000 baseline, i.e. never actually recovers real content despite node-count churn",
+            "start_tracing_from": "pdf_to_markdown_docling, _maybe_splice_picture_ocr",
+            "complexity": "simple"
+        },
+        {
+            "doc": "القرار التنظيمي (Organizational Decision)",
+            "category": "stall",
+            "domain": "worker",
+            "symptom": "Persistent CMap corruption crashing the pipeline; the D7 Tesseract-on-raster fallback that was supposed to recover this class of doc did not fire/succeed in either Run 7 or Run 8",
+            "start_tracing_from": "_run_converter_subprocess, arq job handler (then the D7 Tesseract fallback invocation inside the converter)",
+            "complexity": "complex"
+        }
+    ]
+}

@@ -1,0 +1,483 @@
+{
+  "cluster_traces": [
+    {
+      "domain": "verdict_logic",
+      "root_causes": [
+        {
+          "id": "RC-1",
+          "root_cause": "Docling non-deterministic PDF extraction causes max_leaf_ratio to jitter beyond the PASS_MAX_LEAF_RATIO=0.30 threshold. RFC-024 D0 widened PASS_MAX_LEAF_RATIO from 0.20 to 0.30 as a stopgap for Doc 8 (Reitlehrer, jitter range 0.17-0.2571), but the hard threshold comparison at helpers.py line 1233 (`max_leaf_ratio < _pass_max_leaf`) has no hysteresis or tolerance band. Haftpflicht-Besondere had max_leaf_ratio=0.12 in Run 7 but jittered to >=0.30 in Run 8, exceeding the new threshold and flipping PASS to MARGINAL. RFC-024's own risk table (line 256) explicitly predicted this exact recurrence: 'A future doc could jitter past 0.30 in Run 9. ... the next RFC must implement hysteresis / tolerance-band / prior-verdict anchoring rather than widening again.'",
+          "code_path": "src/pageindex_mcp/helpers.py :: classify_verdict() -> PASS gate at lines 1229-1236 -> strict `max_leaf_ratio < _pass_max_leaf` comparison with no hysteresis",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Implement hysteresis / tolerance-band / prior-verdict anchoring as prescribed by RFC-024's risk acknowledgment. Options: (1) Add a tolerance band (e.g., if prior verdict was PASS, use _pass_max_leaf + 0.10 as the threshold); (2) Store prior max_leaf_ratio in meta.json and only downgrade if the ratio exceeds threshold for N consecutive runs; (3) Use a smoothed/averaged max_leaf_ratio across runs. Widening the threshold further is NOT the right fix -- RFC-024 explicitly states this is the third consecutive widening and another widening must not be the approach.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py"
+          ],
+          "affected_docs": [
+            "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            ".agents/rfcs/024-run7-verdict-stability-and-recovery-gaps.md",
+            ".agents/rfcs/023-run6-content-recovery-and-verdict-hardening.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": []
+    },
+    {
+      "domain": "text_layer",
+      "root_causes": [
+        {
+          "id": "RC1_clip_text_captured_no_garble_check",
+          "root_cause": "RFC-024 D1 added clip_text capture in _recover_picture_text (converters.py ~line 1660) that routes PDF text-layer content from picture regions directly into PictureResult.ocr_text WITHOUT any garble check. When the PDF text layer is corrupted (German CMap umlaut/scharfes-s corruption, Arabic CMap mojibake), the garbled clip_text passes _clip_text_contained's containment guard (because the garbled text differs from Docling's markdown) and gets injected into tree nodes via splice_picture_text_for_tree. The per-node garble check in validate_tree then flags these nodes, inflating the garbled node ratio and flipping verdicts from PASS to FAIL. Before RFC-024, all regions with clip_text above _PICTURE_OCR_MIN_CHARS were unconditionally skipped (skip_reasons[i] = 'clip_text'), so the garbled text layer content was never captured.",
+          "code_path": "converters.py:_recover_picture_text -> clip_text capture (line ~1660) -> PictureResult.ocr_text -> client.py:splice_picture_text_for_tree -> md_to_tree -> validate_tree:_garble_check_nodes",
+          "fix_category": "bug",
+          "estimated_complexity": "small",
+          "suggested_fix": "Add _is_garbled_blob(clip_text, expected_script=inferred_script) check before storing clip_captures[i]. If the clip_text is garbled, skip the region with reason 'clip_text_garbled' instead of capturing. The expected_script can be inferred from the document markdown (already available as md parameter) via _infer_script, or passed as an additional parameter to _recover_picture_text.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+            "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf"
+          ],
+          "confidence": "medium",
+          "related_rfcs": [
+            "024-run7-verdict-stability-and-recovery-gaps.md"
+          ]
+        },
+        {
+          "id": "RC2_document_text_fallback_missing_expected_script",
+          "root_cause": "RFC-024 D1's _document_level_text_fallback (converters.py ~line 1568) calls _is_garbled_blob(full_text) WITHOUT passing expected_script. The Latin-gibberish detection heuristic in _is_garbled_blob (the last check at line ~907-918) only fires when expected_script is set AND is not 'Latn'. Without expected_script, Arabic documents whose CMap corruption produces Latin mojibake (the validated failure mode for مرسوم/decree-class PDFs) pass all bulk garble checks and have their garbled text layer appended to the thin Docling markdown. The same gap exists in _text_layer_has_content (line ~1493). This is a missing-parameter bug: the function has no access to the expected_script context that its caller (pdf_to_markdown_docling) could derive from the filename or markdown content.",
+          "code_path": "converters.py:pdf_to_markdown_docling -> _document_level_text_fallback (line 2155) -> _is_garbled_blob(full_text) WITHOUT expected_script -> Latin-gibberish check skipped",
+          "fix_category": "bug",
+          "estimated_complexity": "small",
+          "suggested_fix": "Thread expected_script (or at minimum, infer it from the markdown or filename inside _document_level_text_fallback) and pass it to _is_garbled_blob(full_text, expected_script=...). Similarly fix _text_layer_has_content to accept and pass expected_script. This ensures the Latin-gibberish heuristic catches Arabic CMap mojibake before it gets appended as supplementary content.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+            "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf"
+          ],
+          "confidence": "medium",
+          "related_rfcs": [
+            "024-run7-verdict-stability-and-recovery-gaps.md",
+            "018-corpus-audit-remediation.md"
+          ]
+        },
+        {
+          "id": "RC3_ward597_numeric_junk_garble_gate_hole",
+          "root_cause": "Pre-existing garble-gate blind spot documented in project memory and RFC-018 D3: the وارد 597 document's Arabic text layer contains numeric-junk content where the digit ratio stays below the 60% threshold in _is_garbled_blob (line ~884-886) and the Latin-gibberish check doesn't trigger because the tokens are predominantly Arabic script (not Latin). The document's text layer is effectively garbage but passes all garble heuristics, so OCR escalation never fires. This is NOT a new RFC-024 regression but a known gap that RFC-018 D3 partially addressed (pre-conversion probe + per-node checks) without fully closing.",
+          "code_path": "helpers.py:_is_garbled_blob -> digit ratio check (60% threshold on blobs >500 chars) -> passes for mixed Arabic+numeric junk -> validate_tree passes -> no OCR escalation",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Implement the RFC-018 D3 'two-pronged garble gate' that was designed but not fully landed: add a sub-threshold digit-ratio check combined with Arabic script ratio check (e.g., digit_ratio > 0.30 AND arabic_script_ratio < 0.20 for blobs with expected_script='Arab'). This catches the numeric-junk pattern without false-flagging legitimate financial documents with high digit counts.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py"
+          ],
+          "affected_docs": [
+            "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "018-corpus-audit-remediation.md",
+            "019-corpus-reingestion-phase2.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": [
+        {
+          "doc": "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf",
+          "reason": "99.9% text loss (527k->382 chars) while structural hierarchy is fully preserved (347 nodes, depth 5) does not match either the garble-injection pattern (RC1/RC2) or the garble-gate-hole pattern (RC3). The structure surviving means Docling extracted headings correctly but body text vanished. This could be a Docling extraction regression specific to this document's PDF encoding, or an interaction between _document_level_text_fallback and the picture recovery pipeline that needs per-document log analysis to determine whether the text fallback fired, what the raw Docling output contained, and whether picture OCR contributed the 527k chars in the prior run.",
+          "complexity": "complex"
+        },
+        {
+          "doc": "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+          "reason": "99.3% content loss (8.4k->60 chars, 38->2 nodes) with unintelligible OCR garbage as the sole remaining text suggests a cascading failure: Docling extraction failed or produced thin output, the text fallback either did not fire or was blocked by the garble check, and the OCR recovery path (garble escalation -> VLM -> Tesseract-on-raster) also failed to recover. The RC2 missing-expected-script bug in _document_level_text_fallback may be a contributing factor but cannot fully explain the regression from 38 nodes to 2. Needs per-document pipeline trace to identify which stage lost the content.",
+          "complexity": "complex"
+        }
+      ]
+    },
+    {
+      "domain": "converter",
+      "root_causes": [
+        {
+          "id": "RC1-rfc024-d1-clip-text-over-capture",
+          "root_cause": "RFC-024 D1 clip_text capture in _recover_picture_text causes massive content duplication for table-heavy documents. Before RFC-024, regions with clip_text were unconditionally skipped (reason 'clip_text'). After RFC-024, clip_text is captured when the containment guard (_clip_text_contained at 60% threshold) determines it is NOT already in the Docling markdown. For documents where Docling classifies tables as PictureItems (emitting <!-- image --> markers instead of text), the clip_text for each region is correctly identified as not-contained (the content really was replaced by image markers). Capturing clip_text for ALL such regions produces massive content inflation: for world-stats-pocketbook (292 pages of dense statistical tables), hundreds of captured clip_text regions inflate content from 204k to 6.334M chars (31x). The containment guard works correctly per-region but there is no document-level budget cap to prevent runaway accumulation. Additionally, _document_level_text_fallback may compound this if the Docling markdown (excluding image markers) falls below 100 chars, appending the raw pypdfium2 text layer wholesale.",
+          "code_path": "converters.py:_recover_picture_text -> _clip_text_contained (line 1507) -> clip_captures dict (line 1661) -> splice_picture_text_for_tree (line 1775)",
+          "fix_category": "bug",
+          "estimated_complexity": "small",
+          "suggested_fix": "Add a document-level capture budget to _recover_picture_text: cap total captured clip_text chars (e.g., 2x the Docling markdown body size or a hard ceiling like 500k chars). Once the budget is exhausted, revert remaining regions to the pre-RFC-024 skip behavior. This preserves D1's intent (recovering misclassified chart text) while preventing runaway inflation on table-heavy documents with hundreds of picture-classified regions. Alternatively, add a per-page capture limit (e.g., max 2 captures per page).",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "world-stats-pocketbook-2023.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "024-run7-verdict-stability-and-recovery-gaps.md"
+          ]
+        },
+        {
+          "id": "RC2-rfc024-d1-d2-scanned-node-fragmentation",
+          "root_cause": "RFC-024 D1 (_document_level_text_fallback) and D2 (per-region exception isolation) combine to produce many near-empty nodes for scanned/thin-text-layer PDFs. For scanned documents, Docling produces mostly <!-- image --> markers with < 100 chars of actual text. The D1 text fallback fires and appends the raw PDF text layer via pypdfium2. For scanned PDFs, this text layer is either empty, very thin (a few hundred chars), or a fragmented OCR layer with many short lines. Simultaneously, D2's per-region try/except allows more picture regions to succeed (in Run 7, a single crash in _recover_picture_text would kill ALL results; now each region is isolated). More PictureResults are returned, and splice_picture_text_for_tree appends thin/empty chart-text blocks after each image marker. The LLM tree builder (md_to_tree) then creates individual nodes for each image marker and chart-text block, producing 76-79 nodes with only ~10 chars/node. Content increase from 28-38 chars to 748-764 chars shows D1/D2 ARE recovering some content, but the node-count explosion (4-11 to 76-79) makes the structure worse, not better.",
+          "code_path": "converters.py:_document_level_text_fallback (line 1528) -> pdf_to_markdown_docling (line 2155) + _recover_picture_text D2 per-region isolation (line 1700) -> splice_picture_text_for_tree (line 1775)",
+          "fix_category": "bug",
+          "estimated_complexity": "small",
+          "suggested_fix": "Two mitigations: (1) In _document_level_text_fallback, add a minimum useful-text threshold (e.g., skip appending if the recovered text layer has < 200 chars after stripping whitespace -- thin text layers from scanned PDFs add noise, not signal). (2) In splice_picture_text_for_tree, skip splicing chart-text blocks that are very short (e.g., < 20 chars of actual OCR text) to prevent near-empty node proliferation. These guards prevent D1/D2 from inflating node counts with noise while preserving recovery for documents with genuinely useful text layers.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "uae_numbers_english_page_16_17_portrait - Copy.pdf",
+            "uae_numbers_english_page_16_17_landscape - Copy.pdf"
+          ],
+          "confidence": "medium",
+          "related_rfcs": [
+            "024-run7-verdict-stability-and-recovery-gaps.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": [
+        {
+          "doc": "Reitlehrer - Schäden am Berittpferd.pdf",
+          "reason": "89% content loss (4555 chars/10 nodes depth-2 -> 497 chars/8 flat nodes) is NOT explained by RFC-024's additive code changes (D1 clip_text capture and text fallback only ADD content, D2 only improves exception isolation, D0 only widens the PASS threshold). The doc_class changed from 'tree' to 'unknown' and depth collapsed from 2 to flat, suggesting fundamentally different Docling markdown output between runs. RFC-024 D0 explicitly acknowledged 'Docling non-deterministic heading selection' for this document. Need to examine the actual Docling markdown output (or stored meta.json) from both runs to determine if this is Docling non-determinism or an unidentified code-level interaction. Check whether _recover_heading_depth or the post_md vs raw_md source selection at converters.py:2141-2153 produced a different branch due to changed heading counts.",
+          "complexity": "complex"
+        }
+      ]
+    },
+    {
+      "domain": "splitter",
+      "root_causes": [
+        {
+          "id": "RC1",
+          "root_cause": "Missing English structural word recognition in _WORD_RE (line 146) and _NUM_PART_RE (line 67) of converters.py. These regexes only recognize German words (teil|anhang|abschnitt|kapitel / Teil|Anhang|Kapitel|Abschnitt). English equivalents (Book, Chapter, Section, Part) are absent, so _segment_label returns [] for these headings, _relevel_by_containment leaves them at their flat Docling-assigned H1 level, and _relevel_by_numbering also cannot help (numbering_depth returns None). Depth recovery falls through to _relevel_by_outline (PDF TOC matching), which is a fragile last-resort that depends on exact title matching between Docling-rendered headings and PDF bookmark titles. Any variation in the hierarchical add-on's heading selection or heading_pages collection causes the outline to match fewer headings, producing inconsistent depth across runs (Run 7: depth 3 via outline success, Run 8: depth 2 via partial outline failure). Both the Penal Code (Book/Chapter/Section/Article) and Decree-Law 47 (Chapter/Article) have English structural words that are NOT consumed by _segment_label, so their container headings get no label and containment assigns no depth hierarchy.",
+          "code_path": "src/pageindex_mcp/converters.py :: _WORD_RE (line 146) -> _segment_label (line 219) -> _containment_depths (line 295) -> _relevel_by_containment (line 319) -> _recover_heading_depth (line 610)",
+          "fix_category": "missing_feature",
+          "estimated_complexity": "small",
+          "suggested_fix": "Add English structural words to the heading recognition chain: (1) Extend _WORD_RE to include English equivalents: r'^(teil|anhang|abschnitt|kapitel|book|chapter|section|part)\\b' (case-insensitive). (2) Extend _NUM_PART_RE similarly: r'^(?:Teil|Anhang|Kapitel|Abschnitt|Book|Chapter|Section|Part)\\b'. This allows _segment_label to consume 'Chapter' / 'Book' / 'Section' / 'Part' as structural prefixes, exposing the trailing number/word as the label component. With labels recognized, _relevel_by_containment can assign proper hierarchical depth (Chapter 1 contains Articles 1-50, Book First contains Chapters 1-5) without depending on the fragile PDF outline matching path. Both documents in this cluster would immediately benefit: the Penal Code would get Book > Chapter > Article nesting (depth 3+), and Decree-Law 47 would get Chapter > Article nesting (depth 2).",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE - Copy.pdf",
+            "Federal Decree-Law No. (47) of 2021 - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": []
+        }
+      ],
+      "needs_doc_drilldown": []
+    },
+    {
+      "domain": "picture_ocr",
+      "root_causes": [
+        {
+          "id": "RC1",
+          "root_cause": "The feat/image-block-picture-ocr merge (PR #18, b7cd19b) refactored per-picture OCR from inline text splicing (_maybe_splice_picture_ocr) to a split architecture where OCR results travel separately in pic_results and are spliced by splice_figure_markers in the flat routing path. For scanned/image-only PDFs (zero text layer confirmed for both docs), when per-picture OCR fails to produce text or the image-dominant OCR escalation produces empty pic_results, the flat routing path creates image blocks WITHOUT index fields (helpers.py:2165). _enrich_image_blocks (client.py:526) requires a valid integer index to look up PictureResult data, so blocks without index are skipped entirely, yielding 0 enriched chars. In the old code, _maybe_splice_picture_ocr embedded OCR text directly into the markdown inside pdf_to_markdown_docling; even failed OCR left markers intact as prose, allowing downstream escalation paths to recover text.",
+          "code_path": "converters.py:_recover_picture_results -> client.py:splice_figure_markers -> helpers.py:route_and_extract_flat (line 2163-2167) -> client.py:_enrich_image_blocks (line 526)",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Three-part fix: (1) In route_and_extract_flat (helpers.py:2163-2167), assign auto-incrementing ordinal index to raw <!-- image --> marker blocks so _enrich_image_blocks can match them to pic_results by position. (2) In the image-dominant OCR escalation (client.py:1021-1023), when the escalation's pic_results is empty but the primary conversion's pic_results had entries, preserve the primary pic_results for the flat routing path instead of overwriting with empty. (3) In the flat routing section (client.py:~1278), when content_class is image_standalone and all blocks have 0 chars, attempt Tesseract-on-raster recovery via _attempt_tesseract_raster_recovery before persisting the empty result.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py",
+            "src/pageindex_mcp/client.py",
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+            "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            ".agents/rfcs/017-ocr-image-block-decoupling.md",
+            ".agents/rfcs/023-run6-content-recovery-and-verdict-hardening.md",
+            ".agents/rfcs/024-run7-verdict-stability-and-recovery-gaps.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": []
+    },
+    {
+      "domain": "worker",
+      "root_causes": [
+        {
+          "id": "RC1-pypdfium2-null-handle-arabic-pdfs",
+          "root_cause": "pypdfium2 returns a NULL document handle (ArgumentError: expected LP_struct_fpdf_document_t__ instead of NoneType) when opening all 4 Arabic PDFs in this cluster. This causes _document_level_text_fallback (RFC-024 D1, converters.py line ~1530) to fail silently via its try/except, and also breaks rasterize_pdf_pages (used by D7 Tesseract fallback). While the D4 fitz fallback catches rasterize_pdf_pages failures in tesseract_ocr_pdf_pages, _document_level_text_fallback has NO equivalent fitz fallback -- it catches the exception but does not attempt an alternative text-layer read. For these scanned Arabic PDFs where Docling produces only <!-- image --> markers, the text-layer recovery was the intended safety net and it is completely non-functional.",
+          "code_path": "src/pageindex_mcp/converters.py::_document_level_text_fallback -> pypdfium2.PdfDocument(pdf_path) -> ArgumentError (NULL handle) -> except catches -> returns md unchanged (no fitz fallback attempted)",
+          "fix_category": "bug",
+          "estimated_complexity": "small",
+          "suggested_fix": "Add a fitz-based fallback inside _document_level_text_fallback, mirroring the D4 pattern in tesseract_ocr_pdf_pages: when pypdfium2 raises, fall back to fitz.Page.get_text() to read the native text layer. fitz successfully opens all 4 Arabic PDFs (confirmed via probe). This would allow the function to recover the 213-char text layer in marsoom 33 and detect the garbled text layer in the Organizational Decision doc.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+            "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+            "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+            "القرار التنظيمي (Organizational Decision)"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "024-run7-verdict-stability-and-recovery-gaps"
+          ]
+        },
+        {
+          "id": "RC2-docling-ocr-zero-output-scanned-arabic",
+          "root_cause": "Docling's force_full_page_ocr=True with TesseractCliOcrOptions produces zero text for scanned Arabic PDFs -- OCR stage profiling shows duration=0.000s per page, meaning OCR does not actually execute. The image-dominant OCR escalation (client.py line ~1091) correctly detects the 100% image-marker ratio and fires, but the second Docling conversion with force_full_page_ocr still produces only <!-- image --> markers with 0 non-marker chars. Confirmed locally: pdf_to_markdown_docling(path, force_full_page_ocr=True, ocr_lang_override=['ara','eng']) returns md_len=334, non_image_chars=0. Per-picture Tesseract OCR also fails for all 21 regions with UTF-8 decode errors ('utf-8' codec can't decode byte 0x89). Combined with the pypdfium2 failure above, all three OCR/text-recovery paths are broken for these PDFs.",
+          "code_path": "src/pageindex_mcp/client.py::index() -> image-dominant OCR escalation -> pdf_to_markdown_docling(force_full_page_ocr=True) -> Docling OCR stage duration=0.000s -> only <!-- image --> markers -> tree node_count<3 -> flat routing -> route_and_extract_flat -> 0 blocks",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Investigate why Docling's TesseractCliOcrOptions does not run OCR on these scanned Arabic pages despite force_full_page_ocr=True (OCR stage duration=0.000s). Likely cause: Docling's OCR pipeline may skip pages it classifies as having a text layer (even if empty/thin), or the Tesseract subprocess invoked by Docling cannot access temp files (macOS sandbox). As a fallback, when force_full_page_ocr produces no text, route directly to the D7 Tesseract-on-raster path (tesseract_ocr_pdf_pages with D4 fitz fallback) instead of proceeding with empty markdown to flat routing.",
+          "affected_files": [
+            "src/pageindex_mcp/client.py",
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+            "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+            "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+            "القرار التنظيمي (Organizational Decision)"
+          ],
+          "confidence": "medium",
+          "related_rfcs": [
+            "024-run7-verdict-stability-and-recovery-gaps",
+            "023-run6-content-recovery-and-verdict-hardening"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": [
+        {
+          "doc": "القرار التنظيمي (Organizational Decision)",
+          "reason": "Persistent CMap corruption (garbled chars confirmed: 213 garbled chars in 1111 total on page 1). While it shares the pypdfium2 NULL-handle failure with the other 3 docs, its failure mode is fundamentally different: it has a text layer that IS garbled (unlike the other 3 which are scanned/image-only with no text layer). The D7 Tesseract-on-raster fallback with D4 fitz rasterization should work for this doc (fitz can open it and render pages), but the Tesseract OCR output may also be garbled since the source is CMap-corrupt. Need to verify whether the D4 fitz fallback + Tesseract actually fires and what quality the OCR output has.",
+          "complexity": "complex"
+        }
+      ]
+    }
+  ],
+  "root_causes": [
+    {
+      "id": "RC-1",
+      "root_cause": "Docling non-deterministic PDF extraction causes max_leaf_ratio to jitter beyond the PASS_MAX_LEAF_RATIO=0.30 threshold. RFC-024 D0 widened PASS_MAX_LEAF_RATIO from 0.20 to 0.30 as a stopgap for Doc 8 (Reitlehrer, jitter range 0.17-0.2571), but the hard threshold comparison at helpers.py line 1233 (`max_leaf_ratio < _pass_max_leaf`) has no hysteresis or tolerance band. Haftpflicht-Besondere had max_leaf_ratio=0.12 in Run 7 but jittered to >=0.30 in Run 8, exceeding the new threshold and flipping PASS to MARGINAL. RFC-024's own risk table (line 256) explicitly predicted this exact recurrence: 'A future doc could jitter past 0.30 in Run 9. ... the next RFC must implement hysteresis / tolerance-band / prior-verdict anchoring rather than widening again.'",
+      "code_path": "src/pageindex_mcp/helpers.py :: classify_verdict() -> PASS gate at lines 1229-1236 -> strict `max_leaf_ratio < _pass_max_leaf` comparison with no hysteresis",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Implement hysteresis / tolerance-band / prior-verdict anchoring as prescribed by RFC-024's risk acknowledgment. Options: (1) Add a tolerance band (e.g., if prior verdict was PASS, use _pass_max_leaf + 0.10 as the threshold); (2) Store prior max_leaf_ratio in meta.json and only downgrade if the ratio exceeds threshold for N consecutive runs; (3) Use a smoothed/averaged max_leaf_ratio across runs. Widening the threshold further is NOT the right fix -- RFC-024 explicitly states this is the third consecutive widening and another widening must not be the approach.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py"
+      ],
+      "affected_docs": [
+        "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        ".agents/rfcs/024-run7-verdict-stability-and-recovery-gaps.md",
+        ".agents/rfcs/023-run6-content-recovery-and-verdict-hardening.md"
+      ]
+    },
+    {
+      "id": "RC1_clip_text_captured_no_garble_check",
+      "root_cause": "RFC-024 D1 added clip_text capture in _recover_picture_text (converters.py ~line 1660) that routes PDF text-layer content from picture regions directly into PictureResult.ocr_text WITHOUT any garble check. When the PDF text layer is corrupted (German CMap umlaut/scharfes-s corruption, Arabic CMap mojibake), the garbled clip_text passes _clip_text_contained's containment guard (because the garbled text differs from Docling's markdown) and gets injected into tree nodes via splice_picture_text_for_tree. The per-node garble check in validate_tree then flags these nodes, inflating the garbled node ratio and flipping verdicts from PASS to FAIL. Before RFC-024, all regions with clip_text above _PICTURE_OCR_MIN_CHARS were unconditionally skipped (skip_reasons[i] = 'clip_text'), so the garbled text layer content was never captured.",
+      "code_path": "converters.py:_recover_picture_text -> clip_text capture (line ~1660) -> PictureResult.ocr_text -> client.py:splice_picture_text_for_tree -> md_to_tree -> validate_tree:_garble_check_nodes",
+      "fix_category": "bug",
+      "estimated_complexity": "small",
+      "suggested_fix": "Add _is_garbled_blob(clip_text, expected_script=inferred_script) check before storing clip_captures[i]. If the clip_text is garbled, skip the region with reason 'clip_text_garbled' instead of capturing. The expected_script can be inferred from the document markdown (already available as md parameter) via _infer_script, or passed as an additional parameter to _recover_picture_text.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+        "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf"
+      ],
+      "confidence": "medium",
+      "related_rfcs": [
+        "024-run7-verdict-stability-and-recovery-gaps.md"
+      ]
+    },
+    {
+      "id": "RC2_document_text_fallback_missing_expected_script",
+      "root_cause": "RFC-024 D1's _document_level_text_fallback (converters.py ~line 1568) calls _is_garbled_blob(full_text) WITHOUT passing expected_script. The Latin-gibberish detection heuristic in _is_garbled_blob (the last check at line ~907-918) only fires when expected_script is set AND is not 'Latn'. Without expected_script, Arabic documents whose CMap corruption produces Latin mojibake (the validated failure mode for مرسوم/decree-class PDFs) pass all bulk garble checks and have their garbled text layer appended to the thin Docling markdown. The same gap exists in _text_layer_has_content (line ~1493). This is a missing-parameter bug: the function has no access to the expected_script context that its caller (pdf_to_markdown_docling) could derive from the filename or markdown content.",
+      "code_path": "converters.py:pdf_to_markdown_docling -> _document_level_text_fallback (line 2155) -> _is_garbled_blob(full_text) WITHOUT expected_script -> Latin-gibberish check skipped",
+      "fix_category": "bug",
+      "estimated_complexity": "small",
+      "suggested_fix": "Thread expected_script (or at minimum, infer it from the markdown or filename inside _document_level_text_fallback) and pass it to _is_garbled_blob(full_text, expected_script=...). Similarly fix _text_layer_has_content to accept and pass expected_script. This ensures the Latin-gibberish heuristic catches Arabic CMap mojibake before it gets appended as supplementary content.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+        "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf"
+      ],
+      "confidence": "medium",
+      "related_rfcs": [
+        "024-run7-verdict-stability-and-recovery-gaps.md",
+        "018-corpus-audit-remediation.md"
+      ]
+    },
+    {
+      "id": "RC3_ward597_numeric_junk_garble_gate_hole",
+      "root_cause": "Pre-existing garble-gate blind spot documented in project memory and RFC-018 D3: the وارد 597 document's Arabic text layer contains numeric-junk content where the digit ratio stays below the 60% threshold in _is_garbled_blob (line ~884-886) and the Latin-gibberish check doesn't trigger because the tokens are predominantly Arabic script (not Latin). The document's text layer is effectively garbage but passes all garble heuristics, so OCR escalation never fires. This is NOT a new RFC-024 regression but a known gap that RFC-018 D3 partially addressed (pre-conversion probe + per-node checks) without fully closing.",
+      "code_path": "helpers.py:_is_garbled_blob -> digit ratio check (60% threshold on blobs >500 chars) -> passes for mixed Arabic+numeric junk -> validate_tree passes -> no OCR escalation",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Implement the RFC-018 D3 'two-pronged garble gate' that was designed but not fully landed: add a sub-threshold digit-ratio check combined with Arabic script ratio check (e.g., digit_ratio > 0.30 AND arabic_script_ratio < 0.20 for blobs with expected_script='Arab'). This catches the numeric-junk pattern without false-flagging legitimate financial documents with high digit counts.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py"
+      ],
+      "affected_docs": [
+        "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "018-corpus-audit-remediation.md",
+        "019-corpus-reingestion-phase2.md"
+      ]
+    },
+    {
+      "id": "RC1-rfc024-d1-clip-text-over-capture",
+      "root_cause": "RFC-024 D1 clip_text capture in _recover_picture_text causes massive content duplication for table-heavy documents. Before RFC-024, regions with clip_text were unconditionally skipped (reason 'clip_text'). After RFC-024, clip_text is captured when the containment guard (_clip_text_contained at 60% threshold) determines it is NOT already in the Docling markdown. For documents where Docling classifies tables as PictureItems (emitting <!-- image --> markers instead of text), the clip_text for each region is correctly identified as not-contained (the content really was replaced by image markers). Capturing clip_text for ALL such regions produces massive content inflation: for world-stats-pocketbook (292 pages of dense statistical tables), hundreds of captured clip_text regions inflate content from 204k to 6.334M chars (31x). The containment guard works correctly per-region but there is no document-level budget cap to prevent runaway accumulation. Additionally, _document_level_text_fallback may compound this if the Docling markdown (excluding image markers) falls below 100 chars, appending the raw pypdfium2 text layer wholesale.",
+      "code_path": "converters.py:_recover_picture_text -> _clip_text_contained (line 1507) -> clip_captures dict (line 1661) -> splice_picture_text_for_tree (line 1775)",
+      "fix_category": "bug",
+      "estimated_complexity": "small",
+      "suggested_fix": "Add a document-level capture budget to _recover_picture_text: cap total captured clip_text chars (e.g., 2x the Docling markdown body size or a hard ceiling like 500k chars). Once the budget is exhausted, revert remaining regions to the pre-RFC-024 skip behavior. This preserves D1's intent (recovering misclassified chart text) while preventing runaway inflation on table-heavy documents with hundreds of picture-classified regions. Alternatively, add a per-page capture limit (e.g., max 2 captures per page).",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "world-stats-pocketbook-2023.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "024-run7-verdict-stability-and-recovery-gaps.md"
+      ]
+    },
+    {
+      "id": "RC2-rfc024-d1-d2-scanned-node-fragmentation",
+      "root_cause": "RFC-024 D1 (_document_level_text_fallback) and D2 (per-region exception isolation) combine to produce many near-empty nodes for scanned/thin-text-layer PDFs. For scanned documents, Docling produces mostly <!-- image --> markers with < 100 chars of actual text. The D1 text fallback fires and appends the raw PDF text layer via pypdfium2. For scanned PDFs, this text layer is either empty, very thin (a few hundred chars), or a fragmented OCR layer with many short lines. Simultaneously, D2's per-region try/except allows more picture regions to succeed (in Run 7, a single crash in _recover_picture_text would kill ALL results; now each region is isolated). More PictureResults are returned, and splice_picture_text_for_tree appends thin/empty chart-text blocks after each image marker. The LLM tree builder (md_to_tree) then creates individual nodes for each image marker and chart-text block, producing 76-79 nodes with only ~10 chars/node. Content increase from 28-38 chars to 748-764 chars shows D1/D2 ARE recovering some content, but the node-count explosion (4-11 to 76-79) makes the structure worse, not better.",
+      "code_path": "converters.py:_document_level_text_fallback (line 1528) -> pdf_to_markdown_docling (line 2155) + _recover_picture_text D2 per-region isolation (line 1700) -> splice_picture_text_for_tree (line 1775)",
+      "fix_category": "bug",
+      "estimated_complexity": "small",
+      "suggested_fix": "Two mitigations: (1) In _document_level_text_fallback, add a minimum useful-text threshold (e.g., skip appending if the recovered text layer has < 200 chars after stripping whitespace -- thin text layers from scanned PDFs add noise, not signal). (2) In splice_picture_text_for_tree, skip splicing chart-text blocks that are very short (e.g., < 20 chars of actual OCR text) to prevent near-empty node proliferation. These guards prevent D1/D2 from inflating node counts with noise while preserving recovery for documents with genuinely useful text layers.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "uae_numbers_english_page_16_17_portrait - Copy.pdf",
+        "uae_numbers_english_page_16_17_landscape - Copy.pdf"
+      ],
+      "confidence": "medium",
+      "related_rfcs": [
+        "024-run7-verdict-stability-and-recovery-gaps.md"
+      ]
+    },
+    {
+      "id": "RC1",
+      "root_cause": "Missing English structural word recognition in _WORD_RE (line 146) and _NUM_PART_RE (line 67) of converters.py. These regexes only recognize German words (teil|anhang|abschnitt|kapitel / Teil|Anhang|Kapitel|Abschnitt). English equivalents (Book, Chapter, Section, Part) are absent, so _segment_label returns [] for these headings, _relevel_by_containment leaves them at their flat Docling-assigned H1 level, and _relevel_by_numbering also cannot help (numbering_depth returns None). Depth recovery falls through to _relevel_by_outline (PDF TOC matching), which is a fragile last-resort that depends on exact title matching between Docling-rendered headings and PDF bookmark titles. Any variation in the hierarchical add-on's heading selection or heading_pages collection causes the outline to match fewer headings, producing inconsistent depth across runs (Run 7: depth 3 via outline success, Run 8: depth 2 via partial outline failure). Both the Penal Code (Book/Chapter/Section/Article) and Decree-Law 47 (Chapter/Article) have English structural words that are NOT consumed by _segment_label, so their container headings get no label and containment assigns no depth hierarchy.",
+      "code_path": "src/pageindex_mcp/converters.py :: _WORD_RE (line 146) -> _segment_label (line 219) -> _containment_depths (line 295) -> _relevel_by_containment (line 319) -> _recover_heading_depth (line 610)",
+      "fix_category": "missing_feature",
+      "estimated_complexity": "small",
+      "suggested_fix": "Add English structural words to the heading recognition chain: (1) Extend _WORD_RE to include English equivalents: r'^(teil|anhang|abschnitt|kapitel|book|chapter|section|part)\\b' (case-insensitive). (2) Extend _NUM_PART_RE similarly: r'^(?:Teil|Anhang|Kapitel|Abschnitt|Book|Chapter|Section|Part)\\b'. This allows _segment_label to consume 'Chapter' / 'Book' / 'Section' / 'Part' as structural prefixes, exposing the trailing number/word as the label component. With labels recognized, _relevel_by_containment can assign proper hierarchical depth (Chapter 1 contains Articles 1-50, Book First contains Chapters 1-5) without depending on the fragile PDF outline matching path. Both documents in this cluster would immediately benefit: the Penal Code would get Book > Chapter > Article nesting (depth 3+), and Decree-Law 47 would get Chapter > Article nesting (depth 2).",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE - Copy.pdf",
+        "Federal Decree-Law No. (47) of 2021 - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": []
+    },
+    {
+      "id": "RC1",
+      "root_cause": "The feat/image-block-picture-ocr merge (PR #18, b7cd19b) refactored per-picture OCR from inline text splicing (_maybe_splice_picture_ocr) to a split architecture where OCR results travel separately in pic_results and are spliced by splice_figure_markers in the flat routing path. For scanned/image-only PDFs (zero text layer confirmed for both docs), when per-picture OCR fails to produce text or the image-dominant OCR escalation produces empty pic_results, the flat routing path creates image blocks WITHOUT index fields (helpers.py:2165). _enrich_image_blocks (client.py:526) requires a valid integer index to look up PictureResult data, so blocks without index are skipped entirely, yielding 0 enriched chars. In the old code, _maybe_splice_picture_ocr embedded OCR text directly into the markdown inside pdf_to_markdown_docling; even failed OCR left markers intact as prose, allowing downstream escalation paths to recover text.",
+      "code_path": "converters.py:_recover_picture_results -> client.py:splice_figure_markers -> helpers.py:route_and_extract_flat (line 2163-2167) -> client.py:_enrich_image_blocks (line 526)",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Three-part fix: (1) In route_and_extract_flat (helpers.py:2163-2167), assign auto-incrementing ordinal index to raw <!-- image --> marker blocks so _enrich_image_blocks can match them to pic_results by position. (2) In the image-dominant OCR escalation (client.py:1021-1023), when the escalation's pic_results is empty but the primary conversion's pic_results had entries, preserve the primary pic_results for the flat routing path instead of overwriting with empty. (3) In the flat routing section (client.py:~1278), when content_class is image_standalone and all blocks have 0 chars, attempt Tesseract-on-raster recovery via _attempt_tesseract_raster_recovery before persisting the empty result.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py",
+        "src/pageindex_mcp/client.py",
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+        "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        ".agents/rfcs/017-ocr-image-block-decoupling.md",
+        ".agents/rfcs/023-run6-content-recovery-and-verdict-hardening.md",
+        ".agents/rfcs/024-run7-verdict-stability-and-recovery-gaps.md"
+      ]
+    },
+    {
+      "id": "RC1-pypdfium2-null-handle-arabic-pdfs",
+      "root_cause": "pypdfium2 returns a NULL document handle (ArgumentError: expected LP_struct_fpdf_document_t__ instead of NoneType) when opening all 4 Arabic PDFs in this cluster. This causes _document_level_text_fallback (RFC-024 D1, converters.py line ~1530) to fail silently via its try/except, and also breaks rasterize_pdf_pages (used by D7 Tesseract fallback). While the D4 fitz fallback catches rasterize_pdf_pages failures in tesseract_ocr_pdf_pages, _document_level_text_fallback has NO equivalent fitz fallback -- it catches the exception but does not attempt an alternative text-layer read. For these scanned Arabic PDFs where Docling produces only <!-- image --> markers, the text-layer recovery was the intended safety net and it is completely non-functional.",
+      "code_path": "src/pageindex_mcp/converters.py::_document_level_text_fallback -> pypdfium2.PdfDocument(pdf_path) -> ArgumentError (NULL handle) -> except catches -> returns md unchanged (no fitz fallback attempted)",
+      "fix_category": "bug",
+      "estimated_complexity": "small",
+      "suggested_fix": "Add a fitz-based fallback inside _document_level_text_fallback, mirroring the D4 pattern in tesseract_ocr_pdf_pages: when pypdfium2 raises, fall back to fitz.Page.get_text() to read the native text layer. fitz successfully opens all 4 Arabic PDFs (confirmed via probe). This would allow the function to recover the 213-char text layer in marsoom 33 and detect the garbled text layer in the Organizational Decision doc.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+        "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+        "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+        "القرار التنظيمي (Organizational Decision)"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "024-run7-verdict-stability-and-recovery-gaps"
+      ]
+    },
+    {
+      "id": "RC2-docling-ocr-zero-output-scanned-arabic",
+      "root_cause": "Docling's force_full_page_ocr=True with TesseractCliOcrOptions produces zero text for scanned Arabic PDFs -- OCR stage profiling shows duration=0.000s per page, meaning OCR does not actually execute. The image-dominant OCR escalation (client.py line ~1091) correctly detects the 100% image-marker ratio and fires, but the second Docling conversion with force_full_page_ocr still produces only <!-- image --> markers with 0 non-marker chars. Confirmed locally: pdf_to_markdown_docling(path, force_full_page_ocr=True, ocr_lang_override=['ara','eng']) returns md_len=334, non_image_chars=0. Per-picture Tesseract OCR also fails for all 21 regions with UTF-8 decode errors ('utf-8' codec can't decode byte 0x89). Combined with the pypdfium2 failure above, all three OCR/text-recovery paths are broken for these PDFs.",
+      "code_path": "src/pageindex_mcp/client.py::index() -> image-dominant OCR escalation -> pdf_to_markdown_docling(force_full_page_ocr=True) -> Docling OCR stage duration=0.000s -> only <!-- image --> markers -> tree node_count<3 -> flat routing -> route_and_extract_flat -> 0 blocks",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Investigate why Docling's TesseractCliOcrOptions does not run OCR on these scanned Arabic pages despite force_full_page_ocr=True (OCR stage duration=0.000s). Likely cause: Docling's OCR pipeline may skip pages it classifies as having a text layer (even if empty/thin), or the Tesseract subprocess invoked by Docling cannot access temp files (macOS sandbox). As a fallback, when force_full_page_ocr produces no text, route directly to the D7 Tesseract-on-raster path (tesseract_ocr_pdf_pages with D4 fitz fallback) instead of proceeding with empty markdown to flat routing.",
+      "affected_files": [
+        "src/pageindex_mcp/client.py",
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+        "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+        "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+        "القرار التنظيمي (Organizational Decision)"
+      ],
+      "confidence": "medium",
+      "related_rfcs": [
+        "024-run7-verdict-stability-and-recovery-gaps",
+        "023-run6-content-recovery-and-verdict-hardening"
+      ]
+    }
+  ],
+  "drilldown_needed": [
+    {
+      "doc": "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf",
+      "reason": "99.9% text loss (527k->382 chars) while structural hierarchy is fully preserved (347 nodes, depth 5) does not match either the garble-injection pattern (RC1/RC2) or the garble-gate-hole pattern (RC3). The structure surviving means Docling extracted headings correctly but body text vanished. This could be a Docling extraction regression specific to this document's PDF encoding, or an interaction between _document_level_text_fallback and the picture recovery pipeline that needs per-document log analysis to determine whether the text fallback fired, what the raw Docling output contained, and whether picture OCR contributed the 527k chars in the prior run.",
+      "complexity": "complex"
+    },
+    {
+      "doc": "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+      "reason": "99.3% content loss (8.4k->60 chars, 38->2 nodes) with unintelligible OCR garbage as the sole remaining text suggests a cascading failure: Docling extraction failed or produced thin output, the text fallback either did not fire or was blocked by the garble check, and the OCR recovery path (garble escalation -> VLM -> Tesseract-on-raster) also failed to recover. The RC2 missing-expected-script bug in _document_level_text_fallback may be a contributing factor but cannot fully explain the regression from 38 nodes to 2. Needs per-document pipeline trace to identify which stage lost the content.",
+      "complexity": "complex"
+    },
+    {
+      "doc": "Reitlehrer - Schäden am Berittpferd.pdf",
+      "reason": "89% content loss (4555 chars/10 nodes depth-2 -> 497 chars/8 flat nodes) is NOT explained by RFC-024's additive code changes (D1 clip_text capture and text fallback only ADD content, D2 only improves exception isolation, D0 only widens the PASS threshold). The doc_class changed from 'tree' to 'unknown' and depth collapsed from 2 to flat, suggesting fundamentally different Docling markdown output between runs. RFC-024 D0 explicitly acknowledged 'Docling non-deterministic heading selection' for this document. Need to examine the actual Docling markdown output (or stored meta.json) from both runs to determine if this is Docling non-determinism or an unidentified code-level interaction. Check whether _recover_heading_depth or the post_md vs raw_md source selection at converters.py:2141-2153 produced a different branch due to changed heading counts.",
+      "complexity": "complex"
+    },
+    {
+      "doc": "القرار التنظيمي (Organizational Decision)",
+      "reason": "Persistent CMap corruption (garbled chars confirmed: 213 garbled chars in 1111 total on page 1). While it shares the pypdfium2 NULL-handle failure with the other 3 docs, its failure mode is fundamentally different: it has a text layer that IS garbled (unlike the other 3 which are scanned/image-only with no text layer). The D7 Tesseract-on-raster fallback with D4 fitz rasterization should work for this doc (fitz can open it and render pages), but the Tesseract OCR output may also be garbled since the source is CMap-corrupt. Need to verify whether the D4 fitz fallback + Tesseract actually fires and what quality the OCR output has.",
+      "complexity": "complex"
+    }
+  ]
+}
