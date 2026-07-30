@@ -150,16 +150,19 @@ class TestF1CoverageExemption:
 
     def test_clip_text_skip(self, monkeypatch):
         """A sub-coverage region whose clip already has real text under it
-        (Docling already extracted it into the markdown body) is skipped
-        with reason "clip_text" rather than re-OCR'd."""
+        AND that text is already contained in the Docling markdown export
+        (RFC-024 D1 containment guard) is skipped with reason
+        "clip_text_already_exported" rather than re-OCR'd."""
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         small_region = _region(l=0, t=0, r=100, b=100)
         _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(30))
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 
-        recovered, skip_reasons = _recover_picture_text("dummy.pdf", [small_region], ["eng"])
+        recovered, skip_reasons = _recover_picture_text(
+            "dummy.pdf", [small_region], ["eng"], md=_long_text(30)
+        )
 
-        assert skip_reasons.get(0) == "clip_text"
+        assert skip_reasons.get(0) == "clip_text_already_exported"
         assert 0 not in recovered
 
     def test_coverage_threshold_constant_is_point_six(self):

@@ -686,7 +686,8 @@ class TestTextLayerProbe:
         }
 
     def test_text_layer_skips_picture_ocr(self, monkeypatch):
-        """get_text(clip=rect) returns >20 chars -> region NOT in crops dict."""
+        """get_text(clip=rect) returns >20 chars already in the Docling markdown
+        export -> region NOT in crops dict (RFC-024 D1 containment guard)."""
         long_clip_text = "This is more than twenty characters of extracted text."
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, long_clip_text)
         monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
@@ -695,7 +696,7 @@ class TestTextLayerProbe:
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=long_clip_text)
 
         assert 0 not in result
         assert len(result) == 0
@@ -735,7 +736,7 @@ class TestTextLayerProbe:
         assert 0 in result  # OCR fires — boundary NOT exceeded
 
     def test_text_layer_boundary_21_chars_skips(self, monkeypatch):
-        """21 chars (> threshold) → skip OCR."""
+        """21 chars (> threshold), already in the Docling markdown export → skip OCR."""
         clip_text = "A" * 21  # just above threshold
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
         monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
@@ -744,7 +745,7 @@ class TestTextLayerProbe:
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=clip_text)
 
         assert len(result) == 0  # OCR skipped
 
