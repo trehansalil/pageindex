@@ -1,3 +1,5 @@
+ 
+
 <a id="phase0-top"></a>
 
 # Phase 0 Audit — Postprocess/Registry Population & Filter-Then-Retrieve Latency

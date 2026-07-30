@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400
 MAX_TRIES = 2
-JOB_TIMEOUT = 900
+JOB_TIMEOUT = 1800
 # The inner timeout we apply around the converter child must be strictly
 # *shorter* than arq's outer ``job_timeout`` (JOB_TIMEOUT). Otherwise the two
 # can race: arq cancels the task before our ``asyncio.timeout()`` fires and we
@@ -80,8 +80,31 @@ _CHILD_ERROR_REASON: dict[str, str] = {
 _TERMINAL_CHILD_REASONS: frozenset[str] = frozenset(
     {
         "low_quality_tree",
+        "llm_failure_terminal",
     }
 )
+# Substrings in an LLMTransientFailure's stderr_tail that indicate a
+# deterministic failure (retrying the same input reproduces it). Checked
+# before any rate-limit/transient indicator so a stderr_tail carrying both
+# (e.g. a rate-limited request whose retry then hit a CMap-corrupt PDF)
+# still classifies as terminal rather than looping arq retries forever.
+_LLM_TERMINAL_INDICATORS = ("CMap", "content_policy", "content_filter")
+
+
+def _classify_llm_failure(stderr_tail: str) -> str:
+    """Classify an ``LLMTransientFailure`` child error as terminal or transient.
+
+    Terminal (no retry): CMap corruption or content-policy/content-filter
+    rejection -- deterministic with respect to the input document. Transient
+    (retryable, MAX_TRIES): rate-limit/throttling indicators, and any
+    unrecognized detail -- fails open toward retry rather than toward silent
+    data loss.
+    """
+    if any(indicator in stderr_tail for indicator in _LLM_TERMINAL_INDICATORS):
+        return "llm_failure_terminal"
+    return "llm_failure_transient"
+
+
 # A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
 # grace margin (clock skew + the gap before arq itself gives up) a hash still in
 # status=processing means the worker died mid-job (e.g. OOMKill/SIGKILL ran no
@@ -338,7 +361,10 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             logger.error("Converter child timed out: job=%s", job_id)
             raise
         except ConverterChildError as exc:
-            reason = _CHILD_ERROR_REASON.get(exc.error_class or "", "converter_child_failed")
+            if exc.error_class == "LLMTransientFailure":
+                reason = _classify_llm_failure(exc.stderr_tail)
+            else:
+                reason = _CHILD_ERROR_REASON.get(exc.error_class or "", "converter_child_failed")
             await redis.hset(
                 _job_key(job_id),
                 mapping={

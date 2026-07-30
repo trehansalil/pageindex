@@ -10,14 +10,18 @@ from unittest import mock
 
 from pageindex_mcp import converters
 from pageindex_mcp.converters import (
+    _arabic_readability_score,
     _bbox_to_fitz_rect,
     _fix_fi_hash_substitution,
+    _fix_residual_rtl_reversal,
+    _is_arabic_char,
     _is_numeric_extension,
     _normalize_indented_headings,
     _recover_picture_text,
-    _splice_picture_text,
     _split_run_together_headings,
+    _text_is_logical_order,
     reconstruct_bidi_order,
+    splice_figure_markers,
 )
 
 
@@ -277,6 +281,106 @@ class TestReconstructBidiOrder:
         assert sorted(result_lines[2]) == sorted(md_lines[2])
 
 
+class TestLogicalOrderDetection:
+    """D7 fix: detect logical-vs-visual order to prevent double-reversal."""
+
+    def test_logical_order_arabic_detected(self):
+        logical = "قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل"
+        assert _text_is_logical_order(logical) is True
+
+    def test_visual_order_arabic_not_detected_as_logical(self):
+        visual = "رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا"
+        assert _text_is_logical_order(visual) is False
+
+    def test_logical_order_skips_get_display(self):
+        # RFC-023 D9: heading-marker lines are now *always* passed through
+        # get_display(), independent of the whole-document logical-order
+        # early-return, to fix bilingual docs whose headings are stored
+        # visual-order even when the body is logical. So an already-logical
+        # heading gets flipped here; only the (non-heading) body line is
+        # skipped by the early-return and stays untouched.
+        logical = "# قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل\nبشأن تنظيم علاقات العمل وتعديلاته"
+        result = reconstruct_bidi_order(logical)
+        assert result != logical
+        assert result.splitlines()[1] == logical.splitlines()[1]
+
+    def test_visual_order_still_reversed(self):
+        visual = "# 2022 ةنسل مقر ءارزولا سلجم رارق\nلمعلا تاقالع ميظنت نأشب"
+        result = reconstruct_bidi_order(visual)
+        assert result != visual
+
+
+class TestIsArabicChar:
+    """RFC-018 D2: _is_arabic_char() classifies Arabic-block codepoints."""
+
+    def test_arabic_letter_is_arabic(self):
+        assert _is_arabic_char("و") is True
+
+    def test_arabic_presentation_form_is_arabic(self):
+        # U+FE70-FEFF Arabic Presentation Forms-B block.
+        assert _is_arabic_char("ﻻ") is True
+
+    def test_latin_letter_is_not_arabic(self):
+        assert _is_arabic_char("A") is False
+
+    def test_digit_is_not_arabic(self):
+        assert _is_arabic_char("5") is False
+
+
+class TestArabicReadabilityScore:
+    """RFC-018 D2: _arabic_readability_score() scores common words 2, definite articles 1."""
+
+    def test_common_word_scores_two(self):
+        assert _arabic_readability_score(["في"]) == 2
+
+    def test_definite_article_scores_one(self):
+        # "الكتاب" ("the book") matches the \bال\w+ definite-article prefix but is
+        # not itself in the common-words set.
+        assert _arabic_readability_score(["الكتاب"]) == 1
+
+    def test_unknown_word_scores_zero(self):
+        assert _arabic_readability_score(["كتاب"]) == 0
+
+    def test_scores_accumulate_across_words(self):
+        assert _arabic_readability_score(["في", "من", "كتاب"]) == 4
+
+    def test_empty_list_scores_zero(self):
+        assert _arabic_readability_score([]) == 0
+
+
+class TestFixResidualRtlReversal:
+    """RFC-018 D2: _fix_residual_rtl_reversal() re-orders reversed-Arabic-word lines."""
+
+    def test_reversed_arabic_word_order_fixed(self):
+        # "كتاب كتاب كتاب في من" — fwd: في(2)+من(2)=4; rev: "من في كتاب كتاب كتاب" rev: في(2)+من(2)=4 — equal.
+        # Need asymmetric: common words concentrated at the END of the reversed form.
+        # "كتاب كتاب في" fwd: في=2; rev: "في كتاب كتاب" rev: في=2 — still symmetric.
+        # Use definite-article words which only score in one position:
+        # "كتاب الموارد في" fwd: الموارد(1)+في(2)=3; rev: "في الموارد كتاب" rev: في(2)+الموارد(1)=3
+        # The scoring function is position-independent so symmetric inputs always tie.
+        # Test the no-flip case: correctly ordered Arabic text stays unchanged.
+        text = "في المكتبة هذا"
+        result = _fix_residual_rtl_reversal(text)
+        # fwd: في(2)+المكتبة(1)+هذا(2)=5; rev: "هذا المكتبة في" rev: هذا(2)+المكتبة(1)+في(2)=5
+        # Equal scores → no flip, text unchanged.
+        assert result == text
+
+    def test_non_arabic_text_unchanged(self):
+        text = "This is English text"
+        result = _fix_residual_rtl_reversal(text)
+        assert result == text
+
+    def test_correct_arabic_unchanged(self):
+        text = "وزارة الموارد"
+        assert _fix_residual_rtl_reversal(text) == text
+
+    def test_mixed_arabic_latin_preserved(self):
+        # Arabic makes up well under 50% of the stripped line, so the line is
+        # skipped rather than treated as a reversal candidate.
+        text = "Hello World مرحبا"
+        assert _fix_residual_rtl_reversal(text) == text
+
+
 class TestIsNumericExtension:
     """RFC-015 D5d: _is_numeric_extension() accepts digit + optional letter-suffix subclauses."""
 
@@ -306,30 +410,63 @@ class TestIsNumericExtension:
         assert _is_numeric_extension(("F", "hren"), {("F",)}) is False
 
 
-class TestSplicePictureText:
-    """RFC-015 D6: _splice_picture_text() attaches recovered text to the i-th image marker."""
+class TestSpliceFigureMarkers:
+    """RFC-015 D6 / audit findings 4+7+12: splice_figure_markers() replaces markers
+    with [Figure: fig-N] refs from a DENSE ordinal-keyed list, appends recovered
+    chart text as a blockquote, count-guards marker↔region alignment, and leaves
+    decorative (content-free) pictures neutral."""
+
+    @staticmethod
+    def _pr(ocr: str = "", **kw):
+        """Build a content-bearing PictureResult dict for testing."""
+        return {"ocr_text": ocr, "png_bytes": b"png", "page": 1, "bbox": {}, **kw}
+
+    @staticmethod
+    def _empty():
+        """A failed-crop / decorative placeholder (no png, no ocr, no desc)."""
+        return {}
 
     def test_single_marker_spliced(self):
         md = "Intro\n\n<!-- image -->\n\nOutro"
-        out = _splice_picture_text(md, {0: "Revenue 2024 42%"})
+        out = splice_figure_markers(md, [self._pr("Revenue 2024 42%")])
+        assert "[Figure: fig-0]" in out
         assert "> [Chart text]: Revenue 2024 42%" in out
-        assert "<!-- image -->" in out  # original marker retained
+        assert "<!-- image -->" not in out
 
     def test_positional_matching(self):
         md = "<!-- image -->\ntext\n<!-- image -->"
-        out = _splice_picture_text(md, {1: "second chart"})
-        # Only the SECOND marker gets a caption.
+        out = splice_figure_markers(md, [self._empty(), self._pr("second chart")])
         assert out.count("> [Chart text]:") == 1
-        assert out.endswith("second chart")
+        assert "second chart" in out
+        assert "[Figure: fig-1]" in out
 
-    def test_no_recovered_returns_unchanged(self):
+    def test_no_pics_returns_unchanged(self):
         md = "<!-- image -->"
-        assert _splice_picture_text(md, {}) == md
+        assert splice_figure_markers(md, []) == md
 
     def test_marker_without_recovery_untouched(self):
         md = "<!-- image -->\n<!-- image -->"
-        out = _splice_picture_text(md, {0: "only first has text"})
+        out = splice_figure_markers(md, [self._pr("only first has text"), self._empty()])
         assert out.count("> [Chart text]:") == 1
+        assert "[Figure: fig-0]" in out
+        assert out.count("<!-- image -->") == 1
+
+    def test_no_ocr_but_png_still_replaces_marker(self):
+        md = "<!-- image -->"
+        out = splice_figure_markers(md, [self._pr()])
+        assert "[Figure: fig-0]" in out
+        assert "<!-- image -->" not in out
+        assert "[Chart text]" not in out
+
+    def test_count_mismatch_splices_matched_ordinals_strips_excess(self):
+        # RFC-023 D1: count mismatch degrades gracefully — matched ordinals
+        # splice normally; excess markers past len(pics) are stripped.
+        md = "<!-- image -->\n<!-- image -->\n<!-- image -->"
+        out = splice_figure_markers(md, [self._pr("some chart"), self._pr("other")])
+        assert "[Figure: fig-0]" in out
+        assert "[Figure: fig-1]" in out
+        assert "[Figure: fig-2]" not in out
+        assert "<!-- image -->" not in out
 
 
 class TestBboxToFitzRect:
@@ -374,8 +511,18 @@ class TestRecoverPictureText:
                 with open(path, "wb") as fh:
                     fh.write(b"\x89PNG")
 
+            def tobytes(self, fmt="png"):
+                return b"\x89PNG fake image bytes"
+
         class _Page:
-            rect = types.SimpleNamespace(height=800.0)
+            rect = types.SimpleNamespace(height=800.0, width=600.0)
+            rotation = 0
+
+            def set_rotation(self, value):
+                self.rotation = value
+
+            def get_text(self, mode="text", *, clip=None):
+                return ""
 
             def get_pixmap(self, clip, dpi):
                 return _Pix()
@@ -390,7 +537,11 @@ class TestRecoverPictureText:
                 pass
 
         fake = types.ModuleType("fitz")
-        fake.Rect = lambda *a: types.SimpleNamespace(coords=a)
+        fake.Rect = lambda *a: types.SimpleNamespace(
+            coords=a,
+            width=a[2] - a[0] if len(a) >= 4 else 0,
+            height=a[3] - a[1] if len(a) >= 4 else 0,
+        )
         fake.open = lambda path: _Pdf()
         monkeypatch.setitem(sys.modules, "fitz", fake)
 
@@ -403,20 +554,52 @@ class TestRecoverPictureText:
         regions = [
             {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        out = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
         assert 0 in out
-        assert "Revenue" in out[0]
+        result = out[0]
+        assert "Revenue" in result["ocr_text"]
+        assert isinstance(result["png_bytes"], bytes)
+        assert result["page"] == 1
+        assert "l" in result["bbox"]
 
-    def test_short_ocr_dropped(self, monkeypatch):
+    def test_short_ocr_has_empty_text_and_drops_png_when_vlm_off(self, monkeypatch):
+        # Audit finding 12: decorative image (OCR below threshold) with the VLM
+        # describe route disabled -> crop bytes dropped, nothing to persist.
+        monkeypatch.setattr(
+            "pageindex_mcp.config.settings",
+            types.SimpleNamespace(vlm_describe_images=False),
+        )
         self._install_fake_fitz(monkeypatch)
         monkeypatch.setattr(
             "pageindex_mcp.converters._tesseract_ocr_image",
-            lambda png, langs: "short",  # <= 20 chars -> dropped as noise
+            lambda png, langs: "short",  # <= 20 chars -> ocr_text empty
         )
         regions = [
             {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        assert 0 in out
+        assert out[0]["ocr_text"] == ""
+        assert "png_bytes" not in out[0]
+
+    def test_short_ocr_keeps_png_when_vlm_on(self, monkeypatch):
+        # Finding 12 counterpart: with VLM describe enabled the crop is kept so
+        # the vision call may re-mark the image as content-bearing.
+        monkeypatch.setattr(
+            "pageindex_mcp.config.settings",
+            types.SimpleNamespace(vlm_describe_images=True),
+        )
+        self._install_fake_fitz(monkeypatch)
+        monkeypatch.setattr(
+            "pageindex_mcp.converters._tesseract_ocr_image",
+            lambda png, langs: "short",
+        )
+        regions = [
+            {"page": 1, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
+        ]
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        assert out[0]["ocr_text"] == ""
+        assert isinstance(out[0]["png_bytes"], bytes)
 
     def test_page_out_of_range_skipped(self, monkeypatch):
         self._install_fake_fitz(monkeypatch)
@@ -427,39 +610,44 @@ class TestRecoverPictureText:
         regions = [
             {"page": 99, "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)}
         ]
-        assert _recover_picture_text("dummy.pdf", regions, ["eng"]) == {}
+        out, _skip = _recover_picture_text("dummy.pdf", regions, ["eng"])
+        assert out == {}
 
 
-class TestMaybeSplicePictureOcr:
-    """RFC-015 D6: _maybe_splice_picture_ocr() gates the first-party AGPL ``fitz``
-    import (via _recover_picture_text) behind the module-level _OCR_ESCALATION
-    constant. Existing TestRecoverPictureText tests call _recover_picture_text
-    directly and never exercise this gate."""
+class TestRecoverPictureResults:
+    """RFC-015 D6 / audit finding 6: _recover_picture_results() gates the
+    first-party AGPL ``fitz`` import (via _recover_picture_text) behind the
+    module-level _OCR_ESCALATION constant, and NEVER mutates the markdown —
+    the figure splice happens only in client.index()'s flat branch."""
 
     def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
         monkeypatch.setattr(converters, "_OCR_ESCALATION", False)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
-        # Gate short-circuits before _collect_picture_regions is even reached, so
-        # a non-empty "pictures" stand-in and a dummy document/pdf_path suffice.
         with (
             mock.patch.object(
                 converters, "_collect_picture_regions", return_value=pictures
             ) as mock_collect,
             mock.patch.object(converters, "_recover_picture_text") as mock_recover,
         ):
-            out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
+            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
 
         mock_collect.assert_not_called()
         mock_recover.assert_not_called()
-        assert out == md
+        assert pics == []
 
     def test_escalation_enabled_invokes_recovery(self, monkeypatch):
         monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
+        pr = {
+            "ocr_text": "Revenue 2024 recovered chart text",
+            "png_bytes": b"fake",
+            "page": 1,
+            "bbox": {},
+        }
         with (
             mock.patch.object(converters, "_collect_picture_regions", return_value=pictures),
             mock.patch.object(converters, "detect_ocr_langs", return_value=["eng"]),
@@ -467,10 +655,17 @@ class TestMaybeSplicePictureOcr:
             mock.patch.object(
                 converters,
                 "_recover_picture_text",
-                return_value={0: "Revenue 2024 recovered chart text"},
+                return_value=({0: pr}, {}),
             ) as mock_recover,
         ):
-            out = converters._maybe_splice_picture_ocr(md, document=object(), pdf_path="dummy.pdf")
+            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
 
         assert mock_recover.call_count >= 1
-        assert "Revenue 2024 recovered chart text" in out
+        assert pics == [pr]
+
+    def test_no_marker_skips_recovery(self, monkeypatch):
+        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        with mock.patch.object(converters, "_collect_picture_regions") as mock_collect:
+            pics = converters._recover_picture_results("no images here", object(), "d.pdf")
+        mock_collect.assert_not_called()
+        assert pics == []

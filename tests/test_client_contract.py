@@ -36,6 +36,8 @@ def _fake_settings(flat_doc_routing: bool):
         flat_doc_routing=flat_doc_routing,
         vlm_fallback=False,
         vlm_model="gpt-4.1",
+        vlm_describe_images=False,
+        pii_corpus=False,
     )
 
 
@@ -60,7 +62,7 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return):
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
 
     # validate_tree is HR5-frozen in helpers; we only stub its RETURN at the branch.
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure: validate_return)
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
 
     mocks = {
         "route_and_extract_flat": MagicMock(
@@ -138,6 +140,22 @@ async def test_doc_id_full_uuid(monkeypatch, md_file):
     doc_id = mocks["save_doc"].call_args.args[0]
     assert isinstance(doc_id, str) and len(doc_id) == 36
     uuid.UUID(doc_id)  # raises ValueError if not a valid UUID
+
+
+async def test_client_tree_meta_carries_sha256_and_description(monkeypatch, md_file):
+    """C-3 / Finding 9: the tree ingest path passes sha256 AND doc_description
+    into save_doc_meta so the reconcile cron never GETs the full processed JSON
+    to enrich a freshly ingested tree doc's registry row."""
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(md_file)
+
+    mocks["save_doc_meta"].assert_called_once()
+    meta = mocks["save_doc_meta"].call_args.args[1]
+    assert meta["sha256"]  # non-empty content hash flows into the sidecar
+    assert "doc_description" in meta  # present by key (empty string is valid)
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +613,112 @@ async def test_CONV_01_C5_image_dispatches_to_ocr_only_no_llm_vision(monkeypatch
     called_langs = image_mock.call_args[0][1]
     assert set(called_langs) == {"ara", "deu", "eng"}
     mocks["route_and_extract_flat"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# D3a: pre-conversion garble probe (RFC-018) — raw text-layer digit-junk
+# detection forces force_full_page_ocr=True on the FIRST docling call,
+# instead of wasting a non-OCR conversion attempt and relying on the
+# after-the-fact OCR-01 retry.
+# ---------------------------------------------------------------------------
+def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
+    """Wire index() up to the .pdf branch with a mocked fitz probe and a
+    single mocked docling converter, so the D3a pre-conversion garble probe
+    can be exercised without any real PDF/Docling/Tesseract dependency."""
+    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing=True))
+    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
+    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+
+    mock_page = MagicMock()
+    mock_page.get_text.return_value = page_text
+    mock_doc = MagicMock()
+    mock_doc.page_count = 1
+    mock_doc.__enter__ = MagicMock(return_value=mock_doc)
+    mock_doc.__exit__ = MagicMock(return_value=False)
+    mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+    monkeypatch.setattr("fitz.open", MagicMock(return_value=mock_doc))
+
+    conv_mock = MagicMock(return_value="# converted md")
+    monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_mock)])
+
+    mocks = {
+        "save_doc": MagicMock(),
+        "save_flat_doc": MagicMock(),
+        "save_raw": MagicMock(),
+        "save_doc_meta": MagicMock(),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+        "OCR_ESCALATION_TOTAL": MagicMock(),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(client_mod, name, m)
+    return mocks, conv_mock
+
+
+async def test_garble_probe_numeric_junk(monkeypatch, pdf_file_with_content):
+    """D3a: a first-page text layer that is >60% digit-junk (>500 chars) is
+    caught by the pre-conversion probe (pre_garbled=True). QF1 (RFC-021):
+    with the default env (PRE_GARBLE_FORCE_OCR_ENABLED unset/false), the
+    probe firing no longer forces OCR on the primary conversion attempt —
+    forcing full-page OCR upfront destroyed Docling's PictureItem
+    segmentation. The docling converter is invoked with file_path only;
+    OCR escalation is deferred to the existing Fix-3 retry path (which
+    fires off validate_tree's reason='garbling'), not this probe."""
+    numeric_junk = "1651001429" * 60  # 600 chars, 100% digits
+    monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
+    mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=numeric_junk)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    conv_mock.assert_called_once_with(pdf_file_with_content)
+    mocks["save_doc"].assert_called_once()
+
+
+async def test_garble_probe_numeric_junk_rollback_env(monkeypatch, pdf_file_with_content):
+    """QF1 rollback lever: PRE_GARBLE_FORCE_OCR_ENABLED=true restores the
+    pre-QF1 D3a behavior — the probe firing forces OCR on the primary
+    conversion attempt (force_full_page_ocr=True, ocr_lang_override=...)."""
+    numeric_junk = "1651001429" * 60  # 600 chars, 100% digits
+    monkeypatch.setenv("PRE_GARBLE_FORCE_OCR_ENABLED", "true")
+    mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=numeric_junk)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    conv_mock.assert_called_once_with(
+        pdf_file_with_content,
+        True,
+        ocr_lang_override=["eng"],
+    )
+    mocks["save_doc"].assert_called_once()
+
+
+async def test_garble_probe_clean_text(monkeypatch, pdf_file_with_content):
+    """D3a: a clean first-page text layer does NOT trip the pre-conversion
+    probe, so the docling converter runs the normal (non-OCR) path —
+    force_full_page_ocr stays False / pre_garbled stays False."""
+    clean_text = (
+        "Allgemeine Versicherungsbedingungen fuer die Kfz-Haftpflichtversicherung. "
+        "This is ordinary German and English prose describing insurance terms and "
+        "conditions across several clauses and sections of the policy document."
+    )
+    mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=clean_text)
+    c = _make_client()
+    monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+
+    await c.index(pdf_file_with_content)
+
+    conv_mock.assert_called_once_with(pdf_file_with_content)
+    mocks["save_doc"].assert_called_once()
 
 
 # ---------------------------------------------------------------------------

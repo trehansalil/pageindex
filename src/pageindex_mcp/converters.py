@@ -8,8 +8,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
@@ -1199,6 +1201,37 @@ def _fix_fi_hash_substitution(md: str) -> str:
     return "".join(out)
 
 
+def _text_is_logical_order(text: str) -> bool:
+    """Detect whether Arabic text is already in correct logical reading order.
+
+    Samples Arabic-heavy lines and compares readability scores of the original
+    vs get_display() output. If the original scores equal or higher, the text
+    is already logical order and get_display() would double-reverse it."""
+    from bidi.algorithm import get_display
+
+    sampled = 0
+    orig_total = 0
+    disp_total = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or len(stripped) < 10:
+            continue
+        ar_count = sum(1 for c in stripped if _is_arabic_char(c))
+        if ar_count / len(stripped) <= 0.3:
+            continue
+        orig_words = stripped.split()
+        disp_line = get_display(stripped)
+        disp_words = disp_line.split()
+        orig_total += _arabic_readability_score(orig_words)
+        disp_total += _arabic_readability_score(disp_words)
+        sampled += 1
+        if sampled >= 8:
+            break
+    if sampled == 0:
+        return False
+    return orig_total >= disp_total
+
+
 def reconstruct_bidi_order(text: str) -> str:
     """Reorder visual-order Arabic runs into logical reading order (RFC-015 D7).
 
@@ -1209,12 +1242,22 @@ def reconstruct_bidi_order(text: str) -> str:
     documents are byte-for-byte untouched (zero false-positive risk). A leading markdown
     heading marker is split off and re-prefixed so BiDi reordering never moves the
     ``#`` prefix — heading-depth inference runs right after D7 and must still see it.
+    Includes a logical-vs-visual order probe: if the text already reads correctly
+    (docling outputs logical order for modern PDFs), get_display() is skipped to
+    prevent double-reversal.
+    Even when the full-document reorder is skipped (Arabic ratio <=0.15 or already
+    logical order), heading markers are still individually corrected via
+    ``_BIDI_HEADING_PREFIX_RE`` so bilingual documents don't lose heading structure
+    to md_to_tree() (RFC-023 D9). Documents with zero Arabic characters are still
+    returned untouched with no further processing (perf preserved).
     Pure local computation — no LLM, no network (HR3)."""
     if not text:
         return text
     arabic = len(_AR_SCRIPT_RE.findall(text))
-    if arabic / len(text) <= 0.15:
+    if arabic == 0:
         return text
+    reorder_body = arabic / len(text) > 0.15 and not _text_is_logical_order(text)
+
     from bidi.algorithm import get_display
 
     out: list[str] = []
@@ -1222,14 +1265,77 @@ def reconstruct_bidi_order(text: str) -> str:
         m = _BIDI_HEADING_PREFIX_RE.match(line)
         if m:
             out.append(m.group(1) + get_display(m.group(2)))
-        else:
+        elif reorder_body:
             out.append(get_display(line))
+        else:
+            out.append(line)
     return "".join(out)
 
 
 # Split a leading markdown heading marker off a line so reconstruct_bidi_order reorders
 # only the title text, leaving the '#' prefix in place for depth inference.
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
+
+_AR_COMMON_WORDS = frozenset(
+    [
+        "في",
+        "من",
+        "على",
+        "إلى",
+        "أن",
+        "هذا",
+        "هذه",
+        "التي",
+        "الذي",
+        "عن",
+        "مع",
+        "بين",
+        "كان",
+        "ما",
+    ]
+)
+_AR_DEFINITE_RE = re.compile(r"\bال\w+")
+
+
+def _is_arabic_char(c: str) -> bool:
+    cp = ord(c)
+    return 0x0600 <= cp <= 0x06FF or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF
+
+
+def _arabic_readability_score(words: list[str]) -> int:
+    score = 0
+    for w in words:
+        if w in _AR_COMMON_WORDS:
+            score += 2
+        if _AR_DEFINITE_RE.match(w):
+            score += 1
+    return score
+
+
+def _fix_residual_rtl_reversal(text: str) -> str:
+    if not text:
+        return text
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+        arabic = sum(1 for c in stripped if _is_arabic_char(c))
+        if arabic / len(stripped) <= 0.5:
+            out.append(line)
+            continue
+        words = stripped.split()
+        reversed_words = list(reversed(words))
+        fwd_score = _arabic_readability_score(words)
+        rev_score = _arabic_readability_score(reversed_words)
+        if rev_score > fwd_score:
+            indent = line[: len(line) - len(line.lstrip())]
+            trail = line[len(line.rstrip()) :]
+            out.append(indent + " ".join(reversed_words) + trail)
+        else:
+            out.append(line)
+    return "".join(out)
 
 
 # RFC-015 D6 gate. Mirrors client.py:66 VERBATIM — two independent module-level copies
@@ -1239,6 +1345,58 @@ _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "tru
 
 _IMAGE_MARKER = "<!-- image -->"
 _PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
+_PICTURE_PAGE_COVERAGE_THRESHOLD = float(os.getenv("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6"))
+# D2 (RFC-023): sub-icon PictureItems (both dims below this) skip crop+OCR
+# entirely and are tagged "decorative_icon" — set to 0 to disable the pre-filter.
+_DECORATIVE_ICON_MIN_DIM_PT = float(os.getenv("DECORATIVE_ICON_MIN_DIM_PT", "20"))
+# Audit 2026-07-21 finding 10: bound for the per-picture OCR and VLM thread pools.
+# Keeps a many-figure document from spawning unbounded tesseract subprocesses or
+# parallel paid vision calls inside one conversion.
+_IMAGE_ENRICH_CONCURRENCY = max(1, int(os.getenv("IMAGE_ENRICH_CONCURRENCY", "4") or "4"))
+# F1 (RFC-020): when True, pages with no text layer are exempt from the coverage
+# skip — the full-page picture IS the content and must be OCR'd.
+_COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
+    "COVERAGE_EXEMPT_NO_TEXT_LAYER", "true"
+).strip().lower() in ("1", "true", "yes")
+# D0 (RFC-023): when True, a text layer that passes the char-count check but is
+# garbled (mojibake/scanned-PDF noise) is still treated as "no content", so the
+# coverage exemption above fires and per-picture OCR proceeds.
+_TEXT_LAYER_GARBLE_CHECK_ENABLED = os.getenv(
+    "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+
+
+class PictureResult(TypedDict, total=False):
+    """Structured result from per-picture OCR/crop recovery."""
+
+    ocr_text: str
+    png_bytes: bytes
+    page: int
+    bbox: dict
+    description: str
+    skipped_reason: str  # RFC-019 D3: deliberate-skip tag (e.g. "page_coverage")
+    decorative: bool  # RFC-023 D2: sub-icon pre-filter or empty-OCR belt-and-suspenders
+
+
+def zdr_egress_gate(purpose: str, doc_id: str = "") -> tuple[bool, str | None]:
+    """Shared HR3 gate for every image/doc-text LLM egress (audit findings 2/3).
+
+    Returns ``(allowed, api_base)``. ``api_base`` is the SAME endpoint the caller
+    MUST pass to ``litellm.completion(api_base=...)`` so the gate inspects exactly
+    what egresses — litellm resolving a different endpoint from its own env would
+    otherwise silently diverge from the inspected one (finding 3). Blocks when
+    ``pii_corpus`` is set and the endpoint is not on the ZDR allow-list."""
+    from .config import _is_zdr_allowlisted, settings
+
+    api_base = settings.openai_base_url
+    if settings.pii_corpus and not _is_zdr_allowlisted(api_base):
+        logger.info(
+            "%s skipped for %s: pii_corpus=True, endpoint not ZDR-allowlisted (HR3)",
+            purpose,
+            doc_id or "<unknown doc>",
+        )
+        return False, api_base
+    return True, api_base
 
 
 def _collect_picture_regions(doc) -> list[dict]:
@@ -1301,69 +1459,260 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
         return ""
 
 
-def _recover_picture_text(pdf_path: str, regions: list[dict], langs: list[str]) -> dict[int, str]:
-    """Crop each picture bbox from the PDF and OCR it locally (RFC-015 D6).
+def _text_layer_has_content(page) -> bool:
+    """Return True when the page's native text layer has meaningful content.
 
-    Returns ``{picture_index: recovered_text}`` for pictures whose OCR yields more than
-    ``_PICTURE_OCR_MIN_CHARS`` characters. Docling's layout model buckets chart
-    data-labels / axis text into a Picture cluster, so ``export_to_markdown()`` renders
-    the whole cluster as a bare ``<!-- image -->`` and that co-located text is lost;
-    region-scoped OCR recovers it regardless of the page-level image ratio that gates
-    the existing D1 escalation (RFC-010).
+    Used by F1 (RFC-020) to exempt scanned pages from the coverage skip —
+    when a page has NO text layer the full-page picture IS the content.
 
-    HR3: OCR runs entirely through the LOCAL tesseract binary — no LLM, no network
-    egress — so PII rendered inside a chart never leaves the host.
+    D0 (RFC-023): a text layer can pass the char-count check but still be
+    garbled (thin mojibake left by the PDF creator on a scanned page). Treat
+    a garbled text layer as no content so the coverage exemption fires."""
+    text = page.get_text("text").strip()
+    if len(text) <= _PICTURE_OCR_MIN_CHARS:
+        return False
+    if _TEXT_LAYER_GARBLE_CHECK_ENABLED:
+        from .helpers import _is_garbled_blob
 
-    HR4: this imports ``fitz`` (PyMuPDF, AGPL-3.0) directly for bbox cropping. Unlike
-    the pypdfium2 outline read (``_read_pdf_outline``), this is a FIRST-PARTY AGPL
-    import on the DEFAULT (``PDF_CONVERTER=docling``) path — not merely a transitive
-    dependency, and NOT the ``agpl-fallback``-gated pymupdf4llm route. Reconciled with
-    the user for RFC-015 (2026-07-17); see the [GAP] in ``.agents/state/PENDING_DECISIONS.md``
-    flagging the AGPL legal-review follow-up. The import is function-scoped and only
-    fires when the document actually contains pictures."""
-    import fitz  # PyMuPDF, AGPL-3.0 — first-party import on the DEFAULT path; see HR4 note above
+        if _is_garbled_blob(text):
+            return False
+    return True
 
-    recovered: dict[int, str] = {}
+
+def _recover_picture_text(
+    pdf_path: str,
+    regions: list[dict],
+    langs: list[str],
+) -> tuple[dict[int, PictureResult], dict[int, str]]:
+    """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
+
+    Returns ``{picture_index: PictureResult}`` for every picture region. Each
+    result carries ``png_bytes`` (the cropped 300-DPI image), ``ocr_text``
+    (Tesseract output, empty if below ``_PICTURE_OCR_MIN_CHARS``), ``page``
+    (1-indexed), and ``bbox`` (``{l, t, r, b}``).
+
+    HR3: OCR runs entirely through the LOCAL tesseract binary — no LLM, no
+    network egress — so PII rendered inside a chart never leaves the host.
+
+    HR4: this imports ``fitz`` (PyMuPDF, AGPL-3.0) directly for bbox cropping.
+    First-party AGPL import on the DEFAULT path; reconciled with the user for
+    RFC-015 (2026-07-17). The import is function-scoped and only fires when
+    the document actually contains pictures.
+
+    Audit 2026-07-21 findings 10/12: phase 1 crops every valid region SERIALLY
+    through one ``fitz.Document`` (PyMuPDF is not shared across threads); phase 2
+    OCRs the crops through a bounded ``ThreadPoolExecutor`` (the tesseract CLI is
+    a subprocess, safe to parallelize). Decorative gate: when OCR yield is below
+    ``_PICTURE_OCR_MIN_CHARS`` the crop's ``png_bytes`` are dropped — unless the
+    VLM describe route is enabled downstream, which may still re-mark the image
+    as content-bearing via a description."""
+    import fitz  # PyMuPDF, AGPL-3.0
+
+    from .config import settings
+
+    # Phase 1 (serial, single fitz.Document): crop every valid region.
+    crops: dict[int, dict] = {}
+    skip_reasons: dict[int, str] = {}
     pdf = fitz.open(pdf_path)
     try:
         for i, region in enumerate(regions):
-            page_index = region["page"] - 1  # PyMuPDF pages are 0-indexed
+            page_index = region["page"] - 1
             if page_index < 0 or page_index >= pdf.page_count:
                 continue
             page = pdf[page_index]
             rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
             if rect is None:
                 continue
-            pix = page.get_pixmap(clip=rect, dpi=300)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp_path = tmp.name
+            # D0: skip regions covering >60% of page — full scanned pages, not charts.
+            page_area = page.rect.width * page.rect.height
+            coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
+            if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
+                if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not _text_layer_has_content(page):
+                    logger.warning(
+                        "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
+                        "exempting from skip (picture IS the page content)",
+                        coverage * 100,
+                        page_index + 1,
+                    )
+                else:
+                    skip_reasons[i] = "page_coverage"
+                    continue
+            # D1 (RFC-018): skip per-picture OCR when clean text already exists under
+            # this bbox — Docling already extracted it into the markdown body.
+            clip_text = page.get_text("text", clip=rect).strip()
+            if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
+                skip_reasons[i] = "clip_text"
+                continue
+            # D2 (RFC-023): sub-icon regions (both dims below threshold) are
+            # decorative UI glyphs — skip crop+OCR entirely.
+            if (
+                rect.width < _DECORATIVE_ICON_MIN_DIM_PT
+                and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
+            ):
+                skip_reasons[i] = "decorative_icon"
+                continue
+            # D6: zero page rotation before rendering so Tesseract receives a
+            # correctly-oriented crop regardless of PDF page-rotation metadata.
+            orig_rotation = page.rotation
+            page.set_rotation(0)
             try:
-                pix.save(tmp_path)
-                text = _tesseract_ocr_image(tmp_path, langs)
+                pix = page.get_pixmap(clip=rect, dpi=300)
             finally:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
-            if len(text.strip()) > _PICTURE_OCR_MIN_CHARS:
-                recovered[i] = " ".join(text.split())
+                page.set_rotation(orig_rotation)
+            crops[i] = {
+                "png_bytes": pix.tobytes("png"),
+                "region": region,
+                "rotation": orig_rotation,
+            }
     finally:
         pdf.close()
-    return recovered
+
+    recovered: dict[int, PictureResult] = {}
+    if not crops:
+        return recovered, skip_reasons
+
+    def _ocr_one(png_bytes: bytes) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp.write(png_bytes)
+            tmp_path = tmp.name
+        try:
+            raw = _tesseract_ocr_image(tmp_path, langs)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+        if len(raw.strip()) > _PICTURE_OCR_MIN_CHARS:
+            return " ".join(raw.split())
+        return ""
+
+    # Phase 2 (bounded parallel, finding 10): OCR the crops.
+    indices = list(crops.keys())
+    with ThreadPoolExecutor(max_workers=min(_IMAGE_ENRICH_CONCURRENCY, len(indices))) as pool:
+        ocr_texts = dict(
+            zip(
+                indices,
+                pool.map(lambda i: _ocr_one(crops[i]["png_bytes"]), indices),
+                strict=True,
+            )
+        )
+
+    keep_silent_png = settings.vlm_describe_images
+    for i in indices:
+        region = crops[i]["region"]
+        bbox = region["bbox"]
+        ocr_text = ocr_texts[i]
+        result = PictureResult(
+            ocr_text=ocr_text,
+            page=region["page"],
+            bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
+        )
+        # Finding 12: decorative image (no OCR yield) — drop the crop bytes so
+        # no PNG is persisted, unless the VLM route may still describe it.
+        if ocr_text or keep_silent_png:
+            result["png_bytes"] = crops[i]["png_bytes"]
+        # D2 (RFC-023) belt-and-suspenders: a region that passed the size filter
+        # but still yielded no OCR text is likely decorative — unless the page
+        # is rotated, in which case D6's rotation correction gets first crack.
+        if not ocr_text and crops[i]["rotation"] == 0:
+            result["decorative"] = True
+        recovered[i] = result
+    return recovered, skip_reasons
 
 
-def _splice_picture_text(md: str, recovered: dict[int, str]) -> str:
-    """Append recovered chart text as a ``> [Chart text]: ...`` blockquote after the
-    i-th ``<!-- image -->`` marker whose picture yielded text (RFC-015 D6)."""
-    if not recovered:
+def _figure_desc_inline(desc: str) -> str:
+    """Sanitize a VLM description for the inline ``[Figure: fig-k | desc]`` form
+    so it cannot break the single-line ``_FLAT_FIGURE_RE`` grammar."""
+    return " ".join(desc.split()).replace("[", "(").replace("]", ")")
+
+
+def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
+    """Append OCR text after ``<!-- image -->`` markers for the tree branch.
+
+    Restores the ``_maybe_splice_picture_ocr`` semantics from master that were
+    lost when picture OCR was moved to the flat-only path (RFC-020 AD1).
+
+    The ``<!-- image -->`` markers are left **intact** so that the flat branch's
+    ``splice_figure_markers`` can still resolve them later if needed.
+
+    Guard: if the marker count differs from ``len(pics)`` the ordinal
+    correspondence is broken and we return ``md`` unchanged rather than
+    attaching OCR text to the wrong picture block.
+    """
+    if not pics:
         return md
+    marker = _IMAGE_MARKER
+    marker_count = md.count(marker)
+    if marker_count != len(pics):
+        logger.warning(
+            "splice_picture_text_for_tree: marker/region count mismatch "
+            "(%d marker(s) vs %d picture result(s)); skipping OCR splice",
+            marker_count,
+            len(pics),
+        )
+        return md
+
+    parts: list[str] = []
+    remaining = md
+    for pic in pics:
+        idx = remaining.find(marker)
+        # idx should always be >= 0 given the count check above
+        parts.append(remaining[: idx + len(marker)])
+        remaining = remaining[idx + len(marker) :]
+        ocr_text = pic.get("ocr_text", "")
+        if ocr_text:
+            parts.append("\n> [Chart text]: " + ocr_text + "\n")
+    parts.append(remaining)
+    return "".join(parts)
+
+
+def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
+    """Replace ``<!-- image -->`` markers with ``[Figure: fig-<k>]`` references
+    (flat-branch ONLY — audit finding 6: tree-route markdown stays neutral).
+
+    Ordinal matching (RFC-023 D1): the k-th marker is spliced against ``pics[k]``
+    when it exists, aligning with ``_enrich_image_blocks``'s ``pic_results[index]``
+    lookup (finding 4). Markers count differs from ``len(pics)`` no longer bails
+    out — excess markers past ``len(pics)`` (no matching ``PictureResult``) are
+    stripped when ``STRIP_SKIPPED_IMAGE_MARKERS=true`` (default), else left as
+    neutral markers, matching the existing skipped/decorative behavior below.
+
+    Decorative results (no png/ocr/description — finding 12) keep their neutral
+    marker so no unresolvable ``[Figure: fig-k]`` reference is ever emitted."""
+    if not pics:
+        return md
+    marker_count = md.count(_IMAGE_MARKER)
+    if marker_count != len(pics):
+        logger.warning(
+            "figure marker/region count mismatch (%d marker(s) vs %d picture result(s)); "
+            "splicing by ordinal, stripping/neutralizing excess markers",
+            marker_count,
+            len(pics),
+        )
     counter = {"i": 0}
 
     def _repl(m: "re.Match[str]") -> str:
-        i = counter["i"]
+        k = counter["i"]
         counter["i"] += 1
-        text = recovered.get(i)
-        if text:
-            return m.group(0) + "\n\n> [Chart text]: " + text
-        return m.group(0)
+        if k >= len(pics):
+            strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
+            if strip_env != "false":
+                return ""
+            return m.group(0)
+        result = pics[k]
+        ocr = result.get("ocr_text", "")
+        desc = result.get("description", "")
+        if not (ocr or desc or result.get("png_bytes")):
+            if result.get("skipped_reason") or result.get("decorative"):
+                strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
+                if strip_env != "false":
+                    return ""
+            return m.group(0)
+        if desc:
+            marker = f"[Figure: fig-{k} | {_figure_desc_inline(desc)}]"
+        else:
+            marker = f"[Figure: fig-{k}]"
+        if ocr:
+            return marker + "\n\n> [Chart text]: " + ocr
+        return marker
 
     return re.sub(re.escape(_IMAGE_MARKER), _repl, md)
 
@@ -1377,46 +1726,140 @@ def _pre_inference_normalize(text: str) -> str:
     single token by the time the heading regex parses it)."""
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
-    return reconstruct_bidi_order(text)  # D7
+    text = reconstruct_bidi_order(text)  # D7
+    text = _fix_residual_rtl_reversal(text)  # D2 (RFC-018)
+    return text
 
 
-def _maybe_splice_picture_ocr(md: str, document, pdf_path: str) -> str:
-    """Recover chart/infographic text Docling bucketed into a Picture bbox (RFC-015 D6).
+def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureResult]:
+    """Recover chart/infographic text Docling bucketed into Picture bboxes (RFC-015 D6).
 
-    Docling drops picture clusters as a bare ``<!-- image -->``, discarding co-located
-    chart text. Region-scoped local OCR (HR3) fires per picture regardless of the
-    page-level image ratio that gates the D1 escalation. Gated on ``_OCR_ESCALATION``
-    (mirrors client.py:66) and never fatal — any failure leaves the markdown as-is."""
+    OCR + crop ONLY — no markdown mutation, no VLM (both moved to the flat branch
+    of ``client.index()``, the sole consumer — audit findings 6/8). Gated on
+    ``_OCR_ESCALATION`` (mirrors client.py:66) + the presence of a ``<!-- image -->``
+    marker, and never fatal.
+
+    Returns a DENSE list: element ``i`` corresponds to the i-th PictureItem in
+    ``iterate_items`` order, with an empty ``PictureResult`` placeholder for any
+    region whose crop failed — sparse recovery must never shift ordinals
+    (finding 4)."""
     if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
-        return md
+        return []
     try:
         regions = _collect_picture_regions(document)
         if not regions:
-            return md
+            return []
         langs = ensure_tessdata(detect_ocr_langs(md))
-        recovered = _recover_picture_text(pdf_path, regions, langs)
-        if recovered:
-            md = _splice_picture_text(md, recovered)
-            logger.info(
-                "recovered per-picture chart text for %d image(s) in %s",
-                len(recovered),
-                pdf_path,
-            )
+        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs)
+        if not recovered and not skip_reasons:
+            return []
+        logger.info(
+            "recovered per-picture chart text for %d of %d image(s) in %s",
+            len(recovered),
+            len(regions),
+            pdf_path,
+        )
+        return [
+            recovered.get(i, PictureResult(skipped_reason=skip_reasons.get(i, "unknown")))
+            for i in range(len(regions))
+        ]
     except Exception as exc:
         logger.warning(
-            "per-picture OCR recovery failed for %s (%s); leaving markdown as-is",
+            "per-picture OCR recovery failed for %s (%s); continuing without figures",
             pdf_path,
             exc,
         )
-    return md
+    return []
+
+
+def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
+    """Add VLM-generated descriptions to picture results (HR3-gated, flat-branch only).
+
+    Egress rides ``zdr_egress_gate`` and passes the SAME ``api_base`` the gate
+    inspected to ``litellm.completion`` (finding 3). Calls run through a bounded
+    ``ThreadPoolExecutor`` (finding 10). Each call is retried once after a short
+    backoff; a terminal failure increments ``IMAGE_DESCRIBE_FAILURES`` — matching
+    the ``html_to_markdown_with_images._describe`` contract (finding 15)."""
+    allowed, api_base = zdr_egress_gate("VLM image descriptions", doc_id=doc_id)
+    if not allowed:
+        return
+
+    import base64
+
+    from litellm import completion
+
+    from .config import settings
+    from .metrics import IMAGE_DESCRIBE_FAILURES
+
+    model = settings.vlm_model
+    targets = [(k, pr) for k, pr in enumerate(pics) if pr.get("png_bytes")]
+    if not targets:
+        return
+
+    def _describe_one(item: tuple[int, PictureResult]) -> None:
+        k, result = item
+        png_b64 = base64.b64encode(result["png_bytes"]).decode()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{png_b64}",
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Describe this figure concisely in one sentence. "
+                            "Focus on chart type, data series, and key values."
+                        ),
+                    },
+                ],
+            }
+        ]
+        for attempt in (0, 1):
+            try:
+                resp = completion(
+                    model=model,
+                    api_base=api_base,
+                    messages=messages,
+                    max_tokens=150,
+                )
+                desc = (resp.choices[0].message.content or "").strip()
+                if desc:
+                    result["description"] = desc
+                return
+            except Exception as exc:
+                if attempt == 0:
+                    # Transient failure — retry once after a short backoff.
+                    time.sleep(2)
+                    continue
+                logger.error(
+                    "VLM description failed after retry for fig-%d of %s (%s): %s",
+                    k,
+                    doc_id,
+                    type(exc).__name__,
+                    str(exc)[:200],
+                )
+                IMAGE_DESCRIBE_FAILURES.labels(error_type=type(exc).__name__).inc()
+
+    with ThreadPoolExecutor(max_workers=min(_IMAGE_ENRICH_CONCURRENCY, len(targets))) as pool:
+        list(pool.map(_describe_one, targets))
 
 
 def pdf_to_markdown_docling(
     pdf_path: str,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
-) -> str:
+) -> tuple[str, list[PictureResult]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
+
+    Returns ``(markdown, pic_results)``. The markdown keeps bare ``<!-- image -->``
+    markers (no figure references — audit finding 6); ``pic_results[i]`` corresponds
+    to the i-th PictureItem in ``iterate_items`` order and always has
+    ``len == number of picture regions`` when non-empty (dense — finding 4).
 
     Docling's Heron RT-DETRv2 layout model + TableFormer -> markdown -> relevel
     headings -> normalize dashes. Validated head-to-head against pymupdf4llm on
@@ -1561,12 +2004,25 @@ def pdf_to_markdown_docling(
             )
             md = md_raw
     md = _normalize_indented_headings(md)
-    md = _maybe_splice_picture_ocr(md, result.document, pdf_path)  # RFC-015 D6
-    return md
+    # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
+    # the return value (a thread-local set on the to_thread pool thread was
+    # invisible to the event loop and pinned crop bytes for the process life).
+    # The markdown keeps neutral `<!-- image -->` markers — the [Figure: fig-N]
+    # splice and the VLM describe step run only in client.index()'s flat branch.
+    pic_results = _recover_picture_results(md, result.document, pdf_path)
+    return md, pic_results
 
 
-def pdf_markdown_converters() -> list[tuple[str, Callable[[str], str]]]:
+def _pdf_to_markdown_no_pics(pdf_path: str) -> tuple[str, list[PictureResult]]:
+    """Adapter: the pymupdf4llm route recovers no picture regions, so it returns
+    an empty pic_results list to match the ``(md, pics)`` chain contract."""
+    return pdf_to_markdown(pdf_path), []
+
+
+def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list[PictureResult]]]]]:
     """Ordered ``(name, fn)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
+
+    Every chain callable returns ``(markdown, pic_results)`` (audit finding 1).
 
     INDEX-01: ``pymupdf4llm`` (AGPL, fast, default) and ``docling`` (MIT,
     layout-aware, German-ligature-correct — the RFC-003 D3 / HR4 residency escape).
@@ -1583,7 +2039,9 @@ def pdf_markdown_converters() -> list[tuple[str, Callable[[str], str]]]:
 
     primary = os.getenv("PDF_CONVERTER", "docling").strip().lower()
     have_docling = importlib.util.find_spec("docling") is not None
-    chain: list[tuple[str, Callable[[str], str]]] = [("pymupdf4llm", pdf_to_markdown)]
+    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult]]]]] = [
+        ("pymupdf4llm", _pdf_to_markdown_no_pics)
+    ]
     if have_docling:
         if primary == "docling":
             chain.insert(0, ("docling", pdf_to_markdown_docling))
@@ -1743,31 +2201,6 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
     return normalize_dashes(h.handle(modified_html))
 
 
-def flatten_nodes(nodes: list, results: list, query_lower: str) -> None:
-    """Recursively walk PageIndex tree nodes and collect keyword matches in-place."""
-    for node in nodes:
-        title = node.get("title", "")
-        summary = node.get("summary", "")
-        text = node.get("text", "")
-        if (
-            query_lower in title.lower()
-            or query_lower in summary.lower()
-            or query_lower in text.lower()
-        ):
-            results.append(
-                {
-                    "node_id": node.get("node_id"),
-                    "title": title,
-                    "summary": summary,
-                    "start_index": node.get("start_index"),
-                    "end_index": node.get("end_index"),
-                }
-            )
-        child_nodes = node.get("nodes", [])
-        if child_nodes:
-            flatten_nodes(child_nodes, results, query_lower)
-
-
 def xlsx_to_markdown(path: str) -> str:
     """Convert an .xlsx workbook to markdown tables (Fix 4; openpyxl is MIT, HR4).
 
@@ -1849,6 +2282,29 @@ def rasterize_pdf_pages(pdf_path: str, dpi: int = 200) -> list[str]:
         return result
     finally:
         pdoc.close()
+
+
+async def tesseract_ocr_pdf_pages(pdf_path: str, langs: list[str]) -> str:
+    """Rasterize each PDF page and OCR it via local Tesseract (RFC-023 D7).
+
+    Last-resort recovery when the VLM fallback itself crashes on a garbled
+    PDF -- no LLM egress, local ``tesseract`` binary only (HR3)."""
+    import base64
+
+    page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    pages_text = []
+    for data_uri in page_images:
+        png_bytes = base64.b64decode(data_uri.split(",", 1)[1])
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as png_tmp:
+            png_tmp.write(png_bytes)
+            png_path = png_tmp.name
+        try:
+            text = await asyncio.to_thread(_tesseract_ocr_image, png_path, langs)
+        finally:
+            os.unlink(png_path)
+        if text:
+            pages_text.append(text)
+    return "\n\n".join(pages_text)
 
 
 async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:

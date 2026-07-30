@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import shutil
 import tempfile
 import uuid
@@ -16,6 +17,9 @@ from pageindex import PageIndexClient
 from .cache import get_doc
 from .config import CURRENT_PIPELINE_VERSION, settings
 from .converters import (
+    PictureResult,
+    _add_vlm_descriptions,
+    _tesseract_ocr_image,
     detect_ocr_langs,
     docx_to_markdown,
     ensure_tessdata,
@@ -25,12 +29,17 @@ from .converters import (
     pdf_markdown_converters,
     pdf_to_markdown_docling,
     pptx_to_markdown,
+    splice_figure_markers,
+    splice_picture_text_for_tree,
     xlsx_to_markdown,
+    zdr_egress_gate,
 )
 from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
+    _flat_block_text,
     _flat_text_is_garbled,
+    _script_from_filename,
     _strip_text,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
@@ -54,17 +63,227 @@ from .storage import (
     list_processed_docs,
     save_doc,
     save_doc_meta,
+    save_figure,
     save_flat_doc,
     save_raw,
 )
 
 logger = logging.getLogger(__name__)
 
+_MAX_DESC_CHARS = 4000
+
+TREE_PATH_PICTURE_SPLICE_ENABLED = os.getenv(
+    "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+
+
+def _log_pic_splice_trace(filename: str, stage: str, pic_results: list) -> None:
+    """B3 (RFC-022) diagnosis: trace OCR splice behavior per PictureResult.
+
+    Buckets each pic by outcome so a doc regressing to unenriched
+    `<!-- image -->` markers (e.g. GHV-TKV-Tarif.pdf) can be diagnosed from
+    logs alone — which of enriched / decorative(<min-chars) / skipped
+    (page_coverage, clip_text, ...) each region landed in, without a
+    manual repro script."""
+    if not pic_results:
+        return
+    enriched = sum(1 for p in pic_results if p.get("ocr_text") or p.get("description"))
+    skipped = {}
+    empty_unmarked = 0
+    for p in pic_results:
+        reason = p.get("skipped_reason")
+        if reason:
+            skipped[reason] = skipped.get(reason, 0) + 1
+        elif not (p.get("ocr_text") or p.get("description")):
+            empty_unmarked += 1
+    logger.debug(
+        "B3 pic-splice trace [%s/%s]: %d pic(s), enriched=%d, skipped=%s, ocr_ran_but_empty=%d",
+        filename,
+        stage,
+        len(pic_results),
+        enriched,
+        skipped,
+        empty_unmarked,
+    )
+
+
+class LLMTransientFailure(Exception):
+    """Raised when LLM tree-generation retries are exhausted on transient errors."""
+
+    def __init__(self, attempts: int, last_status: int | None, last_error: str):
+        self.attempts = attempts
+        self.last_status = last_status
+        self.last_error = last_error
+        super().__init__(f"LLM tree generation failed after {attempts} attempt(s): {last_error}")
+
+
+# D4: bounded retry/backoff for the Azure/OpenAI tree-generation LLM call.
+_LLM_TREE_MAX_RETRIES = int(os.environ.get("LLM_TREE_MAX_RETRIES", "3"))
+_LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
+_RETRY_AFTER_CAP = 60  # seconds
+
+
+def _is_retryable_llm_error(exc: Exception) -> tuple[bool, int | None]:
+    """Classify an LLM error as retryable or not. Returns (retryable, status_code)."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True, None
+    if status is not None:
+        if status == 429 or status >= 500:
+            return True, status
+        return False, status  # 4xx (except 429) — not retryable
+    # litellm wraps errors — check for common retryable patterns
+    err_str = str(exc).lower()
+    if any(k in err_str for k in ("timeout", "connection", "rate_limit", "529")):
+        return True, None
+    return False, None
+
+
+async def _llm_with_retry(
+    call_fn,
+    *,
+    max_retries: int = _LLM_TREE_MAX_RETRIES,
+    fallback_base_url: str = _LLM_FALLBACK_BASE_URL,
+):
+    """Call ``call_fn()`` with bounded exponential-backoff retry.
+
+    ``call_fn`` is an async callable that makes the LLM request and accepts an
+    optional ``base_url`` kwarg for fallback routing. On transient failures,
+    retries up to ``max_retries`` times with 2**attempt + jitter backoff
+    (or the server's Retry-After header, capped). If all retries fail and
+    ``fallback_base_url`` is set, tries once more against the fallback.
+    Raises ``LLMTransientFailure`` on exhaustion; non-transient errors
+    propagate immediately.
+    """
+    last_exc: Exception | None = None
+    last_status: int | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await call_fn()
+            if attempt > 1:
+                logger.info("LLM call succeeded on attempt %d", attempt)
+            return result
+        except Exception as exc:
+            retryable, status = _is_retryable_llm_error(exc)
+            last_exc = exc
+            last_status = status
+
+            if not retryable:
+                raise
+
+            if attempt == max_retries:
+                break
+
+            # Respect Retry-After header if present
+            retry_after = getattr(exc, "headers", {})
+            if hasattr(retry_after, "get"):
+                retry_after = retry_after.get("retry-after", None)
+            else:
+                retry_after = None
+
+            if retry_after is not None:
+                try:
+                    delay = min(float(retry_after), _RETRY_AFTER_CAP)
+                except (ValueError, TypeError):
+                    delay = 2**attempt + random.random()
+            else:
+                delay = 2**attempt + random.random()
+
+            logger.warning(
+                "LLM transient error (attempt %d/%d, status=%s): %s — retrying in %.1fs",
+                attempt,
+                max_retries,
+                status,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    # All retries exhausted — try fallback if configured
+    if fallback_base_url:
+        logger.warning(
+            "Primary LLM exhausted %d retries; trying fallback at %s",
+            max_retries,
+            fallback_base_url,
+        )
+        try:
+            return await call_fn(base_url=fallback_base_url)
+        except Exception as fallback_exc:
+            logger.error("Fallback LLM also failed: %s", fallback_exc)
+            last_exc = fallback_exc
+
+    raise LLMTransientFailure(
+        attempts=max_retries,
+        last_status=last_status,
+        last_error=str(last_exc),
+    )
+
+
+def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_id: str = "") -> str:
+    """Generate an LLM description for a flat document from its markdown text.
+
+    HR3 (audit findings 2/3): rides ``zdr_egress_gate`` — when ``pii_corpus`` is
+    set and the endpoint is not ZDR-allowlisted, NO document text egresses and
+    the description is empty. The gated ``api_base`` is passed explicitly to
+    ``litellm.completion`` so the inspected endpoint is the one used."""
+    allowed, api_base = zdr_egress_gate("flat doc description", doc_id=doc_id)
+    if not allowed:
+        return ""
+
+    from litellm import completion
+
+    if not model:
+        model = settings.llm_model
+    snippet = text[:_MAX_DESC_CHARS]
+    try:
+        resp = completion(
+            model=model,
+            api_base=api_base,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "You are an expert in generating descriptions of a document. "
+                        "You are given the text of a document. Your task is to generate "
+                        "one-sentence description of the document, that makes it easy to "
+                        "distinguish this document from other documents.\n\n"
+                        f"Document Text:\n{snippet}\n\n"
+                        "Directly return the description, do not include any other text."
+                    ),
+                }
+            ],
+            max_tokens=200,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.warning("flat doc description generation failed: %s", exc)
+        return ""
+
+
 # Image inputs route through OCR (Fix 4); .xlsx routes through openpyxl -> flat tables.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Fix 3 kill-switch (default on): one force_full_page_ocr retry when a PDF garbles.
 _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+# Task 6.1: dedicated image-standalone pipeline for PDFs whose content is all images.
+# When disabled, falls back to the existing QF2a image-enrichment promotion path.
+_IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
+    "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+# RFC-023 D8a: skip the standalone-image Tesseract recovery below when Docling's
+# md_content already carries this many non-whitespace chars (avoids double-counting).
+MIN_STANDALONE_IMAGE_MD_CHARS = int(os.getenv("MIN_STANDALONE_IMAGE_MD_CHARS", "100"))
+# RFC-023 D11 kill-switch (default on): widen the image-dominant OCR escalation to
+# structural validate_tree failures (node_count<3 / depth<2), not just garbling.
+_IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = os.getenv(
+    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+# RFC-023 D7 kill-switch (default on): Tesseract-on-raster last resort when the
+# VLM fallback itself crashes (rate limit / content-policy / token overflow).
+_VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
+    "VLM_TESSERACT_FALLBACK_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
 
 
 def _is_azure_url(url: str | None) -> bool:
@@ -224,6 +443,56 @@ def validate_llm_config() -> None:
         )
 
 
+def _split_converter_output(out) -> tuple[str, list]:
+    """Normalize a PDF-converter result to ``(markdown, pic_results)``.
+
+    Chain callables return ``(md, pics)`` (audit finding 1); a bare string from a
+    legacy/test double is tolerated and mapped to an empty pic_results list."""
+    if isinstance(out, tuple):
+        md, pics = out
+        return md, list(pics or [])
+    return out, []
+
+
+async def _enrich_image_blocks(
+    blocks: list[dict],
+    pic_results: list,
+    doc_id: str,
+) -> None:
+    """Enrich ``{"role": "image"}`` blocks with figure metadata and persist PNGs.
+
+    Each image block's ``index`` is matched against the ordered ``pic_results``
+    list. Matching results get ``figure_path``, ``page``, ``bbox``, ``ocr_text``,
+    and optionally ``description`` written into the block dict, and the cropped
+    PNG is uploaded to MinIO at ``figures/<doc_id>/fig-<index>.png`` — inside the
+    per-doc prefix ``delete_doc`` purges (HR2, storage.py step 2c).
+
+    Audit finding 14: the blocking MinIO put runs via ``asyncio.to_thread`` so a
+    many-figure doc never stalls the event loop. Finding 11: ``png_bytes`` is
+    released from the result as soon as the PNG is persisted."""
+    if not pic_results:
+        return
+    for block in blocks:
+        if block.get("role") != "image":
+            continue
+        idx = block.get("index")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(pic_results):
+            continue
+        pr = pic_results[idx]
+        png = pr.get("png_bytes")
+        if png:
+            fig_key = await asyncio.to_thread(save_figure, doc_id, idx, png)
+            block["figure_path"] = fig_key
+            pr.pop("png_bytes", None)
+        block["page"] = pr.get("page", 0)
+        block["bbox"] = pr.get("bbox", {})
+        if not block.get("ocr_text"):
+            block["ocr_text"] = pr.get("ocr_text", "")
+        desc = pr.get("description")
+        if desc:
+            block["description"] = desc
+
+
 class CustomPageIndexClient(PageIndexClient):
     """
     Extends PageIndexClient to support .docx, .pptx, .html, and .txt formats
@@ -274,6 +543,9 @@ class CustomPageIndexClient(PageIndexClient):
         ext = Path(filename).suffix.lower()
         logger.info("Indexing file: %s (ext=%s)", filename, ext)
 
+        # F2 (RFC-020): derive expected script from filename for garble-gate threading
+        expected_script = _script_from_filename(filename)
+
         if ext not in _SUPPORTED:
             raise ValueError(
                 f"Unsupported format '{ext}'. Supported: {', '.join(sorted(_SUPPORTED))}"
@@ -305,6 +577,10 @@ class CustomPageIndexClient(PageIndexClient):
         tmp_lo_dir = None  # LibreOffice temp dir
         tmp_md_path = None  # HTML → markdown temp file
         md_content = None  # FLAT-03: converter markdown for the flat-routing branch
+        # Audit finding 1/11: per-picture OCR/crop results travel as a function
+        # local (converter return value), never a thread-local; the frame drops
+        # on return so crop bytes are never pinned process-wide.
+        pic_results: list = []
 
         try:
             if ext == ".pdf":
@@ -312,17 +588,67 @@ class CustomPageIndexClient(PageIndexClient):
                 # (pymupdf4llm / docling, per PDF_CONVERTER), then fall back to
                 # the legacy page_index route only if every converter fails.
                 md_content = None
+
+                # D3a (RFC-018): pre-conversion text-layer probe. If the raw PDF text
+                # layer is garbled, skip straight to force_full_page_ocr=True instead of
+                # wasting a non-OCR conversion attempt.
+                pre_garbled = False
+                try:
+                    import fitz
+
+                    with fitz.open(file_path) as probe_pdf:
+                        if probe_pdf.page_count > 0:
+                            raw_text = probe_pdf[0].get_text()
+                            if raw_text.strip() and _flat_text_is_garbled(
+                                raw_text, expected_script=expected_script
+                            ):
+                                pre_garbled = True
+                                logger.info(
+                                    "D3a: raw text layer garbled for %s, forcing full-page "
+                                    "OCR upfront",
+                                    filename,
+                                )
+                except Exception:
+                    pass  # probe failure is non-fatal — fall through to the normal chain
+
+                # QF1 (RFC-021): forcing full-page OCR on the primary conversion
+                # attempt destroys Docling's PictureItem segmentation. Defer to the
+                # existing Fix-3 retry path (which already handles OCR escalation on
+                # validate_tree reason="garbling") unless explicitly re-enabled.
+                PRE_GARBLE_FORCE_OCR_ENABLED = (
+                    os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
+                )
+
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
                 for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        md_content = await asyncio.to_thread(conv_fn, file_path)
+                        if pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED:
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(
+                                    conv_fn,
+                                    file_path,
+                                    True,
+                                    ocr_lang_override=detect_ocr_langs(filename),
+                                )
+                            )
+                        else:
+                            if pre_garbled and "docling" in conv_name:
+                                logger.info(
+                                    "D3a pre-garble probe fired for %s but OCR deferral "
+                                    "active; deferring to Fix-3 retry path",
+                                    filename,
+                                )
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(conv_fn, file_path)
+                            )
                         used_converter = conv_name
                         break
                     except Exception as conv_exc:
                         md_content = None
+                        pic_results = []
                         if idx == 0:
                             # The CONFIGURED PRIMARY converter failed. Never let this be
                             # masked downstream as a generic "depth<2": log it loudly with
@@ -363,6 +689,9 @@ class CustomPageIndexClient(PageIndexClient):
                             used_converter,
                             primary_name,
                         )
+                    if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                        _log_pic_splice_trace(filename, "primary", pic_results)
+                        md_content = splice_picture_text_for_tree(md_content, pic_results)
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
@@ -376,7 +705,7 @@ class CustomPageIndexClient(PageIndexClient):
                         "page_index. Investigate converter availability in this image.",
                         filename,
                     )
-                    result = await asyncio.to_thread(self._run_page_index, file_path)
+                    result = await self._run_page_index_retrying(file_path)
 
             elif ext in (".md", ".markdown", ".txt"):
                 logger.info("Running md_to_tree on: %s", filename)
@@ -388,7 +717,7 @@ class CustomPageIndexClient(PageIndexClient):
                     pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
                     tmp_lo_dir = os.path.dirname(pdf_path)
                     logger.info("Running page_index on converted PDF: %s", pdf_path)
-                    result = await asyncio.to_thread(self._run_page_index, pdf_path)
+                    result = await self._run_page_index_retrying(pdf_path)
                 except Exception as lo_exc:
                     logger.warning(
                         "LibreOffice/page_index failed for %s (%s), falling back to "
@@ -428,6 +757,31 @@ class CustomPageIndexClient(PageIndexClient):
                 logger.info("OCR image to markdown: %s", filename)
                 img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
                 md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
+                # D0 (RFC-018): standalone image IS the picture — synthetic
+                # PictureResult(s).  Count <!-- image --> markers so
+                # splice_figure_markers + _enrich_image_blocks get one
+                # PictureResult per marker (max(1, …) preserves the pre-D0
+                # single-result behaviour when zero markers are present).
+                img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
+                # D8a (RFC-023): the standalone-image route bypasses
+                # _recover_picture_results, so the synthetic PictureResult never gets
+                # Tesseract-recovered text. Only run it when Docling's md_content
+                # didn't already extract meaningful text, to avoid double-counting.
+                standalone_ocr_text = ""
+                if len("".join(md_content.split())) <= MIN_STANDALONE_IMAGE_MD_CHARS:
+                    standalone_ocr_text = await asyncio.to_thread(
+                        _tesseract_ocr_image, file_path, img_langs
+                    )
+                marker_count = md_content.count("<!-- image -->")
+                pic_results = [
+                    PictureResult(
+                        ocr_text=standalone_ocr_text,
+                        page=1,
+                        bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                        png_bytes=img_bytes,
+                    )
+                    for _ in range(max(1, marker_count))
+                ]
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
                 ) as md_tmp:
@@ -451,7 +805,7 @@ class CustomPageIndexClient(PageIndexClient):
             result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
-            ok, reason = validate_tree(result.get("structure", []))
+            ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
 
             # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
             # the Fix-5 detected language before any rejection — rescues the corrupt
@@ -479,9 +833,16 @@ class CustomPageIndexClient(PageIndexClient):
                         filename,
                         langs,
                     )
-                    md_content = await asyncio.to_thread(
-                        pdf_to_markdown_docling, file_path, True, langs
+                    md_content, pic_results = _split_converter_output(
+                        await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                     )
+                    # QF1 follow-up: the escalated OCR pass is where PictureItem
+                    # text actually gets produced (the primary pass deferred it).
+                    # Splice it into the tree markdown here — omitting this call
+                    # silently drops all picture-OCR text from the escalated tree.
+                    if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                        _log_pic_splice_trace(filename, "garble_escalation", pic_results)
+                        md_content = splice_picture_text_for_tree(md_content, pic_results)
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -491,7 +852,9 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(result.get("structure", []))
+                    ok, reason = validate_tree(
+                        result.get("structure", []), expected_script=expected_script
+                    )
                     OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
@@ -512,6 +875,9 @@ class CustomPageIndexClient(PageIndexClient):
                         settings.vlm_model,
                     )
                     md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
+                    # New markdown source: prior converter's picture ordinals no
+                    # longer correspond to its markers (finding 4/7 alignment).
+                    pic_results = []
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -521,7 +887,9 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(result.get("structure", []))
+                    ok, reason = validate_tree(
+                        result.get("structure", []), expected_script=expected_script
+                    )
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
@@ -531,21 +899,61 @@ class CustomPageIndexClient(PageIndexClient):
                         vlm_exc,
                         exc_info=True,
                     )
+                    # RFC-023 D7: the VLM crashed outright (rate limit / content-policy /
+                    # token overflow) rather than merely failing to recover the tree. Try
+                    # one last local-only Tesseract pass over the rasterized pages before
+                    # giving up. `reason` stays 'garbling' (never added to the flat-routing
+                    # check) unless the OCR text itself passes the garble gate -- so a
+                    # genuinely garbled, unrecovered document still raises
+                    # LowQualityTreeError (HR5).
+                    if _VLM_TESSERACT_FALLBACK_ENABLED:
+                        try:
+                            from .converters import tesseract_ocr_pdf_pages
 
-            # D1: image-dominant PDFs (>50% <!-- image --> lines) get one OCR retry
-            # before falling through to flat routing — rescues scanned PDFs whose
-            # text layer is empty placeholders.
+                            tess_langs = await asyncio.to_thread(
+                                ensure_tessdata, detect_ocr_langs(filename)
+                            )
+                            ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
+                            if ocr_text and not _flat_text_is_garbled(
+                                ocr_text, expected_script=expected_script
+                            ):
+                                md_content = ocr_text
+                                # New markdown source — the prior converter's
+                                # picture ordinals no longer apply (finding 4/7),
+                                # matching the VLM-recovery convention above.
+                                pic_results = []
+                                reason = "node_count<3"
+                                logger.warning(
+                                    "Tesseract-on-raster fallback recovered %s; "
+                                    "overriding reason to node_count<3",
+                                    filename,
+                                )
+                        except Exception as tess_exc:
+                            logger.error(
+                                "Tesseract-on-raster fallback failed for %s (%s)",
+                                filename,
+                                tess_exc,
+                                exc_info=True,
+                            )
+
+            # D1/RFC-023 D11: image-dominant PDFs (>50% <!-- image --> lines) get one
+            # OCR retry before falling through to flat routing — rescues scanned PDFs
+            # whose text layer is empty placeholders, and also the D0 case where a
+            # garbled text layer's coverage exemption fires but the resulting
+            # image-only markdown produces too few tree nodes (node_count<3/depth<2).
             if (
                 not ok
-                and reason != "garbling"
+                and reason in ("node_count<3", "depth<2")
                 and ext == ".pdf"
                 and _OCR_ESCALATION
+                and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
                 and settings.flat_doc_routing
                 and md_content
             ):
                 total_lines = md_content.splitlines()
-                image_lines = sum(1 for ln in total_lines if "<!-- image -->" in ln)
-                if total_lines and (image_lines / len(total_lines)) > 0.50:
+                non_empty_lines = [ln for ln in total_lines if ln.strip()]
+                image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
+                if non_empty_lines and (image_lines / len(non_empty_lines)) > 0.50:
                     try:
                         escalation_langs: list[str] = []
                         for src in (
@@ -557,16 +965,24 @@ class CustomPageIndexClient(PageIndexClient):
                                     escalation_langs.append(lg)
                         langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
                         logger.warning(
-                            "Image-dominant (%d/%d lines) on %s; "
+                            "Image-dominant (%d/%d non-empty lines) on %s; "
                             "escalating to force_full_page_ocr (lang=%s)",
                             image_lines,
-                            len(total_lines),
+                            len(non_empty_lines),
                             filename,
                             langs,
                         )
-                        md_content = await asyncio.to_thread(
-                            pdf_to_markdown_docling, file_path, True, langs
+                        md_content, pic_results = _split_converter_output(
+                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                         )
+                        # QF1 follow-up: splice the escalated pass's picture-OCR
+                        # text into the tree markdown (see Fix-3 escalation above
+                        # for why this must not be skipped).
+                        if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                            _log_pic_splice_trace(
+                                filename, "image_dominant_escalation", pic_results
+                            )
+                            md_content = splice_picture_text_for_tree(md_content, pic_results)
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
                         with tempfile.NamedTemporaryFile(
@@ -578,7 +994,9 @@ class CustomPageIndexClient(PageIndexClient):
                         result["structure"] = split_oversized_leaf_nodes(
                             result.get("structure", [])
                         )
-                        ok, reason = validate_tree(result.get("structure", []))
+                        ok, reason = validate_tree(
+                            result.get("structure", []), expected_script=expected_script
+                        )
                         OCR_ESCALATION_TOTAL.labels(
                             result="recovered" if ok else "still_image_only"
                         ).inc()
@@ -624,7 +1042,7 @@ class CustomPageIndexClient(PageIndexClient):
                         # D3B: flat-path garble gate — catch garbled text that
                         # passed the tree gate (e.g. numeric-junk docs routed
                         # here via node_count<3).
-                        if _flat_text_is_garbled(flat_md):
+                        if _flat_text_is_garbled(flat_md, expected_script=expected_script):
                             reason = "garbling"
                             logger.warning(
                                 "Flat-path garble gate triggered for %s; "
@@ -647,8 +1065,13 @@ class CustomPageIndexClient(PageIndexClient):
                                     vlm_md = await vlm_extract_markdown(
                                         file_path, settings.vlm_model
                                     )
-                                    if not _flat_text_is_garbled(vlm_md):
+                                    if not _flat_text_is_garbled(
+                                        vlm_md, expected_script=expected_script
+                                    ):
                                         flat_md = vlm_md
+                                        # New markdown source — converter picture
+                                        # ordinals no longer apply (finding 4/7).
+                                        pic_results = []
                                         reason = "node_count<3"
                                         VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
                                     else:
@@ -662,9 +1085,38 @@ class CustomPageIndexClient(PageIndexClient):
                                         exc_info=True,
                                     )
                         if reason != "garbling":
+                            doc_id = str(uuid.uuid4())
+
+                            # RFC-004 user-locked: VLM describe stays OFF by default;
+                            # when enabled it runs HERE (flat branch, the only
+                            # consumer — finding 8) with the real doc_id, HR3-gated
+                            # and off the event loop (findings 2/3/10).
+                            if pic_results and settings.vlm_describe_images:
+                                await asyncio.to_thread(_add_vlm_descriptions, pic_results, doc_id)
+
+                            # Findings 4/6/7: figure references exist ONLY in flat
+                            # markdown; splice_figure_markers count-guards the
+                            # marker↔region alignment and degrades to neutral
+                            # markers on mismatch.
+                            _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
+                            flat_md = splice_figure_markers(flat_md, pic_results)
+
                             content_class, blocks = await asyncio.to_thread(
                                 route_and_extract_flat, flat_md
                             )
+
+                            # Task 6.1: detect image-standalone PDFs — all blocks
+                            # have role="image".  Bare image files (.jpg/.png) are
+                            # already handled by the _IMAGE_EXTS route above; this
+                            # catches PDFs whose extracted content is entirely images.
+                            if (
+                                _IMAGE_STANDALONE_PIPELINE_ENABLED
+                                and content_class in ("flat_prose", "flat_mixed")
+                                and blocks
+                                and all(b.get("role") == "image" for b in blocks)
+                            ):
+                                content_class = "image_standalone"
+
                             logger.info(
                                 "Routing %s to flat success path: reason=%s content_class=%s",
                                 filename,
@@ -672,7 +1124,20 @@ class CustomPageIndexClient(PageIndexClient):
                                 content_class,
                             )
 
-                            doc_id = str(uuid.uuid4())
+                            await _enrich_image_blocks(blocks, pic_results, doc_id)
+
+                            image_blocks = [b for b in blocks if b.get("role") == "image"]
+                            if image_blocks:
+                                enriched_count = sum(
+                                    1
+                                    for b in image_blocks
+                                    if b.get("ocr_text")
+                                    or b.get("description")
+                                    or b.get("figure_path")
+                                )
+                                image_enrichment_ratio = enriched_count / len(image_blocks)
+                            else:
+                                image_enrichment_ratio = None
 
                             protocol = "https" if settings.minio_secure else "http"
                             source_url = (
@@ -683,12 +1148,46 @@ class CustomPageIndexClient(PageIndexClient):
 
                             # RFC-014 D3: compute verdict for flat doc.
                             flat_structure = result.get("structure", [])
+
+                            # B1 (RFC-022): flat docs may have structure=[] (failed tree or
+                            # no tree attempt). classify_verdict scores on structure — an
+                            # empty list yields node_count=0/depth=0/flat_text="" which
+                            # blocks every promotion gate. Build synthetic structure from
+                            # blocks so the verdict function has real content to assess.
+                            #
+                            # B3 (RFC-022): `role="table"` blocks carry no "text" key by
+                            # design (helpers.py FLAT-05-C1) — parsed cell content lives in
+                            # `row_records` instead. Measuring content via `b.get("text", "")`
+                            # alone sees 0 chars for every table block and starves
+                            # classify_verdict of real content on table-heavy docs (Doc 3
+                            # GHV-TKV-Tarif: 13,022 raw chars → 375 measured chars, all from
+                            # 3 tables with no "text" key). Fall back to verbalized
+                            # row_records, mirroring _flat_search_text's pattern.
+                            #
+                            # D5 (RFC-023): flat_structure may be non-empty but rejected by
+                            # validate_tree (low node_count/depth). A rejected tree should
+                            # never be preferred over real block content for verdict
+                            # computation — always build synthetic structure when blocks exist.
+                            if blocks:
+                                flat_structure = [
+                                    {"title": "", "text": _flat_block_text(b)}
+                                    for b in blocks
+                                    if _flat_block_text(b).strip()
+                                ]
+
                             f_verdict, f_verdict_reason = classify_verdict(
                                 flat_structure,
                                 content_class,
                                 None,
+                                image_enrichment_ratio=image_enrichment_ratio,
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
+
+                            flat_desc = await asyncio.to_thread(
+                                _generate_flat_doc_description,
+                                flat_md,
+                                doc_id=doc_id,
+                            )
 
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
@@ -704,6 +1203,7 @@ class CustomPageIndexClient(PageIndexClient):
                                     "sha256": sha256,
                                     "content_class": content_class,
                                     "blocks": blocks,
+                                    "doc_description": flat_desc,
                                     "verdict": f_verdict,
                                     "verdict_reason": f_verdict_reason,
                                     "max_leaf_ratio": round(f_mlr, 4),
@@ -780,6 +1280,8 @@ class CustomPageIndexClient(PageIndexClient):
                 "doc_name": filename,
                 "source_url": source_url,
                 "processed_at": processed_at,
+                "sha256": sha256,  # C-3: fatten sidecar so reconcile skips full-JSON GET
+                "doc_description": result.get("doc_description", ""),  # C-3
                 "verdict": verdict,
                 "verdict_reason": verdict_reason,
                 "max_leaf_ratio": round(mlr, 4),
@@ -881,26 +1383,58 @@ class CustomPageIndexClient(PageIndexClient):
             if_add_doc_description="yes",
         )
 
+    async def _run_page_index_retrying(self, pdf_path: str) -> dict:
+        """D4: bounded retry/backoff wrapper around the blocking page_index() LLM call."""
+
+        async def call_fn(base_url: str | None = None):
+            prev_base = None
+            if base_url:
+                import litellm
+
+                prev_base = litellm.api_base
+                litellm.api_base = base_url
+            try:
+                return await asyncio.to_thread(self._run_page_index, pdf_path)
+            finally:
+                if base_url:
+                    litellm.api_base = prev_base
+
+        return await _llm_with_retry(call_fn)
+
     async def _run_md_to_tree(self, md_path: str) -> dict:
         from pageindex.page_index_md import md_to_tree
 
-        coro = md_to_tree(
-            md_path=md_path,
-            if_thinning=False,
-            if_add_node_summary="yes",
-            summary_token_threshold=200,
-            model=self.model,
-            if_add_doc_description="yes",
-            if_add_node_text="yes",
-            if_add_node_id="yes",
-        )
-        # md_to_tree is a coroutine; if we're already in an event loop, await directly.
-        # If called from a thread (asyncio.to_thread), spin a new loop.
-        try:
-            asyncio.get_running_loop()
-            result = await coro
-        except RuntimeError:
-            result = asyncio.run(coro)
+        # D4: bounded retry/backoff around the tree-generation LLM call.
+        async def call_fn(base_url: str | None = None):
+            prev_base = None
+            if base_url:
+                import litellm
+
+                prev_base = litellm.api_base
+                litellm.api_base = base_url
+            try:
+                coro = md_to_tree(
+                    md_path=md_path,
+                    if_thinning=False,
+                    if_add_node_summary="yes",
+                    summary_token_threshold=200,
+                    model=self.model,
+                    if_add_doc_description="yes",
+                    if_add_node_text="yes",
+                    if_add_node_id="yes",
+                )
+                # md_to_tree is a coroutine; if we're already in an event loop, await
+                # directly. If called from a thread (asyncio.to_thread), spin a new loop.
+                try:
+                    asyncio.get_running_loop()
+                    return await coro
+                except RuntimeError:
+                    return asyncio.run(coro)
+            finally:
+                if base_url:
+                    litellm.api_base = prev_base
+
+        result = await _llm_with_retry(call_fn)
 
         # RFC-015 D10: splice in any preamble content the fork's tree-builder
         # silently drops (content before the first heading in the source md).
