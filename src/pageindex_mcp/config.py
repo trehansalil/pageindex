@@ -12,7 +12,7 @@ load_dotenv()
 # Pipeline version — bumped in the same commit as any splitter/garble/OCR fix
 # that could change corpus classification (RFC-014 D3).
 # ---------------------------------------------------------------------------
-CURRENT_PIPELINE_VERSION: int = 3
+CURRENT_PIPELINE_VERSION: int = 4
 CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 
 # ---------------------------------------------------------------------------
@@ -92,6 +92,10 @@ class Settings:
     vlm_fallback: bool
     vlm_model: str
     vlm_describe_images: bool
+    docling_service_url: str | None
+    docling_service_timeout_s: int
+    docling_service_bearer_token: str
+    minio_presign_endpoint: str | None
 
 
 # HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
@@ -176,6 +180,10 @@ def _load_settings() -> Settings:
         vlm_model=os.environ.get("VLM_MODEL", "gpt-4.1"),
         vlm_describe_images=os.environ.get("VLM_DESCRIBE_IMAGES", "false").strip().lower()
         in ("1", "true", "yes"),
+        docling_service_url=os.environ.get("DOCLING_SERVICE_URL") or None,
+        docling_service_timeout_s=int(os.environ.get("DOCLING_SERVICE_TIMEOUT_S", "600")),
+        docling_service_bearer_token=os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", ""),
+        minio_presign_endpoint=os.environ.get("MINIO_PRESIGN_ENDPOINT") or None,
     )
 
 

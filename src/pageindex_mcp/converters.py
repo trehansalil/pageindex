@@ -1380,6 +1380,25 @@ _CLIP_TEXT_CONTAINMENT_THRESHOLD = 0.6
 # image-dominant and the native PDF text layer is read wholesale as
 # supplementary content rather than lost entirely.
 _DOC_TEXT_FALLBACK_MIN_CHARS = 100
+# D1 (RFC-025): secondary trigger — a heading-only tree can carry enough total
+# chars to clear _DOC_TEXT_FALLBACK_MIN_CHARS while every heading has almost no
+# body prose beneath it (structure survived, content did not). Fire the same
+# pdfium whole-document fallback when chars-per-heading drops below this floor.
+_DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING = 50
+# D1 (RFC-025): when True, the full-page-coverage exemption uses the
+# region-scoped text check (_region_has_own_text_layer); when False, restore
+# the pre-RFC-025 page-level check (_text_layer_has_content) for rollback.
+_REGION_AWARE_TEXT_CHECK_ENABLED = os.getenv(
+    "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+# D1 (RFC-025): the region-aware exemption converts previously-skipped
+# full-page picture regions into active 300-DPI crop+Tesseract OCR work,
+# which is expensive on multi-hundred-page scanned documents. Cap the number
+# of full-page exemptions fired per document; further regions past the cap
+# are skipped (page_coverage) with a warning.
+_MAX_FULLPAGE_PICTURE_OCR_REGIONS = int(
+    os.getenv("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50")
+)
 
 
 class PictureResult(TypedDict, total=False):
@@ -1495,6 +1514,18 @@ def _text_layer_has_content(page) -> bool:
     return True
 
 
+def _region_has_own_text_layer(page, region_rect) -> bool:
+    """Return True when the picture region's OWN bbox has a meaningful native text layer.
+
+    D1 (RFC-025): `_text_layer_has_content(page)` is a page-level check, so
+    incidental text outside the region (headers, footers, page numbers) keeps
+    it True and disables the coverage exemption even when the region's own
+    body text was baked into a skipped full-page image. This checks only the
+    text clipped to `region_rect`, regardless of what text exists outside it."""
+    region_clip_len = len(page.get_text("text", clip=region_rect).strip())
+    return region_clip_len >= _PICTURE_OCR_MIN_CHARS
+
+
 def _normalize_for_containment(text: str) -> str:
     """NFKC-fold + whitespace-collapse + lowercase (RFC-024 D1).
 
@@ -1535,8 +1566,19 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
     body to work against. Read the native PDF text layer wholesale via
     pypdfium2 (BSD-3/Apache-2, HR4) and append it as supplementary content so
     the tree build sees something other than bare image markers. Never fatal
-    — any failure returns ``md`` unchanged."""
-    if len(md.replace(_IMAGE_MARKER, "")) >= _DOC_TEXT_FALLBACK_MIN_CHARS:
+    — any failure returns ``md`` unchanged.
+
+    Secondary trigger (RFC-025 D1): a heading-only tree (structure survived,
+    body prose did not — e.g. a 347-node ToC with no article text) can clear
+    the total-char floor above while still carrying almost no prose per
+    heading. Fire the same fallback when chars-per-heading drops below
+    ``_DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING``."""
+    total_chars = len(md.replace(_IMAGE_MARKER, ""))
+    heading_count = len(_HEADING_RE.findall(md))
+    if (
+        total_chars >= _DOC_TEXT_FALLBACK_MIN_CHARS
+        and total_chars / max(heading_count, 1) >= _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING
+    ):
         return md
     try:
         import pypdfium2 as pdfium
@@ -1575,7 +1617,7 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
         "document-level text-layer fallback fired for %s (%d markdown char(s) "
         "excluding image markers)",
         pdf_path,
-        len(md.replace(_IMAGE_MARKER, "")),
+        total_chars,
     )
     return f"{md}\n\n{full_text}"
 
@@ -1627,6 +1669,7 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     clip_captures: dict[int, dict] = {}
     skip_reasons: dict[int, str] = {}
     pdf = fitz.open(pdf_path)
+    fullpage_ocr_region_count = 0
     try:
         for i, region in enumerate(regions):
             try:
@@ -1641,7 +1684,22 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 page_area = page.rect.width * page.rect.height
                 coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
                 if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
-                    if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not _text_layer_has_content(page):
+                    has_own_text = (
+                        _region_has_own_text_layer(page, rect)
+                        if _REGION_AWARE_TEXT_CHECK_ENABLED
+                        else _text_layer_has_content(page)
+                    )
+                    if fullpage_ocr_region_count >= _MAX_FULLPAGE_PICTURE_OCR_REGIONS:
+                        logger.warning(
+                            "MAX_FULLPAGE_PICTURE_OCR_REGIONS (%d) exceeded for %s; "
+                            "skipping further full-page picture exemptions",
+                            _MAX_FULLPAGE_PICTURE_OCR_REGIONS,
+                            pdf_path,
+                        )
+                        skip_reasons[i] = "page_coverage"
+                        continue
+                    if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not has_own_text:
+                        fullpage_ocr_region_count += 1
                         logger.warning(
                             "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
                             "exempting from skip (picture IS the page content)",
@@ -1758,9 +1816,8 @@ def _recover_picture_text(  # noqa: PLR0915, C901
         if ocr_text or keep_silent_png:
             result["png_bytes"] = crops[i]["png_bytes"]
         # D2 (RFC-023) belt-and-suspenders: a region that passed the size filter
-        # but still yielded no OCR text is likely decorative — unless the page
-        # is rotated, in which case D6's rotation correction gets first crack.
-        if not ocr_text and crops[i]["rotation"] == 0:
+        # but still yielded no OCR text is likely decorative.
+        if not ocr_text:
             result["decorative"] = True
         recovered[i] = result
     return recovered, skip_reasons

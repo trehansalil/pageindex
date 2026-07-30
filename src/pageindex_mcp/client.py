@@ -58,6 +58,7 @@ from .metrics import (
     VLM_FALLBACK_TOTAL,
 )
 from .storage import (
+    find_prior_verdict,
     hash_cache_get,
     hash_cache_set,
     list_processed_docs,
@@ -501,6 +502,78 @@ def _split_converter_output(out) -> tuple[str, list]:
     return out, []
 
 
+async def _remote_pdf_to_markdown(
+    staging_key: str,
+    *,
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+) -> tuple[str, list]:
+    """Call the external Docling service to convert a PDF.
+
+    Returns ``(markdown, pic_results)`` with the same shape as the local
+    ``pdf_to_markdown_docling()`` — callers are oblivious to the transport.
+    ``png_bytes`` in each PictureResult is decoded from base64 back to bytes.
+    """
+    import base64
+    import httpx
+    from .storage import presigned_get_url
+
+    url = presigned_get_url(staging_key)
+    payload = {
+        "presigned_url": url,
+        "force_full_page_ocr": force_full_page_ocr,
+        "ocr_lang_override": ocr_lang_override,
+    }
+    headers: dict[str, str] = {}
+    if settings.docling_service_bearer_token:
+        headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
+    async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:
+        resp = await client.post(
+            f"{settings.docling_service_url}/convert/pdf",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    pic_results: list[dict] = []
+    for pr in data.get("picture_results", []):
+        raw_b64 = pr.get("png_bytes", "")
+        if raw_b64:
+            pr["png_bytes"] = base64.b64decode(raw_b64)
+        else:
+            pr["png_bytes"] = b""
+        pic_results.append(pr)
+    return data["markdown"], pic_results
+
+
+async def _remote_image_to_markdown(
+    staging_key: str,
+    *,
+    ocr_lang_override: list[str] | None = None,
+) -> str:
+    """Call the external Docling service to convert an image to markdown."""
+    import httpx
+    from .storage import presigned_get_url
+
+    url = presigned_get_url(staging_key)
+    payload = {
+        "presigned_url": url,
+        "ocr_lang_override": ocr_lang_override,
+    }
+    headers: dict[str, str] = {}
+    if settings.docling_service_bearer_token:
+        headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
+    async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:
+        resp = await client.post(
+            f"{settings.docling_service_url}/convert/image",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return data["markdown"]
+
+
 async def _enrich_image_blocks(
     blocks: list[dict],
     pic_results: list,
@@ -565,6 +638,7 @@ class CustomPageIndexClient(PageIndexClient):
         # None for a normal tree doc. converters_cli reads this after index()
         # returns so the worker job hash can carry content_class (FLAT-04-C1).
         self.last_content_class: str | None = None
+        self._staging_key: str | None = None
 
     # ------------------------------------------------------------------
     # Indexing
@@ -669,10 +743,35 @@ class CustomPageIndexClient(PageIndexClient):
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
+                _use_remote = bool(
+                    getattr(settings, "docling_service_url", None) and self._staging_key
+                )
                 for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        if pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED:
+                        if _use_remote and "docling" in conv_name:
+                            logger.info(
+                                "Routing %s to external Docling service at %s",
+                                filename,
+                                settings.docling_service_url,
+                            )
+                            if pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED:
+                                md_content, pic_results = await _remote_pdf_to_markdown(
+                                    self._staging_key,  # type: ignore[arg-type]
+                                    force_full_page_ocr=True,
+                                    ocr_lang_override=detect_ocr_langs(filename),
+                                )
+                            else:
+                                if pre_garbled:
+                                    logger.info(
+                                        "D3a pre-garble probe fired for %s but OCR deferral "
+                                        "active; deferring to Fix-3 retry path",
+                                        filename,
+                                    )
+                                md_content, pic_results = await _remote_pdf_to_markdown(
+                                    self._staging_key,  # type: ignore[arg-type]
+                                )
+                        elif pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED:
                             md_content, pic_results = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,
@@ -853,12 +952,17 @@ class CustomPageIndexClient(PageIndexClient):
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
             ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
+            # D2 (RFC-025): the tree-build's original failure reason, captured before
+            # any recovery retry below overwrites `reason` (e.g. to "node_count<3" so
+            # the flat-routing branch is entered) — threaded to the flat-path garble
+            # gate so garble-by-default can key off the true first-pass reason.
+            original_reason = reason
 
             # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
             # the Fix-5 detected language before any rejection — rescues the corrupt
             # text-layer class (مرسوم). HR5: the retry re-runs the splitter AND the quality
             # gate and is still rejected if it stays garbled; it never bypasses validation.
-            if not ok and reason == "garbling" and ext == ".pdf" and _OCR_ESCALATION:
+            if not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and _OCR_ESCALATION:
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -880,13 +984,16 @@ class CustomPageIndexClient(PageIndexClient):
                         filename,
                         langs,
                     )
-                    md_content, pic_results = _split_converter_output(
-                        await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
-                    )
-                    # QF1 follow-up: the escalated OCR pass is where PictureItem
-                    # text actually gets produced (the primary pass deferred it).
-                    # Splice it into the tree markdown here — omitting this call
-                    # silently drops all picture-OCR text from the escalated tree.
+                    if _use_remote:
+                        md_content, pic_results = await _remote_pdf_to_markdown(
+                            self._staging_key,  # type: ignore[arg-type]
+                            force_full_page_ocr=True,
+                            ocr_lang_override=langs,
+                        )
+                    else:
+                        md_content, pic_results = _split_converter_output(
+                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
+                        )
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                         _log_pic_splice_trace(filename, "garble_escalation", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
@@ -911,7 +1018,7 @@ class CustomPageIndexClient(PageIndexClient):
 
             # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
             # whose OCR escalation was either skipped or failed.
-            if not ok and reason == "garbling" and ext == ".pdf" and settings.vlm_fallback:
+            if not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and settings.vlm_fallback:
                 try:
                     from .converters import vlm_extract_markdown
 
@@ -944,7 +1051,7 @@ class CustomPageIndexClient(PageIndexClient):
                     # previously only reachable from the except block below, so this
                     # path fell straight through to LowQualityTreeError. Try the same
                     # recovery here (supersedes RFC-023 D7 test case (d)).
-                    if not ok and reason == "garbling" and _D7_GARBLE_RECOVERY_ENABLED:
+                    if not ok and reason in ("garbling", "node_garbling") and _D7_GARBLE_RECOVERY_ENABLED:
                         recovered_md = await _attempt_tesseract_raster_recovery(
                             file_path, expected_script, filename
                         )
@@ -1018,12 +1125,16 @@ class CustomPageIndexClient(PageIndexClient):
                             filename,
                             langs,
                         )
-                        md_content, pic_results = _split_converter_output(
-                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
-                        )
-                        # QF1 follow-up: splice the escalated pass's picture-OCR
-                        # text into the tree markdown (see Fix-3 escalation above
-                        # for why this must not be skipped).
+                        if _use_remote:
+                            md_content, pic_results = await _remote_pdf_to_markdown(
+                                self._staging_key,  # type: ignore[arg-type]
+                                force_full_page_ocr=True,
+                                ocr_lang_override=langs,
+                            )
+                        else:
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
+                            )
                         if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                             _log_pic_splice_trace(
                                 filename, "image_dominant_escalation", pic_results
@@ -1088,7 +1199,9 @@ class CustomPageIndexClient(PageIndexClient):
                         # D3B: flat-path garble gate — catch garbled text that
                         # passed the tree gate (e.g. numeric-junk docs routed
                         # here via node_count<3).
-                        if _flat_text_is_garbled(flat_md, expected_script=expected_script):
+                        if _flat_text_is_garbled(
+                            flat_md, expected_script=expected_script, original_reason=original_reason
+                        ):
                             reason = "garbling"
                             logger.warning(
                                 "Flat-path garble gate triggered for %s; "
@@ -1221,11 +1334,15 @@ class CustomPageIndexClient(PageIndexClient):
                                     if _flat_block_text(b).strip()
                                 ]
 
+                            f_prior_verdict = await asyncio.to_thread(
+                                find_prior_verdict, sha256, filename, doc_id
+                            )
                             f_verdict, f_verdict_reason = classify_verdict(
                                 flat_structure,
                                 content_class,
                                 None,
                                 image_enrichment_ratio=image_enrichment_ratio,
+                                prior_verdict=f_prior_verdict,
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
@@ -1326,7 +1443,12 @@ class CustomPageIndexClient(PageIndexClient):
             )
 
             structure = result.get("structure", [])
-            verdict, verdict_reason = classify_verdict(structure, "", None)
+            prior_verdict = await asyncio.to_thread(
+                find_prior_verdict, sha256, filename, doc_id
+            )
+            verdict, verdict_reason = classify_verdict(
+                structure, "", None, prior_verdict=prior_verdict
+            )
             _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
                 "doc_id": doc_id,

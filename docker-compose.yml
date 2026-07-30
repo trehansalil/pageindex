@@ -161,6 +161,54 @@ services:
     container_name: pageindex-mcp-worker
     profiles: ["app"]
     command: ["arq", "pageindex_mcp.worker.WorkerSettings"]
+    environment:
+      REDIS_URL: redis://redis:6379/1
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MINIO_SECURE: "false"
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8201"
+      WEB_CONCURRENCY: "1"
+      CACHE_TTL: "300"
+      POSTGRES_DSN: postgresql://pageindex:pageindex@postgres:5432/pageindex
+      REGISTRY_ENABLED: ${REGISTRY_ENABLED:-true}
+      PAGEINDEX_CATALOG_TOPK: ${PAGEINDEX_CATALOG_TOPK:-200}
+      DOCLING_SERVICE_URL: http://docling-service:8080
+      DOCLING_SERVICE_BEARER_TOKEN: ${DOCLING_SERVICE_BEARER_TOKEN:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      docling-service:
+        condition: service_healthy
+
+  # ─── External Docling conversion service ────────────────────────────────────
+  # Heavy PDF conversion (~1.9 GB RSS) runs here instead of the worker.
+  docling-service:
+    build:
+      context: .
+      dockerfile: services/docling-service/Dockerfile
+    container_name: pageindex-docling-service
+    profiles: ["app"]
+    environment:
+      DOCLING_ARTIFACTS_PATH: /opt/docling-models
+      TESSDATA_PREFIX: /opt/tessdata
+      DOCLING_DO_OCR: "1"
+      DOCLING_SERVICE_BEARER_TOKEN: ${DOCLING_SERVICE_BEARER_TOKEN:-}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 
 volumes:
   redis_data:

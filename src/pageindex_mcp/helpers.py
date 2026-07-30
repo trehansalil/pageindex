@@ -1176,6 +1176,7 @@ def classify_verdict(  # noqa: C901
     content_class: str,
     validate_reason: str | None,
     image_enrichment_ratio: float | None = None,
+    prior_verdict: str | None = None,
 ) -> tuple[str, str]:
     if validate_reason == "garbling":
         return "FAIL", "garbling"
@@ -1227,10 +1228,14 @@ def classify_verdict(  # noqa: C901
         effectively_garbled = False
 
     _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"))
+    _effective_max_leaf = _pass_max_leaf
+    if prior_verdict == "PASS":
+        _hysteresis_band = float(os.environ.get("PASS_HYSTERESIS_BAND", "0.10"))
+        _effective_max_leaf = _pass_max_leaf + _hysteresis_band
     if (
         node_count >= 3
         and depth >= 2
-        and max_leaf_ratio < _pass_max_leaf
+        and max_leaf_ratio < _effective_max_leaf
         and not effectively_garbled
     ):
         return "PASS", ""
@@ -2058,9 +2063,25 @@ def flag_empty_cells(block: dict) -> dict:
 _TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
 
 
-def _flat_text_is_garbled(md: str, expected_script: str | None = None) -> bool:
+_GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"
+
+
+def _flat_text_is_garbled(
+    md: str,
+    expected_script: str | None = None,
+    original_reason: str | None = None,
+) -> bool:
     """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
     text = md or ""
+    # RFC-025 D2: garble-by-default for short post-retry text when the
+    # original tree-build failure was itself a garbling reason -- avoids
+    # falling through the minimum-size heuristic gates below the floor.
+    if (
+        _GARBLE_SHORT_TEXT_DEFAULT
+        and len(text) < 200
+        and original_reason in ("garbling", "node_garbling")
+    ):
+        return True
     # Additive OR (RFC-015 D8): sparse mixed-script mojibake, same as the tree gate.
     return _is_garbled_blob(text, expected_script=expected_script) or _has_sparse_mojibake(text)
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
@@ -42,6 +43,41 @@ def get_minio() -> Minio:
                     client.make_bucket(settings.minio_bucket)
                 _minio_client = client
     return _minio_client
+
+
+_presign_client: Minio | None = None
+_presign_lock = Lock()
+
+
+def _get_presign_minio() -> Minio:
+    """Return a Minio client for presigned URL generation.
+
+    When ``MINIO_PRESIGN_ENDPOINT`` is set, presigned URLs embed that
+    hostname instead of the internal ``MINIO_ENDPOINT``.  This is
+    necessary when an external service (outside the cluster) needs to
+    download objects via the presigned URL.
+    """
+    if not settings.minio_presign_endpoint:
+        return get_minio()
+    global _presign_client
+    if _presign_client is None:
+        with _presign_lock:
+            if _presign_client is None:
+                _presign_client = Minio(
+                    settings.minio_presign_endpoint,
+                    access_key=settings.minio_access_key,
+                    secret_key=settings.minio_secret_key,
+                    secure=settings.minio_secure,
+                )
+    return _presign_client
+
+
+def presigned_get_url(
+    object_key: str, expires: timedelta = timedelta(minutes=15)
+) -> str:
+    """Generate a time-limited presigned GET URL for a MinIO object."""
+    mc = _get_presign_minio()
+    return mc.presigned_get_object(settings.minio_bucket, object_key, expires=expires)
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +617,57 @@ def list_processed_docs() -> list[dict]:
         return docs
     finally:
         MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
+
+
+# RFC-025 D0: verdict priority for best-ever prior-verdict anchoring.
+_VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+
+
+def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str | None:
+    """Resolve the best-ever verdict from a prior ingestion of the same content.
+
+    Re-ingestion mints a new doc_id per upload, so the prior run's verdict
+    lives under a different, unknown doc_id. Scans processed/*.meta.json
+    sidecars, matching on sha256 (primary) or doc_name (fallback for legacy
+    sidecars without sha256), excludes current_doc_id, and returns the
+    highest-priority verdict found (PASS > MARGINAL > FAIL > ERROR). Returns
+    None if no prior sidecar matches or MinIO is unavailable (graceful
+    degradation -- hysteresis is a quality-of-life improvement, never a
+    blocker for ingestion).
+    """
+    mc = get_minio()
+    best: str | None = None
+    try:
+        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
+            name = obj.object_name
+            if not name.endswith(".meta.json"):
+                continue
+            doc_id = Path(name).stem.removesuffix(".meta")
+            if doc_id == current_doc_id:
+                continue
+            response = None
+            try:
+                response = mc.get_object(settings.minio_bucket, name)
+                sidecar = json.loads(response.read())
+            except Exception:
+                continue
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                        response.release_conn()
+                    except Exception:
+                        pass
+            if sidecar.get("sha256") == sha256 or sidecar.get("doc_name") == filename:
+                verdict = sidecar.get("verdict")
+                if verdict in _VERDICT_PRIORITY and (
+                    best is None or _VERDICT_PRIORITY[verdict] > _VERDICT_PRIORITY[best]
+                ):
+                    best = verdict
+    except Exception:
+        logger.warning("find_prior_verdict: MinIO unavailable, no hysteresis", exc_info=True)
+        return None
+    return best
 
 
 # ---------------------------------------------------------------------------

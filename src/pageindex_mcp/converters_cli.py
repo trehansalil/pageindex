@@ -65,6 +65,11 @@ async def main() -> int:
             description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
         )
         parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
+        parser.add_argument(
+            "--staging-key",
+            default=None,
+            help="MinIO staging key for remote Docling service (presigned URL generation).",
+        )
         try:
             args = parser.parse_args()
         except SystemExit as sysexit:
@@ -99,6 +104,8 @@ async def main() -> int:
             configure_litellm()
 
             client = CustomPageIndexClient()
+            if args.staging_key:
+                client._staging_key = args.staging_key
             doc_id = await client.index(args.input_path)
 
             duration_ms = int((time.monotonic() - start) * 1000)

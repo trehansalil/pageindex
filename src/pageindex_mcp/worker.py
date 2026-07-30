@@ -209,7 +209,7 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
-async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
+async def _run_converter_subprocess(pdf_path: str, *, staging_key: str | None = None) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
 
     The child runs ``python -m pageindex_mcp.converters_cli <pdf_path>``. On
@@ -224,15 +224,18 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
             child exited 0 but reported ``ok=false``.
         asyncio.TimeoutError: child did not finish within CHILD_TIMEOUT.
     """
-    proc = await asyncio.create_subprocess_exec(
+    cmd = [
         sys.executable,
         "-m",
         "pageindex_mcp.converters_cli",
         pdf_path,
+    ]
+    if staging_key and settings.docling_service_url:
+        cmd.extend(["--staging-key", staging_key])
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        # start_new_session=True is the documented, thread-safe way to put the
-        # child in its own process group. Do NOT use preexec_fn=os.setsid.
         start_new_session=True,
         env=os.environ.copy(),
     )
@@ -329,7 +332,7 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # Fails open (proceeds) on any error or after the wait cap.
         await wait_for_memory(redis)
         try:
-            result = await _run_converter_subprocess(local_path)
+            result = await _run_converter_subprocess(local_path, staging_key=staging_key)
         except ConverterOOMError as exc:
             await redis.hset(
                 _job_key(job_id),
