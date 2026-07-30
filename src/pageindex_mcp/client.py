@@ -476,7 +476,7 @@ async def _enrich_image_blocks(
         if block.get("role") != "image":
             continue
         idx = block.get("index")
-        if idx is None or idx >= len(pic_results):
+        if not isinstance(idx, int) or idx < 0 or idx >= len(pic_results):
             continue
         pr = pic_results[idx]
         png = pr.get("png_bytes")

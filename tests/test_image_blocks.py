@@ -113,7 +113,7 @@ class TestSaveFigure:
             mc.put_object.assert_called_once()
             call_args = mc.put_object.call_args
             assert call_args[0][1] == "figures/doc123/fig-0.png"
-            assert call_args[1].get("content_type") or call_args[0][4] == "image/png"
+            assert call_args[1].get("content_type") == "image/png"
 
 
 class TestDeleteDocFigures:

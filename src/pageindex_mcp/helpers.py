@@ -952,7 +952,12 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
     return (len(matches) / max(len(text.split()), 1)) > threshold
 
 
-_GARBLE_NODE_RATIO_THRESHOLD = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
+_GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
+_GARBLE_NODE_RATIO_THRESHOLD = (
+    _GARBLE_NODE_RATIO_THRESHOLD_RAW
+    if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1
+    else 0.10
+)
 
 
 def _infer_script(text: str) -> str | None:
@@ -1002,7 +1007,7 @@ def _garble_check_nodes(
     """Recursively count nodes whose text is individually garbled."""
     garbled = 0
     for node in nodes:
-        text = node.get("text", "")
+        text = node.get("text") or ""
         if text.strip():
             if expected_script is not None:
                 # QF3 (RFC-021): when text-inferred script disagrees with
