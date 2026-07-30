@@ -178,7 +178,10 @@ def test_classify_verdict_category_a_promoted():
 
 
 def test_classify_verdict_category_b_promoted():
-    tree = _make_tree([10] * 20, depth=1)  # flat -> depth=1, node_count>=3
+    # RFC-023 D4 added a MIN_FLAT_PROMOTION_CHARS=500 content-quality guard
+    # to cat_b promotion, so leaf text is sized to clear it (10 chars/leaf
+    # -> 200 total would fall short and land small_doc_promoted instead).
+    tree = _make_tree([30] * 20, depth=1)  # flat -> depth=1, node_count>=3
     verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert (verdict, reason) == ("PASS", "cat_b_promoted")
 

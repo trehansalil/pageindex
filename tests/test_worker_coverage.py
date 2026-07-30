@@ -262,9 +262,7 @@ async def test_process_document_job_warns_when_staging_delete_fails(fake_redis):
         result = await process_document_job(ctx, staging_key, "job-del")
 
     assert result == "doc-del"
-    assert any(
-        "left behind" in call.args[0] for call in mock_logger.warning.call_args_list
-    )
+    assert any("left behind" in call.args[0] for call in mock_logger.warning.call_args_list)
 
 
 # ── _upsert_registry_row ──────────────────────────────────────────────────
@@ -347,9 +345,7 @@ async def test_mirror_registry_metric_to_redis_success():
 
 
 async def test_mirror_registry_metric_to_redis_swallows_errors():
-    with patch(
-        "pageindex_mcp.worker.get_async_redis", AsyncMock(side_effect=RuntimeError("down"))
-    ):
+    with patch("pageindex_mcp.worker.get_async_redis", AsyncMock(side_effect=RuntimeError("down"))):
         await _mirror_registry_metric_to_redis("some:key", "42")  # must not raise
 
 
@@ -361,9 +357,7 @@ async def test_mirror_registry_write_failure_to_redis_success():
 
 
 async def test_mirror_registry_write_failure_to_redis_swallows_errors():
-    with patch(
-        "pageindex_mcp.worker.get_async_redis", AsyncMock(side_effect=RuntimeError("down"))
-    ):
+    with patch("pageindex_mcp.worker.get_async_redis", AsyncMock(side_effect=RuntimeError("down"))):
         await _mirror_registry_write_failure_to_redis()  # must not raise
 
 
