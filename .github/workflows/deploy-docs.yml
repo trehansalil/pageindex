@@ -1,0 +1,44 @@
+name: Deploy Docs to Vercel
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/corpus-quality-cycle.html'
+      - 'docs/vercel.json'
+      - '.github/workflows/deploy-docs.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build standalone HTML
+        run: |
+          mkdir -p docs/public
+          STYLE_END=$(grep -n '</style>' docs/corpus-quality-cycle.html | head -1 | cut -d: -f1)
+          LAST_LINE=$(wc -l < docs/corpus-quality-cycle.html)
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html lang="en">'
+            echo '<head>'
+            echo '<meta charset="UTF-8">'
+            echo '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            sed -n "2,${STYLE_END}p" docs/corpus-quality-cycle.html
+            echo '</head>'
+            echo '<body>'
+            sed -n "$((STYLE_END + 1)),$((LAST_LINE - 1))p" docs/corpus-quality-cycle.html
+            echo '</body>'
+            echo '</html>'
+          } > docs/public/index.html
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+          working-directory: docs

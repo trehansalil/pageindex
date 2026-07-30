@@ -19,3 +19,7 @@ issue/phase0_*.log
 
 # Obsidian editor config (per-developer, not project source)
 .obsidian/
+
+# Vercel build output (CI-generated from docs/corpus-quality-cycle.html)
+docs/public/
+docs/.vercel/
