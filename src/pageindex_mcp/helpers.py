@@ -1226,7 +1226,7 @@ def classify_verdict(  # noqa: C901
         garble_ratio = 0.0
         effectively_garbled = False
 
-    _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.20"))
+    _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"))
     if (
         node_count >= 3
         and depth >= 2
@@ -1442,7 +1442,14 @@ _OVERSIZED_ORDINAL_RE = re.compile(
     r"|Section\s+\(?\s*(?P<s>\d+(?:\.\d+)?)"  # Section 4 / Section (4) / Section 4.2
     r"|Schedule\s+\(?\s*(?P<sched>\d+(?:\.\d+)?)"  # RFC-015 D5b: Schedule 3 / Schedule (3)
     r"|(?:ال)?مادة\s*\(?\s*(?P<mada>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # (ال)مادة (5) / المادة ٥
-    r")"
+    # RFC-024 D3: MOU/decree markers (Clause/Part/Annex + بند/باب)
+    r"|Clause\s+\(?\s*(?P<clause>\d+(?:\.\d+)?)"  # Clause 4 / Clause (4)
+    r"|Part\s+\(?\s*(?P<part>(?:[IVX]+|\d+)(?:\.\d+)?)"  # Part IV / Part 4
+    r"|بند\s*\(?\s*(?P<band>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # بند (5) / بند ٥
+    r"|باب\s*\(?\s*(?P<bab>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # باب (5) / باب ٥
+    r"|Annex\s+\(?\s*(?P<annex>[A-Z]|\d+(?:\.\d+)?)"  # Annex A / Annex 4
+    r")",
+    re.IGNORECASE,
 )
 # Characters dropped before NFKC matching: tatweel/kashida (U+0640) which splits
 # Arabic presentation-form glyphs, plus zero-width and bidi control marks that the
@@ -1490,13 +1497,50 @@ def _fold_with_index_map(text: str) -> tuple[str, list[int]]:
     return "".join(folded), idx_map
 
 
+def _roman_to_int(s: str) -> int:
+    """Convert an uppercase Roman numeral (``I``-``XXXIX``, per RFC-024 D3's
+    ``Part`` marker) to an int. No large-numeral subtractive pairs (``CM``,
+    ``CD``, …) are needed at this range."""
+    values = {"I": 1, "V": 5, "X": 10}
+    total = 0
+    prev = 0
+    for ch in reversed(s):
+        val = values[ch]
+        if val < prev:
+            total -= val
+        else:
+            total += val
+            prev = val
+    return total
+
+
 def _ordinal_value(m: "re.Match[str]") -> tuple[int, ...]:
     """The ordinal captured by whichever marker alternative matched, as a tuple of
     dotted components compared lexicographically (NOT a float — ``3.10`` must
     stay distinct from ``3.1``, whereas ``float("3.10") == float("3.1")`` would
-    silently collapse them and eject a genuine heading from the increasing run)."""
+    silently collapse them and eject a genuine heading from the increasing run).
+
+    RFC-024 D3: ``part`` and ``annex`` can carry non-decimal tokens (Roman
+    numerals, bare Latin letters) that ``int()`` cannot parse — ``part`` is
+    converted per dotted component (Roman or decimal each), ``annex`` tries
+    decimal first and falls back to letter ordinals on ``ValueError``."""
+    part = m.group("part")
+    if part is not None:
+        # Convert per dotted component: the pattern permits a Roman head with a
+        # decimal suffix ("Part IV.2"), so a whole-token _roman_to_int fallback
+        # would KeyError on the "." / digit characters.
+        return tuple(int(p) if p.isdigit() else _roman_to_int(p.upper()) for p in part.split("."))
+    annex = m.group("annex")
+    if annex is not None:
+        try:
+            return tuple(int(p) for p in annex.split("."))
+        except ValueError:
+            return (ord(annex.upper()) - ord("A") + 1,)
     digits = (
-        m.group("art")
+        m.group("clause")  # RFC-024 D3
+        or m.group("band")  # RFC-024 D3
+        or m.group("bab")  # RFC-024 D3
+        or m.group("art")
         or m.group("sec")
         or m.group("s")
         or m.group("sched")  # RFC-015 D5b
@@ -1611,6 +1655,40 @@ def _split_on_paragraph_markers(
     return True
 
 
+def _split_on_blank_line_paragraphs(
+    node: dict,
+    text: str,
+    max_chars: int,
+    min_segments: int,
+    min_seg_chars: int = 2000,
+) -> bool:
+    """RFC-024 D3 (Task 2.3): last-resort fallback for leaves where neither the
+    ordinal splitter nor the فقرة marker fallback (``_split_on_paragraph_markers``)
+    found a structural sequence — OCR-recovered text with no ATX headings and no
+    ordinal markers at all. Splits on blank-line-separated paragraph boundaries.
+    Same minimum-inter-segment-chars floor and every-segment-under-max_chars
+    acceptance guard as the فقرة fallback, so a leaf is left untouched rather
+    than half-split."""
+    matches = list(re.finditer(r"\n[ \t]*\n+", text))
+    if not matches:
+        return False
+
+    starts = [0]
+    for m in matches:
+        if m.end() - starts[-1] >= min_seg_chars:
+            starts.append(m.end())
+    if len(starts) < min_segments:
+        return False
+
+    for idx, seg_start in enumerate(starts):
+        seg_end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+        if seg_end - seg_start >= max_chars:
+            return False
+
+    _apply_split(node, text, starts)
+    return True
+
+
 _PREAMBLE_MIN_CHARS = 50
 
 
@@ -1677,15 +1755,32 @@ def _has_heading_markers(text: str) -> bool:
     marker-finding done inside ``split_oversized_leaf_nodes``. Used to decouple the
     split trigger from raw char count: a residual leaf under ``max_chars`` that
     still carries a real heading sequence (6147c7d7: 19,959 chars) must still be
-    eligible for splitting."""
+    eligible for splitting. RFC-024 D3: also recognizes Clause/Part/Annex/بند/باب
+    MOU/decree markers, since they are alternatives on the same compiled regex."""
     if not text:
         return False
     folded, _ = _fold_with_index_map(text)
     return _OVERSIZED_ORDINAL_RE.search(folded) is not None
 
 
+def _blank_line_fallback_enabled(tree_ratio: float) -> bool:
+    """RFC-024 D3 (Task 2.3): gate for the blank-line paragraph-boundary
+    fallback. Reuses the SAME ``PASS_MAX_LEAF_RATIO`` env var as D0's
+    ``classify_verdict`` PASS gate (not an independently hard-coded threshold),
+    so the two mechanisms stay aligned."""
+    enabled = os.environ.get("LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true")
+    if enabled.strip().lower() in {"false", "0", "no", "off"}:
+        return False
+    pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"))
+    return tree_ratio > pass_max_leaf
+
+
 def split_oversized_leaf_nodes(
-    structure: list, max_chars: int = 50000, min_segments: int = 3
+    structure: list,
+    max_chars: int = 50000,
+    min_segments: int = 3,
+    _tree_ratio: float | None = None,
+    _tree_total: int | None = None,
 ) -> list:
     """Fix 1: bounded, deterministic, no-LLM splitter for tail-blob hierarchy
     collapse (REDESIGNED for inline + presentation-form markers).
@@ -1707,14 +1802,27 @@ def split_oversized_leaf_nodes(
     order-preserving). Structure/retrieval fix, never an accuracy claim (HR1); runs
     before ``validate_tree`` and persists nothing itself (HR5); stdlib only (HR4).
     Mutates in place and returns ``structure``. Idempotent: child segments fall
-    under ``max_chars`` so a second pass is a no-op."""
+    under ``max_chars`` so a second pass is a no-op.
+
+    RFC-024 D3 (Task 2.3): ``_tree_ratio`` / ``_tree_total`` are the whole-tree
+    ``max_leaf_ratio`` and total leaf chars (``_tree_max_leaf_ratio``), computed
+    once on the top-level call and threaded through recursion so they always
+    reflect the original tree, not a subtree. They gate the blank-line
+    paragraph-boundary fallback for leaves where the ordinal splitter and the
+    فقرة marker fallback both find no structural sequence at all — including
+    marker-less leaves UNDER ``max_chars`` whose own share of the tree's leaf
+    chars exceeds ``PASS_MAX_LEAF_RATIO`` (the "even under 50k chars" case in
+    RFC-024 D3 item 3)."""
+    if _tree_ratio is None:
+        _, _tree_total, _tree_ratio = _tree_max_leaf_ratio(structure)
+
     for node in structure or []:
         if not isinstance(node, dict):
             continue
         children = node.get("nodes")
         if children:
             # Parent node: recurse, leave its own text untouched.
-            split_oversized_leaf_nodes(children, max_chars, min_segments)
+            split_oversized_leaf_nodes(children, max_chars, min_segments, _tree_ratio, _tree_total)
             continue
 
         text = node.get("text") or ""
@@ -1728,7 +1836,19 @@ def split_oversized_leaf_nodes(
         # acceptance) is unchanged, so no leaf is split without a genuine
         # ordinal sequence (HR5-neutral: recovers more real structure only).
         if len(text) <= max_chars and not _has_heading_markers(text):
-            continue
+            # RFC-024 D3 (Task 2.3): a marker-less leaf under max_chars is still
+            # split-eligible when IT ALONE holds more than PASS_MAX_LEAF_RATIO of
+            # the tree's leaf chars (the "even under 50k chars" case — OCR text
+            # with no ATX headings and no ordinal markers). Per-leaf share >
+            # threshold implies the whole-tree max_leaf_ratio exceeds it too
+            # (the tree ratio is the max over leaves), so this stays strictly
+            # within the RFC's tree-level trigger while never fragmenting small
+            # leaves that are not the concentration culprit.
+            leaf_share = (
+                (len(node.get("title", "")) + len(text)) / _tree_total if _tree_total else 0.0
+            )
+            if not _blank_line_fallback_enabled(leaf_share):
+                continue
 
         folded, idx_map = _fold_with_index_map(text)
         all_matches = list(_OVERSIZED_ORDINAL_RE.finditer(folded))
@@ -1739,8 +1859,13 @@ def split_oversized_leaf_nodes(
             continue
 
         if len(all_matches) < min_segments:
-            if _split_on_paragraph_markers(node, text, max_chars, min_segments):
-                split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments)
+            if _split_on_paragraph_markers(node, text, max_chars, min_segments) or (
+                _blank_line_fallback_enabled(_tree_ratio)
+                and _split_on_blank_line_paragraphs(node, text, max_chars, min_segments)
+            ):
+                split_oversized_leaf_nodes(
+                    node["nodes"], max_chars, min_segments, _tree_ratio, _tree_total
+                )
             continue
 
         # Keep only the longest strictly-increasing ordinal run (drops cross-refs).
@@ -1749,8 +1874,13 @@ def split_oversized_leaf_nodes(
         if len(keep_idx) < min_segments:
             # مادة/Article markers exist but don't form a long enough increasing
             # run (e.g. RTL reading-order scramble) — fall back to فقرة.
-            if _split_on_paragraph_markers(node, text, max_chars, min_segments):
-                split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments)
+            if _split_on_paragraph_markers(node, text, max_chars, min_segments) or (
+                _blank_line_fallback_enabled(_tree_ratio)
+                and _split_on_blank_line_paragraphs(node, text, max_chars, min_segments)
+            ):
+                split_oversized_leaf_nodes(
+                    node["nodes"], max_chars, min_segments, _tree_ratio, _tree_total
+                )
             continue
         # Map kept markers back to ORIGINAL text start offsets, in order.
         starts = [idx_map[all_matches[k].start()] for k in keep_idx]
@@ -1760,7 +1890,7 @@ def split_oversized_leaf_nodes(
         # (sub-clauses, or a gap whose inner markers were not part of the top-level
         # increasing run) gets a second split pass. Terminates because each pass
         # strictly shrinks segments.
-        split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments)
+        split_oversized_leaf_nodes(node["nodes"], max_chars, min_segments, _tree_ratio, _tree_total)
 
     return structure
 

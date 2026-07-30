@@ -349,6 +349,7 @@ _META_FIELDS = (
     "permanent_marginal",
     "promotion_eligible",
     "verdict_computed_at",
+    "flat_char_count",
     *_FACET_FIELDS,
 )
 
@@ -402,6 +403,7 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             "permanent_marginal",
             "promotion_eligible",
             "verdict_computed_at",
+            "flat_char_count",
         ):
             if vf in meta:
                 sidecar[vf] = meta[vf]

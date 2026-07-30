@@ -284,6 +284,53 @@ _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = os.getenv(
 _VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
     "VLM_TESSERACT_FALLBACK_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
+# RFC-024 D5 kill-switch (default on): also attempt the D7 Tesseract-on-raster
+# recovery when the VLM *succeeds* but validate_tree still reports 'garbling'
+# (as opposed to only when the VLM call itself raises). Set to false to
+# restore the RFC-023 D7 behavior where this path falls through to
+# LowQualityTreeError unchanged.
+_D7_GARBLE_RECOVERY_ENABLED = os.getenv("D7_GARBLE_RECOVERY_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+async def _attempt_tesseract_raster_recovery(
+    file_path: str,
+    expected_script: str | None,
+    filename: str,
+) -> str | None:
+    """RFC-023 D7 / RFC-024 D5: last-resort local Tesseract-on-raster OCR pass.
+
+    Returns the recovered markdown text when the OCR output passes the garble
+    gate, else None. Shared by both call sites: the VLM-crash except-block
+    (RFC-023 D7) and the VLM-succeeds-but-garbled try-block (RFC-024 D5).
+
+    Language derivation (ensure_tessdata) runs INSIDE the try so a tessdata
+    fetch failure is logged and returns None (falling through to
+    LowQualityTreeError, HR5) instead of propagating -- matching the original
+    inline D7 behavior where ensure_tessdata sat inside the try/except.
+    """
+    from .converters import tesseract_ocr_pdf_pages
+
+    try:
+        tess_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
+        ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
+        if ocr_text and not _flat_text_is_garbled(ocr_text, expected_script=expected_script):
+            logger.warning(
+                "Tesseract-on-raster fallback recovered %s; overriding reason to node_count<3",
+                filename,
+            )
+            return ocr_text
+    except Exception as tess_exc:
+        logger.error(
+            "Tesseract-on-raster fallback failed for %s (%s)",
+            filename,
+            tess_exc,
+            exc_info=True,
+        )
+    return None
 
 
 def _is_azure_url(url: str | None) -> bool:
@@ -891,6 +938,23 @@ class CustomPageIndexClient(PageIndexClient):
                         result.get("structure", []), expected_script=expected_script
                     )
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
+
+                    # RFC-024 D5: the VLM *succeeded* but the tree is still garbled
+                    # (no exception raised). D7's Tesseract-on-raster recovery was
+                    # previously only reachable from the except block below, so this
+                    # path fell straight through to LowQualityTreeError. Try the same
+                    # recovery here (supersedes RFC-023 D7 test case (d)).
+                    if not ok and reason == "garbling" and _D7_GARBLE_RECOVERY_ENABLED:
+                        recovered_md = await _attempt_tesseract_raster_recovery(
+                            file_path, expected_script, filename
+                        )
+                        if recovered_md:
+                            md_content = recovered_md
+                            # New markdown source — the prior converter's picture
+                            # ordinals no longer apply (finding 4/7), matching the
+                            # VLM-recovery convention above.
+                            pic_results = []
+                            reason = "node_count<3"
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
                     logger.error(
@@ -907,34 +971,16 @@ class CustomPageIndexClient(PageIndexClient):
                     # genuinely garbled, unrecovered document still raises
                     # LowQualityTreeError (HR5).
                     if _VLM_TESSERACT_FALLBACK_ENABLED:
-                        try:
-                            from .converters import tesseract_ocr_pdf_pages
-
-                            tess_langs = await asyncio.to_thread(
-                                ensure_tessdata, detect_ocr_langs(filename)
-                            )
-                            ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-                            if ocr_text and not _flat_text_is_garbled(
-                                ocr_text, expected_script=expected_script
-                            ):
-                                md_content = ocr_text
-                                # New markdown source — the prior converter's
-                                # picture ordinals no longer apply (finding 4/7),
-                                # matching the VLM-recovery convention above.
-                                pic_results = []
-                                reason = "node_count<3"
-                                logger.warning(
-                                    "Tesseract-on-raster fallback recovered %s; "
-                                    "overriding reason to node_count<3",
-                                    filename,
-                                )
-                        except Exception as tess_exc:
-                            logger.error(
-                                "Tesseract-on-raster fallback failed for %s (%s)",
-                                filename,
-                                tess_exc,
-                                exc_info=True,
-                            )
+                        recovered_md = await _attempt_tesseract_raster_recovery(
+                            file_path, expected_script, filename
+                        )
+                        if recovered_md:
+                            md_content = recovered_md
+                            # New markdown source — the prior converter's
+                            # picture ordinals no longer apply (finding 4/7),
+                            # matching the VLM-recovery convention above.
+                            pic_results = []
+                            reason = "node_count<3"
 
             # D1/RFC-023 D11: image-dominant PDFs (>50% <!-- image --> lines) get one
             # OCR retry before falling through to flat routing — rescues scanned PDFs
@@ -1189,6 +1235,12 @@ class CustomPageIndexClient(PageIndexClient):
                                 doc_id=doc_id,
                             )
 
+                            # D6 (RFC-024): persist the same _flat_block_text-derived char
+                            # count used for verdict computation above (B3/RFC-022), so
+                            # future audits read a durable ground-truth value instead of
+                            # re-deriving it via the wrong block.get("text", "") accessor.
+                            flat_char_count = sum(len(_flat_block_text(b)) for b in blocks)
+
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
                             # un-cascaded derivative).
@@ -1207,6 +1259,7 @@ class CustomPageIndexClient(PageIndexClient):
                                     "verdict": f_verdict,
                                     "verdict_reason": f_verdict_reason,
                                     "max_leaf_ratio": round(f_mlr, 4),
+                                    "flat_char_count": flat_char_count,
                                     "pipeline_version": CURRENT_PIPELINE_VERSION,
                                     "verdict_computed_at": datetime.now(UTC).isoformat(),
                                 },

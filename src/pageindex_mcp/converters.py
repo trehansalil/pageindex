@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -1364,6 +1365,21 @@ _COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
 _TEXT_LAYER_GARBLE_CHECK_ENABLED = os.getenv(
     "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
+# D1 (RFC-024): capture clip_text into PictureResult.ocr_text when it is NOT
+# already contained in the Docling markdown export (containment-guarded — see
+# _clip_text_contained). Set to False to restore the pre-RFC-024 skip-only
+# behavior (every non-trivial clip_text is discarded, "clip_text" reason).
+_CLIP_TEXT_CAPTURE_ENABLED = os.getenv("CLIP_TEXT_CAPTURE_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_CLIP_TEXT_CONTAINMENT_THRESHOLD = 0.6
+# D1 (RFC-024): document-level text-layer fallback — when Docling's exported
+# markdown is this thin (excluding `<!-- image -->` markers), the document is
+# image-dominant and the native PDF text layer is read wholesale as
+# supplementary content rather than lost entirely.
+_DOC_TEXT_FALLBACK_MIN_CHARS = 100
 
 
 class PictureResult(TypedDict, total=False):
@@ -1479,10 +1495,96 @@ def _text_layer_has_content(page) -> bool:
     return True
 
 
-def _recover_picture_text(  # noqa: PLR0915
+def _normalize_for_containment(text: str) -> str:
+    """NFKC-fold + whitespace-collapse + lowercase (RFC-024 D1).
+
+    Shared between the clip-text containment guard and its tests so both sides
+    of the comparison are robust to whitespace/reflow differences between the
+    PDF text layer and the Docling markdown export."""
+    return " ".join(unicodedata.normalize("NFKC", text).split()).lower()
+
+
+def _clip_text_contained(clip_text: str, md_norm: str) -> bool:
+    """True when >=60% of ``clip_text``'s normalized chars belong to tokens
+    that appear as substrings of ``md_norm`` (RFC-024 D1 containment guard
+    against double-capturing content Docling already exported into the
+    markdown body). Token-level substring matching (length-weighted) stays
+    robust to whitespace/reflow differences while remaining discriminative —
+    a raw character-frequency check would report near-total containment for
+    any clip against a large markdown body."""
+    clip_norm = _normalize_for_containment(clip_text)
+    if not clip_norm:
+        return True
+    if not md_norm:
+        return False
+    tokens = clip_norm.split()
+    total = sum(len(t) for t in tokens)
+    if total == 0:
+        return True
+    matched = sum(len(t) for t in tokens if t in md_norm)
+    return matched / total >= _CLIP_TEXT_CONTAINMENT_THRESHOLD
+
+
+def _document_level_text_fallback(md: str, pdf_path: str) -> str:
+    """Full-page text-layer fallback for image-dominant documents (RFC-024 D1).
+
+    When Docling's exported markdown carries fewer than
+    ``_DOC_TEXT_FALLBACK_MIN_CHARS`` characters (excluding ``<!-- image -->``
+    markers), Docling routed nearly the entire document through the picture
+    path and per-region recovery in ``_recover_picture_text`` has no markdown
+    body to work against. Read the native PDF text layer wholesale via
+    pypdfium2 (BSD-3/Apache-2, HR4) and append it as supplementary content so
+    the tree build sees something other than bare image markers. Never fatal
+    — any failure returns ``md`` unchanged."""
+    if len(md.replace(_IMAGE_MARKER, "")) >= _DOC_TEXT_FALLBACK_MIN_CHARS:
+        return md
+    try:
+        import pypdfium2 as pdfium
+
+        pdoc = pdfium.PdfDocument(pdf_path)
+        try:
+            page_texts = []
+            for page in pdoc:
+                textpage = page.get_textpage()
+                text = textpage.get_text_range().strip()
+                if text:
+                    page_texts.append(text)
+        finally:
+            pdoc.close()
+    except Exception as exc:
+        logger.warning(
+            "document-level text-layer fallback failed for %s (%s); keeping markdown as-is",
+            pdf_path,
+            exc,
+        )
+        return md
+    full_text = "\n\n".join(page_texts).strip()
+    if not full_text:
+        return md
+    # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
+    # layer — never append a garbled text layer as supplementary content (HR5).
+    from .helpers import _is_garbled_blob
+
+    if _is_garbled_blob(full_text):
+        logger.warning(
+            "document-level text-layer fallback skipped for %s: text layer is garbled",
+            pdf_path,
+        )
+        return md
+    logger.info(
+        "document-level text-layer fallback fired for %s (%d markdown char(s) "
+        "excluding image markers)",
+        pdf_path,
+        len(md.replace(_IMAGE_MARKER, "")),
+    )
+    return f"{md}\n\n{full_text}"
+
+
+def _recover_picture_text(  # noqa: PLR0915, C901
     pdf_path: str,
     regions: list[dict],
     langs: list[str],
+    md: str = "",
 ) -> tuple[dict[int, PictureResult], dict[int, str]]:
     """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
 
@@ -1505,69 +1607,115 @@ def _recover_picture_text(  # noqa: PLR0915
     a subprocess, safe to parallelize). Decorative gate: when OCR yield is below
     ``_PICTURE_OCR_MIN_CHARS`` the crop's ``png_bytes`` are dropped — unless the
     VLM describe route is enabled downstream, which may still re-mark the image
-    as content-bearing via a description."""
+    as content-bearing via a description.
+
+    D1 (RFC-024): when a region's ``clip_text`` is NOT already contained in
+    ``md`` (the Docling markdown export, normalized once here — not per
+    region), it is captured directly into ``ocr_text`` (reason
+    ``clip_text_captured``) instead of being discarded. This recovers
+    chart/infographic text-layer content that Docling misclassified as a
+    Picture and that Tesseract OCR on the crop would fail to recognize
+    (vector-art labels)."""
     import fitz  # PyMuPDF, AGPL-3.0
 
     from .config import settings
 
+    md_norm = _normalize_for_containment(md) if _CLIP_TEXT_CAPTURE_ENABLED else ""
+
     # Phase 1 (serial, single fitz.Document): crop every valid region.
     crops: dict[int, dict] = {}
+    clip_captures: dict[int, dict] = {}
     skip_reasons: dict[int, str] = {}
     pdf = fitz.open(pdf_path)
     try:
         for i, region in enumerate(regions):
-            page_index = region["page"] - 1
-            if page_index < 0 or page_index >= pdf.page_count:
-                continue
-            page = pdf[page_index]
-            rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
-            if rect is None:
-                continue
-            # D0: skip regions covering >60% of page — full scanned pages, not charts.
-            page_area = page.rect.width * page.rect.height
-            coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
-            if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
-                if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not _text_layer_has_content(page):
-                    logger.warning(
-                        "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
-                        "exempting from skip (picture IS the page content)",
-                        coverage * 100,
-                        page_index + 1,
-                    )
-                else:
-                    skip_reasons[i] = "page_coverage"
-                    continue
-            # D1 (RFC-018): skip per-picture OCR when clean text already exists under
-            # this bbox — Docling already extracted it into the markdown body.
-            clip_text = page.get_text("text", clip=rect).strip()
-            if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
-                skip_reasons[i] = "clip_text"
-                continue
-            # D2 (RFC-023): sub-icon regions (both dims below threshold) are
-            # decorative UI glyphs — skip crop+OCR entirely.
-            if (
-                rect.width < _DECORATIVE_ICON_MIN_DIM_PT
-                and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
-            ):
-                skip_reasons[i] = "decorative_icon"
-                continue
-            # D6: zero page rotation before rendering so Tesseract receives a
-            # correctly-oriented crop regardless of PDF page-rotation metadata.
-            orig_rotation = page.rotation
-            page.set_rotation(0)
             try:
-                pix = page.get_pixmap(clip=rect, dpi=300)
-            finally:
-                page.set_rotation(orig_rotation)
-            crops[i] = {
-                "png_bytes": pix.tobytes("png"),
-                "region": region,
-                "rotation": orig_rotation,
-            }
+                page_index = region["page"] - 1
+                if page_index < 0 or page_index >= pdf.page_count:
+                    continue
+                page = pdf[page_index]
+                rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
+                if rect is None:
+                    continue
+                # D0: skip regions covering >60% of page — full scanned pages, not charts.
+                page_area = page.rect.width * page.rect.height
+                coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
+                if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
+                    if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not _text_layer_has_content(page):
+                        logger.warning(
+                            "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
+                            "exempting from skip (picture IS the page content)",
+                            coverage * 100,
+                            page_index + 1,
+                        )
+                    else:
+                        skip_reasons[i] = "page_coverage"
+                        continue
+                # D1 (RFC-018/RFC-024): a region with meaningful clip_text is either
+                # already exported by Docling (skip) or was misclassified as a
+                # Picture and never surfaced (capture), decided by the containment
+                # guard against the normalized markdown body.
+                clip_text = page.get_text("text", clip=rect).strip()
+                if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
+                    if _CLIP_TEXT_CAPTURE_ENABLED and not _clip_text_contained(clip_text, md_norm):
+                        clip_captures[i] = {
+                            "ocr_text": " ".join(clip_text.split()),
+                            "region": region,
+                        }
+                        logger.info(
+                            "clip_text_captured for picture region %d in %s (not found in "
+                            "Docling markdown export)",
+                            i,
+                            pdf_path,
+                        )
+                    else:
+                        skip_reasons[i] = (
+                            "clip_text_already_exported"
+                            if _CLIP_TEXT_CAPTURE_ENABLED
+                            else "clip_text"
+                        )
+                    continue
+                # D2 (RFC-023): sub-icon regions (both dims below threshold) are
+                # decorative UI glyphs — skip crop+OCR entirely.
+                if (
+                    rect.width < _DECORATIVE_ICON_MIN_DIM_PT
+                    and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
+                ):
+                    skip_reasons[i] = "decorative_icon"
+                    continue
+                # D6: zero page rotation before rendering so Tesseract receives a
+                # correctly-oriented crop regardless of PDF page-rotation metadata.
+                orig_rotation = page.rotation
+                page.set_rotation(0)
+                try:
+                    pix = page.get_pixmap(clip=rect, dpi=300)
+                finally:
+                    page.set_rotation(orig_rotation)
+                crops[i] = {
+                    "png_bytes": pix.tobytes("png"),
+                    "region": region,
+                    "rotation": orig_rotation,
+                }
+            except Exception as exc:  # D2 (RFC-024): isolate per-region crop failures
+                logger.warning(
+                    "crop failed for picture region %d in %s (%s); skipping region",
+                    i,
+                    pdf_path,
+                    exc,
+                )
+                skip_reasons[i] = "crop_error"
+                continue
     finally:
         pdf.close()
 
     recovered: dict[int, PictureResult] = {}
+    for i, capture in clip_captures.items():
+        bbox = capture["region"]["bbox"]
+        recovered[i] = PictureResult(
+            ocr_text=capture["ocr_text"],
+            page=capture["region"]["page"],
+            bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
+        )
     if not crops:
         return recovered, skip_reasons
 
@@ -1750,7 +1898,7 @@ def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureRe
         if not regions:
             return []
         langs = ensure_tessdata(detect_ocr_langs(md))
-        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs)
+        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=md)
         if not recovered and not skip_reasons:
             return []
         logger.info(
@@ -2004,6 +2152,7 @@ def pdf_to_markdown_docling(
             )
             md = md_raw
     md = _normalize_indented_headings(md)
+    md = _document_level_text_fallback(md, pdf_path)
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was
     # invisible to the event loop and pinned crop bytes for the process life).
@@ -2284,14 +2433,65 @@ def rasterize_pdf_pages(pdf_path: str, dpi: int = 200) -> list[str]:
         pdoc.close()
 
 
+# D4 (RFC-024): fallback rasterization backend for tesseract_ocr_pdf_pages. CMap
+# corruption that crashes pypdfium2 page rendering is deterministic per-page, so a
+# retry against pypdfium2 would fail identically; fitz uses a different rendering
+# path (already proven for crop rasterization in _recover_picture_text) and isolates
+# D7's rasterization from rasterize_pdf_pages' shared use by the VLM fallback.
+_D7_FITZ_FALLBACK_ENABLED = os.getenv("D7_FITZ_FALLBACK_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def rasterize_pdf_pages_fitz(pdf_path: str, dpi: int = 200) -> list[str]:
+    """Rasterize each PDF page to a base64 data-URI PNG via fitz (D4, RFC-024).
+
+    Fallback backend for ``rasterize_pdf_pages`` when pypdfium2 crashes on
+    CMap-corrupt PDFs. Reuses the ``fitz.Page.get_pixmap()`` pattern already
+    proven for image cropping in ``_recover_picture_text``."""
+    import base64
+
+    import fitz  # PyMuPDF, AGPL-3.0
+
+    pdf = fitz.open(pdf_path)
+    try:
+        result: list[str] = []
+        zoom = dpi / 72
+        matrix = fitz.Matrix(zoom, zoom)
+        for page in pdf:
+            pix = page.get_pixmap(matrix=matrix)
+            b64 = base64.b64encode(pix.tobytes("png")).decode("ascii")
+            result.append(f"data:image/png;base64,{b64}")
+        return result
+    finally:
+        pdf.close()
+
+
 async def tesseract_ocr_pdf_pages(pdf_path: str, langs: list[str]) -> str:
     """Rasterize each PDF page and OCR it via local Tesseract (RFC-023 D7).
 
     Last-resort recovery when the VLM fallback itself crashes on a garbled
-    PDF -- no LLM egress, local ``tesseract`` binary only (HR3)."""
+    PDF -- no LLM egress, local ``tesseract`` binary only (HR3).
+
+    D4 (RFC-024): tries pypdfium2 (``rasterize_pdf_pages``) first; on Exception
+    (e.g. CMap-corrupt PDFs that crash pypdfium2), falls back to fitz
+    (``rasterize_pdf_pages_fitz``) unless disabled via
+    ``D7_FITZ_FALLBACK_ENABLED=false``."""
     import base64
 
-    page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    try:
+        page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    except Exception as exc:  # D4: fall back to fitz rasterization
+        if not _D7_FITZ_FALLBACK_ENABLED:
+            raise
+        logger.warning(
+            "rasterize_pdf_pages (pypdfium2) failed for %s (%s); falling back to fitz",
+            pdf_path,
+            exc,
+        )
+        page_images = await asyncio.to_thread(rasterize_pdf_pages_fitz, pdf_path)
     pages_text = []
     for data_uri in page_images:
         png_bytes = base64.b64decode(data_uri.split(",", 1)[1])
