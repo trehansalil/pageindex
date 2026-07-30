@@ -23,3 +23,4 @@ issue/phase0_*.log
 # Vercel build output (CI-generated from docs/corpus-quality-cycle.html)
 docs/public/
 docs/.vercel/
+.DS_Store
