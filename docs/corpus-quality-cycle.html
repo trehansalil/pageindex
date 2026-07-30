@@ -659,6 +659,7 @@ flowchart TD
         ARTIFACT_BUILD["rfc-artifact-build\nGenerates design + tasks"]:::skill
         DESIGN_OUT[/".agents/designs/\ndesign-rfcNNN-slug.md"/]:::output
         TASKS_OUT[/".agents/tasks/\ntasks-rfcNNN-slug.md"/]:::output
+        VERIFY_ARTIFACTS["Verify Artifacts\nCross-refs · mermaid · links\n▸ Sonnet"]:::skill
     end
     CONVERGED -- "No → continue" --> TRIAGE
     TRIAGE --> CLUSTER
@@ -670,10 +671,11 @@ flowchart TD
     RFC_OK --> ARTIFACT_BUILD
     ARTIFACT_BUILD --> DESIGN_OUT
     ARTIFACT_BUILD --> TASKS_OUT
+    DESIGN_OUT --> VERIFY_ARTIFACTS
+    TASKS_OUT --> VERIFY_ARTIFACTS
 
     G2{"G2 — Human approves\nRFC + design + tasks\n▸ manual"}:::gate_manual
-    DESIGN_OUT --> G2
-    TASKS_OUT --> G2
+    VERIFY_ARTIFACTS --> G2
 
     subgraph W4 ["Workflow 4 — Build"]
         direction TB
@@ -836,6 +838,13 @@ flowchart TD
           <div class="card-detail">Takes the verified RFC and produces design doc + implementation task plan with bidirectional anchor links. Uses reference templates from <code>.agents/reference_files/</code>.</div>
         </div>
       </div>
+      <div class="card-row">
+        <div class="card">
+          <div class="card-label">Sonnet &bull; auto-fix</div>
+          <div class="card-title">Verify Artifacts</div>
+          <div class="card-detail">Cross-checks the three generated artifacts for broken anchor links, dangling cross-references, malformed Mermaid diagrams, missing template sections, and content contradictions. Fixes issues in-place and reports remaining warnings.</div>
+        </div>
+      </div>
       <div style="font-size: 0.78rem; color: var(--text-muted); margin: 0.5rem 0 0.3rem; font-family: var(--font-label);">Artifact destinations:</div>
       <div style="overflow-x: auto;">
         <table class="flow-table" style="min-width: 400px;">
@@ -994,6 +1003,11 @@ flowchart TD
             <td><code>rfc-artifact-build</code></td>
             <td>Design + tasks</td>
             <td><code>.agents/designs/</code> + <code>.agents/tasks/</code></td>
+          </tr>
+          <tr>
+            <td>Verify Artifacts <small>(Sonnet)</small></td>
+            <td>Cross-ref &amp; mermaid validation</td>
+            <td>Fixes applied in-place to RFC, design, tasks</td>
           </tr>
           <tr>
             <td><code>make confluence-local-sync</code></td>

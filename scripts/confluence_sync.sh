@@ -88,19 +88,21 @@ if [[ "$LOCAL_DIFF" == "1" ]]; then
   while IFS= read -r rel_path; do
     [[ -z "$rel_path" ]] && continue
     [[ "$rel_path" == *-metadata.md ]] && continue
+    # Only sync audit run files, not every .md in audit/
+    [[ "$rel_path" == audit/* && "$(basename "$rel_path")" != CORPUS_REINGESTION_AUDIT_RUN-*.md ]] && continue
     abs_path="$ROOT_DIR/$rel_path"
     [[ -f "$abs_path" ]] || continue
     FILES+=("$abs_path")
   done < <(
     cd "$ROOT_DIR"
     {
-      git diff --name-only HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ 2>/dev/null
-      git diff --name-only --cached HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ 2>/dev/null
-      git ls-files --others --exclude-standard -- .agents/rfcs/ .agents/designs/ .agents/tasks/ 2>/dev/null
+      git diff --name-only HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ audit/ 2>/dev/null
+      git diff --name-only --cached HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ audit/ 2>/dev/null
+      git ls-files --others --exclude-standard -- .agents/rfcs/ .agents/designs/ .agents/tasks/ audit/ 2>/dev/null
     } | grep '\.md$' | sort -u
   )
   if [[ ${#FILES[@]} -eq 0 ]]; then
-    echo "==> No local changes in .agents/{rfcs,designs,tasks}/ — nothing to sync"
+    echo "==> No local changes in .agents/{rfcs,designs,tasks}/ or audit/ — nothing to sync"
     exit 0
   fi
   echo "==> Local diff mode: ${#FILES[@]} changed file(s)"
@@ -111,10 +113,36 @@ else
       FILES+=("$f")
     done
   done
+  for f in "$ROOT_DIR"/audit/CORPUS_REINGESTION_AUDIT_RUN-*.md; do
+    [[ -f "$f" ]] || continue
+    FILES+=("$f")
+  done
 fi
+
+# Pre-process markdown links for Confluence: rewrite relative cross-file
+# links to Confluence display URLs (synced pages) or GitHub blob URLs
+# (non-synced files like CLAUDE.md).  mark processes files one at a time
+# and cannot resolve cross-file links on its own.
+PREPROCESS_DIR="$(mktemp -d)"
+trap 'rm -rf "$PREPROCESS_DIR"' EXIT
+
+python3 "$ROOT_DIR/scripts/confluence_preprocess.py" "$PREPROCESS_DIR" "${FILES[@]}"
+
+# Remap file list to the pre-processed copies.
+PROCESSED_FILES=()
+for f in "${FILES[@]}"; do
+  abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+  rel="${abs#"$ROOT_DIR"/}"
+  pf="$PREPROCESS_DIR/$rel"
+  if [[ -f "$pf" ]]; then
+    PROCESSED_FILES+=("$pf")
+  else
+    PROCESSED_FILES+=("$f")
+  fi
+done
 
 # Each mark call only reads/writes its own file and targets its own
 # Confluence page, so calls are independent and safe to run concurrently.
 # MARK_CONCURRENCY lets callers tune this against Confluence API rate limits.
 CONCURRENCY="${MARK_CONCURRENCY:-4}"
-printf '%s\n' "${FILES[@]}" | xargs -I{} -P "$CONCURRENCY" mark "${BASE_ARGS[@]}" --files {}
+printf '%s\n' "${PROCESSED_FILES[@]}" | xargs -I{} -P "$CONCURRENCY" mark "${BASE_ARGS[@]}" --files {}

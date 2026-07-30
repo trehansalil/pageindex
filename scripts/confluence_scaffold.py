@@ -21,9 +21,11 @@ AGENTS_DIR = Path(__file__).resolve().parent.parent / ".agents"
 RFCS_DIR = AGENTS_DIR / "rfcs"
 DESIGNS_DIR = AGENTS_DIR / "designs"
 TASKS_DIR = AGENTS_DIR / "tasks"
+AUDIT_DIR = Path(__file__).resolve().parent.parent / "audit"
 
 SPACE = "CITRA"
 RFC_FILE_RE = re.compile(r"^(\d+)-(.+)\.md$")
+AUDIT_RUN_RE = re.compile(r"^CORPUS_REINGESTION_AUDIT_RUN-(\d+)\.md$")
 
 HEADER_RE = re.compile(r"<!--\s*Space:", re.IGNORECASE)
 
@@ -186,6 +188,16 @@ def ensure_companions() -> None:
         )
 
 
+def audit_title_for_path(path: Path, text: str) -> str:
+    h1 = first_h1(text)
+    if h1:
+        return h1
+    m = AUDIT_RUN_RE.match(path.name)
+    if m:
+        return f"Corpus Re-ingestion Audit — Run {m.group(1)}"
+    return path.stem.replace("_", " ").title()
+
+
 def rfc_title_for_path(path: Path, text: str) -> str:
     parsed = rfc_id_slug(path)
     if not parsed:
@@ -199,7 +211,25 @@ def main() -> int:
     ensure_companions()
     ensure_headers(DESIGNS_DIR, "Designs", lambda p, t: first_h1(t) or p.stem)
     ensure_headers(TASKS_DIR, "Tasks", lambda p, t: first_h1(t) or p.stem)
+    ensure_audit_headers()
     return 0
+
+
+def ensure_audit_headers() -> None:
+    """Add mark metadata to audit run files matching CORPUS_REINGESTION_AUDIT_RUN-N.md."""
+    for path in sorted(AUDIT_DIR.glob("CORPUS_REINGESTION_AUDIT_RUN-*.md")):
+        text = read(path)
+        if has_mark_headers(text):
+            continue
+        title = audit_title_for_path(path, text)
+        inject_audit_headers(path, title)
+
+
+def inject_audit_headers(path: Path, title: str) -> None:
+    text = read(path)
+    header = f"<!-- Space: {SPACE} -->\n<!-- Title: {title} -->\n<!-- Folder: Audits -->\n\n"
+    path.write_text(header + text, encoding="utf-8")
+    print(f"[headers] added mark metadata to {path.relative_to(AUDIT_DIR.parent)}")
 
 
 if __name__ == "__main__":

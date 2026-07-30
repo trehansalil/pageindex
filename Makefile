@@ -6,7 +6,7 @@
 # nothing changed since the last successful sync.
 
 AGENTS_DIR := .agents
-DOC_FILES  := $(wildcard $(AGENTS_DIR)/rfcs/*.md) $(wildcard $(AGENTS_DIR)/designs/*.md) $(wildcard $(AGENTS_DIR)/tasks/*.md)
+DOC_FILES  := $(wildcard $(AGENTS_DIR)/rfcs/*.md) $(wildcard $(AGENTS_DIR)/designs/*.md) $(wildcard $(AGENTS_DIR)/tasks/*.md) $(wildcard audit/CORPUS_REINGESTION_AUDIT_RUN-*.md)
 STAMP      := $(AGENTS_DIR)/.confluence-sync.stamp
 
 .PHONY: confluence-sync confluence-sync-dry-run confluence-scaffold confluence-force-sync confluence-local-sync

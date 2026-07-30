@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Corpus Re-ingestion Audit — Run 7 -->
+<!-- Folder: Audits -->
+
 # Corpus Re-ingestion Audit — Run 7
 
 Full 25-doc corpus re-ingested from scratch after wiping all persistent stores
@@ -26,13 +30,13 @@ Batches 1-5: D0-D11) against the Run 6 regression baseline, per
 | -- | ----------------------------------------------------------- | ------------- | ----------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | 1  | FEDERAL LAW NO (3) OF 1987 (Penal Code)                     | PASS          | **PASS**          | =                             | tree, 606 nodes, depth 3, 247k chars, max_leaf_ratio=0.01                                                  |
 | 2  | Federal Decree-Law No. (47) of 2021                         | PASS          | **PASS**          | =                             | tree, 69 nodes, depth 2, 22k chars                                                                         |
-| 3  | GHV-TKV-Tarif.pdf                                           | MARGINAL      | **MARGINAL**      | =                             | flat_mixed depth=1, 20 nodes, 333 chars — out of scope per RFC-023 (unchanged)                            |
+| 3  | GHV-TKV-Tarif.pdf                                           | MARGINAL      | **MARGINAL**      | =                             | flat_mixed depth=1, 20 nodes, 8,110 chars (3 tariff tables; corrected per RFC-024 D6 — was misreported as 333 chars) — out of scope per RFC-023 (unchanged)                            |
 | 4  | Haftpflicht-Allgemeine-Bedingungen                          | PASS          | **PASS**          | =                             | tree, 132 nodes, depth 2, 80k chars                                                                        |
 | 5  | Haftpflicht-Besondere-Bedingungen                           | MARGINAL      | **PASS**          | ↑                            | tree, 34 nodes, depth 2, 140k chars, max_leaf_ratio=0.12 (D10 threshold widening)                          |
 | 6  | Ministerial Resolution No279/2022                           | MARGINAL      | **PASS**          | ↑                            | tree, 28 nodes, depth 2, 14k chars (D9 BiDi heading preservation)                                          |
 | 7  | MOU MOHRE & Nafis                                           | FAIL          | **MARGINAL**      | ↑                            | tree, 20 nodes, depth 5, 14.6k chars,`leaf_concentration=0.50` (D0 OCR recovery)                         |
 | 8  | Reitlehrer - Schäden am Berittpferd                        | PASS          | **MARGINAL**      | **↓ REGRESSION**       | tree, 10 nodes, depth 2, 4555 chars,`leaf_concentration=0.26` (was ≤0.20 in Run 6)                      |
-| 9  | Unfallversicherung-Leistungsuebersicht                      | FAIL          | **MARGINAL**      | ↑                            | flat_mixed depth=1, 15 nodes, 381 chars (D2 decorative-icon stripping)                                     |
+| 9  | Unfallversicherung-Leistungsuebersicht                      | FAIL          | **MARGINAL**      | ↑                            | flat_mixed depth=1, 15 nodes, 7,297 chars (4 benefit-comparison tables; corrected per RFC-024 D6 — was misreported as 381 chars) (D2 decorative-icon stripping)                                     |
 | 10 | Cabinet Resolution No. 21/2020                              | PASS          | **PASS**          | =                             | tree, 43 nodes, depth 3, 58k chars                                                                         |
 | 11 | Cabinet Resolution No. 96/2023                              | PASS          | **PASS**          | =                             | tree, 108 nodes, depth 3, 46k chars                                                                        |
 | 12 | Federal Decree-Law No. 33/2021 (Labor)                      | PASS          | **PASS**          | =                             | tree, 488 nodes, depth 3, 189k chars                                                                       |
