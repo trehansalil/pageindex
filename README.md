@@ -54,7 +54,7 @@ graph TD
 
     subgraph infra["Storage & External Services"]
         MINIO[("MinIO — bucket: pageindex\nuploads/ · processed/*.json\n*.flat.json · *.meta.json · hashes/")]
-        REDIS[("Redis DB 1\ndoc cache TTL 300s · job status TTL 24h\narq queue + DLQ")]
+        REDIS[("Redis DB 0\ndoc cache TTL 300s · job status TTL 24h\narq queue + DLQ")]
         PG[("PostgreSQL 16\ndocument registry\ndual-write + backfill")]
         PROV["LLM Provider\nOpenAI · Azure · compatible"]
         LF["Langfuse — tracing + cost"]
@@ -71,7 +71,8 @@ graph TD
     UPAPI -->|enqueue| REDIS
     UPAPI -->|stage file| MINIO
     PDJ --> SUB
-    SUB -->|success| ST & SF
+    SUB -->|success| ST
+    SUB -->|success| SF
     SUB -->|failure| DLQ
     CFG --> IDX --> CONV --> VT
     VT -->|pass, hierarchical| ST
@@ -79,8 +80,10 @@ graph TD
     VT -->|garbled| OCR -->|still garbled| VLM
     VLM -->|recovered| ST
     VLM -->|still garbled| GB --> DLQ
-    ST & SF -->|persist| MINIO
-    ST & SF -->|dual-write| PG
+    ST -->|persist| MINIO
+    SF -->|persist| MINIO
+    ST -->|dual-write| PG
+    SF -->|dual-write| PG
     METRICS --> PROM
     IDX -->|trace| LF
     RAG -->|trace| LF
@@ -135,7 +138,7 @@ Minimum `.env` for local development:
 
 ```dotenv
 OPENAI_API_KEY=sk-your-key-here
-REDIS_URL=redis://localhost:6379/1
+REDIS_URL=redis://localhost:6379/0
 MINIO_ENDPOINT=localhost:9000
 POSTGRES_DSN=postgresql://pageindex:pageindex@localhost:5432/pageindex
 MCP_PORT=8201
@@ -197,7 +200,7 @@ docker compose --profile app up -d --build
 |---------|-----|-------|
 | MCP server | `http://localhost:8201/mcp` | `/upload` and `/metrics` on the same port |
 | MinIO console | `http://localhost:9001` | `minioadmin` / `minioadmin` |
-| Redis | `localhost:6379` | DB `1` |
+| Redis | `localhost:6379` | DB `0` |
 | PostgreSQL | `localhost:5432` | DB `pageindex`, user `pageindex`/`pageindex` |
 
 ## MCP Query Tools
