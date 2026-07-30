@@ -4,10 +4,9 @@ sub-icon ``PictureItem`` regions.
 Validates Design Property 3: for any ``PictureItem`` region whose bbox width
 AND height are both below ``DECORATIVE_ICON_MIN_DIM_PT`` (default 20pt), the
 system SHALL skip crop+OCR and set ``skip_reasons[i] = "decorative_icon"``;
-for any region that passes the size filter but yields empty OCR text on a
-page with ``rotation == 0``, the system SHALL set ``decorative=True``;
-neither path SHALL fire when ``page.rotation != 0`` (the D2/D6 interaction
-guard).
+for any region that passes the size filter but yields empty OCR text, the
+system SHALL set ``decorative=True`` REGARDLESS of ``page.rotation`` (RFC-025
+D2 removed the orphaned rotation gate on this flag).
 """
 
 import types
@@ -130,10 +129,11 @@ class TestBeltAndSuspendersDecorativeFlag:
 
 
 class TestD2D6InteractionGuard:
-    def test_empty_ocr_on_rotated_page_does_not_set_decorative(self, monkeypatch):
-        """D2's belt-and-suspenders heuristic must NOT fire when the page is
-        rotated -- empty OCR on a rotated page more likely indicates D6's
-        rotation-caused OCR failure than a genuinely decorative image."""
+    def test_empty_ocr_on_rotated_page_sets_decorative(self, monkeypatch):
+        """RFC-025 D2: the rotation gate on the decorative flag was removed
+        as dead code (the "gets first crack" rotation-correction retry it
+        referenced was never implemented). Empty OCR now sets
+        ``decorative=True`` regardless of ``page.rotation``."""
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=180)
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "")
         region = _region(0, 0, 30, 30)
@@ -141,12 +141,12 @@ class TestD2D6InteractionGuard:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        assert "decorative" not in result[0]
+        assert result[0]["decorative"] is True
 
     def test_nonempty_ocr_on_rotated_page_still_not_decorative(self, monkeypatch):
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=90)
         monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda path, langs: "recovered text"
+            converters, "_tesseract_ocr_image", lambda path, langs: "Recovered chart text here"
         )
         region = _region(0, 0, 30, 30)
 

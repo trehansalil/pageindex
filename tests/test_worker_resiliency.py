@@ -56,7 +56,7 @@ async def test_worker_02_c2_stamps_processing_started_at(fake_redis):
     ctx = {"redis": fake_redis}
     captured = {}
 
-    async def capture_then_return(_path):
+    async def capture_then_return(_path, **kwargs):
         captured.update(await fake_redis.hgetall("pageindex:job:job-ts"))
         return {"ok": True, "doc_id": "doc-ts", "peak_rss_kib": 0, "duration_ms": 0}
 

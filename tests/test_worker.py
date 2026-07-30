@@ -43,7 +43,7 @@ async def test_process_document_job_awaits_memory_gate_before_subprocess(mock_re
         calls.append("gate")
         return True
 
-    async def fake_subprocess(path):
+    async def fake_subprocess(path, **kwargs):
         calls.append("subprocess")
         return {"ok": True, "doc_id": "doc-123", "peak_rss_kib": 0, "duration_ms": 0}
 
