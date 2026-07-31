@@ -1622,6 +1622,88 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
     return f"{md}\n\n{full_text}"
 
 
+def _detect_page_rotation(page) -> dict:
+    """RFC-026 D2: read a single page's /Rotate metadata plus an aspect-ratio
+    fallback. Reuses the `page.rotation` accessor already used at the D6
+    crop-normalization site (~line 1746). Per-page, not per-document — a
+    single PDF can mix portrait and landscape pages. `/Rotate` is authoritative;
+    the aspect-ratio heuristic is advisory only, for pages where a scanner
+    omitted `/Rotate` but still produced a wide page.
+    """
+    try:
+        rotate = page.rotation
+        width = page.rect.width
+        height = page.rect.height
+    except Exception:
+        return {"rotate": 0, "likely_landscape": False, "width": 0.0, "height": 0.0}
+    likely_landscape = rotate == 0 and width > height
+    return {
+        "rotate": rotate,
+        "likely_landscape": likely_landscape,
+        "width": width,
+        "height": height,
+    }
+
+
+# RFC-026 D2: gates the rotation-aware coordinate transform below so the fix
+# can be rolled back without a revert if it regresses an unrelated corpus doc.
+_PAGE_ROTATION_DETECTION_ENABLED = os.getenv(
+    "PAGE_ROTATION_DETECTION_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+
+
+def _normalize_pdf_page_rotation(pdf_path: str) -> str:
+    """RFC-026 D2: bake each page's effective rotation into its `/Rotate` key
+    before handing the file to the docling extraction backend, so rotated and
+    aspect-ratio-landscape pages get a consistent coordinate mapping instead of
+    fragmenting into near-empty text blocks (the `uae_numbers_english_page_16_17`
+    stall — ~750 chars extracted vs. ~4000-8000 expected).
+
+    `effective_rotation` is `/Rotate` when non-zero, else 90 when the aspect-ratio
+    heuristic flags a likely-landscape page with no explicit `/Rotate` (a scanner
+    that omitted the key but still produced a wide page). Per-page — mixed
+    portrait/landscape documents only get pages that need it rewritten.
+
+    Composes with the existing D6 rotation-zeroing at the OCR-crop site
+    (~lines 1744-1774): that path opens its own `fitz.Document` for cropping and
+    always restores `orig_rotation` after rendering, so it is unaffected by the
+    (separate, disk-persisted) copy this function may return.
+
+    Returns the original path unchanged when no page needs correction, when the
+    gate is disabled, or on any read/write failure (fail-open — a single
+    corrupted page's rotation metadata must not abort extraction).
+    """
+    if not _PAGE_ROTATION_DETECTION_ENABLED:
+        return pdf_path
+    try:
+        import fitz  # PyMuPDF, AGPL-3.0
+
+        pdf = fitz.open(pdf_path)
+        try:
+            changed = False
+            for page in pdf:
+                info = _detect_page_rotation(page)
+                effective_rotation = (
+                    info["rotate"] if info["rotate"] else (90 if info["likely_landscape"] else 0)
+                )
+                if effective_rotation and effective_rotation != page.rotation:
+                    page.set_rotation(effective_rotation)
+                    changed = True
+            if not changed:
+                return pdf_path
+            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+            tmp.close()
+            pdf.save(tmp.name)
+            return tmp.name
+        finally:
+            pdf.close()
+    except Exception as exc:
+        logger.warning(
+            "rotation normalization failed for %s (%s); using original file", pdf_path, exc
+        )
+        return pdf_path
+
+
 def _recover_picture_text(  # noqa: PLR0915, C901
     pdf_path: str,
     regions: list[dict],
@@ -2094,7 +2176,16 @@ def pdf_to_markdown_docling(
     converter = _docling_converter(
         force_full_page_ocr=force_full_page_ocr, ocr_lang_override=ocr_lang_override
     )
-    result = converter.convert(pdf_path)
+    # RFC-026 D2: normalize per-page rotation before extraction so landscape/
+    # rotated pages get correct coordinate mapping instead of fragmenting text
+    # into near-empty nodes. Returns pdf_path unchanged when no page needs it.
+    docling_input_path = _normalize_pdf_page_rotation(pdf_path)
+    try:
+        result = converter.convert(docling_input_path)
+    finally:
+        if docling_input_path != pdf_path:
+            with contextlib.suppress(OSError):
+                os.unlink(docling_input_path)
 
     # Capture the RAW Docling markdown BEFORE the add-on runs: ResultPostprocessor
     # mutates result.document in place (it demotes unmatched headings to body text),

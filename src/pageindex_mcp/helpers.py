@@ -1048,14 +1048,17 @@ def validate_tree(structure: list, expected_script: str | None = None) -> tuple[
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
     Returns (ok, reason); reason is '' when ok. Fails (priority order) on
-    node_count < 3, depth < 2, or garbling (null/replacement bytes or a high
-    ratio of control characters — the validated German-insurance failure mode)."""
+    garbling (null/replacement bytes or a high ratio of control characters —
+    the validated German-insurance failure mode), node_count < 3, or
+    depth < 2. RFC-026 D5: garbling is checked first so a thin tree whose
+    only content is garbled reports 'garbling', not a shadowing structural
+    reason."""
+    if _tree_is_garbled(structure, expected_script=expected_script):
+        return False, "garbling"
     if _tree_node_count(structure) < 3:
         return False, "node_count<3"
     if _tree_depth(structure) < 2:
         return False, "depth<2"
-    if _tree_is_garbled(structure, expected_script=expected_script):
-        return False, "garbling"
     # RFC-018 D3b: per-node garble ratio — catches documents where a minority of
     # nodes are garbled but the flattened full-text dilutes below the bulk gate.
     total_nodes = _tree_node_count(structure)
@@ -1178,6 +1181,12 @@ def classify_verdict(  # noqa: C901
     image_enrichment_ratio: float | None = None,
     prior_verdict: str | None = None,
 ) -> tuple[str, str]:
+    # RFC-026 D0: unconditional hard-FAIL floor for zero-content documents.
+    # Runs before every other check/promotion branch, including
+    # image_enrichment_promoted -- no content_class, ratio, or hysteresis
+    # band can override an empty document (CLAUDE.md Hard Rule 5).
+    if _tree_node_count(structure) == 0 or len(_flatten_tree_text(structure)) == 0:
+        return "FAIL", "zero_content"
     if validate_reason == "garbling":
         return "FAIL", "garbling"
     # RFC-015 D2: content-ordering regression forces the lowest tier. Self-contained
@@ -1200,6 +1209,13 @@ def classify_verdict(  # noqa: C901
         and image_enrichment_ratio is not None
         and image_enrichment_ratio >= 0.8
     ):
+        # RFC-026 D1: ratio-only gate is scale-blind (a doc with one tiny
+        # enriched image can hit ratio=1.0). Pair the promotion with an
+        # absolute character floor.
+        _min_promoted_chars = int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500"))
+        total_chars = len(_flatten_tree_text(structure))
+        if total_chars < _min_promoted_chars:
+            return "MARGINAL", "image_enrichment_promoted_below_char_floor"
         return "PASS", "image_enrichment_promoted"
 
     _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)

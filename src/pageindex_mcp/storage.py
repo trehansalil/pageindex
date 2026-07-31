@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
@@ -667,7 +667,79 @@ def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str |
     except Exception:
         logger.warning("find_prior_verdict: MinIO unavailable, no hysteresis", exc_info=True)
         return None
+    if best is not None:
+        return best
+    # RFC-026 D3: individual sidecars didn't match (e.g. wiped pre-reingestion) --
+    # fall back to the pre-wipe snapshot.
+    try:
+        response = mc.get_object(settings.minio_bucket, "processed/_prior_verdicts.json")
+        try:
+            snapshot = json.loads(response.read())
+        finally:
+            response.close()
+            response.release_conn()
+        for entry in snapshot.get("entries", []):
+            if entry.get("sha256") == sha256 or entry.get("doc_name") == filename:
+                verdict = entry.get("verdict")
+                if verdict in _VERDICT_PRIORITY and (
+                    best is None or _VERDICT_PRIORITY[verdict] > _VERDICT_PRIORITY[best]
+                ):
+                    best = verdict
+    except Exception:
+        logger.debug("find_prior_verdict: no snapshot fallback available", exc_info=True)
+        return None
     return best
+
+
+def snapshot_prior_verdicts() -> None:
+    """Snapshot all current processed/*.meta.json verdicts to a sidecar file.
+
+    RFC-026 D3: corpus reingestion wipes processed/* before reingesting, which
+    would otherwise make find_prior_verdict() always return None. Called
+    pre-wipe, this preserves the best-ever verdict per document so hysteresis
+    survives the wipe. Fails silently -- the snapshot is a quality-of-life
+    improvement, never a blocker for reingestion.
+    """
+    mc = get_minio()
+    entries = []
+    try:
+        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
+            name = obj.object_name
+            if not name.endswith(".meta.json"):
+                continue
+            response = None
+            try:
+                response = mc.get_object(settings.minio_bucket, name)
+                sidecar = json.loads(response.read())
+            except Exception:
+                continue
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                        response.release_conn()
+                    except Exception:
+                        pass
+            entries.append(
+                {
+                    "sha256": sidecar.get("sha256"),
+                    "doc_name": sidecar.get("doc_name"),
+                    "doc_id": Path(name).stem.removesuffix(".meta"),
+                    "verdict": sidecar.get("verdict"),
+                }
+            )
+        payload = json.dumps(
+            {"snapshot_at": datetime.now(timezone.utc).isoformat(), "entries": entries}
+        ).encode("utf-8")
+        mc.put_object(
+            settings.minio_bucket,
+            "processed/_prior_verdicts.json",
+            BytesIO(payload),
+            length=len(payload),
+            content_type="application/json",
+        )
+    except Exception:
+        logger.warning("snapshot_prior_verdicts: failed, hysteresis snapshot skipped", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
