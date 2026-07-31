@@ -1,9 +1,5 @@
- 
-
 <!-- Space: CITRA -->
-
 <!-- Title: Implementation Plan: RFC-025 Run 8 Verdict Hysteresis & Recovery Coverage -->
-
 <!-- Folder: Tasks -->
 
 # Implementation Plan: RFC-025 Run 8 Verdict Hysteresis & Recovery Coverage
@@ -25,7 +21,7 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
 
 ## Tasks
 
-- [x] <a id="1-batch-1--verdict-hysteresis--garble-gate-fixes-d0-d2"></a>1. Batch 1: Verdict Hysteresis & Garble Gate Fixes ([RFC-025 D0](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d0-implement-hysteresis-band-for-max_leaf_ratio-verdict-gate-p0-bug), [D2](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d2-fix-short-text-garble-gate-bypass-and-orphaned-rotation-decorative-flag-p1-bug))
+- [X] <a id="1-batch-1--verdict-hysteresis--garble-gate-fixes-d0-d2"></a>1. Batch 1: Verdict Hysteresis & Garble Gate Fixes ([RFC-025 D0](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d0-implement-hysteresis-band-for-max_leaf_ratio-verdict-gate-p0-bug), [D2](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d2-fix-short-text-garble-gate-bypass-and-orphaned-rotation-decorative-flag-p1-bug))
 
   *[RFC-025 Batch 1: Verdict Hysteresis &amp; Garble Gate Fixes](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#batch-1-verdict-hysteresis--garble-gate-fixes-d0-d2-items-1-2----25d) — D0 and D2 are independent of each other but both modify `helpers.py`; batching avoids merge conflicts. D2's rollback env var (`GARBLE_SHORT_TEXT_DEFAULT`) lives in this batch, keeping both D2 code changes together for simple partial revert.*
 
@@ -59,7 +55,7 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
     - The reason set MUST include `"node_garbling"`, not just `"garbling"` — [Task 2.4](#24-extend-recovery-triggers-to-match-node_garbling-clientpy-d3) legitimizes `"node_garbling"` as a garbling failure class in the same RFC, and omitting it here would reintroduce the exact bypass this task fixes for a `"node_garbling"`-origin document
     - Add `GARBLE_SHORT_TEXT_DEFAULT` env var (default `true`) for rollback
     - _Requirements:_ [RFC-025 D2](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d2-fix-short-text-garble-gate-bypass-and-orphaned-rotation-decorative-flag-p1-bug) | [Design Property 3](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-3-garble-by-default-for-short-post-retry-text-d2) | [Design Service: helpers.py](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#2-helperspy--verdict-classification--garble-gate)
-  - [x] <a id="15-thread-original-reason-through-flat-path-garble-gate-clientpy-d2"></a>1.5 Thread original reason through flat-path garble gate call (D2)
+  - [X] <a id="15-thread-original-reason-through-flat-path-garble-gate-clientpy-d2"></a>1.5 Thread original reason through flat-path garble gate call (D2)
 
     - In `src/pageindex_mcp/client.py`, at the flat-path garble gate call site (~line 1196), pass the tree-build's original `reason` value through to `_flat_text_is_garbled(text, original_reason=reason)`
     - NOTE: depends on [Task 1.4](#14-garble-by-default-for-post-retry-short-text-helperspy-d2) — the parameter must exist before threading it
@@ -80,13 +76,13 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
     - **Validates: [Design Property 1](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-1-prior-verdict-hysteresis-anchoring-d0), [RFC-025 D0](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d0-implement-hysteresis-band-for-max_leaf_ratio-verdict-gate-p0-bug), [RFC-025 Test Strategy: D0 row](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#test-strategy)**
     - **Property 3: Garble-by-default for short post-retry text**
     - **Validates: [Design Property 3](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-3-garble-by-default-for-short-post-retry-text-d2), [RFC-025 D2](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d2-fix-short-text-garble-gate-bypass-and-orphaned-rotation-decorative-flag-p1-bug), [RFC-025 Test Strategy: D2 row](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#test-strategy)**
-  - [x] <a id="18-checkpoint--batch-1"></a>1.8 Checkpoint — Batch 1: Verdict Hysteresis & Garble Gate Fixes
+  - [X] <a id="18-checkpoint--batch-1"></a>1.8 Checkpoint — Batch 1: Verdict Hysteresis & Garble Gate Fixes
 
     - Run `uv run pytest tests/test_rfc025_d0.py tests/test_rfc025_d2.py` and verify all pass
     - Verify [Design Properties 1, 3](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#correctness-properties) hold
     - Spot-check Doc 14 (Haftpflicht-Besondere) and Doc 15 (Federal Decree 13/2022) against the [RFC-025 Projected Run 9 Verdict Changes](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#projected-run-9-verdict-changes) table
     - Ask the user if questions arise before proceeding
-- [x] <a id="2-batch-2--picture-coverage--recovery-path-d1-d3"></a>2. Batch 2: Picture Coverage & Recovery Path ([RFC-025 D1](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d1-region-aware-text-layer-check-for-picture-coverage-exemption-p0-bug), [D3](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d3-extend-recovery-triggers-to-match-node_garbling-reason-p1-bug))
+- [X] <a id="2-batch-2--picture-coverage--recovery-path-d1-d3"></a>2. Batch 2: Picture Coverage & Recovery Path ([RFC-025 D1](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d1-region-aware-text-layer-check-for-picture-coverage-exemption-p0-bug), [D3](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d3-extend-recovery-triggers-to-match-node_garbling-reason-p1-bug))
 
   *[RFC-025 Batch 2: Picture Coverage &amp; Recovery Path](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#batch-2-picture-coverage--recovery-path-d1-d3----20d) — D1 and D3 are independent of each other and of Batch 1. D1 modifies `converters.py`; D3 modifies `client.py` at different call sites than Batch 1.*
 
@@ -120,7 +116,7 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
     - Write a test that renders a known rotation=270 PDF, crops a known-coordinate region via `_bbox_to_fitz_rect`, and asserts the crop matches the expected pixel content
     - **Exit criteria**: (a) if the test passes, the spike closes with no code change; (b) if the test fails (mis-crop confirmed), file a follow-up RFC with the coordinate-transform fix — the fix itself is explicitly out of scope for this RFC
     - _Requirements:_ [RFC-025 D2](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d2-fix-short-text-garble-gate-bypass-and-orphaned-rotation-decorative-flag-p1-bug) | [Design Property 3](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-3-garble-by-default-for-short-post-retry-text-d2)
-  - [x] <a id="26-batch-2-unit-tests"></a>2.6 Unit tests for Tasks 2.1-2.5 (D1, D3)
+  - [X] <a id="26-batch-2-unit-tests"></a>2.6 Unit tests for Tasks 2.1-2.5 (D1, D3)
 
     - Write `tests/test_rfc025_d1.py`: (a) full-page picture region (>60% coverage) with header-only text outside bbox — region NOT skipped, OCR/clip_text fires; (b) full-page picture region with substantial text inside bbox (>20 chars) — region skipped as before; (c) heading-only tree with chars_per_heading < 50 — document-level fallback fires; (d) `REGION_AWARE_TEXT_CHECK_ENABLED=false` — page-level check used (backward compat); (e) `MAX_FULLPAGE_PICTURE_OCR_REGIONS` exceeded — further exemptions skipped, warning logged
     - Write `tests/test_rfc025_d3.py`: (a) `validate_tree` returns `(False, "node_garbling")` — OCR escalation path fires; (b) same — VLM fallback path fires; (c) same — D7 Tesseract-raster path fires; (d) `validate_tree` returns `(False, "node_count<3")` — none of the garble recovery paths fire (no false triggering)
@@ -128,14 +124,14 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
     - **Validates: [Design Property 2](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-2-region-scoped-picture-coverage-text-check-d1), [RFC-025 D1](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d1-region-aware-text-layer-check-for-picture-coverage-exemption-p0-bug), [RFC-025 Test Strategy: D1 row](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#test-strategy)**
     - **Property 4: node_garbling recovery trigger parity**
     - **Validates: [Design Property 4](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-4-node_garbling-recovery-trigger-parity-d3), [RFC-025 D3](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d3-extend-recovery-triggers-to-match-node_garbling-reason-p1-bug), [RFC-025 Test Strategy: D3 row](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#test-strategy)**
-  - [x] <a id="27-checkpoint--batch-2"></a>2.7 Checkpoint — Batch 2: Picture Coverage & Recovery Path
+  - [X] <a id="27-checkpoint--batch-2"></a>2.7 Checkpoint — Batch 2: Picture Coverage & Recovery Path
 
     - Run `uv run pytest tests/test_rfc025_d1.py tests/test_rfc025_d3.py` and verify all pass
     - Verify [Design Properties 2, 4](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#correctness-properties) hold, including the D3 false-positive regression guard (test 2.6d)
     - Spot-check Doc 16 (Human-Rights) and القرار التنظيمي against the [RFC-025 Projected Run 9 Verdict Changes](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#projected-run-9-verdict-changes) table
     - Confirm the [Task 2.5](#25-spike-verify-_bbox_to_fitz_rect-rotation-math-d2) spike outcome (spike closed clean, or follow-up RFC filed) is recorded
     - Ask the user if questions arise before proceeding
-- [x] <a id="3-batch-3--audit-data-correction--verification-hardening-d4"></a>3. Batch 3: Audit Data Correction & Verification Hardening ([RFC-025 D4](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d4-harden-audit-data-verification-against-minio-ground-truth-p2-data-quality))
+- [X] <a id="3-batch-3--audit-data-correction--verification-hardening-d4"></a>3. Batch 3: Audit Data Correction & Verification Hardening ([RFC-025 D4](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d4-harden-audit-data-verification-against-minio-ground-truth-p2-data-quality))
 
   *[RFC-025 Batch 3: Audit Data Correction &amp; Verification Hardening](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#batch-3-audit-data-correction--verification-hardening-d4----06d) — depends on Batches 1-2 only for context; the audit correction itself can run in parallel with any prior batch, but skill-prompt hardening should reflect the final decision set.*
 
@@ -152,7 +148,7 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
     - Fail the write if the report's figures diverge from the actual store
     - This closes the same fabrication failure mode already confirmed once in project memory (`fabricated-corpus-report-2026-07-17.md`) but not yet implemented
     - _Requirements:_ [RFC-025 D4](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#d4-harden-audit-data-verification-against-minio-ground-truth-p2-data-quality) | [Design Property 5](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-5-audit-ground-truth-verification-d4) | [Design Service: Audit Tooling](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#5-audit-tooling--corpus-score-diff--corpus-cycle-skill-prompts)
-  - [x] <a id="33-checkpoint--batch-3"></a>3.3 Checkpoint — Batch 3: Audit Data Correction & Verification Hardening
+  - [X] <a id="33-checkpoint--batch-3"></a>3.3 Checkpoint — Batch 3: Audit Data Correction & Verification Hardening
 
     - Manually verify all four Reitlehrer locations in `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md` now match live MinIO `meta.json` state (row, tally, regression narrative, investigation table)
     - Verify [Design Property 5](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md#property-5-audit-ground-truth-verification-d4) holds
@@ -162,7 +158,7 @@ This plan implements the five RFC-025 decisions across four batches, per the [RF
 
   *[RFC-025 Batch 4: Reingestion Verification](../rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md#batch-4-reingestion-verification-run-9----025d) — must run after Batches 1-3 complete; running it in parallel with prior batches would validate nothing.*
 
-  - [x] <a id="41-bump-pipeline-version-and-reingest-corpus-for-run-9"></a>4.1 Bump `CURRENT_PIPELINE_VERSION`; full 25-doc reingestion for Run 9
+  - [X] <a id="41-bump-pipeline-version-and-reingest-corpus-for-run-9"></a>4.1 Bump `CURRENT_PIPELINE_VERSION`; full 25-doc reingestion for Run 9
 
     - Bump `CURRENT_PIPELINE_VERSION` to invalidate cached pipeline results
     - Wipe all derived stores (MinIO, Redis) per the corpus-reaudit methodology
