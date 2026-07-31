@@ -579,6 +579,91 @@
     <div class="header-sub">Automated loop: audit a corpus run, diagnose regressions, build fixes via RFC, re-ingest. Each iteration improves the 25-doc scorecard toward convergence.</div>
   </div>
 
+  <!-- ═══════════ STATUS BANNER ═══════════ -->
+  <div style="background: linear-gradient(135deg, var(--teal-bg), var(--accent-bg)); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
+    <div style="flex: 0 0 auto;">
+      <div style="font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.3rem;">Latest Run</div>
+      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--teal);">Run 9</div>
+    </div>
+    <div style="flex: 1; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
+      <div style="text-align: center; min-width: 60px;">
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">15</div>
+        <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">PASS</div>
+      </div>
+      <div style="text-align: center; min-width: 60px;">
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">8</div>
+        <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">MARGINAL</div>
+      </div>
+      <div style="text-align: center; min-width: 60px;">
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">0</div>
+        <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">FAIL</div>
+      </div>
+      <div style="text-align: center; min-width: 60px;">
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">1</div>
+        <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">ERROR</div>
+      </div>
+    </div>
+    <div style="flex: 0 0 auto; font-family: var(--font-label); font-size: 0.8rem; color: var(--text-muted); text-align: right;">
+      <div>RFC-026 &middot; 2026-07-31</div>
+      <div style="color: var(--teal); font-weight: 600;">+8 PASS vs Run 8</div>
+    </div>
+  </div>
+
+  <!-- ═══════════ RUN HISTORY TABLE ═══════════ -->
+  <div style="margin-bottom: 1.5rem; overflow-x: auto;">
+    <table style="width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 0.82rem;">
+      <thead>
+        <tr style="border-bottom: 2px solid var(--border);">
+          <th style="text-align: left; padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);">Run</th>
+          <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">PASS</th>
+          <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--accent);">MARGINAL</th>
+          <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">FAIL</th>
+          <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">ERROR</th>
+          <th style="text-align: left; padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);">RFC</th>
+          <th style="text-align: left; padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);">Key Change</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">5</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">11</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">2</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-018/019</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Marker count, text-layer, Arabic RTL, garble gate</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">6</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">11</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">4</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-023</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Content recovery, verdict hardening (12 decisions)</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">8</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">6</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-025</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Verdict hysteresis, recovery coverage</td>
+        </tr>
+        <tr style="background: var(--teal-bg); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">15</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">8</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">0</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-026</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Verdict gate hardening, rotation detection</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
   <div class="legend">
     <div class="legend-group">
       <div class="legend-dot" style="background: var(--gate-auto)"></div>
@@ -622,23 +707,18 @@ flowchart TD
 
     START(["corpus:cycle orchestrator"]):::phase
 
-    subgraph W1 ["Workflow 1 — Ingest"]
+    subgraph W1 ["Workflow 1 — Ingest + Score (incremental)"]
         WIPE["Wipe PG / MinIO / Redis"]:::skill
         RESTART["Restart workers + server"]:::skill
-        INGEST["preprocess_client.py\n25-doc batch"]:::skill
-    end
-    START --> WIPE --> RESTART --> INGEST
-
-    G0{"G0 — All 25 docs\nterminal state\n▸ Haiku · auto"}:::gate_auto
-    INGEST --> G0
-
-    subgraph W2 ["Workflow 2 — Score + Diff"]
-        SCORE["corpus:score\nHybrid verdict\n▸ pipeline: Haiku fetch\n+ Sonnet judge"]:::skill
-        DIFF["corpus:diff\nRun N vs N-1 delta\n▸ Haiku"]:::skill
-        REPORT["Write audit report\n▸ Haiku"]:::skill
+        PIPELINE["Per-doc pipeline\n▸ Haiku process\n▸ Sonnet fetch metrics\n▸ Opus judge verdict"]:::skill
+        DIFF["corpus:diff\nRun N vs N-1 delta\n▸ Sonnet"]:::skill
+        REPORT["Write audit report\n▸ Fable"]:::skill
         AUDIT_FILE[/"audit/CORPUS_REINGESTION\n_AUDIT_RUN-N.md"/]:::output
     end
-    G0 --> SCORE --> DIFF --> REPORT --> AUDIT_FILE
+    START --> WIPE --> RESTART --> PIPELINE --> DIFF --> REPORT --> AUDIT_FILE
+
+    G0{"G0 — All docs\nterminal state\n▸ Haiku · auto"}:::gate_auto
+    PIPELINE --> G0
 
     G1{"G1 — Human reviews\nscorecard + convergence\n▸ manual"}:::gate_manual
     AUDIT_FILE --> G1
@@ -652,11 +732,13 @@ flowchart TD
         CLUSTER["Cluster Trace\nOne Opus agent per\ndomain cluster"]:::skill
         DRILLDOWN["Document Drill-down\nPer-doc investigation\n▸ Sonnet / Haiku"]:::skill
         CKPT_W3["Checkpoint\nPersist to disk\n▸ Haiku"]:::checkpoint
-        RFC_DRAFT["corpus:plan\nOpus drafts RFC\nD-numbered decisions"]:::skill
+        RFC_PLAN["RFC Plan\nCompress traces + structure\n▸ Opus · schema"]:::skill
+        RFC_WRITE["RFC Write\nWrite file from plan\n▸ Opus · no schema"]:::skill
         RFC_VERIFY{"Fable verifies\nmax 2 rounds"}:::skill
         RFC_REDRAFT["Opus re-drafts\nvia Serena MCP"]:::skill
         RFC_OK[/"RFC approved\n.agents/rfcs/NNN-slug.md"/]:::output
-        ARTIFACT_BUILD["rfc-artifact-build\nGenerates design + tasks"]:::skill
+        BUILD_DESIGN["Build Design Doc\n▸ Sonnet"]:::skill
+        BUILD_TASKS["Build Tasks File\n▸ Sonnet"]:::skill
         DESIGN_OUT[/".agents/designs/\ndesign-rfcNNN-slug.md"/]:::output
         TASKS_OUT[/".agents/tasks/\ntasks-rfcNNN-slug.md"/]:::output
         VERIFY_ARTIFACTS["Verify Artifacts\nCross-refs · mermaid · links\n▸ Sonnet"]:::skill
@@ -665,12 +747,12 @@ flowchart TD
     TRIAGE --> CLUSTER
     CLUSTER -- "all explained" --> CKPT_W3
     CLUSTER -- "ambiguous docs" --> DRILLDOWN --> CKPT_W3
-    CKPT_W3 --> RFC_DRAFT --> RFC_VERIFY
+    CKPT_W3 --> RFC_PLAN --> RFC_WRITE --> RFC_VERIFY
     RFC_VERIFY -- "rejected" --> RFC_REDRAFT --> RFC_VERIFY
     RFC_VERIFY -- "approved" --> RFC_OK
-    RFC_OK --> ARTIFACT_BUILD
-    ARTIFACT_BUILD --> DESIGN_OUT
-    ARTIFACT_BUILD --> TASKS_OUT
+    RFC_OK --> BUILD_DESIGN & BUILD_TASKS
+    BUILD_DESIGN --> DESIGN_OUT
+    BUILD_TASKS --> TASKS_OUT
     DESIGN_OUT --> VERIFY_ARTIFACTS
     TASKS_OUT --> VERIFY_ARTIFACTS
 
@@ -711,67 +793,49 @@ flowchart TD
   <!-- ═══════════ PHASE 1 ═══════════ -->
   <div class="phase">
     <div class="phase-head">
-      <div class="phase-num">1</div>
-      <div class="phase-title">Ingest</div>
+      <div class="phase-num">1+2</div>
+      <div class="phase-title">Ingest + Score (Incremental)</div>
     </div>
     <div class="phase-body">
-      <div class="phase-desc">Wipe derived state (PG/MinIO processed/Redis cache), restart MCP workers + server, run full corpus ingestion via <code>preprocess_client.py</code>.</div>
+      <div class="phase-desc">Wipe derived state, restart services, then process each document and score it <strong>immediately</strong> &mdash; no waiting for the full batch. Each doc flows through a 3-stage pipeline: <em>process &rarr; fetch metrics &rarr; judge verdict</em>. Diff and report run after all docs are scored.</div>
       <div class="card-row">
         <div class="card">
-          <div class="card-label">corpus:cycle &rarr; shell</div>
+          <div class="card-label">corpus:ingest-score &rarr; setup</div>
           <div class="card-title">Environment Reset</div>
-          <div class="card-detail">Drop PG tables, clear MinIO <code>processed/</code>, flush Redis. Restart arq workers and MCP server. Confirm healthy via health endpoint.</div>
+          <div class="card-detail">Drop PG tables, clear MinIO <code>processed/</code>, flush Redis. Restart arq workers and MCP server. Collect doc inventory + prior audit baseline. <span class="model model-haiku">Haiku</span></div>
         </div>
         <div class="card">
-          <div class="card-label">corpus:cycle &rarr; shell</div>
-          <div class="card-title">Batch Ingestion</div>
-          <div class="card-detail">Run <code>preprocess_client.py</code> against full 25-doc corpus. Monitor parallel workers via log tailing.</div>
+          <div class="card-label">corpus:ingest-score &rarr; pipeline</div>
+          <div class="card-title">Per-Doc Pipeline (3-stage)</div>
+          <div class="card-detail">
+            Each document independently flows through &mdash; no batch barrier:<br>
+            <strong>Stage 1: Process</strong> &mdash; run <code>preprocess_client.py &lt;filename&gt;</code> per file. <span class="model model-haiku">Haiku</span><br>
+            <strong>Stage 2: Fetch Metrics</strong> &mdash; pull meta.json + tree JSON from MinIO, extract/compute node count, depth, chars, garble, markers. <span class="model model-sonnet">Sonnet</span><br>
+            <strong>Stage 3: Judge Verdict</strong> &mdash; subjective assessment (tree quality, content coverage, Arabic order). Assigns verdict: PASS / MARGINAL / FAIL / ERROR. <span class="model model-opus">Opus</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-row">
+        <div class="card">
+          <div class="card-label">corpus:diff</div>
+          <div class="card-title">Run-over-Run Delta</div>
+          <div class="card-detail">Compare Run N vs Run N-1 verdicts. Flag regressions (PASS&rarr;MARGINAL), improvements, and stalls. <span class="model model-sonnet">Sonnet</span></div>
+        </div>
+        <div class="card" style="flex: 0 1 auto;">
+          <div class="card-label">output</div>
+          <div class="card-title"><code>audit/CORPUS_REINGESTION_AUDIT_RUN-N.md</code></div>
+          <div class="card-detail">25-doc scorecard table + verdict delta section. One file per run, appended over iterations. <span class="model model-fable">Fable</span></div>
         </div>
       </div>
       <div class="gate">
         <div class="gate-tag auto">G0</div>
         <div class="gate-content auto-bg">
-          <span>All 25 docs reach terminal state (PASS/MARGINAL/FAIL/ERROR)</span>
+          <span>All docs reach terminal state (verified per-doc during pipeline + MinIO count check)</span>
           <span class="gate-type auto">auto</span>
           <span class="model model-haiku">Haiku</span>
         </div>
       </div>
-    </div>
-  </div>
-
-  <div class="phase-connector"></div>
-
-  <!-- ═══════════ PHASE 2 ═══════════ -->
-  <div class="phase">
-    <div class="phase-head">
-      <div class="phase-num">2</div>
-      <div class="phase-title">Score + Diff</div>
-    </div>
-    <div class="phase-body">
-      <div class="phase-desc">Score every document with the hybrid verdict system via a two-stage pipeline (Haiku fetch + Sonnet judge), then diff against the previous run&rsquo;s scorecard. Output: one audit file per run.</div>
-      <div class="card-row">
-        <div class="card">
-          <div class="card-label">corpus:score &rarr; pipeline</div>
-          <div class="card-title">Hybrid Verdict (2-stage pipeline)</div>
-          <div class="card-detail">
-            <strong>Stage 1: Fetch</strong> &mdash; extract tree metrics (node count, depth, chars, garbled blocks, image markers, PictureResult enrichments). <span class="model model-haiku">Haiku</span><br>
-            <strong>Stage 2: Judge</strong> &mdash; subjective assessment (tree structure quality, content coverage, Arabic text order). Assigns verdict: PASS / MARGINAL / FAIL / ERROR. <span class="model model-sonnet">Sonnet</span>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-label">corpus:diff</div>
-          <div class="card-title">Run-over-Run Delta</div>
-          <div class="card-detail">Compare Run N vs Run N-1 verdicts. Flag regressions (PASS&rarr;MARGINAL), improvements, and stalls. <span class="model model-haiku">Haiku</span></div>
-        </div>
-      </div>
-      <div class="card-row">
-        <div class="card" style="flex: 0 1 auto;">
-          <div class="card-label">output</div>
-          <div class="card-title"><code>audit/CORPUS_REINGESTION_AUDIT_RUN-N.md</code></div>
-          <div class="card-detail">25-doc scorecard table + verdict delta section. One file per run, appended over iterations.</div>
-        </div>
-      </div>
-      <div class="gate">
+      <div class="gate" style="margin-top: 0.5rem;">
         <div class="gate-tag manual">G1</div>
         <div class="gate-content manual-bg">
           <span>Human reviews scorecard. Decide: continue cycle or stop (converged).</span>
@@ -968,7 +1032,7 @@ flowchart TD
   <!-- ═══════════ LOOP BACK ═══════════ -->
   <div class="loop-back">
     <span class="loop-arrow">&#x21BA;</span>
-    <span>After G4, the cycle loops back to <strong>Phase 1 (Ingest)</strong> with fixes applied. Auto-convergence triggers at G1 when scoring shows <strong>0 FAIL + 0 ERROR + 0 regressions</strong>. The human retains override &mdash; convergence is a judgment call, not a hard threshold. Checkpoints in Phase 3 and <code>start_wave</code> in Phase 4 allow mid-run resume if context limits interrupt.</span>
+    <span>After G4, the cycle loops back to <strong>Phase 1+2 (Ingest + Score)</strong> with fixes applied. Each doc is scored immediately after processing &mdash; no waiting for the full batch. Auto-convergence triggers at G1 when scoring shows <strong>0 FAIL + 0 ERROR + 0 regressions</strong>. The human retains override &mdash; convergence is a judgment call, not a hard threshold. Checkpoints in Phase 3 and <code>start_wave</code> in Phase 4 allow mid-run resume if context limits interrupt.</span>
   </div>
 
   <!-- ═══════════ ARTIFACT FLOW ═══════════ -->
@@ -985,7 +1049,7 @@ flowchart TD
         </thead>
         <tbody>
           <tr>
-            <td><code>corpus:score</code> + <code>corpus:diff</code></td>
+            <td><code>corpus:ingest-score</code></td>
             <td>Scorecard + delta</td>
             <td><code>audit/CORPUS_REINGESTION_AUDIT_RUN-N.md</code></td>
           </tr>
@@ -1026,17 +1090,17 @@ flowchart TD
       <div class="tier-card">
         <div class="tier-card-name" style="color: var(--model-haiku);">Haiku</div>
         <div class="tier-card-desc">Easy tasks</div>
-        <div class="tier-card-use">Gate checks (G0, G4). Log parsing. Programmatic verdict checks. Diff generation. L1 pytest checkpoint.</div>
+        <div class="tier-card-use">Gate checks (G0, G4). Log parsing. Service restart. Document processing (subprocess call). L1 pytest checkpoint.</div>
       </div>
       <div class="tier-card">
         <div class="tier-card-name" style="color: var(--model-sonnet);">Sonnet</div>
         <div class="tier-card-desc">Medium tasks</div>
-        <div class="tier-card-use">Implementation. Subjective verdicts. Test repair. Builder agents in waves.</div>
+        <div class="tier-card-use">Metric fetch + comparison (scoring Stage 2). Run-over-run diff. Implementation. Test repair. Builder agents in waves. Triage.</div>
       </div>
       <div class="tier-card">
         <div class="tier-card-name" style="color: var(--model-opus);">Opus</div>
         <div class="tier-card-desc">Complex tasks</div>
-        <div class="tier-card-use">RFC drafting. Root-cause tracing. Architecture decisions. Phase orchestration.</div>
+        <div class="tier-card-use">Verdict judgment (scoring Stage 3). RFC drafting. Root-cause tracing. Architecture decisions.</div>
       </div>
       <div class="tier-card">
         <div class="tier-card-name" style="color: var(--model-fable);">Fable</div>
@@ -1085,19 +1149,24 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
       </thead>
       <tbody>
         <tr>
+          <td><code class="cmd-full">/corpus-ingest-score</code></td>
+          <td>Phase 1+2</td>
+          <td>Wipe, restart, then per-doc pipeline: Haiku process &rarr; Sonnet fetch metrics &rarr; Opus judge. Diff + report after all scored.</td>
+        </tr>
+        <tr>
           <td><code class="cmd-full">/corpus-ingest</code></td>
-          <td>Phase 1</td>
-          <td>Wipe stores, restart services, re-ingest full corpus, verify G0</td>
+          <td>Phase 1 (standalone)</td>
+          <td>Wipe stores, restart services, re-ingest full corpus, verify G0. Use <code>/corpus-ingest-score</code> for the full cycle.</td>
         </tr>
         <tr>
           <td><code class="cmd-full">/corpus-score-diff</code></td>
-          <td>Phase 2</td>
-          <td>Pipeline: Haiku fetch + Sonnet judge per doc, diff vs prior run, write <code>audit/CORPUS_REINGESTION_AUDIT_RUN-N.md</code></td>
+          <td>Phase 2 (standalone)</td>
+          <td>Score all processed docs + diff. Use <code>/corpus-ingest-score</code> for incremental review during a cycle.</td>
         </tr>
         <tr>
           <td><code class="cmd-full">/corpus-diagnose-plan</code> <code>@audit/CORPUS_&hellip;.md</code></td>
           <td>Phase 3</td>
-          <td>Triage &rarr; cluster trace (Opus) &rarr; drilldown (Sonnet/Haiku) &rarr; checkpoint &rarr; Opus drafts RFC &rarr; Fable verifies &rarr; build design + tasks. Supports <code>resume_from</code>.</td>
+          <td>Triage &rarr; cluster trace (Opus) &rarr; drilldown (Sonnet/Haiku) &rarr; checkpoint &rarr; Opus plans RFC (schema) &rarr; Opus writes RFC (no schema) &rarr; Fable verifies &rarr; build design + tasks (two parallel agents). Supports <code>resume_from</code>.</td>
         </tr>
         <tr>
           <td><code class="cmd-full">/corpus-build</code> <code>@.agents/tasks/tasks-rfcNNN-&hellip;.md</code></td>
@@ -1210,14 +1279,42 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
       </div>
     </div>
 
+    <!-- RFC-025 / RFC-026 Verdict Hardening -->
+    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Verdict Hardening &amp; Rotation Detection (RFC-025 / RFC-026)</h3>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-07-30 &middot; RFC-025</div>
+      <div class="card-title">Run 8: Verdict Hysteresis &amp; Recovery Coverage</div>
+      <div class="card-detail">
+        Run 8 corpus audit (25 docs): 7 PASS / 6 MARGINAL / 9 FAIL / 3 ERROR. RFC-025 landed hysteresis anchoring (<code>find_prior_verdict()</code> preserves best-ever verdict across reingestion), recovery coverage fixes, and expected-script propagation for garble detection.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-07-31 &middot; RFC-026</div>
+      <div class="card-title">Run 9: Verdict Gate Hardening &amp; Page Rotation Detection</div>
+      <div class="card-detail">
+        Run 9 corpus audit (25 docs): 15 PASS / 8 MARGINAL / 0 FAIL / 1 ERROR (PASS doubled vs Run 8). Audit found several verdicts unreliable &mdash; zero-content docs reaching MARGINAL, image-enrichment promotion bypassing volume checks. RFC-026: 6 active fix dimensions:<br>
+        <strong>D0:</strong> Hard FAIL floor for zero-content documents (4 Arabic docs). <strong>D1:</strong> Image-enrichment volume floor (<code>MIN_IMAGE_PROMOTED_CHARS=500</code>). <strong>D2:</strong> Page-level rotation detection (portrait/landscape stall, 3 runs). <strong>D3:</strong> Hysteresis preservation across reingestion wipe. <strong>D4:</strong> Scoring harness Stage 2 substring-match bug fix. <strong>D5:</strong> Garble check ordering in <code>validate_tree()</code>. D6 (Latin CMap garble) deferred.
+      </div>
+    </div>
+
     <!-- Process & Workflow Decisions -->
     <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Process &amp; Workflow Conventions</h3>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-07-31</div>
+      <div class="card-title">Incremental Ingest + Score Pipeline</div>
+      <div class="card-detail">
+        Merged Phase 1 (Ingest) and Phase 2 (Score) into a single per-document pipeline via <code>corpus-ingest-score</code> workflow. Each document is scored <strong>immediately</strong> after processing &mdash; no waiting for the full 25-doc batch to finish before review begins. The 3-stage pipeline (<span class="model model-haiku">Haiku</span> process &rarr; <span class="model model-sonnet">Sonnet</span> fetch metrics &rarr; <span class="model model-opus">Opus</span> judge verdict) runs with no barriers: Doc A can be in the judgment stage while Doc B is still processing. Scoring model tier upgraded: Haiku&rarr;Sonnet for fetch/comparison, Sonnet&rarr;Opus for judgment.
+      </div>
+    </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
       <div class="card-label">2026-07-20</div>
       <div class="card-title">Model Tier Assignment Convention</div>
       <div class="card-detail">
-        Tiered model selection established for all sub-agent and workflow dispatching: <span class="model model-fable">Fable</span> super complex tasks (RFC verification, wave checkpoints, G3 verdict) &middot; <span class="model model-opus">Opus</span> complex tasks (RFC drafting, root-cause tracing, architecture) &middot; <span class="model model-sonnet">Sonnet</span> medium tasks (subjective verdicts, test repair) &middot; <span class="model model-haiku">Haiku</span> easy tasks (programmatic scoring, shell commands).
+        Tiered model selection established for all sub-agent and workflow dispatching: <span class="model model-fable">Fable</span> super complex tasks (RFC verification, wave checkpoints, G3 verdict) &middot; <span class="model model-opus">Opus</span> complex tasks (RFC drafting, root-cause tracing, verdict judgment) &middot; <span class="model model-sonnet">Sonnet</span> medium tasks (metric comparison, test repair, triage) &middot; <span class="model model-haiku">Haiku</span> easy tasks (shell commands, gate checks, subprocess calls).
       </div>
     </div>
 
@@ -1273,7 +1370,7 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
       <div class="card-label">2026-07-28</div>
       <div class="card-title">Corpus Namespace Convention (<code>corpus:</code> prefix)</div>
       <div class="card-detail">
-        All corpus skills use a <code>corpus:</code> namespace prefix: <code>/corpus:score</code>, <code>/corpus:diff</code>, <code>/corpus:trace</code>, <code>/corpus:plan</code>, <code>/corpus:mend</code>, <code>/corpus:cycle</code>. Skill directories match workflow names. Gated pipeline with numbered runs and RFC-based task planning.
+        All corpus skills use a <code>corpus:</code> namespace prefix: <code>/corpus:ingest-score</code>, <code>/corpus:score</code>, <code>/corpus:diff</code>, <code>/corpus:trace</code>, <code>/corpus:plan</code>, <code>/corpus:mend</code>, <code>/corpus:cycle</code>. Skill directories match workflow names. Gated pipeline with numbered runs and RFC-based task planning. The default cycle now uses <code>/corpus:ingest-score</code> (merged Phase 1+2) instead of separate ingest + score phases.
       </div>
     </div>
 
@@ -1298,6 +1395,14 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
       <div class="card-title">Checkpoint Persistence + Cross-Session Resume</div>
       <div class="card-detail">
         Phase 3 (Diagnose + Plan) persists checkpoints to <code>.agents/checkpoints/diagnose-plan-runN/</code> after each sub-phase: triage, cluster-traces, drilldown. Resume via <code>args.resume_from</code> avoids re-running expensive Opus cluster trace work on context-limit interruptions. Phase 4 supports <code>start_wave</code> to skip completed waves.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-07-31</div>
+      <div class="card-title">Diagnose-Plan Workflow: Split Draft RFC + Parallel Artifact Build</div>
+      <div class="card-detail">
+        <code>corpus-diagnose-plan</code> workflow stalled in Run 9: Draft RFC agent (Opus + schema) timed out after 6 attempts &mdash; too much work in a single agent. Build Artifacts also used one agent for both docs. Fix: (1) Split Draft RFC into plan step (small schema, fast) + write step (no schema, just writes file). (2) Compress trace findings before RFC planner. (3) Split Build Artifacts into two parallel agents matching the <code>rfc-artifact-build</code> skill&rsquo;s structure.
       </div>
     </div>
 
