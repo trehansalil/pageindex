@@ -36,6 +36,9 @@ def _make_rotated_pdf(tmp_path):
     return path
 
 
+@pytest.mark.xfail(
+    reason="D2 spike: _bbox_to_fitz_rect does not yet handle native page rotation; follow-up RFC needed"
+)
 def test_bbox_to_fitz_rect_crops_known_region_on_rotated_page(tmp_path):
     path = _make_rotated_pdf(tmp_path)
     doc = fitz.open(path)

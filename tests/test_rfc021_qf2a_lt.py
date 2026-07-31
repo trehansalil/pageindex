@@ -65,13 +65,20 @@ def test_classify_image_verdict_zero():
 # ---------------------------------------------------------------------------
 
 
+# RFC-026 D0: a genuinely empty structure ([]) is now an unconditional
+# zero_content FAIL that runs before the image_standalone routing branch, so
+# these image_standalone-specific tests use a minimal non-empty structure to
+# isolate the routing/precedence behavior they're actually testing.
+_NON_EMPTY_STRUCTURE = [{"node_id": "1", "title": "Cover", "text": "img", "nodes": []}]
+
+
 def test_classify_verdict_image_standalone_routing():
     """content_class='image_standalone' delegates entirely to
     _classify_image_verdict — the normal node_count/depth/max_leaf_ratio
-    tree-shape checks never run, even with an empty structure (which would
-    otherwise MARGINAL, not FAIL, under the default tree-shape path)."""
+    tree-shape checks never run (which would otherwise MARGINAL, not FAIL,
+    under the default tree-shape path)."""
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         None,
         image_enrichment_ratio=1.0,
@@ -79,7 +86,7 @@ def test_classify_verdict_image_standalone_routing():
     assert (verdict, reason) == ("PASS", "image_enrichment_complete")
 
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         None,
         image_enrichment_ratio=None,
@@ -87,7 +94,7 @@ def test_classify_verdict_image_standalone_routing():
     assert (verdict, reason) == ("FAIL", "no_image_enrichment")
 
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         None,
         image_enrichment_ratio=0.5,
@@ -99,7 +106,7 @@ def test_classify_verdict_garbling_still_wins_over_image_standalone():
     """The 'garbling' terminal reason short-circuits BEFORE the
     content_class=='image_standalone' branch is even reached."""
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         "garbling",
         image_enrichment_ratio=1.0,
