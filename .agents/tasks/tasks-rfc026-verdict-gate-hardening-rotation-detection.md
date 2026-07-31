@@ -6,14 +6,14 @@
 
 ## Traceability
 
-| Artifact               | Reference                                                                                                                                                    |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Governing RFC(s)        | [RFC-026: Run 9 — Verdict Gate Hardening & Page Rotation Detection](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md)                    |
-| Design Document         | [design-rfc026-verdict-gate-hardening-rotation-detection.md](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md)                       |
-| Hard Rules (binding)    | [CLAUDE.md § Hard Rules](../../CLAUDE.md#hard-rules)                                                                                                       |
-| Priority Order          | [RFC-026 Priority Order](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#priority-order)                                                 |
-| Out of Scope            | [RFC-026 Out of Scope](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#out-of-scope)                                                     |
-| Correctness Properties  | [Design § Correctness Properties](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-1-zero-content-hard-fail)                |
+| Artifact               | Reference                                                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Governing RFC(s)       | [RFC-026: Run 9 — Verdict Gate Hardening &amp; Page Rotation Detection](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md) |
+| Design Document        | [design-rfc026-verdict-gate-hardening-rotation-detection.md](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md)         |
+| Hard Rules (binding)   | [CLAUDE.md § Hard Rules](../../CLAUDE.md#hard-rules)                                                                                       |
+| Priority Order         | [RFC-026 Priority Order](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#priority-order)                                  |
+| Out of Scope           | [RFC-026 Out of Scope](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#out-of-scope)                                      |
+| Correctness Properties | [Design § Correctness Properties](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-1-zero-content-hard-fail) |
 
 ## Overview
 
@@ -25,27 +25,27 @@ This plan implements five of the six RFC-026 fix dimensions across three batches
 
   *All three fixes touch `src/pageindex_mcp/helpers.py` and are independent of one another — batched together to avoid merge conflicts and because they are the RFC's top three priority items. See [Priority Order](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#priority-order) items 1-3.*
 
-  - [ ] <a id="11-zero-content-fail-floor"></a>1.1 Add hard FAIL floor for zero-content documents to `classify_verdict()` (D0)
+  - [X] <a id="11-zero-content-fail-floor"></a>1.1 Add hard FAIL floor for zero-content documents to `classify_verdict()` (D0)
 
     - In `src/pageindex_mcp/helpers.py`, in `classify_verdict()` (starts at line 1174), add an early-exit check: if `_tree_node_count(structure) == 0` or `len(_flatten_tree_text(structure)) == 0` (total_chars), return `("FAIL", "zero_content")`
     - Place this check after the `reordered` check (currently ~line 1186) and BEFORE the `image_enrichment_promoted` branch (currently ~line 1198), per the RFC's explicit ordering requirement — a doc with zero content must never reach the image-enrichment promotion path, image-standalone branch, or fall through to the final `("MARGINAL", ...)` default
     - Keep the existing `garbling` and `reordered` FAIL paths (lines 1181-1186) untouched — this is strictly additive, ~15 lines
     - _Requirements:_ [RFC-026 D0](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d0--hard-fail-floor-for-zero-content-documents) | [Design Property 1](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-1-zero-content-hard-fail) | [Design Service: helpers.py](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#1-helpers-helperspy) | [Design Flow: Verdict Classification (D0/D1/D5)](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#verdict-classification-flow--d0--d1--d5)
-  - [ ] <a id="12-image-enrichment-volume-floor"></a>1.2 Add minimum character floor to the image-enrichment-promoted PASS path (D1)
+  - [X] <a id="12-image-enrichment-volume-floor"></a>1.2 Add minimum character floor to the image-enrichment-promoted PASS path (D1)
 
     - In `src/pageindex_mcp/helpers.py`, in the `image_enrichment_promoted` branch of `classify_verdict()` (currently ~lines 1198-1203, gated on `content_class in ("flat_prose", "flat_mixed") and image_enrichment_ratio >= 0.8`), add a `MIN_IMAGE_PROMOTED_CHARS` env var (default `500`, read via `int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500"))`)
     - Compute total chars via `len(_flatten_tree_text(structure))` (same helper as [Task 1.1](#11-zero-content-fail-floor)) at this branch; if total chars is below the floor, return `("MARGINAL", "image_enrichment_promoted_below_char_floor")` instead of `("PASS", "image_enrichment_promoted")`
     - If total chars meets or exceeds the floor, keep the existing `("PASS", "image_enrichment_promoted")` return unchanged — this gates the promotion, it does not disable it, per the RFC's explicit framing
     - NOTE: this branch runs after [Task 1.1](#11-zero-content-fail-floor)'s zero-content check, so `total_chars == 0` is already handled as `FAIL` before this branch is reached — no double-counting risk, ~10 lines
     - _Requirements:_ [RFC-026 D1](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d1--image-enrichment-promoted-volume-floor) | [Design Property 2](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-2-image-enrichment-volume-floor) | [Design Service: helpers.py](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#1-helpers-helperspy) | [Design Flow: Verdict Classification (D0/D1/D5)](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#verdict-classification-flow--d0--d1--d5)
-  - [ ] <a id="13-validate-tree-garble-reorder"></a>1.3 Move garble check before node_count/depth early-exits in `validate_tree()` (D5)
+  - [X] <a id="13-validate-tree-garble-reorder"></a>1.3 Move garble check before node_count/depth early-exits in `validate_tree()` (D5)
 
     - In `src/pageindex_mcp/helpers.py`, in `validate_tree()` (starts at line 1046), reorder the existing checks so `_tree_is_garbled(structure, expected_script=expected_script)` (currently the third check, ~line 1057) runs FIRST, before the `_tree_node_count(structure) < 3` (~line 1053) and `_tree_depth(structure) < 2` (~line 1055) early-exits
     - If garble is detected, return `("FAIL", "garbling")` regardless of node count or depth — a minimal/flat garbled tree must surface `"garbling"`, not `"node_count<3"` or `"depth<2"`, so downstream OCR-escalation triggers (which key on `reason == "garbling"`) fire correctly
     - Leave the RFC-018 D3b per-node `node_garbling` check and the RFC-015 D2 `reordered` check (both after the node_count/depth exits today) in their current relative order after the reordered garble check — this task only moves the bulk `_tree_is_garbled` check, not the per-node one
     - ~10 lines (pure reorder, no new logic)
     - _Requirements:_ [RFC-026 D5](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d5--validate-tree-garble-check-ordering) | [Design Property 6](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-6-garble-priority-over-structure) | [Design Service: helpers.py](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#1-helpers-helperspy) | [Design Flow: Verdict Classification (D0/D1/D5)](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#verdict-classification-flow--d0--d1--d5)
-  - [ ] <a id="14-unit-tests-batch-0"></a>1.4 Unit tests for Tasks 1.1-1.3 (D0, D1, D5)
+  - [X] <a id="14-unit-tests-batch-0"></a>1.4 Unit tests for Tasks 1.1-1.3 (D0, D1, D5)
 
     - Write `tests/test_rfc026_d0.py`: (a) `node_count=0` — `classify_verdict` returns `("FAIL", "zero_content")`; (b) `total_chars=0` with `node_count>0` (e.g. whitespace-only leaves) — returns `("FAIL", "zero_content")`; (c) zero-content check fires before the `image_standalone` branch and before `image_enrichment_promoted`, even when `image_enrichment_ratio=1.0` is passed; (d) non-zero content with otherwise-passing structure is unaffected (regression guard)
     - Write `tests/test_rfc026_d1.py`: (a) `image_enrichment_ratio=0.9`, total chars = 38 (below default floor) — returns `("MARGINAL", "image_enrichment_promoted_below_char_floor")`; (b) same ratio, total chars = 600 (above default floor) — returns `("PASS", "image_enrichment_promoted")`; (c) `MIN_IMAGE_PROMOTED_CHARS=100` env override — 150 chars now passes, 50 chars still capped at MARGINAL; (d) boundary case chars == floor exactly — passes (floor is exclusive-below)
@@ -53,25 +53,24 @@ This plan implements five of the six RFC-026 fix dimensions across three batches
     - **Validates: [Design Property 1](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-1-zero-content-hard-fail), [Design Property 2](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-2-image-enrichment-volume-floor), [Design Property 6](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-6-garble-priority-over-structure), [RFC-026 D0](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d0--hard-fail-floor-for-zero-content-documents), [RFC-026 D1](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d1--image-enrichment-promoted-volume-floor), [RFC-026 D5](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d5--validate-tree-garble-check-ordering)**
     - NOTE: depends on [Task 1.1](#11-zero-content-fail-floor), [Task 1.2](#12-image-enrichment-volume-floor), [Task 1.3](#13-validate-tree-garble-reorder)
     - _Requirements:_ [CLAUDE.md Hard Rule 5](../../CLAUDE.md#hard-rules)
-  - [ ] <a id="15-checkpoint--batch-0"></a>1.5 Checkpoint — Batch 0: Verdict Gate Fixes
+  - [X] <a id="15-checkpoint--batch-0"></a>1.5 Checkpoint — Batch 0: Verdict Gate Fixes
 
     - Run `uv run pytest tests/test_rfc026_d0.py tests/test_rfc026_d1.py tests/test_rfc026_d5.py` and verify all pass
     - Verify [Design Properties 1, 2, 6](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-1-zero-content-hard-fail) hold
     - Confirm no existing test in `tests/` that exercises `classify_verdict()` or `validate_tree()` regressed (run the full existing suite for those modules, e.g. `uv run pytest tests/ -k "classify_verdict or validate_tree"`)
     - Ask the user if questions arise before proceeding
-
-- [ ] <a id="2-batch-1--rotation-detection-d2"></a>2. Batch 1 — Page Rotation Detection ([RFC-026 D2](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d2--page-level-rotation-detection))
+- [X] <a id="2-batch-1--rotation-detection-d2"></a>2. Batch 1 — Page Rotation Detection ([RFC-026 D2](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d2--page-level-rotation-detection))
 
   *Independent of Batch 0's verdict-gate logic — this batch is entirely within `src/pageindex_mcp/converters.py` and addresses the persistent portrait/landscape stall documented across 3 consecutive runs. See [Priority Order](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#priority-order) item 4.*
 
-  - [ ] <a id="21-page-rotation-metadata-reader"></a>2.1 Add page-level rotation metadata reader (D2)
+  - [X] <a id="21-page-rotation-metadata-reader"></a>2.1 Add page-level rotation metadata reader (D2)
 
     - In `src/pageindex_mcp/converters.py`, add a helper (e.g. `_detect_page_rotation(page) -> int`) that reads the PDF page's `/Rotate` key (0/90/180/270) — reuse the existing `page.rotation` accessor already used at the D6 crop-normalization site (~line 1746, `orig_rotation = page.rotation`) rather than reimplementing PDF metadata parsing
     - Add an aspect-ratio heuristic fallback: when `/Rotate` is 0 but `page.rect.width > page.rect.height`, flag the page as likely-landscape (some scanners omit `/Rotate` but still produce wide pages) — this heuristic is advisory, not authoritative; `/Rotate` takes priority when both signals disagree
     - The function must operate per-page (not per-document) — a single PDF can mix portrait and landscape pages, per the RFC's explicit requirement
     - Return a small structured result (e.g. `{"rotate": int, "likely_landscape": bool, "width": float, "height": float}`) that downstream code can consume without re-reading page metadata
     - _Requirements:_ [RFC-026 D2](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d2--page-level-rotation-detection) | [Design Property 3](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-3-rotation-aware-extraction) | [Design Service: converters.py](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#2-converters-converterspy) | [Design Flow: Rotation Detection (D2)](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#rotation-detection-flow--d2)
-  - [ ] <a id="22-rotation-aware-converter-integration"></a>2.2 Wire rotation metadata into the docling conversion path and apply coordinate transform (D2)
+  - [X] <a id="22-rotation-aware-converter-integration"></a>2.2 Wire rotation metadata into the docling conversion path and apply coordinate transform (D2)
 
     - In `src/pageindex_mcp/converters.py`, in `pdf_to_markdown_docling()` (starts ~line 2057) and/or the shared `_docling_converter()` factory (~line 971), pass the per-page rotation result from [Task 2.1](#21-page-rotation-metadata-reader) through to the docling service call so text extraction uses correct coordinate mapping for rotated/landscape pages
     - When a page is flagged rotated (non-zero `/Rotate` or `likely_landscape`), apply a coordinate transform before text extraction (or set the equivalent docling page-preprocessing option) so text blocks are not fragmented into near-empty nodes — this is the direct fix for the `uae_numbers_english_page_16_17_landscape/portrait` stall (748/764 chars observed vs. ~4000-8000 expected)
@@ -80,25 +79,24 @@ This plan implements five of the six RFC-026 fix dimensions across three batches
     - ~80 lines total across [Task 2.1](#21-page-rotation-metadata-reader) and this task, per RFC estimate
     - NOTE: depends on [Task 2.1](#21-page-rotation-metadata-reader) — the rotation reader must exist before it can be wired in
     - _Requirements:_ [RFC-026 D2](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d2--page-level-rotation-detection) | [Design Property 3](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-3-rotation-aware-extraction) | [Design Service: converters.py](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#2-converters-converterspy) | [Design Flow: Rotation Detection (D2)](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#rotation-detection-flow--d2)
-  - [ ] <a id="23-unit-tests-batch-1"></a>2.3 Unit tests for Tasks 2.1-2.2 (D2)
+  - [X] <a id="23-unit-tests-batch-1"></a>2.3 Unit tests for Tasks 2.1-2.2 (D2)
 
     - Write `tests/test_rfc026_d2.py`: (a) `/Rotate=90` page — `_detect_page_rotation` reports `rotate=90`; (b) `/Rotate=0` with `width > height` — reports `likely_landscape=True`; (c) `/Rotate=0` with `width <= height` — reports `likely_landscape=False`, no false-positive on genuine portrait pages; (d) `/Rotate` and aspect-ratio heuristic disagree (e.g. `/Rotate=0` but wide page that is intentionally landscape content) — `/Rotate` value is authoritative per the priority rule in [Task 2.1](#21-page-rotation-metadata-reader); (e) mixed-orientation document (one portrait page, one landscape page) — each page's rotation result is independent, no document-level leakage; (f) `PAGE_ROTATION_DETECTION_ENABLED=false` — rotation transform is skipped, prior (pre-fix) extraction path is used
     - Use a small synthetic fixture PDF (or a minimal in-memory PDF built with PyMuPDF/pypdf in the test) with a known `/Rotate` value rather than relying on corpus files, so the test suite has no dependency on `doc_store/` contents
     - **Validates: [Design Property 3](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-3-rotation-aware-extraction), [RFC-026 D2](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d2--page-level-rotation-detection)**
     - NOTE: depends on [Task 2.1](#21-page-rotation-metadata-reader), [Task 2.2](#22-rotation-aware-converter-integration)
     - _Requirements:_ [CLAUDE.md Hard Rule 5](../../CLAUDE.md#hard-rules)
-  - [ ] <a id="24-checkpoint--batch-1"></a>2.4 Checkpoint — Batch 1: Page Rotation Detection
+  - [X] <a id="24-checkpoint--batch-1"></a>2.4 Checkpoint — Batch 1: Page Rotation Detection
 
     - Run `uv run pytest tests/test_rfc026_d2.py` and verify all pass
     - Verify [Design Property 3](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-3-rotation-aware-extraction) holds
     - Confirm the D6 OCR-crop rotation-zeroing logic (~lines 1744-1755 of `converters.py`) is untouched and its existing tests (if any) still pass
     - Ask the user if questions arise before proceeding
-
-- [ ] <a id="3-batch-2--hysteresis-and-harness-d3-d4"></a>3. Batch 2 — Hysteresis & Harness ([RFC-026 D3](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d3--hysteresis-preservation-across-reingestion-wipe), [D4](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d4--scoring-harness-stage-2-guard-fix))
+- [X] <a id="3-batch-2--hysteresis-and-harness-d3-d4"></a>3. Batch 2 — Hysteresis & Harness ([RFC-026 D3](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d3--hysteresis-preservation-across-reingestion-wipe), [D4](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d4--scoring-harness-stage-2-guard-fix))
 
   *D3 (`storage.py`) and D4 (`.claude/workflows/corpus-ingest-score.js`) are independent of each other and of Batches 0-1 — grouped together as the RFC's two lowest-priority remaining items. See [Priority Order](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#priority-order) items 5-6.*
 
-  - [ ] <a id="31-hysteresis-verdict-snapshot"></a>3.1 Snapshot prior verdicts to a sidecar file before reingestion wipe (D3)
+  - [X] <a id="31-hysteresis-verdict-snapshot"></a>3.1 Snapshot prior verdicts to a sidecar file before reingestion wipe (D3)
 
     - In `src/pageindex_mcp/storage.py`, add a function (e.g. `snapshot_prior_verdicts() -> None`) that reads all `processed/*.meta.json` objects (reuse the `list_objects(prefix="processed/", recursive=True)` pattern already used by `find_prior_verdict()` at line 641 and `list_processed_docs()`), extracts `{sha256/doc_name: best_verdict}` using the same `_VERDICT_PRIORITY` ordering already defined at line 623 (`PASS > MARGINAL > FAIL > ERROR`), and writes the result to `processed/_prior_verdicts.json`
     - This function must be called BEFORE the reingestion wipe step (the wipe itself is an operational/pipeline step, out of scope for this task — this task only adds the snapshot function and its call site immediately preceding the existing wipe logic, wherever that lives today)
@@ -106,28 +104,27 @@ This plan implements five of the six RFC-026 fix dimensions across three batches
     - Catch `Exception` on snapshot write/read failures and degrade gracefully (log + return `None`/no-op) — matching the existing `find_prior_verdict()` graceful-degradation contract at line 668, hysteresis must never block ingestion
     - ~40 lines total
     - _Requirements:_ [RFC-026 D3](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d3--hysteresis-preservation-across-reingestion-wipe) | [Design Property 4](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-4-hysteresis-preservation) | [Design Service: storage.py](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#3-storage-storagepy) | [Design Flow: Hysteresis Snapshot (D3)](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#hysteresis-snapshot-flow--d3)
-  - [ ] <a id="32-scoring-harness-structured-output"></a>3.2 Add schema to Stage 1 agent and fix Stage 2 guard to check structured status (D4)
+  - [X] <a id="32-scoring-harness-structured-output"></a>3.2 Add schema to Stage 1 agent and fix Stage 2 guard to check structured status (D4)
 
     - In `.claude/workflows/corpus-ingest-score.js`, add a `schema` object for the Stage 1 agent call (~line 158, the `process` step) mirroring the existing `BASELINE_SCHEMA`/`SCORE_SCHEMA` pattern already used by the Stage 1-baseline, Stage 2-fetch, and Stage 3-judge calls (lines 108, 234, 274) — the Stage 1 process step currently has no `schema` key and returns a plain string from a Haiku agent, per the RFC's root-cause description
     - Define the schema to require at minimum `{ status: 'success'|'error'|'timeout'|'oom', doc_id: string|null, error: string|null, content_class: string|null }`, matching the JSON shape already described in the Stage 1 prompt's "Return a JSON object" instruction (~lines 172-176) — the prompt already asks for this shape, it just isn't enforced by a schema today
     - Fix the Stage 2 guard (currently ~line 183: `if (!ingestResult || (typeof ingestResult === 'string' && ingestResult.includes('error')))`) to check `ingestResult.status === 'error'` (or `'timeout'`/`'oom'` as applicable) against the now-structured object, instead of the substring match — this removes the false-positive where any string containing the substring "error" (e.g. "error handling succeeded") short-circuits ALL docs to verdict=ERROR
     - ~20 lines
     - _Requirements:_ [RFC-026 D4](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d4--scoring-harness-stage-2-guard-fix) | [Design Property 5](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-5-scoring-harness-structured-output) | [Design Service: corpus-ingest-score.js](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#4-workflow-corpus-ingest-scorejs)
-  - [ ] <a id="33-unit-tests-batch-2"></a>3.3 Unit tests for Tasks 3.1-3.2 (D3, D4)
+  - [X] <a id="33-unit-tests-batch-2"></a>3.3 Unit tests for Tasks 3.1-3.2 (D3, D4)
 
     - Write `tests/test_rfc026_d3.py`: (a) `snapshot_prior_verdicts()` writes `processed/_prior_verdicts.json` containing the best-ever verdict per sha256, matching `_VERDICT_PRIORITY` ordering when duplicate sha256 entries exist across doc_ids; (b) `find_prior_verdict()` with no matching individual `meta.json` but a matching entry in `_prior_verdicts.json` — returns the snapshot verdict (fallback path); (c) `find_prior_verdict()` with a matching individual `meta.json` present — the individual sidecar wins over the snapshot (snapshot is fallback-only, not primary); (d) snapshot write raises `Exception` (simulated MinIO failure) — function degrades gracefully, does not raise; (e) snapshot read raises `Exception` in the fallback path — `find_prior_verdict()` still returns `None` gracefully, matching existing degradation contract
     - Write a JS-level test/assertion for Batch 2's D4 change (e.g. via the project's existing JS test runner if one exists for `.claude/workflows/`, or a minimal Node script asserting the Stage 2 guard function): (a) `ingestResult = { status: 'success', ... }` containing the word "error" nowhere relevant — Stage 2 proceeds normally (regression guard for the original bug); (b) `ingestResult = { status: 'success', doc_id: 'x', error: null }` where some unrelated field contains the substring "error" (e.g. a `content_class` value) — Stage 2 still proceeds (proves the substring-match bug is gone); (c) `ingestResult = { status: 'error', error: 'OOM' }` — Stage 2 correctly short-circuits to verdict=ERROR; (d) `ingestResult = null` / missing — still short-circuits to ERROR (preserves existing null-safety)
     - **Validates: [Design Property 4](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-4-hysteresis-preservation), [Design Property 5](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-5-scoring-harness-structured-output), [RFC-026 D3](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d3--hysteresis-preservation-across-reingestion-wipe), [RFC-026 D4](../rfcs/026-run9-verdict-gate-hardening-and-rotation-detection.md#d4--scoring-harness-stage-2-guard-fix)**
     - NOTE: depends on [Task 3.1](#31-hysteresis-verdict-snapshot), [Task 3.2](#32-scoring-harness-structured-output)
     - _Requirements:_ [CLAUDE.md Hard Rule 5](../../CLAUDE.md#hard-rules)
-  - [ ] <a id="34-checkpoint--batch-2"></a>3.4 Checkpoint — Batch 2: Hysteresis & Harness
+  - [X] <a id="34-checkpoint--batch-2"></a>3.4 Checkpoint — Batch 2: Hysteresis & Harness
 
     - Run `uv run pytest tests/test_rfc026_d3.py` and the D4 JS-level test/assertion from [Task 3.3](#33-unit-tests-batch-2); verify all pass
     - Verify [Design Properties 4, 5](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-4-hysteresis-preservation) hold
     - Confirm `find_prior_verdict()`'s existing RFC-025 behavior (individual-sidecar matching, best-ever priority, graceful degradation) is unchanged for all cases where an individual sidecar exists — the snapshot is additive fallback only
     - Ask the user if questions arise before proceeding
-
-- [ ] <a id="4-final-checkpoint"></a>4. Final Checkpoint
+- [X] <a id="4-final-checkpoint"></a>4. Final Checkpoint
 
   - Run `uv run pytest` (full suite) and verify all tests pass, including `tests/test_rfc026_d0.py`, `tests/test_rfc026_d1.py`, `tests/test_rfc026_d5.py`, `tests/test_rfc026_d2.py`, `tests/test_rfc026_d3.py`, and the pre-existing suite (no regressions introduced across Batches 0-2)
   - Verify all six in-scope [Design Properties 1-6](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md#property-1-zero-content-hard-fail) hold (Property numbering in the design doc spans D0-D5; D6 has no corresponding property in scope for this plan)
