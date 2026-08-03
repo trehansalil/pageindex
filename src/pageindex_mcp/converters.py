@@ -80,6 +80,19 @@ _NUM_PARA_RE = re.compile(r"^(?:§\s*)?\d+(\.\d+)+(?=[ \t.:]|$)")
 _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b")
 _AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b")
+# RFC-028 D1: char limit for wholesale heading promotion, raised from 60 to
+# accommodate Arabic legal headings/titles (66-76+ chars observed).
+_AR_HEADING_CHAR_LIMIT = 100
+# RFC-028 D1: captures the structural marker word plus an immediately
+# following PARENTHESIZED numeral (e.g. "مادة (3)") so a fused marker+title
+# line exceeding the char limit can be split into a standalone heading (this
+# capture) and remaining prose (everything after it). Deliberately requires
+# the parenthetical — a bare trailing number ("مادة 2 من هذا القانون...") is
+# the shape of a mid-paragraph/citation reference continuing into running
+# prose ("Article 2 OF this law..."), not a title, so it must NOT be split
+# into a heading (see TestInjectArabicStructuralHeadingsBlockStart's
+# wrapped-citation case in test_rfc027_d4.py).
+_AR_MARKER_CAPTURE_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء|مادة)\s*\(\s*\d+\s*\)")
 
 
 def _inject_arabic_structural_headings(md: str) -> str:
@@ -91,27 +104,44 @@ def _inject_arabic_structural_headings(md: str) -> str:
     re-level EXISTING headings via ``_AR_PART_RE``/``_AR_ARTICLE_RE`` in
     ``numbering_depth`` — has nothing to work with, leaving the tree flat.
 
-    Only promotes a line when it (a) starts a text block (preceded by a blank
-    line or the start of the document) and (b) is short enough that the marker
-    is the line's dominant content, not a quoted mid-paragraph reference like
-    "...المشار إليها في المادة 5 من هذا القانون...". Depth is left to the
-    existing ``_relevel_by_containment``/``_relevel_by_numbering`` chain."""
+    Promotion is gated ONLY on the marker regex matching the line's **start**
+    (RFC-028 D1) — a preceding-blank-line requirement is redundant/harmful for
+    continuous OCR output, where scanned Arabic legal text flows without
+    blank-line separators between consecutive مادة articles, and previously
+    meant only the FIRST marker in a run was ever promoted. The anchor
+    protects against mid-paragraph references like "...المشار إليها في
+    المادة 5 من هذا القانون..." since those never start their line with the
+    marker.
+
+    A matching line up to 100 chars (RFC-028 D1: raised from 60 to
+    accommodate Arabic legal headings like "المادة (3) نطاق التطبيق", which
+    run 66-76+ chars) is promoted wholesale. A matching line that exceeds 100
+    chars is split: the marker (plus any immediately-following numeral/
+    parenthetical, e.g. "مادة (3)") becomes a standalone heading and the
+    remaining prose is kept as a following line rather than dropped. Depth is
+    left to the existing ``_relevel_by_containment``/``_relevel_by_numbering``
+    chain."""
     lines = md.split("\n")
     out = []
-    prev_blank = True
     for line in lines:
         t = line.strip()
-        if prev_blank and t and len(t) <= 60 and not _HEADING_RE.match(t):
-            if _AR_PART_RE.match(t):
-                out.append(f"# {t}")
-                prev_blank = False
-                continue
-            if _AR_ARTICLE_RE.match(t):
-                out.append(f"## {t}")
-                prev_blank = False
-                continue
+        if t and not _HEADING_RE.match(t):
+            is_part = bool(_AR_PART_RE.match(t))
+            is_article = is_part is False and bool(_AR_ARTICLE_RE.match(t))
+            if is_part or is_article:
+                level = "#" if is_part else "##"
+                if len(t) <= _AR_HEADING_CHAR_LIMIT:
+                    out.append(f"{level} {t}")
+                    continue
+                marker_match = _AR_MARKER_CAPTURE_RE.match(t)
+                if marker_match:
+                    marker = marker_match.group(0).strip()
+                    remainder = t[marker_match.end() :].strip()
+                    out.append(f"{level} {marker}")
+                    if remainder:
+                        out.append(remainder)
+                    continue
         out.append(line)
-        prev_blank = not t
     return "\n".join(out)
 
 
@@ -1328,6 +1358,24 @@ _AR_COMMON_WORDS = frozenset(
         "بين",
         "كان",
         "ما",
+        # RFC-028 D3: governance/legal domain terms (siyasat-hawkama gap — specialized
+        # vocabulary scored 0 for both forward and reversed text, so the readability
+        # comparison never fired).
+        "حوكمة",
+        "بيانات",
+        "سياسة",
+        "إدارة",
+        "تنظيم",
+        "قرار",
+        "وزارة",
+        "لائحة",
+        "تنفيذية",
+        "مرسوم",
+        "قانون",
+        "نظام",
+        "مادة",
+        "حكومة",
+        "هيئة",
     ]
 )
 _AR_DEFINITE_RE = re.compile(r"\bال\w+")
@@ -1431,9 +1479,7 @@ _REGION_AWARE_TEXT_CHECK_ENABLED = os.getenv(
 # which is expensive on multi-hundred-page scanned documents. Cap the number
 # of full-page exemptions fired per document; further regions past the cap
 # are skipped (page_coverage) with a warning.
-_MAX_FULLPAGE_PICTURE_OCR_REGIONS = int(
-    os.getenv("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50")
-)
+_MAX_FULLPAGE_PICTURE_OCR_REGIONS = int(os.getenv("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50"))
 
 
 class PictureResult(TypedDict, total=False):
@@ -1979,7 +2025,7 @@ def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
         # idx should always be >= 0 given the count check above
         parts.append(remaining[: idx + len(marker)])
         remaining = remaining[idx + len(marker) :]
-        ocr_text = pic.get("ocr_text", "")
+        ocr_text = pic.pop("ocr_text", "")
         if ocr_text:
             parts.append("\n> [Chart text]: " + ocr_text + "\n")
     parts.append(remaining)
@@ -2033,6 +2079,11 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         else:
             marker = f"[Figure: fig-{k}]"
         if ocr:
+            # RFC-028 D5: pop rather than get — the OCR text is spliced into the
+            # prose stream here, so pop it so _enrich_image_blocks (which reads
+            # this SAME result dict) does not also persist it onto the
+            # role:"image" block and double the stored fragment.
+            result.pop("ocr_text", None)
             return marker + "\n\n> [Chart text]: " + ocr
         return marker
 
@@ -2053,7 +2104,9 @@ def _pre_inference_normalize(text: str) -> str:
     return text
 
 
-def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureResult]:
+def _recover_picture_results(
+    md: str, document, pdf_path: str, filename: str | None = None
+) -> list[PictureResult]:
     """Recover chart/infographic text Docling bucketed into Picture bboxes (RFC-015 D6).
 
     OCR + crop ONLY — no markdown mutation, no VLM (both moved to the flat branch
@@ -2064,14 +2117,25 @@ def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureRe
     Returns a DENSE list: element ``i`` corresponds to the i-th PictureItem in
     ``iterate_items`` order, with an empty ``PictureResult`` placeholder for any
     region whose crop failed — sparse recovery must never shift ordinals
-    (finding 4)."""
+    (finding 4).
+
+    Language detection (RFC-028 D5): ``md`` is the Docling markdown export, which
+    is near-empty or all-digits for scanned Arabic PDFs, so ``detect_ocr_langs(md)``
+    alone falls through to ``['eng']``. Union with ``detect_ocr_langs(filename)``
+    (matching the escalation sites in client.py) so filename script hints survive
+    even when the export carries no usable signal."""
     if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
         return []
     try:
         regions = _collect_picture_regions(document)
         if not regions:
             return []
-        langs = ensure_tessdata(detect_ocr_langs(md))
+        lang_sources: list[str] = []
+        for src in (detect_ocr_langs(filename or ""), detect_ocr_langs(md or "")):
+            for lg in src:
+                if lg not in lang_sources:
+                    lang_sources.append(lg)
+        langs = ensure_tessdata(lang_sources)
         recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=md)
         if not recovered and not skip_reasons:
             return []
@@ -2176,7 +2240,11 @@ def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
 # PDFs die to in the first place; the chunked path needs a timeout budget
 # proportional to how many independent Docling passes it runs.
 _CHUNKED_DOCLING_BASE_TIMEOUT_S = 300
-_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S = 600
+# RFC-028 D0: 600 -> 1500. The prior constant made chunked_docling_timeout_s(2)
+# (1500s) *lower* than the fixed CHILD_TIMEOUT (1770s) it was meant to extend,
+# so wiring it in without raising this would have shrunk the timeout budget for
+# world-stats-pocketbook-2023.pdf (292 pages, observed 24-49min conversion).
+_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S = 1500
 
 
 def chunked_docling_timeout_s(chunk_count: int) -> int:
@@ -2187,6 +2255,35 @@ def chunked_docling_timeout_s(chunk_count: int) -> int:
     runs, instead of the fixed single-pass timeout that oversized PDFs die to.
     """
     return _CHUNKED_DOCLING_BASE_TIMEOUT_S + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+
+
+def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
+    """RFC-028 D0: cheap pre-flight probe run by ``converters_cli`` before the
+    heavy conversion pipeline starts, so the worker can size its child timeout
+    from the child's own startup handshake instead of re-deriving page count
+    independently (which risks worker/child disagreement on a PyPDF2 failure).
+
+    Returns ``(chunk_count, is_docling_route)`` using the same PyPDF2 page-count
+    read and ``MAX_DOCLING_PAGES`` threshold as the routing guard at the top of
+    ``pdf_to_markdown_docling``. Non-PDF inputs and PDFs whose page count cannot
+    be read report ``is_docling_route=False`` so the worker falls back to the
+    fixed ``CHILD_TIMEOUT`` unconditionally.
+    """
+    if not pdf_path.lower().endswith(".pdf"):
+        return 1, False
+    from .config import MAX_DOCLING_PAGES
+
+    try:
+        import PyPDF2
+
+        page_count = len(PyPDF2.PdfReader(pdf_path).pages)
+    except Exception:
+        return 1, False
+    if page_count <= 0:
+        return 1, False
+    if MAX_DOCLING_PAGES > 0 and page_count > MAX_DOCLING_PAGES:
+        return math.ceil(page_count / MAX_DOCLING_PAGES), True
+    return 1, True
 
 
 def _pdf_to_markdown_docling_chunked(
@@ -2477,7 +2574,9 @@ def pdf_to_markdown_docling(
     # invisible to the event loop and pinned crop bytes for the process life).
     # The markdown keeps neutral `<!-- image -->` markers — the [Figure: fig-N]
     # splice and the VLM describe step run only in client.index()'s flat branch.
-    pic_results = _recover_picture_results(md, result.document, pdf_path)
+    pic_results = _recover_picture_results(
+        md, result.document, pdf_path, os.path.basename(pdf_path)
+    )
     return md, pic_results
 
 

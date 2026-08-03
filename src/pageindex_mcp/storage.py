@@ -72,9 +72,7 @@ def _get_presign_minio() -> Minio:
     return _presign_client
 
 
-def presigned_get_url(
-    object_key: str, expires: timedelta = timedelta(minutes=15)
-) -> str:
+def presigned_get_url(object_key: str, expires: timedelta = timedelta(minutes=15)) -> str:
     """Generate a time-limited presigned GET URL for a MinIO object."""
     mc = _get_presign_minio()
     return mc.presigned_get_object(settings.minio_bucket, object_key, expires=expires)
@@ -739,7 +737,9 @@ def snapshot_prior_verdicts() -> None:
             content_type="application/json",
         )
     except Exception:
-        logger.warning("snapshot_prior_verdicts: failed, hysteresis snapshot skipped", exc_info=True)
+        logger.warning(
+            "snapshot_prior_verdicts: failed, hysteresis snapshot skipped", exc_info=True
+        )
 
 
 # ---------------------------------------------------------------------------

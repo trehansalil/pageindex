@@ -26,6 +26,7 @@ from arq.connections import RedisSettings
 
 from .cache import get_async_redis
 from .config import settings
+from .converters import chunked_docling_timeout_s
 from .memory_admission import wait_for_memory
 from .metrics import (
     _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY,
@@ -45,7 +46,13 @@ logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400
 MAX_TRIES = 2
-JOB_TIMEOUT = 1800
+# RFC-028 D0: 1800 -> 3630 (max_dynamic_child_timeout 3300 + 300 buffer +
+# CHILD_GRACE_SECONDS 30). arq's job_timeout is worker-level, not per-job, so
+# raising it to cover the dynamic-timeout worst case (chunked_docling_timeout_s
+# for large chunked PDFs) statically doubles worst-case slot occupancy for
+# every job, not just large chunked PDFs. Accepted trade-off (see RFC-028
+# Risks) -- world-stats-pocketbook-2023.pdf has ERRORed 3 consecutive runs.
+JOB_TIMEOUT = 3630
 # The inner timeout we apply around the converter child must be strictly
 # *shorter* than arq's outer ``job_timeout`` (JOB_TIMEOUT). Otherwise the two
 # can race: arq cancels the task before our ``asyncio.timeout()`` fires and we
@@ -209,7 +216,9 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
-async def _run_converter_subprocess(pdf_path: str, *, staging_key: str | None = None) -> dict[str, Any]:
+async def _run_converter_subprocess(
+    pdf_path: str, *, staging_key: str | None = None
+) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
 
     The child runs ``python -m pageindex_mcp.converters_cli <pdf_path>``. On
@@ -239,14 +248,48 @@ async def _run_converter_subprocess(pdf_path: str, *, staging_key: str | None = 
         start_new_session=True,
         env=os.environ.copy(),
     )
-    stdout_bytes = b""
-    stderr_bytes = b""
+    # RFC-028 D0: the child emits a startup handshake line (chunk_count,
+    # is_docling_route) before it starts the heavy conversion, computed from a
+    # cheap PyPDF2 page-count probe -- read it first so we can size the
+    # effective timeout for a large chunked PDF instead of always using the
+    # fixed CHILD_TIMEOUT. HANDSHAKE_TIMEOUT_S bounds only this cheap probe;
+    # the remaining budget below still adds up to at most effective_timeout.
+    start = time.monotonic()
+    HANDSHAKE_TIMEOUT_S = 60
+    handshake_line = b""
     try:
-        async with asyncio.timeout(CHILD_TIMEOUT):
-            stdout_bytes, stderr_bytes = await proc.communicate()
+        async with asyncio.timeout(HANDSHAKE_TIMEOUT_S):
+            handshake_line = await proc.stdout.readline()
     except (TimeoutError, asyncio.CancelledError):
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
+
+    effective_timeout = CHILD_TIMEOUT
+    leftover_stdout = handshake_line
+    try:
+        handshake = json.loads(handshake_line.decode(errors="replace").strip())
+    except (json.JSONDecodeError, AttributeError):
+        handshake = None
+    if isinstance(handshake, dict) and handshake.get("handshake"):
+        leftover_stdout = b""
+        if handshake.get("is_docling_route"):
+            try:
+                chunk_count = int(handshake.get("chunk_count", 1))
+            except (ValueError, TypeError):
+                chunk_count = 1
+            dynamic_timeout = chunked_docling_timeout_s(chunk_count)
+            effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
+
+    remaining_budget = max(effective_timeout - (time.monotonic() - start), 0)
+    stdout_bytes = b""
+    stderr_bytes = b""
+    try:
+        async with asyncio.timeout(remaining_budget):
+            rest_stdout, stderr_bytes = await proc.communicate()
+    except (TimeoutError, asyncio.CancelledError):
+        await _kill_group(proc, grace=KILL_GRACE_SECONDS)
+        raise
+    stdout_bytes = leftover_stdout + rest_stdout
 
     stderr_tail = stderr_bytes.decode(errors="replace")[-2000:]
 

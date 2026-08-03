@@ -880,6 +880,20 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
     if (pua / len(blob)) > 0.03:
         return True
+    # Arabic Presentation-Forms ratio > 50% (RFC-028 D2): font-encoded
+    # garble emits positional glyph variants (U+FB50-FDFF, U+FE70-FEFF)
+    # instead of logical-order Arabic Unicode (U+0600-06FF). `_infer_script`
+    # correctly counts these as Arabic-script text, so that classification
+    # alone let 93%+ presentation-forms blobs (e.g. huquq-al-insan) sail
+    # through every other check here. Denominator is all Arabic-range chars
+    # (logical + presentation) so plain non-Arabic text never divides by
+    # zero and never false-positives.
+    presentation_forms = sum(
+        1 for c in blob if 0xFB50 <= ord(c) <= 0xFDFF or 0xFE70 <= ord(c) <= 0xFEFF
+    )
+    arabic_range_chars = presentation_forms + sum(1 for c in blob if 0x0600 <= ord(c) <= 0x06FF)
+    if arabic_range_chars > 0 and (presentation_forms / arabic_range_chars) > 0.50:
+        return True
     # Digit ratio > 60% on blobs > 500 chars — numeric junk
     if len(blob) > 500:
         digits = sum(1 for c in blob if c.isdigit())
@@ -1044,6 +1058,26 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
     return _is_garbled_blob(blob, expected_script=expected_script) or _has_sparse_mojibake(blob)
 
 
+def _word_has_reversed_morphology(word: str) -> bool:
+    """RFC-028 D3: vocabulary-independent reversal signal. Arabic Presentation
+    Forms glyphs are contextual (isolated/initial/medial/final); a final-form
+    glyph at word start or an initial-form glyph at word end is a morphologically
+    invalid sequence in correctly-ordered Arabic and indicates the character order
+    was reversed. Plain logical-order Arabic (U+0600-06FF, no presentation-form
+    shaping) never matches this and cannot false-positive."""
+    if len(word) < 2:
+        return False
+    try:
+        first_name = unicodedata.name(word[0])
+    except ValueError:
+        first_name = ""
+    try:
+        last_name = unicodedata.name(word[-1])
+    except ValueError:
+        last_name = ""
+    return "FINAL FORM" in first_name or "INITIAL FORM" in last_name
+
+
 def _tree_is_rtl_reversed(nodes: list) -> bool:
     """RFC-027 D3: True when an Arabic-heavy tree's readability score is higher
     in visual (bidi-reversed) order than in logical order — Docling/OCR emitted
@@ -1074,6 +1108,7 @@ def _tree_is_rtl_reversed(nodes: list) -> bool:
     sampled = 0
     orig_total = 0
     disp_total = 0
+    morphological_reversal = False
     for line in lines:
         stripped = line.strip()
         if not stripped or len(stripped) < 10:
@@ -1083,10 +1118,16 @@ def _tree_is_rtl_reversed(nodes: list) -> bool:
             continue
         orig_total += _arabic_readability_score(stripped.split())
         disp_total += _arabic_readability_score(get_display(stripped).split())
+        if any(_word_has_reversed_morphology(w) for w in stripped.split()):
+            morphological_reversal = True
         sampled += 1
         if sampled >= 8:
             break
-    return sampled > 0 and disp_total > orig_total
+    # RFC-028 D3: OR-combine the vocabulary-based signal with the
+    # vocabulary-independent morphological signal — either one is sufficient to
+    # flag reversal, since the two failure modes (specialized vocabulary gap vs.
+    # unseen shaping pattern) are largely orthogonal.
+    return sampled > 0 and (disp_total > orig_total or morphological_reversal)
 
 
 def validate_tree(structure: list, expected_script: str | None = None) -> tuple[bool, str]:
@@ -1549,6 +1590,10 @@ _OVERSIZED_ORDINAL_RE = re.compile(
     r"|بند\s*\(?\s*(?P<band>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # بند (5) / بند ٥
     r"|باب\s*\(?\s*(?P<bab>[\d٠-٩]+(?:[.٫][\d٠-٩]+)?)"  # باب (5) / باب ٥
     r"|Annex\s+\(?\s*(?P<annex>[A-Z]|\d+(?:\.\d+)?)"  # Annex A / Annex 4
+    # RFC-028 D7: standalone Roman-numeral sub-clause markers ("I. ", "II. ").
+    # Gated on ≥2 matches per leaf in split_oversized_leaf_nodes below, since a
+    # single incidental "I." in prose is not a heading.
+    r"|(?P<roman>[IVX]+)\.\s"
     r")",
     re.IGNORECASE,
 )
@@ -1631,6 +1676,9 @@ def _ordinal_value(m: "re.Match[str]") -> tuple[int, ...]:
         # decimal suffix ("Part IV.2"), so a whole-token _roman_to_int fallback
         # would KeyError on the "." / digit characters.
         return tuple(int(p) if p.isdigit() else _roman_to_int(p.upper()) for p in part.split("."))
+    roman = m.group("roman")  # RFC-028 D7
+    if roman is not None:
+        return (_roman_to_int(roman.upper()),)
     annex = m.group("annex")
     if annex is not None:
         try:
@@ -1953,6 +2001,13 @@ def split_oversized_leaf_nodes(
 
         folded, idx_map = _fold_with_index_map(text)
         all_matches = list(_OVERSIZED_ORDINAL_RE.finditer(folded))
+
+        # RFC-028 D7: a lone Roman-numeral marker ("I. ") is not distinguishable
+        # from incidental prose ("I. went to the store"); require ≥2 matches of
+        # this alternative in the leaf before letting it feed the split decision.
+        roman_idx = {i for i, m in enumerate(all_matches) if m.group("roman") is not None}
+        if 0 < len(roman_idx) < 2:
+            all_matches = [m for i, m in enumerate(all_matches) if i not in roman_idx]
 
         # Cover/bibliography/ToC blocks (dotted leaders, ~no ordinal markers):
         # accept as-is rather than force-splitting a bibliography on فقرة.

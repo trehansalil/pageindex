@@ -3,7 +3,9 @@
 Usage:
     python -m pageindex_mcp.converters_cli <input_pdf_path>
 
-Stdout: exactly one JSON line at exit.
+Stdout: one startup handshake JSON line (RFC-028 D0), then exactly one final
+JSON line at exit.
+  handshake: {"handshake": true, "chunk_count": <int>, "is_docling_route": <bool>}
   success: {"ok": true, "doc_id": "...", "peak_rss_kib": <int>, "duration_ms": <int>}
   failure: {"ok": false, "error": "<ExceptionClassName>", "message": "..."}
 
@@ -86,6 +88,21 @@ async def main() -> int:
                 }
             )
             return 1
+
+        # RFC-028 D0: emit the startup handshake before any heavy import so the
+        # worker can size its child timeout from the actual page/chunk count
+        # instead of the fixed CHILD_TIMEOUT, without the worker having to
+        # re-derive page count itself (avoids worker/child disagreement).
+        from pageindex_mcp.converters import probe_conversion_route
+
+        chunk_count, is_docling_route = probe_conversion_route(args.input_path)
+        _emit(
+            {
+                "handshake": True,
+                "chunk_count": chunk_count,
+                "is_docling_route": is_docling_route,
+            }
+        )
 
         try:
             # Heavy import deferred to here so baseline RSS in the parent process

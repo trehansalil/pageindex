@@ -42,6 +42,7 @@ from .helpers import (
     _flat_block_primary_text,
     _flat_text_is_garbled,
     _flatten_tree_text,
+    _is_garbled_blob,
     _script_from_filename,
     _strip_text,
     _synthesize_preamble_node,
@@ -779,7 +780,9 @@ class CustomPageIndexClient(PageIndexClient):
                                 md_content, pic_results = await _remote_pdf_to_markdown(
                                     self._staging_key,  # type: ignore[arg-type]
                                 )
-                        elif pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED:
+                        elif (
+                            pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED
+                        ):
                             md_content, pic_results = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,
@@ -991,6 +994,13 @@ class CustomPageIndexClient(PageIndexClient):
                 and ext == ".pdf"
                 and _OCR_ESCALATION
             ):
+                # D4 (RFC-028): snapshot the pre-retry result so a retry that produces
+                # LESS content (e.g. the retry's OCR also fails on the same underlying
+                # defect) doesn't unconditionally overwrite an already-better result.
+                pre_retry_result = result
+                pre_retry_ok = ok
+                pre_retry_reason = reason
+                pre_retry_chars = total_chars
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -1038,6 +1048,37 @@ class CustomPageIndexClient(PageIndexClient):
                     ok, reason = validate_tree(
                         result.get("structure", []), expected_script=expected_script
                     )
+                    # D4 (RFC-028): keep-best, not unconditional overwrite. Compare
+                    # post-retry char count against the pre-retry snapshot; on a
+                    # near-tie (equal char count), a retry that now VALIDATES ok
+                    # always wins over the pre-retry snapshot (which is by
+                    # construction never ok — this branch only runs `if not ok`)
+                    # — a same-length retry that fixed the underlying defect (e.g.
+                    # validate_tree's script/structure checks, not just text
+                    # content) must not be discarded. Only when the retry is STILL
+                    # not-ok on the tie do we fall back to _is_garbled_blob as a
+                    # secondary signal, so a marginally-longer but still-garbled
+                    # retry doesn't win over an equally-garbled original.
+                    post_retry_chars = len(_flatten_tree_text(result.get("structure", [])))
+                    if post_retry_chars < pre_retry_chars:
+                        retry_wins = False
+                    elif post_retry_chars == pre_retry_chars:
+                        retry_wins = ok or (
+                            _is_garbled_blob(
+                                _flatten_tree_text(pre_retry_result.get("structure", [])),
+                                expected_script=expected_script,
+                            )
+                            and not _is_garbled_blob(
+                                _flatten_tree_text(result.get("structure", [])),
+                                expected_script=expected_script,
+                            )
+                        )
+                    else:
+                        retry_wins = True
+                    if not retry_wins:
+                        result = pre_retry_result
+                        ok = pre_retry_ok
+                        reason = pre_retry_reason
                     OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
@@ -1077,7 +1118,12 @@ class CustomPageIndexClient(PageIndexClient):
 
             # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
             # whose OCR escalation was either skipped or failed.
-            if not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and settings.vlm_fallback:
+            if (
+                not ok
+                and reason in ("garbling", "node_garbling")
+                and ext == ".pdf"
+                and settings.vlm_fallback
+            ):
                 try:
                     from .converters import vlm_extract_markdown
 
@@ -1110,7 +1156,11 @@ class CustomPageIndexClient(PageIndexClient):
                     # previously only reachable from the except block below, so this
                     # path fell straight through to LowQualityTreeError. Try the same
                     # recovery here (supersedes RFC-023 D7 test case (d)).
-                    if not ok and reason in ("garbling", "node_garbling") and _D7_GARBLE_RECOVERY_ENABLED:
+                    if (
+                        not ok
+                        and reason in ("garbling", "node_garbling")
+                        and _D7_GARBLE_RECOVERY_ENABLED
+                    ):
                         recovered_md = await _attempt_tesseract_raster_recovery(
                             file_path, expected_script, filename
                         )
@@ -1192,7 +1242,9 @@ class CustomPageIndexClient(PageIndexClient):
                             )
                         else:
                             md_content, pic_results = _split_converter_output(
-                                await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
+                                await asyncio.to_thread(
+                                    pdf_to_markdown_docling, file_path, True, langs
+                                )
                             )
                         if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                             _log_pic_splice_trace(
@@ -1270,7 +1322,9 @@ class CustomPageIndexClient(PageIndexClient):
                         # here via node_count<3). Runs post-splice (D1) so
                         # image-OCR-derived content is included.
                         if _flat_text_is_garbled(
-                            flat_md, expected_script=expected_script, original_reason=original_reason
+                            flat_md,
+                            expected_script=expected_script,
+                            original_reason=original_reason,
                         ):
                             reason = "garbling"
                             logger.warning(
@@ -1423,9 +1477,7 @@ class CustomPageIndexClient(PageIndexClient):
                             # D0/RFC-027), so future audits read a durable ground-truth
                             # value instead of re-deriving it via the wrong
                             # block.get("text", "") accessor or inflated enrichment text.
-                            flat_char_count = sum(
-                                len(_flat_block_primary_text(b)) for b in blocks
-                            )
+                            flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
 
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
@@ -1512,9 +1564,7 @@ class CustomPageIndexClient(PageIndexClient):
             )
 
             structure = result.get("structure", [])
-            prior_verdict = await asyncio.to_thread(
-                find_prior_verdict, sha256, filename, doc_id
-            )
+            prior_verdict = await asyncio.to_thread(find_prior_verdict, sha256, filename, doc_id)
             verdict, verdict_reason = classify_verdict(
                 structure, "", None, prior_verdict=prior_verdict
             )
