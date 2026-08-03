@@ -8,7 +8,7 @@
 
 | Artifact | Reference |
 |---|---|
-| Governing RFC(s) | [RFC-029: Run 12 Arabic garble-gate fixes, thin-tree density gate, and extraction quality improvements](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md) |
+| Governing RFC(s) | [RFC-029: Run 12 Arabic garble-gate fixes, thin-tree density gate, and extraction quality improvements](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md) |
 | Audit | [audit/CORPUS_REINGESTION_AUDIT_RUN-12.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-12.md) |
 | Implementation Plan | [tasks-rfc029-run12-arabic-garble-gates-and-extraction-quality.md](../tasks/tasks-rfc029-run12-arabic-garble-gates-and-extraction-quality.md) |
 | Hard Rules (binding) | [CLAUDE.md § Hard Rules](../../CLAUDE.md#hard-rules) |

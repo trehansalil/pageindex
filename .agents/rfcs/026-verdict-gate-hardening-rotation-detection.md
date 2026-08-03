@@ -11,6 +11,13 @@
 
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc026-verdict-gate-hardening-rotation-detection.md](../designs/design-rfc026-verdict-gate-hardening-rotation-detection.md) |
+| Implementation Plan | [tasks-rfc026-verdict-gate-hardening-rotation-detection.md](../tasks/tasks-rfc026-verdict-gate-hardening-rotation-detection.md) |
+
 ## Context
 
 Run 9 shows strong numerical improvement (PASS doubled, FAIL dropped to zero), but the audit found that several PASS/MARGINAL verdicts are unreliable — zero-content docs pass the gate via promotion flags and missing FAIL floors. The portrait/landscape rotation issue persists for a third straight run. The scoring harness itself had a process bug (Stage 2 guard false-positive) that the D4 re-verification caught, masking the real tally.

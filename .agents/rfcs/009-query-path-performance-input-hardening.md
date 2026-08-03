@@ -17,6 +17,13 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---------------------------
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc009-query-path-performance-input-hardening.md](../designs/design-rfc009-query-path-performance-input-hardening.md) |
+| Implementation Plan | [tasks-rfc009-query-path-performance-input-hardening.md](../tasks/tasks-rfc009-query-path-performance-input-hardening.md) |
+
 ## Context
 
 The docstore audit (Wave 3, 2026-07-10) surfaced 5 issues sharing a systemic pattern:

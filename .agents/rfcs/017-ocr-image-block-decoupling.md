@@ -12,6 +12,14 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---------------------------
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc017-ocr-image-block-decoupling.md](../designs/design-rfc017-ocr-image-block-decoupling.md) |
+| Implementation Plan | [tasks-rfc017-ocr-image-block-decoupling.md](../tasks/tasks-rfc017-ocr-image-block-decoupling.md) |
+| Audit | [OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md](../../audit/OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md) |
+
 ## Context
 
 The `feat/image-block-picture-ocr` branch introduced a per-picture OCR + VLM description pipeline (RFC-015 D6) to capture non-textual content (charts, infographics, photos) as first-class retrievable artifacts. **However, this pipeline conflates with the proven page-level OCR escalation pipeline** (OCR-01, RFC-005 Fix 3), causing OCR-recovered text from scanned/image-dominant PDFs to be structurally reclassified from `prose` blocks into `image`-block `ocr_text` fields — degrading retrieval granularity, content classification accuracy, and text continuity.

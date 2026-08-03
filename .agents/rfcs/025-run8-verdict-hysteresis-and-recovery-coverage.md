@@ -13,6 +13,14 @@
 - Supersedes: Directly addresses RFC-024 risk table prediction (line 256): "the next RFC must implement hysteresis / tolerance-band / prior-verdict anchoring rather than widening again." Builds on RFC-024 (D0-D6 landed), RFC-023 (D0-D11 landed), RFC-018 (D3b per-node garble check).
 - Audit source: `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md`
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md](../designs/design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md) |
+| Implementation Plan | [tasks-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md](../tasks/tasks-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-8.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-8.md) |
+
 ## Problem Statement
 
 Run 8 corpus reaudit (25 docs, audited as 6 PASS / 6 MARGINAL / 10 FAIL / 3 ERROR; corrected to 7 PASS / 6 MARGINAL / 9 FAIL / 3 ERROR after D4 Reitlehrer verification) exposes four distinct defect classes that prior RFCs either predicted but deferred, or introduced as side effects:

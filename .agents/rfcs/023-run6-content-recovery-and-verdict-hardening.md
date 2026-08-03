@@ -13,6 +13,14 @@
 - Supersedes: Builds on RFC-022 (B1/B2/B3 landed), RFC-020 (F1/D0-D3), RFC-021 (QF1-QF4)
 - Audit source: `audit/CORPUS_REINGESTION_AUDIT_RUN-6.md`
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc023-run6-content-recovery-and-verdict-hardening.md](../designs/design-rfc023-run6-content-recovery-and-verdict-hardening.md) |
+| Implementation Plan | [tasks-rfc023-run6-content-recovery-and-verdict-hardening.md](../tasks/tasks-rfc023-run6-content-recovery-and-verdict-hardening.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-6.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-6.md) |
+
 ## Problem Statement
 
 Run 6 corpus reaudit (25 docs) scored **11 PASS / 4 MARGINAL / 9 FAIL / 1 ERROR** — the worst regression since Run 4. Net movement from Run 4: -2 PASS, -5 MARGINAL, +7 FAIL, 0 ERROR (9 verdict downgrades). The projected 19 PASS from RFC-022 was not reached; instead the branch introduced 7 new FAIL verdicts and 2 new MARGINAL downgrades.

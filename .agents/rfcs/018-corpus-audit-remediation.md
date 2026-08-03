@@ -12,6 +12,14 @@ plan-impact: yes
 supersedes-decisions-in: [RFC-017 D1]
 ---------------------------
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc018-corpus-audit-remediation.md](../designs/design-rfc018-corpus-audit-remediation.md) |
+| Implementation Plan | [tasks-rfc018-corpus-audit-remediation.md](../tasks/tasks-rfc018-corpus-audit-remediation.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_2026-07-27.md](../../audit/CORPUS_REINGESTION_AUDIT_2026-07-27.md) |
+
 ## Context
 
 The 25-doc corpus re-ingestion audit ([`audit/CORPUS_REINGESTION_AUDIT_2026-07-27.md`](../../audit/CORPUS_REINGESTION_AUDIT_2026-07-27.md)) validated the full ingestion pipeline on the `feat/image-block-picture-ocr` branch. Results: **7 PASS, 10 MARGINAL, 8 FAIL**. RFC-017's P0a (standalone image enrichment) and P0b (page-coverage filter) are implemented but **not working end-to-end**: P0a hits a marker-count mismatch on every standalone image, and P0b's area-only filter is insufficient for sub-60% chart regions with clean embedded text. Additionally, two failure modes outside RFC-017's scope dominate the failure count: Arabic RTL text reversal (7 docs) and garble-gate numeric-junk hole (3 docs).

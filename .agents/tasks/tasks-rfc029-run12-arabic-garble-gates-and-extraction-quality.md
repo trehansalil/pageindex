@@ -8,9 +8,10 @@
 
 | Artifact | Reference |
 |---|---|
-| Governing RFC(s) | `.agents/rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md` |
-| Design Document | `.agents/designs/design-rfc029-run12-arabic-garble-gates-and-extraction-quality.md` |
-| Audit | `audit/CORPUS_REINGESTION_AUDIT_RUN-12.md` |
+| Governing RFC(s) | [RFC-029: Run 12 Arabic garble-gate fixes, thin-tree density gate, and extraction quality improvements](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md) |
+| Design Document | [design-rfc029-run12-arabic-garble-gates-and-extraction-quality.md](../designs/design-rfc029-run12-arabic-garble-gates-and-extraction-quality.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-12.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-12.md) |
+| Hard Rules (binding) | [CLAUDE.md § Hard Rules](../../CLAUDE.md#hard-rules) |
 
 ## Overview
 
@@ -18,7 +19,7 @@ Run 12 audited all 25 corpus documents (10 PASS / 10 MARGINAL / 4 FAIL / 1 ERROR
 
 ## Tasks
 
-- [ ] <a id="1-batch-1--isolated-fixes-d0-d3-d6-d8"></a>1. Batch 1 — Isolated Fixes ([RFC-029 D0](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d0-nfkc-normalize-arabic-presentation-forms-before-garble-check), [D3](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d3-strip-fence-markers-and-hr-separators-in-flat-extraction-path), [D6](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d6-llm-judge-calibration-stability-and-severity-anchoring-rules), [D8](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d8-cross-document-contamination-gate-for-zero-body-text-node-clusters))
+- [ ] <a id="1-batch-1--isolated-fixes-d0-d3-d6-d8"></a>1. Batch 1 — Isolated Fixes ([RFC-029 D0](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d0-nfkc-normalize-arabic-presentation-forms-before-garble-check), [D3](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d3-strip-fence-markers-and-hr-separators-in-flat-extraction-path), [D6](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d6-llm-judge-calibration-stability-and-severity-anchoring-rules), [D8](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d8-cross-document-contamination-gate-for-zero-body-text-node-clusters))
 
   - [ ] 1.1 <a id="11-nfkc-normalize-arabic-presentation-forms"></a>Add NFKC normalization for Arabic Presentation Forms in `_pre_inference_normalize`
 
@@ -48,9 +49,9 @@ Run 12 audited all 25 corpus documents (10 PASS / 10 MARGINAL / 4 FAIL / 1 ERROR
     - **Validates: Requirements Design Property 5**
   - [ ] 1.6 <a id="16-d6-phase-a-json-diff-verification"></a>D6 Phase A — verify byte-identity of cabinet_resolution_no_21 stored artifacts across runs
 
-    - Diff the stored table blocks in the Run 11 and Run 12 JSON artifacts for `cabinet_resolution_no_21` to confirm the extraction is byte-identical (per [RFC-029 D6 verification prerequisite](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d6-llm-judge-calibration-stability-and-severity-anchoring-rules))
+    - Diff the stored table blocks in the Run 11 and Run 12 JSON artifacts for `cabinet_resolution_no_21` to confirm the extraction is byte-identical (per [RFC-029 D6 verification prerequisite](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d6-llm-judge-calibration-stability-and-severity-anchoring-rules))
     - Document the diff result inline in this task's commit message or a code comment; if the diff reveals real table-header malformation, STOP and do not proceed to 1.7 — file a follow-on code decision instead and skip the stability rule for this document
-    - _Requirements: [RFC-029 D6](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d6-llm-judge-calibration-stability-and-severity-anchoring-rules)_
+    - _Requirements: [RFC-029 D6](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d6-llm-judge-calibration-stability-and-severity-anchoring-rules)_
   - [ ] 1.7 <a id="17-d6-phase-b-judge-calibration-rules"></a>D6 Phase B — add judge stability and severity-anchoring calibration rules (contingent on 1.6)
 
     - In `.claude/skills/corpus-ingest-score/SKILL.md`, add the stability rule to the Judge Verdict guidance section: when stored gate verdict is PASS and metrics are byte-identical to the prior run (per the 1.6 diff, not assumed), the judge MUST NOT downgrade unless it can cite a specific content-quality defect not present in the prior run's finding
@@ -78,7 +79,7 @@ Run 12 audited all 25 corpus documents (10 PASS / 10 MARGINAL / 4 FAIL / 1 ERROR
   - Confirm Task 1.6's diff result before Task 1.7 was executed (not skipped)
   - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="3-batch-2--routing-decision-hardening-d1-d2"></a>3. Batch 2 — Routing Decision Hardening ([RFC-029 D1](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d1-content-density-gate-prefer-flat-extraction-when-tree-is-thin), [D2](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d2-post-ocr-garble-dilution-density-floor-for-scanned-arabic-pdfs))
+- [ ] <a id="3-batch-2--routing-decision-hardening-d1-d2"></a>3. Batch 2 — Routing Decision Hardening ([RFC-029 D1](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d1-content-density-gate-prefer-flat-extraction-when-tree-is-thin), [D2](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d2-post-ocr-garble-dilution-density-floor-for-scanned-arabic-pdfs))
 
   - [ ] 3.1 <a id="31-content-density-gate-tree-vs-flat"></a>Add content-density comparison gate to tree-vs-flat decision
 
@@ -112,7 +113,7 @@ Run 12 audited all 25 corpus documents (10 PASS / 10 MARGINAL / 4 FAIL / 1 ERROR
   - Run the full parameterized corpus-metric-fixture sweep from Tasks 3.2 and 3.4 together and confirm no fixture-level conflict between the D1 and D2 thresholds
   - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="5-batch-3--table-handling-d4-d7"></a>5. Batch 3 — Table Handling ([RFC-029 D4](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d4-post-export-table-deduplication-for-docling-char-inflation), [D7](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d7-tree-builder-table-aware-node-segmentation))
+- [ ] <a id="5-batch-3--table-handling-d4-d7"></a>5. Batch 3 — Table Handling ([RFC-029 D4](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d4-post-export-table-deduplication-for-docling-char-inflation), [D7](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d7-tree-builder-table-aware-node-segmentation))
 
   - [ ] 5.1 <a id="51-post-export-table-repair-pass"></a>Add post-export table-repair pass for Docling output
 
@@ -145,7 +146,7 @@ Run 12 audited all 25 corpus documents (10 PASS / 10 MARGINAL / 4 FAIL / 1 ERROR
   - Run `uv run pytest tests/test_rfc029_d4.py tests/test_rfc029_d7.py -v` and verify all property tests (Properties 6, 9) pass
   - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="7-batch-4--picture-enrichment-context-retention-d5ab"></a>7. Batch 4 — Picture Enrichment Context Retention ([RFC-029 D5](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d5-retain-chart-image-context-when-picture-skip-gates-fire) parts a, b)
+- [ ] <a id="7-batch-4--picture-enrichment-context-retention-d5ab"></a>7. Batch 4 — Picture Enrichment Context Retention ([RFC-029 D5](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d5-retain-chart-image-context-when-picture-skip-gates-fire) parts a, b)
 
   - [ ] 7.1 <a id="71-retain-png-and-clip-text-on-skip-gate"></a>Retain `png_bytes`/`clip_text` when `_recover_picture_text` skip gates fire
 
@@ -169,7 +170,7 @@ Run 12 audited all 25 corpus documents (10 PASS / 10 MARGINAL / 4 FAIL / 1 ERROR
   - Run `uv run pytest tests/test_rfc029_d5ab.py -v` and verify all property tests (Property 7) pass
   - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="9-batch-5--post-docling-chart-page-heuristic-d5c"></a>9. Batch 5 — Post-Docling Chart-Page Heuristic ([RFC-029 D5](../rfcs/029-run12-run12-arabic-garble-gates-and-extraction-quality.md#d5-retain-chart-image-context-when-picture-skip-gates-fire) part c — independently deferrable)
+- [ ] <a id="9-batch-5--post-docling-chart-page-heuristic-d5c"></a>9. Batch 5 — Post-Docling Chart-Page Heuristic ([RFC-029 D5](../rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md#d5-retain-chart-image-context-when-picture-skip-gates-fire) part c — independently deferrable)
 
   - [ ] 9.1 <a id="91-chart-page-density-heuristic"></a>Add post-Docling low-text-density chart-page detection heuristic
 

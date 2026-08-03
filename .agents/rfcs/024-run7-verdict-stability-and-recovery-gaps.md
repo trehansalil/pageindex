@@ -13,6 +13,14 @@
 - Supersedes: Builds on RFC-023 (D0-D11 landed), RFC-022 (B1/B2/B3 landed). **D5 explicitly supersedes RFC-023 D7 test case (d)** -- see D5 Supersession note.
 - Audit source: `audit/CORPUS_REINGESTION_AUDIT_RUN-7.md`
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc024-run7-verdict-stability-and-recovery-gaps.md](../designs/design-rfc024-run7-verdict-stability-and-recovery-gaps.md) |
+| Implementation Plan | [tasks-rfc024-run7-verdict-stability-and-recovery-gaps.md](../tasks/tasks-rfc024-run7-verdict-stability-and-recovery-gaps.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-7.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-7.md) |
+
 ## Problem Statement
 
 Run 7 corpus reaudit (25 docs) shows residual instability: verdicts that oscillate between runs due to extraction non-determinism, content recovery pipelines that crash on single-region failures losing all results for a document, and splitter/ordinal patterns that do not recognize MOU/decree document structures common in the Arabic legal corpus. Additionally, the chart/infographic content recovery path discards readable PDF text-layer content when Docling misclassifies it as PictureItems, and the D7 Tesseract fallback shares a single point of failure with the VLM rasterization backend.

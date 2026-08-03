@@ -9,6 +9,14 @@
 **Baseline:** 8 PASS / 7 MARGINAL / 10 FAIL / 0 ERROR (25 docs, 24 persisted)
 **Prior (Run 9):** 15 PASS / 8 MARGINAL / 0 FAIL / 1 ERROR
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc027-run10-extraction-gate-and-arabic-recovery.md](../designs/design-rfc027-run10-extraction-gate-and-arabic-recovery.md) |
+| Implementation Plan | [tasks-rfc027-run10-extraction-gate-and-arabic-recovery.md](../tasks/tasks-rfc027-run10-extraction-gate-and-arabic-recovery.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-10.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-10.md) |
+
 ---
 
 ## Context

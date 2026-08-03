@@ -9,6 +9,14 @@
 **Baseline:** 7 PASS / 13 MARGINAL / 4 FAIL / 1 ERROR (25 docs, 24 persisted)
 **Prior (Run 10):** 8 PASS / 7 MARGINAL / 10 FAIL / 0 ERROR
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc028-run11-arabic-recovery-and-timeout-wiring.md](../designs/design-rfc028-run11-arabic-recovery-and-timeout-wiring.md) |
+| Implementation Plan | [tasks-rfc028-run11-arabic-recovery-and-timeout-wiring.md](../tasks/tasks-rfc028-run11-arabic-recovery-and-timeout-wiring.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-11.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-11.md) |
+
 ---
 
 ## Context

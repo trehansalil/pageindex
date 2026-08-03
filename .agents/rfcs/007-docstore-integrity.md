@@ -14,6 +14,13 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc007-docstore-integrity.md](../designs/design-rfc007-docstore-integrity.md) |
+| Implementation Plan | [tasks-rfc007-docstore-integrity.md](../tasks/tasks-rfc007-docstore-integrity.md) |
+
 ## Context
 
 A Wave 3 docstore audit (2026-07-10) subjected every write-path in PageIndex to

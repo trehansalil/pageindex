@@ -13,6 +13,14 @@
 - Supersedes: Builds on RFC-021 (QF1-QF4 + QF2a-LT landed)
 - Adversarial review: Fable pass completed; C1/C3/C4/C5/P1/P2 addressed in this revision
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc022-run5-verdict-bugfixes.md](../designs/design-rfc022-run5-verdict-bugfixes.md) |
+| Implementation Plan | [tasks-rfc022-run5-verdict-bugfixes.md](../tasks/tasks-rfc022-run5-verdict-bugfixes.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_2026-07-27.md](../../audit/CORPUS_REINGESTION_AUDIT_2026-07-27.md) |
+
 ## Problem Statement
 
 Run 5 corpus reaudit (25 docs, all RFC-021 QF1-QF4 + QF2a-LT fixes applied) scored **17 PASS / 4 MARGINAL / 3 FAIL / 1 ERROR** — an improvement over Run 4's 13/9/2/1 but falling short of the projected 19-20 PASS. The FAIL count increased by 1 (GHV-TKV regression). Post-audit deviation analysis identified **3 confirmed code bugs**:

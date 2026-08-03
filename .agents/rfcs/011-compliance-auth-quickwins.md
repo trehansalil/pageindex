@@ -11,6 +11,14 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc011-compliance-auth-quickwins.md](../designs/design-rfc011-compliance-auth-quickwins.md) |
+| Implementation Plan | [tasks-rfc011-compliance-auth-quickwins.md](../tasks/tasks-rfc011-compliance-auth-quickwins.md) |
+| Audit | [DOCSTORE_AUDIT_REPORT.md](../../audit/DOCSTORE_AUDIT_REPORT.md) |
+
 ## Context
 
 `audit/DOCSTORE_AUDIT_REPORT.md` (2026-07-15) flagged 6 issues touching the erasure

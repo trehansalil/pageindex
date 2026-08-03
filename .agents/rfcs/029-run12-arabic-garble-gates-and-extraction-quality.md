@@ -5,8 +5,16 @@
 # RFC-029: Run 12 Arabic garble-gate fixes, thin-tree density gate, and extraction quality improvements
 
 **Run:** 12
-**Audit:** [audit/CORPUS_REINGESTION_AUDIT_RUN-12.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-12.md)
 **Status:** Draft
+
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc029-run12-arabic-garble-gates-and-extraction-quality.md](../designs/design-rfc029-run12-arabic-garble-gates-and-extraction-quality.md) |
+| Implementation Plan | [tasks-rfc029-run12-arabic-garble-gates-and-extraction-quality.md](../tasks/tasks-rfc029-run12-arabic-garble-gates-and-extraction-quality.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_RUN-12.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-12.md) |
+| Hard Rules (binding) | [CLAUDE.md § Hard Rules](../../CLAUDE.md#hard-rules) |
 
 ## Summary
 

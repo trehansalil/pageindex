@@ -12,6 +12,13 @@
 - Branch: `feat/image-block-picture-ocr`
 - Supersedes: Builds on RFC-017 (P0a/P0b), RFC-018 (D0-D3), RFC-019 (D0-D4)
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc020-run3-regression-remediation.md](../designs/design-rfc020-run3-regression-remediation.md) |
+| Implementation Plan | [tasks-rfc020-run3-regression-remediation.md](../tasks/tasks-rfc020-run3-regression-remediation.md) |
+
 ## Problem Statement
 
 The Run 3 corpus reingestion audit (2026-07-27, 25 docs, `feat/image-block-picture-ocr` after RFC-019 D0-D4 landed) scored **8 PASS / 11 MARGINAL / 5 FAIL / 1 ERROR** — a net *regression* from Run 2's 12 PASS / 9 MARGINAL / 3 FAIL / 1 ERROR. Seven regressions are directly attributable to branch changes, in three categories:

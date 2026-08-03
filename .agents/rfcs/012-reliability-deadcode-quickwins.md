@@ -11,6 +11,14 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc012-reliability-deadcode-quickwins.md](../designs/design-rfc012-reliability-deadcode-quickwins.md) |
+| Implementation Plan | [tasks-rfc012-reliability-deadcode-quickwins.md](../tasks/tasks-rfc012-reliability-deadcode-quickwins.md) |
+| Audit | [DOCSTORE_AUDIT_REPORT.md](../../audit/DOCSTORE_AUDIT_REPORT.md) |
+
 ## Context
 
 `audit/DOCSTORE_AUDIT_REPORT.md` flagged 7 issues spanning worker reliability

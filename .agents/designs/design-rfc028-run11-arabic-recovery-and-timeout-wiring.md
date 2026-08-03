@@ -10,7 +10,7 @@
 
 | Artifact                               | Reference                                                                                                                                                                                                        |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Governing RFC                          | [RFC-028: Run 11 Arabic Recovery, Garble Detection, and Timeout Wiring](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md)                                                                            |
+| Governing RFC                          | [RFC-028: Run 11 Arabic Recovery, Garble Detection, and Timeout Wiring](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md)                                                                            |
 | Audit report                           | [audit/CORPUS_REINGESTION_AUDIT_RUN-11.md](../../audit/CORPUS_REINGESTION_AUDIT_RUN-11.md)                                                                                                                        |
 | Product requirements                   | [PRD.md § Quality Bar &amp; Acceptance Criteria](../../PRD.md#quality-bar--acceptance-criteria)                                                                                                                  |
 | Architecture — tree gate              | [ARCHITECTURE.md § Tree Quality Gate](../../ARCHITECTURE.md#tree-quality-gate)                                                                                                                                   |
@@ -25,15 +25,15 @@ Run 11 is the first corpus cycle after RFC-027's extraction-gate and Arabic-reco
 
 ## Key Design Principles
 
-1. **Dynamic timeout computation is dead until it is called from the hot path** ([D0](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)): `chunked_docling_timeout_s()` existing in `converters.py` satisfies nothing on its own — RFC-027 task 4.2 marked this "complete" without wiring it into `worker.py`'s `asyncio.timeout()` call, which is the actual failure mode this RFC closes.
-2. **Timeout extensions are floor-raising, never floor-lowering** ([D0](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)): `max(CHILD_TIMEOUT, dynamic_timeout)` ensures non-chunked documents keep their existing 1770s budget; only chunked PDFs above the chunking threshold get an extended budget.
-3. **Structural marker promotion is gated on position, not on surrounding whitespace** ([D1](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d1----fix-arabic-structural-heading-injection-prev_blank--char-limit)): the `prev_blank` guard assumed OCR output preserves blank-line separators between structural markers, which scanned Arabic PDFs do not; the line-start regex anchor (`^`), not blank-line context, is what prevents mid-paragraph references from over-promoting.
-4. **Garble judgment for a script belongs in the garble function, not the script-identification function** ([D2](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d2----arabic-presentation-forms-garble-detection)): `_infer_script` correctly classifies Arabic Presentation Forms as Arabic-script text (they are); the fact that heavy presentation-forms usage indicates font-encoded garble is a quality judgment that belongs solely in `_is_garbled_blob`, per the RFC's explicit note.
-5. **Reversal detection must not depend solely on a fixed vocabulary** ([D3](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d3----expand-rtl-reversal-detection-vocabulary)): expanding `_AR_COMMON_WORDS` closes the observed gap but not the general one; a morphological (final/initial Arabic glyph-form) check gives a vocabulary-independent second signal so unseen domain vocabulary does not silently defeat reversal detection again.
-6. **A recovery retry must only replace content it actually improves** ([D4](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d4----fix-3-ocr-retry-keep-best-instead-of-unconditional-overwrite)): the D2/Fix-3 low-content OCR retry exists to rescue near-zero-content documents; an unconditional overwrite turns a rescue mechanism into a regression mechanism when the retry itself underperforms the original extraction.
-7. **OCR language selection must use a signal that survives near-empty input** ([D5](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d5----fix-ocr-language-detection-source-in-_recover_picture_results)): `detect_ocr_langs(md)` degrades to `['eng']` exactly when `md` is near-empty or all-digits — precisely the scanned-Arabic-PDF case this path exists to serve; the filename is a signal that does not degrade with extraction quality, matching the union pattern `client.py`'s escalation sites already use.
-8. **Scoring-prompt alignment is not a substitute for a code-level gate, and vice versa** ([D6](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d6----gate-vs-judge-alignment-for-image-markers-in-hierarchical-docs)): `classify_verdict` already returns the correct `PASS` for federal_decree_law_no_33; the fix belongs entirely in the LLM audit-judge prompt, not as a redundant code-level exemption that risks under-penalizing genuine enrichment gaps elsewhere.
-9. **Structural splitting on incidental tokens is a false-positive risk that must be guarded numerically, not heuristically** ([D7](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d7----add-standalone-roman-numeral-ordinal-splitting)): a bare `[IVX]+\.` pattern matches incidental prose ("I. went to the store"); requiring a minimum of two consecutive matches within the same oversized leaf is the guard, mirroring the existing strictly-increasing-run guard already used elsewhere in the ordinal splitter.
+1. **Dynamic timeout computation is dead until it is called from the hot path** ([D0](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)): `chunked_docling_timeout_s()` existing in `converters.py` satisfies nothing on its own — RFC-027 task 4.2 marked this "complete" without wiring it into `worker.py`'s `asyncio.timeout()` call, which is the actual failure mode this RFC closes.
+2. **Timeout extensions are floor-raising, never floor-lowering** ([D0](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)): `max(CHILD_TIMEOUT, dynamic_timeout)` ensures non-chunked documents keep their existing 1770s budget; only chunked PDFs above the chunking threshold get an extended budget.
+3. **Structural marker promotion is gated on position, not on surrounding whitespace** ([D1](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d1----fix-arabic-structural-heading-injection-prev_blank--char-limit)): the `prev_blank` guard assumed OCR output preserves blank-line separators between structural markers, which scanned Arabic PDFs do not; the line-start regex anchor (`^`), not blank-line context, is what prevents mid-paragraph references from over-promoting.
+4. **Garble judgment for a script belongs in the garble function, not the script-identification function** ([D2](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d2----arabic-presentation-forms-garble-detection)): `_infer_script` correctly classifies Arabic Presentation Forms as Arabic-script text (they are); the fact that heavy presentation-forms usage indicates font-encoded garble is a quality judgment that belongs solely in `_is_garbled_blob`, per the RFC's explicit note.
+5. **Reversal detection must not depend solely on a fixed vocabulary** ([D3](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d3----expand-rtl-reversal-detection-vocabulary)): expanding `_AR_COMMON_WORDS` closes the observed gap but not the general one; a morphological (final/initial Arabic glyph-form) check gives a vocabulary-independent second signal so unseen domain vocabulary does not silently defeat reversal detection again.
+6. **A recovery retry must only replace content it actually improves** ([D4](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d4----fix-3-ocr-retry-keep-best-instead-of-unconditional-overwrite)): the D2/Fix-3 low-content OCR retry exists to rescue near-zero-content documents; an unconditional overwrite turns a rescue mechanism into a regression mechanism when the retry itself underperforms the original extraction.
+7. **OCR language selection must use a signal that survives near-empty input** ([D5](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d5----fix-ocr-language-detection-source-in-_recover_picture_results)): `detect_ocr_langs(md)` degrades to `['eng']` exactly when `md` is near-empty or all-digits — precisely the scanned-Arabic-PDF case this path exists to serve; the filename is a signal that does not degrade with extraction quality, matching the union pattern `client.py`'s escalation sites already use.
+8. **Scoring-prompt alignment is not a substitute for a code-level gate, and vice versa** ([D6](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d6----gate-vs-judge-alignment-for-image-markers-in-hierarchical-docs)): `classify_verdict` already returns the correct `PASS` for federal_decree_law_no_33; the fix belongs entirely in the LLM audit-judge prompt, not as a redundant code-level exemption that risks under-penalizing genuine enrichment gaps elsewhere.
+9. **Structural splitting on incidental tokens is a false-positive risk that must be guarded numerically, not heuristically** ([D7](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d7----add-standalone-roman-numeral-ordinal-splitting)): a bare `[IVX]+\.` pattern matches incidental prose ("I. went to the store"); requiring a minimum of two consecutive matches within the same oversized leaf is the guard, mirroring the existing strictly-increasing-run guard already used elsewhere in the ordinal splitter.
 
 ## Launch Constraints
 
@@ -108,35 +108,35 @@ graph TB
 
 #### D0 – Wire Dynamic Timeout into Worker Subprocess
 
-**Delegate chunk-count computation to the converter child, not the worker** (RFC-028 [D0](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)): the worker never independently re-derives page count; it trusts the child's startup JSON handshake, which already reads page count at `converters.py:2318-2340` for routing. This avoids worker/child disagreement when PyPDF2 fails in one process but not the other, and gives a clean fallback (`CHILD_TIMEOUT`) when the child reports a non-Docling route.
+**Delegate chunk-count computation to the converter child, not the worker** (RFC-028 [D0](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)): the worker never independently re-derives page count; it trusts the child's startup JSON handshake, which already reads page count at `converters.py:2318-2340` for routing. This avoids worker/child disagreement when PyPDF2 fails in one process but not the other, and gives a clean fallback (`CHILD_TIMEOUT`) when the child reports a non-Docling route.
 
 #### D1 – Fix Arabic Structural Heading Injection
 
-**Remove `prev_blank`, keep the line-start anchor** (RFC-028 [D1](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d1----fix-arabic-structural-heading-injection-prev_blank--char-limit)): the alternative — requiring some other separator heuristic (e.g. sentence-boundary detection) — was rejected as unnecessary complexity; the existing `^`-anchored regex match already prevents mid-paragraph promotion, so `prev_blank` was redundant and actively harmful for continuous OCR output.
+**Remove `prev_blank`, keep the line-start anchor** (RFC-028 [D1](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d1----fix-arabic-structural-heading-injection-prev_blank--char-limit)): the alternative — requiring some other separator heuristic (e.g. sentence-boundary detection) — was rejected as unnecessary complexity; the existing `^`-anchored regex match already prevents mid-paragraph promotion, so `prev_blank` was redundant and actively harmful for continuous OCR output.
 
 #### D2 – Arabic Presentation-Forms Garble Detection
 
-**Presentation-Forms check is additive to `_is_garbled_blob`, not a replacement for the PUA check** (RFC-028 [D2](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d2----arabic-presentation-forms-garble-detection)): both checks address distinct garble signatures (private-use-area glyphs vs. positional Arabic glyph variants) and are evaluated independently; the RFC considered folding both into one generic "non-logical-Unicode ratio" check but rejected it because the failure signatures and safe thresholds differ per range.
+**Presentation-Forms check is additive to `_is_garbled_blob`, not a replacement for the PUA check** (RFC-028 [D2](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d2----arabic-presentation-forms-garble-detection)): both checks address distinct garble signatures (private-use-area glyphs vs. positional Arabic glyph variants) and are evaluated independently; the RFC considered folding both into one generic "non-logical-Unicode ratio" check but rejected it because the failure signatures and safe thresholds differ per range.
 
 #### D3 – Expand RTL Reversal Detection Vocabulary
 
-**Morphological check is combined with vocabulary score via OR, not AND** (RFC-028 [D3](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d3----expand-rtl-reversal-detection-vocabulary)): either signal independently indicating reversal is sufficient to flag a tree as `rtl_reversed`, because the vocabulary gap (RFC-028's root cause) and the morphological gap are largely orthogonal failure modes — requiring both to agree would re-introduce the same class of false-negative this RFC closes.
+**Morphological check is combined with vocabulary score via OR, not AND** (RFC-028 [D3](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d3----expand-rtl-reversal-detection-vocabulary)): either signal independently indicating reversal is sufficient to flag a tree as `rtl_reversed`, because the vocabulary gap (RFC-028's root cause) and the morphological gap are largely orthogonal failure modes — requiring both to agree would re-introduce the same class of false-negative this RFC closes.
 
 #### D4 – OCR Retry Keep-Best
 
-**Keep-best uses `total_chars` as primary signal, garble as tie-break only** (RFC-028 [D4](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d4----fix-3-ocr-retry-keep-best-instead-of-unconditional-overwrite)): a strict "prefer non-garbled" primary rule was rejected because garble detection itself has known blind spots (D2, D3 exist because of this); char-count is the more robust primary signal, with garble as a secondary tie-break only when counts are close, per the RFC's explicit risk mitigation.
+**Keep-best uses `total_chars` as primary signal, garble as tie-break only** (RFC-028 [D4](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d4----fix-3-ocr-retry-keep-best-instead-of-unconditional-overwrite)): a strict "prefer non-garbled" primary rule was rejected because garble detection itself has known blind spots (D2, D3 exist because of this); char-count is the more robust primary signal, with garble as a secondary tie-break only when counts are close, per the RFC's explicit risk mitigation.
 
 #### D5 – Fix OCR Language Detection Source
 
-**Filename is a signal that does not degrade with extraction quality** (RFC-028 [D5](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d5----fix-ocr-language-detection-source-in-_recover_picture_results)): `detect_ocr_langs(md)` degrades to `['eng']` exactly when `md` is near-empty or all-digits — precisely the scanned-Arabic-PDF case this path exists to serve. Threading `filename` into `_recover_picture_results` and unioning with the `md`-derived langs matches the existing pattern already used at `client.py`'s OCR-escalation call sites, so this decision is a consistency fix, not a new pattern.
+**Filename is a signal that does not degrade with extraction quality** (RFC-028 [D5](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d5----fix-ocr-language-detection-source-in-_recover_picture_results)): `detect_ocr_langs(md)` degrades to `['eng']` exactly when `md` is near-empty or all-digits — precisely the scanned-Arabic-PDF case this path exists to serve. Threading `filename` into `_recover_picture_results` and unioning with the `md`-derived langs matches the existing pattern already used at `client.py`'s OCR-escalation call sites, so this decision is a consistency fix, not a new pattern.
 
 #### D6 – Gate-vs-Judge Alignment for Image Markers
 
-**Prompt-only fix, no code-level property** (RFC-028 [D6](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d6----gate-vs-judge-alignment-for-image-markers-in-hierarchical-docs)): `classify_verdict` already returns `PASS` correctly for federal_decree_law_no_33 (502 nodes, 110k chars, decorative unenriched image markers); the gap is entirely in the LLM audit-judge prompt used by the scoring pipeline (`.claude/skills/corpus-ingest-score`), which downgrades to MARGINAL for markers the code-level gate already tolerates. Because this decision does not change `src/`, it has no entry in [Correctness Properties](#correctness-properties) and no unit-test task — it is validated via the audit scoring pipeline's judge output, not `pytest`.
+**Prompt-only fix, no code-level property** (RFC-028 [D6](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d6----gate-vs-judge-alignment-for-image-markers-in-hierarchical-docs)): `classify_verdict` already returns `PASS` correctly for federal_decree_law_no_33 (502 nodes, 110k chars, decorative unenriched image markers); the gap is entirely in the LLM audit-judge prompt used by the scoring pipeline (`.claude/skills/corpus-ingest-score`), which downgrades to MARGINAL for markers the code-level gate already tolerates. Because this decision does not change `src/`, it has no entry in [Correctness Properties](#correctness-properties) and no unit-test task — it is validated via the audit scoring pipeline's judge output, not `pytest`.
 
 #### D7 – Roman-Numeral Ordinal Splitting
 
-**Require a minimum of 2 consecutive matches, not a single-token heuristic** (RFC-028 [D7](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d7----add-standalone-roman-numeral-ordinal-splitting)): a bare `[IVX]+\.` alternative alone would false-positive on incidental prose (e.g. "I. went to the store"); gating the split on 2+ consecutive matches within the same oversized leaf mirrors the existing strictly-increasing-run guard already used elsewhere in the ordinal splitter, rather than introducing a new heuristic class.
+**Require a minimum of 2 consecutive matches, not a single-token heuristic** (RFC-028 [D7](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d7----add-standalone-roman-numeral-ordinal-splitting)): a bare `[IVX]+\.` alternative alone would false-positive on incidental prose (e.g. "I. went to the store"); gating the split on 2+ consecutive matches within the same oversized leaf mirrors the existing strictly-increasing-run guard already used elsewhere in the ordinal splitter, rather than introducing a new heuristic class.
 
 ### Deployment Architecture
 
@@ -382,43 +382,43 @@ class Verdict(str, Enum):
 
 *For any* document whose converter child reports `chunk_count = N` on a Docling route, system SHALL compute `effective_timeout = max(CHILD_TIMEOUT, chunked_docling_timeout_s(N))`, and *for any* document whose child reports a non-Docling route, system SHALL use `effective_timeout = CHILD_TIMEOUT` unconditionally.
 
-**Validates: [RFC-028 D0](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)**
+**Validates: [RFC-028 D0](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d0----wire-dynamic-timeout-into-worker-subprocess)**
 
 ### Property 2: Arabic heading injection promotes all markers regardless of blank-line context
 
 *For any* markdown line matching the Arabic structural-marker regex at line start (`^`), system SHALL promote it to an ATX heading regardless of whether the preceding line was blank, and SHALL NOT promote any line where the marker match does not begin at the line start.
 
-**Validates: [RFC-028 D1](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d1----fix-arabic-structural-heading-injection-prev_blank--char-limit)**
+**Validates: [RFC-028 D1](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d1----fix-arabic-structural-heading-injection-prev_blank--char-limit)**
 
 ### Property 3: Presentation-Forms ratio triggers garble detection
 
 *For any* text blob where the ratio of Arabic Presentation Forms characters (U+FB50-FDFF, U+FE70-FEFF) to total Arabic-range characters exceeds `0.50`, `_is_garbled_blob` SHALL return `True`; *for any* blob at or below that ratio (holding all other garble signals constant), it SHALL NOT trigger this specific check.
 
-**Validates: [RFC-028 D2](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d2----arabic-presentation-forms-garble-detection)**
+**Validates: [RFC-028 D2](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d2----arabic-presentation-forms-garble-detection)**
 
 ### Property 4: RTL-reversal detection is vocabulary and morphology aware
 
 *For any* Arabic tree whose title text is reversed, system SHALL flag it via `_tree_is_rtl_reversed` returning `True` if EITHER the vocabulary-based readability score OR the morphological (final/initial glyph-form position) check indicates reversal; *for any* correctly-ordered Arabic tree with valid morphology, system SHALL NOT flag it as reversed regardless of vocabulary coverage.
 
-**Validates: [RFC-028 D3](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d3----expand-rtl-reversal-detection-vocabulary)**
+**Validates: [RFC-028 D3](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d3----expand-rtl-reversal-detection-vocabulary)**
 
 ### Property 5: OCR retry keeps result with more content
 
 *For any* low-content-triggered OCR retry, system SHALL persist the result (pre-retry or post-retry) with the greater `total_chars`, and *for any* near-tie in `total_chars`, SHALL prefer the non-garbled result (per `_is_garbled_blob`) as a secondary tie-break.
 
-**Validates: [RFC-028 D4](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d4----fix-3-ocr-retry-keep-best-instead-of-unconditional-overwrite)**
+**Validates: [RFC-028 D4](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d4----fix-3-ocr-retry-keep-best-instead-of-unconditional-overwrite)**
 
 ### Property 6: Picture OCR language is filename-derived, not markdown-derived
 
 *For any* call to `_recover_picture_results`, system SHALL derive the Tesseract language list from `detect_ocr_langs(filename)` unioned with `detect_ocr_langs(md_content or "")`, and SHALL NOT rely solely on `detect_ocr_langs(md)` when `md` is near-empty or all-digits.
 
-**Validates: [RFC-028 D5](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d5----fix-ocr-language-detection-source-in-_recover_picture_results)**
+**Validates: [RFC-028 D5](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d5----fix-ocr-language-detection-source-in-_recover_picture_results)**
 
 ### Property 7: Roman-numeral ordinal markers are detected and split
 
 *For any* oversized leaf node containing 2 or more consecutive standalone Roman-numeral markers (e.g. "I. ", "II. ", "III. "), `_OVERSIZED_ORDINAL_RE` SHALL match all of them and `split_oversized_leaf_nodes` SHALL split the node accordingly; *for any* leaf containing fewer than 2 such matches, system SHALL NOT trigger a split on this pattern alone.
 
-**Validates: [RFC-028 D7](../rfcs/028-run11-run11-arabic-recovery-and-timeout-wiring.md#d7----add-standalone-roman-numeral-ordinal-splitting)**
+**Validates: [RFC-028 D7](../rfcs/028-run11-arabic-recovery-and-timeout-wiring.md#d7----add-standalone-roman-numeral-ordinal-splitting)**
 
 ## Error Handling
 

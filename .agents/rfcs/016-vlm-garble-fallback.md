@@ -11,6 +11,13 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc016-vlm-garble-fallback.md](../designs/design-rfc016-vlm-garble-fallback.md) |
+| Implementation Plan | [tasks-rfc016-vlm-garble-fallback.md](../tasks/tasks-rfc016-vlm-garble-fallback.md) |
+
 ## Context
 
 RFC-004 (VLM-Based Document-Hierarchy Detection) was accepted with `VLM_MODE=disabled`

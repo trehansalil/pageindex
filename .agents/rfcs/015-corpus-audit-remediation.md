@@ -11,6 +11,13 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc015-corpus-audit-remediation.md](../designs/design-rfc015-corpus-audit-remediation.md) |
+| Implementation Plan | [tasks-rfc015-corpus-audit-remediation.md](../tasks/tasks-rfc015-corpus-audit-remediation.md) |
+
 ## Context
 
 A 26-file corpus audit (2026-07-17, branch `feat/scaling-pageindex`) independently
