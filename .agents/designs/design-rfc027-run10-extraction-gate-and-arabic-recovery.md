@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: RFC-027 Run-10 Extraction Gate Integrity and Arabic Content Recovery -->
+<!-- Folder: Designs -->
+
 # Design Document: RFC-027 Run-10 Extraction Gate Integrity and Arabic Content Recovery
 
 ## Traceability

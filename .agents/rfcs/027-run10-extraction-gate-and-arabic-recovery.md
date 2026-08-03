@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-027: Run-10 Extraction Gate Integrity and Arabic Content Recovery -->
+<!-- Folder: RFCs -->
+
 # RFC-027: Run-10 Extraction Gate Integrity and Arabic Content Recovery
 
 **Date:** 2026-07-31
