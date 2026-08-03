@@ -583,11 +583,11 @@
   <div style="background: linear-gradient(135deg, var(--teal-bg), var(--accent-bg)); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
     <div style="flex: 0 0 auto;">
       <div style="font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.3rem;">Latest Run</div>
-      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--teal);">Run 9</div>
+      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--accent);">Run 10</div>
     </div>
     <div style="flex: 1; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">15</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">7</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">PASS</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
@@ -595,17 +595,17 @@
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">MARGINAL</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">0</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">10</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">FAIL</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">1</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">0</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">ERROR</div>
       </div>
     </div>
     <div style="flex: 0 0 auto; font-family: var(--font-label); font-size: 0.8rem; color: var(--text-muted); text-align: right;">
-      <div>RFC-026 &middot; 2026-07-31</div>
-      <div style="color: var(--teal); font-weight: 600;">+8 PASS vs Run 8</div>
+      <div>RFC-027 &middot; 2026-08-03</div>
+      <div style="color: var(--accent); font-weight: 600;">Gate hardening &rarr; 10 FAIL surfaced</div>
     </div>
   </div>
 
@@ -651,17 +651,104 @@
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-025</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Verdict hysteresis, recovery coverage</td>
         </tr>
-        <tr style="background: var(--teal-bg); border-bottom: 1px solid var(--border);">
-          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">9</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">15</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">8</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">0</td>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">15</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">8</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">0</td>
           <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-026</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Verdict gate hardening, rotation detection</td>
         </tr>
+        <tr style="background: var(--accent-bg, rgba(245,158,11,0.08)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--accent);">10</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">8</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--rose);">10</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">0</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-027</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Extraction gate integrity, Arabic content recovery</td>
+        </tr>
       </tbody>
     </table>
+  </div>
+
+  <!-- ═══════════ RUN TREND CHART ═══════════ -->
+  <div style="margin: 1.5rem 0; padding: 1.2rem; background: var(--card-bg); border-radius: 0.6rem; border: 1px solid var(--border);">
+    <h2 style="font-family: var(--font-label); font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">Verdict Trend</h2>
+    <div style="overflow-x: auto;">
+      <svg viewBox="0 0 600 260" style="width: 100%; max-width: 600px; height: auto; font-family: var(--font-label, 'Inter', sans-serif);">
+        <!-- Y axis labels -->
+        <text x="30" y="30" fill="var(--text-muted)" font-size="10" text-anchor="end">25</text>
+        <text x="30" y="80" fill="var(--text-muted)" font-size="10" text-anchor="end">20</text>
+        <text x="30" y="130" fill="var(--text-muted)" font-size="10" text-anchor="end">15</text>
+        <text x="30" y="180" fill="var(--text-muted)" font-size="10" text-anchor="end">10</text>
+        <text x="30" y="230" fill="var(--text-muted)" font-size="10" text-anchor="end">5</text>
+        <!-- Grid lines -->
+        <line x1="40" y1="30" x2="570" y2="30" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="80" x2="570" y2="80" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="130" x2="570" y2="130" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="180" x2="570" y2="180" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="230" x2="570" y2="230" stroke="var(--border)" stroke-width="0.5"/>
+
+        <!-- Run 5: 11P 9M 3F 2E = 25 -->
+        <rect x="60" y="142" width="60" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="60" y="70" width="60" height="72" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="60" y="46" width="60" height="24" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="60" y="30" width="60" height="16" rx="3" fill="#6b5b73"/>
+        <text x="90" y="190" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">11</text>
+        <text x="90" y="110" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">9</text>
+        <text x="90" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 5</text>
+
+        <!-- Run 6: 11P 4M 9F 1E = 25 -->
+        <rect x="165" y="142" width="60" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="165" y="110" width="60" height="32" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="165" y="38" width="60" height="72" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="165" y="30" width="60" height="8" rx="3" fill="#6b5b73"/>
+        <text x="195" y="190" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">11</text>
+        <text x="195" y="78" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">9</text>
+        <text x="195" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 6</text>
+
+        <!-- Run 8: 7P 6M 9F 3E = 25 -->
+        <rect x="270" y="174" width="60" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="270" y="126" width="60" height="48" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="270" y="54" width="60" height="72" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="270" y="30" width="60" height="24" rx="3" fill="#6b5b73"/>
+        <text x="300" y="206" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">7</text>
+        <text x="300" y="95" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">9</text>
+        <text x="300" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 8</text>
+
+        <!-- Run 9: 15P 8M 0F 1E = 24(+1err) -->
+        <rect x="375" y="110" width="60" height="120" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="375" y="46" width="60" height="64" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="375" y="38" width="60" height="8" rx="3" fill="#6b5b73"/>
+        <text x="405" y="175" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">15</text>
+        <text x="405" y="82" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">8</text>
+        <text x="405" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 9</text>
+
+        <!-- Run 10: 7P 8M 10F 0E = 25 -->
+        <rect x="480" y="174" width="60" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="480" y="110" width="60" height="64" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="480" y="30" width="60" height="80" rx="3" fill="var(--rose, #a8505a)"/>
+        <text x="510" y="206" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">7</text>
+        <text x="510" y="146" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">8</text>
+        <text x="510" y="75" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">10</text>
+        <text x="510" y="248" fill="var(--accent)" font-size="11" font-weight="700" text-anchor="middle">Run 10</text>
+
+        <!-- Legend -->
+        <rect x="40" y="252" width="10" height="10" rx="2" fill="var(--teal, #2e7d6e)"/>
+        <text x="54" y="261" fill="var(--text-muted)" font-size="9">PASS</text>
+        <rect x="100" y="252" width="10" height="10" rx="2" fill="var(--accent, #d4943a)"/>
+        <text x="114" y="261" fill="var(--text-muted)" font-size="9">MARGINAL</text>
+        <rect x="185" y="252" width="10" height="10" rx="2" fill="var(--rose, #a8505a)"/>
+        <text x="199" y="261" fill="var(--text-muted)" font-size="9">FAIL</text>
+        <rect x="240" y="252" width="10" height="10" rx="2" fill="#6b5b73"/>
+        <text x="254" y="261" fill="var(--text-muted)" font-size="9">ERROR</text>
+      </svg>
+    </div>
+    <div style="font-family: var(--font-label); font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+      Run 10: RFC-026 gate hardening surfaced 10 pre-existing FAILs previously masked as PASS/MARGINAL. PASS &minus;8 is accuracy correction, not content regression.
+    </div>
   </div>
 
   <div class="legend">
@@ -711,6 +798,18 @@ flowchart TD
         WIPE["Wipe PG / MinIO / Redis"]:::skill
         RESTART["Restart workers + server"]:::skill
         PIPELINE["Per-doc pipeline\n▸ Haiku process\n▸ Sonnet fetch metrics\n▸ Opus judge verdict"]:::skill
+        subgraph GATES ["Gate Architecture (RFC-026/027)"]
+            direction LR
+            D7["D7 Page guard\nDocling chunking\nPyPDF2 fallback"]:::skill
+            D4["D4 Arabic\nheading injection"]:::skill
+            D3["D3 RTL reversal\ndetection + bidi fix"]:::skill
+            VT["validate_tree()\nD5 small-doc relax\nleaf_ratio ≥ 0.40"]:::skill
+            D2["D2 OCR escalation\n< 300 chars → OCR"]:::skill
+            D6["D6 Dedup adjacent\nimage markers"]:::skill
+            D1["D1 Post-splice\ngarble check"]:::skill
+            D0["D0 classify_verdict\nprimary-text only\nzero-content → FAIL"]:::skill
+        end
+        D7 --> D4 --> D3 --> VT --> D2 --> D6 --> D1 --> D0
         DIFF["corpus:diff\nRun N vs N-1 delta\n▸ Sonnet"]:::skill
         REPORT["Write audit report\n▸ Fable"]:::skill
         AUDIT_FILE[/"audit/CORPUS_REINGESTION\n_AUDIT_RUN-N.md"/]:::output
@@ -1414,6 +1513,33 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
       </div>
     </div>
 
+    <!-- RFC-026 / RFC-027 Gate Hardening & Extraction Recovery -->
+    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Gate Hardening &amp; Extraction Recovery (RFC-026 / RFC-027)</h3>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-07-31 &middot; RFC-026 &middot; LANDED</div>
+      <div class="card-title">Verdict Gate Hardening + Rotation Detection</div>
+      <div class="card-detail">
+        5 dimensions implemented: D0 zero-content FAIL floor (<code>node_count==0 || total_chars==0 &rarr; FAIL zero_content</code>). D1 image-enrichment char floor (<code>image_enrichment_promoted_below_char_floor</code> when chars &lt; 500). D2 garble-check ordering in <code>validate_tree()</code>. D3 tightened <code>cat_b_promoted</code> quality guard. D5 rotation detection wired into verdict scoring. <strong>Result:</strong> Run 10 surfaced 10 FAILs previously masked as PASS/MARGINAL &mdash; overwhelmingly correct gate corrections.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-08-03 &middot; RFC-027 &middot; PLANNED</div>
+      <div class="card-title">Run-10 Extraction Gate Integrity &amp; Arabic Content Recovery</div>
+      <div class="card-detail">
+        8 fix dimensions from Run 10 audit (7P/8M/10F/0E): <strong>D0</strong> split <code>_flat_block_text</code> to exclude enrichment metadata from verdict char counts (Unfallversicherung 492 real vs 7,471 inflated). <strong>D1</strong> wire garble detection into <code>image_enrichment_promoted</code> branch + reorder D3B post-splice. <strong>D2</strong> OCR escalation for low-content/garbled Arabic PDFs (&lt;300 chars &rarr; <code>force_full_page_ocr</code>). <strong>D3</strong> RTL reversal detection in <code>validate_tree()</code> + vocabulary-calibrated scoring. <strong>D5</strong> small-doc leaf-ratio relaxation (<code>node_count&lt;=5 &rarr; threshold 0.40</code>). <strong>D6</strong> deduplicate adjacent image markers. <strong>D7</strong> page-count guard for large-doc Docling timeout (PyPDF2 MIT fallback, not AGPL). <strong>D8</strong> pre-publish cross-check all scorecard rows vs stored gate verdicts.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-08-03 &middot; Run 10 Audit</div>
+      <div class="card-title">Run 10 Corpus Re-Ingestion: 12 Regressions (Gate Corrections)</div>
+      <div class="card-detail">
+        <strong>Tally:</strong> 7 PASS / 8 MARGINAL / 10 FAIL / 0 ERROR (vs Run 9: 15P/8M/0F/1E). <strong>0 improvements</strong>, <strong>12 regressions</strong> (all gate-hardening corrections exposing pre-existing defects), <strong>4 stalls</strong>, <strong>6 stable</strong>. Key findings: promotion-path bypass still open for junk OCR (ward 597), meta char counter diverges from persisted blocks (Unfallversicherung 15&times; inflation), judge-vs-gate verdict divergence on 5 docs (RTL reversal and Arabic Presentation Forms caught only by audit, not gate). Audit: <code>audit/CORPUS_REINGESTION_AUDIT_RUN-10.md</code>
+      </div>
+    </div>
+
     <!-- Guardrails & Lessons -->
     <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Guardrails &amp; Lessons Learned</h3>
 
@@ -1469,7 +1595,7 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
     </div>
 
     <p style="font-size: 0.72rem; color: var(--text-faint); margin-top: 1.5rem; font-family: var(--font-mono); letter-spacing: 0.04em;">
-      Last updated: 2026-07-29 &middot; Sourced from claude-mem observations + project memory
+      Last updated: 2026-08-03 &middot; Sourced from claude-mem observations + project memory
     </p>
   </div>
 
