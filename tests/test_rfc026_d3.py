@@ -91,7 +91,12 @@ class TestFindPriorVerdictSnapshotFallback:
             {
                 "snapshot_at": "2026-07-31T00:00:00Z",
                 "entries": [
-                    {"sha256": "abc123", "doc_name": "old.pdf", "doc_id": "doc-old", "verdict": "PASS"}
+                    {
+                        "sha256": "abc123",
+                        "doc_name": "old.pdf",
+                        "doc_id": "doc-old",
+                        "verdict": "PASS",
+                    }
                 ],
             }
         )
@@ -147,9 +152,7 @@ class TestScoringHarnessStage2Guard:
         const isError = {guard_predicate};
         console.log(JSON.stringify(isError));
         """
-        result = subprocess.run(
-            ["node", "-e", script], capture_output=True, text=True, check=True
-        )
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
         return json.loads(result.stdout.strip())
 
     def test_a_success_status_with_unrelated_error_substring_proceeds(self, guard_predicate):
@@ -160,7 +163,12 @@ class TestScoringHarnessStage2Guard:
 
     def test_b_success_status_error_field_null_proceeds(self, guard_predicate):
         ingest_result = json.dumps(
-            {"status": "success", "doc_id": "x", "error": None, "content_class": "has_error_prone_layout"}
+            {
+                "status": "success",
+                "doc_id": "x",
+                "error": None,
+                "content_class": "has_error_prone_layout",
+            }
         )
         assert self._run_guard(guard_predicate, ingest_result) is False
 

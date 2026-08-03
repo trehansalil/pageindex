@@ -24,27 +24,37 @@ import pytest
 class TestPresignedUrl:
     def test_presigned_get_url_delegates_to_minio(self):
         mock_minio = MagicMock()
-        mock_minio.presigned_get_object.return_value = "https://minio.example.com/bucket/key?sig=abc"
-        with patch("pageindex_mcp.storage.get_minio", return_value=mock_minio), \
-             patch("pageindex_mcp.storage.settings") as mock_settings:
+        mock_minio.presigned_get_object.return_value = (
+            "https://minio.example.com/bucket/key?sig=abc"
+        )
+        with (
+            patch("pageindex_mcp.storage.get_minio", return_value=mock_minio),
+            patch("pageindex_mcp.storage.settings") as mock_settings,
+        ):
             mock_settings.minio_presign_endpoint = None
             mock_settings.minio_bucket = "pageindex"
             from pageindex_mcp.storage import presigned_get_url
+
             url = presigned_get_url("uploads/staging/job123/test.pdf")
         assert "minio.example.com" in url
         mock_minio.presigned_get_object.assert_called_once()
 
     def test_presigned_get_url_uses_presign_endpoint(self):
         mock_presign = MagicMock()
-        mock_presign.presigned_get_object.return_value = "https://public.minio.com/bucket/key?sig=xyz"
-        with patch("pageindex_mcp.storage._presign_client", mock_presign), \
-             patch("pageindex_mcp.storage.settings") as mock_settings:
+        mock_presign.presigned_get_object.return_value = (
+            "https://public.minio.com/bucket/key?sig=xyz"
+        )
+        with (
+            patch("pageindex_mcp.storage._presign_client", mock_presign),
+            patch("pageindex_mcp.storage.settings") as mock_settings,
+        ):
             mock_settings.minio_presign_endpoint = "public.minio.com"
             mock_settings.minio_bucket = "pageindex"
             mock_settings.minio_secure = True
             mock_settings.minio_access_key = "key"
             mock_settings.minio_secret_key = "secret"
             from pageindex_mcp.storage import presigned_get_url
+
             url = presigned_get_url("uploads/staging/job123/test.pdf")
         assert "public.minio.com" in url
 
@@ -128,14 +138,19 @@ class TestRemotePdfToMarkdown:
         }
         mock_client = _MockAsyncClient(response_data)
 
-        with patch("pageindex_mcp.client.settings") as mock_settings, \
-             patch("httpx.AsyncClient", return_value=mock_client), \
-             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key?sig=abc"):
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch(
+                "pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key?sig=abc"
+            ),
+        ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
             mock_settings.docling_service_bearer_token = ""
 
             from pageindex_mcp.client import _remote_pdf_to_markdown
+
             md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
 
         assert md == "# Test Document\n\nHello world"
@@ -149,14 +164,17 @@ class TestRemotePdfToMarkdown:
         captured = {}
         mock_client = _MockAsyncClient(response_data, capture_headers=captured)
 
-        with patch("pageindex_mcp.client.settings") as mock_settings, \
-             patch("httpx.AsyncClient", return_value=mock_client), \
-             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"):
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+        ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
             mock_settings.docling_service_bearer_token = "secret-token"
 
             from pageindex_mcp.client import _remote_pdf_to_markdown
+
             await _remote_pdf_to_markdown("staging/key.pdf")
 
         assert captured.get("Authorization") == "Bearer secret-token"
@@ -167,14 +185,17 @@ class TestRemotePdfToMarkdown:
         captured = {}
         mock_client = _MockAsyncClient(response_data, capture_headers=captured)
 
-        with patch("pageindex_mcp.client.settings") as mock_settings, \
-             patch("httpx.AsyncClient", return_value=mock_client), \
-             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"):
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+        ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
             mock_settings.docling_service_bearer_token = ""
 
             from pageindex_mcp.client import _remote_pdf_to_markdown
+
             await _remote_pdf_to_markdown("staging/key.pdf")
 
         assert "Authorization" not in captured
@@ -186,14 +207,17 @@ class TestRemoteImageToMarkdown:
         response_data = {"markdown": "OCR text from image"}
         mock_client = _MockAsyncClient(response_data)
 
-        with patch("pageindex_mcp.client.settings") as mock_settings, \
-             patch("httpx.AsyncClient", return_value=mock_client), \
-             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"):
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+        ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
             mock_settings.docling_service_bearer_token = ""
 
             from pageindex_mcp.client import _remote_image_to_markdown
+
             md = await _remote_image_to_markdown("staging/key.png")
 
         assert md == "OCR text from image"
@@ -207,6 +231,7 @@ class TestRemoteImageToMarkdown:
 class TestConvertersCliStagingKey:
     def test_staging_key_argument_parsed(self):
         import argparse
+
         parser = argparse.ArgumentParser()
         parser.add_argument("input_path")
         parser.add_argument("--staging-key", default=None)
@@ -215,6 +240,7 @@ class TestConvertersCliStagingKey:
 
     def test_staging_key_default_none(self):
         import argparse
+
         parser = argparse.ArgumentParser()
         parser.add_argument("input_path")
         parser.add_argument("--staging-key", default=None)

@@ -24,10 +24,17 @@ import pageindex_mcp.client as client_mod
 
 def _ocr_escalation_gate(ok: bool, reason: str, *, ext: str = ".pdf") -> bool:
     """Reproduces client.py:965 — OCR escalation trigger."""
-    return not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and client_mod._OCR_ESCALATION
+    return (
+        not ok
+        and reason in ("garbling", "node_garbling")
+        and ext == ".pdf"
+        and client_mod._OCR_ESCALATION
+    )
 
 
-def _vlm_fallback_gate(ok: bool, reason: str, *, ext: str = ".pdf", vlm_fallback: bool = True) -> bool:
+def _vlm_fallback_gate(
+    ok: bool, reason: str, *, ext: str = ".pdf", vlm_fallback: bool = True
+) -> bool:
     """Reproduces client.py:1021 — VLM fallback trigger."""
     return not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and vlm_fallback
 
@@ -35,7 +42,11 @@ def _vlm_fallback_gate(ok: bool, reason: str, *, ext: str = ".pdf", vlm_fallback
 def _d7_tesseract_raster_gate(ok: bool, reason: str) -> bool:
     """Reproduces client.py:1054 — D7 Tesseract-raster recovery trigger
     (post-VLM, no-exception path)."""
-    return not ok and reason in ("garbling", "node_garbling") and client_mod._D7_GARBLE_RECOVERY_ENABLED
+    return (
+        not ok
+        and reason in ("garbling", "node_garbling")
+        and client_mod._D7_GARBLE_RECOVERY_ENABLED
+    )
 
 
 class TestOcrEscalationTriggerParity:

@@ -118,8 +118,18 @@ class TestValidateTreeRtlReversal:
                 "text": "",
                 "start_index": 0,
                 "nodes": [
-                    {"title": "Article One", "text": "plain english prose", "start_index": 1, "nodes": []},
-                    {"title": "Article Two", "text": "more english prose", "start_index": 2, "nodes": []},
+                    {
+                        "title": "Article One",
+                        "text": "plain english prose",
+                        "start_index": 1,
+                        "nodes": [],
+                    },
+                    {
+                        "title": "Article Two",
+                        "text": "more english prose",
+                        "start_index": 2,
+                        "nodes": [],
+                    },
                 ],
             }
         ]

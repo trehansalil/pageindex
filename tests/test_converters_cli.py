@@ -206,8 +206,12 @@ async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
 
     assert exit_code == 0
     lines = [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()]
-    assert len(lines) == 1, f"Expected exactly 1 stdout line, got: {lines}"
-    payload = json.loads(lines[0])
+    # RFC-028 D0: exactly 2 stdout lines now — the startup handshake
+    # ({"handshake": true, ...}) followed by the final result JSON.
+    assert len(lines) == 2, f"Expected exactly 2 stdout lines, got: {lines}"
+    handshake = json.loads(lines[0])
+    assert handshake == {"handshake": True, "chunk_count": 1, "is_docling_route": True}
+    payload = json.loads(lines[1])
 
     # Required keys
     assert set(payload.keys()) == {"ok", "doc_id", "peak_rss_kib", "duration_ms"}
@@ -247,11 +251,13 @@ def test_no_stdout_pollution_from_logs(tmp_pdf: Path, tmp_path: Path):
         timeout=60,
     )
     stdout_lines = [ln for ln in result.stdout.decode().splitlines() if ln.strip()]
-    assert len(stdout_lines) == 1, (
-        f"Expected exactly 1 stdout line, got {len(stdout_lines)}: {stdout_lines!r}. "
+    # RFC-028 D0: exactly 2 stdout lines now — the startup handshake followed
+    # by the final result JSON; neither may be polluted by stray prints/logs.
+    assert len(stdout_lines) == 2, (
+        f"Expected exactly 2 stdout lines, got {len(stdout_lines)}: {stdout_lines!r}. "
         f"stderr={result.stderr.decode()!r}"
     )
-    payload = json.loads(stdout_lines[0])
+    payload = json.loads(stdout_lines[-1])
     assert payload["ok"] is True
 
 

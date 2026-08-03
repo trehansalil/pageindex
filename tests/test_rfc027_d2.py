@@ -54,8 +54,7 @@ class TestLowContentOcrEscalationBoundaries:
         """(f): the same low-content case on a non-.pdf extension must not
         escalate -- gate is strictly .pdf-scoped."""
         assert (
-            _escalation_fires(ok=False, reason="node_count<3", total_chars=38, ext=".docx")
-            is False
+            _escalation_fires(ok=False, reason="node_count<3", total_chars=38, ext=".docx") is False
         )
 
     def test_garbling_reason_unaffected_by_new_branch(self):

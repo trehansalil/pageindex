@@ -150,7 +150,9 @@ class TestHeadingOnlyFallbackTrigger:
         # well under the 50-char floor, even though total_chars clears the
         # absolute 100-char floor.
         md = "\n\n".join(f"# Heading {i}\n\nshort" for i in range(6))
-        assert len(md.replace(converters._IMAGE_MARKER, "")) >= converters._DOC_TEXT_FALLBACK_MIN_CHARS
+        assert (
+            len(md.replace(converters._IMAGE_MARKER, "")) >= converters._DOC_TEXT_FALLBACK_MIN_CHARS
+        )
 
         fake_pdfium = types.ModuleType("pypdfium2")
 

@@ -80,7 +80,10 @@ async def _run_index_with_markdown(monkeypatch, markdown: str, source_bytes: byt
         c = CustomPageIndexClient(api_key="test-key")
 
         async def _fake_tree(md_path):
-            return {"structure": [{"node_id": "n1", "text": "x", "nodes": []}], "doc_description": ""}
+            return {
+                "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
+                "doc_description": "",
+            }
 
         monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
 
@@ -150,9 +153,7 @@ class TestMarkerDedupIntegration:
         assert len(pics) == 1
 
     @pytest.mark.asyncio
-    async def test_content_separated_markers_still_produce_two_picture_results(
-        self, monkeypatch
-    ):
+    async def test_content_separated_markers_still_produce_two_picture_results(self, monkeypatch):
         """Two markers separated by real content (distinct figures on the
         same page) must NOT dedup -- multi-region replication preserved."""
         source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_TWO_FIGS"
