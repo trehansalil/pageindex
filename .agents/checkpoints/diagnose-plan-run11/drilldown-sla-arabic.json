@@ -1,0 +1,56 @@
+{
+    "document": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+    "audit_row": 17,
+    "audit_run": "CORPUS_REINGESTION_AUDIT_RUN-11",
+    "verdict_audit": "MARGINAL",
+    "verdict_stored": "PASS",
+    "verdict_reason": "cat_b_promoted",
+    "metrics": {
+        "blocks": 259,
+        "chars": 27929,
+        "depth": 0,
+        "pages": 20
+    },
+    "root_cause": {
+        "cluster_level_finding": "_inject_arabic_structural_headings (RFC-027 D4) has two bugs preventing Arabic structural markers from being promoted to ATX headings",
+        "bug_1": {
+            "name": "prev_blank guard blocks consecutive markers",
+            "location": "src/pageindex_mcp/converters.py:104",
+            "issue": "Requires blank line before each marker; OCR output flows continuously without blank lines; only first marker promoted, others fail",
+            "impact": "Depth-0 flat tree despite multiple structural sections"
+        },
+        "bug_2": {
+            "name": "len(t)<=60 char limit too tight",
+            "location": "src/pageindex_mcp/converters.py:104",
+            "issue": "Arabic legal headings commonly 66-76+ chars; 60-char limit filters legitimate markers",
+            "impact": "Long article titles not promoted to headings"
+        }
+    },
+    "function": {
+        "name": "_inject_arabic_structural_headings",
+        "file": "src/pageindex_mcp/converters.py",
+        "lines": "85-115",
+        "signature": "def _inject_arabic_structural_headings(md: str) -> str",
+        "docstring": "Promote al-bab/al-fasl/al-maddah lines to '#' headings (RFC-027 D4)",
+        "key_condition": "if prev_blank and t and len(t) <= 60 and not _HEADING_RE.match(t):"
+    },
+    "regex_patterns": {
+        "_AR_PART_RE": "^(?:ال)?(?:باب|فصل|قسم|جزء)\\b",
+        "_AR_ARTICLE_RE": "^(?:ال)?مادة\\b",
+        "patterns_correct": true
+    },
+    "evidence": {
+        "test_continuous_ocr": "Input: محتوى متصل بدون أسطر فارغة → Output: 0 headings promoted",
+        "test_with_blanks": "Input: محتوى مع أسطر فارغة → Output: 4 headings promoted",
+        "test_long_title": "Input: 90-char article title → Output: NOT promoted (fails len check)",
+        "test_short_title": "Input: 52-char article title → Output: promoted"
+    },
+    "specific_to_document": {
+        "content_recovery": "Went from 0 chars (FAIL) to 27,929 chars (MARGINAL) - OCR route fired",
+        "structural_impact": "20-page SLA should have multiple sections/articles with hierarchy; tree is flat (depth-0)",
+        "stored_vs_audit_divergence": "Stored gate says PASS with cat_b_promoted but audit says MARGINAL with zero hierarchy"
+    },
+    "fix_required": true,
+    "complexity": "high",
+    "estimated_tokens": 350
+}
