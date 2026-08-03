@@ -13,7 +13,7 @@
       "src/pageindex_mcp/client.py"
     ],
     "related_rfcs": [
-      "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+      "028-run11-arabic-recovery-and-timeout-wiring.md"
     ],
     "source": "cluster",
     "confidence": "high"
@@ -31,7 +31,7 @@
       ".claude/skills/corpus-score-diff/SKILL.md"
     ],
     "related_rfcs": [
-      "028-run11-run11-arabic-recovery-and-timeout-wiring"
+      "028-run11-arabic-recovery-and-timeout-wiring"
     ],
     "source": "cluster",
     "confidence": "high"
@@ -49,7 +49,7 @@
       "src/pageindex_mcp/client.py"
     ],
     "related_rfcs": [
-      "028-run11-run11-arabic-recovery-and-timeout-wiring.md",
+      "028-run11-arabic-recovery-and-timeout-wiring.md",
       "019-corpus-reingestion-phase2.md"
     ],
     "source": "cluster",
@@ -67,7 +67,7 @@
       "src/pageindex_mcp/converters.py"
     ],
     "related_rfcs": [
-      "026-run9-verdict-gate-hardening-and-rotation-detection.md"
+      "026-verdict-gate-hardening-rotation-detection.md"
     ],
     "source": "cluster",
     "confidence": "high"
@@ -103,7 +103,7 @@
     ],
     "related_rfcs": [
       "027-run10-extraction-gate-and-arabic-recovery.md",
-      "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+      "028-run11-arabic-recovery-and-timeout-wiring.md"
     ],
     "source": "cluster",
     "confidence": "medium"
@@ -122,7 +122,7 @@
       "src/pageindex_mcp/client.py"
     ],
     "related_rfcs": [
-      "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+      "028-run11-arabic-recovery-and-timeout-wiring.md"
     ],
     "source": "cluster",
     "confidence": "high"

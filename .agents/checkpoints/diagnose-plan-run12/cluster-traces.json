@@ -20,7 +20,7 @@
           ],
           "confidence": "high",
           "related_rfcs": [
-            "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+            "028-run11-arabic-recovery-and-timeout-wiring.md"
           ]
         }
       ],
@@ -47,7 +47,7 @@
           ],
           "confidence": "high",
           "related_rfcs": [
-            "028-run11-run11-arabic-recovery-and-timeout-wiring"
+            "028-run11-arabic-recovery-and-timeout-wiring"
           ]
         }
       ],
@@ -73,7 +73,7 @@
           ],
           "confidence": "high",
           "related_rfcs": [
-            "028-run11-run11-arabic-recovery-and-timeout-wiring.md",
+            "028-run11-arabic-recovery-and-timeout-wiring.md",
             "019-corpus-reingestion-phase2.md"
           ]
         }
@@ -98,7 +98,7 @@
           ],
           "confidence": "high",
           "related_rfcs": [
-            "026-run9-verdict-gate-hardening-and-rotation-detection.md"
+            "026-verdict-gate-hardening-rotation-detection.md"
           ]
         },
         {
@@ -136,7 +136,7 @@
           "confidence": "medium",
           "related_rfcs": [
             "027-run10-extraction-gate-and-arabic-recovery.md",
-            "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+            "028-run11-arabic-recovery-and-timeout-wiring.md"
           ]
         }
       ],
@@ -175,7 +175,7 @@
           ],
           "confidence": "high",
           "related_rfcs": [
-            "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+            "028-run11-arabic-recovery-and-timeout-wiring.md"
           ]
         },
         {
@@ -273,7 +273,7 @@
       ],
       "confidence": "high",
       "related_rfcs": [
-        "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+        "028-run11-arabic-recovery-and-timeout-wiring.md"
       ]
     },
     {
@@ -294,7 +294,7 @@
       ],
       "confidence": "high",
       "related_rfcs": [
-        "028-run11-run11-arabic-recovery-and-timeout-wiring"
+        "028-run11-arabic-recovery-and-timeout-wiring"
       ]
     },
     {
@@ -314,7 +314,7 @@
       ],
       "confidence": "high",
       "related_rfcs": [
-        "028-run11-run11-arabic-recovery-and-timeout-wiring.md",
+        "028-run11-arabic-recovery-and-timeout-wiring.md",
         "019-corpus-reingestion-phase2.md"
       ]
     },
@@ -333,7 +333,7 @@
       ],
       "confidence": "high",
       "related_rfcs": [
-        "026-run9-verdict-gate-hardening-and-rotation-detection.md"
+        "026-verdict-gate-hardening-rotation-detection.md"
       ]
     },
     {
@@ -371,7 +371,7 @@
       "confidence": "medium",
       "related_rfcs": [
         "027-run10-extraction-gate-and-arabic-recovery.md",
-        "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+        "028-run11-arabic-recovery-and-timeout-wiring.md"
       ]
     },
     {
@@ -393,7 +393,7 @@
       ],
       "confidence": "high",
       "related_rfcs": [
-        "028-run11-run11-arabic-recovery-and-timeout-wiring.md"
+        "028-run11-arabic-recovery-and-timeout-wiring.md"
       ]
     },
     {
