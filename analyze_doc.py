@@ -11,6 +11,7 @@ meta_json = """{"doc_id":"150adddf-6fd2-479d-930b-d4919556977f","doc_name":"Reit
 tree_data = json.loads(tree_json)
 meta_data = json.loads(meta_json)
 
+
 def count_nodes(structure):
     """Recursively count nodes with heading or content keys"""
     count = 0
@@ -21,38 +22,41 @@ def count_nodes(structure):
             count += count_nodes(item["nodes"])
     return count
 
+
 def get_max_depth(structure, current_depth=0):
     """Get maximum depth of tree"""
     if not structure:
         return current_depth
-    
+
     max_d = current_depth
     for item in structure:
         if "nodes" in item and item["nodes"]:
             max_d = max(max_d, get_max_depth(item["nodes"], current_depth + 1))
-    
+
     return max_d
+
 
 def get_text_content(item):
     """Extract text content from an item, handling CCR references and tables"""
     content = ""
-    
+
     if "text" in item:
         text = item["text"]
         if text.startswith("<<ccr:") and text.endswith(">>"):
             return ""
         content += text
-    
+
     if item.get("role") == "table" and "row_records" in item:
         content += "\n".join(item["row_records"])
-    
+
     if item.get("role") == "image":
         if "ocr_text" in item:
             content += item["ocr_text"]
         if "description" in item:
             content += item["description"]
-    
+
     return content
+
 
 def count_chars(structure):
     """Count total characters across all content fields"""
@@ -62,6 +66,7 @@ def count_chars(structure):
         if "nodes" in item and item["nodes"]:
             total_chars += count_chars(item["nodes"])
     return total_chars
+
 
 def count_image_markers(structure):
     """Count image markers (<!-- image -->)"""
@@ -73,15 +78,17 @@ def count_image_markers(structure):
             count += count_image_markers(item["nodes"])
     return count
 
+
 def count_picture_results(structure):
     """Count PictureResult enrichments (> [Chart text]: blocks)"""
     count = 0
     for item in structure:
         text = get_text_content(item)
-        count += len(re.findall(r'>\s+\[Chart', text, re.IGNORECASE))
+        count += len(re.findall(r">\s+\[Chart", text, re.IGNORECASE))
         if "nodes" in item and item["nodes"]:
             count += count_picture_results(item["nodes"])
     return count
+
 
 # Analyze
 structure = tree_data.get("structure", [])
@@ -117,7 +124,7 @@ output = {
     "picture_results": picture_results,
     "markers": image_markers,
     "doc_class": content_class,
-    "subjective_notes": f"Pipeline version 3, max leaf ratio 0.2571. Verdict reason: {verdict_reason or 'None'}"
+    "subjective_notes": f"Pipeline version 3, max leaf ratio 0.2571. Verdict reason: {verdict_reason or 'None'}",
 }
 
 print("\n" + json.dumps(output, indent=2))

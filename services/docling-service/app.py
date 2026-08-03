@@ -30,6 +30,7 @@ DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
 # Auth
 # ---------------------------------------------------------------------------
 
+
 def _verify_token(authorization: str | None = Header(None)) -> None:
     if not BEARER_TOKEN:
         return
@@ -42,6 +43,7 @@ def _verify_token(authorization: str | None = Header(None)) -> None:
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+
 
 class PdfConvertRequest(BaseModel):
     presigned_url: str
@@ -77,11 +79,13 @@ class ImageConvertResponse(BaseModel):
 # Lifespan: warm the Docling converter cache on startup
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Warming Docling converter cache...")
     try:
         from pageindex_mcp.converters import _docling_converter
+
         _docling_converter()
         logger.info("Docling converter cache warmed successfully")
     except Exception:
@@ -95,6 +99,7 @@ app = FastAPI(title="Docling Conversion Service", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _download_to_temp(url: str, suffix: str = ".pdf") -> str:
     """Download a file from a presigned URL to a temporary path."""
@@ -128,6 +133,7 @@ def _serialize_picture_result(pr: dict) -> dict:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -160,7 +166,9 @@ async def convert_pdf(req: PdfConvertRequest):
             os.unlink(tmp_path)
 
 
-@app.post("/convert/image", response_model=ImageConvertResponse, dependencies=[Depends(_verify_token)])
+@app.post(
+    "/convert/image", response_model=ImageConvertResponse, dependencies=[Depends(_verify_token)]
+)
 async def convert_image(req: ImageConvertRequest):
     import asyncio
 

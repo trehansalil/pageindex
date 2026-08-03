@@ -7,6 +7,7 @@ Usage:
   python scripts/minio_helper.py tree <doc_id>     # print tree JSON (first 500 lines)
   python scripts/minio_helper.py inventory         # full inventory: doc_id, filename, has_tree
 """
+
 import json
 import os
 import sys
@@ -55,8 +56,7 @@ def cmd_tree(doc_id, max_lines=500):
 def cmd_inventory():
     c = client()
     all_objects = {
-        o.object_name
-        for o in c.list_objects("pageindex", prefix="processed/", recursive=True)
+        o.object_name for o in c.list_objects("pageindex", prefix="processed/", recursive=True)
     }
     meta_files = sorted(o for o in all_objects if o.endswith(".meta.json"))
     results = []
@@ -65,19 +65,19 @@ def cmd_inventory():
         has_tree = f"processed/{doc_id}.json" in all_objects
         has_flat = f"processed/{doc_id}.flat.json" in all_objects
         try:
-            meta_data = json.loads(
-                c.get_object("pageindex", mf).read().decode()
-            )
+            meta_data = json.loads(c.get_object("pageindex", mf).read().decode())
             filename = meta_data.get("doc_name", meta_data.get("original_filename", doc_id))
         except Exception:
             filename = doc_id
-        results.append({
-            "doc_id": doc_id,
-            "filename": filename,
-            "has_tree": has_tree,
-            "has_flat": has_flat,
-            "has_meta": True,
-        })
+        results.append(
+            {
+                "doc_id": doc_id,
+                "filename": filename,
+                "has_tree": has_tree,
+                "has_flat": has_flat,
+                "has_meta": True,
+            }
+        )
     print(json.dumps(results, indent=2, ensure_ascii=False))
 
 
