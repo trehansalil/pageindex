@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import random
+import re
 import shutil
 import tempfile
 import uuid
@@ -29,6 +30,7 @@ from .converters import (
     pdf_markdown_converters,
     pdf_to_markdown_docling,
     pptx_to_markdown,
+    reconstruct_bidi_order,
     splice_figure_markers,
     splice_picture_text_for_tree,
     xlsx_to_markdown,
@@ -37,8 +39,9 @@ from .converters import (
 from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
-    _flat_block_text,
+    _flat_block_primary_text,
     _flat_text_is_garbled,
+    _flatten_tree_text,
     _script_from_filename,
     _strip_text,
     _synthesize_preamble_node,
@@ -267,6 +270,11 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Fix 3 kill-switch (default on): one force_full_page_ocr retry when a PDF garbles.
 _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+# RFC-027 D2: PDFs rejected as node_count<3 with fewer than this many chars (zero or
+# near-zero/garbled scanned content) also earn the force_full_page_ocr retry, not just
+# the garbling reasons above -- calibrated to the Run-10 corpus (highest affected doc
+# القرار التنظيمي at 230 garbled chars; legitimate sparse docs all exceed 400 chars).
+LOW_CONTENT_OCR_CHAR_FLOOR = int(os.getenv("LOW_CONTENT_OCR_CHAR_FLOOR", "300"))
 # Task 6.1: dedicated image-standalone pipeline for PDFs whose content is all images.
 # When disabled, falls back to the existing QF2a image-enrichment promotion path.
 _IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
@@ -918,6 +926,11 @@ class CustomPageIndexClient(PageIndexClient):
                     standalone_ocr_text = await asyncio.to_thread(
                         _tesseract_ocr_image, file_path, img_langs
                     )
+                # D6 (RFC-027): Docling can emit duplicate consecutive
+                # `<!-- image -->` markers for the same image region. Collapse
+                # only whitespace-gapped runs so distinct adjacent images
+                # (RFC-018 D0 multi-region design) stay intact.
+                md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", md_content)
                 marker_count = md_content.count("<!-- image -->")
                 pic_results = [
                     PictureResult(
@@ -958,11 +971,26 @@ class CustomPageIndexClient(PageIndexClient):
             # gate so garble-by-default can key off the true first-pass reason.
             original_reason = reason
 
+            # RFC-027 D2: a PDF rejected as node_count<3 with fewer than
+            # LOW_CONTENT_OCR_CHAR_FLOOR chars (zero-content or near-zero/garbled scanned
+            # Arabic, e.g. مرسوم at 38 chars, القرار التنظيمي at 230 garbled chars) earns
+            # the same OCR retry as the garbling branches below, rather than being FAILed
+            # without an attempted recovery.
+            total_chars = len(_flatten_tree_text(result.get("structure", [])))
+            low_content_ocr_eligible = (
+                reason == "node_count<3" and total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
+            )
+
             # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
             # the Fix-5 detected language before any rejection — rescues the corrupt
             # text-layer class (مرسوم). HR5: the retry re-runs the splitter AND the quality
             # gate and is still rejected if it stays garbled; it never bypasses validation.
-            if not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and _OCR_ESCALATION:
+            if (
+                not ok
+                and (reason in ("garbling", "node_garbling") or low_content_ocr_eligible)
+                and ext == ".pdf"
+                and _OCR_ESCALATION
+            ):
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -980,7 +1008,8 @@ class CustomPageIndexClient(PageIndexClient):
                                 escalation_langs.append(lg)
                     langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
                     logger.warning(
-                        "Garbling on %s; escalating to force_full_page_ocr (lang=%s)",
+                        "%s on %s; escalating to force_full_page_ocr (lang=%s)",
+                        "Low content" if low_content_ocr_eligible else "Garbling",
                         filename,
                         langs,
                     )
@@ -1014,6 +1043,36 @@ class CustomPageIndexClient(PageIndexClient):
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
                     logger.error(
                         "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
+                    )
+
+            # RFC-027 D3: repair-first ordering. `validate_tree` flags 'rtl_reversal'
+            # for correctly-encoded-but-visually-reversed Arabic text -- a known-fixable
+            # defect (`reconstruct_bidi_order` already exists). Attempt the repair and
+            # re-validate BEFORE deciding the verdict; only fall through to
+            # LowQualityTreeError if the reversed reading still scores higher post-repair.
+            if not ok and reason == "rtl_reversal" and ext == ".pdf":
+                try:
+
+                    def _repair_rtl_nodes(nodes: list) -> None:
+                        for n in nodes:
+                            for key in ("title", "text"):
+                                val = n.get(key)
+                                if isinstance(val, str) and val:
+                                    n[key] = reconstruct_bidi_order(val)
+                            _repair_rtl_nodes(n.get("nodes") or [])
+
+                    _repair_rtl_nodes(result.get("structure", []))
+                    ok, reason = validate_tree(
+                        result.get("structure", []), expected_script=expected_script
+                    )
+                    logger.warning(
+                        "RTL reversal on %s; reconstruct_bidi_order repair %s",
+                        filename,
+                        "converged" if ok else "did not converge",
+                    )
+                except Exception as bidi_exc:
+                    logger.error(
+                        "RTL bidi repair failed for %s (%s)", filename, bidi_exc, exc_info=True
                     )
 
             # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
@@ -1196,9 +1255,20 @@ class CustomPageIndexClient(PageIndexClient):
                     # reject below instead — a binary doc with no extractable text layer is
                     # genuinely low-quality, not flat.
                     if flat_md is not None:
+                        # Findings 4/6/7: figure references exist ONLY in flat
+                        # markdown; splice_figure_markers count-guards the
+                        # marker↔region alignment and degrades to neutral
+                        # markers on mismatch.
+                        # D1 (RFC-027): splice BEFORE the garble check runs so
+                        # OCR-derived content injected by splicing is included
+                        # in the evaluation below.
+                        _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
+                        flat_md = splice_figure_markers(flat_md, pic_results)
+
                         # D3B: flat-path garble gate — catch garbled text that
                         # passed the tree gate (e.g. numeric-junk docs routed
-                        # here via node_count<3).
+                        # here via node_count<3). Runs post-splice (D1) so
+                        # image-OCR-derived content is included.
                         if _flat_text_is_garbled(
                             flat_md, expected_script=expected_script, original_reason=original_reason
                         ):
@@ -1252,13 +1322,6 @@ class CustomPageIndexClient(PageIndexClient):
                             # and off the event loop (findings 2/3/10).
                             if pic_results and settings.vlm_describe_images:
                                 await asyncio.to_thread(_add_vlm_descriptions, pic_results, doc_id)
-
-                            # Findings 4/6/7: figure references exist ONLY in flat
-                            # markdown; splice_figure_markers count-guards the
-                            # marker↔region alignment and degrades to neutral
-                            # markers on mismatch.
-                            _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
-                            flat_md = splice_figure_markers(flat_md, pic_results)
 
                             content_class, blocks = await asyncio.to_thread(
                                 route_and_extract_flat, flat_md
@@ -1327,11 +1390,14 @@ class CustomPageIndexClient(PageIndexClient):
                             # validate_tree (low node_count/depth). A rejected tree should
                             # never be preferred over real block content for verdict
                             # computation — always build synthetic structure when blocks exist.
+                            # D0 (RFC-027): use primary text (excludes ocr_text/description
+                            # enrichment) here so verdict classification scores real
+                            # extracted document content, not inflated enrichment metadata.
                             if blocks:
                                 flat_structure = [
-                                    {"title": "", "text": _flat_block_text(b)}
+                                    {"title": "", "text": _flat_block_primary_text(b)}
                                     for b in blocks
-                                    if _flat_block_text(b).strip()
+                                    if _flat_block_primary_text(b).strip()
                                 ]
 
                             f_prior_verdict = await asyncio.to_thread(
@@ -1352,11 +1418,14 @@ class CustomPageIndexClient(PageIndexClient):
                                 doc_id=doc_id,
                             )
 
-                            # D6 (RFC-024): persist the same _flat_block_text-derived char
-                            # count used for verdict computation above (B3/RFC-022), so
-                            # future audits read a durable ground-truth value instead of
-                            # re-deriving it via the wrong block.get("text", "") accessor.
-                            flat_char_count = sum(len(_flat_block_text(b)) for b in blocks)
+                            # D6 (RFC-024): persist the same _flat_block_primary_text-derived
+                            # char count used for verdict computation above (B3/RFC-022,
+                            # D0/RFC-027), so future audits read a durable ground-truth
+                            # value instead of re-deriving it via the wrong
+                            # block.get("text", "") accessor or inflated enrichment text.
+                            flat_char_count = sum(
+                                len(_flat_block_primary_text(b)) for b in blocks
+                            )
 
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no

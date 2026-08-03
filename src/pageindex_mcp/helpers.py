@@ -11,7 +11,7 @@ from collections import Counter
 
 from .cache import get_doc
 from .config import settings
-from .converters import normalize_dashes
+from .converters import _arabic_readability_score, _is_arabic_char, normalize_dashes
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
@@ -1044,6 +1044,51 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
     return _is_garbled_blob(blob, expected_script=expected_script) or _has_sparse_mojibake(blob)
 
 
+def _tree_is_rtl_reversed(nodes: list) -> bool:
+    """RFC-027 D3: True when an Arabic-heavy tree's readability score is higher
+    in visual (bidi-reversed) order than in logical order — Docling/OCR emitted
+    reversed RTL text that the existing garble gate does not catch (correctly
+    encoded, just reversed). Mirrors the sampling approach behind
+    `_text_is_logical_order` (converters.py) but is the direct forward-vs-reversed
+    comparison the RTL-reversal gate needs, rather than that function's
+    zero-score-safe boolean."""
+    if not nodes:
+        return False
+    full_text = _flatten_tree_text(nodes)
+    if not full_text:
+        return False
+    arabic = sum(1 for c in full_text if _is_arabic_char(c))
+    if arabic / len(full_text) <= 0.15:
+        return False
+
+    from bidi.algorithm import get_display
+
+    # `_flatten_tree_text` concatenates title+text with no separator, so
+    # per-node lines have to be collected via the leaf walk rather than
+    # `full_text.splitlines()`.
+    lines: list[str] = []
+    for leaf in _walk_leaves(nodes):
+        lines.extend(str(leaf.get("title", "")).splitlines())
+        lines.extend(str(leaf.get("text", "")).splitlines())
+
+    sampled = 0
+    orig_total = 0
+    disp_total = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or len(stripped) < 10:
+            continue
+        ar_count = sum(1 for c in stripped if _is_arabic_char(c))
+        if ar_count / len(stripped) <= 0.3:
+            continue
+        orig_total += _arabic_readability_score(stripped.split())
+        disp_total += _arabic_readability_score(get_display(stripped).split())
+        sampled += 1
+        if sampled >= 8:
+            break
+    return sampled > 0 and disp_total > orig_total
+
+
 def validate_tree(structure: list, expected_script: str | None = None) -> tuple[bool, str]:
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
@@ -1077,6 +1122,12 @@ def validate_tree(structure: list, expected_script: str | None = None) -> tuple[
     # surfaces this reason as a low_quality_tree error rather than persisting.
     if _tree_is_reordered(structure):
         return False, "reordered"
+    # RFC-027 D3: additive prong — correctly-encoded but reversed Arabic text
+    # passes every check above (no garbling, real node/depth counts, in-order
+    # start_indexes) but reads backwards. Checked last so it never shadows the
+    # existing garble/structure gates it is additive to.
+    if _tree_is_rtl_reversed(structure):
+        return False, "rtl_reversal"
     return True, ""
 
 
@@ -1174,6 +1225,22 @@ def _classify_image_verdict(image_enrichment_ratio: float | None) -> tuple[str, 
     return "FAIL", "no_image_enrichment"
 
 
+def _dedupe_chart_text_lines(text: str) -> str:
+    """RFC-027 D1: drop repeated '> [Chart text]:' lines before a promoted
+    doc's char/garble calculations -- a single OCR read spliced into prose
+    can otherwise be double-counted toward both the char floor and the
+    garble check. Keeps the first occurrence of each distinct line. Pure."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if _FLAT_CHART_TEXT_RE.match(line.strip()):
+            if line in seen:
+                continue
+            seen.add(line)
+        kept.append(line)
+    return "".join(kept)
+
+
 def classify_verdict(  # noqa: C901
     structure: list,
     content_class: str,
@@ -1213,10 +1280,19 @@ def classify_verdict(  # noqa: C901
         # enriched image can hit ratio=1.0). Pair the promotion with an
         # absolute character floor.
         _min_promoted_chars = int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500"))
-        total_chars = len(_flatten_tree_text(structure))
+        # RFC-027 D1: drop duplicate '> [Chart text]:' lines first so a
+        # single spliced OCR read isn't double-counted toward the floor.
+        _promoted_text = _dedupe_chart_text_lines(_flatten_tree_text(structure))
+        total_chars = len(_promoted_text)
         if total_chars < _min_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
-        return "PASS", "image_enrichment_promoted"
+        # RFC-027 D1: the char floor alone is insufficient -- digit/token
+        # noise (e.g. barcode OCR junk) can clear it while still being
+        # garbage. Reuse the existing calibrated garble detector; if
+        # garbled, fall through to the ordinary max_leaf_ratio/MARGINAL
+        # logic below instead of returning PASS.
+        if not _is_garbled_blob(_promoted_text):
+            return "PASS", "image_enrichment_promoted"
 
     _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
     if max_leaf_ratio > 0.75:
@@ -1295,13 +1371,17 @@ def classify_verdict(  # noqa: C901
     # promotion path, which is not what QF2c is for and breaks the
     # existing cat_c threshold-boundary guardrails.
     _small_doc_enabled = os.environ.get("SMALL_DOC_PROMOTION_ENABLED", "true").lower() == "true"
+    # RFC-027 D5: very small trees (node_count<=5) have a structurally
+    # unreachable leaf-concentration floor below 0.20, so the ratio bound
+    # is relaxed to 0.40 for them; 6-10 node docs keep the 0.20 bound.
+    _small_doc_leaf_ratio_bound = 0.40 if node_count <= 5 else 0.20
     if (
         _small_doc_enabled
         and not effectively_garbled
         and content_class.startswith("flat_")
         and node_count >= 1
         and node_count <= 10
-        and max_leaf_ratio < 0.20
+        and max_leaf_ratio < _small_doc_leaf_ratio_bound
         and 100 <= len(flat_text.strip()) < 15000
     ):
         return "PASS", "small_doc_promoted"
@@ -2244,6 +2324,22 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
         content_class = "flat_prose"
 
     return content_class, blocks
+
+
+def _flat_block_primary_text(block: dict) -> str:
+    """D0 (RFC-027): a single flat block's primary document text, excluding
+    OCR/description enrichment metadata. Unlike `_flat_block_text`, image
+    blocks contribute nothing here — `ocr_text`/`description` are enrichment,
+    not extracted document content, and inflate char counts used for verdict
+    classification (see `classify_verdict`'s `image_enrichment_promoted`
+    branch). Pure."""
+    text = block.get("text", "")
+    if text:
+        return text
+    role = block.get("role")
+    if role == "table":
+        return "\n".join(block.get("row_records", []) or [])
+    return text
 
 
 def _flat_block_text(block: dict) -> str:

@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ import time
 import unicodedata
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
@@ -78,6 +80,39 @@ _NUM_PARA_RE = re.compile(r"^(?:§\s*)?\d+(\.\d+)+(?=[ \t.:]|$)")
 _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b")
 _AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b")
+
+
+def _inject_arabic_structural_headings(md: str) -> str:
+    """Promote al-bab/al-fasl/al-maddah lines to '#' headings (RFC-027 D4).
+
+    Docling never classifies Arabic structural markers as ``SectionHeaderItem``s
+    (English equivalents like "Chapter"/"Article" ARE detected), so these lines
+    stay plain prose and the heading-depth recovery chain — which can only
+    re-level EXISTING headings via ``_AR_PART_RE``/``_AR_ARTICLE_RE`` in
+    ``numbering_depth`` — has nothing to work with, leaving the tree flat.
+
+    Only promotes a line when it (a) starts a text block (preceded by a blank
+    line or the start of the document) and (b) is short enough that the marker
+    is the line's dominant content, not a quoted mid-paragraph reference like
+    "...المشار إليها في المادة 5 من هذا القانون...". Depth is left to the
+    existing ``_relevel_by_containment``/``_relevel_by_numbering`` chain."""
+    lines = md.split("\n")
+    out = []
+    prev_blank = True
+    for line in lines:
+        t = line.strip()
+        if prev_blank and t and len(t) <= 60 and not _HEADING_RE.match(t):
+            if _AR_PART_RE.match(t):
+                out.append(f"# {t}")
+                prev_blank = False
+                continue
+            if _AR_ARTICLE_RE.match(t):
+                out.append(f"## {t}")
+                prev_blank = False
+                continue
+        out.append(line)
+        prev_blank = not t
+    return "\n".join(out)
 
 
 def numbering_depth(title: str) -> int | None:
@@ -1230,7 +1265,7 @@ def _text_is_logical_order(text: str) -> bool:
             break
     if sampled == 0:
         return False
-    return orig_total >= disp_total
+    return sampled > 0 and orig_total > 0 and orig_total >= disp_total
 
 
 def reconstruct_bidi_order(text: str) -> str:
@@ -2136,10 +2171,118 @@ def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
         list(pool.map(_describe_one, targets))
 
 
+# RFC-027 D7: dynamic CHILD_TIMEOUT scaling for the chunked-Docling path. A
+# fixed CHILD_TIMEOUT sized for a single-pass conversion is what oversized
+# PDFs die to in the first place; the chunked path needs a timeout budget
+# proportional to how many independent Docling passes it runs.
+_CHUNKED_DOCLING_BASE_TIMEOUT_S = 300
+_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S = 600
+
+
+def chunked_docling_timeout_s(chunk_count: int) -> int:
+    """RFC-027 D7: ``base_timeout + (chunk_count * per_chunk_timeout)``.
+
+    Consumed by the worker's per-job CHILD_TIMEOUT so a chunked conversion
+    gets a budget proportional to how many independent Docling passes it
+    runs, instead of the fixed single-pass timeout that oversized PDFs die to.
+    """
+    return _CHUNKED_DOCLING_BASE_TIMEOUT_S + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+
+
+def _pdf_to_markdown_docling_chunked(
+    pdf_path: str,
+    page_count: int,
+    max_pages: int,
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+) -> tuple[str, list[PictureResult]]:
+    """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
+
+    Splits ``pdf_path`` into ``ceil(page_count / max_pages)`` page-boundary
+    chunks via ``PyPDF2`` (MIT, HR4-safe -- no ``pymupdf4llm``), runs each
+    chunk through the existing standard ``pdf_to_markdown_docling`` pipeline
+    independently, and concatenates the resulting markdown. Each chunk's page
+    count is <= ``max_pages`` by construction, so the recursive call takes the
+    direct single-pass route rather than re-entering this function.
+
+    Minor heading-level discontinuities at chunk joins are an accepted
+    trade-off (RFC-027 D7 risk acceptance) -- the downstream tree-building
+    ``_relevel_by_containment`` pass normalizes heading depth across the
+    concatenated output.
+    """
+    import PyPDF2
+
+    chunk_count = math.ceil(page_count / max_pages)
+    logger.info(
+        "chunked-Docling route: %s (%d pages) -> %d chunk(s) of <= %d pages",
+        pdf_path,
+        page_count,
+        chunk_count,
+        max_pages,
+    )
+    reader = PyPDF2.PdfReader(pdf_path)
+    md_parts: list[str] = []
+    pic_results: list[PictureResult] = []
+    for i in range(chunk_count):
+        start = i * max_pages
+        end = min(start + max_pages, page_count)
+        writer = PyPDF2.PdfWriter()
+        for page in reader.pages[start:end]:
+            writer.add_page(page)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+        try:
+            with open(tmp.name, "wb") as fh:
+                writer.write(fh)
+            try:
+                pool = ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(
+                    pdf_to_markdown_docling,
+                    tmp.name,
+                    force_full_page_ocr=force_full_page_ocr,
+                    ocr_lang_override=ocr_lang_override,
+                )
+                try:
+                    chunk_md, chunk_pics = future.result(
+                        timeout=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
+                    )
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
+            except FuturesTimeoutError:
+                # RFC-027 D7: an individually heavy chunk still times out on the
+                # Docling pipeline -- fall back to PyPDF2 text-layer-only
+                # extraction (no tables/figures) rather than losing the chunk
+                # entirely. No pymupdf4llm (CLAUDE.md Hard Rule 4). The document
+                # lands MARGINAL downstream due to the resulting flat structure.
+                logger.warning(
+                    "chunk %d/%d of %s timed out on Docling; falling back to "
+                    "PyPDF2 text-layer extraction",
+                    i + 1,
+                    chunk_count,
+                    pdf_path,
+                )
+                chunk_reader = PyPDF2.PdfReader(tmp.name)
+                chunk_md = "\n\n".join(page.extract_text() or "" for page in chunk_reader.pages)
+                chunk_pics = []
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp.name)
+        md_parts.append(chunk_md)
+        for pic in chunk_pics:
+            # Re-base chunk-relative page numbers to document-level pages so
+            # the persisted PictureResult metadata (client.py block["page"])
+            # stays correct for chunks after the first.
+            if "page" in pic:
+                pic["page"] = pic["page"] + start
+        pic_results.extend(chunk_pics)
+    return "\n\n".join(md_parts), pic_results
+
+
 def pdf_to_markdown_docling(
     pdf_path: str,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
+    max_pages: int | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -2171,6 +2314,32 @@ def pdf_to_markdown_docling(
 
     Raises on empty extraction so the caller falls back to the next converter.
     """
+    # RFC-027 D7: oversized PDFs die to CHILD_TIMEOUT on a single direct-conversion
+    # pass. Guard the page count via PyPDF2 (MIT, HR4-safe -- no pymupdf4llm) before
+    # touching the Docling converter and route to the chunked path instead.
+    from .config import MAX_DOCLING_PAGES
+
+    effective_max_pages = max_pages if max_pages is not None else MAX_DOCLING_PAGES
+    try:
+        import PyPDF2
+
+        page_count = len(PyPDF2.PdfReader(pdf_path).pages)
+    except Exception as exc:
+        logger.warning(
+            "could not read page count for %s (%s); skipping chunked-Docling guard",
+            pdf_path,
+            exc,
+        )
+        page_count = 0
+    if effective_max_pages > 0 and page_count > effective_max_pages:
+        return _pdf_to_markdown_docling_chunked(
+            pdf_path,
+            page_count=page_count,
+            max_pages=effective_max_pages,
+            force_full_page_ocr=force_full_page_ocr,
+            ocr_lang_override=ocr_lang_override,
+        )
+
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
     converter = _docling_converter(
@@ -2263,6 +2432,8 @@ def pdf_to_markdown_docling(
     # RFC-015 D5c/D4/D7: normalise BOTH candidate markdown sources BEFORE heading-depth
     # inference so the heading regexes see split, في-restored, logically-ordered text
     # (see _pre_inference_normalize for the load-bearing ordering rationale).
+    post_md = _inject_arabic_structural_headings(post_md)
+    raw_md = _inject_arabic_structural_headings(raw_md)
     post_md = _pre_inference_normalize(post_md)
     raw_md = _pre_inference_normalize(raw_md)
     post_headings = len(_HEADING_RE.findall(post_md))

@@ -14,6 +14,9 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 CURRENT_PIPELINE_VERSION: int = 4
 CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
+# RFC-027 D7: page-count threshold above which pdf_to_markdown_docling routes
+# to the chunked-Docling path instead of a single direct conversion call.
+MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
