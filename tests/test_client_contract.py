@@ -470,7 +470,7 @@ async def test_image_dominant_triggers_ocr_escalation(monkeypatch, pdf_file_with
     assert pdf_calls[0]["force_full_page_ocr"] is True
     # Recovered -> persisted as a tree, not the flat path.
     mocks["save_doc"].assert_called_once()
-    mocks["route_and_extract_flat"].assert_not_called()
+    mocks["save_flat_doc"].assert_not_called()
 
 
 async def test_below_image_threshold_no_escalation(monkeypatch, pdf_file_with_content):

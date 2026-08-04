@@ -26,7 +26,7 @@ def _ocr_escalation_gate(ok: bool, reason: str, *, ext: str = ".pdf") -> bool:
     """Reproduces client.py:965 — OCR escalation trigger."""
     return (
         not ok
-        and reason in ("garbling", "node_garbling")
+        and reason in ("garbling", "node_garbling", "visual_order_garble")
         and ext == ".pdf"
         and client_mod._OCR_ESCALATION
     )
@@ -36,7 +36,7 @@ def _vlm_fallback_gate(
     ok: bool, reason: str, *, ext: str = ".pdf", vlm_fallback: bool = True
 ) -> bool:
     """Reproduces client.py:1021 — VLM fallback trigger."""
-    return not ok and reason in ("garbling", "node_garbling") and ext == ".pdf" and vlm_fallback
+    return not ok and reason in ("garbling", "node_garbling", "visual_order_garble") and ext == ".pdf" and vlm_fallback
 
 
 def _d7_tesseract_raster_gate(ok: bool, reason: str) -> bool:
@@ -44,7 +44,7 @@ def _d7_tesseract_raster_gate(ok: bool, reason: str) -> bool:
     (post-VLM, no-exception path)."""
     return (
         not ok
-        and reason in ("garbling", "node_garbling")
+        and reason in ("garbling", "node_garbling", "visual_order_garble")
         and client_mod._D7_GARBLE_RECOVERY_ENABLED
     )
 
@@ -142,11 +142,11 @@ class TestFalsePositiveRegressionGuard:
         """Anchor the characterization helpers above to the REAL module:
         client.py must gate all three recovery paths (OCR escalation, VLM
         fallback, D7 Tesseract-raster) on exact-set membership against
-        {"garbling", "node_garbling"}. A regression reverting any gate to
-        `reason == "garbling"` fails here even though the mirrored helper
-        functions in this file would still pass."""
+        {"garbling", "node_garbling", "visual_order_garble"}. A regression
+        reverting any gate to `reason == "garbling"` fails here even though
+        the mirrored helper functions in this file would still pass."""
         source = inspect.getsource(client_mod)
-        assert source.count('reason in ("garbling", "node_garbling")') >= 3
+        assert source.count('reason in ("garbling", "node_garbling", "visual_order_garble")') >= 3
         assert 'reason == "garbling" and ext' not in source
 
     def test_source_gates_use_tuple_membership_not_substring_match(self):

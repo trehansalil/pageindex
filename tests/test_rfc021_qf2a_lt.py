@@ -301,6 +301,7 @@ async def test_image_standalone_no_conflict_bare_image_file_unaffected(monkeypat
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
+        "save_flat_doc": MagicMock(),
         "route_and_extract_flat": MagicMock(
             return_value=("flat_prose", [dict(b) for b in _ALL_IMAGE_BLOCKS])
         ),
@@ -316,6 +317,6 @@ async def test_image_standalone_no_conflict_bare_image_file_unaffected(monkeypat
 
     assert isinstance(doc_id, str) and len(doc_id) == 36
     mocks["save_doc"].assert_called_once()
-    mocks["route_and_extract_flat"].assert_not_called()
+    mocks["save_flat_doc"].assert_not_called()
     mocks["FLAT_DOCS_TOTAL"].labels.assert_not_called()
     assert c.last_content_class is None
