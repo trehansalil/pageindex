@@ -120,7 +120,11 @@ class TestF1CoverageExemption:
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
         assert skip_reasons.get(0) == "page_coverage"
-        assert 0 not in recovered
+        # D5a (RFC-029): page_coverage retains png_bytes + skipped_reason, no ocr_text.
+        assert 0 in recovered
+        assert recovered[0].get("skipped_reason") == "page_coverage"
+        assert recovered[0].get("png_bytes")
+        assert not recovered[0].get("ocr_text")
 
     def test_sub_coverage_region_unaffected(self, monkeypatch):
         """A region covering well under 60% of the page is never skipped for
@@ -146,7 +150,11 @@ class TestF1CoverageExemption:
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
         assert skip_reasons.get(0) == "page_coverage"
-        assert 0 not in recovered
+        # D5a (RFC-029): page_coverage retains png_bytes + skipped_reason, no ocr_text.
+        assert 0 in recovered
+        assert recovered[0].get("skipped_reason") == "page_coverage"
+        assert recovered[0].get("png_bytes")
+        assert not recovered[0].get("ocr_text")
 
     def test_clip_text_skip(self, monkeypatch):
         """A sub-coverage region whose clip already has real text under it
@@ -163,7 +171,11 @@ class TestF1CoverageExemption:
         )
 
         assert skip_reasons.get(0) == "clip_text_already_exported"
-        assert 0 not in recovered
+        # D5a (RFC-029): clip_text_already_exported retains png_bytes and ocr_text.
+        assert 0 in recovered
+        assert recovered[0].get("skipped_reason") == "clip_text_already_exported"
+        assert recovered[0].get("png_bytes")
+        assert recovered[0].get("ocr_text") == _long_text(30)
 
     def test_coverage_threshold_constant_is_point_six(self):
         assert _PICTURE_PAGE_COVERAGE_THRESHOLD == pytest.approx(0.6)

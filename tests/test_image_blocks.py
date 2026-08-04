@@ -355,7 +355,12 @@ class TestPageCoverageFilter:
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        assert len(result) == 0
+        # D5a (RFC-029): page_coverage skip retains png_bytes + skipped_reason,
+        # no ocr_text — OCR still short-circuited.
+        assert 0 in result
+        assert result[0].get("skipped_reason") == "page_coverage"
+        assert result[0].get("png_bytes")
+        assert not result[0].get("ocr_text")
 
     def test_page_coverage_filter_keeps_small_region(self, monkeypatch):
         """Region at 30% page area → present in crops dict with valid PNG bytes."""
@@ -698,8 +703,12 @@ class TestTextLayerProbe:
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=long_clip_text)
 
-        assert 0 not in result
-        assert len(result) == 0
+        # D5a (RFC-029): clip_text_already_exported retains png_bytes and
+        # propagates clip_text into ocr_text — OCR itself was not invoked.
+        assert 0 in result
+        assert result[0].get("skipped_reason") == "clip_text_already_exported"
+        assert result[0].get("png_bytes")
+        assert result[0].get("ocr_text") == long_clip_text
 
     def test_no_text_layer_allows_picture_ocr(self, monkeypatch):
         """get_text(clip=rect) returns "" -> region IS in crops dict, OCR proceeds."""
@@ -747,7 +756,12 @@ class TestTextLayerProbe:
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=clip_text)
 
-        assert len(result) == 0  # OCR skipped
+        # D5a (RFC-029): retained-skip contract — OCR skipped but crop and
+        # propagated clip_text are surfaced for downstream.
+        assert 0 in result
+        assert result[0].get("skipped_reason") == "clip_text_already_exported"
+        assert result[0].get("png_bytes")
+        assert result[0].get("ocr_text") == clip_text
 
     def test_text_layer_env_override(self, monkeypatch):
         """_PICTURE_OCR_MIN_CHARS env override: set to 50 → 30 chars should NOT skip."""

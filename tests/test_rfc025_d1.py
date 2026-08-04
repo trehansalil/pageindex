@@ -137,7 +137,11 @@ class TestRegionAwareExemptionIntegration:
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
         assert skip_reasons.get(0) == "page_coverage"
-        assert 0 not in recovered
+        # RFC-029 D5a: skipped regions still surface in ``recovered`` carrying
+        # ``png_bytes`` + ``skipped_reason`` so downstream can reason about the
+        # crop, but ``ocr_text`` MUST be absent -- proving Tesseract was not run.
+        assert "ocr_text" not in recovered.get(0, {})
+        assert recovered.get(0, {}).get("skipped_reason") == "page_coverage"
 
 
 class TestHeadingOnlyFallbackTrigger:
@@ -211,7 +215,10 @@ class TestEnvVarGating:
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
         assert skip_reasons.get(0) == "page_coverage"
-        assert 0 not in recovered
+        # RFC-029 D5a: retention contract -- entry present with ``png_bytes``
+        # and ``skipped_reason``, but no ``ocr_text`` (OCR did not fire).
+        assert "ocr_text" not in recovered.get(0, {})
+        assert recovered.get(0, {}).get("skipped_reason") == "page_coverage"
 
 
 class TestRegionCapBoundary:
@@ -233,9 +240,12 @@ class TestRegionCapBoundary:
         assert skip_reasons.get(0) != "page_coverage"
         assert skip_reasons.get(1) != "page_coverage"
         assert skip_reasons.get(2) == "page_coverage"
-        assert 0 in recovered
-        assert 1 in recovered
-        assert 2 not in recovered
+        assert recovered[0]["ocr_text"] == _long_text()
+        assert recovered[1]["ocr_text"] == _long_text()
+        # RFC-029 D5a: region past the cap is retained with ``png_bytes`` +
+        # ``skipped_reason`` but WITHOUT ``ocr_text`` -- Tesseract skipped.
+        assert "ocr_text" not in recovered.get(2, {})
+        assert recovered.get(2, {}).get("skipped_reason") == "page_coverage"
 
     def test_cap_at_default_fifty(self):
         assert converters._MAX_FULLPAGE_PICTURE_OCR_REGIONS == 50

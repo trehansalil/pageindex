@@ -74,6 +74,10 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return):
         "save_doc_meta": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree branches.
+        # Stub to None so the module's "No MinIO / Redis / network access" contract
+        # holds after RFC-025 D0 added the call site (RFC-029 mend).
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
