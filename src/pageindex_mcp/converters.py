@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import unicodedata
 import shutil
 import subprocess
 import tempfile
@@ -1820,7 +1821,15 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     ``clip_text_captured``) instead of being discarded. This recovers
     chart/infographic text-layer content that Docling misclassified as a
     Picture and that Tesseract OCR on the crop would fail to recognize
-    (vector-art labels)."""
+    (vector-art labels).
+
+    D5a (RFC-029): skip-gate retention — when the ``page_coverage`` or
+    ``clip_text_already_exported`` gate fires, the cropped ``png_bytes`` are
+    still captured into the returned ``PictureResult`` so downstream consumers
+    (VLM describe route, ``splice_figure_markers``) retain picture context.
+    For ``clip_text_already_exported`` the ``clip_text`` is also propagated
+    into ``PictureResult.ocr_text`` so ``splice_figure_markers`` can emit a
+    ``[Chart text]`` block."""
     import fitz  # PyMuPDF, AGPL-3.0
 
     from .config import settings
@@ -1830,6 +1839,9 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     # Phase 1 (serial, single fitz.Document): crop every valid region.
     crops: dict[int, dict] = {}
     clip_captures: dict[int, dict] = {}
+    # D5a (RFC-029): regions skipped by a gate but whose png_bytes we still
+    # want to retain for downstream context (page_coverage, clip_text_already_exported).
+    retained_skips: dict[int, dict] = {}
     skip_reasons: dict[int, str] = {}
     pdf = fitz.open(pdf_path)
     fullpage_ocr_region_count = 0
@@ -1860,6 +1872,25 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                             pdf_path,
                         )
                         skip_reasons[i] = "page_coverage"
+                        # D5a: retain crop bytes even though OCR is skipped.
+                        try:
+                            orig_rotation = page.rotation
+                            page.set_rotation(0)
+                            try:
+                                pix = page.get_pixmap(clip=rect, dpi=300)
+                            finally:
+                                page.set_rotation(orig_rotation)
+                            retained_skips[i] = {
+                                "png_bytes": pix.tobytes("png"),
+                                "region": region,
+                                "skipped_reason": "page_coverage",
+                            }
+                        except Exception as _crop_exc:
+                            logger.debug(
+                                "D5a: png_bytes crop failed for page_coverage region %d: %s",
+                                i,
+                                _crop_exc,
+                            )
                         continue
                     if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not has_own_text:
                         fullpage_ocr_region_count += 1
@@ -1871,6 +1902,25 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         )
                     else:
                         skip_reasons[i] = "page_coverage"
+                        # D5a: retain crop bytes even though OCR is skipped.
+                        try:
+                            orig_rotation = page.rotation
+                            page.set_rotation(0)
+                            try:
+                                pix = page.get_pixmap(clip=rect, dpi=300)
+                            finally:
+                                page.set_rotation(orig_rotation)
+                            retained_skips[i] = {
+                                "png_bytes": pix.tobytes("png"),
+                                "region": region,
+                                "skipped_reason": "page_coverage",
+                            }
+                        except Exception as _crop_exc:
+                            logger.debug(
+                                "D5a: png_bytes crop failed for page_coverage region %d: %s",
+                                i,
+                                _crop_exc,
+                            )
                         continue
                 # D1 (RFC-018/RFC-024): a region with meaningful clip_text is either
                 # already exported by Docling (skip) or was misclassified as a
@@ -1890,11 +1940,35 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                             pdf_path,
                         )
                     else:
-                        skip_reasons[i] = (
+                        skip_reason = (
                             "clip_text_already_exported"
                             if _CLIP_TEXT_CAPTURE_ENABLED
                             else "clip_text"
                         )
+                        skip_reasons[i] = skip_reason
+                        # D5a: for clip_text_already_exported, retain png_bytes AND
+                        # propagate clip_text so splice_figure_markers can emit [Chart text].
+                        if _CLIP_TEXT_CAPTURE_ENABLED:
+                            try:
+                                orig_rotation = page.rotation
+                                page.set_rotation(0)
+                                try:
+                                    pix = page.get_pixmap(clip=rect, dpi=300)
+                                finally:
+                                    page.set_rotation(orig_rotation)
+                                retained_skips[i] = {
+                                    "png_bytes": pix.tobytes("png"),
+                                    "ocr_text": " ".join(clip_text.split()),
+                                    "region": region,
+                                    "skipped_reason": skip_reason,
+                                }
+                            except Exception as _crop_exc:
+                                logger.debug(
+                                    "D5a: png_bytes crop failed for %s region %d: %s",
+                                    skip_reason,
+                                    i,
+                                    _crop_exc,
+                                )
                     continue
                 # D2 (RFC-023): sub-icon regions (both dims below threshold) are
                 # decorative UI glyphs — skip crop+OCR entirely.
@@ -1937,6 +2011,19 @@ def _recover_picture_text(  # noqa: PLR0915, C901
             page=capture["region"]["page"],
             bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
         )
+    # D5a (RFC-029): emit retained-skip PictureResults (page_coverage,
+    # clip_text_already_exported) so downstream has png_bytes / ocr_text context.
+    for i, rs in retained_skips.items():
+        bbox = rs["region"]["bbox"]
+        pr: PictureResult = PictureResult(
+            page=rs["region"]["page"],
+            bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
+            png_bytes=rs["png_bytes"],
+            skipped_reason=rs["skipped_reason"],
+        )
+        if rs.get("ocr_text"):
+            pr["ocr_text"] = rs["ocr_text"]
+        recovered[i] = pr
     if not crops:
         return recovered, skip_reasons
 
@@ -2096,7 +2183,18 @@ def _pre_inference_normalize(text: str) -> str:
     Ordering is load-bearing: D5c (split run-together headings) must precede D4 (the
     per-line hash-sentinel fix, so ``##Foo ###Bar`` is split before the one-marker-per-
     line pass), which must precede D7 (BiDi reorder) and depth inference (so في is a
-    single token by the time the heading regex parses it)."""
+    single token by the time the heading regex parses it).
+
+    RFC-029 §1.1: NFKC canonicalization of Arabic Presentation Forms (U+FB50–FDFF,
+    U+FE70–FEFF) runs first so all downstream consumers see canonical codepoints.
+    The pass is gated on detection — non-Arabic text is untouched (idempotent).
+    Design Property 1: NFKC canonicalization idempotence.
+    """
+    # RFC-029 §1.1 — NFKC only when Arabic Presentation Forms are present.
+    # Ranges: Arabic Presentation Forms-A U+FB50–U+FDFF,
+    #         Arabic Presentation Forms-B U+FE70–U+FEFF.
+    if any('ﭐ' <= ch <= '﷿' or 'ﹰ' <= ch <= '﻿' for ch in text):
+        text = unicodedata.normalize('NFKC', text)
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
     text = reconstruct_bidi_order(text)  # D7
@@ -2286,6 +2384,80 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
     return 1, True
 
 
+
+def _repair_docling_tables(md: str) -> str:
+    """RFC-029 D4 (Task 5.1, Property 6) — post-export table-repair pass.
+
+    Runs after every Docling ``export_to_markdown()`` call to correct two
+    systematic Docling GFM rendering artefacts:
+
+    1. **Degenerate duplicate-cell rows**: pipe-table data rows where EVERY
+       non-separator cell is byte-identical (e.g. Docling emitting the same
+       cell value repeated across all columns due to table-cell merging
+       ambiguity).  A row is collapsed to a single ``| value |`` cell only
+       when the identical-cell count exceeds ``_RFC029_TABLE_MIN_COLLAPSE_COLS``
+       (default 3) — avoids collapsing legitimate 1- or 2-col tables that
+       happen to share a value across columns.
+
+    2. **GFM-aligned whitespace padding**: Docling right-pads every pipe-table
+       cell to column-width for visual alignment.  The downstream tree builder
+       and flat-table parser both strip whitespace, so the padding is harmless
+       for semantics but inflates character counts (up to ~10x for wide
+       statistical tables).  Re-emitting with single-space padding recovers the
+       inflation without data loss.
+
+    Both transforms are heuristic-only, work on the raw markdown string, and
+    require no external dependencies (stdlib ``re`` only).  When
+    ``_RFC029_TABLE_DEDUP_ENABLED`` is falsy the function is a no-op.
+
+    Content-preservation: collapsed rows replace the original row text with a
+    single-cell row; non-collapsed rows are re-emitted with stripped (single-
+    space-padded) cell content, preserving every non-whitespace character.
+    Separator rows (``|---|``) are re-emitted as ``| --- |`` (minimal form).
+    """
+    if not _RFC029_TABLE_DEDUP_ENABLED or not md:
+        return md
+
+    lines = md.split("\n")
+    out: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        # Only process lines that look like pipe-table rows.
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            out.append(line)
+            continue
+
+        # Split on pipe, drop leading/trailing empty strings from the outer | |.
+        raw_cells = stripped.split("|")
+        cells = [c.strip() for c in raw_cells[1:-1]]
+
+        if not cells:
+            out.append(line)
+            continue
+
+        # Detect separator row (cells contain only dashes, colons, spaces).
+        if all(set(c.replace("-", "").replace(":", "").replace(" ", "")) == set() and c for c in cells):
+            # Re-emit in minimal form: | --- | --- | ...
+            out.append("| " + " | ".join("---" for _ in cells) + " |")
+            continue
+
+        # Check for all-identical degenerate row.
+        unique_vals = set(cells)
+        if (
+            len(unique_vals) == 1
+            and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS
+        ):
+            # Collapse: emit a single cell with the shared value.
+            out.append("| " + cells[0] + " |")
+            continue
+
+        # Normal row: re-emit with minimal single-space padding (strips GFM alignment).
+        out.append("| " + " | ".join(cells) + " |")
+
+    return "\n".join(out)
+
+
 def _pdf_to_markdown_docling_chunked(
     pdf_path: str,
     page_count: int,
@@ -2457,7 +2629,7 @@ def pdf_to_markdown_docling(
     # mutates result.document in place (it demotes unmatched headings to body text),
     # so this is the only chance to retain the full heading set for the Rank-1
     # over-prune fallback below.
-    raw_md = result.document.export_to_markdown()
+    raw_md = _repair_docling_tables(result.document.export_to_markdown())
 
     # Snapshot heading -> [page_no, ...] from the RAW (pre-add-on) document: the
     # add-on demotes unmatched headings to body text in place, so this is the only
@@ -2522,7 +2694,7 @@ def pdf_to_markdown_docling(
             exc,
         )
 
-    post_md = result.document.export_to_markdown()
+    post_md = _repair_docling_tables(result.document.export_to_markdown())
     if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
 
@@ -2819,7 +2991,7 @@ def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> 
         force_full_page_ocr=True, ocr_lang_override=ocr_lang_override, for_image=True
     )
     result = converter.convert(path)
-    md = result.document.export_to_markdown()
+    md = _repair_docling_tables(result.document.export_to_markdown())
     if not md or not md.strip():
         raise RuntimeError(f"image_to_markdown produced empty output for {path}")
     return normalize_dashes(md)
@@ -2860,6 +3032,16 @@ _D7_FITZ_FALLBACK_ENABLED = os.getenv("D7_FITZ_FALLBACK_ENABLED", "true").strip(
     "1",
     "true",
     "yes",
+)
+
+# RFC-029 D4 (Task 5.1) — post-export table-repair constants
+# Feature flag: set to "0" to disable the repair pass entirely.
+_RFC029_TABLE_DEDUP_ENABLED: bool = os.environ.get("RFC029_TABLE_DEDUP_ENABLED", "1") != "0"
+# Minimum column count that must be identical before a row is collapsed.
+# Rows with <= this many identical cells are left untouched to avoid collapsing
+# legitimately short tables (e.g. 2-col header rows where both cols share a value).
+_RFC029_TABLE_MIN_COLLAPSE_COLS: int = int(
+    os.environ.get("RFC029_TABLE_MIN_COLLAPSE_COLS", "3")
 )
 
 

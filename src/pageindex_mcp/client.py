@@ -49,6 +49,7 @@ from .helpers import (
     _tree_max_leaf_ratio,
     classify_verdict,
     route_and_extract_flat,
+    _segment_table_nodes,
     split_oversized_leaf_nodes,
     validate_tree,
 )
@@ -304,6 +305,12 @@ _D7_GARBLE_RECOVERY_ENABLED = os.getenv("D7_GARBLE_RECOVERY_ENABLED", "true").st
     "true",
     "yes",
 )
+# RFC-029 D1 (Task 3.1): flat-prefer multiplier — when flat char count exceeds
+# tree char count by this factor, prefer flat over tree result post-validation.
+_RFC029_FLAT_PREFER_MULTIPLIER = float(os.getenv("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
+# RFC-029 D1 (Task 3.1): minimum chars-per-node floor (mirrors helpers.py constant;
+# client module holds the flat-prefer logic while helpers.py holds the validate gate).
+_RFC029_MIN_CHARS_PER_NODE = float(os.getenv("RFC029_MIN_CHARS_PER_NODE", "500"))
 
 
 async def _attempt_tesseract_raster_recovery(
@@ -723,10 +730,12 @@ class CustomPageIndexClient(PageIndexClient):
                 # layer is garbled, skip straight to force_full_page_ocr=True instead of
                 # wasting a non-OCR conversion attempt.
                 pre_garbled = False
+                pdf_page_count: int | None = None  # RFC-029 D2: threaded into validate_tree
                 try:
                     import fitz
 
                     with fitz.open(file_path) as probe_pdf:
+                        pdf_page_count = probe_pdf.page_count if probe_pdf.page_count > 0 else None
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
                             if raw_text.strip() and _flat_text_is_garbled(
@@ -929,6 +938,11 @@ class CustomPageIndexClient(PageIndexClient):
                     standalone_ocr_text = await asyncio.to_thread(
                         _tesseract_ocr_image, file_path, img_langs
                     )
+                else:
+                    # D5b (RFC-029): Docling already extracted meaningful text (D8a gate
+                    # fired); pass it through as ocr_text so splice_figure_markers can
+                    # emit a [Chart text] block and the context is not silently dropped.
+                    standalone_ocr_text = md_content
                 # D6 (RFC-027): Docling can emit duplicate consecutive
                 # `<!-- image -->` markers for the same image region. Collapse
                 # only whitespace-gapped runs so distinct adjacent images
@@ -967,7 +981,11 @@ class CustomPageIndexClient(PageIndexClient):
             result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
-            ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
+            ok, reason = validate_tree(
+                result.get("structure", []),
+                expected_script=expected_script,
+                page_count=pdf_page_count if ext == ".pdf" else None,
+            )
             # D2 (RFC-025): the tree-build's original failure reason, captured before
             # any recovery retry below overwrites `reason` (e.g. to "node_count<3" so
             # the flat-routing branch is entered) — threaded to the flat-path garble
@@ -990,7 +1008,7 @@ class CustomPageIndexClient(PageIndexClient):
             # gate and is still rejected if it stays garbled; it never bypasses validation.
             if (
                 not ok
-                and (reason in ("garbling", "node_garbling") or low_content_ocr_eligible)
+                and (reason in ("garbling", "node_garbling", "visual_order_garble") or low_content_ocr_eligible)
                 and ext == ".pdf"
                 and _OCR_ESCALATION
             ):
@@ -1045,6 +1063,7 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
+                    result["structure"] = _segment_table_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
                         result.get("structure", []), expected_script=expected_script
                     )
@@ -1060,6 +1079,22 @@ class CustomPageIndexClient(PageIndexClient):
                     # secondary signal, so a marginally-longer but still-garbled
                     # retry doesn't win over an equally-garbled original.
                     post_retry_chars = len(_flatten_tree_text(result.get("structure", [])))
+
+                    def _repeating_token_density(text: str) -> float:
+                        """Return the fraction of alnum tokens that are the most-common token.
+
+                        Mirrors the single-token repetition check inside _is_garbled_blob
+                        (>30% threshold, >20 alnum tokens) but returns the raw ratio so the
+                        D4 guardrail can compare pre/post-retry densities without re-running
+                        the full garble gate.
+                        """
+                        from collections import Counter
+                        import re as _re
+                        tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
+                        if len(tokens) < 20:
+                            return 0.0
+                        return Counter(tokens).most_common(1)[0][1] / len(tokens)
+
                     if post_retry_chars < pre_retry_chars:
                         retry_wins = False
                     elif post_retry_chars == pre_retry_chars:
@@ -1074,7 +1109,38 @@ class CustomPageIndexClient(PageIndexClient):
                             )
                         )
                     else:
-                        retry_wins = True
+                        # RFC-029 D4 (Task 3.3): char-count growth alone must not override
+                        # a garble-detection result when the pre-retry text was already
+                        # garbled AND the post-retry shows similar repeating-token patterns.
+                        # Compare repeating-token densities: if the pre-retry was garbled
+                        # and the post-retry density is within 20% of the pre-retry density,
+                        # the retry has not meaningfully de-garbled — revert to pre-retry.
+                        _pre_garble_flag = _is_garbled_blob(
+                            _flatten_tree_text(pre_retry_result.get("structure", [])),
+                            expected_script=expected_script,
+                        )
+                        if _pre_garble_flag:
+                            _pre_density = _repeating_token_density(
+                                _flatten_tree_text(pre_retry_result.get("structure", []))
+                            )
+                            _post_density = _repeating_token_density(
+                                _flatten_tree_text(result.get("structure", []))
+                            )
+                            # Similar density means the retry just produced more of the same
+                            # garble — char-count growth should not win here.
+                            _density_improved = _post_density < _pre_density * 0.80
+                            retry_wins = _density_improved
+                            if not retry_wins:
+                                logger.warning(
+                                    "RFC-029 D4: post-retry repeating-token density (%.3f)"
+                                    " not substantially better than pre-retry (%.3f) for %s"
+                                    " — reverting to pre-retry result",
+                                    _post_density,
+                                    _pre_density,
+                                    filename,
+                                )
+                        else:
+                            retry_wins = True
                     if not retry_wins:
                         result = pre_retry_result
                         ok = pre_retry_ok
@@ -1120,7 +1186,7 @@ class CustomPageIndexClient(PageIndexClient):
             # whose OCR escalation was either skipped or failed.
             if (
                 not ok
-                and reason in ("garbling", "node_garbling")
+                and reason in ("garbling", "node_garbling", "visual_order_garble")
                 and ext == ".pdf"
                 and settings.vlm_fallback
             ):
@@ -1146,6 +1212,7 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
+                    result["structure"] = _segment_table_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
                         result.get("structure", []), expected_script=expected_script
                     )
@@ -1158,7 +1225,7 @@ class CustomPageIndexClient(PageIndexClient):
                     # recovery here (supersedes RFC-023 D7 test case (d)).
                     if (
                         not ok
-                        and reason in ("garbling", "node_garbling")
+                        and reason in ("garbling", "node_garbling", "visual_order_garble")
                         and _D7_GARBLE_RECOVERY_ENABLED
                     ):
                         recovered_md = await _attempt_tesseract_raster_recovery(
@@ -1275,6 +1342,40 @@ class CustomPageIndexClient(PageIndexClient):
                             filename,
                             ocr_exc,
                             exc_info=True,
+                        )
+
+            # RFC-029 D1 (Task 3.1): content-density flat-prefer guard.  When the tree
+            # passes validate_tree but the flat extraction is richer by a large margin
+            # (_RFC029_FLAT_PREFER_MULTIPLIER), prefer the flat result over the tree.
+            # Only runs when: tree passed validation, markdown is available (PDF path),
+            # and flat_doc_routing is enabled.  Sets ok=False / reason="node_count<3"
+            # so the existing flat-routing branch below handles persistence uniformly.
+            if ok and md_content and settings.flat_doc_routing:
+                _tree_char_count = len(_flatten_tree_text(result.get("structure", [])))
+                if _tree_char_count > 0:
+                    try:
+                        _flat_cc, _flat_blocks = await asyncio.to_thread(
+                            route_and_extract_flat, md_content
+                        )
+                        _flat_char_count = sum(
+                            len(_flat_block_primary_text(b)) for b in _flat_blocks
+                        )
+                        if _flat_char_count > _RFC029_FLAT_PREFER_MULTIPLIER * _tree_char_count:
+                            logger.warning(
+                                "RFC-029 D1: flat char count (%d) > %.1f× tree char count"
+                                " (%d) for %s — preferring flat result",
+                                _flat_char_count,
+                                _RFC029_FLAT_PREFER_MULTIPLIER,
+                                _tree_char_count,
+                                filename,
+                            )
+                            ok = False
+                            reason = "node_count<3"
+                    except Exception as _flat_exc:
+                        logger.warning(
+                            "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
+                            filename,
+                            _flat_exc,
                         )
 
             if not ok:

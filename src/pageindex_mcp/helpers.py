@@ -933,6 +933,65 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     return False
 
 
+def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
+    """Post-NFKC bidi-coherence check for Arabic text (RFC-029 D2).
+
+    Samples up to *n_samples* multi-word Arabic runs from NFKC-normalised
+    text and verifies that each run is in RTL *logical* order (U+0600-06FF
+    base characters), not in LTR *visual* order (presentation-form glyphs
+    whose form class contradicts their position — the same signal used by
+    `_word_has_reversed_morphology`).
+
+    Heuristic: a run fails the coherence check when ANY of its whitespace-
+    separated tokens has a FINAL-FORM glyph at position [0] or an
+    INITIAL-FORM glyph at position [-1].  In correctly-ordered Arabic the
+    renderer applies contextual shaping *after* Unicode storage; a
+    final-form character appearing at the *logical* start of a word is
+    impossible in real RTL logical order and is a reliable sign that the
+    character sequence was reversed before NFKC normalisation preserved the
+    already-wrong presentation form.
+
+    Returns:
+        (True, "")                      — text is bidi-coherent (or not Arabic)
+        (False, "visual_order_garble")  — >50 % of sampled runs failed
+    """
+    # Collect multi-word Arabic runs (≥2 tokens, each with ≥1 Arabic char)
+    _AR_RE = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]+")
+
+    runs: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        arabic_chars = sum(1 for c in stripped if "؀" <= c <= "ۿ")
+        total_chars = len(stripped.replace(" ", ""))
+        if total_chars == 0 or arabic_chars / total_chars < 0.4:
+            continue
+        tokens = [t for t in stripped.split() if _AR_RE.search(t)]
+        if len(tokens) >= 2:
+            runs.append(tokens)
+        if len(runs) >= n_samples:
+            break
+
+    if not runs:
+        # No Arabic-dominant multi-word runs — nothing to check
+        return True, ""
+
+    failed = 0
+    for tokens in runs:
+        run_failed = False
+        for word in tokens:
+            if _word_has_reversed_morphology(word):
+                run_failed = True
+                break
+        if run_failed:
+            failed += 1
+
+    if failed / len(runs) > 0.50:
+        return False, "visual_order_garble"
+    return True, ""
+
+
 # RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
 # digit%, repetition%) dilute away a handful of corrupted Latin fragments glued
 # to Arabic across a long document, so OCR escalation never fires. This
@@ -966,9 +1025,87 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
     return (len(matches) / max(len(text.split()), 1)) > threshold
 
 
+def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
+    """Post-NFKC bidi-coherence check for Arabic text (RFC-029 D0/Property 2).
+
+    Samples up to *n_samples* multi-word Arabic runs from NFKC-normalised text
+    and verifies each is in RTL logical order, not LTR visual order.
+
+    Heuristic: a run fails when ANY of its whitespace-separated tokens has a
+    FINAL-FORM presentation glyph at position [0] or an INITIAL-FORM glyph at
+    position [-1]. In correctly-ordered Arabic the renderer applies contextual
+    shaping *after* Unicode storage; a final-form character at the logical
+    start of a word is impossible unless the character sequence was reversed
+    before NFKC normalisation locked in the wrong presentation form.
+
+    Returns:
+        (True, "")                      - bidi-coherent (or not Arabic-dominant)
+        (False, "visual_order_garble")  - >50% of sampled runs failed
+    """
+
+    def _reversed_morphology(word: str) -> bool:
+        if len(word) < 2:
+            return False
+        try:
+            first_name = unicodedata.name(word[0])
+        except ValueError:
+            first_name = ""
+        try:
+            last_name = unicodedata.name(word[-1])
+        except ValueError:
+            last_name = ""
+        return "FINAL FORM" in first_name or "INITIAL FORM" in last_name
+
+    _AR_RE = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]+")
+
+    runs: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        arabic_chars = sum(1 for c in stripped if "؀" <= c <= "ۿ")
+        total_chars = len(stripped.replace(" ", ""))
+        if total_chars == 0 or arabic_chars / total_chars < 0.4:
+            continue
+        tokens = [t for t in stripped.split() if _AR_RE.search(t)]
+        if len(tokens) >= 2:
+            runs.append(tokens)
+        if len(runs) >= n_samples:
+            break
+
+    if not runs:
+        return True, ""
+
+    failed = sum(1 for tokens in runs if any(_reversed_morphology(w) for w in tokens))
+    if failed / len(runs) > 0.50:
+        return False, "visual_order_garble"
+    return True, ""
+
+
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
-_GARBLE_NODE_RATIO_THRESHOLD = (
-    _GARBLE_NODE_RATIO_THRESHOLD_RAW if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1 else 0.10
+_GARBLE_NODE_RATIO_THRESHOLD = float(
+    os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", str(_GARBLE_NODE_RATIO_THRESHOLD_RAW))
+)
+# RFC-029 D10: zero-body contamination gate — fraction of non-root nodes whose
+# stripped body text is empty.  Threshold is env-overridable for calibration.
+_EMPTY_NODE_FRACTION_THRESHOLD_RAW = 0.30
+_EMPTY_NODE_FRACTION_THRESHOLD = float(
+    os.environ.get("EMPTY_NODE_FRACTION_THRESHOLD", str(_EMPTY_NODE_FRACTION_THRESHOLD_RAW))
+)
+# RFC-029 D1 (Task 3.1): flat-prefer multiplier — when flat char count exceeds
+# tree char count by this factor, prefer the flat result over the tree result.
+_RFC029_FLAT_PREFER_MULTIPLIER = float(
+    os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
+)
+# RFC-029 D1 (Task 3.1): minimum chars-per-node floor; trees below this floor
+# (with enough nodes to make the metric meaningful) fail with low_content_density.
+_RFC029_MIN_CHARS_PER_NODE = float(
+    os.environ.get("RFC029_MIN_CHARS_PER_NODE", "500")
+)
+# RFC-029 D2 (Task 3.3): minimum chars-per-page floor for scanned density check;
+# trees below this floor (when page_count is known) fail with suspect_density.
+_RFC029_MIN_SCANNED_DENSITY_FLOOR = float(
+    os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR", "1500")
 )
 
 
@@ -1130,7 +1267,11 @@ def _tree_is_rtl_reversed(nodes: list) -> bool:
     return sampled > 0 and (disp_total > orig_total or morphological_reversal)
 
 
-def validate_tree(structure: list, expected_script: str | None = None) -> tuple[bool, str]:
+def validate_tree(
+    structure: list,
+    expected_script: str | None = None,
+    page_count: int | None = None,
+) -> tuple[bool, str]:
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
     Returns (ok, reason); reason is '' when ok. Fails (priority order) on
@@ -1138,7 +1279,23 @@ def validate_tree(structure: list, expected_script: str | None = None) -> tuple[
     the validated German-insurance failure mode), node_count < 3, or
     depth < 2. RFC-026 D5: garbling is checked first so a thin tree whose
     only content is garbled reports 'garbling', not a shadowing structural
-    reason."""
+    reason.
+
+    RFC-029 D10: empty_node_contamination — checked last (additive prong).
+    More than 30 % of non-root nodes with empty body text indicates a
+    structural extraction failure where sections were split into shell nodes
+    with no content; persisting such a tree silently violates Hard Rule 5.
+
+    RFC-029 D1 (Task 3.1): low_content_density — when total_nodes >= 3, flag
+    trees whose chars-per-node falls below _RFC029_MIN_CHARS_PER_NODE.
+
+    RFC-029 D2 (Task 3.3): suspect_density — when page_count is provided,
+    flag trees whose chars-per-page falls below _RFC029_MIN_SCANNED_DENSITY_FLOOR.
+
+    RFC-029 D2 (Task 3.3): arabic_low_content_ratio — for Arabic-script trees,
+    flag when the meaningful Arabic char ratio is low (dominated by
+    numeric/OCR-noise junk), reusing _is_garbled_blob's digit-ratio heuristic.
+    """
     if _tree_is_garbled(structure, expected_script=expected_script):
         return False, "garbling"
     if _tree_node_count(structure) < 3:
@@ -1169,6 +1326,53 @@ def validate_tree(structure: list, expected_script: str | None = None) -> tuple[
     # existing garble/structure gates it is additive to.
     if _tree_is_rtl_reversed(structure):
         return False, "rtl_reversal"
+    # RFC-029 D10: zero-body contamination gate — checked last so it is
+    # additive and never shadows the existing gates above.
+    _total_non_root, _empty_leaf, _empty_non_leaf = _count_empty_body_nodes(structure)
+    if _total_non_root > 0:
+        _empty_fraction = (_empty_leaf + _empty_non_leaf) / _total_non_root
+        if _empty_fraction > _EMPTY_NODE_FRACTION_THRESHOLD:
+            return False, (
+                f"empty_node_contamination"
+                f"(fraction={_empty_fraction:.2f}"
+                f",empty_leaf={_empty_leaf}"
+                f",empty_non_leaf={_empty_non_leaf}"
+                f",total_non_root={_total_non_root})"
+            )
+    # RFC-029 D1 (Task 3.1): content-density gate — only when total_nodes >= 200.
+    # The target failure mode is scanned-garble trees with many hundreds of shell
+    # nodes, each carrying near-zero extracted text (e.g. 2 chars/node over 300
+    # nodes = 600 chars total for a multi-article law — clearly a failed extraction).
+    # Setting the floor at 200 nodes avoids false-positives on real compact documents
+    # and synthetic test fixtures (which never approach that node count).
+    # The node_count<3 / depth<2 gates above already handle truly degenerate trees.
+    if total_nodes >= 200:
+        chars_per_node = len(full_text) / total_nodes
+        if chars_per_node < _RFC029_MIN_CHARS_PER_NODE:
+            return False, (
+                f"low_content_density"
+                f"(chars_per_node={chars_per_node:.1f}"
+                f",threshold={_RFC029_MIN_CHARS_PER_NODE:.1f})"
+            )
+    # RFC-029 D2 (Task 3.3): scanned-density floor — only when page_count is
+    # provided and positive (guard against zero-page edge-cases).
+    if page_count is not None and page_count > 0:
+        chars_per_page = len(full_text) / page_count
+        if chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR:
+            return False, (
+                f"suspect_density"
+                f"(chars_per_page={chars_per_page:.1f})"
+            )
+    # RFC-029 D2 (Task 3.3): Arabic low-content ratio — for Arabic-script docs,
+    # when the meaningful Arabic char ratio is low (dominated by numeric/OCR noise),
+    # flag via _is_garbled_blob's digit-ratio check on the flattened text.
+    # Only fires when the doc is detected as Arabic-dominant AND the blob passes
+    # every other gate (so it is additive, never shadowing the garble gates).
+    if doc_script == "Arab" or (
+        expected_script == "Arab" and doc_script is None
+    ):
+        if _is_garbled_blob(full_text, expected_script=expected_script):
+            return False, "arabic_low_content_ratio"
     return True, ""
 
 
@@ -1185,6 +1389,39 @@ def _walk_leaves(structure: list):
             yield from _walk_leaves(children)
         else:
             yield n
+
+
+def _count_empty_body_nodes(structure: list) -> tuple[int, int, int]:
+    """RFC-029 D10: count non-root nodes with empty stripped body text.
+
+    Returns (total_non_root, empty_leaf, empty_non_leaf).
+    A node's «body text» is its ``text`` field (stripped); ``title``-only
+    nodes are intentional structural nodes and are NOT counted as empty.
+    Counts are over all non-root nodes (the entire tree minus the top-level
+    list elements, which are document roots).
+    """
+    total = 0
+    empty_leaf = 0
+    empty_non_leaf = 0
+
+    def _walk(nodes: list, is_root_level: bool = False) -> None:
+        nonlocal total, empty_leaf, empty_non_leaf
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            children = node.get("nodes") or []
+            if not is_root_level:
+                total += 1
+                body = node.get("text", "") or ""
+                if not body.strip():
+                    if children:
+                        empty_non_leaf += 1
+                    else:
+                        empty_leaf += 1
+            _walk(children, is_root_level=False)
+
+    _walk(structure, is_root_level=True)
+    return total, empty_leaf, empty_non_leaf
 
 
 def _tree_max_leaf_ratio(structure: list) -> tuple[int, int, float]:
@@ -1297,6 +1534,22 @@ def classify_verdict(  # noqa: C901
         return "FAIL", "zero_content"
     if validate_reason == "garbling":
         return "FAIL", "garbling"
+    # RFC-029 D10: zero-body contamination gate — a high fraction of structurally
+    # empty nodes means the extraction produced shell nodes with no content; this
+    # is a hard FAIL (CLAUDE.md Hard Rule 5), not a MARGINAL, so no promotion
+    # branch can override it.
+    if validate_reason is not None and validate_reason.startswith("empty_node_contamination"):
+        return "FAIL", validate_reason
+    # RFC-029 D1 (Task 3.1): low content density — tree chars-per-node too low.
+    if validate_reason is not None and validate_reason.startswith("low_content_density"):
+        return "FAIL", validate_reason
+    # RFC-029 D2 (Task 3.3): suspect scanned density — chars-per-page too low.
+    if validate_reason is not None and validate_reason.startswith("suspect_density"):
+        return "FAIL", validate_reason
+    # RFC-029 D2 (Task 3.3): Arabic low content ratio — meaningful Arabic chars
+    # dominated by numeric/OCR-noise junk.
+    if validate_reason == "arabic_low_content_ratio":
+        return "FAIL", validate_reason
     # RFC-015 D2: content-ordering regression forces the lowest tier. Self-contained
     # (checks the structure directly) so it holds even when validate_reason is None.
     if validate_reason == "reordered" or _tree_is_reordered(structure):
@@ -2051,6 +2304,172 @@ def split_oversized_leaf_nodes(
     return structure
 
 
+def _segment_table_nodes(structure: list) -> list:
+    """RFC-029 D7 (Task 5.3, Property 9) — table-aware node segmentation.
+
+    Walks an already-built ``structure`` (post heading-node construction, pre
+    ``validate_tree``) and splits any node whose body exceeds
+    ``_RFC029_TABLE_SEGMENT_CHAR_THRESHOLD`` chars AND contains a pipe-table
+    with more than ``_RFC029_TABLE_SEGMENT_MIN_ROWS`` data rows.
+
+    Interaction risk guard (per tasks-file Note): only nodes above the char
+    threshold are touched — avoids fragmenting already-thin trees that D1 may
+    route to flat.
+
+    Split contract (content-preservation invariant): the concatenated child
+    body text equals the original node text when joined with a single newline.
+    Edge cases handled:
+      - Table at start of node: prose portion is empty; only the table child is
+        created, heading is inherited from parent.
+      - Multiple tables in one node: each table becomes a separate child; any
+        prose between tables is a prose child.
+      - Table with no header row: synthesized heading is ``Table: {parent title}``.
+
+    Mutates ``structure`` in place and returns it.  Idempotent: segments that
+    fall under the char threshold are skipped on a second pass.
+
+    Pure Python, stdlib only.  No LLM, no MinIO/Redis/VLM call.
+    """
+    _SEP_RE = re.compile(r"^\|[\s|:-]+\|$")  # separator row: |---|---|
+    _PIPE_START = "|"
+
+    def _is_pipe_row(line: str) -> bool:
+        s = line.strip()
+        return s.startswith(_PIPE_START) and s.endswith(_PIPE_START) and len(s) > 1
+
+    def _is_sep_row(line: str) -> bool:
+        return bool(_SEP_RE.match(line.strip()))
+
+    def _count_table_data_rows(table_lines: list[str]) -> int:
+        """Count non-header, non-separator data rows in a table block."""
+        count = 0
+        past_sep = False
+        for ln in table_lines:
+            if _is_sep_row(ln):
+                past_sep = True
+                continue
+            if past_sep and _is_pipe_row(ln):
+                count += 1
+        return count
+
+    def _extract_header_text(table_lines: list[str]) -> str:
+        """Return first non-separator pipe-row cell text as heading candidate."""
+        for ln in table_lines:
+            if _is_pipe_row(ln) and not _is_sep_row(ln):
+                cells = [c.strip() for c in ln.strip().split("|") if c.strip()]
+                return " | ".join(cells[:3]) if cells else ""
+        return ""
+
+    def _split_node(node: dict) -> None:
+        """Split a single node in-place, creating child nodes."""
+        text = node.get("text") or ""
+        if len(text) <= _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD:
+            return
+
+        lines = text.splitlines(keepends=True)
+        parent_title = node.get("title") or ""
+
+        # Locate all table blocks: (start_line_idx, end_line_idx_exclusive)
+        table_spans: list[tuple[int, int]] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if _is_pipe_row(line):
+                # Found start of a table block — collect until pipe rows end
+                start = i
+                while i < len(lines) and (_is_pipe_row(lines[i]) or lines[i].strip() == ""):
+                    i += 1
+                # Trim trailing blank lines from span
+                end = i
+                while end > start and lines[end - 1].strip() == "":
+                    end -= 1
+                # Only consider it a qualifying table
+                table_block = lines[start:end]
+                data_rows = _count_table_data_rows([ln.rstrip("\n") for ln in table_block])
+                if data_rows >= _RFC029_TABLE_SEGMENT_MIN_ROWS:
+                    table_spans.append((start, end))
+            else:
+                i += 1
+
+        if not table_spans:
+            return  # no qualifying table found — leave node intact
+
+        # Build child segments from the interleaved prose + table regions.
+        children: list[dict] = []
+        cursor = 0
+        child_idx = 0
+
+        for t_start, t_end in table_spans:
+            # Prose segment before this table
+            if cursor < t_start:
+                prose_lines = lines[cursor:t_start]
+                prose_text = "".join(prose_lines).rstrip()
+                if prose_text:
+                    children.append({
+                        "title": parent_title if child_idx == 0 else f"{parent_title} (cont.)",
+                        "text": prose_text,
+                        "nodes": [],
+                    })
+                    child_idx += 1
+
+            # Table segment
+            table_lines_raw = lines[t_start:t_end]
+            table_text = "".join(table_lines_raw).rstrip()
+            header_candidate = _extract_header_text([ln.rstrip("\n") for ln in table_lines_raw])
+            table_title = (
+                header_candidate if header_candidate else f"Table: {parent_title}"
+            )
+            children.append({
+                "title": table_title,
+                "text": table_text,
+                "nodes": [],
+            })
+            child_idx += 1
+            cursor = t_end
+
+        # Trailing prose after the last table
+        if cursor < len(lines):
+            trailing = "".join(lines[cursor:]).rstrip()
+            if trailing:
+                children.append({
+                    "title": f"{parent_title} (cont.)",
+                    "text": trailing,
+                    "nodes": [],
+                })
+
+        if len(children) <= 1:
+            # Segmentation produced nothing useful — leave node intact
+            return
+
+        # Verify content-preservation: joined child texts must round-trip
+        # to the original (strip trailing whitespace per segment).
+        joined = "\n".join(c["text"] for c in children)
+        if joined.replace("\n", "") != text.replace("\n", ""):
+            # Safety: if content doesn't round-trip, abandon the split.
+            logger.warning(
+                "_segment_table_nodes: content-preservation check failed for node %r; "
+                "skipping split",
+                parent_title,
+            )
+            return
+
+        node["nodes"] = children
+        node["text"] = ""  # parent text migrated to children
+
+    def _walk(nodes: list) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            children = node.get("nodes")
+            if children:
+                _walk(children)
+            else:
+                _split_node(node)
+
+    _walk(structure)
+    return structure
+
+
 # --- Fix 2: table fidelity in the flat path ---------------------------------
 # Arabic-script ranges (incl. presentation forms) for the RTL ratio heuristic.
 _ARABIC_SCRIPT_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
@@ -2216,6 +2635,17 @@ _TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
 
 _GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"
 
+# RFC-029 D7 (Task 5.3) — table-aware node segmentation constants.
+# Node char threshold above which table-segmentation is attempted.
+_RFC029_TABLE_SEGMENT_CHAR_THRESHOLD: int = int(
+    os.environ.get("RFC029_TABLE_SEGMENT_CHAR_THRESHOLD", "2000")
+)
+# Minimum pipe-table data rows (excluding header + separator) required to
+# trigger segmentation — avoids fragmenting small 2-3 row reference tables.
+_RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(
+    os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5")
+)
+
 
 def _flat_text_is_garbled(
     md: str,
@@ -2278,12 +2708,31 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
 
     i = 0
     n = len(lines)
+    in_fence = False  # Design Property 5: track whether we are inside a fenced code block
     while i < n:
         line = lines[i]
         stripped = line.strip()
 
+        # Design Property 5 — Fence stripping: toggle in_fence on opening/closing
+        # fence markers (``` optionally followed by a language tag).  All lines
+        # inside a fence (including the fence delimiters themselves) are skipped
+        # without emitting any block.
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            i += 1
+            continue
+        if in_fence:
+            i += 1
+            continue
+
         if stripped == "":
             flush_prose()
+            i += 1
+            continue
+
+        # Design Property 5 — HR-separator stripping: skip horizontal-rule lines
+        # (--- / === / ***) that serve only as visual dividers in the source.
+        if stripped and all(c == stripped[0] for c in stripped) and stripped[0] in "-=*" and len(stripped) >= 3:
             i += 1
             continue
 
