@@ -62,10 +62,16 @@ JOB_TIMEOUT = 3630
 CHILD_GRACE_SECONDS = 30
 CHILD_TIMEOUT = JOB_TIMEOUT - CHILD_GRACE_SECONDS
 DLQ_KEY = "pageindex:dlq"
-# At most one job in flight per worker process. A single Docling index can peak
-# at multiple GiB; allowing arq's default (10) to stack two heavy jobs would
-# double peak RSS on an already memory-tight node and invite an OOM kill.
-MAX_JOBS = 1
+# At most one job in flight per worker process by default. A single Docling
+# index can peak at multiple GiB; allowing arq's default (10) to stack two heavy
+# jobs would double peak RSS on an already memory-tight node and invite an OOM
+# kill. Override with PAGEINDEX_WORKER_MAX_JOBS when running against *remote*
+# Docling (Scaleway) — the worker is then I/O-bound and 2–4 parallel jobs are
+# safe. Do NOT raise this against the local Docling profile.
+try:
+    MAX_JOBS = max(1, int(os.getenv("PAGEINDEX_WORKER_MAX_JOBS", "1")))
+except ValueError:
+    MAX_JOBS = 1
 # Map child-reported exception class names (from converters_cli.py stdout JSON
 # "error" field) to the documented, stable Redis ``reason`` codes. Unknown
 # classes fall back to the generic ``converter_child_failed`` so the reason
@@ -171,7 +177,7 @@ class ConverterChildError(RuntimeError):
     """The converter child process exited non-zero (or reported ok=False)."""
 
     def __init__(self, returncode: int, stderr_tail: str, error_class: str | None = None):
-        super().__init__(f"converter child exited {returncode}: {stderr_tail[:200]}")
+        super().__init__(f"converter child exited {returncode}: {stderr_tail[-4000:]}")
         self.returncode = returncode
         self.stderr_tail = stderr_tail
         # ``error_class`` is the original exception class name reported by the
@@ -291,7 +297,7 @@ async def _run_converter_subprocess(
         raise
     stdout_bytes = leftover_stdout + rest_stdout
 
-    stderr_tail = stderr_bytes.decode(errors="replace")[-2000:]
+    stderr_tail = stderr_bytes.decode(errors="replace")[-20000:]
 
     if proc.returncode == 0:
         stdout_text = stdout_bytes.decode(errors="replace").strip()

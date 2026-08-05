@@ -9,10 +9,11 @@ from io import BytesIO
 from pathlib import Path
 from threading import Lock
 
-from minio import Minio
+from minio import Minio  # for type annotations; construction goes through make_minio
 from minio.error import S3Error
 
 from .config import settings
+from .minio_client import make_minio
 from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,15 @@ def get_minio() -> Minio:
                     settings.minio_endpoint,
                     settings.minio_bucket,
                 )
-                client = Minio(
+                client = make_minio(
                     settings.minio_endpoint,
-                    access_key=settings.minio_access_key,
-                    secret_key=settings.minio_secret_key,
+                    settings.minio_access_key,
+                    settings.minio_secret_key,
                     secure=settings.minio_secure,
+                    # Set when the endpoint is a reverse-proxied public route
+                    # rather than MinIO itself. See minio_client.py.
+                    path_prefix=settings.minio_path_prefix,
+                    region=settings.minio_region,
                 )
                 if not client.bucket_exists(settings.minio_bucket):
                     logger.info("Creating MinIO bucket: %s", settings.minio_bucket)
@@ -63,11 +68,19 @@ def _get_presign_minio() -> Minio:
     if _presign_client is None:
         with _presign_lock:
             if _presign_client is None:
-                _presign_client = Minio(
+                # No path_prefix here: presigned URLs are built from the client's
+                # base URL, never sent through its HTTP client, so the prefix is
+                # spliced in by _apply_route_prefix instead.
+                _presign_client = make_minio(
                     settings.minio_presign_endpoint,
-                    access_key=settings.minio_access_key,
-                    secret_key=settings.minio_secret_key,
-                    secure=settings.minio_secure,
+                    settings.minio_access_key,
+                    settings.minio_secret_key,
+                    # Independent of minio_secure: the internal endpoint is
+                    # plaintext in-cluster, the public one is HTTPS.
+                    secure=settings.minio_presign_secure,
+                    # Pinned: without it the SDK resolves the region with a live
+                    # GetBucketLocation against the public host, which raises.
+                    region=settings.minio_region,
                 )
     return _presign_client
 
@@ -75,7 +88,33 @@ def _get_presign_minio() -> Minio:
 def presigned_get_url(object_key: str, expires: timedelta = timedelta(minutes=15)) -> str:
     """Generate a time-limited presigned GET URL for a MinIO object."""
     mc = _get_presign_minio()
-    return mc.presigned_get_object(settings.minio_bucket, object_key, expires=expires)
+    url = mc.presigned_get_object(settings.minio_bucket, object_key, expires=expires)
+    return _apply_route_prefix(url)
+
+
+def _apply_route_prefix(url: str) -> str:
+    """Splice ``MINIO_PRESIGN_PATH_PREFIX`` into an already-signed URL.
+
+    MinIO's public route sits behind a Traefik StripPrefix, so MinIO verifies the
+    signature against the *stripped* path (``/<bucket>/<key>``) — exactly what the
+    SDK signs. Adding the prefix afterwards therefore keeps the signature valid,
+    and is the only way to do it: the SDK rejects a path in the endpoint.
+
+    With a dedicated presign endpoint the URL names that host, so its prefix
+    applies. Without one the URL is built from the main endpoint, so the main
+    endpoint's prefix applies — otherwise a public MINIO_ENDPOINT would presign
+    URLs that 404 at the proxy.
+    """
+    if settings.minio_presign_endpoint:
+        host, prefix = settings.minio_presign_endpoint, settings.minio_presign_path_prefix
+    else:
+        host, prefix = settings.minio_endpoint, settings.minio_path_prefix
+    if not prefix or not host:
+        return url
+    before, _, after = url.partition(host)
+    if not after:  # host not found in URL — leave it alone
+        return url
+    return f"{before}{host}{prefix}{after}"
 
 
 # ---------------------------------------------------------------------------
