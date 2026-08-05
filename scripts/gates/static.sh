@@ -141,10 +141,19 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # Grep-based heuristic enforcement
 
     # no_minio_outside_storage: minio client import outside storage.py.
+    # The rule's intent is "no MinIO SDK usage scattered across business logic",
+    # not "one specific filename" — so the encapsulation layer itself is allowed.
     # Whitelist: hash_cache_migrate.py — one-shot MinIO->Redis migration script
-    # that legitimately needs direct MinIO access (see RFC-013 D9 / RFC-014).
+    # that legitimately needs direct MinIO access (see RFC-013 D9 / RFC-014);
+    # minio_client.py — the SDK-construction module storage.py delegates to
+    # (make_minio / PrefixedPoolManager for the stripped-prefix route). It owns
+    # the SDK by design and carries no business logic; storage.py is its only
+    # src consumer. The allowlist regex is anchored to the full `grep -rn`
+    # "path:lineno:" prefix (^[^:]+/<name>.py:[0-9]+:) so it only matches the
+    # path field — never a substring of the matched line content (e.g. a comment
+    # that mentions `Minio(`) or of an unrelated file like `my_minio_client.py`.
     MINIO_VIOLATIONS=$(grep -rn 'from minio\|import minio\|Minio(' src/pageindex_mcp/ \
-        | grep -vE '(storage|hash_cache_migrate)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '^[^:]+/(storage|minio_client|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$MINIO_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_minio_outside_storage"
     else

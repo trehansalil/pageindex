@@ -1035,14 +1035,10 @@ _EMPTY_NODE_FRACTION_THRESHOLD = float(
 )
 # RFC-029 D1 (Task 3.1): flat-prefer multiplier — when flat char count exceeds
 # tree char count by this factor, prefer the flat result over the tree result.
-_RFC029_FLAT_PREFER_MULTIPLIER = float(
-    os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
-)
+_RFC029_FLAT_PREFER_MULTIPLIER = float(os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
 # RFC-029 D1 (Task 3.1): minimum chars-per-node floor; trees below this floor
 # (with enough nodes to make the metric meaningful) fail with low_content_density.
-_RFC029_MIN_CHARS_PER_NODE = float(
-    os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")
-)
+_RFC029_MIN_CHARS_PER_NODE = float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150"))
 # RFC-029 D2 (Task 3.3): minimum chars-per-page floor for scanned density check;
 # trees below this floor (when page_count is known) fail with suspect_density.
 _RFC029_MIN_SCANNED_DENSITY_FLOOR = float(
@@ -1128,11 +1124,11 @@ def _garble_check_nodes(
         # (digit/repetition ratios only kick in on longer blobs) that would
         # false-positive on short legitimate mixed-script titles.
         title = node.get("title") or ""
-        if title.strip():
-            if any(_word_has_reversed_morphology(w) for w in title.split()):
-                node_garbled = True
-            elif _is_garbled_blob(title, expected_script=expected_script or page_script):
-                node_garbled = True
+        if title.strip() and (
+            any(_word_has_reversed_morphology(w) for w in title.split())
+            or _is_garbled_blob(title, expected_script=expected_script or page_script)
+        ):
+            node_garbled = True
         if node_garbled:
             garbled += 1
         children = node.get("nodes") or []
@@ -1223,7 +1219,7 @@ def _tree_is_rtl_reversed(nodes: list) -> bool:
     return sampled > 0 and (disp_total > orig_total or morphological_reversal)
 
 
-def validate_tree(
+def validate_tree(  # noqa: C901
     structure: list,
     expected_script: str | None = None,
     page_count: int | None = None,
@@ -1329,20 +1325,16 @@ def validate_tree(
     if page_count is not None and page_count > 0:
         chars_per_page = len(full_text) / page_count
         if chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR:
-            return False, (
-                f"suspect_density"
-                f"(chars_per_page={chars_per_page:.1f})"
-            )
+            return False, (f"suspect_density(chars_per_page={chars_per_page:.1f})")
     # RFC-029 D2 (Task 3.3): Arabic low-content ratio — for Arabic-script docs,
     # when the meaningful Arabic char ratio is low (dominated by numeric/OCR noise),
     # flag via _is_garbled_blob's digit-ratio check on the flattened text.
     # Only fires when the doc is detected as Arabic-dominant AND the blob passes
     # every other gate (so it is additive, never shadowing the garble gates).
-    if doc_script == "Arab" or (
-        expected_script == "Arab" and doc_script is None
-    ):
-        if _is_garbled_blob(full_text, expected_script=expected_script):
-            return False, "arabic_low_content_ratio"
+    if (
+        doc_script == "Arab" or (expected_script == "Arab" and doc_script is None)
+    ) and _is_garbled_blob(full_text, expected_script=expected_script):
+        return False, "arabic_low_content_ratio"
     return True, ""
 
 
@@ -1489,7 +1481,7 @@ def _dedupe_chart_text_lines(text: str) -> str:
     return "".join(kept)
 
 
-def classify_verdict(  # noqa: C901
+def classify_verdict(  # noqa: C901, PLR0915
     structure: list,
     content_class: str,
     validate_reason: str | None,
@@ -2274,7 +2266,7 @@ def split_oversized_leaf_nodes(
     return structure
 
 
-def _segment_table_nodes(structure: list) -> list:
+def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
     """RFC-029 D7 (Task 5.3, Property 9) — table-aware node segmentation.
 
     Walks an already-built ``structure`` (post heading-node construction, pre
@@ -2330,7 +2322,7 @@ def _segment_table_nodes(structure: list) -> list:
                 return " | ".join(cells[:3]) if cells else ""
         return ""
 
-    def _split_node(node: dict) -> None:
+    def _split_node(node: dict) -> None:  # noqa: C901, PLR0915
         """Split a single node in-place, creating child nodes."""
         text = node.get("text") or ""
         if len(text) <= _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD:
@@ -2375,25 +2367,27 @@ def _segment_table_nodes(structure: list) -> list:
                 prose_lines = lines[cursor:t_start]
                 prose_text = "".join(prose_lines).rstrip()
                 if prose_text:
-                    children.append({
-                        "title": parent_title if child_idx == 0 else f"{parent_title} (cont.)",
-                        "text": prose_text,
-                        "nodes": [],
-                    })
+                    children.append(
+                        {
+                            "title": parent_title if child_idx == 0 else f"{parent_title} (cont.)",
+                            "text": prose_text,
+                            "nodes": [],
+                        }
+                    )
                     child_idx += 1
 
             # Table segment
             table_lines_raw = lines[t_start:t_end]
             table_text = "".join(table_lines_raw).rstrip()
             header_candidate = _extract_header_text([ln.rstrip("\n") for ln in table_lines_raw])
-            table_title = (
-                header_candidate if header_candidate else f"Table: {parent_title}"
+            table_title = header_candidate if header_candidate else f"Table: {parent_title}"
+            children.append(
+                {
+                    "title": table_title,
+                    "text": table_text,
+                    "nodes": [],
+                }
             )
-            children.append({
-                "title": table_title,
-                "text": table_text,
-                "nodes": [],
-            })
             child_idx += 1
             cursor = t_end
 
@@ -2401,11 +2395,13 @@ def _segment_table_nodes(structure: list) -> list:
         if cursor < len(lines):
             trailing = "".join(lines[cursor:]).rstrip()
             if trailing:
-                children.append({
-                    "title": f"{parent_title} (cont.)",
-                    "text": trailing,
-                    "nodes": [],
-                })
+                children.append(
+                    {
+                        "title": f"{parent_title} (cont.)",
+                        "text": trailing,
+                        "nodes": [],
+                    }
+                )
 
         if len(children) <= 1:
             # Segmentation produced nothing useful — leave node intact
@@ -2618,9 +2614,7 @@ _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD: int = int(
 )
 # Minimum pipe-table data rows (excluding header + separator) required to
 # trigger segmentation — avoids fragmenting small 2-3 row reference tables.
-_RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(
-    os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5")
-)
+_RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5"))
 
 
 def _flat_text_is_garbled(

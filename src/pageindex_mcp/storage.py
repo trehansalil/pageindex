@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
@@ -13,8 +13,8 @@ from minio import Minio  # for type annotations; construction goes through make_
 from minio.error import S3Error
 
 from .config import settings
-from .minio_client import make_minio
 from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES
+from .minio_client import make_minio
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +672,7 @@ def list_processed_docs() -> list[dict]:
 _VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
 
 
-def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str | None:
+def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str | None:  # noqa: C901
     """Resolve the best-ever verdict from a prior ingestion of the same content.
 
     Re-ingestion mints a new doc_id per upload, so the prior run's verdict
@@ -782,7 +782,7 @@ def snapshot_prior_verdicts() -> None:
                 }
             )
         payload = json.dumps(
-            {"snapshot_at": datetime.now(timezone.utc).isoformat(), "entries": entries}
+            {"snapshot_at": datetime.now(UTC).isoformat(), "entries": entries}
         ).encode("utf-8")
         mc.put_object(
             settings.minio_bucket,

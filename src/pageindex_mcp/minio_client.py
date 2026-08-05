@@ -39,9 +39,7 @@ def _sdk_pool_kwargs(cert_check: bool = True) -> dict:
         "maxsize": 10,
         "cert_reqs": "CERT_REQUIRED" if cert_check else "CERT_NONE",
         "ca_certs": os.environ.get("SSL_CERT_FILE") or certifi.where(),
-        "retries": Retry(
-            total=5, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504]
-        ),
+        "retries": Retry(total=5, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504]),
     }
 
 
@@ -72,16 +70,24 @@ class PrefixedPoolManager(urllib3.PoolManager):
             return path
         return prefix + path
 
-    def urlopen(self, method, url, redirect=True, **kw):  # noqa: D102 - urllib3 API
+    def urlopen(self, method, url, redirect=True, **kw):
         parts = urlsplit(url)
         prefixed = urlunsplit(
-            (parts.scheme, parts.netloc, self._prefixed_path(parts.path),
-             parts.query, parts.fragment)
+            (
+                parts.scheme,
+                parts.netloc,
+                self._prefixed_path(parts.path),
+                parts.query,
+                parts.fragment,
+            )
         )
         return super().urlopen(method, prefixed, redirect=redirect, **kw)
 
 
-def make_minio(
+# PLR0913 suppressed: every parameter is a distinct MinIO SDK connection primitive
+# passed straight through to ``Minio(...)``; there is no options object at this layer
+# to fold ``region`` into without inverting the config dependency and churning callers.
+def make_minio(  # noqa: PLR0913
     endpoint: str,
     access_key: str,
     secret_key: str,

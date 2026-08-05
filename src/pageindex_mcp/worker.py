@@ -245,7 +245,7 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
-async def _run_converter_subprocess(
+async def _run_converter_subprocess(  # noqa: C901, PLR0915
     pdf_path: str, *, staging_key: str | None = None
 ) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
@@ -279,7 +279,7 @@ async def _run_converter_subprocess(
     )
     # RFC-028 D0: the child emits a startup handshake line (chunk_count,
     # is_docling_route) before it starts the heavy conversion, computed from a
-    # cheap PyPDF2 page-count probe -- read it first so we can size the
+    # cheap pymupdf page-count probe -- read it first so we can size the
     # effective timeout for a large chunked PDF instead of always using the
     # fixed CHILD_TIMEOUT. HANDSHAKE_TIMEOUT_S bounds only this cheap probe;
     # the remaining budget below still adds up to at most effective_timeout.

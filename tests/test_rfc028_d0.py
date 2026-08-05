@@ -8,9 +8,6 @@ Validates Design Property 1 (dynamic timeout scales with chunk count).
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-import pageindex_mcp.worker as worker
 from pageindex_mcp.converters import (
     _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
     chunked_docling_timeout_s,
@@ -66,7 +63,7 @@ class TestChunkedDoclingTimeoutConstants:
 
     def test_job_timeout_raised_and_accommodates_dynamic_maximum(self):
         assert JOB_TIMEOUT == 3630
-        assert JOB_TIMEOUT > chunked_docling_timeout_s(2) + CHILD_GRACE_SECONDS
+        assert chunked_docling_timeout_s(2) + CHILD_GRACE_SECONDS < JOB_TIMEOUT
 
 
 class TestDynamicTimeoutWiring:
@@ -147,7 +144,8 @@ class TestDynamicTimeoutWiring:
         assert CHILD_TIMEOUT - 5 <= sink[1] <= CHILD_TIMEOUT
 
     async def test_page_count_read_failure_reports_chunk_count_one_non_docling(self):
-        # RFC-028 D0 edge case: PyPDF2 read failure -> probe_conversion_route
+        # RFC-028 D0 edge case: pymupdf page-count read failure ->
+        # probe_conversion_route
         # reports (1, False); worker must still land on CHILD_TIMEOUT, not
         # a lower dynamic value derived from chunk_count=1 on a Docling route.
         handshake = {"handshake": True, "chunk_count": 1, "is_docling_route": False}
@@ -190,21 +188,28 @@ class TestProbeConversionRoute:
 
         assert probe_conversion_route("notes.txt") == (1, False)
 
-    def test_pypdf2_failure_reports_non_docling(self):
+    def test_pymupdf_failure_reports_non_docling(self):
         from pageindex_mcp import converters
 
-        with patch("PyPDF2.PdfReader", side_effect=RuntimeError("bad pdf")):
+        # `converters.probe_conversion_route` does a function-local
+        # `import fitz`, so `fitz.open` is the patch seam.
+        with patch("fitz.open", side_effect=RuntimeError("bad pdf")):
             assert converters.probe_conversion_route("broken.pdf") == (1, False)
 
     def test_oversized_pdf_reports_chunked_docling_route(self):
         from pageindex_mcp import converters
 
-        fake_reader = MagicMock()
-        fake_reader.pages = [MagicMock() for _ in range(292)]
+        # `fitz.open(...)` is used as a context manager and read via
+        # `doc.page_count`.
+        fake_doc = MagicMock()
+        fake_doc.page_count = 292
+        fake_doc.__enter__.return_value = fake_doc
+        fake_doc.__exit__.return_value = False
         with (
-            patch("PyPDF2.PdfReader", return_value=fake_reader),
+            patch("fitz.open", return_value=fake_doc) as fake_open,
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             chunk_count, is_docling_route = converters.probe_conversion_route("world-stats.pdf")
+        fake_open.assert_called_once_with("world-stats.pdf")
         assert is_docling_route is True
         assert chunk_count == 2

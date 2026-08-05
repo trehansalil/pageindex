@@ -6,7 +6,6 @@ import logging
 import math
 import os
 import re
-import unicodedata
 import shutil
 import subprocess
 import tempfile
@@ -1773,7 +1772,10 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
                     changed = True
             if not changed:
                 return pdf_path
-            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+            # SIM115 rationale: the temp FILE must outlive this scope -- its path is
+            # returned to the caller, who reads it and unlinks it later. A context
+            # manager would delete/close it before the caller ever opens it.
+            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # noqa: SIM115
             tmp.close()
             pdf.save(tmp.name)
             return tmp.name
@@ -2193,8 +2195,8 @@ def _pre_inference_normalize(text: str) -> str:
     # RFC-029 §1.1 — NFKC only when Arabic Presentation Forms are present.
     # Ranges: Arabic Presentation Forms-A U+FB50–U+FDFF,
     #         Arabic Presentation Forms-B U+FE70–U+FEFF.
-    if any('ﭐ' <= ch <= '﷿' or 'ﹰ' <= ch <= '﻿' for ch in text):
-        text = unicodedata.normalize('NFKC', text)
+    if any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in text):
+        text = unicodedata.normalize("NFKC", text)
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
     text = reconstruct_bidi_order(text)  # D7
@@ -2359,9 +2361,9 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
     """RFC-028 D0: cheap pre-flight probe run by ``converters_cli`` before the
     heavy conversion pipeline starts, so the worker can size its child timeout
     from the child's own startup handshake instead of re-deriving page count
-    independently (which risks worker/child disagreement on a PyPDF2 failure).
+    independently (which risks worker/child disagreement on a page-count failure).
 
-    Returns ``(chunk_count, is_docling_route)`` using the same PyPDF2 page-count
+    Returns ``(chunk_count, is_docling_route)`` using the same pymupdf page-count
     read and ``MAX_DOCLING_PAGES`` threshold as the routing guard at the top of
     ``pdf_to_markdown_docling``. Non-PDF inputs and PDFs whose page count cannot
     be read report ``is_docling_route=False`` so the worker falls back to the
@@ -2372,9 +2374,10 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
     from .config import MAX_DOCLING_PAGES
 
     try:
-        import PyPDF2
+        import fitz  # PyMuPDF
 
-        page_count = len(PyPDF2.PdfReader(pdf_path).pages)
+        with fitz.open(pdf_path) as doc:
+            page_count = doc.page_count
     except Exception:
         return 1, False
     if page_count <= 0:
@@ -2382,7 +2385,6 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
     if MAX_DOCLING_PAGES > 0 and page_count > MAX_DOCLING_PAGES:
         return math.ceil(page_count / MAX_DOCLING_PAGES), True
     return 1, True
-
 
 
 def _repair_docling_tables(md: str) -> str:
@@ -2437,17 +2439,16 @@ def _repair_docling_tables(md: str) -> str:
             continue
 
         # Detect separator row (cells contain only dashes, colons, spaces).
-        if all(set(c.replace("-", "").replace(":", "").replace(" ", "")) == set() and c for c in cells):
+        if all(
+            set(c.replace("-", "").replace(":", "").replace(" ", "")) == set() and c for c in cells
+        ):
             # Re-emit in minimal form: | --- | --- | ...
             out.append("| " + " | ".join("---" for _ in cells) + " |")
             continue
 
         # Check for all-identical degenerate row.
         unique_vals = set(cells)
-        if (
-            len(unique_vals) == 1
-            and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS
-        ):
+        if len(unique_vals) == 1 and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS:
             # Collapse: emit a single cell with the shared value.
             out.append("| " + cells[0] + " |")
             continue
@@ -2468,8 +2469,9 @@ def _pdf_to_markdown_docling_chunked(
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
     Splits ``pdf_path`` into ``ceil(page_count / max_pages)`` page-boundary
-    chunks via ``PyPDF2`` (MIT, HR4-safe -- no ``pymupdf4llm``), runs each
-    chunk through the existing standard ``pdf_to_markdown_docling`` pipeline
+    chunks via ``pymupdf`` (``fitz``) -- the project's single PDF-primitive
+    layer, no ``pymupdf4llm`` (CLAUDE.md Hard Rule 4) -- runs each chunk
+    through the existing standard ``pdf_to_markdown_docling`` pipeline
     independently, and concatenates the resulting markdown. Each chunk's page
     count is <= ``max_pages`` by construction, so the recursive call takes the
     direct single-pass route rather than re-entering this function.
@@ -2479,7 +2481,7 @@ def _pdf_to_markdown_docling_chunked(
     ``_relevel_by_containment`` pass normalizes heading depth across the
     concatenated output.
     """
-    import PyPDF2
+    import fitz  # PyMuPDF
 
     chunk_count = math.ceil(page_count / max_pages)
     logger.info(
@@ -2489,65 +2491,75 @@ def _pdf_to_markdown_docling_chunked(
         chunk_count,
         max_pages,
     )
-    reader = PyPDF2.PdfReader(pdf_path)
+    src = fitz.open(pdf_path)
     md_parts: list[str] = []
     pic_results: list[PictureResult] = []
-    for i in range(chunk_count):
-        start = i * max_pages
-        end = min(start + max_pages, page_count)
-        writer = PyPDF2.PdfWriter()
-        for page in reader.pages[start:end]:
-            writer.add_page(page)
-        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        tmp.close()
-        try:
-            with open(tmp.name, "wb") as fh:
-                writer.write(fh)
+    try:
+        for i in range(chunk_count):
+            start = i * max_pages
+            end = min(start + max_pages, page_count)
+            # SIM115 rationale: the temp FILE must outlive this statement -- it is
+            # written, then re-opened by name below and unlinked in `finally`. A
+            # context manager would close/delete it before it is ever used.
+            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # noqa: SIM115
+            tmp.close()
             try:
-                pool = ThreadPoolExecutor(max_workers=1)
-                future = pool.submit(
-                    pdf_to_markdown_docling,
-                    tmp.name,
-                    force_full_page_ocr=force_full_page_ocr,
-                    ocr_lang_override=ocr_lang_override,
-                )
+                writer = fitz.open()
                 try:
-                    chunk_md, chunk_pics = future.result(
-                        timeout=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
-                    )
+                    writer.insert_pdf(src, from_page=start, to_page=end - 1)
+                    writer.save(tmp.name)
                 finally:
-                    pool.shutdown(wait=False, cancel_futures=True)
-            except FuturesTimeoutError:
-                # RFC-027 D7: an individually heavy chunk still times out on the
-                # Docling pipeline -- fall back to PyPDF2 text-layer-only
-                # extraction (no tables/figures) rather than losing the chunk
-                # entirely. No pymupdf4llm (CLAUDE.md Hard Rule 4). The document
-                # lands MARGINAL downstream due to the resulting flat structure.
-                logger.warning(
-                    "chunk %d/%d of %s timed out on Docling; falling back to "
-                    "PyPDF2 text-layer extraction",
-                    i + 1,
-                    chunk_count,
-                    pdf_path,
-                )
-                chunk_reader = PyPDF2.PdfReader(tmp.name)
-                chunk_md = "\n\n".join(page.extract_text() or "" for page in chunk_reader.pages)
-                chunk_pics = []
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp.name)
-        md_parts.append(chunk_md)
-        for pic in chunk_pics:
-            # Re-base chunk-relative page numbers to document-level pages so
-            # the persisted PictureResult metadata (client.py block["page"])
-            # stays correct for chunks after the first.
-            if "page" in pic:
-                pic["page"] = pic["page"] + start
-        pic_results.extend(chunk_pics)
+                    writer.close()
+                try:
+                    pool = ThreadPoolExecutor(max_workers=1)
+                    future = pool.submit(
+                        pdf_to_markdown_docling,
+                        tmp.name,
+                        force_full_page_ocr=force_full_page_ocr,
+                        ocr_lang_override=ocr_lang_override,
+                    )
+                    try:
+                        chunk_md, chunk_pics = future.result(
+                            timeout=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
+                        )
+                    finally:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                except FuturesTimeoutError:
+                    # RFC-027 D7: an individually heavy chunk still times out on the
+                    # Docling pipeline -- fall back to pymupdf text-layer-only
+                    # extraction (no tables/figures) rather than losing the chunk
+                    # entirely. No pymupdf4llm (CLAUDE.md Hard Rule 4). The document
+                    # lands MARGINAL downstream due to the resulting flat structure.
+                    logger.warning(
+                        "chunk %d/%d of %s timed out on Docling; falling back to "
+                        "pymupdf text-layer extraction",
+                        i + 1,
+                        chunk_count,
+                        pdf_path,
+                    )
+                    chunk_doc = fitz.open(tmp.name)
+                    try:
+                        chunk_md = "\n\n".join(page.get_text() or "" for page in chunk_doc)
+                    finally:
+                        chunk_doc.close()
+                    chunk_pics = []
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp.name)
+            md_parts.append(chunk_md)
+            for pic in chunk_pics:
+                # Re-base chunk-relative page numbers to document-level pages so
+                # the persisted PictureResult metadata (client.py block["page"])
+                # stays correct for chunks after the first.
+                if "page" in pic:
+                    pic["page"] = pic["page"] + start
+            pic_results.extend(chunk_pics)
+    finally:
+        src.close()
     return "\n\n".join(md_parts), pic_results
 
 
-def pdf_to_markdown_docling(
+def pdf_to_markdown_docling(  # noqa: PLR0915
     pdf_path: str,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
@@ -2584,15 +2596,17 @@ def pdf_to_markdown_docling(
     Raises on empty extraction so the caller falls back to the next converter.
     """
     # RFC-027 D7: oversized PDFs die to CHILD_TIMEOUT on a single direct-conversion
-    # pass. Guard the page count via PyPDF2 (MIT, HR4-safe -- no pymupdf4llm) before
-    # touching the Docling converter and route to the chunked path instead.
+    # pass. Guard the page count via pymupdf (no pymupdf4llm -- CLAUDE.md Hard
+    # Rule 4) before touching the Docling converter and route to the chunked
+    # path instead.
     from .config import MAX_DOCLING_PAGES
 
     effective_max_pages = max_pages if max_pages is not None else MAX_DOCLING_PAGES
     try:
-        import PyPDF2
+        import fitz  # PyMuPDF
 
-        page_count = len(PyPDF2.PdfReader(pdf_path).pages)
+        with fitz.open(pdf_path) as doc:
+            page_count = doc.page_count
     except Exception as exc:
         logger.warning(
             "could not read page count for %s (%s); skipping chunked-Docling guard",
@@ -3040,9 +3054,7 @@ _RFC029_TABLE_DEDUP_ENABLED: bool = os.environ.get("RFC029_TABLE_DEDUP_ENABLED",
 # Minimum column count that must be identical before a row is collapsed.
 # Rows with <= this many identical cells are left untouched to avoid collapsing
 # legitimately short tables (e.g. 2-col header rows where both cols share a value).
-_RFC029_TABLE_MIN_COLLAPSE_COLS: int = int(
-    os.environ.get("RFC029_TABLE_MIN_COLLAPSE_COLS", "3")
-)
+_RFC029_TABLE_MIN_COLLAPSE_COLS: int = int(os.environ.get("RFC029_TABLE_MIN_COLLAPSE_COLS", "3"))
 
 
 def rasterize_pdf_pages_fitz(pdf_path: str, dpi: int = 200) -> list[str]:

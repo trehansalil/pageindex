@@ -44,12 +44,12 @@ from .helpers import (
     _flatten_tree_text,
     _is_garbled_blob,
     _script_from_filename,
+    _segment_table_nodes,
     _strip_text,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     classify_verdict,
     route_and_extract_flat,
-    _segment_table_nodes,
     split_oversized_leaf_nodes,
     validate_tree,
 )
@@ -531,7 +531,9 @@ async def _remote_pdf_to_markdown(
     ``png_bytes`` in each PictureResult is decoded from base64 back to bytes.
     """
     import base64
+
     import httpx
+
     from .storage import presigned_get_url
 
     url = presigned_get_url(staging_key)
@@ -569,6 +571,7 @@ async def _remote_image_to_markdown(
 ) -> str:
     """Call the external Docling service to convert an image to markdown."""
     import httpx
+
     from .storage import presigned_get_url
 
     url = presigned_get_url(staging_key)
@@ -1008,7 +1011,10 @@ class CustomPageIndexClient(PageIndexClient):
             # gate and is still rejected if it stays garbled; it never bypasses validation.
             if (
                 not ok
-                and (reason in ("garbling", "node_garbling", "visual_order_garble") or low_content_ocr_eligible)
+                and (
+                    reason in ("garbling", "node_garbling", "visual_order_garble")
+                    or low_content_ocr_eligible
+                )
                 and ext == ".pdf"
                 and _OCR_ESCALATION
             ):
@@ -1098,7 +1104,7 @@ class CustomPageIndexClient(PageIndexClient):
                         from "assessed and found clean" (RFC-030 D1).
                         """
                         from collections import Counter
-                        import re as _re
+
                         tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
                         if len(tokens) < 20:
                             return None
