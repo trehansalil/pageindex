@@ -583,19 +583,19 @@
   <div style="background: linear-gradient(135deg, var(--teal-bg), var(--accent-bg)); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
     <div style="flex: 0 0 auto;">
       <div style="font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.3rem;">Latest Run</div>
-      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--accent);">Run 10</div>
+      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--accent);">Run 14</div>
     </div>
     <div style="flex: 1; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">7</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">9</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">PASS</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">8</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">14</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">MARGINAL</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">10</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">2</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">FAIL</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
@@ -604,8 +604,8 @@
       </div>
     </div>
     <div style="flex: 0 0 auto; font-family: var(--font-label); font-size: 0.8rem; color: var(--text-muted); text-align: right;">
-      <div>RFC-027 &middot; 2026-08-03</div>
-      <div style="color: var(--accent); font-weight: 600;">Gate hardening &rarr; 10 FAIL surfaced</div>
+      <div>RFC-030 &middot; 2026-08-05</div>
+      <div style="color: var(--teal); font-weight: 600;">Best run &mdash; 0 ERROR, FAIL 10&rarr;2</div>
     </div>
   </div>
 
@@ -660,14 +660,50 @@
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-026</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Verdict gate hardening, rotation detection</td>
         </tr>
-        <tr style="background: var(--accent-bg, rgba(245,158,11,0.08)); border-bottom: 1px solid var(--border);">
-          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--accent);">10</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">7</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">8</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--rose);">10</td>
-          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">0</td>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">10</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">8</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">10</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">0</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-026</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Gate hardening surfaced 10 pre-existing FAILs</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">11</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">13</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">4</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-027</td>
-          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Extraction gate integrity, Arabic content recovery</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Arabic recovery, garble gate fix, FAIL 10&rarr;4</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">12</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">10</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">10</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">4</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-028</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Arabic garble gates, world-stats recovered</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">13</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">5</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">4</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-029</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Density gate regressions, 4 ERRORs (worst run)</td>
+        </tr>
+        <tr style="background: var(--accent-bg, rgba(245,158,11,0.08)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--accent);">14</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">14</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">2</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 700; color: var(--teal);">0</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-030</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Regression fixes, 0 ERROR, best run</td>
         </tr>
       </tbody>
     </table>
@@ -677,7 +713,7 @@
   <div style="margin: 1.5rem 0; padding: 1.2rem; background: var(--card-bg); border-radius: 0.6rem; border: 1px solid var(--border);">
     <h2 style="font-family: var(--font-label); font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">Verdict Trend</h2>
     <div style="overflow-x: auto;">
-      <svg viewBox="0 0 600 260" style="width: 100%; max-width: 600px; height: auto; font-family: var(--font-label, 'Inter', sans-serif);">
+      <svg viewBox="0 0 880 270" style="width: 100%; max-width: 880px; height: auto; font-family: var(--font-label, 'Inter', sans-serif);">
         <!-- Y axis labels -->
         <text x="30" y="30" fill="var(--text-muted)" font-size="10" text-anchor="end">25</text>
         <text x="30" y="80" fill="var(--text-muted)" font-size="10" text-anchor="end">20</text>
@@ -685,69 +721,103 @@
         <text x="30" y="180" fill="var(--text-muted)" font-size="10" text-anchor="end">10</text>
         <text x="30" y="230" fill="var(--text-muted)" font-size="10" text-anchor="end">5</text>
         <!-- Grid lines -->
-        <line x1="40" y1="30" x2="570" y2="30" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="80" x2="570" y2="80" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="130" x2="570" y2="130" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="180" x2="570" y2="180" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="230" x2="570" y2="230" stroke="var(--border)" stroke-width="0.5"/>
+        <line x1="40" y1="30" x2="840" y2="30" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="80" x2="840" y2="80" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="130" x2="840" y2="130" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="180" x2="840" y2="180" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="230" x2="840" y2="230" stroke="var(--border)" stroke-width="0.5"/>
 
         <!-- Run 5: 11P 9M 3F 2E = 25 -->
-        <rect x="60" y="142" width="60" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
-        <rect x="60" y="70" width="60" height="72" rx="0" fill="var(--accent, #d4943a)"/>
-        <rect x="60" y="46" width="60" height="24" rx="0" fill="var(--rose, #a8505a)"/>
-        <rect x="60" y="30" width="60" height="16" rx="3" fill="#6b5b73"/>
-        <text x="90" y="190" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">11</text>
-        <text x="90" y="110" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">9</text>
-        <text x="90" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 5</text>
+        <rect x="50" y="142" width="50" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="50" y="70" width="50" height="72" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="50" y="46" width="50" height="24" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="50" y="30" width="50" height="16" rx="3" fill="#6b5b73"/>
+        <text x="75" y="190" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">11</text>
+        <text x="75" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R5</text>
 
         <!-- Run 6: 11P 4M 9F 1E = 25 -->
-        <rect x="165" y="142" width="60" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
-        <rect x="165" y="110" width="60" height="32" rx="0" fill="var(--accent, #d4943a)"/>
-        <rect x="165" y="38" width="60" height="72" rx="0" fill="var(--rose, #a8505a)"/>
-        <rect x="165" y="30" width="60" height="8" rx="3" fill="#6b5b73"/>
-        <text x="195" y="190" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">11</text>
-        <text x="195" y="78" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">9</text>
-        <text x="195" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 6</text>
+        <rect x="140" y="142" width="50" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="140" y="110" width="50" height="32" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="140" y="38" width="50" height="72" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="140" y="30" width="50" height="8" rx="3" fill="#6b5b73"/>
+        <text x="165" y="190" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">11</text>
+        <text x="165" y="78" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">9</text>
+        <text x="165" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R6</text>
 
         <!-- Run 8: 7P 6M 9F 3E = 25 -->
-        <rect x="270" y="174" width="60" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
-        <rect x="270" y="126" width="60" height="48" rx="0" fill="var(--accent, #d4943a)"/>
-        <rect x="270" y="54" width="60" height="72" rx="0" fill="var(--rose, #a8505a)"/>
-        <rect x="270" y="30" width="60" height="24" rx="3" fill="#6b5b73"/>
-        <text x="300" y="206" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">7</text>
-        <text x="300" y="95" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">9</text>
-        <text x="300" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 8</text>
+        <rect x="230" y="174" width="50" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="230" y="126" width="50" height="48" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="230" y="54" width="50" height="72" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="230" y="30" width="50" height="24" rx="3" fill="#6b5b73"/>
+        <text x="255" y="206" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">7</text>
+        <text x="255" y="95" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">9</text>
+        <text x="255" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R8</text>
 
         <!-- Run 9: 15P 8M 0F 1E = 24(+1err) -->
-        <rect x="375" y="110" width="60" height="120" rx="3" fill="var(--teal, #2e7d6e)"/>
-        <rect x="375" y="46" width="60" height="64" rx="0" fill="var(--accent, #d4943a)"/>
-        <rect x="375" y="38" width="60" height="8" rx="3" fill="#6b5b73"/>
-        <text x="405" y="175" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">15</text>
-        <text x="405" y="82" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">8</text>
-        <text x="405" y="248" fill="var(--text-muted)" font-size="11" font-weight="600" text-anchor="middle">Run 9</text>
+        <rect x="320" y="110" width="50" height="120" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="320" y="46" width="50" height="64" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="320" y="38" width="50" height="8" rx="3" fill="#6b5b73"/>
+        <text x="345" y="175" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">15</text>
+        <text x="345" y="82" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">8</text>
+        <text x="345" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R9</text>
 
         <!-- Run 10: 7P 8M 10F 0E = 25 -->
-        <rect x="480" y="174" width="60" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
-        <rect x="480" y="110" width="60" height="64" rx="0" fill="var(--accent, #d4943a)"/>
-        <rect x="480" y="30" width="60" height="80" rx="3" fill="var(--rose, #a8505a)"/>
-        <text x="510" y="206" fill="#fff" font-size="11" font-weight="700" text-anchor="middle">7</text>
-        <text x="510" y="146" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">8</text>
-        <text x="510" y="75" fill="#fff" font-size="10" font-weight="600" text-anchor="middle">10</text>
-        <text x="510" y="248" fill="var(--accent)" font-size="11" font-weight="700" text-anchor="middle">Run 10</text>
+        <rect x="410" y="174" width="50" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="410" y="110" width="50" height="64" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="410" y="30" width="50" height="80" rx="3" fill="var(--rose, #a8505a)"/>
+        <text x="435" y="206" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">7</text>
+        <text x="435" y="75" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">10</text>
+        <text x="435" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R10</text>
+
+        <!-- Run 11: 7P 13M 4F 1E = 25 -->
+        <rect x="500" y="174" width="50" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="500" y="70" width="50" height="104" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="500" y="38" width="50" height="32" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="500" y="30" width="50" height="8" rx="3" fill="#6b5b73"/>
+        <text x="525" y="206" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">7</text>
+        <text x="525" y="126" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">13</text>
+        <text x="525" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R11</text>
+
+        <!-- Run 12: 10P 10M 4F 1E = 25 -->
+        <rect x="590" y="150" width="50" height="80" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="590" y="70" width="50" height="80" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="590" y="38" width="50" height="32" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="590" y="30" width="50" height="8" rx="3" fill="#6b5b73"/>
+        <text x="615" y="194" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">10</text>
+        <text x="615" y="114" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">10</text>
+        <text x="615" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R12</text>
+
+        <!-- Run 13: 7P 9M 5F 4E = 25 -->
+        <rect x="680" y="174" width="50" height="56" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="680" y="102" width="50" height="72" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="680" y="62" width="50" height="40" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="680" y="30" width="50" height="32" rx="3" fill="#6b5b73"/>
+        <text x="705" y="206" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">7</text>
+        <text x="705" y="142" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">9</text>
+        <text x="705" y="50" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">4</text>
+        <text x="705" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R13</text>
+
+        <!-- Run 14: 9P 14M 2F 0E = 25 -->
+        <rect x="770" y="158" width="50" height="72" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <rect x="770" y="46" width="50" height="112" rx="0" fill="var(--accent, #d4943a)"/>
+        <rect x="770" y="30" width="50" height="16" rx="3" fill="var(--rose, #a8505a)"/>
+        <text x="795" y="198" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">9</text>
+        <text x="795" y="106" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">14</text>
+        <text x="795" y="248" fill="var(--accent)" font-size="10" font-weight="700" text-anchor="middle">R14</text>
 
         <!-- Legend -->
-        <rect x="40" y="252" width="10" height="10" rx="2" fill="var(--teal, #2e7d6e)"/>
-        <text x="54" y="261" fill="var(--text-muted)" font-size="9">PASS</text>
-        <rect x="100" y="252" width="10" height="10" rx="2" fill="var(--accent, #d4943a)"/>
-        <text x="114" y="261" fill="var(--text-muted)" font-size="9">MARGINAL</text>
-        <rect x="185" y="252" width="10" height="10" rx="2" fill="var(--rose, #a8505a)"/>
-        <text x="199" y="261" fill="var(--text-muted)" font-size="9">FAIL</text>
-        <rect x="240" y="252" width="10" height="10" rx="2" fill="#6b5b73"/>
-        <text x="254" y="261" fill="var(--text-muted)" font-size="9">ERROR</text>
+        <rect x="40" y="258" width="10" height="10" rx="2" fill="var(--teal, #2e7d6e)"/>
+        <text x="54" y="267" fill="var(--text-muted)" font-size="9">PASS</text>
+        <rect x="100" y="258" width="10" height="10" rx="2" fill="var(--accent, #d4943a)"/>
+        <text x="114" y="267" fill="var(--text-muted)" font-size="9">MARGINAL</text>
+        <rect x="185" y="258" width="10" height="10" rx="2" fill="var(--rose, #a8505a)"/>
+        <text x="199" y="267" fill="var(--text-muted)" font-size="9">FAIL</text>
+        <rect x="240" y="258" width="10" height="10" rx="2" fill="#6b5b73"/>
+        <text x="254" y="267" fill="var(--text-muted)" font-size="9">ERROR</text>
       </svg>
     </div>
     <div style="font-family: var(--font-label); font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
-      Run 10: RFC-026 gate hardening surfaced 10 pre-existing FAILs previously masked as PASS/MARGINAL. PASS &minus;8 is accuracy correction, not content regression.
+      Run 14: Best recent run &mdash; 0 ERROR, only 2 FAIL. RFC-029/030 regression fixes recovered Run 13&rsquo;s 4 ERRORs. MARGINAL dominance (14/25) reflects stricter judge criteria on Arabic content and hierarchy quality, not content loss. Trend: FAIL steadily declining from Run 10&rsquo;s 10 &rarr; Run 14&rsquo;s 2.
     </div>
   </div>
 
@@ -790,101 +860,40 @@ flowchart TD
     classDef skill fill:#fff,color:#2a2520,stroke:#d8d4ce,stroke-width:1px
     classDef output fill:#fdf6ed,color:#2a2520,stroke:#d4943a,stroke-width:1px
     classDef decision fill:#fdf0f1,color:#2a2520,stroke:#a8505a,stroke-width:1px
-    classDef checkpoint fill:#edf7f5,color:#2a2520,stroke:#2e7d6e,stroke-width:1px
 
-    START(["corpus:cycle orchestrator"]):::phase
+    START(["corpus:cycle"]):::phase
 
-    subgraph W1 ["Workflow 1 — Ingest + Score (incremental)"]
-        WIPE["Wipe PG / MinIO / Redis"]:::skill
-        RESTART["Restart workers + server"]:::skill
-        PIPELINE["Per-doc pipeline\n▸ Haiku process\n▸ Sonnet fetch metrics\n▸ Opus judge verdict"]:::skill
-        subgraph GATES ["Gate Architecture (RFC-026/027)"]
-            direction LR
-            D7["D7 Page guard\nDocling chunking\nPyPDF2 fallback"]:::skill
-            D4["D4 Arabic\nheading injection"]:::skill
-            D3["D3 RTL reversal\ndetection + bidi fix"]:::skill
-            VT["validate_tree()\nD5 small-doc relax\nleaf_ratio ≥ 0.40"]:::skill
-            D2["D2 OCR escalation\n< 300 chars → OCR"]:::skill
-            D6["D6 Dedup adjacent\nimage markers"]:::skill
-            D1["D1 Post-splice\ngarble check"]:::skill
-            D0["D0 classify_verdict\nprimary-text only\nzero-content → FAIL"]:::skill
-        end
-        D7 --> D4 --> D3 --> VT --> D2 --> D6 --> D1 --> D0
-        DIFF["corpus:diff\nRun N vs N-1 delta\n▸ Sonnet"]:::skill
-        REPORT["Write audit report\n▸ Fable"]:::skill
-        AUDIT_FILE[/"audit/CORPUS_REINGESTION\n_AUDIT_RUN-N.md"/]:::output
-    end
-    START --> WIPE --> RESTART --> PIPELINE --> DIFF --> REPORT --> AUDIT_FILE
+    W1["Phase 1+2: Ingest + Score\n(combined workflow)\nWipe → Restart → Per-doc pipeline\nProcess · Fetch · Judge\n→ Diff → Audit Report"]:::skill
 
-    G0{"G0 — All docs\nterminal state\n▸ Haiku · auto"}:::gate_auto
-    PIPELINE --> G0
+    START --> W1
 
-    G1{"G1 — Human reviews\nscorecard + convergence\n▸ manual"}:::gate_manual
-    AUDIT_FILE --> G1
+    G0{"G0 auto\nAll docs terminal"}:::gate_auto
+    G1{"G1 manual\nHuman reviews scorecard"}:::gate_manual
+    W1 --> G0 --> G1
 
-    CONVERGED{{"Converged?\n0 FAIL + 0 ERROR\n+ 0 regressions"}}:::decision
+    CONVERGED{{"Converged?\n0 FAIL · 0 ERROR\n0 regressions"}}:::decision
     G1 --> CONVERGED
-    CONVERGED -- "Yes → stop" --> DONE(["Cycle complete"])
+    CONVERGED -- "Yes" --> DONE(["Cycle complete"]):::phase
 
-    subgraph W3 ["Workflow 3 — Diagnose + Plan"]
-        TRIAGE["Triage\nCategorize by domain\n▸ Sonnet"]:::skill
-        CLUSTER["Cluster Trace\nOne Opus agent per\ndomain cluster"]:::skill
-        DRILLDOWN["Document Drill-down\nPer-doc investigation\n▸ Sonnet / Haiku"]:::skill
-        CKPT_W3["Checkpoint\nPersist to disk\n▸ Haiku"]:::checkpoint
-        RFC_PLAN["RFC Plan\nCompress traces + structure\n▸ Opus · schema"]:::skill
-        RFC_WRITE["RFC Write\nWrite file from plan\n▸ Opus · no schema"]:::skill
-        RFC_VERIFY{"Fable verifies\nmax 2 rounds"}:::skill
-        RFC_REDRAFT["Opus re-drafts\nvia Serena MCP"]:::skill
-        RFC_OK[/"RFC approved\n.agents/rfcs/NNN-slug.md"/]:::output
-        BUILD_DESIGN["Build Design Doc\n▸ Sonnet"]:::skill
-        BUILD_TASKS["Build Tasks File\n▸ Sonnet"]:::skill
-        DESIGN_OUT[/".agents/designs/\ndesign-rfcNNN-slug.md"/]:::output
-        TASKS_OUT[/".agents/tasks/\ntasks-rfcNNN-slug.md"/]:::output
-        VERIFY_ARTIFACTS["Verify Artifacts\nCross-refs · mermaid · links\n▸ Sonnet"]:::skill
-    end
-    CONVERGED -- "No → continue" --> TRIAGE
-    TRIAGE --> CLUSTER
-    CLUSTER -- "all explained" --> CKPT_W3
-    CLUSTER -- "ambiguous docs" --> DRILLDOWN --> CKPT_W3
-    CKPT_W3 --> RFC_PLAN --> RFC_WRITE --> RFC_VERIFY
-    RFC_VERIFY -- "rejected" --> RFC_REDRAFT --> RFC_VERIFY
-    RFC_VERIFY -- "approved" --> RFC_OK
-    RFC_OK --> BUILD_DESIGN & BUILD_TASKS
-    BUILD_DESIGN --> DESIGN_OUT
-    BUILD_TASKS --> TASKS_OUT
-    DESIGN_OUT --> VERIFY_ARTIFACTS
-    TASKS_OUT --> VERIFY_ARTIFACTS
+    W3["Phase 3: Diagnose + Plan\nTriage → Cluster Trace → Drilldown\n→ RFC + Design + Tasks"]:::skill
+    CONVERGED -- "No" --> W3
 
-    G2{"G2 — Human approves\nRFC + design + tasks\n▸ manual"}:::gate_manual
-    VERIFY_ARTIFACTS --> G2
+    G2{"G2 manual\nHuman approves plan"}:::gate_manual
+    W3 --> G2
 
-    subgraph W4 ["Workflow 4 — Build"]
-        direction TB
-        WAVE["swarm-builder\nWave execution\n▸ pipeline: Sonnet build\n+ Fable/Opus review"]:::skill
-        CHECK["Between-wave checkpoint\nL1: pytest · Haiku\nL2: review vs design · Fable/Opus\nL3: task acceptance · Fable/Opus\n+ Serena MCP task update"]:::skill
-        MEND["corpus:mend\nTest repair if needed\n▸ Sonnet"]:::skill
-    end
-    G2 --> WAVE --> CHECK
-    CHECK -- "pass + more waves" --> WAVE
-    CHECK -- "tests broken" --> MEND --> WAVE
-    CHECK -- "all waves done" --> G3
+    W4["Phase 4: Build\nWave execution → Checkpoint\n→ Test repair if needed"]:::skill
+    G2 --> W4
 
-    G3{"G3 — Full suite green\nAll tasks marked done\n▸ Haiku · auto"}:::gate_auto
+    G3{"G3 auto\nFull suite green"}:::gate_auto
+    W4 --> G3
 
-    subgraph W5 ["Workflow 5 — Sync + Commit"]
-        SYNC["make confluence-local-sync\nNo LLM needed"]:::skill
-        BATCH1["Batch 1: docs · .agents/\nRFC + design + tasks"]:::skill
-        BATCH2["Batch 2: feat · src/\nImplementation"]:::skill
-        BATCH3["Batch 3: test · tests/\nTest coverage"]:::skill
-        BATCH4["Batch 4: docs · audit/\nScoring artifacts"]:::skill
-        PUSH["git push\nall batches together\nno co-author trailers"]:::skill
-    end
-    G3 --> SYNC --> BATCH1 --> BATCH2 --> BATCH3 --> BATCH4 --> PUSH
+    W5["Phase 5: Sync + Commit\nConfluence sync → 4 batches\n→ Push"]:::skill
+    G3 --> W5
 
-    G4{"G4 — Clean tree\nCommit verified\n▸ Haiku · auto"}:::gate_auto
-    PUSH --> G4
+    G4{"G4 auto\nClean tree verified"}:::gate_auto
+    W5 --> G4
 
-    G4 -- "Loop back\nwith fixes applied" --> WIPE
+    G4 -- "Loop back" --> W1
       </pre>
     </div>
   </div>
@@ -1149,33 +1158,33 @@ flowchart TD
         <tbody>
           <tr>
             <td><code>corpus:ingest-score</code></td>
-            <td>Scorecard + delta</td>
+            <td>Scorecard + delta + pre-publish verification</td>
             <td><code>audit/CORPUS_REINGESTION_AUDIT_RUN-N.md</code></td>
           </tr>
           <tr>
             <td><code>corpus:trace</code></td>
-            <td>Root-cause investigation</td>
-            <td>Inline in RFC body (no separate file)</td>
+            <td>Root-cause investigation (cluster-level + drilldown)</td>
+            <td>Inline in RFC body (no separate file); checkpoints at <code>.agents/checkpoints/</code></td>
           </tr>
           <tr>
             <td><code>corpus:plan</code></td>
-            <td>RFC document</td>
+            <td>RFC document (Opus draft &rarr; Fable verify &rarr; max 2 re-drafts via Serena MCP)</td>
             <td><code>.agents/rfcs/NNN-&lt;slug&gt;.md</code></td>
           </tr>
           <tr>
             <td><code>rfc-artifact-build</code></td>
-            <td>Design + tasks</td>
-            <td><code>.agents/designs/</code> + <code>.agents/tasks/</code></td>
+            <td>Design + tasks (parallel Sonnet agents, bidirectional anchor links)</td>
+            <td><code>.agents/designs/design-rfcNNN-&lt;slug&gt;.md</code> + <code>.agents/tasks/tasks-rfcNNN-&lt;slug&gt;.md</code></td>
           </tr>
           <tr>
             <td>Verify Artifacts <small>(Sonnet)</small></td>
-            <td>Cross-ref &amp; mermaid validation</td>
+            <td>Cross-ref, mermaid, &amp; link validation</td>
             <td>Fixes applied in-place to RFC, design, tasks</td>
           </tr>
           <tr>
-            <td><code>make confluence-local-sync</code></td>
-            <td>Confluence pages</td>
-            <td>All files with <code>&lt;!-- Space: CITRA --&gt;</code> headers</td>
+            <td><code>corpus:sync-commit</code></td>
+            <td>4-batch commits (docs &rarr; feat &rarr; test &rarr; audit) + Confluence sync</td>
+            <td>Git + all files with <code>&lt;!-- Space: CITRA --&gt;</code> headers</td>
           </tr>
         </tbody>
       </table>
@@ -1290,272 +1299,79 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
   <div class="section" style="margin-top: 3rem; padding-top: 2rem; border-top: 2px solid var(--border);">
     <h2>Decisions Log</h2>
     <p style="font-size: 0.88rem; color: var(--text-muted); max-width: 620px; margin-bottom: 1.5rem;">
-      Key architectural and process decisions made across the project lifecycle, sourced from claude-mem observations and project memory. Organized chronologically.
+      Recent architectural and process decisions from the active corpus quality cycle. Earlier decisions (RFC-003&ndash;023, architecture, infrastructure) are archived in project memory.
     </p>
 
-    <!-- Architecture & Pipeline Decisions -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Architecture &amp; Pipeline</h3>
+    <!-- Run 10-14 Corpus Cycle -->
+    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Corpus Cycle &mdash; Runs 10&ndash;14</h3>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-06 &middot; RFC-003 / RFC-005</div>
-      <div class="card-title">PDF Extraction: Markdown-First + Docling CPU</div>
+      <div class="card-label">2026-08-03 &middot; Run 10 &middot; RFC-026 LANDED</div>
+      <div class="card-title">Gate Hardening: 12 Regressions (All Corrections)</div>
       <div class="card-detail">
-        PyPDF2 garbles German insurance PDFs &mdash; root cause is text extraction, not OCR. Adopted markdown-first extraction via pymupdf4llm. Docling-CPU is the config-gated converter (<code>PDF_CONVERTER=docling</code>, force CPU on darwin). pymupdf4llm drops the fl-ligature (Haftpflicht&rarr;Haftpficht); Docling fixes it. Docling MPS-only was NO-GO on Apple Silicon.
+        <strong>7P / 8M / 10F / 0E</strong> (vs Run 9: 15P/8M/0F/1E). 12 regressions &mdash; all gate-hardening corrections exposing pre-existing defects, not content loss. Promotion-path bypass still open for junk OCR (وارد 597). Meta char counter 15&times; divergence from persisted blocks. Judge-vs-gate verdict divergence on 5 Arabic docs.
       </div>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-06-12 &middot; RFC-004 &middot; USER-LOCKED</div>
-      <div class="card-title">Granite-258M REJECTED for All Future Implementations</div>
+      <div class="card-label">2026-08-03 &middot; Run 11 &middot; RFC-027 LANDED</div>
+      <div class="card-title">Arabic Content Recovery + Garble Gate Fix</div>
       <div class="card-detail">
-        gpt-4.1 vision: DPI-unstable hierarchy hallucination &rarr; validates flat-doc-success route. VLM stays off by default. <strong>Granite-258M permanently rejected</strong>: 2.9 GB RSS, 38 min/page on CPU, flat-only output. RFC-004 D1/D2 adopted: deterministic-first VLM-escalation cascade (<code>VLM_MODE=disabled</code> default) + hybrid engine (frontier gpt-4.1 vision via <code>OPENAI_BASE_URL</code>; self-hosted Apache-2.0 residency floor).
+        <strong>7P / 13M / 4F / 1E.</strong> 4 Arabic docs recovered from zero-content FAIL to MARGINAL (MOU MOHRE 0&rarr;13.5k chars, SLA 27.9k, labor regulation 47.6k). وارد 597 garble gate now fires (ratio=1.00), closing Run 10&rsquo;s promotion-path bypass. world-stats-pocketbook large-file timeout persists (ERROR).
       </div>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-06-12 &middot; RFC-004</div>
-      <div class="card-title">Flat Docs: SUCCESS, Not Rejected</div>
+      <div class="card-label">2026-08-03 &middot; Run 12 &middot; RFC-028 LANDED</div>
+      <div class="card-title">Arabic Garble Gates + Extraction Quality</div>
       <div class="card-detail">
-        Clean-text-layer docs with no hierarchy are processed as SUCCESS &mdash; matches all 8 surveyed peers (Textract, Azure DI, Google Doc AI, Docling, Unstructured, LlamaParse, Reducto). "Flat" and "garbled" are orthogonal. Flat outcome: <code>status=done</code> + <code>content_class &isin; {flat_table, flat_kv, flat_prose, flat_mixed}</code>, persisted as <code>processed/&lt;doc_id&gt;.flat.json</code>; <code>validate_tree()</code> never called.
+        <strong>10P / 10M / 4F / 1E.</strong> world-stats-pocketbook recovered from ERROR to MARGINAL. سياسة حوكمة and Haftpflicht-Besondere promoted to PASS. <strong>Regressions:</strong> مرسوم 13 ~80% content collapse (75&rarr;6 nodes). ﺣﻘﻮق اﻹﻧﺴﺎن artifacts vanished from MinIO (FAIL&rarr;ERROR). وارد 597 garble gate regressed (stored verdict back to PASS).
       </div>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-06 &middot; AGPL</div>
-      <div class="card-title">AGPL Has THREE Pullers, Not One</div>
+      <div class="card-label">2026-08-04 &middot; Run 13 &middot; RFC-029 LANDED</div>
+      <div class="card-title">Thin-Tree Density Gate + Recovery Gaps</div>
       <div class="card-detail">
-        pymupdf (AGPL) enters via pymupdf4llm AND docling-hierarchical-pdf AND the pageindex fork. pymupdf4llm now moved behind <code>agpl-fallback</code> extra (landed). Verify other two pullers before declaring venv clean. MIT escape: Docling.
-      </div>
-    </div>
-
-    <!-- RFC-018 / RFC-019 Corpus Remediation -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Corpus Remediation (RFC-018 / RFC-019)</h3>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-27 &middot; RFC-018</div>
-      <div class="card-title">D0&ndash;D3: Marker Count, Text-Layer Probe, Arabic RTL, Garble Gate</div>
-      <div class="card-detail">
-        D0 marker-count fix: WORKING. D1 text-layer skip: WORKING. D2 Arabic RTL hardening: WORKING. D3a garble probe: PARTIAL (Latin-gibberish gap on document &lrm;597). D3b per-node garble: WORKING. Full corpus validation: 25/25 processed &rarr; 23 stored (11 PASS, 9 MARGINAL, 3 FAIL), 2 errors.
+        <strong>7P / 9M / 5F / 4E</strong> &mdash; worst run in cycle. 3 docs hit new <code>low_content_density</code> gate (Penal Code, Decree-Law 33 EN, مرسوم 33 AR &mdash; all &rarr; ERROR). MOU MOHRE 89% content collapse (MARGINAL&rarr;FAIL, 13.5k&rarr;1.5k chars). ﺣﻘﻮق اﻹﻧﺴﺎن recovered (ERROR&rarr;PASS, 347 nodes / 419k chars). Garble gate false-positives on clean Arabic text.
       </div>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-27 &middot; RFC-019</div>
-      <div class="card-title">D0&ndash;D4: Five Corpus Reingestion Fixes</div>
+      <div class="card-label">2026-08-05 &middot; Run 14 &middot; RFC-030 LANDED</div>
+      <div class="card-title">RFC-029 Regression Fixes: Fence-Toggle + OCR Floor</div>
       <div class="card-detail">
-        5 fixes from 25-doc audit (12P/9M/3F/1E): D0 landed, D1 uncommitted, D2/D3/D4 pending. 14 tasks, 4.5 person-days estimated.
+        <strong>9P / 14M / 2F / 0E</strong> &mdash; best recent run. All 3 <code>low_content_density</code> ERRORs recovered to PASS. MOU MOHRE restored to PASS. 0 ERRORs for the first time since Run 10. <strong>Regressions:</strong> Reitlehrer 32% char loss from RFC-029 D3 fence/HR stripping. سياسة حوكمة MARGINAL&rarr;FAIL (RTL garble spreading). MARGINAL dominance (14/25) reflects stricter judge criteria, not content loss.
       </div>
     </div>
 
-    <!-- RFC-021 / RFC-023 Content Recovery -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Content Recovery &amp; Verdict Hardening (RFC-021 / RFC-023)</h3>
+    <!-- Active RFC Plans -->
+    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Active RFC Plans</h3>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28 &middot; RFC-021</div>
-      <div class="card-title">Verdict Quick-Fixes: QF1&ndash;QF4</div>
+      <div class="card-label">2026-08-03 &middot; RFC-027</div>
+      <div class="card-title">Run 10 Extraction Gate Integrity (8 Dimensions)</div>
       <div class="card-detail">
-        QF1 accepts imperfect but useful tree output. QF2a/QF2b/QF2c tighten or defer garble checks. QF4 <code>LEGACY_VERDICT_ENABLED</code> env var provides rollback lever to restore pre-RFC-021 behavior. Cross-fix interaction risks flagged: QF2c+QF4 could PASS numeric-junk docs.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28 &middot; RFC-017</div>
-      <div class="card-title">OCR Image Block Decoupling: Page Coverage + Standalone Image</div>
-      <div class="card-detail">
-        D0: Skip regions exceeding 60% page area in <code>_recover_picture_text()</code> &mdash; full scanned pages handled by page-level OCR, not per-picture cropping. <code>PICTURE_PAGE_COVERAGE_THRESHOLD</code> env var (default 0.6). D1: Standalone image branch never calls <code>splice_figure_markers()</code> or <code>_enrich_image_blocks()</code> &mdash; chart content lost entirely. Fix: create synthetic <code>PictureResult</code> after <code>image_to_markdown()</code>.
+        D0 split <code>_flat_block_text</code> to exclude enrichment metadata. D1 garble detection in <code>image_enrichment_promoted</code>. D2 OCR escalation (&lt;300 chars). D3 RTL reversal detection. D5 small-doc leaf-ratio relaxation. D6 dedup image markers. D7 large-doc Docling timeout fallback. D8 pre-publish cross-check.
       </div>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-29 &middot; RFC-023</div>
-      <div class="card-title">D0&ndash;D11: Content Recovery &amp; Verdict Hardening (12 Decisions)</div>
+      <div class="card-label">2026-08-05 &middot; RFC-030</div>
+      <div class="card-title">Run 13 Regression Fixes (Fence-Toggle, OCR Floor, Validate-Tree)</div>
       <div class="card-detail">
-        Run 6 corpus reaudit (25 docs): 11 PASS / 4 MARGINAL / 9 FAIL / 1 ERROR. 12 decisions across 3 themes:<br>
-        <strong>A. Garble-aware recovery</strong> &mdash; D0: garble-check in <code>_text_layer_has_content</code>; D1: ordinal marker splicing; D2: decorative-icon bbox filter; D11: image-dominant OCR escalation.<br>
-        <strong>B. Verdict correctness</strong> &mdash; D3: strip HTML comments before garble tokenization; D4: content-quality guard on <code>cat_b_promoted</code>; D5: prefer synthetic structure over rejected tree.<br>
-        <strong>C. Pipeline resilience</strong> &mdash; D6: page rotation correction; D7: Tesseract-on-raster VLM-crash fallback; D8&ndash;D10: verdict hysteresis and tuning.
-        Projected Run 7: 18&ndash;20 PASS (up from 11).
+        Targeted fixes for RFC-029 regressions: fence-toggle content loss (Reitlehrer stripping), OCR retry floor for garble-gated docs, validate-tree recovery path gaps. Result: Run 14&rsquo;s 0 ERROR recovery.
       </div>
     </div>
 
-    <!-- RFC-025 / RFC-026 Verdict Hardening -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Verdict Hardening &amp; Rotation Detection (RFC-025 / RFC-026)</h3>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-30 &middot; RFC-025</div>
-      <div class="card-title">Run 8: Verdict Hysteresis &amp; Recovery Coverage</div>
-      <div class="card-detail">
-        Run 8 corpus audit (25 docs): 7 PASS / 6 MARGINAL / 9 FAIL / 3 ERROR. RFC-025 landed hysteresis anchoring (<code>find_prior_verdict()</code> preserves best-ever verdict across reingestion), recovery coverage fixes, and expected-script propagation for garble detection.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-31 &middot; RFC-026</div>
-      <div class="card-title">Run 9: Verdict Gate Hardening &amp; Page Rotation Detection</div>
-      <div class="card-detail">
-        Run 9 corpus audit (25 docs): 15 PASS / 8 MARGINAL / 0 FAIL / 1 ERROR (PASS doubled vs Run 8). Audit found several verdicts unreliable &mdash; zero-content docs reaching MARGINAL, image-enrichment promotion bypassing volume checks. RFC-026: 6 active fix dimensions:<br>
-        <strong>D0:</strong> Hard FAIL floor for zero-content documents (4 Arabic docs). <strong>D1:</strong> Image-enrichment volume floor (<code>MIN_IMAGE_PROMOTED_CHARS=500</code>). <strong>D2:</strong> Page-level rotation detection (portrait/landscape stall, 3 runs). <strong>D3:</strong> Hysteresis preservation across reingestion wipe. <strong>D4:</strong> Scoring harness Stage 2 substring-match bug fix. <strong>D5:</strong> Garble check ordering in <code>validate_tree()</code>. D6 (Latin CMap garble) deferred.
-      </div>
-    </div>
-
-    <!-- Process & Workflow Decisions -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Process &amp; Workflow Conventions</h3>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-31</div>
-      <div class="card-title">Incremental Ingest + Score Pipeline</div>
-      <div class="card-detail">
-        Merged Phase 1 (Ingest) and Phase 2 (Score) into a single per-document pipeline via <code>corpus-ingest-score</code> workflow. Each document is scored <strong>immediately</strong> after processing &mdash; no waiting for the full 25-doc batch to finish before review begins. The 3-stage pipeline (<span class="model model-haiku">Haiku</span> process &rarr; <span class="model model-sonnet">Sonnet</span> fetch metrics &rarr; <span class="model model-opus">Opus</span> judge verdict) runs with no barriers: Doc A can be in the judgment stage while Doc B is still processing. Scoring model tier upgraded: Haiku&rarr;Sonnet for fetch/comparison, Sonnet&rarr;Opus for judgment.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-20</div>
-      <div class="card-title">Model Tier Assignment Convention</div>
-      <div class="card-detail">
-        Tiered model selection established for all sub-agent and workflow dispatching: <span class="model model-fable">Fable</span> super complex tasks (RFC verification, wave checkpoints, G3 verdict) &middot; <span class="model model-opus">Opus</span> complex tasks (RFC drafting, root-cause tracing, verdict judgment) &middot; <span class="model model-sonnet">Sonnet</span> medium tasks (metric comparison, test repair, triage) &middot; <span class="model model-haiku">Haiku</span> easy tasks (shell commands, gate checks, subprocess calls).
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-20</div>
-      <div class="card-title">Parallel Code Exploration: CodeGraph + Serena MCP</div>
-      <div class="card-detail">
-        All code exploration must use <code>/codebase-memory</code> (CodeGraph) and Serena MCP server (proxy to relevant LSPs) strictly in parallel. Established as mandatory dispatch context for every sub-agent invocation.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28</div>
-      <div class="card-title">Dispatch Context Conventions</div>
-      <div class="card-detail">
-        <code>.claude/dispatch-context.md</code> created as centralized governance document, included verbatim in every sub-agent/workflow/skill prompt. Rules: parallel CodeGraph + Serena exploration, tiered model selection, local-only artifact export (never to Claude), Serena MCP for task file edits, <code>/mem-search</code> for past decisions.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-27</div>
-      <div class="card-title">Task Document Markdown Conventions</div>
-      <div class="card-detail">
-        Phase-based structure with strict anchor-link cross-referencing. No <code>###</code>/<code>####</code> headings inside Tasks section &mdash; nested checkbox lists only. Every task has <code>_Requirements:_</code> line with pipe-separated clickable links. All cross-references must be clickable markdown anchor links, no bare text.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-27</div>
-      <div class="card-title">Corpus Trace Token Efficiency Redesign</div>
-      <div class="card-detail">
-        Phase 3 trace restructured from per-document Opus/Sonnet to cluster-level Opus + selective Sonnet/Haiku drilldown. Skip PASS docs in Phase 3; focus on code changes causing regressions; prefer simple solutions over complex approaches.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-29</div>
-      <div class="card-title">No Co-Authors in Corpus Sync-Commit</div>
-      <div class="card-detail">
-        Corpus sync-commit workflow (<code>.claude/workflows/corpus-sync-commit.js</code>) must NOT include any <code>Co-Authored-By</code> lines or <code>Generated with</code> trailers in any of the 4 batched commit messages. Each batch agent explicitly instructed to omit all co-author attribution.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28</div>
-      <div class="card-title">Skills + Workflows Architecture (over hooks/plugins)</div>
-      <div class="card-detail">
-        Corpus toolset built as project-local Claude Code Skills (markdown entry points in <code>.claude/skills/</code>) + Workflows (JS scripts in <code>.claude/workflows/</code>) rather than hooks or plugins. 7 skills + 6 workflows. Full loop has 5 phases with human-in-the-loop gates at G1 and G2. Shared <code>dispatch-context.md</code> propagates conventions to all sub-agents.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28</div>
-      <div class="card-title">Corpus Namespace Convention (<code>corpus:</code> prefix)</div>
-      <div class="card-detail">
-        All corpus skills use a <code>corpus:</code> namespace prefix: <code>/corpus:ingest-score</code>, <code>/corpus:score</code>, <code>/corpus:diff</code>, <code>/corpus:trace</code>, <code>/corpus:plan</code>, <code>/corpus:mend</code>, <code>/corpus:cycle</code>. Skill directories match workflow names. Gated pipeline with numbered runs and RFC-based task planning. The default cycle now uses <code>/corpus:ingest-score</code> (merged Phase 1+2) instead of separate ingest + score phases.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28</div>
-      <div class="card-title">File Organization: One-File-Per-Run + Trace Inlined</div>
-      <div class="card-detail">
-        Audit scorecards moved from append-style to one-file-per-run (<code>CORPUS_REINGESTION_AUDIT_RUN-N.md</code>). Root-cause investigation traces are inlined directly into the RFC produced by <code>corpus:plan</code>, eliminating separate trace files in <code>audit/</code> or <code>.agents/state/</code>.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-29</div>
-      <div class="card-title">Serena MCP Enforced for RFC Re-Drafting</div>
-      <div class="card-detail">
-        Opus re-drafting step (after Fable verification) restricted to Serena MCP tools only (<code>replace_content</code> / <code>replace_in_files</code>). <code>Edit</code>/<code>Write</code> tools forbidden for RFC file modifications. Same constraint applies to L3 checkpoint task file updates.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-29</div>
-      <div class="card-title">Checkpoint Persistence + Cross-Session Resume</div>
-      <div class="card-detail">
-        Phase 3 (Diagnose + Plan) persists checkpoints to <code>.agents/checkpoints/diagnose-plan-runN/</code> after each sub-phase: triage, cluster-traces, drilldown. Resume via <code>args.resume_from</code> avoids re-running expensive Opus cluster trace work on context-limit interruptions. Phase 4 supports <code>start_wave</code> to skip completed waves.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-31</div>
-      <div class="card-title">Diagnose-Plan Workflow: Split Draft RFC + Parallel Artifact Build</div>
-      <div class="card-detail">
-        <code>corpus-diagnose-plan</code> workflow stalled in Run 9: Draft RFC agent (Opus + schema) timed out after 6 attempts &mdash; too much work in a single agent. Build Artifacts also used one agent for both docs. Fix: (1) Split Draft RFC into plan step (small schema, fast) + write step (no schema, just writes file). (2) Compress trace findings before RFC planner. (3) Split Build Artifacts into two parallel agents matching the <code>rfc-artifact-build</code> skill&rsquo;s structure.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-28</div>
-      <div class="card-title">Auto-Convergence Criteria</div>
-      <div class="card-detail">
-        Cycle auto-converges when scoring produces <strong>0 FAIL + 0 ERROR + 0 regressions</strong>. At G1, if converged, the orchestrator reports convergence and stops. Human retains override: convergence is a judgment call at G1, not a hard threshold.
-      </div>
-    </div>
-
-    <!-- RFC-026 / RFC-027 Gate Hardening & Extraction Recovery -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Gate Hardening &amp; Extraction Recovery (RFC-026 / RFC-027)</h3>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-31 &middot; RFC-026 &middot; LANDED</div>
-      <div class="card-title">Verdict Gate Hardening + Rotation Detection</div>
-      <div class="card-detail">
-        5 dimensions implemented: D0 zero-content FAIL floor (<code>node_count==0 || total_chars==0 &rarr; FAIL zero_content</code>). D1 image-enrichment char floor (<code>image_enrichment_promoted_below_char_floor</code> when chars &lt; 500). D2 garble-check ordering in <code>validate_tree()</code>. D3 tightened <code>cat_b_promoted</code> quality guard. D5 rotation detection wired into verdict scoring. <strong>Result:</strong> Run 10 surfaced 10 FAILs previously masked as PASS/MARGINAL &mdash; overwhelmingly correct gate corrections.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-08-03 &middot; RFC-027 &middot; PLANNED</div>
-      <div class="card-title">Run-10 Extraction Gate Integrity &amp; Arabic Content Recovery</div>
-      <div class="card-detail">
-        8 fix dimensions from Run 10 audit (7P/8M/10F/0E): <strong>D0</strong> split <code>_flat_block_text</code> to exclude enrichment metadata from verdict char counts (Unfallversicherung 492 real vs 7,471 inflated). <strong>D1</strong> wire garble detection into <code>image_enrichment_promoted</code> branch + reorder D3B post-splice. <strong>D2</strong> OCR escalation for low-content/garbled Arabic PDFs (&lt;300 chars &rarr; <code>force_full_page_ocr</code>). <strong>D3</strong> RTL reversal detection in <code>validate_tree()</code> + vocabulary-calibrated scoring. <strong>D5</strong> small-doc leaf-ratio relaxation (<code>node_count&lt;=5 &rarr; threshold 0.40</code>). <strong>D6</strong> deduplicate adjacent image markers. <strong>D7</strong> page-count guard for large-doc Docling timeout (PyPDF2 MIT fallback, not AGPL). <strong>D8</strong> pre-publish cross-check all scorecard rows vs stored gate verdicts.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-08-03 &middot; Run 10 Audit</div>
-      <div class="card-title">Run 10 Corpus Re-Ingestion: 12 Regressions (Gate Corrections)</div>
-      <div class="card-detail">
-        <strong>Tally:</strong> 7 PASS / 8 MARGINAL / 10 FAIL / 0 ERROR (vs Run 9: 15P/8M/0F/1E). <strong>0 improvements</strong>, <strong>12 regressions</strong> (all gate-hardening corrections exposing pre-existing defects), <strong>4 stalls</strong>, <strong>6 stable</strong>. Key findings: promotion-path bypass still open for junk OCR (ward 597), meta char counter diverges from persisted blocks (Unfallversicherung 15&times; inflation), judge-vs-gate verdict divergence on 5 docs (RTL reversal and Arabic Presentation Forms caught only by audit, not gate). Audit: <code>audit/CORPUS_REINGESTION_AUDIT_RUN-10.md</code>
-      </div>
-    </div>
-
-    <!-- Guardrails & Lessons -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Guardrails &amp; Lessons Learned</h3>
+    <!-- Guardrails (retained - still active) -->
+    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Active Guardrails</h3>
 
     <div class="card" style="margin-bottom: 0.6rem;">
       <div class="card-label">2026-06 &middot; RFC-002 lesson</div>
       <div class="card-title">Verify Source Before Asserting Defects</div>
       <div class="card-detail">
-        Must read <code>file:line</code> before any code <code>[FIX]</code> claim in an RFC or queue. Established after RFC-002 fabrication incident where asserted defects did not exist in the actual code.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07-17</div>
-      <div class="card-title">Fabricated Corpus Report Detected</div>
-      <div class="card-detail">
-        <code>DOC_STORE_CORPUS_REPORT.md</code> verdict table was FABRICATED. Real MinIO meta.json showed 11 PASS / 12 MARGINAL / 2 FAIL &mdash; not the claimed 15 / 10 / 0. Always verify against source data.
+        Must read <code>file:line</code> before any code <code>[FIX]</code> claim. Established after RFC-002 fabrication incident.
       </div>
     </div>
 
@@ -1563,39 +1379,20 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
       <div class="card-label">2026-07</div>
       <div class="card-title">Never Export Artifacts to Claude</div>
       <div class="card-detail">
-        Artifacts must always be written locally as <code>.md</code> or <code>.html</code> files. Never use the Claude Artifact tool for export. This is a hard rule in the dispatch context.
+        Always write locally as <code>.md</code> or <code>.html</code>. Hard rule in dispatch context.
       </div>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
       <div class="card-label">2026-07</div>
-      <div class="card-title">OCR/Image-Block Conflation Confirmed</div>
+      <div class="card-title">Pre-Publish Verification (RFC-025 D4)</div>
       <div class="card-detail">
-        <code>feat/image-block-picture-ocr</code> branch conflates page-level OCR with per-picture enrichment. OCR text reclassified from prose to image blocks. Standalone images lose chart content entirely. P0&ndash;P5 fix plan documented at <code>audit/OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md</code>.
-      </div>
-    </div>
-
-    <!-- Infrastructure -->
-    <h3 style="font-family: var(--font-label); font-size: 0.95rem; color: var(--accent); margin: 1.5rem 0 0.8rem; letter-spacing: 0.03em;">Infrastructure</h3>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-07</div>
-      <div class="card-title">Worker Deploy Rollout Fix</div>
-      <div class="card-detail">
-        pageindex-mcp-worker rollout times out: new replicas stuck Pending (unschedulable) on single-node k3s, NOT a crash. Worker <code>maxSurge:1/maxUnavailable:0</code> needs room for 2 pods; node over-committed. Fix: <code>maxSurge:0/maxUnavailable:1</code> + bigger node.
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 0.6rem;">
-      <div class="card-label">2026-06 &middot; PR #11</div>
-      <div class="card-title">Langfuse Tracing (LLM-02)</div>
-      <div class="card-detail">
-        Merged. Gotcha: litellm <code>langfuse_otel</code> uses a PRIVATE OTel provider (<code>skip_set_global</code>) &rarr; needs <code>client.flush_litellm_tracing()</code>; langfuse client flush alone won't reach it. Deploy manifests live in sibling <code>hetzner-deployment-service</code> repo.
+        Every per-document figure in audit reports must be re-pulled from live MinIO before publishing. Mandatory since Run 11 &mdash; catches fabricated or stale metrics.
       </div>
     </div>
 
     <p style="font-size: 0.72rem; color: var(--text-faint); margin-top: 1.5rem; font-family: var(--font-mono); letter-spacing: 0.04em;">
-      Last updated: 2026-08-03 &middot; Sourced from claude-mem observations + project memory
+      Last updated: 2026-08-05 &middot; Sourced from claude-mem observations + project memory
     </p>
   </div>
 
