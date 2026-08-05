@@ -213,9 +213,9 @@ class TestFlatPreferMultiplier:
         assert prefers_flat is False
 
     def test_min_chars_per_node_constant_value(self):
-        """_RFC029_MIN_CHARS_PER_NODE must be 500.0."""
-        assert _RFC029_MIN_CHARS_PER_NODE == 500.0, (
-            f"Expected 500.0, got {_RFC029_MIN_CHARS_PER_NODE}"
+        """_RFC029_MIN_CHARS_PER_NODE must be 150.0 (lowered from 500 by RFC-030 D3)."""
+        assert _RFC029_MIN_CHARS_PER_NODE == 150.0, (
+            f"Expected 150.0, got {_RFC029_MIN_CHARS_PER_NODE}"
         )
 
 

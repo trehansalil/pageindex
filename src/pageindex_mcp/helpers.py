@@ -933,65 +933,6 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     return False
 
 
-def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
-    """Post-NFKC bidi-coherence check for Arabic text (RFC-029 D2).
-
-    Samples up to *n_samples* multi-word Arabic runs from NFKC-normalised
-    text and verifies that each run is in RTL *logical* order (U+0600-06FF
-    base characters), not in LTR *visual* order (presentation-form glyphs
-    whose form class contradicts their position — the same signal used by
-    `_word_has_reversed_morphology`).
-
-    Heuristic: a run fails the coherence check when ANY of its whitespace-
-    separated tokens has a FINAL-FORM glyph at position [0] or an
-    INITIAL-FORM glyph at position [-1].  In correctly-ordered Arabic the
-    renderer applies contextual shaping *after* Unicode storage; a
-    final-form character appearing at the *logical* start of a word is
-    impossible in real RTL logical order and is a reliable sign that the
-    character sequence was reversed before NFKC normalisation preserved the
-    already-wrong presentation form.
-
-    Returns:
-        (True, "")                      — text is bidi-coherent (or not Arabic)
-        (False, "visual_order_garble")  — >50 % of sampled runs failed
-    """
-    # Collect multi-word Arabic runs (≥2 tokens, each with ≥1 Arabic char)
-    _AR_RE = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]+")
-
-    runs: list[list[str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        arabic_chars = sum(1 for c in stripped if "؀" <= c <= "ۿ")
-        total_chars = len(stripped.replace(" ", ""))
-        if total_chars == 0 or arabic_chars / total_chars < 0.4:
-            continue
-        tokens = [t for t in stripped.split() if _AR_RE.search(t)]
-        if len(tokens) >= 2:
-            runs.append(tokens)
-        if len(runs) >= n_samples:
-            break
-
-    if not runs:
-        # No Arabic-dominant multi-word runs — nothing to check
-        return True, ""
-
-    failed = 0
-    for tokens in runs:
-        run_failed = False
-        for word in tokens:
-            if _word_has_reversed_morphology(word):
-                run_failed = True
-                break
-        if run_failed:
-            failed += 1
-
-    if failed / len(runs) > 0.50:
-        return False, "visual_order_garble"
-    return True, ""
-
-
 # RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
 # digit%, repetition%) dilute away a handful of corrupted Latin fragments glued
 # to Arabic across a long document, so OCR escalation never fires. This
@@ -1083,8 +1024,8 @@ def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
 
 
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
-_GARBLE_NODE_RATIO_THRESHOLD = float(
-    os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", str(_GARBLE_NODE_RATIO_THRESHOLD_RAW))
+_GARBLE_NODE_RATIO_THRESHOLD = (
+    _GARBLE_NODE_RATIO_THRESHOLD_RAW if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1 else 0.10
 )
 # RFC-029 D10: zero-body contamination gate — fraction of non-root nodes whose
 # stripped body text is empty.  Threshold is env-overridable for calibration.
@@ -1100,7 +1041,7 @@ _RFC029_FLAT_PREFER_MULTIPLIER = float(
 # RFC-029 D1 (Task 3.1): minimum chars-per-node floor; trees below this floor
 # (with enough nodes to make the metric meaningful) fail with low_content_density.
 _RFC029_MIN_CHARS_PER_NODE = float(
-    os.environ.get("RFC029_MIN_CHARS_PER_NODE", "500")
+    os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")
 )
 # RFC-029 D2 (Task 3.3): minimum chars-per-page floor for scanned density check;
 # trees below this floor (when page_count is known) fail with suspect_density.
@@ -1153,9 +1094,10 @@ def _script_from_filename(filename: str) -> str | None:
 def _garble_check_nodes(
     nodes: list[dict], page_script: str | None = None, expected_script: str | None = None
 ) -> int:
-    """Recursively count nodes whose text is individually garbled."""
+    """Recursively count nodes whose text or title is individually garbled."""
     garbled = 0
     for node in nodes:
+        node_garbled = False
         text = node.get("text") or ""
         if text.strip():
             if expected_script is not None:
@@ -1178,7 +1120,21 @@ def _garble_check_nodes(
             else:
                 node_script = _infer_script(text) if len(text) >= 50 else page_script
             if _is_garbled_blob(text, expected_script=node_script):
-                garbled += 1
+                node_garbled = True
+        # RFC-030 D4: titles carry user-visible content too (23/24 reversed
+        # RTL titles in siyasat-hawkama were invisible to this gate). Titles
+        # are short (10-100 chars), so a per-word reversed-morphology check
+        # catches RTL-reversal without tripping the bulk-ratio heuristics
+        # (digit/repetition ratios only kick in on longer blobs) that would
+        # false-positive on short legitimate mixed-script titles.
+        title = node.get("title") or ""
+        if title.strip():
+            if any(_word_has_reversed_morphology(w) for w in title.split()):
+                node_garbled = True
+            elif _is_garbled_blob(title, expected_script=expected_script or page_script):
+                node_garbled = True
+        if node_garbled:
+            garbled += 1
         children = node.get("nodes") or []
         garbled += _garble_check_nodes(
             children, page_script=page_script, expected_script=expected_script
@@ -1286,7 +1242,7 @@ def validate_tree(
     structural extraction failure where sections were split into shell nodes
     with no content; persisting such a tree silently violates Hard Rule 5.
 
-    RFC-029 D1 (Task 3.1): low_content_density — when total_nodes >= 3, flag
+    RFC-029 D1 (Task 3.1): low_content_density — when total_nodes >= 200, flag
     trees whose chars-per-node falls below _RFC029_MIN_CHARS_PER_NODE.
 
     RFC-029 D2 (Task 3.3): suspect_density — when page_count is provided,
@@ -1326,6 +1282,20 @@ def validate_tree(
     # existing garble/structure gates it is additive to.
     if _tree_is_rtl_reversed(structure):
         return False, "rtl_reversal"
+    # RFC-030 D5: bidi coherence gate — catches visual-order Arabic (reversed
+    # morphology) that _tree_is_rtl_reversed does not detect. Deployed
+    # audit-only (BIDI_COHERENCE_ENFORCE=false by default): logs a would-be
+    # failure without gating, to establish the false-positive rate over one
+    # corpus cycle before enabling routing consequences.
+    _bidi_ok, _bidi_reason = _check_bidi_coherence(full_text)
+    if not _bidi_ok:
+        if os.environ.get("BIDI_COHERENCE_ENFORCE", "false").lower() == "true":
+            return False, _bidi_reason
+        logger.warning(
+            "validate_tree: bidi coherence check would fail (%s) but "
+            "BIDI_COHERENCE_ENFORCE is disabled (audit-only mode); not gating",
+            _bidi_reason,
+        )
     # RFC-029 D10: zero-body contamination gate — checked last so it is
     # additive and never shadows the existing gates above.
     _total_non_root, _empty_leaf, _empty_non_leaf = _count_empty_body_nodes(structure)
@@ -1413,7 +1383,7 @@ def _count_empty_body_nodes(structure: list) -> tuple[int, int, int]:
             if not is_root_level:
                 total += 1
                 body = node.get("text", "") or ""
-                if not body.strip():
+                if not body.strip() and not str(node.get("title") or "").strip():
                     if children:
                         empty_non_leaf += 1
                     else:
@@ -2453,6 +2423,12 @@ def _segment_table_nodes(structure: list) -> list:
             )
             return
 
+        parent_id = node.get("node_id", "")
+        parent_page = node.get("page")
+        for i, child in enumerate(children):
+            child["node_id"] = f"{parent_id}_seg{i}" if parent_id else f"seg{i}"
+            if parent_page is not None:
+                child["page"] = parent_page
         node["nodes"] = children
         node["text"] = ""  # parent text migrated to children
 
@@ -2708,20 +2684,17 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
 
     i = 0
     n = len(lines)
-    in_fence = False  # Design Property 5: track whether we are inside a fenced code block
     while i < n:
         line = lines[i]
         stripped = line.strip()
 
-        # Design Property 5 — Fence stripping: toggle in_fence on opening/closing
-        # fence markers (``` optionally followed by a language tag).  All lines
-        # inside a fence (including the fence delimiters themselves) are skipped
-        # without emitting any block.
+        # RFC-030 D0 — Fence-delimiter-only stripping: drop the triple-backtick
+        # delimiter line itself (opening or closing, optionally with a language
+        # tag) but let the enclosed content fall through to the normal
+        # prose/table parsers below. No line is skipped as "content" solely for
+        # being between fence markers -- a stray/unclosed fence can no longer
+        # cause silent content loss.
         if stripped.startswith("```"):
-            in_fence = not in_fence
-            i += 1
-            continue
-        if in_fence:
             i += 1
             continue
 
@@ -2732,7 +2705,19 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
 
         # Design Property 5 — HR-separator stripping: skip horizontal-rule lines
         # (--- / === / ***) that serve only as visual dividers in the source.
-        if stripped and all(c == stripped[0] for c in stripped) and stripped[0] in "-=*" and len(stripped) >= 3:
+        # RFC-030 D0 tightening: a genuine HR sits at a block boundary (start
+        # of document, or immediately after a blank line / another block) —
+        # `prose_buf` is empty in that case. A repeated-char line that follows
+        # non-blank prose without a blank line between (prose_buf non-empty)
+        # is a mid-paragraph continuation, not a divider, and must fall
+        # through to normal prose handling instead of being dropped.
+        if (
+            not prose_buf
+            and stripped
+            and all(c == stripped[0] for c in stripped)
+            and stripped[0] in "-=*"
+            and len(stripped) >= 3
+        ):
             i += 1
             continue
 

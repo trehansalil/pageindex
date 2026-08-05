@@ -76,6 +76,9 @@ def _wire_common(monkeypatch, *, validate_return, **settings_overrides):
         "RAW_UPLOAD_FAILURES": MagicMock(),
         "PDF_PRIMARY_CONVERTER_FAILURES": MagicMock(),
         "PDF_EXTRACT_FALLBACKS": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

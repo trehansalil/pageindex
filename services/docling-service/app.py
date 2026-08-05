@@ -60,7 +60,7 @@ class PictureResultOut(BaseModel):
     ocr_text: str = ""
     png_bytes: str = ""
     page: int = 0
-    bbox: dict = {}
+    bbox: dict | None = None
     description: str = ""
     skipped_reason: str = ""
     decorative: bool = False
@@ -160,7 +160,7 @@ async def convert_pdf(req: PdfConvertRequest):
         )
     except Exception as exc:
         logger.exception("PDF conversion failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="PDF conversion failed") from exc
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
@@ -185,7 +185,7 @@ async def convert_image(req: ImageConvertRequest):
         return ImageConvertResponse(markdown=md)
     except Exception as exc:
         logger.exception("Image conversion failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Image conversion failed") from exc
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)

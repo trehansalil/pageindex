@@ -306,6 +306,9 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -446,6 +449,9 @@ def _wire_image_ratio_escalation(
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -659,6 +665,9 @@ def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

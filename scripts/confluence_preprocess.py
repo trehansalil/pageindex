@@ -52,6 +52,13 @@ def _detect_github_url() -> str:
     url = url.removesuffix(".git")
     if url.startswith("git@github.com:"):
         url = "https://github.com/" + url[len("git@github.com:") :]
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(url)
+    if parsed.username or parsed.password:
+        host = parsed.hostname or ""
+        netloc = f"{host}:{parsed.port}" if parsed.port else host
+        url = urlunparse(parsed._replace(netloc=netloc))
     return url
 
 
@@ -132,6 +139,8 @@ def rewrite_links(
         if resolved in title_map:
             page_title = title_map[resolved]
             url = confluence_display_url(confluence_base, SPACE, page_title)
+            if fragment:
+                url += f"#{fragment}"
             return f"[{link_text}]({url})"
 
         try:

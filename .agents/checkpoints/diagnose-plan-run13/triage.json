@@ -1,0 +1,76 @@
+{
+    "issues": [
+        {
+            "doc": "Penal Code 1987 · federal_decree_law_no_33 (EN) · مرسوم بقانون اتحادي رقم (33) (AR) — low_content_density gate cluster",
+            "category": "regression",
+            "domain": "splitter",
+            "symptom": "Tree collapsed to ERROR via low_content_density gate (chars_per_node 408.2/54.3/459.4 vs threshold 500) across 3 previously-passing large documents; systemic over-segmentation or gate computation change suspected, not 3 independent failures",
+            "start_tracing_from": "md_to_tree, _extract_markers (check for node-count/over-segmentation drift) and the low_content_density gate computation itself",
+            "complexity": "complex"
+        },
+        {
+            "doc": "اتفاقية مستوى الخدمة (SLA) · مرسوم بقانون اتحادي رقم (13) — total content loss, empty trees persisted",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "0 nodes / 0 chars persisted for both docs (flat.json exists with 0 blocks); body-extraction step silently returns empty and the pipeline saves it anyway, violating Hard Rule 5 (never silently persist a low-quality tree)",
+            "start_tracing_from": "pdf_to_markdown_docling, _maybe_splice_picture_ocr, and the validate_tree/save_doc gate that should have rejected a 0-node tree",
+            "complexity": "complex"
+        },
+        {
+            "doc": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf — 89% content loss + garble gate misfire",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "chars collapsed 13,564 -> 1,487 (preamble only, ~89% loss) while the garble gate simultaneously misreports ratio=1.00 with 0 actual garbled sequences on clean Arabic text",
+            "start_tracing_from": "pdf_to_markdown_docling / Arabic-mixed block handling, and garble gate functions (_probe_text_layer) for the ratio miscomputation",
+            "complexity": "complex"
+        },
+        {
+            "doc": "قرار مجلس الوزراء رقم (106) لسنة 2022 — mid-document truncation",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "Extraction truncated starting at Article 4 and ending abruptly; 179->11 nodes, 26,027->2,022 chars (~92% loss), new truncation not present in Run 12",
+            "start_tracing_from": "pdf_to_markdown_docling",
+            "complexity": "simple"
+        },
+        {
+            "doc": "وارد رقم 597 من مكتب أبوظبي التنفيذي — pipeline timeout/hang, never persisted",
+            "category": "regression",
+            "domain": "worker",
+            "symptom": "Job no longer completes at all: Run 12 persisted a defective FAIL artifact, Run 13 returns NoSuchKey/ERROR (never persisted); suspected timeout/hang on the 42-page scanned Arabic OCR path introduced by a garble-gate or OCR-escalation change",
+            "start_tracing_from": "_run_converter_subprocess, arq job handler, and worker/job timeout configuration",
+            "complexity": "complex"
+        },
+        {
+            "doc": "قرار مجلس الوزراء رقم (1) لسنة 2022 — masked content-loss regression behind stable MARGINAL verdict",
+            "category": "regression",
+            "domain": "converter",
+            "symptom": "chars fell 48,050 -> 14,865 (~69% loss, live-verified), nodes 349 -> 129; verdict stayed MARGINAL in both runs, masking a real extraction collapse",
+            "start_tracing_from": "pdf_to_markdown_docling",
+            "complexity": "simple"
+        },
+        {
+            "doc": "Reitlehrer - Schäden am Berittpferd.pdf — picture-enrichment regression",
+            "category": "regression",
+            "domain": "picture_ocr",
+            "symptom": "chars dropped ~32% (4,082 -> 2,768) with identical node count; a previously-benign unenriched image (node 3.5, judged a logo) is now flagged as missing content, suggesting text derived from/alongside that image was lost",
+            "start_tracing_from": "_enrich_pictures, _maybe_splice_picture_ocr",
+            "complexity": "simple"
+        },
+        {
+            "doc": "سياسة حوكمة و إدارة البيانات - Copy.pdf — RTL title-reversal blind spot",
+            "category": "persistent_fail",
+            "domain": "text_layer",
+            "symptom": "23/24 node titles are fully character-reversed (RTL bug) while body text is correct; the garble gate only inspects body text and never the title field, so this defect class is structurally invisible to quality checks across runs",
+            "start_tracing_from": "_probe_text_layer and garble gate functions — confirm title field is excluded from garble scanning",
+            "complexity": "simple"
+        },
+        {
+            "doc": "Federal Decree-Law 47 · Haftpflicht-Allgemeine · pie-chart JPG — verdict downgrades on (near-)identical live metrics",
+            "category": "regression",
+            "domain": "verdict_logic",
+            "symptom": "PASS->MARGINAL/FAIL verdict swings on byte-identical or near-identical extraction metrics (new node-ordering check, depth-adequacy scrutiny, RTL/truncation scrutiny); also reconcile with the broader stored-vs-judged verdict divergence noted in Pre-publish Verification item 8 (6 docs stored PASS vs judged MARGINAL, 2 stored MARGINAL vs judged FAIL)",
+            "start_tracing_from": "classify_verdict, _compute_verdict",
+            "complexity": "simple"
+        }
+    ]
+}

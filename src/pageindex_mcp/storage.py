@@ -608,7 +608,7 @@ def list_processed_docs() -> list[dict]:
                 doc_id = Path(name).stem.removesuffix(".flat")
                 if doc_id not in meta_keys:
                     meta_keys[doc_id] = name
-            elif name.endswith(".json"):
+            elif name.endswith(".json") and not Path(name).name.startswith("_"):
                 doc_id = Path(name).stem
                 if doc_id not in meta_keys:
                     meta_keys[doc_id] = name
@@ -684,7 +684,11 @@ def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str |
     degradation -- hysteresis is a quality-of-life improvement, never a
     blocker for ingestion).
     """
-    mc = get_minio()
+    try:
+        mc = get_minio()
+    except Exception:
+        logger.warning("find_prior_verdict: MinIO unavailable, skipping hysteresis")
+        return None
     best: str | None = None
     try:
         for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):

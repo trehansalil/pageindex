@@ -30,13 +30,13 @@ def _make_branch(title: str, text: str, children: list[dict]) -> dict:
 
 
 def _contaminated_tree() -> list[dict]:
-    """Build a tree with 91 non-root nodes where 48 have empty body text.
+    """Build a tree with 91 non-root nodes where 30 have empty title+body.
 
     Structure:
         Root A (root-level, not counted)
-          └─ 10 branch nodes (non-root, empty text) — empty_non_leaf=10
+          └─ 10 branch nodes (non-root, empty title+text) — empty_non_leaf=10
                └─ each branch has 4 leaf children:
-                    2 with content, 2 empty  → 40 content leaves, 38 empty
+                    2 with content, 2 truly empty (no title or text)
                     (10 branches × 4 leaves = 40 more non-root nodes)
         Root B (root-level, not counted)
           └─ 1 branch with text (non-root, non-empty)
@@ -45,20 +45,20 @@ def _contaminated_tree() -> list[dict]:
     Totals:
         non-root nodes  = 10 branches + 40 leaves + 1 branch + 40 leaves = 91
         empty_non_leaf  = 10
-        empty_leaf      = 38
-        total_empty     = 48
-        fraction        = 48/91 ≈ 0.527  → exceeds 0.30 threshold
+        empty_leaf      = 20
+        total_empty     = 30
+        fraction        = 30/91 ≈ 0.33  → exceeds 0.30 threshold
     """
     branches = []
     for i in range(10):
-        # Each branch node itself has empty text
+        # Each branch node has empty title AND empty text (extraction shell)
         leaves = []
         for j in range(4):
             if j < 2:
                 leaves.append(_make_leaf(f"A{i}L{j}", f"content {i}-{j}"))
             else:
-                leaves.append(_make_leaf(f"A{i}L{j}", ""))  # empty leaf
-        branches.append(_make_branch(f"Branch{i}", "", leaves))
+                leaves.append({"title": "", "text": ""})  # truly empty leaf
+        branches.append({"title": "", "text": "", "nodes": leaves})
 
     root_a = {"title": "Root A", "text": "section intro", "nodes": branches}
 
