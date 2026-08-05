@@ -297,7 +297,7 @@ async def _run_converter_subprocess(
         raise
     stdout_bytes = leftover_stdout + rest_stdout
 
-    stderr_tail = stderr_bytes.decode(errors="replace")[-20000:]
+    stderr_tail = stderr_bytes.decode(errors="replace")[-4000:]
 
     if proc.returncode == 0:
         stdout_text = stdout_bytes.decode(errors="replace").strip()
