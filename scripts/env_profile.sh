@@ -16,7 +16,8 @@
 #   PI_MINIO         remote | local               (default: from PI_PROFILE)
 #   PI_REDIS         remote | local               (default: from PI_PROFILE)
 #   PI_POSTGRES      remote | local               (default: from PI_PROFILE)
-#   PI_DOCLING       remote | local               (default: remote, always)
+#   PI_DOCLING       remote | local               (default: from PI_PROFILE —
+#                                                  local only under PROFILE=local)
 #   PI_APP           host | compose               (default: host)
 #   PI_MINIO_ACCESS  auto | cluster | public      (default: auto)
 #
@@ -42,6 +43,24 @@ SHOW_ONLY=0
 WARNINGS=()
 warn() { WARNINGS+=("$1"); }
 
+# Serialize NAME=value for a file that is both `.`-sourced by make targets and
+# parsed as dotenv by `docker compose --env-file` / python-dotenv. Single quotes
+# are the only form all three treat identically, because none of them process
+# escapes inside them; double quotes diverge (a shell unescapes \$ and \`,
+# dotenv leaves them literal). Unquoted is unsafe outright — a MinIO secret or
+# DSN containing a space, $, or ` would truncate the value or run as shell code.
+#
+# A literal single quote is the one character no single form can express: the
+# `'\''` splice is correct for the shell but dotenv parsers cannot read it, so
+# that case warns rather than silently emitting something one consumer misreads.
+emit() {
+  local v="${2-}" q="'" esc="'\\''"
+  case "$v" in
+    *"$q"*) warn "$1 contains a single quote — $OUT is correct for 'make'/shell, but 'docker compose --env-file' cannot parse it. Avoid ' in this credential if you use APP=compose." ;;
+  esac
+  printf "%s='%s'\n" "$1" "${v//$q/$esc}"
+}
+
 # ─── Load the layers ─────────────────────────────────────────────────────────
 # Persisted toggles load first so a per-invocation env var still wins.
 if [ -f "$PROFILE_ENV" ]; then
@@ -59,10 +78,6 @@ val_from() {
   [ -f "$file" ] || return 0
   ( set -a; . "$file" >/dev/null 2>&1 || true; set +a; printf '%s' "${!key-}" )
 }
-
-if [ ! -f "$REMOTE_ENV" ]; then
-  warn "env/remote.env is missing — run 'make env-remote' on the k3s node (or copy it there from) before using a remote profile."
-fi
 
 # ─── Resolve the toggles ─────────────────────────────────────────────────────
 PI_PROFILE="${PI_PROFILE:-remote}"
@@ -82,6 +97,15 @@ PI_POSTGRES="${PI_POSTGRES:-$d_store}"
 PI_DOCLING="${PI_DOCLING:-$d_docling}"
 PI_APP="${PI_APP:-host}"
 PI_MINIO_ACCESS="${PI_MINIO_ACCESS:-auto}"
+
+# Checked after the toggles resolve, not before: a fully-offline
+# `make env PROFILE=local` never reads the remote side, so warning there is
+# noise pointing at a cluster the user is deliberately not using.
+if [ ! -f "$REMOTE_ENV" ] \
+   && { [ "$PI_MINIO" = remote ] || [ "$PI_REDIS" = remote ] \
+     || [ "$PI_POSTGRES" = remote ] || [ "$PI_DOCLING" = remote ]; }; then
+  warn "$REMOTE_ENV is missing but this profile uses remote services — run 'make env-remote' on the k3s node, then copy the generated file back to here."
+fi
 
 for pair in "PI_MINIO:$PI_MINIO" "PI_REDIS:$PI_REDIS" "PI_POSTGRES:$PI_POSTGRES" "PI_DOCLING:$PI_DOCLING"; do
   case "${pair#*:}" in remote|local) ;; *) echo "${pair%%:*} must be remote|local (got '${pair#*:}')" >&2; exit 2 ;; esac
@@ -135,6 +159,10 @@ else
       M_ENDPOINT="$M_CLUSTER"; M_SECURE=false; M_PREFIX=""
     else
       MINIO_ACCESS_MODE="public (auto: ClusterIP unreachable)"
+      # Same guard as the explicit `public` branch below. Without it an
+      # unreachable ClusterIP plus an unconfigured public host silently emits
+      # MINIO_ENDPOINT= and the failure surfaces much later, far from the cause.
+      [ -n "$M_PUBLIC" ] || { echo "ClusterIP $M_CLUSTER is unreachable and PI_REMOTE_MINIO_PUBLIC_ENDPOINT is unset in $REMOTE_ENV — no usable MinIO address" >&2; exit 2; }
       M_ENDPOINT="$M_PUBLIC"; M_SECURE=true; M_PREFIX="$M_ROUTE_PREFIX"
     fi
   elif [ "$MINIO_ACCESS_MODE" = "cluster" ]; then
@@ -219,25 +247,28 @@ else
   cat >> "$OUT" <<EOF
 
 # ─── Resolved by scripts/env_profile.sh — DO NOT EDIT ────────────────────────
-# Regenerate with 'make env'. Toggles in effect:
+# Regenerate with 'make env'. Values below are single-quoted by emit() so the
+# shell and dotenv parsers agree; do not hand-edit them unquoted. Toggles:
 #   PI_PROFILE=$PI_PROFILE PI_APP=$PI_APP PI_MINIO=$PI_MINIO PI_REDIS=$PI_REDIS
 #   PI_POSTGRES=$PI_POSTGRES PI_DOCLING=$PI_DOCLING PI_MINIO_ACCESS=$MINIO_ACCESS_MODE
-MINIO_ENDPOINT=${M_ENDPOINT}
-MINIO_ACCESS_KEY=${M_KEY}
-MINIO_SECRET_KEY=${M_SECRET}
-MINIO_SECURE=${M_SECURE}
-MINIO_PATH_PREFIX=${M_PREFIX:-}
-MINIO_PRESIGN_ENDPOINT=${M_PRESIGN}
-MINIO_PRESIGN_SECURE=${M_PRESIGN_SECURE:-true}
-MINIO_PRESIGN_PATH_PREFIX=${M_PRESIGN_PREFIX:-}
-REDIS_URL=${R_URL}
-POSTGRES_DSN=${P_DSN}
-DOCLING_SERVICE_URL=${D_URL}
-DOCLING_SERVICE_BEARER_TOKEN=${D_TOKEN}
-# Echoed as a real variable, not just the comment above, so make targets can
-# guard on the resolved toggle (see the compose-docling recipe).
-PI_DOCLING=${PI_DOCLING}
 EOF
+  {
+    emit MINIO_ENDPOINT             "$M_ENDPOINT"
+    emit MINIO_ACCESS_KEY           "$M_KEY"
+    emit MINIO_SECRET_KEY           "$M_SECRET"
+    emit MINIO_SECURE               "$M_SECURE"
+    emit MINIO_PATH_PREFIX          "${M_PREFIX:-}"
+    emit MINIO_PRESIGN_ENDPOINT     "$M_PRESIGN"
+    emit MINIO_PRESIGN_SECURE       "${M_PRESIGN_SECURE:-true}"
+    emit MINIO_PRESIGN_PATH_PREFIX  "${M_PRESIGN_PREFIX:-}"
+    emit REDIS_URL                  "$R_URL"
+    emit POSTGRES_DSN               "$P_DSN"
+    emit DOCLING_SERVICE_URL        "$D_URL"
+    emit DOCLING_SERVICE_BEARER_TOKEN "$D_TOKEN"
+    # Emitted as a real variable, not just the comment above, so make targets
+    # can guard on the resolved toggle (see the compose-docling recipe).
+    emit PI_DOCLING                 "$PI_DOCLING"
+  } >> "$OUT"
   chmod 600 "$OUT"
   echo "wrote $OUT (mode 600)"
   summary
