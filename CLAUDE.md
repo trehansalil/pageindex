@@ -27,6 +27,15 @@ PageIndex MCP Server is a vectorless / tree-reasoning RAG document-ingestion pla
 uv sync                              # install runtime deps
 uv sync --extra dev                  # add pytest + httpx
 
+# Local/remote toggles — resolve into .env.active, which everything else reads.
+# Defaults: remote MinIO/Redis/Postgres + remote (Scaleway) Docling.
+# See docs/ENV_PROFILES.md. `make help` lists every target.
+make env-remote                      # snapshot the k3s infra namespace (needs kubectl)
+make env                             # PROFILE=remote|local|hybrid, or MINIO=/DOCLING=/APP=
+make up                              # server + worker as host processes, logs in .run/
+make preflight                       # prove every remote hop before spending LLM budget
+make ingest                          # ingest doc_store/  (or: make ingest-minio PREFIX=…)
+
 # Development server (single process, port 8201)
 uv run python mcp_server.py
 
