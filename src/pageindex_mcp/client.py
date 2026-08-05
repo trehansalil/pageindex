@@ -1019,6 +1019,13 @@ class CustomPageIndexClient(PageIndexClient):
                 pre_retry_ok = ok
                 pre_retry_reason = reason
                 pre_retry_chars = total_chars
+                # RFC-030 D1: snapshot the mutable extraction state alongside
+                # result/ok/reason so a lost retry reverts ALL six variables
+                # atomically -- otherwise the tree path (result) and the
+                # downstream flat-routing path (md_content) can diverge on
+                # which extraction was actually used.
+                pre_retry_md_content = md_content
+                pre_retry_pic_results = pic_results
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -1080,19 +1087,21 @@ class CustomPageIndexClient(PageIndexClient):
                     # retry doesn't win over an equally-garbled original.
                     post_retry_chars = len(_flatten_tree_text(result.get("structure", [])))
 
-                    def _repeating_token_density(text: str) -> float:
+                    def _repeating_token_density(text: str) -> float | None:
                         """Return the fraction of alnum tokens that are the most-common token.
 
                         Mirrors the single-token repetition check inside _is_garbled_blob
                         (>30% threshold, >20 alnum tokens) but returns the raw ratio so the
                         D4 guardrail can compare pre/post-retry densities without re-running
-                        the full garble gate.
+                        the full garble gate. Returns None (not 0.0) when there are too few
+                        alnum tokens to assess, so "too short to assess" is distinguishable
+                        from "assessed and found clean" (RFC-030 D1).
                         """
                         from collections import Counter
                         import re as _re
                         tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
                         if len(tokens) < 20:
-                            return 0.0
+                            return None
                         return Counter(tokens).most_common(1)[0][1] / len(tokens)
 
                     if post_retry_chars < pre_retry_chars:
@@ -1126,25 +1135,60 @@ class CustomPageIndexClient(PageIndexClient):
                             _post_density = _repeating_token_density(
                                 _flatten_tree_text(result.get("structure", []))
                             )
-                            # Similar density means the retry just produced more of the same
-                            # garble — char-count growth should not win here.
-                            _density_improved = _post_density < _pre_density * 0.80
-                            retry_wins = _density_improved
-                            if not retry_wins:
-                                logger.warning(
-                                    "RFC-029 D4: post-retry repeating-token density (%.3f)"
-                                    " not substantially better than pre-retry (%.3f) for %s"
-                                    " — reverting to pre-retry result",
-                                    _post_density,
-                                    _pre_density,
-                                    filename,
-                                )
+                            if _pre_density is None:
+                                # RFC-030 D1: pre-retry text was too short (<20 alnum
+                                # tokens) to assess a density at all -- typically a
+                                # no-text-layer PDF whose original extraction was
+                                # near-empty. There is no baseline to compare against,
+                                # so any real OCR recovery wins, gated only by the
+                                # absolute quality floor below.
+                                retry_wins = post_retry_chars >= LOW_CONTENT_OCR_CHAR_FLOOR
+                                if not retry_wins:
+                                    logger.warning(
+                                        "RFC-030 D1: post-retry chars (%d) below quality"
+                                        " floor (%d) for %s -- reverting to pre-retry result",
+                                        post_retry_chars,
+                                        LOW_CONTENT_OCR_CHAR_FLOOR,
+                                        filename,
+                                    )
+                            else:
+                                # Similar density means the retry just produced more of
+                                # the same garble — char-count growth should not win here.
+                                if _post_density is None:
+                                    # Post-retry text also too short to assess density;
+                                    # char-count growth (outer else) decides -- retry wins.
+                                    retry_wins = True
+                                else:
+                                    _density_improved = _post_density < _pre_density * 0.80
+                                    retry_wins = _density_improved
+                                    if not retry_wins:
+                                        logger.warning(
+                                            "RFC-029 D4: post-retry repeating-token density (%.3f)"
+                                            " not substantially better than pre-retry (%.3f) for %s"
+                                            " — reverting to pre-retry result",
+                                            _post_density,
+                                            _pre_density,
+                                            filename,
+                                        )
                         else:
                             retry_wins = True
                     if not retry_wins:
+                        # RFC-030 D1: atomic revert -- restore all six mutable
+                        # variables together so the tree (result) and the
+                        # flat-routing markdown (md_content/tmp_md_path/
+                        # pic_results) cannot diverge on which extraction won.
                         result = pre_retry_result
                         ok = pre_retry_ok
                         reason = pre_retry_reason
+                        md_content = pre_retry_md_content
+                        pic_results = pre_retry_pic_results
+                        if tmp_md_path and os.path.exists(tmp_md_path):
+                            os.unlink(tmp_md_path)
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".md", delete=False, mode="w", encoding="utf-8"
+                        ) as md_tmp:
+                            md_tmp.write(md_content)
+                            tmp_md_path = md_tmp.name
                     OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
@@ -1482,6 +1526,22 @@ class CustomPageIndexClient(PageIndexClient):
                                 route_and_extract_flat, flat_md
                             )
 
+                            # RFC-030 D0 (Task 3.3): zero-block guard -- non-empty
+                            # markdown must never yield an empty block list (e.g. a
+                            # stray/unclosed fence marker swallowing all content).
+                            # Escalate via the same LowQualityTreeError path used for
+                            # tree-routed docs (HR5) instead of persisting a 0-block
+                            # flat.json.
+                            if not blocks and flat_md.strip():
+                                LOW_QUALITY_TREES.labels(reason="flat_zero_block").inc()
+                                logger.warning(
+                                    "Rejecting zero-block flat extraction for %s: "
+                                    "non-empty markdown (%d chars) produced no blocks",
+                                    filename,
+                                    len(flat_md),
+                                )
+                                raise LowQualityTreeError("flat_zero_block")
+
                             # Task 6.1: detect image-standalone PDFs — all blocks
                             # have role="image".  Bare image files (.jpg/.png) are
                             # already handled by the _IMAGE_EXTS route above; this
@@ -1634,9 +1694,30 @@ class CustomPageIndexClient(PageIndexClient):
                             self.last_content_class = content_class
                             return doc_id
 
-                LOW_QUALITY_TREES.labels(reason=reason).inc()
-                logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
-                raise LowQualityTreeError(reason)
+                if reason in (
+                    "garbling",
+                    "node_garbling",
+                    "visual_order_garble",
+                    "node_count<3",
+                    "depth<2",
+                    "rtl_reversal",
+                    "reordered",
+                ):
+                    LOW_QUALITY_TREES.labels(reason=reason).inc()
+                    logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
+                    raise LowQualityTreeError(reason)
+
+                # RFC-030 D2: unhandled validate_tree reason (low_content_density,
+                # suspect_density, empty_node_contamination, arabic_low_content_ratio)
+                # -- persist with FAIL instead of raising (HR5: no silent persistence,
+                # but an explicit FAIL verdict is not silent). Tree structure is
+                # preserved as-is (no flat extraction, no OCR retry); `ok` stays False
+                # so classify_verdict below maps this reason to a FAIL verdict.
+                logger.warning(
+                    "Persisting low-quality tree with FAIL verdict for %s: reason=%s",
+                    filename,
+                    reason,
+                )
 
             # Persist processed result first (D7): the tree must succeed validation
             # and persist before the raw upload is committed, so a save_doc failure
@@ -1667,7 +1748,7 @@ class CustomPageIndexClient(PageIndexClient):
             structure = result.get("structure", [])
             prior_verdict = await asyncio.to_thread(find_prior_verdict, sha256, filename, doc_id)
             verdict, verdict_reason = classify_verdict(
-                structure, "", None, prior_verdict=prior_verdict
+                structure, "", reason or None, prior_verdict=prior_verdict
             )
             _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
