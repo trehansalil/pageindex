@@ -10,6 +10,7 @@ the presigned-URL splice, applied to every verb instead of just GET.
 import importlib
 from unittest.mock import patch
 
+import pytest
 import urllib3
 
 from pageindex_mcp.minio_client import PrefixedPoolManager, make_minio
@@ -47,6 +48,51 @@ class TestPrefixedPoolManager:
         assert args.kwargs["body"] == b"x"
         assert args.kwargs["preload_content"] is False
 
+    def test_already_prefixed_path_not_prefixed_twice(self):
+        """urllib3 follows redirects by re-entering urlopen, so a redirect back
+        to /minio/... must not become /minio/minio/..."""
+        args = self._capture("/minio", "https://infra.example.com/minio/pageindex/a.pdf")
+        assert args.args[1] == "https://infra.example.com/minio/pageindex/a.pdf"
+
+    def test_bare_prefix_path_not_prefixed_twice(self):
+        args = self._capture("/minio", "https://infra.example.com/minio")
+        assert args.args[1] == "https://infra.example.com/minio"
+
+    def test_prefix_lookalike_path_is_still_prefixed(self):
+        """/minio-staging is a different path, not an already-prefixed one."""
+        args = self._capture("/minio", "https://infra.example.com/minio-staging/a")
+        assert args.args[1] == "https://infra.example.com/minio/minio-staging/a"
+
+
+class TestPrefixedPoolInheritsSdkSettings:
+    """Passing http_client= replaces the SDK's own pool, so the prefixed pool
+    must carry the same timeout/retry/CA policy or those guarantees silently
+    vanish on exactly the deployments that use the public route."""
+
+    def test_timeout_and_retries_match_sdk_defaults(self):
+        pm = PrefixedPoolManager("/minio")
+        kw = pm.connection_pool_kw
+
+        assert kw["timeout"].connect_timeout == 300
+        assert kw["timeout"].read_timeout == 300
+        assert kw["maxsize"] == 10
+        assert kw["cert_reqs"] == "CERT_REQUIRED"
+        assert kw["ca_certs"]
+        assert kw["retries"].total == 5
+        assert kw["retries"].status_forcelist == [500, 502, 503, 504]
+
+    def test_ssl_cert_file_env_is_honoured(self, monkeypatch, tmp_path):
+        ca = tmp_path / "ca.pem"
+        ca.write_text("")
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+
+        pm = PrefixedPoolManager("/minio")
+        assert pm.connection_pool_kw["ca_certs"] == str(ca)
+
+    def test_explicit_kwargs_still_override(self):
+        pm = PrefixedPoolManager("/minio", maxsize=3)
+        assert pm.connection_pool_kw["maxsize"] == 3
+
 
 class TestMakeMinio:
     def test_prefix_installs_custom_http_client(self):
@@ -66,23 +112,47 @@ class TestMakeMinio:
             make_minio("infra.example.com/minio", "k", "s", secure=True, path_prefix="")
 
 
+@pytest.fixture
+def reloadable_config(monkeypatch):
+    """Yield pageindex_mcp.config, restoring the module-level singleton after.
+
+    ``importlib.reload`` rebinds ``config.settings``, and monkeypatch only
+    rewinds the environment — not the reloaded module. Without this teardown a
+    test that reloads under MINIO_PATH_PREFIX=/minio leaves that value visible
+    to every later test that reads ``config.settings`` directly.
+    """
+    import pageindex_mcp.config as cfg
+
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    original = cfg.settings
+    try:
+        yield cfg
+    finally:
+        cfg.settings = original
+
+
 class TestConfig:
-    def test_minio_path_prefix_defaults_empty(self, monkeypatch):
+    def test_minio_path_prefix_defaults_empty(self, monkeypatch, reloadable_config):
         monkeypatch.delenv("MINIO_PATH_PREFIX", raising=False)
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
 
-        importlib.reload(cfg)
-        assert cfg.settings.minio_path_prefix == ""
+        importlib.reload(reloadable_config)
+        assert reloadable_config.settings.minio_path_prefix == ""
 
-    def test_minio_path_prefix_normalized(self, monkeypatch):
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
+    def test_minio_path_prefix_normalized(self, monkeypatch, reloadable_config):
         for raw in ("minio", "/minio", "/minio/"):
             monkeypatch.setenv("MINIO_PATH_PREFIX", raw)
-            importlib.reload(cfg)
-            assert cfg.settings.minio_path_prefix == "/minio", raw
+            importlib.reload(reloadable_config)
+            assert reloadable_config.settings.minio_path_prefix == "/minio", raw
+
+    def test_minio_region_defaults_empty_so_sdk_discovers_it(
+        self, monkeypatch, reloadable_config
+    ):
+        """Pinning a region by default would misSign every request on a
+        deployment configured with a different one."""
+        monkeypatch.delenv("MINIO_REGION", raising=False)
+
+        importlib.reload(reloadable_config)
+        assert reloadable_config.settings.minio_region == ""
 
 
 class TestPresignFallsBackToMainPrefix:

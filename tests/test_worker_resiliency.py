@@ -27,10 +27,13 @@ import pytest
 
 from pageindex_mcp.worker import (
     JOB_TIMEOUT,
+    MAX_JOBS,
+    MAX_JOBS_CEILING,
     REAP_GRACE,
     WorkerSettings,
     process_document_job,
     reap_stale_jobs,
+    resolve_max_jobs,
 )
 
 
@@ -44,6 +47,44 @@ def test_worker_02_c1_max_jobs_is_one():
     """WORKER-02-C1: the worker caps concurrency at one job so a single heavy
     Docling job is never stacked with another (peak-memory protection)."""
     assert WorkerSettings.max_jobs == 1
+
+
+# ── WORKER-02-C5 — PAGEINDEX_WORKER_MAX_JOBS override is clamped ─────────────
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, 1),      # unset — the memory-safe default
+        ("1", 1),
+        ("2", 2),       # the documented remote-Docling range
+        ("4", 4),
+        ("5", 4),       # above the ceiling → clamped, not trusted
+        ("9999", 4),    # a typo must not be able to OOM the worker
+        ("0", 1),       # below the floor → clamped up
+        ("-3", 1),
+        ("", 1),        # unparseable → fall back to the safe default
+        ("two", 1),
+        ("2.5", 1),
+    ],
+)
+def test_worker_02_c5_max_jobs_override_is_clamped(raw, expected):
+    """WORKER-02-C5: PAGEINDEX_WORKER_MAX_JOBS opts into parallelism for the
+    remote-Docling profile, but is clamped to [1, MAX_JOBS_CEILING]. An
+    arbitrarily large value would reinstate exactly the OOM that max_jobs=1
+    exists to prevent, and an invalid one must not crash worker startup."""
+    assert resolve_max_jobs(raw) == expected
+
+
+def test_worker_02_c5_ceiling_is_the_documented_safe_maximum():
+    """The docs promise 2-4 parallel jobs against remote Docling; the ceiling
+    has to match, or the guidance and the guard disagree."""
+    assert MAX_JOBS_CEILING == 4
+    assert resolve_max_jobs(str(MAX_JOBS_CEILING)) == MAX_JOBS_CEILING
+
+
+def test_worker_02_c5_worker_settings_uses_the_clamped_value():
+    """The clamp is worthless if WorkerSettings reads the raw env itself."""
+    assert WorkerSettings.max_jobs == MAX_JOBS
+    assert 1 <= WorkerSettings.max_jobs <= MAX_JOBS_CEILING
 
 
 # ── WORKER-02-C2 — processing is stamped with a wall-clock start time ─────────
