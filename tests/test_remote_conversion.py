@@ -32,6 +32,8 @@ class TestPresignedUrl:
             patch("pageindex_mcp.storage.settings") as mock_settings,
         ):
             mock_settings.minio_presign_endpoint = None
+            mock_settings.minio_endpoint = "minio.example.com"
+            mock_settings.minio_path_prefix = ""
             mock_settings.minio_bucket = "pageindex"
             from pageindex_mcp.storage import presigned_get_url
 

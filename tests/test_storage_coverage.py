@@ -47,14 +47,14 @@ def test_get_minio_creates_bucket_when_missing(monkeypatch):
     monkeypatch.setattr(storage_mod, "_minio_client", None)
     fake_client = MagicMock()
     fake_client.bucket_exists.return_value = False
-    with patch("pageindex_mcp.storage.Minio", return_value=fake_client) as mock_minio_cls:
+    with patch("pageindex_mcp.storage.make_minio", return_value=fake_client) as mock_minio_cls:
         result = get_minio()
 
     mock_minio_cls.assert_called_once()
     fake_client.make_bucket.assert_called_once_with(storage_mod.settings.minio_bucket)
     assert result is fake_client
     # Second call must reuse the cached singleton, not construct again.
-    with patch("pageindex_mcp.storage.Minio") as mock_minio_cls_2:
+    with patch("pageindex_mcp.storage.make_minio") as mock_minio_cls_2:
         result2 = get_minio()
     mock_minio_cls_2.assert_not_called()
     assert result2 is fake_client
@@ -66,7 +66,7 @@ def test_get_minio_skips_bucket_creation_when_exists(monkeypatch):
     monkeypatch.setattr(storage_mod, "_minio_client", None)
     fake_client = MagicMock()
     fake_client.bucket_exists.return_value = True
-    with patch("pageindex_mcp.storage.Minio", return_value=fake_client):
+    with patch("pageindex_mcp.storage.make_minio", return_value=fake_client):
         get_minio()
     fake_client.make_bucket.assert_not_called()
     monkeypatch.setattr(storage_mod, "_minio_client", None)
