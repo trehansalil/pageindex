@@ -355,7 +355,12 @@ class TestPageCoverageFilter:
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        assert len(result) == 0
+        # D5a (RFC-029): page_coverage skip retains png_bytes + skipped_reason,
+        # no ocr_text — OCR still short-circuited.
+        assert 0 in result
+        assert result[0].get("skipped_reason") == "page_coverage"
+        assert result[0].get("png_bytes")
+        assert not result[0].get("ocr_text")
 
     def test_page_coverage_filter_keeps_small_region(self, monkeypatch):
         """Region at 30% page area → present in crops dict with valid PNG bytes."""
@@ -496,6 +501,7 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
             monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
             monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(client_mod, "find_prior_verdict", lambda *a, **kw: None)
             monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
             monkeypatch.setattr(
                 client_mod, "image_to_markdown", lambda path, langs: "<!-- image -->"
@@ -573,6 +579,7 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
             monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
             monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(client_mod, "find_prior_verdict", lambda *a, **kw: None)
             monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
             monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: markdown)
 
@@ -686,7 +693,8 @@ class TestTextLayerProbe:
         }
 
     def test_text_layer_skips_picture_ocr(self, monkeypatch):
-        """get_text(clip=rect) returns >20 chars -> region NOT in crops dict."""
+        """get_text(clip=rect) returns >20 chars already in the Docling markdown
+        export -> region NOT in crops dict (RFC-024 D1 containment guard)."""
         long_clip_text = "This is more than twenty characters of extracted text."
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, long_clip_text)
         monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
@@ -695,10 +703,14 @@ class TestTextLayerProbe:
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=long_clip_text)
 
-        assert 0 not in result
-        assert len(result) == 0
+        # D5a (RFC-029): clip_text_already_exported retains png_bytes and
+        # propagates clip_text into ocr_text — OCR itself was not invoked.
+        assert 0 in result
+        assert result[0].get("skipped_reason") == "clip_text_already_exported"
+        assert result[0].get("png_bytes")
+        assert result[0].get("ocr_text") == long_clip_text
 
     def test_no_text_layer_allows_picture_ocr(self, monkeypatch):
         """get_text(clip=rect) returns "" -> region IS in crops dict, OCR proceeds."""
@@ -735,7 +747,7 @@ class TestTextLayerProbe:
         assert 0 in result  # OCR fires — boundary NOT exceeded
 
     def test_text_layer_boundary_21_chars_skips(self, monkeypatch):
-        """21 chars (> threshold) → skip OCR."""
+        """21 chars (> threshold), already in the Docling markdown export → skip OCR."""
         clip_text = "A" * 21  # just above threshold
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
         monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
@@ -744,9 +756,14 @@ class TestTextLayerProbe:
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=clip_text)
 
-        assert len(result) == 0  # OCR skipped
+        # D5a (RFC-029): retained-skip contract — OCR skipped but crop and
+        # propagated clip_text are surfaced for downstream.
+        assert 0 in result
+        assert result[0].get("skipped_reason") == "clip_text_already_exported"
+        assert result[0].get("png_bytes")
+        assert result[0].get("ocr_text") == clip_text
 
     def test_text_layer_env_override(self, monkeypatch):
         """_PICTURE_OCR_MIN_CHARS env override: set to 50 → 30 chars should NOT skip."""

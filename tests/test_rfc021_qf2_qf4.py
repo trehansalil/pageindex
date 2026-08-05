@@ -127,15 +127,15 @@ def test_qf2b_ratio_016_passes():
 
 
 def test_qf2b_ratio_018_marginal():
-    # RFC-023 D10 widened PASS_MAX_LEAF_RATIO 0.17 -> 0.20, so 0.18 now
-    # clears the base gate. Recalibrated to 0.21, just above the new
-    # threshold -> stays MARGINAL. content_class "default" also fails the
-    # (unchanged, 0.17) cat_c promotion threshold, so no category-promotion
-    # path masks the base-gate result.
-    tree = _make_tree([210] + [10] * 79, depth=2)
+    # RFC-026 D0 widened PASS_MAX_LEAF_RATIO 0.20 -> 0.30, so the old 0.21
+    # ratio now clears the base gate. Recalibrated to 0.35, just above the
+    # new threshold -> stays MARGINAL. content_class "default" also fails
+    # the (unchanged, 0.17) cat_c promotion threshold, so no
+    # category-promotion path masks the base-gate result.
+    tree = _make_tree([350] + [10] * 65, depth=2)
     verdict, reason = classify_verdict(tree, "default", None)
     assert verdict == "MARGINAL"
-    assert reason == "leaf_concentration=0.21"
+    assert reason == "leaf_concentration=0.35"
 
 
 def test_qf2b_env_var_override():

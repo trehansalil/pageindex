@@ -65,13 +65,20 @@ def test_classify_image_verdict_zero():
 # ---------------------------------------------------------------------------
 
 
+# RFC-026 D0: a genuinely empty structure ([]) is now an unconditional
+# zero_content FAIL that runs before the image_standalone routing branch, so
+# these image_standalone-specific tests use a minimal non-empty structure to
+# isolate the routing/precedence behavior they're actually testing.
+_NON_EMPTY_STRUCTURE = [{"node_id": "1", "title": "Cover", "text": "img", "nodes": []}]
+
+
 def test_classify_verdict_image_standalone_routing():
     """content_class='image_standalone' delegates entirely to
     _classify_image_verdict — the normal node_count/depth/max_leaf_ratio
-    tree-shape checks never run, even with an empty structure (which would
-    otherwise MARGINAL, not FAIL, under the default tree-shape path)."""
+    tree-shape checks never run (which would otherwise MARGINAL, not FAIL,
+    under the default tree-shape path)."""
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         None,
         image_enrichment_ratio=1.0,
@@ -79,7 +86,7 @@ def test_classify_verdict_image_standalone_routing():
     assert (verdict, reason) == ("PASS", "image_enrichment_complete")
 
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         None,
         image_enrichment_ratio=None,
@@ -87,7 +94,7 @@ def test_classify_verdict_image_standalone_routing():
     assert (verdict, reason) == ("FAIL", "no_image_enrichment")
 
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         None,
         image_enrichment_ratio=0.5,
@@ -99,7 +106,7 @@ def test_classify_verdict_garbling_still_wins_over_image_standalone():
     """The 'garbling' terminal reason short-circuits BEFORE the
     content_class=='image_standalone' branch is even reached."""
     verdict, reason = classify_verdict(
-        [],
+        _NON_EMPTY_STRUCTURE,
         "image_standalone",
         "garbling",
         image_enrichment_ratio=1.0,
@@ -178,6 +185,9 @@ def _wire_image_standalone_flat(monkeypatch):
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -294,10 +304,14 @@ async def test_image_standalone_no_conflict_bare_image_file_unaffected(monkeypat
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
+        "save_flat_doc": MagicMock(),
         "route_and_extract_flat": MagicMock(
             return_value=("flat_prose", [dict(b) for b in _ALL_IMAGE_BLOCKS])
         ),
         "FLAT_DOCS_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -309,6 +323,6 @@ async def test_image_standalone_no_conflict_bare_image_file_unaffected(monkeypat
 
     assert isinstance(doc_id, str) and len(doc_id) == 36
     mocks["save_doc"].assert_called_once()
-    mocks["route_and_extract_flat"].assert_not_called()
+    mocks["save_flat_doc"].assert_not_called()
     mocks["FLAT_DOCS_TOTAL"].labels.assert_not_called()
     assert c.last_content_class is None

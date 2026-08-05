@@ -109,6 +109,9 @@ def _wire_garble_probe(
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
         "splice_picture_text_for_tree": MagicMock(side_effect=lambda md, pics: md),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

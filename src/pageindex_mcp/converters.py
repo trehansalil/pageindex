@@ -3,14 +3,18 @@
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import re
+import unicodedata
 import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
@@ -77,6 +81,69 @@ _NUM_PARA_RE = re.compile(r"^(?:§\s*)?\d+(\.\d+)+(?=[ \t.:]|$)")
 _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 _AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b")
 _AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b")
+# RFC-028 D1: char limit for wholesale heading promotion, raised from 60 to
+# accommodate Arabic legal headings/titles (66-76+ chars observed).
+_AR_HEADING_CHAR_LIMIT = 100
+# RFC-028 D1: captures the structural marker word plus an immediately
+# following PARENTHESIZED numeral (e.g. "مادة (3)") so a fused marker+title
+# line exceeding the char limit can be split into a standalone heading (this
+# capture) and remaining prose (everything after it). Deliberately requires
+# the parenthetical — a bare trailing number ("مادة 2 من هذا القانون...") is
+# the shape of a mid-paragraph/citation reference continuing into running
+# prose ("Article 2 OF this law..."), not a title, so it must NOT be split
+# into a heading (see TestInjectArabicStructuralHeadingsBlockStart's
+# wrapped-citation case in test_rfc027_d4.py).
+_AR_MARKER_CAPTURE_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء|مادة)\s*\(\s*\d+\s*\)")
+
+
+def _inject_arabic_structural_headings(md: str) -> str:
+    """Promote al-bab/al-fasl/al-maddah lines to '#' headings (RFC-027 D4).
+
+    Docling never classifies Arabic structural markers as ``SectionHeaderItem``s
+    (English equivalents like "Chapter"/"Article" ARE detected), so these lines
+    stay plain prose and the heading-depth recovery chain — which can only
+    re-level EXISTING headings via ``_AR_PART_RE``/``_AR_ARTICLE_RE`` in
+    ``numbering_depth`` — has nothing to work with, leaving the tree flat.
+
+    Promotion is gated ONLY on the marker regex matching the line's **start**
+    (RFC-028 D1) — a preceding-blank-line requirement is redundant/harmful for
+    continuous OCR output, where scanned Arabic legal text flows without
+    blank-line separators between consecutive مادة articles, and previously
+    meant only the FIRST marker in a run was ever promoted. The anchor
+    protects against mid-paragraph references like "...المشار إليها في
+    المادة 5 من هذا القانون..." since those never start their line with the
+    marker.
+
+    A matching line up to 100 chars (RFC-028 D1: raised from 60 to
+    accommodate Arabic legal headings like "المادة (3) نطاق التطبيق", which
+    run 66-76+ chars) is promoted wholesale. A matching line that exceeds 100
+    chars is split: the marker (plus any immediately-following numeral/
+    parenthetical, e.g. "مادة (3)") becomes a standalone heading and the
+    remaining prose is kept as a following line rather than dropped. Depth is
+    left to the existing ``_relevel_by_containment``/``_relevel_by_numbering``
+    chain."""
+    lines = md.split("\n")
+    out = []
+    for line in lines:
+        t = line.strip()
+        if t and not _HEADING_RE.match(t):
+            is_part = bool(_AR_PART_RE.match(t))
+            is_article = is_part is False and bool(_AR_ARTICLE_RE.match(t))
+            if is_part or is_article:
+                level = "#" if is_part else "##"
+                if len(t) <= _AR_HEADING_CHAR_LIMIT:
+                    out.append(f"{level} {t}")
+                    continue
+                marker_match = _AR_MARKER_CAPTURE_RE.match(t)
+                if marker_match:
+                    marker = marker_match.group(0).strip()
+                    remainder = t[marker_match.end() :].strip()
+                    out.append(f"{level} {marker}")
+                    if remainder:
+                        out.append(remainder)
+                    continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def numbering_depth(title: str) -> int | None:
@@ -1229,7 +1296,7 @@ def _text_is_logical_order(text: str) -> bool:
             break
     if sampled == 0:
         return False
-    return orig_total >= disp_total
+    return sampled > 0 and orig_total > 0 and orig_total >= disp_total
 
 
 def reconstruct_bidi_order(text: str) -> str:
@@ -1292,6 +1359,24 @@ _AR_COMMON_WORDS = frozenset(
         "بين",
         "كان",
         "ما",
+        # RFC-028 D3: governance/legal domain terms (siyasat-hawkama gap — specialized
+        # vocabulary scored 0 for both forward and reversed text, so the readability
+        # comparison never fired).
+        "حوكمة",
+        "بيانات",
+        "سياسة",
+        "إدارة",
+        "تنظيم",
+        "قرار",
+        "وزارة",
+        "لائحة",
+        "تنفيذية",
+        "مرسوم",
+        "قانون",
+        "نظام",
+        "مادة",
+        "حكومة",
+        "هيئة",
     ]
 )
 _AR_DEFINITE_RE = re.compile(r"\bال\w+")
@@ -1364,6 +1449,38 @@ _COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
 _TEXT_LAYER_GARBLE_CHECK_ENABLED = os.getenv(
     "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
+# D1 (RFC-024): capture clip_text into PictureResult.ocr_text when it is NOT
+# already contained in the Docling markdown export (containment-guarded — see
+# _clip_text_contained). Set to False to restore the pre-RFC-024 skip-only
+# behavior (every non-trivial clip_text is discarded, "clip_text" reason).
+_CLIP_TEXT_CAPTURE_ENABLED = os.getenv("CLIP_TEXT_CAPTURE_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_CLIP_TEXT_CONTAINMENT_THRESHOLD = 0.6
+# D1 (RFC-024): document-level text-layer fallback — when Docling's exported
+# markdown is this thin (excluding `<!-- image -->` markers), the document is
+# image-dominant and the native PDF text layer is read wholesale as
+# supplementary content rather than lost entirely.
+_DOC_TEXT_FALLBACK_MIN_CHARS = 100
+# D1 (RFC-025): secondary trigger — a heading-only tree can carry enough total
+# chars to clear _DOC_TEXT_FALLBACK_MIN_CHARS while every heading has almost no
+# body prose beneath it (structure survived, content did not). Fire the same
+# pdfium whole-document fallback when chars-per-heading drops below this floor.
+_DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING = 50
+# D1 (RFC-025): when True, the full-page-coverage exemption uses the
+# region-scoped text check (_region_has_own_text_layer); when False, restore
+# the pre-RFC-025 page-level check (_text_layer_has_content) for rollback.
+_REGION_AWARE_TEXT_CHECK_ENABLED = os.getenv(
+    "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+# D1 (RFC-025): the region-aware exemption converts previously-skipped
+# full-page picture regions into active 300-DPI crop+Tesseract OCR work,
+# which is expensive on multi-hundred-page scanned documents. Cap the number
+# of full-page exemptions fired per document; further regions past the cap
+# are skipped (page_coverage) with a warning.
+_MAX_FULLPAGE_PICTURE_OCR_REGIONS = int(os.getenv("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50"))
 
 
 class PictureResult(TypedDict, total=False):
@@ -1479,10 +1596,201 @@ def _text_layer_has_content(page) -> bool:
     return True
 
 
-def _recover_picture_text(  # noqa: PLR0915
+def _region_has_own_text_layer(page, region_rect) -> bool:
+    """Return True when the picture region's OWN bbox has a meaningful native text layer.
+
+    D1 (RFC-025): `_text_layer_has_content(page)` is a page-level check, so
+    incidental text outside the region (headers, footers, page numbers) keeps
+    it True and disables the coverage exemption even when the region's own
+    body text was baked into a skipped full-page image. This checks only the
+    text clipped to `region_rect`, regardless of what text exists outside it."""
+    region_clip_len = len(page.get_text("text", clip=region_rect).strip())
+    return region_clip_len >= _PICTURE_OCR_MIN_CHARS
+
+
+def _normalize_for_containment(text: str) -> str:
+    """NFKC-fold + whitespace-collapse + lowercase (RFC-024 D1).
+
+    Shared between the clip-text containment guard and its tests so both sides
+    of the comparison are robust to whitespace/reflow differences between the
+    PDF text layer and the Docling markdown export."""
+    return " ".join(unicodedata.normalize("NFKC", text).split()).lower()
+
+
+def _clip_text_contained(clip_text: str, md_norm: str) -> bool:
+    """True when >=60% of ``clip_text``'s normalized chars belong to tokens
+    that appear as substrings of ``md_norm`` (RFC-024 D1 containment guard
+    against double-capturing content Docling already exported into the
+    markdown body). Token-level substring matching (length-weighted) stays
+    robust to whitespace/reflow differences while remaining discriminative —
+    a raw character-frequency check would report near-total containment for
+    any clip against a large markdown body."""
+    clip_norm = _normalize_for_containment(clip_text)
+    if not clip_norm:
+        return True
+    if not md_norm:
+        return False
+    tokens = clip_norm.split()
+    total = sum(len(t) for t in tokens)
+    if total == 0:
+        return True
+    matched = sum(len(t) for t in tokens if t in md_norm)
+    return matched / total >= _CLIP_TEXT_CONTAINMENT_THRESHOLD
+
+
+def _document_level_text_fallback(md: str, pdf_path: str) -> str:
+    """Full-page text-layer fallback for image-dominant documents (RFC-024 D1).
+
+    When Docling's exported markdown carries fewer than
+    ``_DOC_TEXT_FALLBACK_MIN_CHARS`` characters (excluding ``<!-- image -->``
+    markers), Docling routed nearly the entire document through the picture
+    path and per-region recovery in ``_recover_picture_text`` has no markdown
+    body to work against. Read the native PDF text layer wholesale via
+    pypdfium2 (BSD-3/Apache-2, HR4) and append it as supplementary content so
+    the tree build sees something other than bare image markers. Never fatal
+    — any failure returns ``md`` unchanged.
+
+    Secondary trigger (RFC-025 D1): a heading-only tree (structure survived,
+    body prose did not — e.g. a 347-node ToC with no article text) can clear
+    the total-char floor above while still carrying almost no prose per
+    heading. Fire the same fallback when chars-per-heading drops below
+    ``_DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING``."""
+    total_chars = len(md.replace(_IMAGE_MARKER, ""))
+    heading_count = len(_HEADING_RE.findall(md))
+    if (
+        total_chars >= _DOC_TEXT_FALLBACK_MIN_CHARS
+        and total_chars / max(heading_count, 1) >= _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING
+    ):
+        return md
+    try:
+        import pypdfium2 as pdfium
+
+        pdoc = pdfium.PdfDocument(pdf_path)
+        try:
+            page_texts = []
+            for page in pdoc:
+                textpage = page.get_textpage()
+                text = textpage.get_text_range().strip()
+                if text:
+                    page_texts.append(text)
+        finally:
+            pdoc.close()
+    except Exception as exc:
+        logger.warning(
+            "document-level text-layer fallback failed for %s (%s); keeping markdown as-is",
+            pdf_path,
+            exc,
+        )
+        return md
+    full_text = "\n\n".join(page_texts).strip()
+    if not full_text:
+        return md
+    # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
+    # layer — never append a garbled text layer as supplementary content (HR5).
+    from .helpers import _is_garbled_blob
+
+    if _is_garbled_blob(full_text):
+        logger.warning(
+            "document-level text-layer fallback skipped for %s: text layer is garbled",
+            pdf_path,
+        )
+        return md
+    logger.info(
+        "document-level text-layer fallback fired for %s (%d markdown char(s) "
+        "excluding image markers)",
+        pdf_path,
+        total_chars,
+    )
+    return f"{md}\n\n{full_text}"
+
+
+def _detect_page_rotation(page) -> dict:
+    """RFC-026 D2: read a single page's /Rotate metadata plus an aspect-ratio
+    fallback. Reuses the `page.rotation` accessor already used at the D6
+    crop-normalization site (~line 1746). Per-page, not per-document — a
+    single PDF can mix portrait and landscape pages. `/Rotate` is authoritative;
+    the aspect-ratio heuristic is advisory only, for pages where a scanner
+    omitted `/Rotate` but still produced a wide page.
+    """
+    try:
+        rotate = page.rotation
+        width = page.rect.width
+        height = page.rect.height
+    except Exception:
+        return {"rotate": 0, "likely_landscape": False, "width": 0.0, "height": 0.0}
+    likely_landscape = rotate == 0 and width > height
+    return {
+        "rotate": rotate,
+        "likely_landscape": likely_landscape,
+        "width": width,
+        "height": height,
+    }
+
+
+# RFC-026 D2: gates the rotation-aware coordinate transform below so the fix
+# can be rolled back without a revert if it regresses an unrelated corpus doc.
+_PAGE_ROTATION_DETECTION_ENABLED = os.getenv(
+    "PAGE_ROTATION_DETECTION_ENABLED", "true"
+).strip().lower() in ("1", "true", "yes")
+
+
+def _normalize_pdf_page_rotation(pdf_path: str) -> str:
+    """RFC-026 D2: bake each page's effective rotation into its `/Rotate` key
+    before handing the file to the docling extraction backend, so rotated and
+    aspect-ratio-landscape pages get a consistent coordinate mapping instead of
+    fragmenting into near-empty text blocks (the `uae_numbers_english_page_16_17`
+    stall — ~750 chars extracted vs. ~4000-8000 expected).
+
+    `effective_rotation` is `/Rotate` when non-zero, else 90 when the aspect-ratio
+    heuristic flags a likely-landscape page with no explicit `/Rotate` (a scanner
+    that omitted the key but still produced a wide page). Per-page — mixed
+    portrait/landscape documents only get pages that need it rewritten.
+
+    Composes with the existing D6 rotation-zeroing at the OCR-crop site
+    (~lines 1744-1774): that path opens its own `fitz.Document` for cropping and
+    always restores `orig_rotation` after rendering, so it is unaffected by the
+    (separate, disk-persisted) copy this function may return.
+
+    Returns the original path unchanged when no page needs correction, when the
+    gate is disabled, or on any read/write failure (fail-open — a single
+    corrupted page's rotation metadata must not abort extraction).
+    """
+    if not _PAGE_ROTATION_DETECTION_ENABLED:
+        return pdf_path
+    try:
+        import fitz  # PyMuPDF, AGPL-3.0
+
+        pdf = fitz.open(pdf_path)
+        try:
+            changed = False
+            for page in pdf:
+                info = _detect_page_rotation(page)
+                effective_rotation = (
+                    info["rotate"] if info["rotate"] else (90 if info["likely_landscape"] else 0)
+                )
+                if effective_rotation and effective_rotation != page.rotation:
+                    page.set_rotation(effective_rotation)
+                    changed = True
+            if not changed:
+                return pdf_path
+            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+            tmp.close()
+            pdf.save(tmp.name)
+            return tmp.name
+        finally:
+            pdf.close()
+    except Exception as exc:
+        logger.warning(
+            "rotation normalization failed for %s (%s); using original file", pdf_path, exc
+        )
+        return pdf_path
+
+
+def _recover_picture_text(  # noqa: PLR0915, C901
     pdf_path: str,
     regions: list[dict],
     langs: list[str],
+    md: str = "",
 ) -> tuple[dict[int, PictureResult], dict[int, str]]:
     """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
 
@@ -1505,69 +1813,217 @@ def _recover_picture_text(  # noqa: PLR0915
     a subprocess, safe to parallelize). Decorative gate: when OCR yield is below
     ``_PICTURE_OCR_MIN_CHARS`` the crop's ``png_bytes`` are dropped — unless the
     VLM describe route is enabled downstream, which may still re-mark the image
-    as content-bearing via a description."""
+    as content-bearing via a description.
+
+    D1 (RFC-024): when a region's ``clip_text`` is NOT already contained in
+    ``md`` (the Docling markdown export, normalized once here — not per
+    region), it is captured directly into ``ocr_text`` (reason
+    ``clip_text_captured``) instead of being discarded. This recovers
+    chart/infographic text-layer content that Docling misclassified as a
+    Picture and that Tesseract OCR on the crop would fail to recognize
+    (vector-art labels).
+
+    D5a (RFC-029): skip-gate retention — when the ``page_coverage`` or
+    ``clip_text_already_exported`` gate fires, the cropped ``png_bytes`` are
+    still captured into the returned ``PictureResult`` so downstream consumers
+    (VLM describe route, ``splice_figure_markers``) retain picture context.
+    For ``clip_text_already_exported`` the ``clip_text`` is also propagated
+    into ``PictureResult.ocr_text`` so ``splice_figure_markers`` can emit a
+    ``[Chart text]`` block."""
     import fitz  # PyMuPDF, AGPL-3.0
 
     from .config import settings
 
+    md_norm = _normalize_for_containment(md) if _CLIP_TEXT_CAPTURE_ENABLED else ""
+
     # Phase 1 (serial, single fitz.Document): crop every valid region.
     crops: dict[int, dict] = {}
+    clip_captures: dict[int, dict] = {}
+    # D5a (RFC-029): regions skipped by a gate but whose png_bytes we still
+    # want to retain for downstream context (page_coverage, clip_text_already_exported).
+    retained_skips: dict[int, dict] = {}
     skip_reasons: dict[int, str] = {}
     pdf = fitz.open(pdf_path)
+    fullpage_ocr_region_count = 0
     try:
         for i, region in enumerate(regions):
-            page_index = region["page"] - 1
-            if page_index < 0 or page_index >= pdf.page_count:
-                continue
-            page = pdf[page_index]
-            rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
-            if rect is None:
-                continue
-            # D0: skip regions covering >60% of page — full scanned pages, not charts.
-            page_area = page.rect.width * page.rect.height
-            coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
-            if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
-                if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not _text_layer_has_content(page):
-                    logger.warning(
-                        "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
-                        "exempting from skip (picture IS the page content)",
-                        coverage * 100,
-                        page_index + 1,
-                    )
-                else:
-                    skip_reasons[i] = "page_coverage"
-                    continue
-            # D1 (RFC-018): skip per-picture OCR when clean text already exists under
-            # this bbox — Docling already extracted it into the markdown body.
-            clip_text = page.get_text("text", clip=rect).strip()
-            if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
-                skip_reasons[i] = "clip_text"
-                continue
-            # D2 (RFC-023): sub-icon regions (both dims below threshold) are
-            # decorative UI glyphs — skip crop+OCR entirely.
-            if (
-                rect.width < _DECORATIVE_ICON_MIN_DIM_PT
-                and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
-            ):
-                skip_reasons[i] = "decorative_icon"
-                continue
-            # D6: zero page rotation before rendering so Tesseract receives a
-            # correctly-oriented crop regardless of PDF page-rotation metadata.
-            orig_rotation = page.rotation
-            page.set_rotation(0)
             try:
-                pix = page.get_pixmap(clip=rect, dpi=300)
-            finally:
-                page.set_rotation(orig_rotation)
-            crops[i] = {
-                "png_bytes": pix.tobytes("png"),
-                "region": region,
-                "rotation": orig_rotation,
-            }
+                page_index = region["page"] - 1
+                if page_index < 0 or page_index >= pdf.page_count:
+                    continue
+                page = pdf[page_index]
+                rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
+                if rect is None:
+                    continue
+                # D0: skip regions covering >60% of page — full scanned pages, not charts.
+                page_area = page.rect.width * page.rect.height
+                coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
+                if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
+                    has_own_text = (
+                        _region_has_own_text_layer(page, rect)
+                        if _REGION_AWARE_TEXT_CHECK_ENABLED
+                        else _text_layer_has_content(page)
+                    )
+                    if fullpage_ocr_region_count >= _MAX_FULLPAGE_PICTURE_OCR_REGIONS:
+                        logger.warning(
+                            "MAX_FULLPAGE_PICTURE_OCR_REGIONS (%d) exceeded for %s; "
+                            "skipping further full-page picture exemptions",
+                            _MAX_FULLPAGE_PICTURE_OCR_REGIONS,
+                            pdf_path,
+                        )
+                        skip_reasons[i] = "page_coverage"
+                        # D5a: retain crop bytes even though OCR is skipped.
+                        try:
+                            orig_rotation = page.rotation
+                            page.set_rotation(0)
+                            try:
+                                pix = page.get_pixmap(clip=rect, dpi=300)
+                            finally:
+                                page.set_rotation(orig_rotation)
+                            retained_skips[i] = {
+                                "png_bytes": pix.tobytes("png"),
+                                "region": region,
+                                "skipped_reason": "page_coverage",
+                            }
+                        except Exception as _crop_exc:
+                            logger.debug(
+                                "D5a: png_bytes crop failed for page_coverage region %d: %s",
+                                i,
+                                _crop_exc,
+                            )
+                        continue
+                    if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not has_own_text:
+                        fullpage_ocr_region_count += 1
+                        logger.warning(
+                            "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
+                            "exempting from skip (picture IS the page content)",
+                            coverage * 100,
+                            page_index + 1,
+                        )
+                    else:
+                        skip_reasons[i] = "page_coverage"
+                        # D5a: retain crop bytes even though OCR is skipped.
+                        try:
+                            orig_rotation = page.rotation
+                            page.set_rotation(0)
+                            try:
+                                pix = page.get_pixmap(clip=rect, dpi=300)
+                            finally:
+                                page.set_rotation(orig_rotation)
+                            retained_skips[i] = {
+                                "png_bytes": pix.tobytes("png"),
+                                "region": region,
+                                "skipped_reason": "page_coverage",
+                            }
+                        except Exception as _crop_exc:
+                            logger.debug(
+                                "D5a: png_bytes crop failed for page_coverage region %d: %s",
+                                i,
+                                _crop_exc,
+                            )
+                        continue
+                # D1 (RFC-018/RFC-024): a region with meaningful clip_text is either
+                # already exported by Docling (skip) or was misclassified as a
+                # Picture and never surfaced (capture), decided by the containment
+                # guard against the normalized markdown body.
+                clip_text = page.get_text("text", clip=rect).strip()
+                if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
+                    if _CLIP_TEXT_CAPTURE_ENABLED and not _clip_text_contained(clip_text, md_norm):
+                        clip_captures[i] = {
+                            "ocr_text": " ".join(clip_text.split()),
+                            "region": region,
+                        }
+                        logger.info(
+                            "clip_text_captured for picture region %d in %s (not found in "
+                            "Docling markdown export)",
+                            i,
+                            pdf_path,
+                        )
+                    else:
+                        skip_reason = (
+                            "clip_text_already_exported"
+                            if _CLIP_TEXT_CAPTURE_ENABLED
+                            else "clip_text"
+                        )
+                        skip_reasons[i] = skip_reason
+                        # D5a: for clip_text_already_exported, retain png_bytes AND
+                        # propagate clip_text so splice_figure_markers can emit [Chart text].
+                        if _CLIP_TEXT_CAPTURE_ENABLED:
+                            try:
+                                orig_rotation = page.rotation
+                                page.set_rotation(0)
+                                try:
+                                    pix = page.get_pixmap(clip=rect, dpi=300)
+                                finally:
+                                    page.set_rotation(orig_rotation)
+                                retained_skips[i] = {
+                                    "png_bytes": pix.tobytes("png"),
+                                    "ocr_text": " ".join(clip_text.split()),
+                                    "region": region,
+                                    "skipped_reason": skip_reason,
+                                }
+                            except Exception as _crop_exc:
+                                logger.debug(
+                                    "D5a: png_bytes crop failed for %s region %d: %s",
+                                    skip_reason,
+                                    i,
+                                    _crop_exc,
+                                )
+                    continue
+                # D2 (RFC-023): sub-icon regions (both dims below threshold) are
+                # decorative UI glyphs — skip crop+OCR entirely.
+                if (
+                    rect.width < _DECORATIVE_ICON_MIN_DIM_PT
+                    and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
+                ):
+                    skip_reasons[i] = "decorative_icon"
+                    continue
+                # D6: zero page rotation before rendering so Tesseract receives a
+                # correctly-oriented crop regardless of PDF page-rotation metadata.
+                orig_rotation = page.rotation
+                page.set_rotation(0)
+                try:
+                    pix = page.get_pixmap(clip=rect, dpi=300)
+                finally:
+                    page.set_rotation(orig_rotation)
+                crops[i] = {
+                    "png_bytes": pix.tobytes("png"),
+                    "region": region,
+                    "rotation": orig_rotation,
+                }
+            except Exception as exc:  # D2 (RFC-024): isolate per-region crop failures
+                logger.warning(
+                    "crop failed for picture region %d in %s (%s); skipping region",
+                    i,
+                    pdf_path,
+                    exc,
+                )
+                skip_reasons[i] = "crop_error"
+                continue
     finally:
         pdf.close()
 
     recovered: dict[int, PictureResult] = {}
+    for i, capture in clip_captures.items():
+        bbox = capture["region"]["bbox"]
+        recovered[i] = PictureResult(
+            ocr_text=capture["ocr_text"],
+            page=capture["region"]["page"],
+            bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
+        )
+    # D5a (RFC-029): emit retained-skip PictureResults (page_coverage,
+    # clip_text_already_exported) so downstream has png_bytes / ocr_text context.
+    for i, rs in retained_skips.items():
+        bbox = rs["region"]["bbox"]
+        pr: PictureResult = PictureResult(
+            page=rs["region"]["page"],
+            bbox={"l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b},
+            png_bytes=rs["png_bytes"],
+            skipped_reason=rs["skipped_reason"],
+        )
+        if rs.get("ocr_text"):
+            pr["ocr_text"] = rs["ocr_text"]
+        recovered[i] = pr
     if not crops:
         return recovered, skip_reasons
 
@@ -1610,9 +2066,8 @@ def _recover_picture_text(  # noqa: PLR0915
         if ocr_text or keep_silent_png:
             result["png_bytes"] = crops[i]["png_bytes"]
         # D2 (RFC-023) belt-and-suspenders: a region that passed the size filter
-        # but still yielded no OCR text is likely decorative — unless the page
-        # is rotated, in which case D6's rotation correction gets first crack.
-        if not ocr_text and crops[i]["rotation"] == 0:
+        # but still yielded no OCR text is likely decorative.
+        if not ocr_text:
             result["decorative"] = True
         recovered[i] = result
     return recovered, skip_reasons
@@ -1657,7 +2112,7 @@ def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
         # idx should always be >= 0 given the count check above
         parts.append(remaining[: idx + len(marker)])
         remaining = remaining[idx + len(marker) :]
-        ocr_text = pic.get("ocr_text", "")
+        ocr_text = pic.pop("ocr_text", "")
         if ocr_text:
             parts.append("\n> [Chart text]: " + ocr_text + "\n")
     parts.append(remaining)
@@ -1711,6 +2166,11 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         else:
             marker = f"[Figure: fig-{k}]"
         if ocr:
+            # RFC-028 D5: pop rather than get — the OCR text is spliced into the
+            # prose stream here, so pop it so _enrich_image_blocks (which reads
+            # this SAME result dict) does not also persist it onto the
+            # role:"image" block and double the stored fragment.
+            result.pop("ocr_text", None)
             return marker + "\n\n> [Chart text]: " + ocr
         return marker
 
@@ -1723,7 +2183,18 @@ def _pre_inference_normalize(text: str) -> str:
     Ordering is load-bearing: D5c (split run-together headings) must precede D4 (the
     per-line hash-sentinel fix, so ``##Foo ###Bar`` is split before the one-marker-per-
     line pass), which must precede D7 (BiDi reorder) and depth inference (so في is a
-    single token by the time the heading regex parses it)."""
+    single token by the time the heading regex parses it).
+
+    RFC-029 §1.1: NFKC canonicalization of Arabic Presentation Forms (U+FB50–FDFF,
+    U+FE70–FEFF) runs first so all downstream consumers see canonical codepoints.
+    The pass is gated on detection — non-Arabic text is untouched (idempotent).
+    Design Property 1: NFKC canonicalization idempotence.
+    """
+    # RFC-029 §1.1 — NFKC only when Arabic Presentation Forms are present.
+    # Ranges: Arabic Presentation Forms-A U+FB50–U+FDFF,
+    #         Arabic Presentation Forms-B U+FE70–U+FEFF.
+    if any('ﭐ' <= ch <= '﷿' or 'ﹰ' <= ch <= '﻿' for ch in text):
+        text = unicodedata.normalize('NFKC', text)
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
     text = reconstruct_bidi_order(text)  # D7
@@ -1731,7 +2202,9 @@ def _pre_inference_normalize(text: str) -> str:
     return text
 
 
-def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureResult]:
+def _recover_picture_results(
+    md: str, document, pdf_path: str, filename: str | None = None
+) -> list[PictureResult]:
     """Recover chart/infographic text Docling bucketed into Picture bboxes (RFC-015 D6).
 
     OCR + crop ONLY — no markdown mutation, no VLM (both moved to the flat branch
@@ -1742,15 +2215,26 @@ def _recover_picture_results(md: str, document, pdf_path: str) -> list[PictureRe
     Returns a DENSE list: element ``i`` corresponds to the i-th PictureItem in
     ``iterate_items`` order, with an empty ``PictureResult`` placeholder for any
     region whose crop failed — sparse recovery must never shift ordinals
-    (finding 4)."""
+    (finding 4).
+
+    Language detection (RFC-028 D5): ``md`` is the Docling markdown export, which
+    is near-empty or all-digits for scanned Arabic PDFs, so ``detect_ocr_langs(md)``
+    alone falls through to ``['eng']``. Union with ``detect_ocr_langs(filename)``
+    (matching the escalation sites in client.py) so filename script hints survive
+    even when the export carries no usable signal."""
     if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
         return []
     try:
         regions = _collect_picture_regions(document)
         if not regions:
             return []
-        langs = ensure_tessdata(detect_ocr_langs(md))
-        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs)
+        lang_sources: list[str] = []
+        for src in (detect_ocr_langs(filename or ""), detect_ocr_langs(md or "")):
+            for lg in src:
+                if lg not in lang_sources:
+                    lang_sources.append(lg)
+        langs = ensure_tessdata(lang_sources)
+        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=md)
         if not recovered and not skip_reasons:
             return []
         logger.info(
@@ -1849,10 +2333,225 @@ def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
         list(pool.map(_describe_one, targets))
 
 
+# RFC-027 D7: dynamic CHILD_TIMEOUT scaling for the chunked-Docling path. A
+# fixed CHILD_TIMEOUT sized for a single-pass conversion is what oversized
+# PDFs die to in the first place; the chunked path needs a timeout budget
+# proportional to how many independent Docling passes it runs.
+_CHUNKED_DOCLING_BASE_TIMEOUT_S = 300
+# RFC-028 D0: 600 -> 1500. The prior constant made chunked_docling_timeout_s(2)
+# (1500s) *lower* than the fixed CHILD_TIMEOUT (1770s) it was meant to extend,
+# so wiring it in without raising this would have shrunk the timeout budget for
+# world-stats-pocketbook-2023.pdf (292 pages, observed 24-49min conversion).
+_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S = 1500
+
+
+def chunked_docling_timeout_s(chunk_count: int) -> int:
+    """RFC-027 D7: ``base_timeout + (chunk_count * per_chunk_timeout)``.
+
+    Consumed by the worker's per-job CHILD_TIMEOUT so a chunked conversion
+    gets a budget proportional to how many independent Docling passes it
+    runs, instead of the fixed single-pass timeout that oversized PDFs die to.
+    """
+    return _CHUNKED_DOCLING_BASE_TIMEOUT_S + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+
+
+def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
+    """RFC-028 D0: cheap pre-flight probe run by ``converters_cli`` before the
+    heavy conversion pipeline starts, so the worker can size its child timeout
+    from the child's own startup handshake instead of re-deriving page count
+    independently (which risks worker/child disagreement on a PyPDF2 failure).
+
+    Returns ``(chunk_count, is_docling_route)`` using the same PyPDF2 page-count
+    read and ``MAX_DOCLING_PAGES`` threshold as the routing guard at the top of
+    ``pdf_to_markdown_docling``. Non-PDF inputs and PDFs whose page count cannot
+    be read report ``is_docling_route=False`` so the worker falls back to the
+    fixed ``CHILD_TIMEOUT`` unconditionally.
+    """
+    if not pdf_path.lower().endswith(".pdf"):
+        return 1, False
+    from .config import MAX_DOCLING_PAGES
+
+    try:
+        import PyPDF2
+
+        page_count = len(PyPDF2.PdfReader(pdf_path).pages)
+    except Exception:
+        return 1, False
+    if page_count <= 0:
+        return 1, False
+    if MAX_DOCLING_PAGES > 0 and page_count > MAX_DOCLING_PAGES:
+        return math.ceil(page_count / MAX_DOCLING_PAGES), True
+    return 1, True
+
+
+
+def _repair_docling_tables(md: str) -> str:
+    """RFC-029 D4 (Task 5.1, Property 6) — post-export table-repair pass.
+
+    Runs after every Docling ``export_to_markdown()`` call to correct two
+    systematic Docling GFM rendering artefacts:
+
+    1. **Degenerate duplicate-cell rows**: pipe-table data rows where EVERY
+       non-separator cell is byte-identical (e.g. Docling emitting the same
+       cell value repeated across all columns due to table-cell merging
+       ambiguity).  A row is collapsed to a single ``| value |`` cell only
+       when the identical-cell count exceeds ``_RFC029_TABLE_MIN_COLLAPSE_COLS``
+       (default 3) — avoids collapsing legitimate 1- or 2-col tables that
+       happen to share a value across columns.
+
+    2. **GFM-aligned whitespace padding**: Docling right-pads every pipe-table
+       cell to column-width for visual alignment.  The downstream tree builder
+       and flat-table parser both strip whitespace, so the padding is harmless
+       for semantics but inflates character counts (up to ~10x for wide
+       statistical tables).  Re-emitting with single-space padding recovers the
+       inflation without data loss.
+
+    Both transforms are heuristic-only, work on the raw markdown string, and
+    require no external dependencies (stdlib ``re`` only).  When
+    ``_RFC029_TABLE_DEDUP_ENABLED`` is falsy the function is a no-op.
+
+    Content-preservation: collapsed rows replace the original row text with a
+    single-cell row; non-collapsed rows are re-emitted with stripped (single-
+    space-padded) cell content, preserving every non-whitespace character.
+    Separator rows (``|---|``) are re-emitted as ``| --- |`` (minimal form).
+    """
+    if not _RFC029_TABLE_DEDUP_ENABLED or not md:
+        return md
+
+    lines = md.split("\n")
+    out: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        # Only process lines that look like pipe-table rows.
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            out.append(line)
+            continue
+
+        # Split on pipe, drop leading/trailing empty strings from the outer | |.
+        raw_cells = stripped.split("|")
+        cells = [c.strip() for c in raw_cells[1:-1]]
+
+        if not cells:
+            out.append(line)
+            continue
+
+        # Detect separator row (cells contain only dashes, colons, spaces).
+        if all(set(c.replace("-", "").replace(":", "").replace(" ", "")) == set() and c for c in cells):
+            # Re-emit in minimal form: | --- | --- | ...
+            out.append("| " + " | ".join("---" for _ in cells) + " |")
+            continue
+
+        # Check for all-identical degenerate row.
+        unique_vals = set(cells)
+        if (
+            len(unique_vals) == 1
+            and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS
+        ):
+            # Collapse: emit a single cell with the shared value.
+            out.append("| " + cells[0] + " |")
+            continue
+
+        # Normal row: re-emit with minimal single-space padding (strips GFM alignment).
+        out.append("| " + " | ".join(cells) + " |")
+
+    return "\n".join(out)
+
+
+def _pdf_to_markdown_docling_chunked(
+    pdf_path: str,
+    page_count: int,
+    max_pages: int,
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+) -> tuple[str, list[PictureResult]]:
+    """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
+
+    Splits ``pdf_path`` into ``ceil(page_count / max_pages)`` page-boundary
+    chunks via ``PyPDF2`` (MIT, HR4-safe -- no ``pymupdf4llm``), runs each
+    chunk through the existing standard ``pdf_to_markdown_docling`` pipeline
+    independently, and concatenates the resulting markdown. Each chunk's page
+    count is <= ``max_pages`` by construction, so the recursive call takes the
+    direct single-pass route rather than re-entering this function.
+
+    Minor heading-level discontinuities at chunk joins are an accepted
+    trade-off (RFC-027 D7 risk acceptance) -- the downstream tree-building
+    ``_relevel_by_containment`` pass normalizes heading depth across the
+    concatenated output.
+    """
+    import PyPDF2
+
+    chunk_count = math.ceil(page_count / max_pages)
+    logger.info(
+        "chunked-Docling route: %s (%d pages) -> %d chunk(s) of <= %d pages",
+        pdf_path,
+        page_count,
+        chunk_count,
+        max_pages,
+    )
+    reader = PyPDF2.PdfReader(pdf_path)
+    md_parts: list[str] = []
+    pic_results: list[PictureResult] = []
+    for i in range(chunk_count):
+        start = i * max_pages
+        end = min(start + max_pages, page_count)
+        writer = PyPDF2.PdfWriter()
+        for page in reader.pages[start:end]:
+            writer.add_page(page)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+        try:
+            with open(tmp.name, "wb") as fh:
+                writer.write(fh)
+            try:
+                pool = ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(
+                    pdf_to_markdown_docling,
+                    tmp.name,
+                    force_full_page_ocr=force_full_page_ocr,
+                    ocr_lang_override=ocr_lang_override,
+                )
+                try:
+                    chunk_md, chunk_pics = future.result(
+                        timeout=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
+                    )
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
+            except FuturesTimeoutError:
+                # RFC-027 D7: an individually heavy chunk still times out on the
+                # Docling pipeline -- fall back to PyPDF2 text-layer-only
+                # extraction (no tables/figures) rather than losing the chunk
+                # entirely. No pymupdf4llm (CLAUDE.md Hard Rule 4). The document
+                # lands MARGINAL downstream due to the resulting flat structure.
+                logger.warning(
+                    "chunk %d/%d of %s timed out on Docling; falling back to "
+                    "PyPDF2 text-layer extraction",
+                    i + 1,
+                    chunk_count,
+                    pdf_path,
+                )
+                chunk_reader = PyPDF2.PdfReader(tmp.name)
+                chunk_md = "\n\n".join(page.extract_text() or "" for page in chunk_reader.pages)
+                chunk_pics = []
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp.name)
+        md_parts.append(chunk_md)
+        for pic in chunk_pics:
+            # Re-base chunk-relative page numbers to document-level pages so
+            # the persisted PictureResult metadata (client.py block["page"])
+            # stays correct for chunks after the first.
+            if "page" in pic:
+                pic["page"] = pic["page"] + start
+        pic_results.extend(chunk_pics)
+    return "\n\n".join(md_parts), pic_results
+
+
 def pdf_to_markdown_docling(
     pdf_path: str,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
+    max_pages: int | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -1884,18 +2583,53 @@ def pdf_to_markdown_docling(
 
     Raises on empty extraction so the caller falls back to the next converter.
     """
+    # RFC-027 D7: oversized PDFs die to CHILD_TIMEOUT on a single direct-conversion
+    # pass. Guard the page count via PyPDF2 (MIT, HR4-safe -- no pymupdf4llm) before
+    # touching the Docling converter and route to the chunked path instead.
+    from .config import MAX_DOCLING_PAGES
+
+    effective_max_pages = max_pages if max_pages is not None else MAX_DOCLING_PAGES
+    try:
+        import PyPDF2
+
+        page_count = len(PyPDF2.PdfReader(pdf_path).pages)
+    except Exception as exc:
+        logger.warning(
+            "could not read page count for %s (%s); skipping chunked-Docling guard",
+            pdf_path,
+            exc,
+        )
+        page_count = 0
+    if effective_max_pages > 0 and page_count > effective_max_pages:
+        return _pdf_to_markdown_docling_chunked(
+            pdf_path,
+            page_count=page_count,
+            max_pages=effective_max_pages,
+            force_full_page_ocr=force_full_page_ocr,
+            ocr_lang_override=ocr_lang_override,
+        )
+
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
     converter = _docling_converter(
         force_full_page_ocr=force_full_page_ocr, ocr_lang_override=ocr_lang_override
     )
-    result = converter.convert(pdf_path)
+    # RFC-026 D2: normalize per-page rotation before extraction so landscape/
+    # rotated pages get correct coordinate mapping instead of fragmenting text
+    # into near-empty nodes. Returns pdf_path unchanged when no page needs it.
+    docling_input_path = _normalize_pdf_page_rotation(pdf_path)
+    try:
+        result = converter.convert(docling_input_path)
+    finally:
+        if docling_input_path != pdf_path:
+            with contextlib.suppress(OSError):
+                os.unlink(docling_input_path)
 
     # Capture the RAW Docling markdown BEFORE the add-on runs: ResultPostprocessor
     # mutates result.document in place (it demotes unmatched headings to body text),
     # so this is the only chance to retain the full heading set for the Rank-1
     # over-prune fallback below.
-    raw_md = result.document.export_to_markdown()
+    raw_md = _repair_docling_tables(result.document.export_to_markdown())
 
     # Snapshot heading -> [page_no, ...] from the RAW (pre-add-on) document: the
     # add-on demotes unmatched headings to body text in place, so this is the only
@@ -1960,13 +2694,15 @@ def pdf_to_markdown_docling(
             exc,
         )
 
-    post_md = result.document.export_to_markdown()
+    post_md = _repair_docling_tables(result.document.export_to_markdown())
     if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
 
     # RFC-015 D5c/D4/D7: normalise BOTH candidate markdown sources BEFORE heading-depth
     # inference so the heading regexes see split, في-restored, logically-ordered text
     # (see _pre_inference_normalize for the load-bearing ordering rationale).
+    post_md = _inject_arabic_structural_headings(post_md)
+    raw_md = _inject_arabic_structural_headings(raw_md)
     post_md = _pre_inference_normalize(post_md)
     raw_md = _pre_inference_normalize(raw_md)
     post_headings = len(_HEADING_RE.findall(post_md))
@@ -2004,12 +2740,15 @@ def pdf_to_markdown_docling(
             )
             md = md_raw
     md = _normalize_indented_headings(md)
+    md = _document_level_text_fallback(md, pdf_path)
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was
     # invisible to the event loop and pinned crop bytes for the process life).
     # The markdown keeps neutral `<!-- image -->` markers — the [Figure: fig-N]
     # splice and the VLM describe step run only in client.index()'s flat branch.
-    pic_results = _recover_picture_results(md, result.document, pdf_path)
+    pic_results = _recover_picture_results(
+        md, result.document, pdf_path, os.path.basename(pdf_path)
+    )
     return md, pic_results
 
 
@@ -2252,7 +2991,7 @@ def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> 
         force_full_page_ocr=True, ocr_lang_override=ocr_lang_override, for_image=True
     )
     result = converter.convert(path)
-    md = result.document.export_to_markdown()
+    md = _repair_docling_tables(result.document.export_to_markdown())
     if not md or not md.strip():
         raise RuntimeError(f"image_to_markdown produced empty output for {path}")
     return normalize_dashes(md)
@@ -2284,14 +3023,75 @@ def rasterize_pdf_pages(pdf_path: str, dpi: int = 200) -> list[str]:
         pdoc.close()
 
 
+# D4 (RFC-024): fallback rasterization backend for tesseract_ocr_pdf_pages. CMap
+# corruption that crashes pypdfium2 page rendering is deterministic per-page, so a
+# retry against pypdfium2 would fail identically; fitz uses a different rendering
+# path (already proven for crop rasterization in _recover_picture_text) and isolates
+# D7's rasterization from rasterize_pdf_pages' shared use by the VLM fallback.
+_D7_FITZ_FALLBACK_ENABLED = os.getenv("D7_FITZ_FALLBACK_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# RFC-029 D4 (Task 5.1) — post-export table-repair constants
+# Feature flag: set to "0" to disable the repair pass entirely.
+_RFC029_TABLE_DEDUP_ENABLED: bool = os.environ.get("RFC029_TABLE_DEDUP_ENABLED", "1") != "0"
+# Minimum column count that must be identical before a row is collapsed.
+# Rows with <= this many identical cells are left untouched to avoid collapsing
+# legitimately short tables (e.g. 2-col header rows where both cols share a value).
+_RFC029_TABLE_MIN_COLLAPSE_COLS: int = int(
+    os.environ.get("RFC029_TABLE_MIN_COLLAPSE_COLS", "3")
+)
+
+
+def rasterize_pdf_pages_fitz(pdf_path: str, dpi: int = 200) -> list[str]:
+    """Rasterize each PDF page to a base64 data-URI PNG via fitz (D4, RFC-024).
+
+    Fallback backend for ``rasterize_pdf_pages`` when pypdfium2 crashes on
+    CMap-corrupt PDFs. Reuses the ``fitz.Page.get_pixmap()`` pattern already
+    proven for image cropping in ``_recover_picture_text``."""
+    import base64
+
+    import fitz  # PyMuPDF, AGPL-3.0
+
+    pdf = fitz.open(pdf_path)
+    try:
+        result: list[str] = []
+        zoom = dpi / 72
+        matrix = fitz.Matrix(zoom, zoom)
+        for page in pdf:
+            pix = page.get_pixmap(matrix=matrix)
+            b64 = base64.b64encode(pix.tobytes("png")).decode("ascii")
+            result.append(f"data:image/png;base64,{b64}")
+        return result
+    finally:
+        pdf.close()
+
+
 async def tesseract_ocr_pdf_pages(pdf_path: str, langs: list[str]) -> str:
     """Rasterize each PDF page and OCR it via local Tesseract (RFC-023 D7).
 
     Last-resort recovery when the VLM fallback itself crashes on a garbled
-    PDF -- no LLM egress, local ``tesseract`` binary only (HR3)."""
+    PDF -- no LLM egress, local ``tesseract`` binary only (HR3).
+
+    D4 (RFC-024): tries pypdfium2 (``rasterize_pdf_pages``) first; on Exception
+    (e.g. CMap-corrupt PDFs that crash pypdfium2), falls back to fitz
+    (``rasterize_pdf_pages_fitz``) unless disabled via
+    ``D7_FITZ_FALLBACK_ENABLED=false``."""
     import base64
 
-    page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    try:
+        page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    except Exception as exc:  # D4: fall back to fitz rasterization
+        if not _D7_FITZ_FALLBACK_ENABLED:
+            raise
+        logger.warning(
+            "rasterize_pdf_pages (pypdfium2) failed for %s (%s); falling back to fitz",
+            pdf_path,
+            exc,
+        )
+        page_images = await asyncio.to_thread(rasterize_pdf_pages_fitz, pdf_path)
     pages_text = []
     for data_uri in page_images:
         png_bytes = base64.b64decode(data_uri.split(",", 1)[1])

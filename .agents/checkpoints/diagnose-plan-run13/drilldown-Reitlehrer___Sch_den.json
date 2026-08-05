@@ -1,0 +1,59 @@
+{
+  "document": "Reitlehrer - Schäden am Berittpferd.pdf",
+  "run": 13,
+  "verdict_regression": "PASS → MARGINAL",
+  "metrics_regression": {
+    "chars_run12": 4082,
+    "chars_run13": 2768,
+    "char_loss_pct": 32.2,
+    "nodes_run12": 10,
+    "nodes_run13": 10
+  },
+  "judge_finding": "Single-page German addendum with reasonable structure but missing image enrichment at node 3.5",
+  "root_cause": "RFC-029 D3 fence/HR-separator stripping in route_and_extract_flat() reduces flat_char_count metric without affecting tree node count, causing verdict downgrade despite stable tree extraction",
+  "mechanism": [
+    "Docling PDF→Markdown conversion produces markdown potentially containing HR separators or fence markers",
+    "Tree extraction (md_to_tree via converters.py) does NOT invoke route_and_extract_flat; produces stable 10-node structure",
+    "Flat extraction now strips fence markers (```lines) and HR rules (---, ===, ***) per RFC-029 Design Property 5",
+    "flat_char_count computed as sum(len(_flat_block_primary_text(b)) for b in blocks) from stripped blocks",
+    "Reduction in flat_char_count (1,314 chars) causes judge to re-evaluate node content adequacy",
+    "Image enrichment adequacy check now flags unenriched logo as insufficient when total content metrics decline"
+  ],
+  "affected_code": {
+    "primary": {
+      "file": "src/pageindex_mcp/helpers.py",
+      "function": "route_and_extract_flat",
+      "lines": "2680-2830",
+      "rfc": "RFC-029 D3",
+      "change_type": "fence and HR stripping",
+      "fence_strip_lines": "2720-2726",
+      "hr_strip_lines": "2733-2737"
+    },
+    "secondary": {
+      "file": "src/pageindex_mcp/client.py",
+      "function": "index",
+      "line": 1581,
+      "statement": "flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)"
+    }
+  },
+  "commit_introducing": "08b6eeaba870e73f7ec3d092b793f708d02bf2af (feat(rfc-029): implement RFC-029 run12-arabic-garble-gates-and-extraction-quality)",
+  "classification": {
+    "category": "regression",
+    "domain": "picture_ocr",
+    "severity": "medium",
+    "scope": "single-document interaction (flat metric stripping + judge re-weighting)",
+    "reproducibility": "deterministic (depends on markdown content containing HR/fence-like patterns)"
+  },
+  "evidence": [
+    "Audit line 86: '32% char drop (4,082 → 2,768) with identical node count, and a previously-benign unenriched image is now flagged as missing content'",
+    "Audit summary: 'Picture-enrichment step regressed for this doc (previously the unenriched image was judged a logo, not content-bearing; now it's flagged as missing content)'",
+    "Triage: chars dropped ~32% with identical node count; text derived from/alongside image was lost",
+    "RFC-029 D3 introduces unconditional stripping of HR separators and fence-wrapped content in flat extraction"
+  ],
+  "not_caused_by": [
+    "NFKC normalization (D1) - normalizes but doesn't delete",
+    "Picture OCR splice changes (D5a) - adds retention, not removal",
+    "Table repair (D4) - targeted at specific table cells, not HR/fence",
+    "Judge-only severity change - metric itself changed (flat_char_count dropped)"
+  ]
+}

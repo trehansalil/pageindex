@@ -12,6 +12,13 @@
 - Branch: `feat/run4-verdict-quickfixes`
 - Supersedes: Builds on RFC-020
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc021-run4-verdict-quickfixes.md](../designs/design-rfc021-run4-verdict-quickfixes.md) |
+| Implementation Plan | [tasks-rfc021-run4-verdict-quickfixes.md](../tasks/tasks-rfc021-run4-verdict-quickfixes.md) |
+
 ## Problem Statement
 
 Run 4 corpus reaudit (25 docs, all RFC-020 F0-F5 fixes applied) scored **13 PASS / 9 MARGINAL / 2 FAIL / 1 ERROR** -- a clear improvement over Run 3's 8/11/5/1 but still short of the target. Analysis of the 9 MARGINAL verdicts shows that **6-7 are caused by fixable code bugs or overly harsh thresholds**, not genuine extraction limitations. They fall into four categories:

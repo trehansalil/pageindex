@@ -12,6 +12,13 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc010-corpus-gap-remediation.md](../designs/design-rfc010-corpus-gap-remediation.md) |
+| Implementation Plan | [tasks-rfc010-corpus-gap-remediation.md](../tasks/tasks-rfc010-corpus-gap-remediation.md) |
+
 ## Context
 
 A 25-document corpus gap analysis (2026-07-14, branch `feat/scaling-pageindex`) revealed

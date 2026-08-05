@@ -113,10 +113,10 @@ class TestRotationCorrectedPictureOCR:
 
 class TestD2D6InteractionGuard:
     def test_stored_crop_rotation_reflects_original_not_zeroed_value(self, monkeypatch):
-        """The rotation stashed alongside each crop (used by D2's
-        belt-and-suspenders decorative check) must be the ORIGINAL
-        (pre-zero) page rotation, not the temporarily-zeroed value used only
-        for rendering -- otherwise D2 could never detect a rotated page."""
+        """RFC-025 D2 removed the rotation gate on the decorative flag (dead
+        code -- the rotation-correction retry it referenced was never
+        implemented), so empty OCR now sets ``decorative=True`` regardless
+        of the page's rotation value."""
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=180)
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "")
         region = _region(0, 0, 300, 400)
@@ -124,5 +124,5 @@ class TestD2D6InteractionGuard:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        # Empty OCR + rotated page -> D2's decorative flag must NOT fire.
-        assert "decorative" not in result[0]
+        # Empty OCR -> D2's decorative flag fires (RFC-025 D2: unconditionally).
+        assert result[0]["decorative"] is True

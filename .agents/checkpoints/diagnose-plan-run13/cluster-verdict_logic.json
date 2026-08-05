@@ -1,0 +1,26 @@
+{
+    "domain": "verdict_logic",
+    "root_causes": [
+        {
+            "id": "VL-1",
+            "root_cause": "RFC-029 D6 Phase B judge calibration rules were marked complete (task 1.7) but never actually written to .claude/skills/corpus-ingest-score/SKILL.md. The skill file (lines 34-42) still only contains the old RFC-028 D6 guidance about image markers in hierarchical docs. The two new rules specified by RFC-029 D6 are missing: (1) stability rule -- when stored gate verdict is PASS and metrics are byte-identical to the prior run, the judge MUST NOT downgrade unless citing a specific new defect; (2) severity-anchoring rule -- for flat/chart docs with <1000 chars and zero enrichments, anchor severity to MARGINAL (not FAIL) when extraction has not regressed. Without these rules, the Opus judge applies inconsistent scrutiny across runs to byte-identical content: Haftpflicht (stored PASS, 132 nodes/53K chars, depth 2 unchanged) gets downgraded to MARGINAL on 'depth-2-too-shallow' scrutiny the Run 12 judge did not apply; image pie chart (stored MARGINAL, 6 nodes/489 chars byte-identical) gets escalated to FAIL on RTL garbling the Run 12 judge did not flag. Both regressions are pure judge non-determinism with no underlying pipeline change.",
+            "code_path": ".claude/skills/corpus-ingest-score/SKILL.md lines 34-42 (Judge Verdict guidance section)",
+            "fix_category": "config",
+            "estimated_complexity": "small",
+            "suggested_fix": "Add the two RFC-029 D6 calibration rules to .claude/skills/corpus-ingest-score/SKILL.md after the existing RFC-028 D6 paragraph: (1) Stability rule: 'When stored gate verdict is PASS and extraction metrics (node count, char count, depth) are within 10% of the prior run, the judge MUST NOT downgrade unless it can cite a specific content-quality defect (garbling, content loss, structural corruption) not present in the prior run finding. Known persistent limitations (e.g. shallow depth for a complex document) that were tolerated in the prior run are NOT grounds for downgrade.' (2) Severity-anchoring rule: 'For flat/chart-heavy docs (content_class starts with flat_) with <1000 total chars and zero picture enrichments, anchor severity to MARGINAL (not FAIL) when the extraction layer has not regressed -- the missing enrichment is a known pipeline gap, not a per-run regression.' Also add a consistency check note to .claude/skills/corpus-score-diff/SKILL.md for byte-identical artifacts across runs.",
+            "affected_files": [
+                ".claude/skills/corpus-ingest-score/SKILL.md",
+                ".claude/skills/corpus-score-diff/SKILL.md"
+            ],
+            "affected_docs": [
+                "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+                "image pie chart about labor distribution in january 2025 - Copy.jpg"
+            ],
+            "confidence": "high",
+            "related_rfcs": [
+                "029-run12-arabic-garble-gates-and-extraction-quality"
+            ]
+        }
+    ],
+    "needs_doc_drilldown": []
+}

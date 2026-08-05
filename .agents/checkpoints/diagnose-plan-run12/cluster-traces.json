@@ -1,0 +1,478 @@
+{
+  "cluster_traces": [
+    {
+      "domain": "worker",
+      "root_causes": [
+        {
+          "id": "RC-W1",
+          "root_cause": "RFC-028 D2 added a presentation-forms garble check in _is_garbled_blob (helpers.py:880-895) that fires when >50% of Arabic characters are in the Presentation Forms ranges (U+FB50-FDFF, U+FE70-FEFF). The Human Rights document text layer uses Arabic Presentation Forms characters (confirmed by filename analysis: 6/10 Arabic chars are PF). RFC-028 explicitly references this document (D2 trace: Finding #7 huquq al-insan). validate_tree rejects the tree with reason=garbling (helpers.py:1142-1143). The OCR retry path (client.py:991-1082) runs force_full_page_ocr but either fails or produces fewer chars than the original, so the D4 best-of-two comparison (client.py:1062-1081) restores the original garbled result. reason=garbling is explicitly excluded from flat routing (FLAT-03-C2, client.py:1286), so LowQualityTreeError is raised (client.py:1538). The worker maps this to terminal reason=low_quality_tree (worker.py:431-441), no artifacts are saved, and no flat fallback is attempted.",
+          "code_path": "helpers.py:_is_garbled_blob (D2 PF check) -> helpers.py:validate_tree -> client.py:index (garbling recovery) -> client.py:raise LowQualityTreeError -> converters_cli -> worker.py:_TERMINAL_CHILD_REASONS",
+          "fix_category": "bug",
+          "estimated_complexity": "small",
+          "suggested_fix": "Two options: (A) Add a presentation-forms-to-logical-order Unicode normalization step in _pre_inference_normalize (converters.py) that maps U+FE70-FEFF and U+FB50-FDFF characters to their canonical decomposition equivalents via unicodedata.normalize('NFKC'), so the text passes the garble check and tree validation. (B) Add garbling as a flat-routing-eligible reason after all recovery paths exhaust (preserving content even if garbled, since the previous 328-node/498k-char artifact was usable). Option A is preferred as it treats the root cause (wrong encoding) rather than the symptom.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py",
+            "src/pageindex_mcp/converters.py",
+            "src/pageindex_mcp/client.py"
+          ],
+          "affected_docs": [
+            "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "028-run11-arabic-recovery-and-timeout-wiring.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": []
+    },
+    {
+      "domain": "verdict_logic",
+      "root_causes": [
+        {
+          "id": "VL-1",
+          "root_cause": "LLM audit judge (Opus) non-determinism: all 3 docs have byte-identical extraction between Run 11 and Run 12 (same node counts, char counts, tree structure), but the Opus judge applied different subjective scrutiny. The stored gate verdicts from deterministic classify_verdict (helpers.py:1285) are unchanged -- cabinet_resolution returns PASS (43 nodes, depth 3, max_leaf_ratio well under 0.30), uae_numbers stored MARGINAL (flat_mixed with 748 chars). The audit scorecard 'Verdict' column is the LLM judge verdict, not the stored gate verdict (confirmed by audit line 7: 'stored vs audit verdicts diverge'). RFC-028 D6 already fixed one instance of this pattern (image markers in hierarchical docs) by adding prompt guidance to .claude/skills/corpus-ingest-score/SKILL.md lines 34-42. The same calibration gap now manifests for two new dimensions: (a) table-header malformation scrutiny (cabinet_resolution: judge now flags malformed multi-row headers it previously tolerated), (b) chart-content-loss severity (uae_numbers: judge escalates from MARGINAL to FAIL for the same 748-char artifact with zero enrichments).",
+          "code_path": ".claude/skills/corpus-ingest-score/SKILL.md (Judge Verdict guidance section) -> Opus model subjective scoring",
+          "fix_category": "config",
+          "estimated_complexity": "small",
+          "suggested_fix": "Extend the Judge Verdict guidance in .claude/skills/corpus-ingest-score/SKILL.md with two additional calibration rules: (1) For docs where stored gate verdict is PASS and metrics are byte-identical to the prior run, the judge MUST NOT downgrade unless it can cite a specific content-quality defect not present in the prior run's finding (prevents re-scoring drift on stable artifacts). (2) For flat/chart-heavy docs with low char counts (<1000 chars) and zero enrichments, anchor the severity to MARGINAL (not FAIL) when the extraction layer itself has not regressed -- the missing enrichment is a known pipeline gap, not a per-run regression. This follows the same pattern as RFC-028 D6's fix for image markers.",
+          "affected_files": [
+            ".claude/skills/corpus-ingest-score/SKILL.md",
+            ".claude/skills/corpus-score-diff/SKILL.md"
+          ],
+          "affected_docs": [
+            "cabinet_resolution_no_21_of_2020",
+            "uae_numbers_english_page_16_17_landscape",
+            "cabinet_resolution_no_21_of_2020 - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "028-run11-arabic-recovery-and-timeout-wiring"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": []
+    },
+    {
+      "domain": "text_layer",
+      "root_causes": [
+        {
+          "id": "RC1-ocr-retry-dilutes-garble-gate",
+          "root_cause": "RFC-028 D5 fixed OCR language detection in _recover_picture_results (converters.py) by unioning detect_ocr_langs(filename) with detect_ocr_langs(md), adding 'ara' to Tesseract langs for Arabic-named PDFs. Combined with the existing Fix-3 force_full_page_ocr retry path (client.py ~line 991), the OCR retry now produces 54k chars of Arabic-looking OCR output (up from 1.8k in Run 11) for the scanned 42-page warid-597 document. This OCR output dilutes the repeating numeric-junk text layer ('1651001429') below all _is_garbled_blob thresholds: digit-ratio drops from ~100% to <1% (420 digit chars in 54k total), token-repetition drops far below 30%. validate_tree passes (111 nodes, depth>=2, no garble detected), classify_verdict returns PASS. In Run 11, the OCR retry produced only 1.8k chars (OCR'd with 'eng' model on Arabic pages), validate_tree failed with garbling, doc fell to flat path which stored MARGINAL garbling(ratio=1.00). The regression is that improved OCR language detection paradoxically removed the garble-gate safety net by producing more (but still low-quality) OCR content.",
+          "code_path": "client.py::index() Fix-3 retry (line ~991) -> converters.py::_recover_picture_results D5 lang union (line ~2117) -> helpers.py::_is_garbled_blob digit-ratio check (line 897-901) -> helpers.py::_tree_is_garbled (line 1052-1058) -> helpers.py::validate_tree (line 1142) returns True -> helpers.py::classify_verdict (line 1344) garbled=False -> PASS",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Add a chars-per-page density floor to validate_tree or classify_verdict for scanned PDFs. warid-597 has 54k chars / 42 pages = ~1303 chars/page, well below the 2000-4000 chars/page expected for government documents. A density check (e.g., if page_count available and chars_per_page < MIN_SCANNED_DENSITY_FLOOR, flag as suspect) would catch this. Alternatively, add an Arabic content validation heuristic: if the filename is Arabic but the OCR output's Arabic-char ratio is low (numeric junk + OCR noise), flag as garbled. A third option is to compare pre-retry and post-retry garble signals in the D4 keep-best logic -- if the pre-retry was garbled and the post-retry has similar garble patterns (same repeating tokens), don't let char-count growth alone override the garble detection.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py",
+            "src/pageindex_mcp/client.py"
+          ],
+          "affected_docs": [
+            "وارد رقم 597 (stored verdict)",
+            "وارد رقم 597 - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "028-run11-arabic-recovery-and-timeout-wiring.md",
+            "019-corpus-reingestion-phase2.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": []
+    },
+    {
+      "domain": "converter",
+      "root_causes": [
+        {
+          "id": "RC1-docling-picture-classification",
+          "root_cause": "Docling's Heron RT-DETRv2 layout model does not classify bar charts/infographics as PictureItem when the chart is rendered as vector graphics or text-layer numeric fragments rather than raster images. Without PictureItem classification, no <!-- image --> markers are emitted, so the entire downstream picture enrichment pipeline (_recover_picture_results, splice_picture_text_for_tree, _enrich_image_blocks) never runs. This is an upstream Docling model limitation, not a code change in this codebase.",
+          "code_path": "converters.py:pdf_to_markdown_docling -> result.document.export_to_markdown() -> _collect_picture_regions (returns empty for charts Docling didn't classify as PictureItem)",
+          "fix_category": "missing_feature",
+          "estimated_complexity": "large",
+          "suggested_fix": "Add a post-Docling heuristic that detects pages with very low text content relative to page area (chart-dense pages) and synthesizes PictureItem regions for them, or implement a secondary chart-detection pass using the existing fitz/pypdfium2 page rendering to identify chart regions that Docling missed. Alternatively, for known chart-heavy documents, force the image-standalone pipeline with OCR on the full page.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "uae_numbers_english_page_16_17_landscape - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "026-verdict-gate-hardening-rotation-detection.md"
+          ]
+        },
+        {
+          "id": "RC2-tableformer-merged-cell-loss",
+          "root_cause": "Docling's TableFormer ACCURATE mode drops merged-cell/rowspan content during table reconstruction. The markdown export renders empty cells where merged cells span multiple rows, producing 45-75% empty-cell ratios in benefit overview tables. This is an upstream TableFormer limitation documented in RFC-010 Gap 6a (multi-row header flattening, rowspan info lost before our pipeline). The _flat_parse_table and _forward_fill_leading_column functions in helpers.py only forward-fill column 0, leaving data columns with empty cells intact.",
+          "code_path": "converters.py:pdf_to_markdown_docling -> Docling TableFormer -> export_to_markdown() -> helpers.py:_flat_parse_table -> _forward_fill_leading_column (column 0 only)",
+          "fix_category": "missing_feature",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Extend _forward_fill_leading_column to optionally forward-fill ALL columns (not just column 0) when a table has high empty-cell ratios (>30%), or implement a post-TableFormer heuristic that detects rowspan patterns (consecutive empty cells in a column below a non-empty cell) and fills them. Alternatively, read the raw PDF text layer for table regions via fitz clip and reconcile with Docling's table structure.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py",
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "Unfallversicherung-Besondere-Bedingungen-2024-001_01.pdf.pdf"
+          ],
+          "confidence": "medium",
+          "related_rfcs": [
+            "010-corpus-gap-remediation.md"
+          ]
+        },
+        {
+          "id": "RC3-chunked-docling-table-duplication",
+          "root_cause": "The world-stats-pocketbook (292 pages) now completes processing thanks to RFC-028 D0 timeout wiring, but Docling's export_to_markdown() produces ~9.4M chars (~31k chars/page vs ~3k expected), a 10x inflation. This is likely Docling duplicating table content in its markdown export (the pocketbook is dense statistical tables on every page). Additionally, 19/20 image markers remain unenriched, likely because the chunked-Docling path's concatenated pic_results misalign with the concatenated markdown's <!-- image --> markers (the splice_picture_text_for_tree guard rejects on count mismatch).",
+          "code_path": "converters.py:_pdf_to_markdown_docling_chunked -> pdf_to_markdown_docling (per chunk) -> Docling export_to_markdown() table duplication; converters.py:splice_picture_text_for_tree marker/region count mismatch guard",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "(1) Investigate Docling's export_to_markdown() table duplication on dense statistical pages -- if Docling emits both inline table text AND a separate markdown table block for the same content, deduplicate by detecting repeated content blocks within a page boundary. (2) For the 19/20 unenriched images: debug the marker/pic count mismatch in the chunked path -- the chunk-level pic_results may include regions from chunks that timed out and fell back to PyPDF2 (which strips markers), breaking the global alignment. Fix by recounting markers after concatenation and trimming excess pic_results.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py"
+          ],
+          "affected_docs": [
+            "world-stats-pocketbook-2023.pdf"
+          ],
+          "confidence": "medium",
+          "related_rfcs": [
+            "027-run10-extraction-gate-and-arabic-recovery.md",
+            "028-run11-arabic-recovery-and-timeout-wiring.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": [
+        {
+          "doc": "world-stats-pocketbook-2023.pdf",
+          "reason": "The 10x character inflation needs per-page analysis to determine whether duplication is from Docling's export_to_markdown (upstream) or from the chunked-Docling concatenation/text-fallback logic (this codebase). Additionally, the 19/20 unenriched image markers need chunk-boundary tracing to isolate whether the mismatch is per-chunk or post-concatenation.",
+          "complexity": "complex"
+        },
+        {
+          "doc": "Unfallversicherung-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+          "reason": "Need to verify whether the doc name in the cluster matches the actual corpus doc (audit shows Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf instead), and whether the empty-cell ratios are from TableFormer upstream or from the _flat_parse_table pipeline losing data during verbalization.",
+          "complexity": "simple"
+        }
+      ]
+    },
+    {
+      "domain": "splitter",
+      "root_causes": [
+        {
+          "id": "RC1",
+          "root_cause": "_inject_arabic_structural_headings (RFC-028 D1) removed prev_blank guard and raised char limit to 100, which injects just enough headings for shallow Arabic docs to clear validate_tree thresholds (node_count>=3, depth>=2) — preventing the flat fallback path from triggering. The tree stores a thin 6-node/1225-char result instead of the richer 75-block/5972-char flat extraction. Additionally, for docs where ALL articles have flat peer numbering (1,2,3 not 1.1,1.2), _relevel_by_containment cannot build deeper hierarchy, and _relevel_by_numbering only assigns depth based on numbering_depth which maps all articles to the same level.",
+          "code_path": "src/pageindex_mcp/converters.py::_inject_arabic_structural_headings -> _recover_heading_depth -> _relevel_by_containment/_relevel_by_numbering; src/pageindex_mcp/helpers.py::validate_tree",
+          "fix_category": "bug",
+          "estimated_complexity": "medium",
+          "suggested_fix": "Add a content-density comparison gate: when the tree from md_to_tree passes validate_tree but the flat extraction would yield significantly more content (e.g. flat_char_count > 3x tree_char_count), prefer the flat result. Alternatively, add a minimum chars-per-node threshold to validate_tree so a 6-node/1225-char tree (204 chars/node) does not pass when the content is demonstrably thin. This addresses the regression (marsoom 13) and the stalls (qerar 1, qerar 106) where a barely-passing tree blocks richer flat extraction.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py",
+            "src/pageindex_mcp/helpers.py",
+            "src/pageindex_mcp/client.py"
+          ],
+          "affected_docs": [
+            "مرسوم بقانون اتحادي رقم (13) لسنة 2022 - Copy.pdf",
+            "قرار مجلس الوزراء رقم (1) لسنة 2022",
+            "قرار مجلس الوزراء رقم (106) لسنة 2022 - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "028-run11-arabic-recovery-and-timeout-wiring.md"
+          ]
+        },
+        {
+          "id": "RC2",
+          "root_cause": "route_and_extract_flat has no fence-marker or HR-separator filtering. Markdown fence delimiters (```) and horizontal rules (---) produced by Docling fall through to the prose accumulator (line 2357-2359) and become noise prose blocks. For docs routed to the flat path, 15-20% of blocks are these parsing artifacts. The _pre_inference_normalize chain and _inject_arabic_structural_headings run before md_to_tree but do not strip fences/HRs, and the flat extractor has no special handling for them.",
+          "code_path": "src/pageindex_mcp/helpers.py::route_and_extract_flat (lines 2281-2359)",
+          "fix_category": "missing_feature",
+          "estimated_complexity": "small",
+          "suggested_fix": "Add fence-marker and HR-separator detection at the top of the route_and_extract_flat while loop: (1) skip lines matching ^```.*$ (fence delimiters) and toggle an in_fence state to skip content inside fences, (2) skip lines matching ^---+$ or ^===+$ or ^\\*\\*\\*+$ (thematic breaks/HR separators). Also add a pre-processing strip in the markdown normalization chain (before md_to_tree) to remove or neutralize fences and HRs that Docling emits.",
+          "affected_files": [
+            "src/pageindex_mcp/helpers.py"
+          ],
+          "affected_docs": [
+            "MOU MOHRE - Copy.pdf",
+            "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - Copy.pdf",
+            "قرار مجلس الوزراء رقم (106) لسنة 2022 - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": []
+        }
+      ],
+      "needs_doc_drilldown": [
+        {
+          "doc": "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+          "reason": "Cross-document content contamination (48/91 nodes from unrelated Ministry of Education org chart) plus PUA-glyph encoding is a unique failure mode not shared with the other 6 docs. The contamination source (org-chart content grafted into the tree) suggests a Docling extraction bug or a compound PDF where pages from two documents were merged. The stored PASS verdict despite 53% contamination is a separate classify_verdict gap (the gate checks garbling, node count, depth, and leaf ratio but has no cross-document content coherence check). Needs per-doc investigation of the source PDF structure and Docling extraction output.",
+          "complexity": "complex"
+        },
+        {
+          "doc": "GHV-TKV-Tarif.pdf",
+          "reason": "Rate-table collapse into unsegmented flat blob is a table-segmentation issue, not a heading/fence problem. The 4 unrecovered image markers are a separate _enrich_pictures gap. Neither symptom fits RC1 (Arabic heading injection) or RC2 (fence leakage) — this is a German tariff table document with a different extraction challenge. Needs investigation of _flat_parse_table and table-region detection for dense rate tables.",
+          "complexity": "simple"
+        }
+      ]
+    },
+    {
+      "domain": "picture_ocr",
+      "root_causes": [
+        {
+          "id": "RC1",
+          "root_cause": "_recover_picture_text skip gates (clip_text_already_exported and page_coverage) produce empty PictureResults for chart regions in PDFs: when a chart's text labels are already in the Docling markdown export (clip_text containment guard, converters.py L1881) or the region covers >60% of the page with a text layer (coverage threshold, L1849-1874), the region is skipped with only a skipped_reason. splice_figure_markers then strips the <!-- image --> marker entirely (STRIP_SKIPPED_IMAGE_MARKERS=true default), so route_and_extract_flat never creates an indexed image block. No figure_path, no ocr_text, no description on the stored flat doc. VLM_DESCRIBE_IMAGES=false (default) means no visual semantic fallback exists.",
+          "code_path": "converters.py:_recover_picture_text L1849-1898 (skip gates) -> _recover_picture_results L2148 (placeholder PictureResult) -> splice_figure_markers L2071-2075 (strip skipped markers) -> route_and_extract_flat L2335-2337 (no indexed image block created) -> _enrich_image_blocks L602-608 (nothing to enrich)",
+          "fix_category": "missing_feature",
+          "estimated_complexity": "medium",
+          "suggested_fix": "When a region is skipped with clip_text_already_exported or page_coverage, still retain the cropped png_bytes in the PictureResult so the figure PNG is persisted to MinIO and the image block maintains its semantic link to the chart content. Decouples 'text already extracted' from 'visual context already captured'. Alternatively, for clip_text_already_exported regions, propagate the clip_text as ocr_text on the PictureResult so splice_figure_markers emits a [Chart text] block linking the chart image to its data.",
+          "affected_files": [
+            "src/pageindex_mcp/converters.py",
+            "src/pageindex_mcp/client.py"
+          ],
+          "affected_docs": [
+            "uae_numbers_english_page_16_17_portrait - Copy.pdf"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "017-ocr-image-block-decoupling.md",
+            "024-run7-verdict-stability-and-recovery-gaps.md"
+          ]
+        },
+        {
+          "id": "RC2",
+          "root_cause": "Standalone JPG image route creates synthetic PictureResult with png_bytes but ocr_text='' because D8a (RFC-023) skips standalone Tesseract OCR when Docling's md_content exceeds MIN_STANDALONE_IMAGE_MD_CHARS (100). The image block gets figure_path from _enrich_image_blocks but no ocr_text. Chart quantitative data (percentages, labels) ends up in separate prose blocks, not semantically linked to the image block. The audit counts zero PictureResult enrichments because it looks for '> [Chart text]:' patterns which require non-empty ocr_text on the PictureResult.",
+          "code_path": "client.py L928-930 (D8a gate skips standalone OCR when md_content > 100 chars) -> L938-946 (synthetic PictureResult with ocr_text='') -> splice_figure_markers L2081 (ocr is empty, no Chart text marker) -> _enrich_image_blocks L618-619 (sets ocr_text='' on block)",
+          "fix_category": "missing_feature",
+          "estimated_complexity": "small",
+          "suggested_fix": "For standalone images where Docling extracts meaningful text (>100 chars), copy the Docling-extracted text into the synthetic PictureResult's ocr_text field rather than leaving it empty. This ensures the image block carries the chart's textual content as ocr_text, and splice_figure_markers emits a [Chart text] block linking the visual image to its data. Guard against double-counting by checking if md_content already has the text as prose.",
+          "affected_files": [
+            "src/pageindex_mcp/client.py"
+          ],
+          "affected_docs": [
+            "image pie chart about labor distribution in january 2025 - Copy.jpg"
+          ],
+          "confidence": "high",
+          "related_rfcs": [
+            "017-ocr-image-block-decoupling.md"
+          ]
+        }
+      ],
+      "needs_doc_drilldown": []
+    }
+  ],
+  "root_causes": [
+    {
+      "id": "RC-W1",
+      "root_cause": "RFC-028 D2 added a presentation-forms garble check in _is_garbled_blob (helpers.py:880-895) that fires when >50% of Arabic characters are in the Presentation Forms ranges (U+FB50-FDFF, U+FE70-FEFF). The Human Rights document text layer uses Arabic Presentation Forms characters (confirmed by filename analysis: 6/10 Arabic chars are PF). RFC-028 explicitly references this document (D2 trace: Finding #7 huquq al-insan). validate_tree rejects the tree with reason=garbling (helpers.py:1142-1143). The OCR retry path (client.py:991-1082) runs force_full_page_ocr but either fails or produces fewer chars than the original, so the D4 best-of-two comparison (client.py:1062-1081) restores the original garbled result. reason=garbling is explicitly excluded from flat routing (FLAT-03-C2, client.py:1286), so LowQualityTreeError is raised (client.py:1538). The worker maps this to terminal reason=low_quality_tree (worker.py:431-441), no artifacts are saved, and no flat fallback is attempted.",
+      "code_path": "helpers.py:_is_garbled_blob (D2 PF check) -> helpers.py:validate_tree -> client.py:index (garbling recovery) -> client.py:raise LowQualityTreeError -> converters_cli -> worker.py:_TERMINAL_CHILD_REASONS",
+      "fix_category": "bug",
+      "estimated_complexity": "small",
+      "suggested_fix": "Two options: (A) Add a presentation-forms-to-logical-order Unicode normalization step in _pre_inference_normalize (converters.py) that maps U+FE70-FEFF and U+FB50-FDFF characters to their canonical decomposition equivalents via unicodedata.normalize('NFKC'), so the text passes the garble check and tree validation. (B) Add garbling as a flat-routing-eligible reason after all recovery paths exhaust (preserving content even if garbled, since the previous 328-node/498k-char artifact was usable). Option A is preferred as it treats the root cause (wrong encoding) rather than the symptom.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py",
+        "src/pageindex_mcp/converters.py",
+        "src/pageindex_mcp/client.py"
+      ],
+      "affected_docs": [
+        "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "028-run11-arabic-recovery-and-timeout-wiring.md"
+      ]
+    },
+    {
+      "id": "VL-1",
+      "root_cause": "LLM audit judge (Opus) non-determinism: all 3 docs have byte-identical extraction between Run 11 and Run 12 (same node counts, char counts, tree structure), but the Opus judge applied different subjective scrutiny. The stored gate verdicts from deterministic classify_verdict (helpers.py:1285) are unchanged -- cabinet_resolution returns PASS (43 nodes, depth 3, max_leaf_ratio well under 0.30), uae_numbers stored MARGINAL (flat_mixed with 748 chars). The audit scorecard 'Verdict' column is the LLM judge verdict, not the stored gate verdict (confirmed by audit line 7: 'stored vs audit verdicts diverge'). RFC-028 D6 already fixed one instance of this pattern (image markers in hierarchical docs) by adding prompt guidance to .claude/skills/corpus-ingest-score/SKILL.md lines 34-42. The same calibration gap now manifests for two new dimensions: (a) table-header malformation scrutiny (cabinet_resolution: judge now flags malformed multi-row headers it previously tolerated), (b) chart-content-loss severity (uae_numbers: judge escalates from MARGINAL to FAIL for the same 748-char artifact with zero enrichments).",
+      "code_path": ".claude/skills/corpus-ingest-score/SKILL.md (Judge Verdict guidance section) -> Opus model subjective scoring",
+      "fix_category": "config",
+      "estimated_complexity": "small",
+      "suggested_fix": "Extend the Judge Verdict guidance in .claude/skills/corpus-ingest-score/SKILL.md with two additional calibration rules: (1) For docs where stored gate verdict is PASS and metrics are byte-identical to the prior run, the judge MUST NOT downgrade unless it can cite a specific content-quality defect not present in the prior run's finding (prevents re-scoring drift on stable artifacts). (2) For flat/chart-heavy docs with low char counts (<1000 chars) and zero enrichments, anchor the severity to MARGINAL (not FAIL) when the extraction layer itself has not regressed -- the missing enrichment is a known pipeline gap, not a per-run regression. This follows the same pattern as RFC-028 D6's fix for image markers.",
+      "affected_files": [
+        ".claude/skills/corpus-ingest-score/SKILL.md",
+        ".claude/skills/corpus-score-diff/SKILL.md"
+      ],
+      "affected_docs": [
+        "cabinet_resolution_no_21_of_2020",
+        "uae_numbers_english_page_16_17_landscape",
+        "cabinet_resolution_no_21_of_2020 - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "028-run11-arabic-recovery-and-timeout-wiring"
+      ]
+    },
+    {
+      "id": "RC1-ocr-retry-dilutes-garble-gate",
+      "root_cause": "RFC-028 D5 fixed OCR language detection in _recover_picture_results (converters.py) by unioning detect_ocr_langs(filename) with detect_ocr_langs(md), adding 'ara' to Tesseract langs for Arabic-named PDFs. Combined with the existing Fix-3 force_full_page_ocr retry path (client.py ~line 991), the OCR retry now produces 54k chars of Arabic-looking OCR output (up from 1.8k in Run 11) for the scanned 42-page warid-597 document. This OCR output dilutes the repeating numeric-junk text layer ('1651001429') below all _is_garbled_blob thresholds: digit-ratio drops from ~100% to <1% (420 digit chars in 54k total), token-repetition drops far below 30%. validate_tree passes (111 nodes, depth>=2, no garble detected), classify_verdict returns PASS. In Run 11, the OCR retry produced only 1.8k chars (OCR'd with 'eng' model on Arabic pages), validate_tree failed with garbling, doc fell to flat path which stored MARGINAL garbling(ratio=1.00). The regression is that improved OCR language detection paradoxically removed the garble-gate safety net by producing more (but still low-quality) OCR content.",
+      "code_path": "client.py::index() Fix-3 retry (line ~991) -> converters.py::_recover_picture_results D5 lang union (line ~2117) -> helpers.py::_is_garbled_blob digit-ratio check (line 897-901) -> helpers.py::_tree_is_garbled (line 1052-1058) -> helpers.py::validate_tree (line 1142) returns True -> helpers.py::classify_verdict (line 1344) garbled=False -> PASS",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Add a chars-per-page density floor to validate_tree or classify_verdict for scanned PDFs. warid-597 has 54k chars / 42 pages = ~1303 chars/page, well below the 2000-4000 chars/page expected for government documents. A density check (e.g., if page_count available and chars_per_page < MIN_SCANNED_DENSITY_FLOOR, flag as suspect) would catch this. Alternatively, add an Arabic content validation heuristic: if the filename is Arabic but the OCR output's Arabic-char ratio is low (numeric junk + OCR noise), flag as garbled. A third option is to compare pre-retry and post-retry garble signals in the D4 keep-best logic -- if the pre-retry was garbled and the post-retry has similar garble patterns (same repeating tokens), don't let char-count growth alone override the garble detection.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py",
+        "src/pageindex_mcp/client.py"
+      ],
+      "affected_docs": [
+        "وارد رقم 597 (stored verdict)",
+        "وارد رقم 597 - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "028-run11-arabic-recovery-and-timeout-wiring.md",
+        "019-corpus-reingestion-phase2.md"
+      ]
+    },
+    {
+      "id": "RC1-docling-picture-classification",
+      "root_cause": "Docling's Heron RT-DETRv2 layout model does not classify bar charts/infographics as PictureItem when the chart is rendered as vector graphics or text-layer numeric fragments rather than raster images. Without PictureItem classification, no <!-- image --> markers are emitted, so the entire downstream picture enrichment pipeline (_recover_picture_results, splice_picture_text_for_tree, _enrich_image_blocks) never runs. This is an upstream Docling model limitation, not a code change in this codebase.",
+      "code_path": "converters.py:pdf_to_markdown_docling -> result.document.export_to_markdown() -> _collect_picture_regions (returns empty for charts Docling didn't classify as PictureItem)",
+      "fix_category": "missing_feature",
+      "estimated_complexity": "large",
+      "suggested_fix": "Add a post-Docling heuristic that detects pages with very low text content relative to page area (chart-dense pages) and synthesizes PictureItem regions for them, or implement a secondary chart-detection pass using the existing fitz/pypdfium2 page rendering to identify chart regions that Docling missed. Alternatively, for known chart-heavy documents, force the image-standalone pipeline with OCR on the full page.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "uae_numbers_english_page_16_17_landscape - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "026-verdict-gate-hardening-rotation-detection.md"
+      ]
+    },
+    {
+      "id": "RC2-tableformer-merged-cell-loss",
+      "root_cause": "Docling's TableFormer ACCURATE mode drops merged-cell/rowspan content during table reconstruction. The markdown export renders empty cells where merged cells span multiple rows, producing 45-75% empty-cell ratios in benefit overview tables. This is an upstream TableFormer limitation documented in RFC-010 Gap 6a (multi-row header flattening, rowspan info lost before our pipeline). The _flat_parse_table and _forward_fill_leading_column functions in helpers.py only forward-fill column 0, leaving data columns with empty cells intact.",
+      "code_path": "converters.py:pdf_to_markdown_docling -> Docling TableFormer -> export_to_markdown() -> helpers.py:_flat_parse_table -> _forward_fill_leading_column (column 0 only)",
+      "fix_category": "missing_feature",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Extend _forward_fill_leading_column to optionally forward-fill ALL columns (not just column 0) when a table has high empty-cell ratios (>30%), or implement a post-TableFormer heuristic that detects rowspan patterns (consecutive empty cells in a column below a non-empty cell) and fills them. Alternatively, read the raw PDF text layer for table regions via fitz clip and reconcile with Docling's table structure.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py",
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "Unfallversicherung-Besondere-Bedingungen-2024-001_01.pdf.pdf"
+      ],
+      "confidence": "medium",
+      "related_rfcs": [
+        "010-corpus-gap-remediation.md"
+      ]
+    },
+    {
+      "id": "RC3-chunked-docling-table-duplication",
+      "root_cause": "The world-stats-pocketbook (292 pages) now completes processing thanks to RFC-028 D0 timeout wiring, but Docling's export_to_markdown() produces ~9.4M chars (~31k chars/page vs ~3k expected), a 10x inflation. This is likely Docling duplicating table content in its markdown export (the pocketbook is dense statistical tables on every page). Additionally, 19/20 image markers remain unenriched, likely because the chunked-Docling path's concatenated pic_results misalign with the concatenated markdown's <!-- image --> markers (the splice_picture_text_for_tree guard rejects on count mismatch).",
+      "code_path": "converters.py:_pdf_to_markdown_docling_chunked -> pdf_to_markdown_docling (per chunk) -> Docling export_to_markdown() table duplication; converters.py:splice_picture_text_for_tree marker/region count mismatch guard",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "(1) Investigate Docling's export_to_markdown() table duplication on dense statistical pages -- if Docling emits both inline table text AND a separate markdown table block for the same content, deduplicate by detecting repeated content blocks within a page boundary. (2) For the 19/20 unenriched images: debug the marker/pic count mismatch in the chunked path -- the chunk-level pic_results may include regions from chunks that timed out and fell back to PyPDF2 (which strips markers), breaking the global alignment. Fix by recounting markers after concatenation and trimming excess pic_results.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py"
+      ],
+      "affected_docs": [
+        "world-stats-pocketbook-2023.pdf"
+      ],
+      "confidence": "medium",
+      "related_rfcs": [
+        "027-run10-extraction-gate-and-arabic-recovery.md",
+        "028-run11-arabic-recovery-and-timeout-wiring.md"
+      ]
+    },
+    {
+      "id": "RC1",
+      "root_cause": "_inject_arabic_structural_headings (RFC-028 D1) removed prev_blank guard and raised char limit to 100, which injects just enough headings for shallow Arabic docs to clear validate_tree thresholds (node_count>=3, depth>=2) — preventing the flat fallback path from triggering. The tree stores a thin 6-node/1225-char result instead of the richer 75-block/5972-char flat extraction. Additionally, for docs where ALL articles have flat peer numbering (1,2,3 not 1.1,1.2), _relevel_by_containment cannot build deeper hierarchy, and _relevel_by_numbering only assigns depth based on numbering_depth which maps all articles to the same level.",
+      "code_path": "src/pageindex_mcp/converters.py::_inject_arabic_structural_headings -> _recover_heading_depth -> _relevel_by_containment/_relevel_by_numbering; src/pageindex_mcp/helpers.py::validate_tree",
+      "fix_category": "bug",
+      "estimated_complexity": "medium",
+      "suggested_fix": "Add a content-density comparison gate: when the tree from md_to_tree passes validate_tree but the flat extraction would yield significantly more content (e.g. flat_char_count > 3x tree_char_count), prefer the flat result. Alternatively, add a minimum chars-per-node threshold to validate_tree so a 6-node/1225-char tree (204 chars/node) does not pass when the content is demonstrably thin. This addresses the regression (marsoom 13) and the stalls (qerar 1, qerar 106) where a barely-passing tree blocks richer flat extraction.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py",
+        "src/pageindex_mcp/helpers.py",
+        "src/pageindex_mcp/client.py"
+      ],
+      "affected_docs": [
+        "مرسوم بقانون اتحادي رقم (13) لسنة 2022 - Copy.pdf",
+        "قرار مجلس الوزراء رقم (1) لسنة 2022",
+        "قرار مجلس الوزراء رقم (106) لسنة 2022 - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "028-run11-arabic-recovery-and-timeout-wiring.md"
+      ]
+    },
+    {
+      "id": "RC2",
+      "root_cause": "route_and_extract_flat has no fence-marker or HR-separator filtering. Markdown fence delimiters (```) and horizontal rules (---) produced by Docling fall through to the prose accumulator (line 2357-2359) and become noise prose blocks. For docs routed to the flat path, 15-20% of blocks are these parsing artifacts. The _pre_inference_normalize chain and _inject_arabic_structural_headings run before md_to_tree but do not strip fences/HRs, and the flat extractor has no special handling for them.",
+      "code_path": "src/pageindex_mcp/helpers.py::route_and_extract_flat (lines 2281-2359)",
+      "fix_category": "missing_feature",
+      "estimated_complexity": "small",
+      "suggested_fix": "Add fence-marker and HR-separator detection at the top of the route_and_extract_flat while loop: (1) skip lines matching ^```.*$ (fence delimiters) and toggle an in_fence state to skip content inside fences, (2) skip lines matching ^---+$ or ^===+$ or ^\\*\\*\\*+$ (thematic breaks/HR separators). Also add a pre-processing strip in the markdown normalization chain (before md_to_tree) to remove or neutralize fences and HRs that Docling emits.",
+      "affected_files": [
+        "src/pageindex_mcp/helpers.py"
+      ],
+      "affected_docs": [
+        "MOU MOHRE - Copy.pdf",
+        "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - Copy.pdf",
+        "قرار مجلس الوزراء رقم (106) لسنة 2022 - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": []
+    },
+    {
+      "id": "RC1",
+      "root_cause": "_recover_picture_text skip gates (clip_text_already_exported and page_coverage) produce empty PictureResults for chart regions in PDFs: when a chart's text labels are already in the Docling markdown export (clip_text containment guard, converters.py L1881) or the region covers >60% of the page with a text layer (coverage threshold, L1849-1874), the region is skipped with only a skipped_reason. splice_figure_markers then strips the <!-- image --> marker entirely (STRIP_SKIPPED_IMAGE_MARKERS=true default), so route_and_extract_flat never creates an indexed image block. No figure_path, no ocr_text, no description on the stored flat doc. VLM_DESCRIBE_IMAGES=false (default) means no visual semantic fallback exists.",
+      "code_path": "converters.py:_recover_picture_text L1849-1898 (skip gates) -> _recover_picture_results L2148 (placeholder PictureResult) -> splice_figure_markers L2071-2075 (strip skipped markers) -> route_and_extract_flat L2335-2337 (no indexed image block created) -> _enrich_image_blocks L602-608 (nothing to enrich)",
+      "fix_category": "missing_feature",
+      "estimated_complexity": "medium",
+      "suggested_fix": "When a region is skipped with clip_text_already_exported or page_coverage, still retain the cropped png_bytes in the PictureResult so the figure PNG is persisted to MinIO and the image block maintains its semantic link to the chart content. Decouples 'text already extracted' from 'visual context already captured'. Alternatively, for clip_text_already_exported regions, propagate the clip_text as ocr_text on the PictureResult so splice_figure_markers emits a [Chart text] block linking the chart image to its data.",
+      "affected_files": [
+        "src/pageindex_mcp/converters.py",
+        "src/pageindex_mcp/client.py"
+      ],
+      "affected_docs": [
+        "uae_numbers_english_page_16_17_portrait - Copy.pdf"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "017-ocr-image-block-decoupling.md",
+        "024-run7-verdict-stability-and-recovery-gaps.md"
+      ]
+    },
+    {
+      "id": "RC2",
+      "root_cause": "Standalone JPG image route creates synthetic PictureResult with png_bytes but ocr_text='' because D8a (RFC-023) skips standalone Tesseract OCR when Docling's md_content exceeds MIN_STANDALONE_IMAGE_MD_CHARS (100). The image block gets figure_path from _enrich_image_blocks but no ocr_text. Chart quantitative data (percentages, labels) ends up in separate prose blocks, not semantically linked to the image block. The audit counts zero PictureResult enrichments because it looks for '> [Chart text]:' patterns which require non-empty ocr_text on the PictureResult.",
+      "code_path": "client.py L928-930 (D8a gate skips standalone OCR when md_content > 100 chars) -> L938-946 (synthetic PictureResult with ocr_text='') -> splice_figure_markers L2081 (ocr is empty, no Chart text marker) -> _enrich_image_blocks L618-619 (sets ocr_text='' on block)",
+      "fix_category": "missing_feature",
+      "estimated_complexity": "small",
+      "suggested_fix": "For standalone images where Docling extracts meaningful text (>100 chars), copy the Docling-extracted text into the synthetic PictureResult's ocr_text field rather than leaving it empty. This ensures the image block carries the chart's textual content as ocr_text, and splice_figure_markers emits a [Chart text] block linking the visual image to its data. Guard against double-counting by checking if md_content already has the text as prose.",
+      "affected_files": [
+        "src/pageindex_mcp/client.py"
+      ],
+      "affected_docs": [
+        "image pie chart about labor distribution in january 2025 - Copy.jpg"
+      ],
+      "confidence": "high",
+      "related_rfcs": [
+        "017-ocr-image-block-decoupling.md"
+      ]
+    }
+  ],
+  "drilldown_needed": [
+    {
+      "doc": "world-stats-pocketbook-2023.pdf",
+      "reason": "The 10x character inflation needs per-page analysis to determine whether duplication is from Docling's export_to_markdown (upstream) or from the chunked-Docling concatenation/text-fallback logic (this codebase). Additionally, the 19/20 unenriched image markers need chunk-boundary tracing to isolate whether the mismatch is per-chunk or post-concatenation.",
+      "complexity": "complex"
+    },
+    {
+      "doc": "Unfallversicherung-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+      "reason": "Need to verify whether the doc name in the cluster matches the actual corpus doc (audit shows Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf instead), and whether the empty-cell ratios are from TableFormer upstream or from the _flat_parse_table pipeline losing data during verbalization.",
+      "complexity": "simple"
+    },
+    {
+      "doc": "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+      "reason": "Cross-document content contamination (48/91 nodes from unrelated Ministry of Education org chart) plus PUA-glyph encoding is a unique failure mode not shared with the other 6 docs. The contamination source (org-chart content grafted into the tree) suggests a Docling extraction bug or a compound PDF where pages from two documents were merged. The stored PASS verdict despite 53% contamination is a separate classify_verdict gap (the gate checks garbling, node count, depth, and leaf ratio but has no cross-document content coherence check). Needs per-doc investigation of the source PDF structure and Docling extraction output.",
+      "complexity": "complex"
+    },
+    {
+      "doc": "GHV-TKV-Tarif.pdf",
+      "reason": "Rate-table collapse into unsegmented flat blob is a table-segmentation issue, not a heading/fence problem. The 4 unrecovered image markers are a separate _enrich_pictures gap. Neither symptom fits RC1 (Arabic heading injection) or RC2 (fence leakage) — this is a German tariff table document with a different extraction challenge. Needs investigation of _flat_parse_table and table-region detection for dense rate tables.",
+      "complexity": "simple"
+    }
+  ]
+}

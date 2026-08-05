@@ -47,10 +47,12 @@ def test_synthetic_structure_promotes_cat_b():
 
 
 def test_empty_structure_and_empty_blocks_yields_marginal():
+    # RFC-026 D0: an empty structure is now an unconditional zero_content
+    # FAIL (the hard floor this doc-shape used to slip past), not MARGINAL.
     structure = _synthesize_flat_structure([], [])
     assert structure == []
-    verdict, _ = classify_verdict(structure, "flat_prose", None)
-    assert verdict == "MARGINAL"
+    verdict, reason = classify_verdict(structure, "flat_prose", None)
+    assert (verdict, reason) == ("FAIL", "zero_content")
 
 
 def test_non_empty_garbled_structure_still_detected():

@@ -14,6 +14,13 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc008-observability-error-handling.md](../designs/design-rfc008-observability-error-handling.md) |
+| Implementation Plan | [tasks-rfc008-observability-error-handling.md](../tasks/tasks-rfc008-observability-error-handling.md) |
+
 ## Context
 
 The 62-document corpus audit (Wave 3, 2026-07-10) surfaced 7 issues (ISS-07, ISS-08,

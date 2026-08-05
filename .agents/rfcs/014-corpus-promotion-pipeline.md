@@ -11,6 +11,14 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc014-corpus-promotion-pipeline.md](../designs/design-rfc014-corpus-promotion-pipeline.md) |
+| Implementation Plan | [tasks-rfc014-corpus-promotion-pipeline.md](../tasks/tasks-rfc014-corpus-promotion-pipeline.md) |
+| Audit | [SCOPE.md](../../audit/SCOPE.md) |
+
 ## Context
 
 `audit/SCOPE.md` §5 defines a PASS/MARGINAL/FAIL corpus-verdict taxonomy (PASS =

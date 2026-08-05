@@ -11,6 +11,14 @@ plan-impact: yes
 supersedes-decisions-in: []
 ---
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc013-structural-hardening.md](../designs/design-rfc013-structural-hardening.md) |
+| Implementation Plan | [tasks-rfc013-structural-hardening.md](../tasks/tasks-rfc013-structural-hardening.md) |
+| Audit | [DOCSTORE_AUDIT_REPORT.md](../../audit/DOCSTORE_AUDIT_REPORT.md) |
+
 ## Context
 
 `audit/DOCSTORE_AUDIT_REPORT.md`'s Batch 2 (structural, 1-2 day estimate) covers

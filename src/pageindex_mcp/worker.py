@@ -26,6 +26,7 @@ from arq.connections import RedisSettings
 
 from .cache import get_async_redis
 from .config import settings
+from .converters import chunked_docling_timeout_s
 from .memory_admission import wait_for_memory
 from .metrics import (
     _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY,
@@ -45,7 +46,13 @@ logger = logging.getLogger(__name__)
 
 JOB_TTL = 86_400
 MAX_TRIES = 2
-JOB_TIMEOUT = 1800
+# RFC-028 D0: 1800 -> 3630 (max_dynamic_child_timeout 3300 + 300 buffer +
+# CHILD_GRACE_SECONDS 30). arq's job_timeout is worker-level, not per-job, so
+# raising it to cover the dynamic-timeout worst case (chunked_docling_timeout_s
+# for large chunked PDFs) statically doubles worst-case slot occupancy for
+# every job, not just large chunked PDFs. Accepted trade-off (see RFC-028
+# Risks) -- world-stats-pocketbook-2023.pdf has ERRORed 3 consecutive runs.
+JOB_TIMEOUT = 3630
 # The inner timeout we apply around the converter child must be strictly
 # *shorter* than arq's outer ``job_timeout`` (JOB_TIMEOUT). Otherwise the two
 # can race: arq cancels the task before our ``asyncio.timeout()`` fires and we
@@ -55,10 +62,39 @@ JOB_TIMEOUT = 1800
 CHILD_GRACE_SECONDS = 30
 CHILD_TIMEOUT = JOB_TIMEOUT - CHILD_GRACE_SECONDS
 DLQ_KEY = "pageindex:dlq"
-# At most one job in flight per worker process. A single Docling index can peak
-# at multiple GiB; allowing arq's default (10) to stack two heavy jobs would
-# double peak RSS on an already memory-tight node and invite an OOM kill.
-MAX_JOBS = 1
+# At most one job in flight per worker process by default. A single Docling
+# index can peak at multiple GiB; allowing arq's default (10) to stack two heavy
+# jobs would double peak RSS on an already memory-tight node and invite an OOM
+# kill. Override with PAGEINDEX_WORKER_MAX_JOBS when running against *remote*
+# Docling (Scaleway) — the worker is then I/O-bound and 2–4 parallel jobs are
+# safe. Do NOT raise this against the local Docling profile.
+#
+# The value is clamped to [1, MAX_JOBS_CEILING] rather than trusted: an
+# arbitrarily large env value (a typo, or a remote-profile setting leaking into
+# a local-Docling deployment) would reinstate exactly the OOM the default of 1
+# exists to prevent. The ceiling is the top of the documented safe range for
+# the remote profile; raising it is a deliberate code change, not a deploy-time
+# accident.
+MAX_JOBS_CEILING = 4
+MAX_JOBS_DEFAULT = 1
+
+
+def resolve_max_jobs(raw: str | None) -> int:
+    """Clamp a raw PAGEINDEX_WORKER_MAX_JOBS value into [1, MAX_JOBS_CEILING].
+
+    A free function rather than an inline expression so the clamp is testable
+    without ``importlib.reload``-ing this module — reloading rebinds the
+    exception classes other test modules have already imported, so their
+    ``pytest.raises`` identity checks silently stop matching.
+    """
+    try:
+        parsed = int(raw) if raw is not None else MAX_JOBS_DEFAULT
+    except (TypeError, ValueError):
+        return MAX_JOBS_DEFAULT
+    return min(MAX_JOBS_CEILING, max(1, parsed))
+
+
+MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
 # Map child-reported exception class names (from converters_cli.py stdout JSON
 # "error" field) to the documented, stable Redis ``reason`` codes. Unknown
 # classes fall back to the generic ``converter_child_failed`` so the reason
@@ -164,7 +200,7 @@ class ConverterChildError(RuntimeError):
     """The converter child process exited non-zero (or reported ok=False)."""
 
     def __init__(self, returncode: int, stderr_tail: str, error_class: str | None = None):
-        super().__init__(f"converter child exited {returncode}: {stderr_tail[:200]}")
+        super().__init__(f"converter child exited {returncode}: {stderr_tail[-4000:]}")
         self.returncode = returncode
         self.stderr_tail = stderr_tail
         # ``error_class`` is the original exception class name reported by the
@@ -209,7 +245,9 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
-async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
+async def _run_converter_subprocess(
+    pdf_path: str, *, staging_key: str | None = None
+) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
 
     The child runs ``python -m pageindex_mcp.converters_cli <pdf_path>``. On
@@ -224,28 +262,65 @@ async def _run_converter_subprocess(pdf_path: str) -> dict[str, Any]:
             child exited 0 but reported ``ok=false``.
         asyncio.TimeoutError: child did not finish within CHILD_TIMEOUT.
     """
-    proc = await asyncio.create_subprocess_exec(
+    cmd = [
         sys.executable,
         "-m",
         "pageindex_mcp.converters_cli",
         pdf_path,
+    ]
+    if staging_key and settings.docling_service_url:
+        cmd.extend(["--staging-key", staging_key])
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        # start_new_session=True is the documented, thread-safe way to put the
-        # child in its own process group. Do NOT use preexec_fn=os.setsid.
         start_new_session=True,
         env=os.environ.copy(),
     )
-    stdout_bytes = b""
-    stderr_bytes = b""
+    # RFC-028 D0: the child emits a startup handshake line (chunk_count,
+    # is_docling_route) before it starts the heavy conversion, computed from a
+    # cheap PyPDF2 page-count probe -- read it first so we can size the
+    # effective timeout for a large chunked PDF instead of always using the
+    # fixed CHILD_TIMEOUT. HANDSHAKE_TIMEOUT_S bounds only this cheap probe;
+    # the remaining budget below still adds up to at most effective_timeout.
+    start = time.monotonic()
+    HANDSHAKE_TIMEOUT_S = 60
+    handshake_line = b""
     try:
-        async with asyncio.timeout(CHILD_TIMEOUT):
-            stdout_bytes, stderr_bytes = await proc.communicate()
+        async with asyncio.timeout(HANDSHAKE_TIMEOUT_S):
+            handshake_line = await proc.stdout.readline()
     except (TimeoutError, asyncio.CancelledError):
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
 
-    stderr_tail = stderr_bytes.decode(errors="replace")[-2000:]
+    effective_timeout = CHILD_TIMEOUT
+    leftover_stdout = handshake_line
+    try:
+        handshake = json.loads(handshake_line.decode(errors="replace").strip())
+    except (json.JSONDecodeError, AttributeError):
+        handshake = None
+    if isinstance(handshake, dict) and handshake.get("handshake"):
+        leftover_stdout = b""
+        if handshake.get("is_docling_route"):
+            try:
+                chunk_count = int(handshake.get("chunk_count", 1))
+            except (ValueError, TypeError):
+                chunk_count = 1
+            dynamic_timeout = chunked_docling_timeout_s(chunk_count)
+            effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
+
+    remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
+    stdout_bytes = b""
+    stderr_bytes = b""
+    try:
+        async with asyncio.timeout(remaining_budget):
+            rest_stdout, stderr_bytes = await proc.communicate()
+    except (TimeoutError, asyncio.CancelledError):
+        await _kill_group(proc, grace=KILL_GRACE_SECONDS)
+        raise
+    stdout_bytes = leftover_stdout + rest_stdout
+
+    stderr_tail = stderr_bytes.decode(errors="replace")[-4000:]
 
     if proc.returncode == 0:
         stdout_text = stdout_bytes.decode(errors="replace").strip()
@@ -329,7 +404,7 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # Fails open (proceeds) on any error or after the wait cap.
         await wait_for_memory(redis)
         try:
-            result = await _run_converter_subprocess(local_path)
+            result = await _run_converter_subprocess(local_path, staging_key=staging_key)
         except ConverterOOMError as exc:
             await redis.hset(
                 _job_key(job_id),

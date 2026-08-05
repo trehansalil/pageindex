@@ -74,6 +74,10 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return):
         "save_doc_meta": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree branches.
+        # Stub to None so the module's "No MinIO / Redis / network access" contract
+        # holds after RFC-025 D0 added the call site (RFC-029 mend).
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -302,6 +306,9 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -442,6 +449,9 @@ def _wire_image_ratio_escalation(
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -466,7 +476,7 @@ async def test_image_dominant_triggers_ocr_escalation(monkeypatch, pdf_file_with
     assert pdf_calls[0]["force_full_page_ocr"] is True
     # Recovered -> persisted as a tree, not the flat path.
     mocks["save_doc"].assert_called_once()
-    mocks["route_and_extract_flat"].assert_not_called()
+    mocks["save_flat_doc"].assert_not_called()
 
 
 async def test_below_image_threshold_no_escalation(monkeypatch, pdf_file_with_content):
@@ -655,6 +665,9 @@ def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
+        # find_prior_verdict issues a MinIO call from index()'s flat/tree
+        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
+        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

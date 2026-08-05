@@ -7,21 +7,28 @@
 #
 # ─── Two ways to use it ──────────────────────────────────────────────────────
 #
-#   1. Infra only (Redis + MinIO) — then run the Python app on your host:
-#        docker compose up -d
-#        export REDIS_URL=redis://localhost:6379/1
-#        export MINIO_ENDPOINT=localhost:9000
-#        uv run python mcp_server.py                       # server  (shell 1)
-#        uv run arq pageindex_mcp.worker.WorkerSettings    # worker  (shell 2)
+#   1. Infra only (Redis + MinIO + Postgres) — app runs on your host:
+#        make env PROFILE=local
+#        make compose-infra
+#        make up                        # server + worker, or `make serve` / `make worker`
 #
-#   2. Full deployment (Redis + MinIO + server + worker, all in containers):
-#        docker compose --profile app up -d --build
+#   2. Full deployment (all in containers):
+#        make env PROFILE=local APP=compose
+#        make compose-app
 #        # server  -> http://localhost:8201/mcp   (and /upload, /metrics)
 #        # MinIO   -> http://localhost:9001        (console: minioadmin/minioadmin)
 #
-# Secrets (OPENAI_API_KEY, UPLOAD_API_KEY, MCP_BEARER_TOKEN, …) are read from your
-# .env via `env_file`; the cluster-specific values in .env (REDIS_URL / MINIO_*)
-# are overridden below so the containers talk over the compose network instead.
+#   3. Containers, but pointed at the shared remote cluster:
+#        make env PROFILE=remote APP=compose MINIO_ACCESS=public
+#        make compose-app
+#
+# The Docling service lives behind its own `docling-local` profile — the default
+# is the remote Scaleway one. Start it with `make compose-docling` after
+# `make env DOCLING=local`.
+#
+# Secrets (OPENAI_API_KEY, UPLOAD_API_KEY, MCP_BEARER_TOKEN, …) come from .env.
+# Addresses come from .env.active, the resolved output of `make env`, which the
+# make targets pass with --env-file. See docs/ENV_PROFILES.md.
 #
 # Requires Docker Compose v2.24+ (for `env_file: required: false` and
 # `service_completed_successfully`).
@@ -33,29 +40,47 @@ x-app: &app
   image: pageindex-mcp:local
   build: .
   # Pulls OPENAI_API_KEY / CHATGPT_API_KEY / UPLOAD_API_KEY / MCP_BEARER_TOKEN etc.
-  # from .env. Optional so `docker compose up` (infra only) works without a .env.
+  # Both optional so `docker compose up` (infra only) works without either.
+  # .env.active is listed second so it wins: it is the resolved output of
+  # `make env`, and it is what carries the local/remote toggles.
   env_file:
     - path: .env
       required: false
-  # These override whatever is in .env so the containers reach the compose
-  # services rather than the production cluster IPs. `environment` wins over
-  # `env_file` in Compose, which is exactly what we want here.
+    - path: .env.active
+      required: false
+  # Defaults below are the compose-network addresses. They are only defaults —
+  # `make env PROFILE=remote APP=compose` puts real values in .env.active and
+  # passes it via --env-file, so containers can talk to the shared cluster
+  # instead. Hardcoding them here would make the toggles a lie.
   environment:
-    REDIS_URL: redis://redis:6379/1
-    MINIO_ENDPOINT: minio:9000
-    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-    MINIO_BUCKET: ${MINIO_BUCKET}
-    MINIO_SECURE: "false"
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/1}
+    MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+    MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    MINIO_BUCKET: ${MINIO_BUCKET:-pageindex}
+    MINIO_SECURE: ${MINIO_SECURE:-false}
+    # Set when MINIO_ENDPOINT is a reverse-proxied public route rather than
+    # MinIO itself; applied in the HTTP client after signing.
+    MINIO_PATH_PREFIX: ${MINIO_PATH_PREFIX:-}
+    MINIO_PRESIGN_ENDPOINT: ${MINIO_PRESIGN_ENDPOINT:-}
+    MINIO_PRESIGN_SECURE: ${MINIO_PRESIGN_SECURE:-true}
+    # Route prefix spliced into presigned URLs after signing (the public MinIO
+    # route strips it again before MinIO verifies the signature).
+    MINIO_PRESIGN_PATH_PREFIX: ${MINIO_PRESIGN_PATH_PREFIX:-}
     MCP_HOST: "0.0.0.0"
     MCP_PORT: "8201"
     WEB_CONCURRENCY: "1"
     CACHE_TTL: "300"
     # RFC-006: Postgres registry DSN. Targets the compose postgres service.
     # Set REGISTRY_ENABLED=false in .env to disable if Postgres is not needed.
-    POSTGRES_DSN: postgresql://pageindex:pageindex@postgres:5432/pageindex
+    POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://pageindex:pageindex@postgres:5432/pageindex}
     REGISTRY_ENABLED: ${REGISTRY_ENABLED:-true}
     PAGEINDEX_CATALOG_TOPK: ${PAGEINDEX_CATALOG_TOPK:-200}
+    # Defaults to the Scaleway service in .env.active (PI_DOCLING=remote, the
+    # default). `make env DOCLING=local` + `make compose-docling` swaps in the
+    # container below.
+    DOCLING_SERVICE_URL: ${DOCLING_SERVICE_URL:-http://docling-service:8080}
+    DOCLING_SERVICE_BEARER_TOKEN: ${DOCLING_SERVICE_BEARER_TOKEN:-}
   depends_on:
     redis:
       condition: service_healthy
@@ -161,6 +186,41 @@ services:
     container_name: pageindex-mcp-worker
     profiles: ["app"]
     command: ["arq", "pageindex_mcp.worker.WorkerSettings"]
+    # No `environment:` override here — it would replace the *whole* x-app map
+    # and re-hardcode the addresses the toggles are meant to control.
+    #
+    # depends_on deliberately omits docling-service: with PI_DOCLING=remote
+    # (the default) that container is not started at all, and Compose errors on
+    # a dependency whose profile is inactive. The worker retries the conversion
+    # call, so a not-yet-ready local Docling is not fatal either.
+
+  # ─── External Docling conversion service ────────────────────────────────────
+  # Heavy PDF conversion (~1.9 GB RSS) runs here instead of the worker.
+  #
+  # Behind its own `docling-local` profile because the default is the remote
+  # Scaleway service (PI_DOCLING=remote) — no reason to build a 1.9 GB image
+  # you are not going to call. Start it with `make compose-docling`, and point
+  # the app at it with `make env DOCLING=local`.
+  docling-service:
+    build:
+      context: .
+      dockerfile: services/docling-service/Dockerfile
+    container_name: pageindex-docling-service
+    profiles: ["docling-local"]
+    environment:
+      DOCLING_ARTIFACTS_PATH: /opt/docling-models
+      TESSDATA_PREFIX: /opt/tessdata
+      DOCLING_DO_OCR: "1"
+      DOCLING_SERVICE_BEARER_TOKEN: ${DOCLING_SERVICE_BEARER_TOKEN:-}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 
 volumes:
   redis_data:

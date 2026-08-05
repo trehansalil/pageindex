@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Corpus Re-ingestion Audit — Run 6 -->
+<!-- Folder: Audits -->
+
 # Corpus Re-ingestion Audit — Run 6
 
 Full 25-doc corpus re-ingested from scratch after wiping all persistent stores

@@ -9,7 +9,7 @@
 | Artifact             | Reference                                                                                                                          |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Governing RFC(s)     | [RFC-023: Run 6 Content Recovery &amp; Verdict Hardening](../rfcs/023-run6-content-recovery-and-verdict-hardening.md)               |
-| Audit source         | [`audit/CORPUS_REINGESTION_AUDIT_RUN-6.md`](../rfcs/023-run6-content-recovery-and-verdict-hardening.md#cross-references)          |
+| Audit source         | [`audit/CORPUS_REINGESTION_AUDIT_RUN-6.md`](../../audit/CORPUS_REINGESTION_AUDIT_RUN-6.md)          |
 | Hard Rules (binding) | [CLAUDE.md § Hard Rules](../../CLAUDE.md#hard-rules)                                                                               |
 | Implementation Plan  | [tasks-rfc023-run6-content-recovery-and-verdict-hardening.md](../tasks/tasks-rfc023-run6-content-recovery-and-verdict-hardening.md) |
 

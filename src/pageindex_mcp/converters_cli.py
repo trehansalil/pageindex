@@ -3,15 +3,17 @@
 Usage:
     python -m pageindex_mcp.converters_cli <input_pdf_path>
 
-Stdout: exactly one JSON line at exit.
+Stdout: one startup handshake JSON line (RFC-028 D0), then exactly one final
+JSON line at exit.
+  handshake: {"handshake": true, "chunk_count": <int>, "is_docling_route": <bool>}
   success: {"ok": true, "doc_id": "...", "peak_rss_kib": <int>, "duration_ms": <int>}
   failure: {"ok": false, "error": "<ExceptionClassName>", "message": "..."}
 
 Exit code: 0 on success, 1 on handled exception, signal-default on crash.
 
-All logging goes to stderr. Stdout is reserved exclusively for the final JSON line.
-Any stray print() calls from imported libraries are redirected to stderr so they
-cannot pollute the single-JSON-line stdout contract.
+All logging goes to stderr. Stdout is reserved exclusively for JSON lines
+(handshake + final result). Any stray print() calls from imported libraries
+are redirected to stderr so they cannot pollute the JSON-lines stdout contract.
 """
 
 import argparse
@@ -65,6 +67,11 @@ async def main() -> int:
             description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
         )
         parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
+        parser.add_argument(
+            "--staging-key",
+            default=None,
+            help="MinIO staging key for remote Docling service (presigned URL generation).",
+        )
         try:
             args = parser.parse_args()
         except SystemExit as sysexit:
@@ -81,6 +88,21 @@ async def main() -> int:
                 }
             )
             return 1
+
+        # RFC-028 D0: emit the startup handshake before any heavy import so the
+        # worker can size its child timeout from the actual page/chunk count
+        # instead of the fixed CHILD_TIMEOUT, without the worker having to
+        # re-derive page count itself (avoids worker/child disagreement).
+        from pageindex_mcp.converters import probe_conversion_route
+
+        chunk_count, is_docling_route = probe_conversion_route(args.input_path)
+        _emit(
+            {
+                "handshake": True,
+                "chunk_count": chunk_count,
+                "is_docling_route": is_docling_route,
+            }
+        )
 
         try:
             # Heavy import deferred to here so baseline RSS in the parent process
@@ -99,6 +121,8 @@ async def main() -> int:
             configure_litellm()
 
             client = CustomPageIndexClient()
+            if args.staging_key:
+                client._staging_key = args.staging_key
             doc_id = await client.index(args.input_path)
 
             duration_ms = int((time.monotonic() - start) * 1000)

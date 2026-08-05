@@ -71,22 +71,19 @@ class TestSplicePictureTextForTree:
         assert out.count(_MARKER) == md.count(_MARKER) == 3
 
     def test_composition_with_splice_figure_markers(self):
-        """Document the actual (undesirable) result of chaining both splice
-        functions on the same markdown.
+        """RFC-028 D5: chaining both splice functions on the same markdown must
+        not duplicate the chart-text fragment.
 
         Production never does this: the tree branch calls only
         `splice_picture_text_for_tree` (markers stay neutral for some other
         downstream tree consumer) and the flat branch calls only
         `splice_figure_markers` (markers get resolved to `[Figure: fig-N]`).
-        Both functions independently append their own
-        ``> [Chart text]: {ocr}`` block whenever `ocr_text` is present, and
         `splice_picture_text_for_tree` deliberately leaves the marker intact
         (see its docstring) so that `splice_figure_markers` can still match
-        it. That means if the two were ever chained on the same md+pics, the
-        chart-text line is DUPLICATED (once from each function) rather than
-        appearing once — this is a real gap, not a test bug. Pinning it here
-        so the behavior can't silently change (for better or worse) without
-        the test being updated.
+        it, but it now pops ``ocr_text`` off the shared ``PictureResult`` dict
+        once spliced, so a later `splice_figure_markers` pass over the same
+        `pics` list finds no `ocr_text` left to re-append — one representation
+        per fragment.
         """
         md = f"# Title\n\n{_MARKER}\n\nBody text."
         pics = [_pic("Chart shows growth", png_bytes=b"\x89PNG")]
@@ -96,8 +93,8 @@ class TestSplicePictureTextForTree:
 
         assert "[Figure: fig-0]" in composed
         assert _MARKER not in composed
-        # Current (undesirable) reality: duplicated chart-text line.
-        assert composed.count("> [Chart text]: Chart shows growth") == 2
+        # De-duplicated: the chart-text line appears exactly once.
+        assert composed.count("> [Chart text]: Chart shows growth") == 1
 
     def test_no_ocr_text_leaves_marker_alone(self):
         md = f"# Title\n\n{_MARKER}\n\nBody."

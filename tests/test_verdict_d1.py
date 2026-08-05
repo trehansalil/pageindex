@@ -144,25 +144,30 @@ def test_classify_verdict_pass_on_good_metrics():
 
 
 def _borderline_ratio_tree() -> list:
-    """5 equal children under a Root -> max_leaf/total = 20/100 = 0.20,
-    node_count=6 (>=3), depth=2 (>=2). Titles are left empty so only `text`
-    lengths determine char totals, keeping the ratio math exact."""
+    """One 40-char child + four 20-char children under a Root ->
+    max_leaf/total = 40/120 = 0.33, node_count=6 (>=3), depth=2 (>=2).
+    RFC-026 D0 widened PASS_MAX_LEAF_RATIO 0.17 -> 0.30, so the ratio is
+    calibrated to sit above that new base-gate threshold (while still
+    staying <=0.75 so it doesn't hit the FAIL rule). Titles are left empty
+    so only `text` lengths determine char totals, keeping the ratio math
+    exact."""
+    sizes = [40, 20, 20, 20, 20]
     return [
         {
             "title": "",
             "text": "",
-            "nodes": [{"title": "", "text": "x" * 20, "nodes": []} for _ in range(5)],
+            "nodes": [{"title": "", "text": "x" * s, "nodes": []} for s in sizes],
         }
     ]
 
 
 def test_classify_verdict_marginal_on_borderline_ratio():
-    # ratio = 0.20, node_count>=3 and depth>=2 so it's not FAIL-blocked,
-    # and default category promotion requires ratio<0.15, so it stays MARGINAL.
+    # ratio = 0.33, node_count>=3 and depth>=2 so it's not FAIL-blocked,
+    # and default category promotion requires ratio<0.17, so it stays MARGINAL.
     tree = _borderline_ratio_tree()
     verdict, reason = classify_verdict(tree, "default", None)
     assert verdict == "MARGINAL"
-    assert reason == "leaf_concentration=0.20"
+    assert reason == "leaf_concentration=0.33"
 
 
 def test_classify_verdict_category_a_promoted():
@@ -193,12 +198,13 @@ def test_classify_verdict_category_c_promoted():
 
 
 def test_classify_verdict_category_a_not_promoted_when_ratio_high():
-    # ratio = 0.20 (borderline) with ocr_ content class -> promotion gate
-    # requires ratio<0.15, so it stays MARGINAL.
+    # ratio = 0.33 (above the RFC-026 D0 base gate of 0.30) with ocr_
+    # content class -> cat_a promotion gate requires ratio<0.15, so it
+    # stays MARGINAL.
     tree = _borderline_ratio_tree()
     verdict, reason = classify_verdict(tree, "ocr_rescued", None)
     assert verdict == "MARGINAL"
-    assert reason == "leaf_concentration=0.20"
+    assert reason == "leaf_concentration=0.33"
 
 
 def test_classify_verdict_marginal_node_count_under_3():

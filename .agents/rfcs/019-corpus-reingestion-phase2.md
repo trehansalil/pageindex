@@ -12,6 +12,14 @@
 - Branch: `feat/image-block-picture-ocr`
 - Supersedes: Builds on RFC-017 (P0a/P0b), RFC-018 (D0-D3)
 
+## Traceability
+
+| Artifact | Reference |
+|---|---|
+| Design Document | [design-rfc019-corpus-reingestion-phase2.md](../designs/design-rfc019-corpus-reingestion-phase2.md) |
+| Implementation Plan | [tasks-rfc019-corpus-reingestion-phase2.md](../tasks/tasks-rfc019-corpus-reingestion-phase2.md) |
+| Audit | [CORPUS_REINGESTION_AUDIT_2026-07-27.md](../../audit/CORPUS_REINGESTION_AUDIT_2026-07-27.md) |
+
 ## Problem Statement
 
 The 2026-07-27 corpus reingestion audit (`audit/CORPUS_REINGESTION_AUDIT_2026-07-27.md`) re-ran the full 25-document validation corpus through the current `feat/image-block-picture-ocr` pipeline. Scorecard: **12 PASS, 9 MARGINAL, 3 FAIL, 1 ERROR**. Five distinct defects account for the non-PASS population:

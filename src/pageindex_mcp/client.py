@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import random
+import re
 import shutil
 import tempfile
 import uuid
@@ -29,6 +30,7 @@ from .converters import (
     pdf_markdown_converters,
     pdf_to_markdown_docling,
     pptx_to_markdown,
+    reconstruct_bidi_order,
     splice_figure_markers,
     splice_picture_text_for_tree,
     xlsx_to_markdown,
@@ -37,14 +39,17 @@ from .converters import (
 from .helpers import (
     LowQualityTreeError,
     _extract_page_hits,
-    _flat_block_text,
+    _flat_block_primary_text,
     _flat_text_is_garbled,
+    _flatten_tree_text,
+    _is_garbled_blob,
     _script_from_filename,
     _strip_text,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     classify_verdict,
     route_and_extract_flat,
+    _segment_table_nodes,
     split_oversized_leaf_nodes,
     validate_tree,
 )
@@ -58,6 +63,7 @@ from .metrics import (
     VLM_FALLBACK_TOTAL,
 )
 from .storage import (
+    find_prior_verdict,
     hash_cache_get,
     hash_cache_set,
     list_processed_docs,
@@ -266,6 +272,11 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Fix 3 kill-switch (default on): one force_full_page_ocr retry when a PDF garbles.
 _OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+# RFC-027 D2: PDFs rejected as node_count<3 with fewer than this many chars (zero or
+# near-zero/garbled scanned content) also earn the force_full_page_ocr retry, not just
+# the garbling reasons above -- calibrated to the Run-10 corpus (highest affected doc
+# القرار التنظيمي at 230 garbled chars; legitimate sparse docs all exceed 400 chars).
+LOW_CONTENT_OCR_CHAR_FLOOR = int(os.getenv("LOW_CONTENT_OCR_CHAR_FLOOR", "300"))
 # Task 6.1: dedicated image-standalone pipeline for PDFs whose content is all images.
 # When disabled, falls back to the existing QF2a image-enrichment promotion path.
 _IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
@@ -284,6 +295,59 @@ _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = os.getenv(
 _VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
     "VLM_TESSERACT_FALLBACK_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
+# RFC-024 D5 kill-switch (default on): also attempt the D7 Tesseract-on-raster
+# recovery when the VLM *succeeds* but validate_tree still reports 'garbling'
+# (as opposed to only when the VLM call itself raises). Set to false to
+# restore the RFC-023 D7 behavior where this path falls through to
+# LowQualityTreeError unchanged.
+_D7_GARBLE_RECOVERY_ENABLED = os.getenv("D7_GARBLE_RECOVERY_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# RFC-029 D1 (Task 3.1): flat-prefer multiplier — when flat char count exceeds
+# tree char count by this factor, prefer flat over tree result post-validation.
+_RFC029_FLAT_PREFER_MULTIPLIER = float(os.getenv("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
+# RFC-029 D1 (Task 3.1): minimum chars-per-node floor (mirrors helpers.py constant;
+# client module holds the flat-prefer logic while helpers.py holds the validate gate).
+_RFC029_MIN_CHARS_PER_NODE = float(os.getenv("RFC029_MIN_CHARS_PER_NODE", "500"))
+
+
+async def _attempt_tesseract_raster_recovery(
+    file_path: str,
+    expected_script: str | None,
+    filename: str,
+) -> str | None:
+    """RFC-023 D7 / RFC-024 D5: last-resort local Tesseract-on-raster OCR pass.
+
+    Returns the recovered markdown text when the OCR output passes the garble
+    gate, else None. Shared by both call sites: the VLM-crash except-block
+    (RFC-023 D7) and the VLM-succeeds-but-garbled try-block (RFC-024 D5).
+
+    Language derivation (ensure_tessdata) runs INSIDE the try so a tessdata
+    fetch failure is logged and returns None (falling through to
+    LowQualityTreeError, HR5) instead of propagating -- matching the original
+    inline D7 behavior where ensure_tessdata sat inside the try/except.
+    """
+    from .converters import tesseract_ocr_pdf_pages
+
+    try:
+        tess_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
+        ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
+        if ocr_text and not _flat_text_is_garbled(ocr_text, expected_script=expected_script):
+            logger.warning(
+                "Tesseract-on-raster fallback recovered %s; overriding reason to node_count<3",
+                filename,
+            )
+            return ocr_text
+    except Exception as tess_exc:
+        logger.error(
+            "Tesseract-on-raster fallback failed for %s (%s)",
+            filename,
+            tess_exc,
+            exc_info=True,
+        )
+    return None
 
 
 def _is_azure_url(url: str | None) -> bool:
@@ -454,6 +518,78 @@ def _split_converter_output(out) -> tuple[str, list]:
     return out, []
 
 
+async def _remote_pdf_to_markdown(
+    staging_key: str,
+    *,
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+) -> tuple[str, list]:
+    """Call the external Docling service to convert a PDF.
+
+    Returns ``(markdown, pic_results)`` with the same shape as the local
+    ``pdf_to_markdown_docling()`` — callers are oblivious to the transport.
+    ``png_bytes`` in each PictureResult is decoded from base64 back to bytes.
+    """
+    import base64
+    import httpx
+    from .storage import presigned_get_url
+
+    url = presigned_get_url(staging_key)
+    payload = {
+        "presigned_url": url,
+        "force_full_page_ocr": force_full_page_ocr,
+        "ocr_lang_override": ocr_lang_override,
+    }
+    headers: dict[str, str] = {}
+    if settings.docling_service_bearer_token:
+        headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
+    async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:
+        resp = await client.post(
+            f"{settings.docling_service_url}/convert/pdf",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    pic_results: list[dict] = []
+    for pr in data.get("picture_results", []):
+        raw_b64 = pr.get("png_bytes", "")
+        if raw_b64:
+            pr["png_bytes"] = base64.b64decode(raw_b64)
+        else:
+            pr["png_bytes"] = b""
+        pic_results.append(pr)
+    return data["markdown"], pic_results
+
+
+async def _remote_image_to_markdown(
+    staging_key: str,
+    *,
+    ocr_lang_override: list[str] | None = None,
+) -> str:
+    """Call the external Docling service to convert an image to markdown."""
+    import httpx
+    from .storage import presigned_get_url
+
+    url = presigned_get_url(staging_key)
+    payload = {
+        "presigned_url": url,
+        "ocr_lang_override": ocr_lang_override,
+    }
+    headers: dict[str, str] = {}
+    if settings.docling_service_bearer_token:
+        headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
+    async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:
+        resp = await client.post(
+            f"{settings.docling_service_url}/convert/image",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return data["markdown"]
+
+
 async def _enrich_image_blocks(
     blocks: list[dict],
     pic_results: list,
@@ -518,6 +654,7 @@ class CustomPageIndexClient(PageIndexClient):
         # None for a normal tree doc. converters_cli reads this after index()
         # returns so the worker job hash can carry content_class (FLAT-04-C1).
         self.last_content_class: str | None = None
+        self._staging_key: str | None = None
 
     # ------------------------------------------------------------------
     # Indexing
@@ -593,10 +730,12 @@ class CustomPageIndexClient(PageIndexClient):
                 # layer is garbled, skip straight to force_full_page_ocr=True instead of
                 # wasting a non-OCR conversion attempt.
                 pre_garbled = False
+                pdf_page_count: int | None = None  # RFC-029 D2: threaded into validate_tree
                 try:
                     import fitz
 
                     with fitz.open(file_path) as probe_pdf:
+                        pdf_page_count = probe_pdf.page_count if probe_pdf.page_count > 0 else None
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
                             if raw_text.strip() and _flat_text_is_garbled(
@@ -622,10 +761,37 @@ class CustomPageIndexClient(PageIndexClient):
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
+                _use_remote = bool(
+                    getattr(settings, "docling_service_url", None) and self._staging_key
+                )
                 for idx, (conv_name, conv_fn) in enumerate(chain):
                     try:
                         logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        if pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED:
+                        if _use_remote and "docling" in conv_name:
+                            logger.info(
+                                "Routing %s to external Docling service at %s",
+                                filename,
+                                settings.docling_service_url,
+                            )
+                            if pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED:
+                                md_content, pic_results = await _remote_pdf_to_markdown(
+                                    self._staging_key,  # type: ignore[arg-type]
+                                    force_full_page_ocr=True,
+                                    ocr_lang_override=detect_ocr_langs(filename),
+                                )
+                            else:
+                                if pre_garbled:
+                                    logger.info(
+                                        "D3a pre-garble probe fired for %s but OCR deferral "
+                                        "active; deferring to Fix-3 retry path",
+                                        filename,
+                                    )
+                                md_content, pic_results = await _remote_pdf_to_markdown(
+                                    self._staging_key,  # type: ignore[arg-type]
+                                )
+                        elif (
+                            pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED
+                        ):
                             md_content, pic_results = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,
@@ -772,6 +938,16 @@ class CustomPageIndexClient(PageIndexClient):
                     standalone_ocr_text = await asyncio.to_thread(
                         _tesseract_ocr_image, file_path, img_langs
                     )
+                else:
+                    # D5b (RFC-029): Docling already extracted meaningful text (D8a gate
+                    # fired); pass it through as ocr_text so splice_figure_markers can
+                    # emit a [Chart text] block and the context is not silently dropped.
+                    standalone_ocr_text = md_content
+                # D6 (RFC-027): Docling can emit duplicate consecutive
+                # `<!-- image -->` markers for the same image region. Collapse
+                # only whitespace-gapped runs so distinct adjacent images
+                # (RFC-018 D0 multi-region design) stay intact.
+                md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", md_content)
                 marker_count = md_content.count("<!-- image -->")
                 pic_results = [
                     PictureResult(
@@ -805,13 +981,51 @@ class CustomPageIndexClient(PageIndexClient):
             result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
-            ok, reason = validate_tree(result.get("structure", []), expected_script=expected_script)
+            ok, reason = validate_tree(
+                result.get("structure", []),
+                expected_script=expected_script,
+                page_count=pdf_page_count if ext == ".pdf" else None,
+            )
+            # D2 (RFC-025): the tree-build's original failure reason, captured before
+            # any recovery retry below overwrites `reason` (e.g. to "node_count<3" so
+            # the flat-routing branch is entered) — threaded to the flat-path garble
+            # gate so garble-by-default can key off the true first-pass reason.
+            original_reason = reason
+
+            # RFC-027 D2: a PDF rejected as node_count<3 with fewer than
+            # LOW_CONTENT_OCR_CHAR_FLOOR chars (zero-content or near-zero/garbled scanned
+            # Arabic, e.g. مرسوم at 38 chars, القرار التنظيمي at 230 garbled chars) earns
+            # the same OCR retry as the garbling branches below, rather than being FAILed
+            # without an attempted recovery.
+            total_chars = len(_flatten_tree_text(result.get("structure", [])))
+            low_content_ocr_eligible = (
+                reason == "node_count<3" and total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
+            )
 
             # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
             # the Fix-5 detected language before any rejection — rescues the corrupt
             # text-layer class (مرسوم). HR5: the retry re-runs the splitter AND the quality
             # gate and is still rejected if it stays garbled; it never bypasses validation.
-            if not ok and reason == "garbling" and ext == ".pdf" and _OCR_ESCALATION:
+            if (
+                not ok
+                and (reason in ("garbling", "node_garbling", "visual_order_garble") or low_content_ocr_eligible)
+                and ext == ".pdf"
+                and _OCR_ESCALATION
+            ):
+                # D4 (RFC-028): snapshot the pre-retry result so a retry that produces
+                # LESS content (e.g. the retry's OCR also fails on the same underlying
+                # defect) doesn't unconditionally overwrite an already-better result.
+                pre_retry_result = result
+                pre_retry_ok = ok
+                pre_retry_reason = reason
+                pre_retry_chars = total_chars
+                # RFC-030 D1: snapshot the mutable extraction state alongside
+                # result/ok/reason so a lost retry reverts ALL six variables
+                # atomically -- otherwise the tree path (result) and the
+                # downstream flat-routing path (md_content) can diverge on
+                # which extraction was actually used.
+                pre_retry_md_content = md_content
+                pre_retry_pic_results = pic_results
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -829,17 +1043,21 @@ class CustomPageIndexClient(PageIndexClient):
                                 escalation_langs.append(lg)
                     langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
                     logger.warning(
-                        "Garbling on %s; escalating to force_full_page_ocr (lang=%s)",
+                        "%s on %s; escalating to force_full_page_ocr (lang=%s)",
+                        "Low content" if low_content_ocr_eligible else "Garbling",
                         filename,
                         langs,
                     )
-                    md_content, pic_results = _split_converter_output(
-                        await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
-                    )
-                    # QF1 follow-up: the escalated OCR pass is where PictureItem
-                    # text actually gets produced (the primary pass deferred it).
-                    # Splice it into the tree markdown here — omitting this call
-                    # silently drops all picture-OCR text from the escalated tree.
+                    if _use_remote:
+                        md_content, pic_results = await _remote_pdf_to_markdown(
+                            self._staging_key,  # type: ignore[arg-type]
+                            force_full_page_ocr=True,
+                            ocr_lang_override=langs,
+                        )
+                    else:
+                        md_content, pic_results = _split_converter_output(
+                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
+                        )
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                         _log_pic_splice_trace(filename, "garble_escalation", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
@@ -852,9 +1070,125 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
+                    result["structure"] = _segment_table_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
                         result.get("structure", []), expected_script=expected_script
                     )
+                    # D4 (RFC-028): keep-best, not unconditional overwrite. Compare
+                    # post-retry char count against the pre-retry snapshot; on a
+                    # near-tie (equal char count), a retry that now VALIDATES ok
+                    # always wins over the pre-retry snapshot (which is by
+                    # construction never ok — this branch only runs `if not ok`)
+                    # — a same-length retry that fixed the underlying defect (e.g.
+                    # validate_tree's script/structure checks, not just text
+                    # content) must not be discarded. Only when the retry is STILL
+                    # not-ok on the tie do we fall back to _is_garbled_blob as a
+                    # secondary signal, so a marginally-longer but still-garbled
+                    # retry doesn't win over an equally-garbled original.
+                    post_retry_chars = len(_flatten_tree_text(result.get("structure", [])))
+
+                    def _repeating_token_density(text: str) -> float | None:
+                        """Return the fraction of alnum tokens that are the most-common token.
+
+                        Mirrors the single-token repetition check inside _is_garbled_blob
+                        (>30% threshold, >20 alnum tokens) but returns the raw ratio so the
+                        D4 guardrail can compare pre/post-retry densities without re-running
+                        the full garble gate. Returns None (not 0.0) when there are too few
+                        alnum tokens to assess, so "too short to assess" is distinguishable
+                        from "assessed and found clean" (RFC-030 D1).
+                        """
+                        from collections import Counter
+                        import re as _re
+                        tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
+                        if len(tokens) < 20:
+                            return None
+                        return Counter(tokens).most_common(1)[0][1] / len(tokens)
+
+                    if post_retry_chars < pre_retry_chars:
+                        retry_wins = False
+                    elif post_retry_chars == pre_retry_chars:
+                        retry_wins = ok or (
+                            _is_garbled_blob(
+                                _flatten_tree_text(pre_retry_result.get("structure", [])),
+                                expected_script=expected_script,
+                            )
+                            and not _is_garbled_blob(
+                                _flatten_tree_text(result.get("structure", [])),
+                                expected_script=expected_script,
+                            )
+                        )
+                    else:
+                        # RFC-029 D4 (Task 3.3): char-count growth alone must not override
+                        # a garble-detection result when the pre-retry text was already
+                        # garbled AND the post-retry shows similar repeating-token patterns.
+                        # Compare repeating-token densities: if the pre-retry was garbled
+                        # and the post-retry density is within 20% of the pre-retry density,
+                        # the retry has not meaningfully de-garbled — revert to pre-retry.
+                        _pre_garble_flag = _is_garbled_blob(
+                            _flatten_tree_text(pre_retry_result.get("structure", [])),
+                            expected_script=expected_script,
+                        )
+                        if _pre_garble_flag:
+                            _pre_density = _repeating_token_density(
+                                _flatten_tree_text(pre_retry_result.get("structure", []))
+                            )
+                            _post_density = _repeating_token_density(
+                                _flatten_tree_text(result.get("structure", []))
+                            )
+                            if _pre_density is None:
+                                # RFC-030 D1: pre-retry text was too short (<20 alnum
+                                # tokens) to assess a density at all -- typically a
+                                # no-text-layer PDF whose original extraction was
+                                # near-empty. There is no baseline to compare against,
+                                # so any real OCR recovery wins, gated only by the
+                                # absolute quality floor below.
+                                retry_wins = post_retry_chars >= LOW_CONTENT_OCR_CHAR_FLOOR
+                                if not retry_wins:
+                                    logger.warning(
+                                        "RFC-030 D1: post-retry chars (%d) below quality"
+                                        " floor (%d) for %s -- reverting to pre-retry result",
+                                        post_retry_chars,
+                                        LOW_CONTENT_OCR_CHAR_FLOOR,
+                                        filename,
+                                    )
+                            else:
+                                # Similar density means the retry just produced more of
+                                # the same garble — char-count growth should not win here.
+                                if _post_density is None:
+                                    # Post-retry text also too short to assess density;
+                                    # char-count growth (outer else) decides -- retry wins.
+                                    retry_wins = True
+                                else:
+                                    _density_improved = _post_density < _pre_density * 0.80
+                                    retry_wins = _density_improved
+                                    if not retry_wins:
+                                        logger.warning(
+                                            "RFC-029 D4: post-retry repeating-token density (%.3f)"
+                                            " not substantially better than pre-retry (%.3f) for %s"
+                                            " — reverting to pre-retry result",
+                                            _post_density,
+                                            _pre_density,
+                                            filename,
+                                        )
+                        else:
+                            retry_wins = True
+                    if not retry_wins:
+                        # RFC-030 D1: atomic revert -- restore all six mutable
+                        # variables together so the tree (result) and the
+                        # flat-routing markdown (md_content/tmp_md_path/
+                        # pic_results) cannot diverge on which extraction won.
+                        result = pre_retry_result
+                        ok = pre_retry_ok
+                        reason = pre_retry_reason
+                        md_content = pre_retry_md_content
+                        pic_results = pre_retry_pic_results
+                        if tmp_md_path and os.path.exists(tmp_md_path):
+                            os.unlink(tmp_md_path)
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".md", delete=False, mode="w", encoding="utf-8"
+                        ) as md_tmp:
+                            md_tmp.write(md_content)
+                            tmp_md_path = md_tmp.name
                     OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
                 except Exception as ocr_exc:
                     OCR_ESCALATION_TOTAL.labels(result="error").inc()
@@ -862,9 +1196,44 @@ class CustomPageIndexClient(PageIndexClient):
                         "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
                     )
 
+            # RFC-027 D3: repair-first ordering. `validate_tree` flags 'rtl_reversal'
+            # for correctly-encoded-but-visually-reversed Arabic text -- a known-fixable
+            # defect (`reconstruct_bidi_order` already exists). Attempt the repair and
+            # re-validate BEFORE deciding the verdict; only fall through to
+            # LowQualityTreeError if the reversed reading still scores higher post-repair.
+            if not ok and reason == "rtl_reversal" and ext == ".pdf":
+                try:
+
+                    def _repair_rtl_nodes(nodes: list) -> None:
+                        for n in nodes:
+                            for key in ("title", "text"):
+                                val = n.get(key)
+                                if isinstance(val, str) and val:
+                                    n[key] = reconstruct_bidi_order(val)
+                            _repair_rtl_nodes(n.get("nodes") or [])
+
+                    _repair_rtl_nodes(result.get("structure", []))
+                    ok, reason = validate_tree(
+                        result.get("structure", []), expected_script=expected_script
+                    )
+                    logger.warning(
+                        "RTL reversal on %s; reconstruct_bidi_order repair %s",
+                        filename,
+                        "converged" if ok else "did not converge",
+                    )
+                except Exception as bidi_exc:
+                    logger.error(
+                        "RTL bidi repair failed for %s (%s)", filename, bidi_exc, exc_info=True
+                    )
+
             # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
             # whose OCR escalation was either skipped or failed.
-            if not ok and reason == "garbling" and ext == ".pdf" and settings.vlm_fallback:
+            if (
+                not ok
+                and reason in ("garbling", "node_garbling", "visual_order_garble")
+                and ext == ".pdf"
+                and settings.vlm_fallback
+            ):
                 try:
                     from .converters import vlm_extract_markdown
 
@@ -887,10 +1256,32 @@ class CustomPageIndexClient(PageIndexClient):
                         tmp_md_path = md_tmp.name
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
+                    result["structure"] = _segment_table_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
                         result.get("structure", []), expected_script=expected_script
                     )
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
+
+                    # RFC-024 D5: the VLM *succeeded* but the tree is still garbled
+                    # (no exception raised). D7's Tesseract-on-raster recovery was
+                    # previously only reachable from the except block below, so this
+                    # path fell straight through to LowQualityTreeError. Try the same
+                    # recovery here (supersedes RFC-023 D7 test case (d)).
+                    if (
+                        not ok
+                        and reason in ("garbling", "node_garbling", "visual_order_garble")
+                        and _D7_GARBLE_RECOVERY_ENABLED
+                    ):
+                        recovered_md = await _attempt_tesseract_raster_recovery(
+                            file_path, expected_script, filename
+                        )
+                        if recovered_md:
+                            md_content = recovered_md
+                            # New markdown source — the prior converter's picture
+                            # ordinals no longer apply (finding 4/7), matching the
+                            # VLM-recovery convention above.
+                            pic_results = []
+                            reason = "node_count<3"
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
                     logger.error(
@@ -907,34 +1298,16 @@ class CustomPageIndexClient(PageIndexClient):
                     # genuinely garbled, unrecovered document still raises
                     # LowQualityTreeError (HR5).
                     if _VLM_TESSERACT_FALLBACK_ENABLED:
-                        try:
-                            from .converters import tesseract_ocr_pdf_pages
-
-                            tess_langs = await asyncio.to_thread(
-                                ensure_tessdata, detect_ocr_langs(filename)
-                            )
-                            ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-                            if ocr_text and not _flat_text_is_garbled(
-                                ocr_text, expected_script=expected_script
-                            ):
-                                md_content = ocr_text
-                                # New markdown source — the prior converter's
-                                # picture ordinals no longer apply (finding 4/7),
-                                # matching the VLM-recovery convention above.
-                                pic_results = []
-                                reason = "node_count<3"
-                                logger.warning(
-                                    "Tesseract-on-raster fallback recovered %s; "
-                                    "overriding reason to node_count<3",
-                                    filename,
-                                )
-                        except Exception as tess_exc:
-                            logger.error(
-                                "Tesseract-on-raster fallback failed for %s (%s)",
-                                filename,
-                                tess_exc,
-                                exc_info=True,
-                            )
+                        recovered_md = await _attempt_tesseract_raster_recovery(
+                            file_path, expected_script, filename
+                        )
+                        if recovered_md:
+                            md_content = recovered_md
+                            # New markdown source — the prior converter's
+                            # picture ordinals no longer apply (finding 4/7),
+                            # matching the VLM-recovery convention above.
+                            pic_results = []
+                            reason = "node_count<3"
 
             # D1/RFC-023 D11: image-dominant PDFs (>50% <!-- image --> lines) get one
             # OCR retry before falling through to flat routing — rescues scanned PDFs
@@ -972,12 +1345,18 @@ class CustomPageIndexClient(PageIndexClient):
                             filename,
                             langs,
                         )
-                        md_content, pic_results = _split_converter_output(
-                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
-                        )
-                        # QF1 follow-up: splice the escalated pass's picture-OCR
-                        # text into the tree markdown (see Fix-3 escalation above
-                        # for why this must not be skipped).
+                        if _use_remote:
+                            md_content, pic_results = await _remote_pdf_to_markdown(
+                                self._staging_key,  # type: ignore[arg-type]
+                                force_full_page_ocr=True,
+                                ocr_lang_override=langs,
+                            )
+                        else:
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(
+                                    pdf_to_markdown_docling, file_path, True, langs
+                                )
+                            )
                         if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                             _log_pic_splice_trace(
                                 filename, "image_dominant_escalation", pic_results
@@ -1007,6 +1386,40 @@ class CustomPageIndexClient(PageIndexClient):
                             filename,
                             ocr_exc,
                             exc_info=True,
+                        )
+
+            # RFC-029 D1 (Task 3.1): content-density flat-prefer guard.  When the tree
+            # passes validate_tree but the flat extraction is richer by a large margin
+            # (_RFC029_FLAT_PREFER_MULTIPLIER), prefer the flat result over the tree.
+            # Only runs when: tree passed validation, markdown is available (PDF path),
+            # and flat_doc_routing is enabled.  Sets ok=False / reason="node_count<3"
+            # so the existing flat-routing branch below handles persistence uniformly.
+            if ok and md_content and settings.flat_doc_routing:
+                _tree_char_count = len(_flatten_tree_text(result.get("structure", [])))
+                if _tree_char_count > 0:
+                    try:
+                        _flat_cc, _flat_blocks = await asyncio.to_thread(
+                            route_and_extract_flat, md_content
+                        )
+                        _flat_char_count = sum(
+                            len(_flat_block_primary_text(b)) for b in _flat_blocks
+                        )
+                        if _flat_char_count > _RFC029_FLAT_PREFER_MULTIPLIER * _tree_char_count:
+                            logger.warning(
+                                "RFC-029 D1: flat char count (%d) > %.1f× tree char count"
+                                " (%d) for %s — preferring flat result",
+                                _flat_char_count,
+                                _RFC029_FLAT_PREFER_MULTIPLIER,
+                                _tree_char_count,
+                                filename,
+                            )
+                            ok = False
+                            reason = "node_count<3"
+                    except Exception as _flat_exc:
+                        logger.warning(
+                            "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
+                            filename,
+                            _flat_exc,
                         )
 
             if not ok:
@@ -1039,10 +1452,25 @@ class CustomPageIndexClient(PageIndexClient):
                     # reject below instead — a binary doc with no extractable text layer is
                     # genuinely low-quality, not flat.
                     if flat_md is not None:
+                        # Findings 4/6/7: figure references exist ONLY in flat
+                        # markdown; splice_figure_markers count-guards the
+                        # marker↔region alignment and degrades to neutral
+                        # markers on mismatch.
+                        # D1 (RFC-027): splice BEFORE the garble check runs so
+                        # OCR-derived content injected by splicing is included
+                        # in the evaluation below.
+                        _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
+                        flat_md = splice_figure_markers(flat_md, pic_results)
+
                         # D3B: flat-path garble gate — catch garbled text that
                         # passed the tree gate (e.g. numeric-junk docs routed
-                        # here via node_count<3).
-                        if _flat_text_is_garbled(flat_md, expected_script=expected_script):
+                        # here via node_count<3). Runs post-splice (D1) so
+                        # image-OCR-derived content is included.
+                        if _flat_text_is_garbled(
+                            flat_md,
+                            expected_script=expected_script,
+                            original_reason=original_reason,
+                        ):
                             reason = "garbling"
                             logger.warning(
                                 "Flat-path garble gate triggered for %s; "
@@ -1094,16 +1522,25 @@ class CustomPageIndexClient(PageIndexClient):
                             if pic_results and settings.vlm_describe_images:
                                 await asyncio.to_thread(_add_vlm_descriptions, pic_results, doc_id)
 
-                            # Findings 4/6/7: figure references exist ONLY in flat
-                            # markdown; splice_figure_markers count-guards the
-                            # marker↔region alignment and degrades to neutral
-                            # markers on mismatch.
-                            _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
-                            flat_md = splice_figure_markers(flat_md, pic_results)
-
                             content_class, blocks = await asyncio.to_thread(
                                 route_and_extract_flat, flat_md
                             )
+
+                            # RFC-030 D0 (Task 3.3): zero-block guard -- non-empty
+                            # markdown must never yield an empty block list (e.g. a
+                            # stray/unclosed fence marker swallowing all content).
+                            # Escalate via the same LowQualityTreeError path used for
+                            # tree-routed docs (HR5) instead of persisting a 0-block
+                            # flat.json.
+                            if not blocks and flat_md.strip():
+                                LOW_QUALITY_TREES.labels(reason="flat_zero_block").inc()
+                                logger.warning(
+                                    "Rejecting zero-block flat extraction for %s: "
+                                    "non-empty markdown (%d chars) produced no blocks",
+                                    filename,
+                                    len(flat_md),
+                                )
+                                raise LowQualityTreeError("flat_zero_block")
 
                             # Task 6.1: detect image-standalone PDFs — all blocks
                             # have role="image".  Bare image files (.jpg/.png) are
@@ -1168,18 +1605,25 @@ class CustomPageIndexClient(PageIndexClient):
                             # validate_tree (low node_count/depth). A rejected tree should
                             # never be preferred over real block content for verdict
                             # computation — always build synthetic structure when blocks exist.
+                            # D0 (RFC-027): use primary text (excludes ocr_text/description
+                            # enrichment) here so verdict classification scores real
+                            # extracted document content, not inflated enrichment metadata.
                             if blocks:
                                 flat_structure = [
-                                    {"title": "", "text": _flat_block_text(b)}
+                                    {"title": "", "text": _flat_block_primary_text(b)}
                                     for b in blocks
-                                    if _flat_block_text(b).strip()
+                                    if _flat_block_primary_text(b).strip()
                                 ]
 
+                            f_prior_verdict = await asyncio.to_thread(
+                                find_prior_verdict, sha256, filename, doc_id
+                            )
                             f_verdict, f_verdict_reason = classify_verdict(
                                 flat_structure,
                                 content_class,
                                 None,
                                 image_enrichment_ratio=image_enrichment_ratio,
+                                prior_verdict=f_prior_verdict,
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
@@ -1188,6 +1632,13 @@ class CustomPageIndexClient(PageIndexClient):
                                 flat_md,
                                 doc_id=doc_id,
                             )
+
+                            # D6 (RFC-024): persist the same _flat_block_primary_text-derived
+                            # char count used for verdict computation above (B3/RFC-022,
+                            # D0/RFC-027), so future audits read a durable ground-truth
+                            # value instead of re-deriving it via the wrong
+                            # block.get("text", "") accessor or inflated enrichment text.
+                            flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
 
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
@@ -1207,6 +1658,7 @@ class CustomPageIndexClient(PageIndexClient):
                                     "verdict": f_verdict,
                                     "verdict_reason": f_verdict_reason,
                                     "max_leaf_ratio": round(f_mlr, 4),
+                                    "flat_char_count": flat_char_count,
                                     "pipeline_version": CURRENT_PIPELINE_VERSION,
                                     "verdict_computed_at": datetime.now(UTC).isoformat(),
                                 },
@@ -1242,9 +1694,30 @@ class CustomPageIndexClient(PageIndexClient):
                             self.last_content_class = content_class
                             return doc_id
 
-                LOW_QUALITY_TREES.labels(reason=reason).inc()
-                logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
-                raise LowQualityTreeError(reason)
+                if reason in (
+                    "garbling",
+                    "node_garbling",
+                    "visual_order_garble",
+                    "node_count<3",
+                    "depth<2",
+                    "rtl_reversal",
+                    "reordered",
+                ):
+                    LOW_QUALITY_TREES.labels(reason=reason).inc()
+                    logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
+                    raise LowQualityTreeError(reason)
+
+                # RFC-030 D2: unhandled validate_tree reason (low_content_density,
+                # suspect_density, empty_node_contamination, arabic_low_content_ratio)
+                # -- persist with FAIL instead of raising (HR5: no silent persistence,
+                # but an explicit FAIL verdict is not silent). Tree structure is
+                # preserved as-is (no flat extraction, no OCR retry); `ok` stays False
+                # so classify_verdict below maps this reason to a FAIL verdict.
+                logger.warning(
+                    "Persisting low-quality tree with FAIL verdict for %s: reason=%s",
+                    filename,
+                    reason,
+                )
 
             # Persist processed result first (D7): the tree must succeed validation
             # and persist before the raw upload is committed, so a save_doc failure
@@ -1273,7 +1746,10 @@ class CustomPageIndexClient(PageIndexClient):
             )
 
             structure = result.get("structure", [])
-            verdict, verdict_reason = classify_verdict(structure, "", None)
+            prior_verdict = await asyncio.to_thread(find_prior_verdict, sha256, filename, doc_id)
+            verdict, verdict_reason = classify_verdict(
+                structure, "", reason or None, prior_verdict=prior_verdict
+            )
             _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
                 "doc_id": doc_id,

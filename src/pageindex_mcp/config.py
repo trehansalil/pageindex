@@ -12,8 +12,11 @@ load_dotenv()
 # Pipeline version — bumped in the same commit as any splitter/garble/OCR fix
 # that could change corpus classification (RFC-014 D3).
 # ---------------------------------------------------------------------------
-CURRENT_PIPELINE_VERSION: int = 3
+CURRENT_PIPELINE_VERSION: int = 4
 CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
+# RFC-027 D7: page-count threshold above which pdf_to_markdown_docling routes
+# to the chunked-Docling path instead of a single direct conversion call.
+MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
@@ -25,6 +28,16 @@ if not os.environ.get("OPENAI_API_KEY") and os.environ.get("CHATGPT_API_KEY"):
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+
+
+def _normalize_route_prefix(raw: str) -> str:
+    """Normalize a route prefix to '' or '/segment' (no trailing slash).
+
+    Accepts 'minio', '/minio' and '/minio/' — all name the same Traefik route,
+    and a stray trailing slash would produce a double slash in the signed path.
+    """
+    stripped = raw.strip().strip("/")
+    return f"/{stripped}" if stripped else ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +105,30 @@ class Settings:
     vlm_fallback: bool
     vlm_model: str
     vlm_describe_images: bool
+    docling_service_url: str | None
+    docling_service_timeout_s: int
+    docling_service_bearer_token: str
+    # Route prefix the S3 API is served under for *direct* calls. Applied in the
+    # HTTP client (see minio_client.py) because the SDK rejects a path in an
+    # endpoint. Empty for a direct-to-MinIO endpoint such as a ClusterIP.
+    minio_path_prefix: str
+    minio_presign_endpoint: str | None
+    # TLS for the *presign* endpoint, which is independent of minio_secure: the
+    # internal endpoint is usually plaintext (in-cluster) while the public one
+    # that Docling fetches is HTTPS. Sharing one flag emitted http:// URLs.
+    minio_presign_secure: bool
+    # Route prefix to splice into a presigned URL *after* signing. MinIO's public
+    # route is served behind a Traefik StripPrefix, so the signature covers the
+    # stripped path and the prefix must be added afterwards. The SDK cannot do
+    # this itself — it rejects a path in the endpoint outright.
+    minio_presign_path_prefix: str
+    # Signing region. Empty (the default) means "let the SDK discover it" for
+    # the direct client — pinning a region there would break any deployment not
+    # actually in it. The *presign* client cannot discover it (GetBucketLocation
+    # is not reachable through the public route, and the lookup raised before
+    # any URL was returned), so it falls back to storage.DEFAULT_PRESIGN_REGION.
+    # Set this only when your MinIO/S3 is configured with a non-default region.
+    minio_region: str
 
 
 # HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
@@ -176,6 +213,19 @@ def _load_settings() -> Settings:
         vlm_model=os.environ.get("VLM_MODEL", "gpt-4.1"),
         vlm_describe_images=os.environ.get("VLM_DESCRIBE_IMAGES", "false").strip().lower()
         in ("1", "true", "yes"),
+        # rstrip('/'): call sites build f"{url}/convert/pdf", and a trailing
+        # slash makes that "//convert/pdf", which the Scaleway function 404s.
+        docling_service_url=(os.environ.get("DOCLING_SERVICE_URL") or "").rstrip("/") or None,
+        docling_service_timeout_s=int(os.environ.get("DOCLING_SERVICE_TIMEOUT_S", "600")),
+        docling_service_bearer_token=os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", ""),
+        minio_path_prefix=_normalize_route_prefix(os.environ.get("MINIO_PATH_PREFIX", "")),
+        minio_presign_endpoint=os.environ.get("MINIO_PRESIGN_ENDPOINT") or None,
+        minio_presign_secure=os.environ.get("MINIO_PRESIGN_SECURE", "true").strip().lower()
+        in ("1", "true", "yes"),
+        minio_presign_path_prefix=_normalize_route_prefix(
+            os.environ.get("MINIO_PRESIGN_PATH_PREFIX", "")
+        ),
+        minio_region=os.environ.get("MINIO_REGION", ""),
     )
 
 

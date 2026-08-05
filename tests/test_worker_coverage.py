@@ -129,6 +129,11 @@ async def test_kill_group_process_lookup_error_is_swallowed():
 # ── _run_converter_subprocess ─────────────────────────────────────────────
 def _fake_subprocess(returncode, stdout=b"", stderr=b""):
     proc = MagicMock()
+    # RFC-028 D0: worker now reads a startup handshake line off proc.stdout
+    # before calling communicate(). No handshake here (empty readline) means
+    # the full stdout is delivered via communicate(), matching pre-D0 behavior.
+    proc.stdout = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=b"")
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.returncode = returncode
     return proc

@@ -4,17 +4,23 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
 
-from minio import Minio
+from minio import Minio  # for type annotations; construction goes through make_minio
 from minio.error import S3Error
 
 from .config import settings
+from .minio_client import make_minio
 from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES
 
 logger = logging.getLogger(__name__)
+
+# MinIO's own default region. Only used for the presign client, which cannot
+# discover the region live — see _get_presign_minio().
+DEFAULT_PRESIGN_REGION = "us-east-1"
 
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
@@ -31,17 +37,96 @@ def get_minio() -> Minio:
                     settings.minio_endpoint,
                     settings.minio_bucket,
                 )
-                client = Minio(
+                client = make_minio(
                     settings.minio_endpoint,
-                    access_key=settings.minio_access_key,
-                    secret_key=settings.minio_secret_key,
+                    settings.minio_access_key,
+                    settings.minio_secret_key,
                     secure=settings.minio_secure,
+                    # Set when the endpoint is a reverse-proxied public route
+                    # rather than MinIO itself. See minio_client.py.
+                    path_prefix=settings.minio_path_prefix,
+                    # Deliberately NOT pinned like the presign client below:
+                    # this client can reach GetBucketLocation, so leaving the
+                    # region unset lets the SDK discover it. Hard-coding
+                    # us-east-1 here would sign every request for the wrong
+                    # region on a deployment configured with another one.
+                    region=settings.minio_region or None,
                 )
                 if not client.bucket_exists(settings.minio_bucket):
                     logger.info("Creating MinIO bucket: %s", settings.minio_bucket)
                     client.make_bucket(settings.minio_bucket)
                 _minio_client = client
     return _minio_client
+
+
+_presign_client: Minio | None = None
+_presign_lock = Lock()
+
+
+def _get_presign_minio() -> Minio:
+    """Return a Minio client for presigned URL generation.
+
+    When ``MINIO_PRESIGN_ENDPOINT`` is set, presigned URLs embed that
+    hostname instead of the internal ``MINIO_ENDPOINT``.  This is
+    necessary when an external service (outside the cluster) needs to
+    download objects via the presigned URL.
+    """
+    if not settings.minio_presign_endpoint:
+        return get_minio()
+    global _presign_client
+    if _presign_client is None:
+        with _presign_lock:
+            if _presign_client is None:
+                # No path_prefix here: presigned URLs are built from the client's
+                # base URL, never sent through its HTTP client, so the prefix is
+                # spliced in by _apply_route_prefix instead.
+                _presign_client = make_minio(
+                    settings.minio_presign_endpoint,
+                    settings.minio_access_key,
+                    settings.minio_secret_key,
+                    # Independent of minio_secure: the internal endpoint is
+                    # plaintext in-cluster, the public one is HTTPS.
+                    secure=settings.minio_presign_secure,
+                    # Pinned: without it the SDK resolves the region with a live
+                    # GetBucketLocation against the public host, which raises.
+                    # Falls back to us-east-1 (MinIO's own default) when
+                    # MINIO_REGION is unset, because "discover it" is not an
+                    # option on this route.
+                    region=settings.minio_region or DEFAULT_PRESIGN_REGION,
+                )
+    return _presign_client
+
+
+def presigned_get_url(object_key: str, expires: timedelta = timedelta(minutes=15)) -> str:
+    """Generate a time-limited presigned GET URL for a MinIO object."""
+    mc = _get_presign_minio()
+    url = mc.presigned_get_object(settings.minio_bucket, object_key, expires=expires)
+    return _apply_route_prefix(url)
+
+
+def _apply_route_prefix(url: str) -> str:
+    """Splice ``MINIO_PRESIGN_PATH_PREFIX`` into an already-signed URL.
+
+    MinIO's public route sits behind a Traefik StripPrefix, so MinIO verifies the
+    signature against the *stripped* path (``/<bucket>/<key>``) — exactly what the
+    SDK signs. Adding the prefix afterwards therefore keeps the signature valid,
+    and is the only way to do it: the SDK rejects a path in the endpoint.
+
+    With a dedicated presign endpoint the URL names that host, so its prefix
+    applies. Without one the URL is built from the main endpoint, so the main
+    endpoint's prefix applies — otherwise a public MINIO_ENDPOINT would presign
+    URLs that 404 at the proxy.
+    """
+    if settings.minio_presign_endpoint:
+        host, prefix = settings.minio_presign_endpoint, settings.minio_presign_path_prefix
+    else:
+        host, prefix = settings.minio_endpoint, settings.minio_path_prefix
+    if not prefix or not host:
+        return url
+    before, _, after = url.partition(host)
+    if not after:  # host not found in URL — leave it alone
+        return url
+    return f"{before}{host}{prefix}{after}"
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +434,7 @@ _META_FIELDS = (
     "permanent_marginal",
     "promotion_eligible",
     "verdict_computed_at",
+    "flat_char_count",
     *_FACET_FIELDS,
 )
 
@@ -402,6 +488,7 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             "permanent_marginal",
             "promotion_eligible",
             "verdict_computed_at",
+            "flat_char_count",
         ):
             if vf in meta:
                 sidecar[vf] = meta[vf]
@@ -521,7 +608,7 @@ def list_processed_docs() -> list[dict]:
                 doc_id = Path(name).stem.removesuffix(".flat")
                 if doc_id not in meta_keys:
                     meta_keys[doc_id] = name
-            elif name.endswith(".json"):
+            elif name.endswith(".json") and not Path(name).name.startswith("_"):
                 doc_id = Path(name).stem
                 if doc_id not in meta_keys:
                     meta_keys[doc_id] = name
@@ -579,6 +666,135 @@ def list_processed_docs() -> list[dict]:
         return docs
     finally:
         MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
+
+
+# RFC-025 D0: verdict priority for best-ever prior-verdict anchoring.
+_VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+
+
+def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str | None:
+    """Resolve the best-ever verdict from a prior ingestion of the same content.
+
+    Re-ingestion mints a new doc_id per upload, so the prior run's verdict
+    lives under a different, unknown doc_id. Scans processed/*.meta.json
+    sidecars, matching on sha256 (primary) or doc_name (fallback for legacy
+    sidecars without sha256), excludes current_doc_id, and returns the
+    highest-priority verdict found (PASS > MARGINAL > FAIL > ERROR). Returns
+    None if no prior sidecar matches or MinIO is unavailable (graceful
+    degradation -- hysteresis is a quality-of-life improvement, never a
+    blocker for ingestion).
+    """
+    try:
+        mc = get_minio()
+    except Exception:
+        logger.warning("find_prior_verdict: MinIO unavailable, skipping hysteresis")
+        return None
+    best: str | None = None
+    try:
+        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
+            name = obj.object_name
+            if not name.endswith(".meta.json"):
+                continue
+            doc_id = Path(name).stem.removesuffix(".meta")
+            if doc_id == current_doc_id:
+                continue
+            response = None
+            try:
+                response = mc.get_object(settings.minio_bucket, name)
+                sidecar = json.loads(response.read())
+            except Exception:
+                continue
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                        response.release_conn()
+                    except Exception:
+                        pass
+            if sidecar.get("sha256") == sha256 or sidecar.get("doc_name") == filename:
+                verdict = sidecar.get("verdict")
+                if verdict in _VERDICT_PRIORITY and (
+                    best is None or _VERDICT_PRIORITY[verdict] > _VERDICT_PRIORITY[best]
+                ):
+                    best = verdict
+    except Exception:
+        logger.warning("find_prior_verdict: MinIO unavailable, no hysteresis", exc_info=True)
+        return None
+    if best is not None:
+        return best
+    # RFC-026 D3: individual sidecars didn't match (e.g. wiped pre-reingestion) --
+    # fall back to the pre-wipe snapshot.
+    try:
+        response = mc.get_object(settings.minio_bucket, "processed/_prior_verdicts.json")
+        try:
+            snapshot = json.loads(response.read())
+        finally:
+            response.close()
+            response.release_conn()
+        for entry in snapshot.get("entries", []):
+            if entry.get("sha256") == sha256 or entry.get("doc_name") == filename:
+                verdict = entry.get("verdict")
+                if verdict in _VERDICT_PRIORITY and (
+                    best is None or _VERDICT_PRIORITY[verdict] > _VERDICT_PRIORITY[best]
+                ):
+                    best = verdict
+    except Exception:
+        logger.debug("find_prior_verdict: no snapshot fallback available", exc_info=True)
+        return None
+    return best
+
+
+def snapshot_prior_verdicts() -> None:
+    """Snapshot all current processed/*.meta.json verdicts to a sidecar file.
+
+    RFC-026 D3: corpus reingestion wipes processed/* before reingesting, which
+    would otherwise make find_prior_verdict() always return None. Called
+    pre-wipe, this preserves the best-ever verdict per document so hysteresis
+    survives the wipe. Fails silently -- the snapshot is a quality-of-life
+    improvement, never a blocker for reingestion.
+    """
+    mc = get_minio()
+    entries = []
+    try:
+        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
+            name = obj.object_name
+            if not name.endswith(".meta.json"):
+                continue
+            response = None
+            try:
+                response = mc.get_object(settings.minio_bucket, name)
+                sidecar = json.loads(response.read())
+            except Exception:
+                continue
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                        response.release_conn()
+                    except Exception:
+                        pass
+            entries.append(
+                {
+                    "sha256": sidecar.get("sha256"),
+                    "doc_name": sidecar.get("doc_name"),
+                    "doc_id": Path(name).stem.removesuffix(".meta"),
+                    "verdict": sidecar.get("verdict"),
+                }
+            )
+        payload = json.dumps(
+            {"snapshot_at": datetime.now(timezone.utc).isoformat(), "entries": entries}
+        ).encode("utf-8")
+        mc.put_object(
+            settings.minio_bucket,
+            "processed/_prior_verdicts.json",
+            BytesIO(payload),
+            length=len(payload),
+            content_type="application/json",
+        )
+    except Exception:
+        logger.warning(
+            "snapshot_prior_verdicts: failed, hysteresis snapshot skipped", exc_info=True
+        )
 
 
 # ---------------------------------------------------------------------------

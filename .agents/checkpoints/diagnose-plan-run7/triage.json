@@ -1,0 +1,68 @@
+{
+    "issues": [
+        {
+            "doc": "8 — Reitlehrer (Schäden am Berittpferd)",
+            "category": "regression",
+            "domain": "verdict_logic",
+            "symptom": "PASS→MARGINAL: max_leaf_ratio jittered to 0.2571, landing above the D10-widened 0.20 PASS_MAX_LEAF_RATIO threshold, on identical node count/depth/near-identical content — a boundary case where Docling's run-to-run extraction non-determinism (converter side) flips the verdict at a fixed threshold (verdict_logic side).",
+            "start_tracing_from": "classify_verdict (PASS_MAX_LEAF_RATIO threshold comparison) — then cross-reference pdf_to_markdown_docling output variance across repeated runs on this doc to quantify jitter magnitude",
+            "complexity": "complex"
+        },
+        {
+            "doc": "14 — UAE numbers landscape",
+            "category": "persistent_fail",
+            "domain": "converter",
+            "symptom": "Near-total content loss persists unchanged from Run 6 (28 chars, 11 nodes, max_leaf_ratio=0.86) despite all of RFC-023's D0-D11 fixes landing; this doc's failure mode was never targeted/diagnosed by any of the batches.",
+            "start_tracing_from": "pdf_to_markdown_docling on this specific file to see what Docling actually returns for the raw PDF; if markdown is already near-empty, check _maybe_splice_picture_ocr / whether image-based numeric content should have triggered OCR fallback and didn't",
+            "complexity": "complex"
+        },
+        {
+            "doc": "3 — GHV-TKV-Tarif",
+            "category": "stall",
+            "domain": "splitter",
+            "symptom": "flat_mixed, depth=1, 20 nodes, 333 chars — unchanged from Run 6, explicitly marked out of scope for RFC-023; tree never forms structure beyond a single flat level.",
+            "start_tracing_from": "md_to_tree / _extract_markers to confirm why no heading markers are detected in this doc's markdown output (likely a marker-format mismatch rather than a true content-loss issue, since char count, while low, matches prior runs)",
+            "complexity": "simple"
+        },
+        {
+            "doc": "7 — MOU MOHRE & Nafis",
+            "category": "persistent_fail",
+            "domain": "splitter",
+            "symptom": "Recovered from FAIL to MARGINAL via D0 OCR (content now present, tree depth=5, 20 nodes, 14.6k chars), but leaf_concentration=0.50 shows the tree is still lopsided — most content sits under one or few leaves rather than being distributed, keeping the verdict at MARGINAL.",
+            "start_tracing_from": "md_to_tree / _extract_markers — inspect how OCR-recovered text is being attached to tree nodes; likely one section is swallowing OCR output as a single blob instead of being split by sub-markers",
+            "complexity": "simple"
+        },
+        {
+            "doc": "9 — Unfallversicherung-Leistungsuebersicht",
+            "category": "persistent_fail",
+            "domain": "converter",
+            "symptom": "Recovered from FAIL via D2 decorative-icon stripping, but resulting content volume is very low (flat_mixed, depth=1, 15 nodes, 381 chars) — stripping icons removed noise but the underlying extraction still yields little real text.",
+            "start_tracing_from": "pdf_to_markdown_docling output for this doc post-D2 stripping — check whether real table/body content is being dropped alongside the icons, or whether the source page genuinely has little text (e.g., a benefits table rendered as images)",
+            "complexity": "simple"
+        },
+        {
+            "doc": "15 — UAE numbers portrait",
+            "category": "persistent_fail",
+            "domain": "converter",
+            "symptom": "Recovered from FAIL via D6 rotation correction, but content is still near-zero (flat_mixed, depth=1, 4 nodes, 38 chars) — rotation was fixed but the page's actual content (numeric table, per the doc family with doc 14) still isn't being extracted.",
+            "start_tracing_from": "pdf_to_markdown_docling post-D6-rotation-fix output for this doc; likely the same numeric-table-as-image failure mode as doc 14, just triggering MARGINAL instead of FAIL because rotation fix recovered a few stray characters",
+            "complexity": "simple"
+        },
+        {
+            "doc": "21 — قرار 106/2022 (Domestic Workers)",
+            "category": "persistent_fail",
+            "domain": "splitter",
+            "symptom": "Recovered from FAIL via D0+D4 (OCR + garble gate), tree now depth=3, 82 nodes, 41k chars, but leaf_concentration=0.37 indicates imbalance persists — same class of issue as doc 7, where content is unevenly distributed across leaf nodes after recovery.",
+            "start_tracing_from": "md_to_tree / _extract_markers — check whether Arabic heading-marker detection (RTL) is under-splitting relative to the actual document structure, concentrating text in fewer/larger leaves",
+            "complexity": "simple"
+        },
+        {
+            "doc": "18 — القرار التنظيمي (Organizational Decision)",
+            "category": "persistent_fail",
+            "domain": "worker",
+            "symptom": "CMap corruption in the source PDF crashes the Azure VLM call; D7's Tesseract-on-raster fallback was supposed to catch this failure mode but did not recover the doc — it still ERRORs with no artifacts produced (consistent across Run 6 and Run 7).",
+            "start_tracing_from": "_run_converter_subprocess / arq job handler to see whether the VLM crash is even being caught and routed to the D7 Tesseract fallback path, or whether it's escaping before the fallback trigger; then check _enrich_pictures / _maybe_splice_picture_ocr for how D7's Tesseract-on-raster path is invoked and why it errors/no-ops on this file's raster extraction",
+            "complexity": "complex"
+        }
+    ]
+}
