@@ -1,0 +1,426 @@
+[
+  {
+    "doc": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf, مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf, قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+    "symptom": "RFC-029 introduced two transformations to pdf_to_markdown_docling that are the ONLY code changes between Run 12 and Run 13 affecting markdown content: (1) _repair_docling_tables wrapping every export_to_markdown() call (converters.py:2388-2458, applied at lines 2627,2697,2991), and (2) NFKC normalization of Arabic Presentation Forms in _pre_inference_normalize (converters.py:2197-2200). Both SLA and marsoom-13 are Arabic PDFs flat-routed (tree <3 nodes). In Run 12, route_and_extract_flat produced 264 and 6 blocks respectively. In Run 13, 0 blocks. The markdown is non-empty (doc_description populates from metadata), but route_and_extract_flat produces zero parseable blocks from it — all content ends up skipped (likely via fence-toggle, HR-separator, or empty-line paths). The exact interaction causing total block loss needs per-document markdown comparison. qerar-106 shows a different pattern (truncation at Article 4, 179->11 nodes) but shares the Arabic extraction context.",
+    "root_cause": "RFC-029 introduced two transformations to pdf_to_markdown_docling that are the ONLY code changes between Run 12 and Run 13 affecting markdown content: (1) _repair_docling_tables wrapping every export_to_markdown() call (converters.py:2388-2458, applied at lines 2627,2697,2991), and (2) NFKC normalization of Arabic Presentation Forms in _pre_inference_normalize (converters.py:2197-2200). Both SLA and marsoom-13 are Arabic PDFs flat-routed (tree <3 nodes). In Run 12, route_and_extract_flat produced 264 and 6 blocks respectively. In Run 13, 0 blocks. The markdown is non-empty (doc_description populates from metadata), but route_and_extract_flat produces zero parseable blocks from it — all content ends up skipped (likely via fence-toggle, HR-separator, or empty-line paths). The exact interaction causing total block loss needs per-document markdown comparison. qerar-106 shows a different pattern (truncation at Article 4, 179->11 nodes) but shares the Arabic extraction context.",
+    "code_path": "converters.py:_repair_docling_tables (2388-2458) + converters.py:_pre_inference_normalize NFKC (2197-2200) -> pdf_to_markdown_docling (2627,2697) -> client.py:md_content -> flat routing -> route_and_extract_flat",
+    "fix_category": "bug",
+    "estimated_complexity": "medium",
+    "suggested_fix": "Compare the markdown output of pdf_to_markdown_docling for the SLA doc with and without _repair_docling_tables and NFKC normalization (toggle via env vars RFC029_TABLE_DEDUP_ENABLED=0 and conditionalizing the NFKC block). Identify which transformation produces markdown that route_and_extract_flat cannot parse into blocks. Then fix the specific interaction — likely a table-row formatting change that causes the flat parser to misclassify content lines.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/helpers.py",
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "medium"
+  },
+  {
+    "doc": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf, مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+    "symptom": "RFC-029 added 4 new validate_tree failure reasons (suspect_density, low_content_density, empty_node_contamination, arabic_low_content_ratio) in helpers.py but NONE are handled in client.py's recovery/routing paths. OCR escalation only handles garbling/node_garbling/visual_order_garble. Flat routing only handles node_count<3/depth<2. These new reasons fall through to raise LowQualityTreeError (ERROR) with NO recovery opportunity. For docs in THIS cluster the tree has <3 nodes so node_count<3 fires first (before suspect_density), but the gap is systemic and explains the 3 ERROR docs in the audit (Penal Code, federal_decree_law_no_33, marsoom_33). For the SLA doc (20 pages, ~27k chars = ~1394 chars/page < 1500 threshold), suspect_density WOULD fire if the tree had >=3 nodes.",
+    "root_cause": "RFC-029 added 4 new validate_tree failure reasons (suspect_density, low_content_density, empty_node_contamination, arabic_low_content_ratio) in helpers.py but NONE are handled in client.py's recovery/routing paths. OCR escalation only handles garbling/node_garbling/visual_order_garble. Flat routing only handles node_count<3/depth<2. These new reasons fall through to raise LowQualityTreeError (ERROR) with NO recovery opportunity. For docs in THIS cluster the tree has <3 nodes so node_count<3 fires first (before suspect_density), but the gap is systemic and explains the 3 ERROR docs in the audit (Penal Code, federal_decree_law_no_33, marsoom_33). For the SLA doc (20 pages, ~27k chars = ~1394 chars/page < 1500 threshold), suspect_density WOULD fire if the tree had >=3 nodes.",
+    "code_path": "helpers.py:validate_tree (1330-1375 new gates) -> client.py:index (1381-1639 — none of the 4 new reasons match flat routing or OCR escalation conditions)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add the new validate_tree failure reasons to either the OCR escalation condition or the flat routing condition in client.py. suspect_density and low_content_density should route to flat (reason='node_count<3') since the tree has content but is structurally rejected. empty_node_contamination should attempt OCR escalation. arabic_low_content_ratio should attempt OCR escalation.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+    "symptom": "Docling TableFormer cannot extract vector-icon table cells (checkmarks/symbols rendered as PDF path operators, not Unicode text glyphs). The Unfallversicherung benefit-comparison tables have empty_cell_ratio 0.44-0.75 because cell content is rasterized vector icons invisible to text-layer extraction. This predates RFC-029 and has persisted across all runs (Run 11, 12, 13). No RFC-029 change addresses this; _repair_docling_tables processes table FORMAT (dedup, whitespace) but cannot recover content Docling never extracted.",
+    "root_cause": "Docling TableFormer cannot extract vector-icon table cells (checkmarks/symbols rendered as PDF path operators, not Unicode text glyphs). The Unfallversicherung benefit-comparison tables have empty_cell_ratio 0.44-0.75 because cell content is rasterized vector icons invisible to text-layer extraction. This predates RFC-029 and has persisted across all runs (Run 11, 12, 13). No RFC-029 change addresses this; _repair_docling_tables processes table FORMAT (dedup, whitespace) but cannot recover content Docling never extracted.",
+    "code_path": "converters.py:pdf_to_markdown_docling -> Docling TableFormer ACCURATE mode -> export_to_markdown() (checkmark glyphs lost at extraction) -> helpers.py:_flat_parse_table -> helpers.py:flag_empty_cells",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "Cell-level rasterization+OCR for table cells with zero text content but non-zero visual content (vector-icon path operators). Alternative: Docling upstream enhancement for path-operator glyph recognition. RFC-010 originally scoped this; RFC-027 deferred it.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "010-corpus-gap-remediation.md",
+      "027-run10-extraction-gate-and-arabic-recovery.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "uae_numbers_english_page_16_17_landscape - Copy.pdf, uae_numbers_english_page_16_17_portrait - Copy.pdf",
+    "symptom": "RFC-029 D5c (post-Docling chart-page-detection heuristic) was marked complete in tasks-rfc029 but never implemented in code. No function for chart-page density detection or PictureItem synthesis exists anywhere in the codebase. Without D5c, Docling's Heron RT-DETRv2 layout model does not classify vector charts/bar-charts as PictureItem, so zero <!-- image --> markers are emitted and _recover_picture_results returns [] at converters.py:2225 (guard: _IMAGE_MARKER not in md). The entire picture enrichment pipeline never runs for chart-dominant PDF pages.",
+    "root_cause": "RFC-029 D5c (post-Docling chart-page-detection heuristic) was marked complete in tasks-rfc029 but never implemented in code. No function for chart-page density detection or PictureItem synthesis exists anywhere in the codebase. Without D5c, Docling's Heron RT-DETRv2 layout model does not classify vector charts/bar-charts as PictureItem, so zero <!-- image --> markers are emitted and _recover_picture_results returns [] at converters.py:2225 (guard: _IMAGE_MARKER not in md). The entire picture enrichment pipeline never runs for chart-dominant PDF pages.",
+    "code_path": "converters.py:2225 -> _recover_picture_results entry guard (_IMAGE_MARKER in md) -> returns [] because Docling never emitted markers for chart pages",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "Implement D5c as designed in RFC-029: add a post-Docling heuristic that detects pages with very low text content relative to page area (<200 chars/page but known visual content from page dimensions/aspect ratio) and synthesizes PictureItem regions for them so they enter the existing picture-enrichment pipeline. This requires page rendering + text-density calculation + threshold tuning.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE - Copy.pdf, federal_decree_law_no_33_of_2021_regarding_the_regulation_of_employment_relationship_and_its_amendments - Copy.pdf, مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+    "symptom": "RFC-029 D1 low_content_density gate in validate_tree (helpers.py:1342-1356) rejects trees with chars_per_node < 500 when total_nodes >= 200. This new gate was introduced in commit 08b6eea and has no recovery path -- low_content_density is not in the OCR escalation reasons list (client.py:1008), so the tree simply ERRORs. The threshold of 500 chars/node is too aggressive for legal documents with fine-grained article structure: Penal Code (606 nodes, 408.2 chars/node) and marsoom-33-AR (231 nodes, 459.4 chars/node) were previously healthy PASS trees with near-identical metrics. For federal_decree_law_no_33 EN the drop from ~221 to 54.3 chars/node suggests additional over-fragmentation from _repair_docling_tables char reduction (table whitespace stripping reduced total chars while node count held or grew).",
+    "root_cause": "RFC-029 D1 low_content_density gate in validate_tree (helpers.py:1342-1356) rejects trees with chars_per_node < 500 when total_nodes >= 200. This new gate was introduced in commit 08b6eea and has no recovery path -- low_content_density is not in the OCR escalation reasons list (client.py:1008), so the tree simply ERRORs. The threshold of 500 chars/node is too aggressive for legal documents with fine-grained article structure: Penal Code (606 nodes, 408.2 chars/node) and marsoom-33-AR (231 nodes, 459.4 chars/node) were previously healthy PASS trees with near-identical metrics. For federal_decree_law_no_33 EN the drop from ~221 to 54.3 chars/node suggests additional over-fragmentation from _repair_docling_tables char reduction (table whitespace stripping reduced total chars while node count held or grew).",
+    "code_path": "src/pageindex_mcp/helpers.py::validate_tree -> low_content_density gate (line 1349)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Two changes: (1) Add low_content_density to the OCR escalation reasons list in client.py:1008 so the tree gets a recovery attempt instead of immediately ERRORing. (2) Either lower the threshold from 500 to ~200 chars/node (legal articles averaging 300-450 chars/node are legitimate), or raise the node-count floor from 200 to a higher value (e.g., 500) that only catches truly degenerate over-fragmented trees. The docstring at line 1289 says 'total_nodes >= 3' but code uses >= 200 -- fix the docstring too.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py",
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "GHV-TKV-Tarif.pdf",
+    "symptom": "_segment_table_nodes (helpers.py:2307) was implemented in RFC-029 D7 but only wired into the OCR retry path (client.py:1066) and VLM fallback path (client.py:1215). It is NOT called in the primary tree-build path (client.py:981 only calls split_oversized_leaf_nodes). GHV-TKV-Tarif goes through the primary path (no garble/OCR escalation), so _segment_table_nodes never runs and the tariff table stays merged in a single oversized node.",
+    "root_cause": "_segment_table_nodes (helpers.py:2307) was implemented in RFC-029 D7 but only wired into the OCR retry path (client.py:1066) and VLM fallback path (client.py:1215). It is NOT called in the primary tree-build path (client.py:981 only calls split_oversized_leaf_nodes). GHV-TKV-Tarif goes through the primary path (no garble/OCR escalation), so _segment_table_nodes never runs and the tariff table stays merged in a single oversized node.",
+    "code_path": "src/pageindex_mcp/client.py::index() primary tree-build path (line 981, missing _segment_table_nodes call)",
+    "fix_category": "bug",
+    "estimated_complexity": "trivial",
+    "suggested_fix": "Add result['structure'] = _segment_table_nodes(result.get('structure', [])) at line 982 (after split_oversized_leaf_nodes, before validate_tree) in the primary tree-build path, matching the pattern already used in the OCR retry path at line 1066.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+    "symptom": "RFC-029 D3 fence stripping in route_and_extract_flat (helpers.py:2720-2726) strips ALL content inside fenced code blocks. Docling wraps substantial Arabic document content in fenced blocks for the MOU document, causing 89% content loss (166 nodes/13564 chars -> 20 nodes/1487 chars). The garble gate misfire (ratio=1.00) is a CONSEQUENCE: the truncated preamble has concentrated mixed-script patterns that trip _has_sparse_mojibake or _is_garbled_blob checks which were diluted in the full-length text.",
+    "root_cause": "RFC-029 D3 fence stripping in route_and_extract_flat (helpers.py:2720-2726) strips ALL content inside fenced code blocks. Docling wraps substantial Arabic document content in fenced blocks for the MOU document, causing 89% content loss (166 nodes/13564 chars -> 20 nodes/1487 chars). The garble gate misfire (ratio=1.00) is a CONSEQUENCE: the truncated preamble has concentrated mixed-script patterns that trip _has_sparse_mojibake or _is_garbled_blob checks which were diluted in the full-length text.",
+    "code_path": "helpers.py:route_and_extract_flat -> fence stripping loop (in_fence toggle on ``` lines) -> all fenced content silently dropped",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Change fence stripping from content-dropping to delimiter-only stripping: instead of skipping ALL lines inside fences, skip only the ``` delimiter lines themselves and let the enclosed content fall through to the normal prose/table parsers. Alternatively, add a content-length guard: only strip fenced blocks below a character threshold (e.g. <50 chars) that are likely formatting noise, preserving substantial content blocks.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "سياسة حوكمة و إدارة البيانات - Copy.pdf",
+    "symptom": "_garble_check_nodes (helpers.py:1153-1186) only inspects node.get('text'), never node.get('title'). RTL-reversed titles (23/24 nodes in سياسة حوكمة) are invisible to the garble gate. classify_verdict also uses _tree_is_garbled which flattens only text fields via _flatten_tree_text. The garble gate has zero coverage of the title field, making title-level corruption a permanent blind spot.",
+    "root_cause": "_garble_check_nodes (helpers.py:1153-1186) only inspects node.get('text'), never node.get('title'). RTL-reversed titles (23/24 nodes in سياسة حوكمة) are invisible to the garble gate. classify_verdict also uses _tree_is_garbled which flattens only text fields via _flatten_tree_text. The garble gate has zero coverage of the title field, making title-level corruption a permanent blind spot.",
+    "code_path": "helpers.py:_garble_check_nodes -> node.get('text') only, skips node.get('title')",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Extend _garble_check_nodes to also check node.get('title') for garble/RTL-reversal. Add title text to the _flatten_tree_text concatenation (or a separate title-aware flatten). Wire the existing _word_has_reversed_morphology check into the title inspection path so reversed Arabic titles are detected.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf, سياسة حوكمة و إدارة البيانات - Copy.pdf",
+    "symptom": "_check_bidi_coherence (helpers.py) is defined TWICE (lines 936 and 1028) but never called from any pipeline path. RFC-029 D0 intended this function to detect visual-order Arabic (reversed morphology) as a validate_tree gate, but the wiring was never completed. Both documents in this cluster would benefit from bidi coherence checking - the MOU for detecting reversed Arabic in body text, and سياسة حوكمة for detecting reversed Arabic in titles.",
+    "root_cause": "_check_bidi_coherence (helpers.py) is defined TWICE (lines 936 and 1028) but never called from any pipeline path. RFC-029 D0 intended this function to detect visual-order Arabic (reversed morphology) as a validate_tree gate, but the wiring was never completed. Both documents in this cluster would benefit from bidi coherence checking - the MOU for detecting reversed Arabic in body text, and سياسة حوكمة for detecting reversed Arabic in titles.",
+    "code_path": "helpers.py:_check_bidi_coherence (dead code, defined twice, never called)",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "small",
+    "suggested_fix": "Remove the duplicate definition. Wire the single _check_bidi_coherence into validate_tree as an additive gate (after _tree_is_rtl_reversed), returning (False, 'visual_order_garble') when the check fails. Add 'visual_order_garble' to the client.py flat-routing whitelist if bidi-incoherent docs should fall back to flat rather than ERROR.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py",
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf, image pie chart about labor distribution in january 2025 - Copy.jpg",
+    "symptom": "RFC-029 D6 Phase B judge calibration rules were marked complete (task 1.7) but never actually written to .claude/skills/corpus-ingest-score/SKILL.md. The skill file (lines 34-42) still only contains the old RFC-028 D6 guidance about image markers in hierarchical docs. The two new rules specified by RFC-029 D6 are missing: (1) stability rule -- when stored gate verdict is PASS and metrics are byte-identical to the prior run, the judge MUST NOT downgrade unless citing a specific new defect; (2) severity-anchoring rule -- for flat/chart docs with <1000 chars and zero enrichments, anchor severity to MARGINAL (not FAIL) when extraction has not regressed. Without these rules, the Opus judge applies inconsistent scrutiny across runs to byte-identical content: Haftpflicht (stored PASS, 132 nodes/53K chars, depth 2 unchanged) gets downgraded to MARGINAL on 'depth-2-too-shallow' scrutiny the Run 12 judge did not apply; image pie chart (stored MARGINAL, 6 nodes/489 chars byte-identical) gets escalated to FAIL on RTL garbling the Run 12 judge did not flag. Both regressions are pure judge non-determinism with no underlying pipeline change.",
+    "root_cause": "RFC-029 D6 Phase B judge calibration rules were marked complete (task 1.7) but never actually written to .claude/skills/corpus-ingest-score/SKILL.md. The skill file (lines 34-42) still only contains the old RFC-028 D6 guidance about image markers in hierarchical docs. The two new rules specified by RFC-029 D6 are missing: (1) stability rule -- when stored gate verdict is PASS and metrics are byte-identical to the prior run, the judge MUST NOT downgrade unless citing a specific new defect; (2) severity-anchoring rule -- for flat/chart docs with <1000 chars and zero enrichments, anchor severity to MARGINAL (not FAIL) when extraction has not regressed. Without these rules, the Opus judge applies inconsistent scrutiny across runs to byte-identical content: Haftpflicht (stored PASS, 132 nodes/53K chars, depth 2 unchanged) gets downgraded to MARGINAL on 'depth-2-too-shallow' scrutiny the Run 12 judge did not apply; image pie chart (stored MARGINAL, 6 nodes/489 chars byte-identical) gets escalated to FAIL on RTL garbling the Run 12 judge did not flag. Both regressions are pure judge non-determinism with no underlying pipeline change.",
+    "code_path": ".claude/skills/corpus-ingest-score/SKILL.md lines 34-42 (Judge Verdict guidance section)",
+    "fix_category": "config",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add the two RFC-029 D6 calibration rules to .claude/skills/corpus-ingest-score/SKILL.md after the existing RFC-028 D6 paragraph: (1) Stability rule: 'When stored gate verdict is PASS and extraction metrics (node count, char count, depth) are within 10% of the prior run, the judge MUST NOT downgrade unless it can cite a specific content-quality defect (garbling, content loss, structural corruption) not present in the prior run finding. Known persistent limitations (e.g. shallow depth for a complex document) that were tolerated in the prior run are NOT grounds for downgrade.' (2) Severity-anchoring rule: 'For flat/chart-heavy docs (content_class starts with flat_) with <1000 total chars and zero picture enrichments, anchor severity to MARGINAL (not FAIL) when the extraction layer has not regressed -- the missing enrichment is a known pipeline gap, not a per-run regression.' Also add a consistency check note to .claude/skills/corpus-score-diff/SKILL.md for byte-identical artifacts across runs.",
+    "affected_files": [
+      ".claude/skills/corpus-ingest-score/SKILL.md",
+      ".claude/skills/corpus-score-diff/SKILL.md"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+    "symptom": "RFC-029 D2 added suspect_density check to validate_tree (chars_per_page < 1500 floor with page_count threading). For warid-597 (42-page scanned Arabic PDF, 54728 chars / 42 pages = 1303 chars/page < 1500), this fires and returns (False, 'suspect_density'). But 'suspect_density' is not handled by ANY recovery or routing path in client.py -- not in OCR escalation triggers (garbling/node_garbling/visual_order_garble), not in flat routing (node_count<3/depth<2), not in VLM fallback. Falls through to LowQualityTreeError raise at line 1639. In Run 12, the tree PASSED validate_tree (garble gate blind to numeric-junk) and was persisted. RFC-029 design intended verdict change to MARGINAL/FAIL, not ERROR.",
+    "root_cause": "RFC-029 D2 added suspect_density check to validate_tree (chars_per_page < 1500 floor with page_count threading). For warid-597 (42-page scanned Arabic PDF, 54728 chars / 42 pages = 1303 chars/page < 1500), this fires and returns (False, 'suspect_density'). But 'suspect_density' is not handled by ANY recovery or routing path in client.py -- not in OCR escalation triggers (garbling/node_garbling/visual_order_garble), not in flat routing (node_count<3/depth<2), not in VLM fallback. Falls through to LowQualityTreeError raise at line 1639. In Run 12, the tree PASSED validate_tree (garble gate blind to numeric-junk) and was persisted. RFC-029 design intended verdict change to MARGINAL/FAIL, not ERROR.",
+    "code_path": "helpers.py:validate_tree (line 1359-1365) -> client.py (line 1381-1387, reason not in flat routing set) -> client.py (line 1637-1639, raises LowQualityTreeError)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add 'suspect_density' (and other new RFC-029 validate_tree reasons: 'arabic_low_content_ratio', 'low_content_density', 'empty_node_contamination') to the flat routing path's reason check at client.py line 1387. Change: reason in ('node_count<3', 'depth<2') to include these new reasons. This routes rejected trees to flat extraction (which matches RFC-029 D1 design intent) instead of raising LowQualityTreeError. Alternatively, move the suspect_density check from validate_tree to classify_verdict so the tree is persisted but gets a lower verdict.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "document": "federal_decree_law_no_33_of_2021_regarding_the_regulation_of_employment_relationship_and_its_amendments - Copy.pdf",
+    "run_12_metrics": {
+      "nodes": 502,
+      "chars": 110938,
+      "chars_per_node": 221.04,
+      "verdict": "PASS"
+    },
+    "run_13_metrics": {
+      "chars_per_node": 54.3,
+      "gate_failure": "low_content_density",
+      "threshold": 500.0,
+      "verdict": "ERROR",
+      "implied_nodes": 2042
+    },
+    "root_cause": "RFC-029 D7 table segmentation (_segment_table_nodes) causes node explosion from 502→~2042 nodes; new low_content_density gate (threshold 500 chars/node) rejects the resulting tree. Both features introduced in commit 08b6eea (RFC-029 implementation).",
+    "code_path": [
+      "src/pageindex_mcp/helpers.py::_segment_table_nodes (line 2307)",
+      "src/pageindex_mcp/helpers.py::validate_tree low_content_density gate (line 1349)",
+      "src/pageindex_mcp/client.py::index (line 1066 — _segment_table_nodes call)"
+    ],
+    "mechanism": "1. Tree builder (md_to_tree) produces 502-node tree with ~110k chars (same as Run 12). 2. _segment_table_nodes examines nodes for pipe-tables with >=5 rows and >2000 chars. 3. Each qualifying node is split into child nodes (one per table block + inter-table prose). 4. For a hierarchical legal document with multiple embedded tables, this explodes the tree to ~2000+ nodes. 5. validate_tree checks total_nodes >= 200 && chars_per_node < 500 — both conditions met. 6. Tree is rejected with low_content_density ERROR.",
+    "table_segmentation_thresholds": {
+      "char_threshold_per_node": 2000,
+      "min_data_rows_per_table": 5
+    },
+    "why_run_12_passed": "RFC-029 code was committed AFTER Run 12 (commit 08b6eea). Run 12 did not have _segment_table_nodes or low_content_density gate.",
+    "why_not_repair_docling_tables": "_repair_docling_tables strips GFM whitespace (~10% reduction), applied before tree building. This affects markdown char count, not node count. The 4x node explosion is the only mechanism for 54.3 chars/node.",
+    "fix_strategy": "Lower threshold to ~200 chars/node or exclude child nodes from density check. Add low_content_density to recovery paths in client.py.",
+    "related_rfc": "029-run12-arabic-garble-gates-and-extraction-quality.md",
+    "confidence": "high",
+    "source": "drilldown",
+    "related_rfcs": []
+  },
+  {
+    "document": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+    "run_12_baseline": {
+      "nodes": 166,
+      "chars": 13564,
+      "verdict": "MARGINAL"
+    },
+    "run_13_regression": {
+      "nodes": 20,
+      "chars": 1487,
+      "verdict": "FAIL"
+    },
+    "content_loss_percentage": 89,
+    "root_causes": [
+      {
+        "id": "primary",
+        "title": "Fence stripping (RFC-029 D3 regression)",
+        "confidence": "high",
+        "file": "src/pageindex_mcp/helpers.py",
+        "function": "route_and_extract_flat",
+        "lines": "2720-2726",
+        "description": "ALL content inside fenced code blocks is discarded. Docling wraps substantial Arabic content in ``` markers for the MOU document. The fence-stripping loop at lines 2724-2726 skips every line while in_fence=True, silently dropping the entire block rather than preserving content and stripping delimiters only.",
+        "code_pattern": "if in_fence:\n    i += 1\n    continue",
+        "mechanism": "1. Docling exports markdown with fenced blocks wrapping Arabic/mixed-language sections (code-extraction hints)\n2. RFC-029 D3 added fence stripping to remove rendering noise\n3. Implementation toggles in_fence flag and skips ALL enclosed lines (not just delimiters)\n4. Result: 13,564 chars → 1,487 chars (preamble only survives)",
+        "severity": "HIGH",
+        "fix_category": "regression",
+        "evidence": "Node count fell from 166→20, chars 13,564→1,487; both metrics point to content deletion not extraction change"
+      },
+      {
+        "id": "secondary",
+        "title": "Garble gate misfire (consequence of primary)",
+        "confidence": "high",
+        "file": "src/pageindex_mcp/helpers.py",
+        "function": "validate_tree, _is_garbled_blob, _has_sparse_mojibake",
+        "lines": "1374, 1013, 2000+",
+        "description": "After fence stripping removes 89% of content, the remaining preamble has concentrated mixed-script English/Arabic text. This dense pattern triggers _has_sparse_mojibake() which reports ratio=1.00 with 0 actual garbled sequences. NOT a gate bug—consequence of reduced text density.",
+        "mechanism": "Run 12: 13,564 chars → mixed patterns diluted → sparse mojibake below threshold\nRun 13: 1,487 chars (preamble) → mixed patterns concentrated → triggers false positive on clean Arabic",
+        "severity": "MEDIUM",
+        "fix_category": "consequence_of_primary",
+        "evidence": "Garble gate reports ratio=1.00 but MOU body text is clean Arabic. The misfire only appears after fence stripping reduces content."
+      },
+      {
+        "id": "tertiary",
+        "title": "Dead code: _check_bidi_coherence (RFC-029 D0 incompleteness)",
+        "confidence": "high",
+        "file": "src/pageindex_mcp/helpers.py",
+        "function": "_check_bidi_coherence",
+        "lines": "936, 1028",
+        "description": "Function is defined TWICE (duplicate) but never called from any pipeline path. Designed to detect visual-order Arabic (reversed morphology) as a validate_tree gate. RFC-029 D0 implemented the function but never added the call site.",
+        "mechanism": "1. Function exists and is logically correct (detects presentation-form glyph reversal)\n2. RFC-029 D0 marked task 1.2 (implementation) complete\n3. But wiring into validate_tree was never done\n4. Duplicate definition suggests incomplete merge or abandoned implementation",
+        "severity": "MEDIUM",
+        "fix_category": "missing_implementation",
+        "evidence": "grep -r '_check_bidi_coherence' returns only the two definitions; zero call sites in src/",
+        "relevance_to_mou": "Would detect reversed Arabic in MOU body text if wired into gate"
+      }
+    ],
+    "what_makes_mou_unique": [
+      "Docling wraps Arabic content in fences (not just code/examples)",
+      "Preamble is only non-fenced section (unusual structure)",
+      "Majority of content in fenced blocks → all stripped",
+      "Mixed-language preamble creates concentrated sparse mojibake signals triggering false garble gate"
+    ],
+    "verification_strategy": "1. Disable fence stripping (comment lines 2724-2726)\n2. Re-run pipeline on MOU document\n3. If chars recover to ~13,564: fence stripping is sole cause\n4. If chars remain ~1,487: other RFC-029 changes (_repair_docling_tables, HR-separator stripping) also contributing",
+    "cluster_related_documents": [
+      "سياسة حوكمة و إدارة البيانات - Copy.pdf - 23/24 reversed titles (bidi coherence dead code relevant)"
+    ],
+    "fix_recommendations": [
+      {
+        "fix_id": "D2-update",
+        "title": "Change fence stripping to preserve content (strip delimiters only)",
+        "file": "src/pageindex_mcp/helpers.py",
+        "function": "route_and_extract_flat",
+        "lines": "2720-2726",
+        "effort": "1 hour",
+        "rationale": "Current implementation strips ``` delimiters AND all enclosed content. Design should extract content between delimiters, stripping only the ``` markers.",
+        "pseudocode": "if stripped.startswith('```'):\n    in_fence = not in_fence\n    i += 1  # skip the delimiter line itself\n    continue\nif in_fence:\n    # Process line as content, don't skip\n    # Pass to prose buffer or other handlers\n    # (existing line-processing logic)"
+      },
+      {
+        "fix_id": "D4-wire",
+        "title": "Wire _check_bidi_coherence into validate_tree",
+        "file": "src/pageindex_mcp/helpers.py",
+        "function": "validate_tree",
+        "lines": "1328+",
+        "effort": "1-2 hours",
+        "rationale": "Function exists, is tested, solves known problem. Only missing piece is call site in pipeline.",
+        "steps": [
+          "Remove duplicate definition (keep one, delete other)",
+          "Call _check_bidi_coherence(full_text) in validate_tree after _tree_is_rtl_reversed check",
+          "Add 'visual_order_garble' to flat-routing whitelist in client.py"
+        ]
+      }
+    ],
+    "analysis_date": "2026-08-05",
+    "status": "verified_high_confidence",
+    "source": "drilldown",
+    "related_rfcs": []
+  },
+  {
+    "document": "Reitlehrer - Schäden am Berittpferd.pdf",
+    "run": 13,
+    "verdict_regression": "PASS → MARGINAL",
+    "metrics_regression": {
+      "chars_run12": 4082,
+      "chars_run13": 2768,
+      "char_loss_pct": 32.2,
+      "nodes_run12": 10,
+      "nodes_run13": 10
+    },
+    "judge_finding": "Single-page German addendum with reasonable structure but missing image enrichment at node 3.5",
+    "root_cause": "RFC-029 D3 fence/HR-separator stripping in route_and_extract_flat() reduces flat_char_count metric without affecting tree node count, causing verdict downgrade despite stable tree extraction",
+    "mechanism": [
+      "Docling PDF→Markdown conversion produces markdown potentially containing HR separators or fence markers",
+      "Tree extraction (md_to_tree via converters.py) does NOT invoke route_and_extract_flat; produces stable 10-node structure",
+      "Flat extraction now strips fence markers (```lines) and HR rules (---, ===, ***) per RFC-029 Design Property 5",
+      "flat_char_count computed as sum(len(_flat_block_primary_text(b)) for b in blocks) from stripped blocks",
+      "Reduction in flat_char_count (1,314 chars) causes judge to re-evaluate node content adequacy",
+      "Image enrichment adequacy check now flags unenriched logo as insufficient when total content metrics decline"
+    ],
+    "affected_code": {
+      "primary": {
+        "file": "src/pageindex_mcp/helpers.py",
+        "function": "route_and_extract_flat",
+        "lines": "2680-2830",
+        "rfc": "RFC-029 D3",
+        "change_type": "fence and HR stripping",
+        "fence_strip_lines": "2720-2726",
+        "hr_strip_lines": "2733-2737"
+      },
+      "secondary": {
+        "file": "src/pageindex_mcp/client.py",
+        "function": "index",
+        "line": 1581,
+        "statement": "flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)"
+      }
+    },
+    "commit_introducing": "08b6eeaba870e73f7ec3d092b793f708d02bf2af (feat(rfc-029): implement RFC-029 run12-arabic-garble-gates-and-extraction-quality)",
+    "classification": {
+      "category": "regression",
+      "domain": "picture_ocr",
+      "severity": "medium",
+      "scope": "single-document interaction (flat metric stripping + judge re-weighting)",
+      "reproducibility": "deterministic (depends on markdown content containing HR/fence-like patterns)"
+    },
+    "evidence": [
+      "Audit line 86: '32% char drop (4,082 → 2,768) with identical node count, and a previously-benign unenriched image is now flagged as missing content'",
+      "Audit summary: 'Picture-enrichment step regressed for this doc (previously the unenriched image was judged a logo, not content-bearing; now it's flagged as missing content)'",
+      "Triage: chars dropped ~32% with identical node count; text derived from/alongside image was lost",
+      "RFC-029 D3 introduces unconditional stripping of HR separators and fence-wrapped content in flat extraction"
+    ],
+    "not_caused_by": [
+      "NFKC normalization (D1) - normalizes but doesn't delete",
+      "Picture OCR splice changes (D5a) - adds retention, not removal",
+      "Table repair (D4) - targeted at specific table cells, not HR/fence",
+      "Judge-only severity change - metric itself changed (flat_char_count dropped)"
+    ],
+    "source": "drilldown",
+    "related_rfcs": []
+  },
+  {
+    "doc": "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+    "verdict_run12": "MARGINAL",
+    "verdict_run13": "MARGINAL",
+    "chars_run12": 48050,
+    "chars_run13": 14865,
+    "nodes_run12": 349,
+    "nodes_run13": 129,
+    "pdf_pages": 21,
+    "pdf_text_layer": "none (scanned, verified via PyMuPDF get_text() == '' on all 21 pages)",
+    "cluster_reassignment": "converter (OCR-retry keep-best logic), NOT splitter",
+    "root_cause_file": "src/pageindex_mcp/client.py",
+    "root_cause_function": "index() Fix-3 OCR-escalation 'keep-best' guardrail (RFC-029 D4 / Task 3.3)",
+    "root_cause_lines": "1083-1148 (esp. 1093-1096, 1111-1143)",
+    "root_cause_summary": "_repeating_token_density() returns 0.0 whenever a text has <20 alnum tokens (line 1094-1095). The RFC-029 D4 keep-best comparator (added since Run 12) computes _pre_density=_repeating_token_density(pre_retry_text) and only accepts the OCR-retry's richer result when _post_density < _pre_density*0.80. For scanned/no-text-layer PDFs like this one, the pre-retry pass (do_ocr=False by default, RFC-021 QF1 deferral) produces near-empty/garbled text, so pre_retry token count is almost always <20, forcing _pre_density=0.0. The inequality _post_density < 0.0*0.80 is then arithmetically impossible to satisfy, so retry_wins=False unconditionally whenever the pre-retry snapshot is short-and-garbled -- exactly the population of documents this OCR-escalation retry exists to rescue. On revert (line 1144-1147) only result/ok/reason are rolled back to the pre-retry (near-empty) tree; md_content, pic_results and tmp_md_path are NOT reverted, so the tree-path and flat-path diverge on which content survives depending on whether the pre-retry reason was node_count<3 (flat routing still uses the good md_content) or garbling (raises outright). For this document the net effect is partial content survival (14.8k of an original ~48k), consistent with only part of the OCR-recovered structure surviving the reverted tree gate while flat-routing salvages a fraction via a separate, less request-specific path.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "suggested_fix": "Guard _repeating_token_density (or its D4 caller) so a pre-retry text with <20 tokens is treated as 'no reliable density signal' rather than density=0.0 -- e.g. return None and short-circuit retry_wins=True (any real recovery beats near-empty content) instead of running it through the '<' comparison that is unsatisfiable against a floor of 0. Also make the revert at line 1144-1147 restore md_content/tmp_md_path/pic_results in lockstep with result/ok/reason so tree-path and flat-path never diverge on which markdown was actually used.",
+    "confidence": "high (verified against source at client.py:1083-1148, helpers.py:863-891 for _is_garbled_blob empty-blob=True, and confirmed via PyMuPDF that all 21 pages carry zero embedded text)",
+    "source": "drilldown",
+    "related_rfcs": []
+  },
+  {
+    "doc": "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن أعمال الخدمة المساعدة.pdf",
+    "symptom": "Run 12 MARGINAL (179 nodes / 26,027 chars, depth-0 flat hierarchy) regressed to Run 13 FAIL (11 nodes / 2,022 chars, ~92% content loss); extraction now starts at Article 4 and ends abruptly instead of covering the full 15-page executive regulation.",
+    "root_cause": "RFC-029 D4 (Task 3.3) 'keep-best' OCR-retry comparison in client.py (commit 08b6eea) replaced the previous unconditional `retry_wins = True` (post_retry_chars > pre_retry_chars branch) with a repeating-token-density guard. `_repeating_token_density()` (client.py:1083-1096) returns a hardcoded 0.0 whenever the input has fewer than 20 alnum tokens (line 1094). This doc is a 15-page fully scanned/image-only PDF (confirmed: PyPDF2 extracts 0 chars on every page) that is well under MAX_DOCLING_PAGES=150, so it never enters the chunked-Docling route — the truncation is not a chunking artifact. Instead it takes the LOW_CONTENT_OCR_CHAR_FLOOR retry path (client.py:1001-1014): the first, non-forced Docling pass yields near-empty/garbled markdown (a short mid-document fragment happening to start around 'Article 4'), reason='node_count<3', total_chars<300, triggering the force_full_page_ocr escalation. The escalation legitimately recovers far more content (post_retry_chars > pre_retry_chars), landing in the `else` branch at client.py:1111-1143. There, `_pre_garble_flag = _is_garbled_blob(pre_retry_text)` is true for the short garbled fragment, so the code computes `_pre_density = _repeating_token_density(pre_retry_text)`. Because the pre-retry fragment has <20 alnum tokens, `_pre_density` is forced to 0.0 regardless of its actual content. The subsequent check `_density_improved = _post_density < _pre_density * 0.80` then evaluates as `_post_density < 0.0`, which is unsatisfiable for any non-negative density value — `retry_wins` is unconditionally False whenever the pre-retry fragment is short-but-garbled. `result = pre_retry_result` (client.py:1145) then discards the complete, OCR-recovered markdown and keeps the short pre-retry garbled fragment (whatever partial/garbled text the first Docling pass happened to pull off a mid-document page range) as the persisted content — exactly matching the observed 'starts at Article 4, ends abruptly' truncation and the 179->11 node / 26,027->2,022 char collapse. This is a distinct code-level mechanism from the cluster's converters.py _repair_docling_tables/NFKC total-collapse finding: it lives in client.py's RFC-029 D4 retry-arbitration logic, not in the markdown-generation/table-repair code path, and produces partial-fragment truncation rather than 0-block total collapse.",
+    "code_path": "src/pageindex_mcp/client.py:1083-1147 (function-local `_repeating_token_density` at 1083-1096, retry-arbitration branch at 1098-1147, specifically the short-text degenerate case at line 1094 `if len(tokens) < 20: return 0.0` feeding the unsatisfiable comparison at line 1131 `_density_improved = _post_density < _pre_density * 0.80`)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "In `_repeating_token_density`, do not silently collapse short inputs to 0.0 density (which biases the RFC-029 D4 comparison to always reject the retry). Either (a) return `None`/a sentinel for <20-token inputs and treat that case as 'density undecidable -> retry_wins = True' (mirroring the pre-existing behavior before RFC-029 D4), since a growth in char count from a too-short-to-score fragment to a scoreable OCR result is itself strong evidence of recovery; or (b) fall back to `_is_garbled_blob` post-retry check alone (as already done in the equal-char-count tie-break branch at line 1100-1110) when the pre-retry token count is below the 20-token floor. Add a regression test with a <20-token garbled pre-retry fragment and a much longer, non-garbled post-retry OCR result to assert retry_wins=True.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "source": "drilldown",
+    "related_rfcs": []
+  }
+]
