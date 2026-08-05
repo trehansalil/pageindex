@@ -42,7 +42,7 @@ Usage
     uv run python scripts/remote_ingest_test.py --source minio --prefix corpus/de/
 
 Every endpoint and credential comes from the environment (``--env-file``,
-default ``.env``). Nothing is hardcoded; there are no secrets in this file.
+default ``.env.active``). Nothing is hardcoded; there are no secrets in this file.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ import random
 import sys
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -65,6 +65,18 @@ from typing import Any, Iterable, Literal
 import httpx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _default_env_file() -> Path:
+    """Prefer .env.active — the resolved profile `make env` writes.
+
+    Defaulting to .env would silently read the pre-toggle source, so a run
+    invoked as "remote" could quietly target the localhost defaults still
+    sitting in .env. Falls back to .env when the profile has not been resolved
+    yet, so the script still works in a checkout that never ran `make env`.
+    """
+    active = REPO_ROOT / ".env.active"
+    return active if active.exists() else REPO_ROOT / ".env"
 
 # Mirrors client._SUPPORTED (src/pageindex_mcp/client.py:271-272). Duplicated
 # deliberately: this script must stay importable without the ingestion stack.
@@ -144,6 +156,10 @@ class RemoteConfig:
     docling_token: str
     redis_url: str
     postgres_dsn: str | None
+    # Set from --require-remote. Preflight checks read it to decide whether a
+    # missing remote hop is a warning or a hard failure: without it a run that
+    # silently converted PDFs in-process still reported green.
+    require_remote: bool = False
 
     @property
     def presign_host(self) -> str:
@@ -233,8 +249,12 @@ def build_config(args: argparse.Namespace) -> RemoteConfig:
         )
 
     if args.require_remote:
+        cfg = replace(cfg, require_remote=True)
+        # DOCLING_SERVICE_URL included: a localhost Docling is exactly the
+        # silent in-process degradation --require-remote exists to catch.
         local = [n for n, v in (
             ("MINIO_ENDPOINT", cfg.minio_endpoint), ("REDIS_URL", cfg.redis_url),
+            ("DOCLING_SERVICE_URL", cfg.docling_url or ""),
         ) if "localhost" in v or "127.0.0.1" in v]
         if local:
             raise ConfigError(
@@ -308,20 +328,19 @@ def _minio_client(endpoint: str, cfg: RemoteConfig, *, secure: bool, path_prefix
 
     # A public MinIO route is served under a stripped path prefix. The SDK
     # rejects a path in an endpoint, so it is applied in the HTTP client after
-    # signing — mirrors pageindex_mcp.minio_client.PrefixedPoolManager.
+    # signing. This reuses pageindex_mcp.minio_client.PrefixedPoolManager rather
+    # than re-deriving it: the local copy had drifted, losing both the
+    # redirect re-entry guard (urllib3 re-enters urlopen on a 30x, which turned
+    # /minio/<bucket>/<key> into /minio/minio/<bucket>/<key> and failed the
+    # probe as "minio.write failed") and the SDK's own pool settings (5-minute
+    # timeout, maxsize=10, retry on 5xx, certifi CA) — so a slow MinIO hung the
+    # preflight instead of reporting cleanly.
     # region pinned: otherwise the SDK resolves it with a live GetBucketLocation.
     kwargs = {}
     if path_prefix:
-        import urllib3
-        from urllib.parse import urlsplit, urlunsplit
+        from pageindex_mcp.minio_client import PrefixedPoolManager
 
-        class _PrefixedPoolManager(urllib3.PoolManager):
-            def urlopen(self, method, url, redirect=True, **kw):
-                p = urlsplit(url)
-                url = urlunsplit((p.scheme, p.netloc, path_prefix + p.path, p.query, p.fragment))
-                return super().urlopen(method, url, redirect=redirect, **kw)
-
-        kwargs["http_client"] = _PrefixedPoolManager()
+        kwargs["http_client"] = PrefixedPoolManager(path_prefix)
     return Minio(endpoint, access_key=cfg.minio_access_key,
                  secret_key=cfg.minio_secret_key, secure=secure,
                  region=os.environ.get("MINIO_REGION", "us-east-1"), **kwargs)
@@ -413,7 +432,10 @@ def check_docling(cfg: RemoteConfig) -> list[PreflightCheck]:
             "docling.configured", False,
             "DOCLING_SERVICE_URL unset — PDFs/images would convert in-process "
             "on this machine instead of on the remote service.",
-            fatal=False)]
+            # Fatal under --require-remote: the run would still pass, having
+            # proved nothing about the remote Docling service it claims to
+            # exercise. Advisory otherwise, since non-PDF formats are fine.
+            fatal=cfg.require_remote)]
     headers = {"Authorization": f"Bearer {cfg.docling_token}"} if cfg.docling_token else {}
     try:
         resp = httpx.get(f"{cfg.docling_url}/health", headers=headers, timeout=30.0)
@@ -504,10 +526,8 @@ def run_preflight(cfg: RemoteConfig, *, skip: set[str]) -> list[PreflightCheck]:
         checks.extend(probe())
 
     for chk in checks:
-        level = "ok" if chk.passed else ("fail" if chk.fatal else "warn")
         print(f"    {_c('PASS', 'green') if chk.passed else (_c('FAIL', 'red') if chk.fatal else _c('WARN', 'yellow'))}"
               f"  {chk.name:<30} {chk.detail}")
-        del level
     return checks
 
 
@@ -927,8 +947,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="ingest at most N documents (0 = no limit)")
 
     tgt = p.add_argument_group("target")
-    tgt.add_argument("--env-file", type=Path, default=REPO_ROOT / ".env",
-                     help="dotenv file to load (default: ./.env)")
+    tgt.add_argument("--env-file", type=Path, default=_default_env_file(),
+                     help="dotenv file to load (default: ./.env.active if 'make env' "
+                          "has been run, else ./.env)")
     tgt.add_argument("--base-url", default=None,
                      help="upload API base URL (default: $INGEST_BASE_URL or localhost:$MCP_PORT)")
     tgt.add_argument("--require-remote", action="store_true",
@@ -937,7 +958,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = p.add_argument_group("run")
     run.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                      help=f"documents in flight at once (default: {DEFAULT_CONCURRENCY}); "
-                          "the worker runs max_jobs=1, so raising this only deepens the queue")
+                          "the worker defaults to max_jobs=1, so raising this only deepens "
+                          "the queue unless PAGEINDEX_WORKER_MAX_JOBS is also raised")
     run.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_S,
                      help=f"seconds between status polls (default: {DEFAULT_POLL_INTERVAL_S})")
     run.add_argument("--job-timeout", type=float, default=DEFAULT_JOB_TIMEOUT_S,
