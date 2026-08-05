@@ -13,10 +13,36 @@ makes the public route usable for every S3 verb, not just presigned GETs, with
 no port-forward and no second ingress route.
 """
 
+import os
+from datetime import timedelta
 from urllib.parse import urlsplit, urlunsplit
 
+import certifi
 import urllib3
 from minio import Minio
+from urllib3.util import Retry, Timeout
+
+
+def _sdk_pool_kwargs(cert_check: bool = True) -> dict:
+    """Mirror the PoolManager configuration ``minio.Minio`` builds for itself.
+
+    Passing ``http_client=`` replaces the SDK's pool outright, so a bare
+    ``PoolManager()`` would silently drop the five-minute timeout, the
+    ``maxsize=10`` pool, the 500/502/503/504 retry policy, and
+    ``SSL_CERT_FILE``/certifi CA resolution — but only on the prefixed route,
+    which makes the difference hard to spot. Kept in sync with
+    ``Minio.__init__``.
+    """
+    timeout = timedelta(minutes=5).seconds
+    return {
+        "timeout": Timeout(connect=timeout, read=timeout),
+        "maxsize": 10,
+        "cert_reqs": "CERT_REQUIRED" if cert_check else "CERT_NONE",
+        "ca_certs": os.environ.get("SSL_CERT_FILE") or certifi.where(),
+        "retries": Retry(
+            total=5, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504]
+        ),
+    }
 
 
 class PrefixedPoolManager(urllib3.PoolManager):
@@ -26,13 +52,30 @@ class PrefixedPoolManager(urllib3.PoolManager):
     """
 
     def __init__(self, prefix: str, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(**{**_sdk_pool_kwargs(), **kwargs})
         self._route_prefix = prefix
+
+    def _prefixed_path(self, path: str) -> str:
+        """Add the route prefix unless the path already carries it.
+
+        ``urllib3`` follows redirects by re-entering ``self.urlopen``, so
+        without this guard a redirect back to ``/minio/<bucket>/<key>`` would
+        be rewritten to ``/minio/minio/<bucket>/<key>`` and stop routing.
+
+        Caveat: a bucket literally named after the prefix (``/minio/...`` with
+        ``MINIO_PATH_PREFIX=/minio``) is indistinguishable from an
+        already-prefixed path here. Name the proxy route something other than a
+        real bucket if that ever collides.
+        """
+        prefix = self._route_prefix
+        if path == prefix or path.startswith(prefix + "/"):
+            return path
+        return prefix + path
 
     def urlopen(self, method, url, redirect=True, **kw):  # noqa: D102 - urllib3 API
         parts = urlsplit(url)
         prefixed = urlunsplit(
-            (parts.scheme, parts.netloc, self._route_prefix + parts.path,
+            (parts.scheme, parts.netloc, self._prefixed_path(parts.path),
              parts.query, parts.fragment)
         )
         return super().urlopen(method, prefixed, redirect=redirect, **kw)

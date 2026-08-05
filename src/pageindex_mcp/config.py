@@ -122,9 +122,12 @@ class Settings:
     # stripped path and the prefix must be added afterwards. The SDK cannot do
     # this itself — it rejects a path in the endpoint outright.
     minio_presign_path_prefix: str
-    # Pinned so the presign client never issues a live GetBucketLocation against
-    # the public host (that verb is not reachable through the route, and the
-    # lookup raised before any URL was returned).
+    # Signing region. Empty (the default) means "let the SDK discover it" for
+    # the direct client — pinning a region there would break any deployment not
+    # actually in it. The *presign* client cannot discover it (GetBucketLocation
+    # is not reachable through the public route, and the lookup raised before
+    # any URL was returned), so it falls back to storage.DEFAULT_PRESIGN_REGION.
+    # Set this only when your MinIO/S3 is configured with a non-default region.
     minio_region: str
 
 
@@ -222,7 +225,7 @@ def _load_settings() -> Settings:
         minio_presign_path_prefix=_normalize_route_prefix(
             os.environ.get("MINIO_PRESIGN_PATH_PREFIX", "")
         ),
-        minio_region=os.environ.get("MINIO_REGION", "us-east-1"),
+        minio_region=os.environ.get("MINIO_REGION", ""),
     )
 
 

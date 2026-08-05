@@ -68,10 +68,33 @@ DLQ_KEY = "pageindex:dlq"
 # kill. Override with PAGEINDEX_WORKER_MAX_JOBS when running against *remote*
 # Docling (Scaleway) — the worker is then I/O-bound and 2–4 parallel jobs are
 # safe. Do NOT raise this against the local Docling profile.
-try:
-    MAX_JOBS = max(1, int(os.getenv("PAGEINDEX_WORKER_MAX_JOBS", "1")))
-except ValueError:
-    MAX_JOBS = 1
+#
+# The value is clamped to [1, MAX_JOBS_CEILING] rather than trusted: an
+# arbitrarily large env value (a typo, or a remote-profile setting leaking into
+# a local-Docling deployment) would reinstate exactly the OOM the default of 1
+# exists to prevent. The ceiling is the top of the documented safe range for
+# the remote profile; raising it is a deliberate code change, not a deploy-time
+# accident.
+MAX_JOBS_CEILING = 4
+MAX_JOBS_DEFAULT = 1
+
+
+def resolve_max_jobs(raw: str | None) -> int:
+    """Clamp a raw PAGEINDEX_WORKER_MAX_JOBS value into [1, MAX_JOBS_CEILING].
+
+    A free function rather than an inline expression so the clamp is testable
+    without ``importlib.reload``-ing this module — reloading rebinds the
+    exception classes other test modules have already imported, so their
+    ``pytest.raises`` identity checks silently stop matching.
+    """
+    try:
+        parsed = int(raw) if raw is not None else MAX_JOBS_DEFAULT
+    except (TypeError, ValueError):
+        return MAX_JOBS_DEFAULT
+    return min(MAX_JOBS_CEILING, max(1, parsed))
+
+
+MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
 # Map child-reported exception class names (from converters_cli.py stdout JSON
 # "error" field) to the documented, stable Redis ``reason`` codes. Unknown
 # classes fall back to the generic ``converter_child_failed`` so the reason

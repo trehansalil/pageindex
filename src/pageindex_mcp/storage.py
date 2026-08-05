@@ -18,6 +18,10 @@ from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES
 
 logger = logging.getLogger(__name__)
 
+# MinIO's own default region. Only used for the presign client, which cannot
+# discover the region live — see _get_presign_minio().
+DEFAULT_PRESIGN_REGION = "us-east-1"
+
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
 
@@ -41,7 +45,12 @@ def get_minio() -> Minio:
                     # Set when the endpoint is a reverse-proxied public route
                     # rather than MinIO itself. See minio_client.py.
                     path_prefix=settings.minio_path_prefix,
-                    region=settings.minio_region,
+                    # Deliberately NOT pinned like the presign client below:
+                    # this client can reach GetBucketLocation, so leaving the
+                    # region unset lets the SDK discover it. Hard-coding
+                    # us-east-1 here would sign every request for the wrong
+                    # region on a deployment configured with another one.
+                    region=settings.minio_region or None,
                 )
                 if not client.bucket_exists(settings.minio_bucket):
                     logger.info("Creating MinIO bucket: %s", settings.minio_bucket)
@@ -80,7 +89,10 @@ def _get_presign_minio() -> Minio:
                     secure=settings.minio_presign_secure,
                     # Pinned: without it the SDK resolves the region with a live
                     # GetBucketLocation against the public host, which raises.
-                    region=settings.minio_region,
+                    # Falls back to us-east-1 (MinIO's own default) when
+                    # MINIO_REGION is unset, because "discover it" is not an
+                    # option on this route.
+                    region=settings.minio_region or DEFAULT_PRESIGN_REGION,
                 )
     return _presign_client
 
