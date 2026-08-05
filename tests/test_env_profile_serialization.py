@@ -13,6 +13,8 @@ serializer rejects those characters, and these tests hold it to that.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,7 +35,13 @@ PI_LOCAL_DOCLING_TOKEN=''
 """
 
 
-def _run(tmp_path: Path, secret_literal: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path,
+    secret_literal: str = "'plainsecret'",
+    base_env: str = "FOO='bar'\n",
+    remote_env: str | None = None,
+    path: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Generate a profile in an isolated repo root holding `secret_literal`.
 
     `secret_literal` goes into env/local.env verbatim — including its quoting —
@@ -42,14 +50,24 @@ def _run(tmp_path: Path, secret_literal: str) -> subprocess.CompletedProcess[str
     (tmp_path / "env").mkdir(exist_ok=True)
     (tmp_path / "scripts").mkdir(exist_ok=True)
     (tmp_path / "scripts" / "env_profile.sh").write_bytes(SCRIPT.read_bytes())
-    (tmp_path / ".env").write_text("FOO='bar'\n")
+    (tmp_path / ".env").write_text(base_env)
     (tmp_path / "env" / "local.env").write_text(
         LOCAL_ENV_TEMPLATE.format(secret=secret_literal)
     )
+    if remote_env is not None:
+        (tmp_path / "env" / "remote.env").write_text(remote_env)
+    # Inherit the real environment rather than pinning PATH. The script shells
+    # out to `ip` on this path, and a hand-built PATH that misses it would make
+    # every test here pass or fail for a reason unrelated to serialization —
+    # the reject cases especially, which would see a non-zero exit from the
+    # wrong cause. PI_* is cleared so an operator's own toggles cannot leak in.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PI_")}
+    env["PI_PROFILE"] = "local"
+    if path is not None:
+        env["PATH"] = path
     return subprocess.run(
         ["bash", "scripts/env_profile.sh"],
-        cwd=tmp_path, capture_output=True, text=True,
-        env={"PATH": "/usr/bin:/bin", "PI_PROFILE": "local"},
+        cwd=tmp_path, capture_output=True, text=True, env=env,
     )
 
 
@@ -135,3 +153,63 @@ def test_rejection_leaves_no_partial_or_temporary_profile_behind(tmp_path):
     assert proc.returncode != 0
     leftovers = sorted(p.name for p in tmp_path.glob(".env.active*"))
     assert leftovers == [], f"left behind: {leftovers}"
+
+
+@pytest.mark.parametrize("base_env,description", [
+    ("", "an empty base file"),
+    ("MINIO_ENDPOINT='x'\nREDIS_URL='y'\n", "a base file of only managed keys"),
+])
+def test_base_file_with_nothing_to_carry_over_still_generates(
+    tmp_path, base_env, description
+):
+    """`grep -v` exits 1 when it filters everything out, which set -e treats
+    as failure — but both of these are legitimate base files."""
+    # Act
+    proc = _run(tmp_path, base_env=base_env)
+
+    # Assert
+    assert proc.returncode == 0, f"{description} aborted: {proc.stderr}"
+    assert dotenv_values(tmp_path / ".env.active")["MINIO_SECRET_KEY"] == "plainsecret"
+
+
+def test_local_profile_ignores_a_malformed_remote_layer(tmp_path):
+    """PROFILE=local touches no remote service, so a stale env/remote.env from
+    an old cluster must not block generating an offline profile."""
+    # Arrange: unbalanced quote — unparsable as shell.
+    # Act
+    proc = _run(tmp_path, remote_env="PI_REMOTE_MINIO_SECRET_KEY='oops\n")
+
+    # Assert
+    assert proc.returncode == 0, proc.stderr
+    assert dotenv_values(tmp_path / ".env.active")["MINIO_ENDPOINT"] == "localhost:9000"
+
+
+def test_generation_does_not_require_iproute2(tmp_path):
+    """`ip` is Linux-only; it is absent on macOS and on slim images. Under
+    `set -o pipefail` a missing binary aborted the run at rc=127, with the
+    reason swallowed by the 2>/dev/null on that same call."""
+    # Arrange: mirror the real PATH minus `ip`. Enumerating the tools the
+    # script needs by hand would be brittle in the same way the pinned PATH
+    # was — a missing one fails the test for the wrong reason.
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d or not os.path.isdir(d):
+            continue
+        for entry in os.listdir(d):
+            if entry == "ip" or (bin_dir / entry).exists():
+                continue
+            try:
+                (bin_dir / entry).symlink_to(Path(d) / entry)
+            except OSError:
+                pass
+    assert shutil.which("ip", path=str(bin_dir)) is None, "fake PATH still has ip"
+
+    # Act
+    proc = _run(tmp_path, path=str(bin_dir))
+
+    # Assert
+    assert proc.returncode == 0, f"aborted without iproute2: {proc.stderr}"
+    # Falls back to the stock docker0 gateway rather than failing.
+    assert dotenv_values(tmp_path / ".env.active")["MINIO_PRESIGN_ENDPOINT"] \
+        == "172.17.0.1:9000"
