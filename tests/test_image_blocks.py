@@ -501,6 +501,7 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
             monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
             monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(client_mod, "find_prior_verdict", lambda *a, **kw: None)
             monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
             monkeypatch.setattr(
                 client_mod, "image_to_markdown", lambda path, langs: "<!-- image -->"
@@ -578,6 +579,7 @@ class TestStandaloneImageEnrichment:
             monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
             monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
             monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(client_mod, "find_prior_verdict", lambda *a, **kw: None)
             monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
             monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: markdown)
 

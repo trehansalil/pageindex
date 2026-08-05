@@ -1,8 +1,16 @@
-"""RFC-029 Design Property 5: Fence/HR stripping for route_and_extract_flat.
+"""RFC-029 Design Property 5 / RFC-030 D0: Fence/HR handling for
+route_and_extract_flat.
 
-Tests verify that triple-backtick fenced code blocks and horizontal-rule
-lines (---, ===, ***) are stripped from the output produced by
-route_and_extract_flat, while leaving real content intact.
+RFC-030 D0 superseded the original RFC-029 D3 behavior: the old fence-parity
+toggle silently swallowed ALL content between an opening and closing (or
+unpaired/unclosed) triple-backtick fence, which caused real content loss in
+production (Reitlehrer corpus doc). The fix (helpers.py:2711-2726) strips
+only the fence-delimiter lines themselves (``` optionally with a language
+tag); enclosed content now falls through to the normal prose/table parsers
+and is preserved. See design-rfc030-run13-rfc029-regression-fixes.md
+Property 1.
+
+Horizontal-rule lines (---, ===, ***) are still stripped as before.
 """
 
 import pytest
@@ -28,8 +36,8 @@ def _all_roles(blocks: list[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 class TestFenceAndHRStripping:
-    def test_fenced_code_block_content_not_emitted(self):
-        """Content inside triple-backtick fences must not appear in any block."""
+    def test_fence_delimiters_stripped_content_preserved(self):
+        """Only the ``` delimiter lines are stripped; enclosed content survives (RFC-030 D0)."""
         # Arrange
         md = (
             "Introduction paragraph.\n"
@@ -48,17 +56,18 @@ class TestFenceAndHRStripping:
 
         # Assert
         combined = " ".join(texts)
-        assert "x = 1 + 2" not in combined, "fenced code line must not appear in output"
-        assert "print(x)" not in combined, "fenced code line must not appear in output"
+        assert "x = 1 + 2" in combined, "enclosed content must fall through, not be swallowed"
+        assert "print(x)" in combined
+        assert "```" not in combined, "fence delimiter lines themselves must be stripped"
 
-    def test_real_content_survives_after_fence_stripped(self):
-        """Prose before and after a fenced block is preserved."""
+    def test_real_content_survives_around_and_inside_fence(self):
+        """Prose before, inside, and after a fenced block is all preserved (RFC-030 D0)."""
         # Arrange
         md = (
             "Before fence.\n"
             "\n"
             "```\n"
-            "ignored code\n"
+            "formerly ignored code\n"
             "```\n"
             "\n"
             "After fence.\n"
@@ -72,7 +81,8 @@ class TestFenceAndHRStripping:
         # Assert
         assert "Before fence." in combined
         assert "After fence." in combined
-        assert "ignored code" not in combined
+        assert "formerly ignored code" in combined
+        assert "```" not in combined
 
     def test_dash_hr_stripped(self):
         """A --- horizontal rule must not appear in any block text."""
@@ -137,8 +147,8 @@ class TestFenceAndHRStripping:
         assert "Alpha." in combined
         assert "Beta." in combined
 
-    def test_mixed_fences_and_hrs_all_stripped(self):
-        """Fenced blocks, --- HRs, === HRs, and *** HRs together — all stripped."""
+    def test_mixed_fences_and_hrs_delimiters_stripped_content_survives(self):
+        """Fence delimiters and HR lines are stripped; fenced content and prose all survive (RFC-030 D0)."""
         # Arrange
         md = (
             "Real content A.\n"
@@ -169,16 +179,23 @@ class TestFenceAndHRStripping:
         texts = _block_texts(blocks)
         combined = " ".join(texts)
 
-        # Assert — no artifact appears
-        for artifact in ("SELECT * FROM table;", "---", "===", "***", "another code block"):
+        # Assert — HR divider lines are stripped, fence delimiters are stripped
+        for artifact in ("---", "===", "***", "```"):
             assert artifact not in combined, f"artifact '{artifact}' must be stripped"
 
-        # Assert — all real content survives
-        for real in ("Real content A.", "Real content B.", "Real content C.", "Real content D."):
-            assert real in combined, f"real content '{real}' must survive"
+        # Assert — fenced content and all real content survive
+        for real in (
+            "SELECT * FROM table;",
+            "another code block",
+            "Real content A.",
+            "Real content B.",
+            "Real content C.",
+            "Real content D.",
+        ):
+            assert real in combined, f"content '{real}' must survive"
 
-    def test_fence_with_language_tag_stripped(self):
-        """Opening fence with a language tag (```python) is still recognised."""
+    def test_fence_with_language_tag_delimiter_stripped_content_survives(self):
+        """Opening fence with a language tag (```python) has its delimiter stripped; content survives."""
         # Arrange
         md = (
             "Preamble.\n"
@@ -196,7 +213,8 @@ class TestFenceAndHRStripping:
         combined = " ".join(texts)
 
         # Assert
-        assert "def foo(): pass" not in combined
+        assert "def foo(): pass" in combined
+        assert "```" not in combined
         assert "Preamble." in combined
         assert "Postamble." in combined
 
@@ -312,14 +330,18 @@ class TestEdgeCases:
         assert isinstance(content_class, str)
         assert isinstance(blocks, list)
 
-    def test_unclosed_fence_content_is_skipped(self):
-        """Content after an unclosed opening fence is not emitted as blocks."""
+    def test_unclosed_fence_content_is_preserved(self):
+        """Content after an unclosed opening fence is preserved as prose, not
+        silently dropped (RFC-030 D0 / task 3.4: renamed from
+        test_unclosed_fence_content_is_skipped — the old fence-parity toggle
+        used to swallow everything following a stray/unclosed fence marker,
+        which caused real content loss in production)."""
         # Arrange
         md = (
             "Real prose before fence.\n"
             "\n"
             "```\n"
-            "skipped line inside unclosed fence\n"
+            "line inside unclosed fence\n"
         )
 
         # Act
@@ -327,8 +349,8 @@ class TestEdgeCases:
         texts = _block_texts(blocks)
         combined = " ".join(texts)
 
-        # Assert — content inside the fence is skipped
-        assert "skipped line inside unclosed fence" not in combined
+        # Assert — content after the stray fence marker now falls through and survives
+        assert "line inside unclosed fence" in combined
         # Assert — content before the fence is present
         assert "Real prose before fence." in combined
 
@@ -357,11 +379,13 @@ class TestEdgeCases:
         assert content_blocks == []
 
     def test_fence_immediately_followed_by_content(self):
-        """Content on the line right after a closing fence is emitted normally."""
+        """Content inside the fence and on the line right after a closing
+        fence are both emitted normally (RFC-030 D0: only the delimiter
+        lines are stripped)."""
         # Arrange
         md = (
             "```\n"
-            "hidden\n"
+            "formerly hidden\n"
             "```\n"
             "Visible line.\n"
         )
@@ -372,5 +396,5 @@ class TestEdgeCases:
         combined = " ".join(texts)
 
         # Assert
-        assert "hidden" not in combined
+        assert "formerly hidden" in combined
         assert "Visible line." in combined
