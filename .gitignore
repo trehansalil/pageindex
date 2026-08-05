@@ -34,3 +34,10 @@ env/remote.env
 env/profile.env
 audit/ingest-runs/
 .run/
+# Per-developer connection settings for the local/remote toggles. Every file in
+# here holds endpoints and credentials for someone's own infra — env_profile.sh
+# reads them, nothing shares them. See docs/ENV_PROFILES.md to write your own.
+env/
+# Per-document ingestion results written by scripts/remote_ingest_test.py.
+# Derived corpus data: keep it purgeable, and out of the repo.
+logs/
