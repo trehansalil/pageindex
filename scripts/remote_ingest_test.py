@@ -953,7 +953,9 @@ def build_parser() -> argparse.ArgumentParser:
     tgt.add_argument("--base-url", default=None,
                      help="upload API base URL (default: $INGEST_BASE_URL or localhost:$MCP_PORT)")
     tgt.add_argument("--require-remote", action="store_true",
-                     help="abort if MinIO/Redis still point at localhost")
+                     help="abort if MinIO/Redis/Docling still point at localhost, "
+                          "and treat an unset or unhealthy Docling service as a "
+                          "preflight failure rather than a warning")
 
     run = p.add_argument_group("run")
     run.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
