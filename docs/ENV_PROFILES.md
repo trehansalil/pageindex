@@ -30,7 +30,7 @@ env/profile.env      your persisted toggle choices (optional, gitignored)
 | `MINIO` | `remote` · `local` | from `PROFILE` | `MINIO_ENDPOINT`, credentials, presign host |
 | `REDIS` | `remote` · `local` | from `PROFILE` | `REDIS_URL` |
 | `POSTGRES` | `remote` · `local` | from `PROFILE` | `POSTGRES_DSN` |
-| `DOCLING` | `remote` · `local` | `remote` | `DOCLING_SERVICE_URL` + bearer token |
+| `DOCLING` | `remote` · `local` | from `PROFILE` — `remote` under `remote`/`hybrid`, `local` under `local` | `DOCLING_SERVICE_URL` + bearer token |
 | `APP` | `host` · `compose` | `host` | whether addresses are host-side or compose-network |
 | `MINIO_ACCESS` | `auto` · `cluster` · `public` | `auto` | which address for remote MinIO |
 

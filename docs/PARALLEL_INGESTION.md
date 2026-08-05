@@ -47,21 +47,30 @@ semaphore, the retry logic, or the server handler.
 One soft edge: two files with the same basename in different folders produce
 ambiguous rows in the report table, which is keyed on `name`.
 
-## 3. The real ceiling: `MAX_JOBS = 1`
+## 3. The real ceiling: `MAX_JOBS` (default 1)
 
-`src/pageindex_mcp/worker.py:68`, hardcoded, no env override; applied at `:688`.
-The script's own help text already says so (`:923-924`): *"the worker runs
-max_jobs=1, so raising this only deepens the queue."*
+`src/pageindex_mcp/worker.py`, `MAX_JOBS` — defaults to 1 and is applied as
+`WorkerSettings.max_jobs`. It is **no longer hardcoded**: `resolve_max_jobs()`
+reads `PAGEINDEX_WORKER_MAX_JOBS` and clamps it to `[1, MAX_JOBS_CEILING]`
+(ceiling 4), so an unset, invalid, or absurd value still lands on a safe number
+rather than crashing startup or stacking enough jobs to OOM the worker.
 
-The stated reason (`worker.py:66-68`) is peak RSS: a local Docling index can
-peak at multiple GiB, and stacking two would risk an OOM kill on a memory-tight
-node. That is a *memory* safeguard, not an arq or I/O limitation.
+The reason for the default of 1 is peak RSS: a local Docling index can peak at
+multiple GiB, and stacking two would risk an OOM kill on a memory-tight node.
+That is a *memory* safeguard, not an arq or I/O limitation — which is exactly
+why the override is safe against **remote** Docling, where conversion happens
+off-box and the worker is I/O-bound. See
+[ENV_PROFILES.md](ENV_PROFILES.md#variables-the-toggles-do-not-set) before
+raising it; do not raise it against `DOCLING=local`.
+
+Symbol names rather than line numbers throughout this section: the earlier
+`:68`/`:688` citations were already stale by the time the override shipped.
 
 Two independent gates exist:
 
 | Control | Where | Scope |
 |---|---|---|
-| `MAX_JOBS = 1` | `worker.py:68` | per worker process |
+| `MAX_JOBS` (default 1, ceiling 4) | `worker.py`, `resolve_max_jobs()` | per worker process |
 | `MEM_ADMISSION_FLOOR_BYTES` ≈ 2.2 GiB | `memory_admission.py:22`, gate at `worker.py:372-375` | cross-process, Redis lock `pageindex:admission` |
 
 Multiple worker **processes** are already safe and already deployed — KEDA
