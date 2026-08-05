@@ -107,9 +107,16 @@ REDIS_IP="$(require_ip "svc/redis" "$(svc_ip redis)")"
 kubectl wait --for=condition=Ready pod -n "$NS" -l app=postgres --timeout=60s >/dev/null
 # Select on the Ready condition too, not just phase: with more than one pod
 # matching the label, `wait` succeeding says nothing about which one [0] is.
+#
+# Flattened with `range` rather than a filter nested inside a filter —
+# kubectl's jsonpath cannot parse the latter ("unterminated filter"), and the
+# 2>/dev/null below would swallow that error into an empty PG_IP, so the run
+# would fail as "is the pod Ready?" no matter how ready the pod was. Each pod
+# prints "<Ready status>\t<podIP>"; a pod with no Ready condition prints only
+# the IP, so the $1 test skips it.
 PG_IP="$(require_ip "pod app=postgres" "$(kubectl get pod -n "$NS" -l app=postgres \
-  -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Ready")].status=="True")].status.podIP}' \
-  2>/dev/null | awk '{print $1}')")"
+  -o jsonpath='{range .items[*]}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\t"}{end}{.status.podIP}{"\n"}{end}' \
+  2>/dev/null | awk '$1 == "True" { print $2; exit }')")"
 
 MINIO_USER="$(secret MINIO_ROOT_USER)"
 MINIO_PASS="$(secret MINIO_ROOT_PASSWORD)"

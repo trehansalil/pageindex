@@ -101,7 +101,12 @@ require_parsable() {
        "every value in the file read as empty." >&2
   exit 2
 }
-for f in "$BASE_ENV" "$LOCAL_ENV" "$REMOTE_ENV"; do require_parsable "$f"; done
+# Only the layers every profile reads. env/remote.env is validated after the
+# toggles resolve (see below) — a fully-offline `make env PROFILE=local` never
+# reads it, so a stale or malformed copy must not block generating a profile
+# that does not use the cluster at all.
+require_parsable "$BASE_ENV"
+require_parsable "$LOCAL_ENV"
 
 val_from() {
   local file="$1" key="$2"
@@ -128,12 +133,18 @@ PI_DOCLING="${PI_DOCLING:-$d_docling}"
 PI_APP="${PI_APP:-host}"
 PI_MINIO_ACCESS="${PI_MINIO_ACCESS:-auto}"
 
-# Checked after the toggles resolve, not before: a fully-offline
-# `make env PROFILE=local` never reads the remote side, so warning there is
-# noise pointing at a cluster the user is deliberately not using.
-if [ ! -f "$REMOTE_ENV" ] \
-   && { [ "$PI_MINIO" = remote ] || [ "$PI_REDIS" = remote ] \
-     || [ "$PI_POSTGRES" = remote ] || [ "$PI_DOCLING" = remote ]; }; then
+# Both checks below are deferred until the toggles resolve, not run at startup:
+# a fully-offline `make env PROFILE=local` never reads the remote side, so
+# neither a missing nor a malformed env/remote.env should block it — one would
+# be noise about a cluster the user is deliberately not using, the other would
+# refuse to generate a profile that does not touch it.
+USES_REMOTE=0
+if [ "$PI_MINIO" = remote ] || [ "$PI_REDIS" = remote ] \
+   || [ "$PI_POSTGRES" = remote ] || [ "$PI_DOCLING" = remote ]; then
+  USES_REMOTE=1
+  require_parsable "$REMOTE_ENV"
+fi
+if [ ! -f "$REMOTE_ENV" ] && [ "$USES_REMOTE" = 1 ]; then
   warn "$REMOTE_ENV is missing but this profile uses remote services — run 'make env-remote' on the k3s node, then copy the generated file back to here."
 fi
 
@@ -162,7 +173,12 @@ if [ "$PI_MINIO" = "local" ]; then
     if [ "$PI_APP" = "compose" ]; then
       M_PRESIGN="minio:9000"
     else
-      M_PRESIGN="$(ip route 2>/dev/null | awk '/docker0/ {print $NF; exit}')"
+      # `|| true`: iproute2 is Linux-only and absent from macOS and slim
+      # images. Without it, set -o pipefail turns a missing `ip` into rc=127
+      # and set -e aborts the whole run — with 2>/dev/null hiding why. The
+      # docker0 default below is the answer that lookup would have produced
+      # anyway on a stock Docker host.
+      M_PRESIGN="$( { ip route 2>/dev/null || true; } | awk '/docker0/ {print $NF; exit}')"
       M_PRESIGN="${M_PRESIGN:-172.17.0.1}:9000"
     fi
   fi
@@ -280,7 +296,10 @@ else
   TMP="$(mktemp "${OUT}.XXXXXX")"
   chmod 600 "$TMP"
   trap 'rm -f "$TMP"' EXIT
-  grep -vE "$MANAGED" "$BASE_ENV" > "$TMP"
+  # `|| [ $? -eq 1 ]`: grep exits 1 when nothing matches, which under set -e
+  # would abort on the legitimate case of a base file that is empty or holds
+  # only managed keys. Status 2+ is a real grep error and still aborts.
+  grep -vE "$MANAGED" "$BASE_ENV" > "$TMP" || [ $? -eq 1 ]
   cat >> "$TMP" <<EOF
 
 # ─── Resolved by scripts/env_profile.sh — DO NOT EDIT ────────────────────────
