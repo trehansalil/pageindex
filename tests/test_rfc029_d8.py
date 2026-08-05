@@ -51,14 +51,14 @@ def _contaminated_tree() -> list[dict]:
     """
     branches = []
     for i in range(10):
-        # Each branch node itself has empty text
+        # Each branch node has empty title AND empty text (extraction shell)
         leaves = []
         for j in range(4):
             if j < 2:
                 leaves.append(_make_leaf(f"A{i}L{j}", f"content {i}-{j}"))
             else:
-                leaves.append(_make_leaf(f"A{i}L{j}", ""))  # empty leaf
-        branches.append(_make_branch(f"Branch{i}", "", leaves))
+                leaves.append({"title": "", "text": ""})  # truly empty leaf
+        branches.append({"title": "", "text": "", "nodes": leaves})
 
     root_a = {"title": "Root A", "text": "section intro", "nodes": branches}
 

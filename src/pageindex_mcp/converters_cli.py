@@ -11,9 +11,9 @@ JSON line at exit.
 
 Exit code: 0 on success, 1 on handled exception, signal-default on crash.
 
-All logging goes to stderr. Stdout is reserved exclusively for the final JSON line.
-Any stray print() calls from imported libraries are redirected to stderr so they
-cannot pollute the single-JSON-line stdout contract.
+All logging goes to stderr. Stdout is reserved exclusively for JSON lines
+(handshake + final result). Any stray print() calls from imported libraries
+are redirected to stderr so they cannot pollute the JSON-lines stdout contract.
 """
 
 import argparse

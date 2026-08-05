@@ -1024,8 +1024,8 @@ def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
 
 
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
-_GARBLE_NODE_RATIO_THRESHOLD = float(
-    os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", str(_GARBLE_NODE_RATIO_THRESHOLD_RAW))
+_GARBLE_NODE_RATIO_THRESHOLD = (
+    _GARBLE_NODE_RATIO_THRESHOLD_RAW if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1 else 0.10
 )
 # RFC-029 D10: zero-body contamination gate — fraction of non-root nodes whose
 # stripped body text is empty.  Threshold is env-overridable for calibration.
@@ -1383,7 +1383,7 @@ def _count_empty_body_nodes(structure: list) -> tuple[int, int, int]:
             if not is_root_level:
                 total += 1
                 body = node.get("text", "") or ""
-                if not body.strip():
+                if not body.strip() and not str(node.get("title") or "").strip():
                     if children:
                         empty_non_leaf += 1
                     else:
@@ -2423,6 +2423,12 @@ def _segment_table_nodes(structure: list) -> list:
             )
             return
 
+        parent_id = node.get("node_id", "")
+        parent_page = node.get("page")
+        for i, child in enumerate(children):
+            child["node_id"] = f"{parent_id}_seg{i}" if parent_id else f"seg{i}"
+            if parent_page is not None:
+                child["page"] = parent_page
         node["nodes"] = children
         node["text"] = ""  # parent text migrated to children
 

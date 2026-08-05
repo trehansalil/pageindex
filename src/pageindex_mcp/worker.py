@@ -280,7 +280,7 @@ async def _run_converter_subprocess(
             dynamic_timeout = chunked_docling_timeout_s(chunk_count)
             effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
 
-    remaining_budget = max(effective_timeout - (time.monotonic() - start), 0)
+    remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
     stdout_bytes = b""
     stderr_bytes = b""
     try:

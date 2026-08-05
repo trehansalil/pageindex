@@ -63,6 +63,7 @@ COPY services/docling-service/app.py ./app.py
 ENV PATH="/app/.venv/bin:$PATH"
 ENV DOCLING_ARTIFACTS_PATH=/opt/docling-models
 ENV TESSDATA_PREFIX=/opt/tessdata
+ENV DOCLING_DO_OCR=1
 
 EXPOSE 8080
 
