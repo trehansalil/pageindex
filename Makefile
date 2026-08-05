@@ -105,7 +105,17 @@ down:
 compose-infra: env
 	docker compose --env-file $(ACTIVE_ENV) up -d redis minio minio-setup postgres
 
+# Guarded rather than unconditional: the resolved profile is the source of
+# truth, so `make compose-docling` under a remote/hybrid toggle refuses instead
+# of silently starting a local Docling the rest of the stack will not use.
+# DOCLING=local on the command line is the documented way through.
 compose-docling: env
+	@. ./$(ACTIVE_ENV); \
+	if [ "$$PI_DOCLING" != "local" ]; then \
+		echo "refusing: PI_DOCLING=$${PI_DOCLING:-unset}, not 'local'."; \
+		echo "  run 'make compose-docling DOCLING=local' to switch the toggle first."; \
+		exit 1; \
+	fi
 	docker compose --env-file $(ACTIVE_ENV) --profile docling-local up -d --build docling-service
 
 compose-app: env
