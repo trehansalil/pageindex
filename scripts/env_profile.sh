@@ -43,22 +43,36 @@ SHOW_ONLY=0
 WARNINGS=()
 warn() { WARNINGS+=("$1"); }
 
-# Serialize NAME=value for a file that is both `.`-sourced by make targets and
-# parsed as dotenv by `docker compose --env-file` / python-dotenv. Single quotes
-# are the only form all three treat identically, because none of them process
-# escapes inside them; double quotes diverge (a shell unescapes \$ and \`,
-# dotenv leaves them literal). Unquoted is unsafe outright — a MinIO secret or
-# DSN containing a space, $, or ` would truncate the value or run as shell code.
+# Serialize NAME=value for a file with three consumers: `.`-sourced by make
+# targets, `docker compose --env-file`, and python-dotenv. Single quotes come
+# closest to a common form — none of the three give $, `, ", or whitespace any
+# meaning inside them, whereas double quotes diverge (a shell unescapes \$ and
+# \`, dotenv leaves them literal) and unquoted truncates on the first space.
 #
-# A literal single quote is the one character no single form can express: the
-# `'\''` splice is correct for the shell but dotenv parsers cannot read it, so
-# that case warns rather than silently emitting something one consumer misreads.
+# But single quotes are not a *universal* form. Measured, not assumed:
+#
+#   value   `.`-sourced   python-dotenv
+#   a\b     a\b           a\b
+#   a\\b    a\\b          a\b            <- dotenv unescapes \\, the shell does not
+#   ab\\    ab\\          unparseable line
+#   p'ss    p'ss          unparseable line   (via the `'\''` splice)
+#
+# So a value holding ' or \ cannot be written such that every consumer reads
+# the same bytes back, and the Python side of that divergence is silent: the
+# worker just gets a different secret and MinIO/Docling answer 403 a long way
+# from here. Reject at generation time, where the cause is still named.
 emit() {
-  local v="${2-}" q="'" esc="'\\''"
+  local v="${2-}"
   case "$v" in
-    *"$q"*) warn "$1 contains a single quote — $OUT is correct for 'make'/shell, but 'docker compose --env-file' cannot parse it. Avoid ' in this credential if you use APP=compose." ;;
+    *\'*|*\\*)
+      echo "error: $1 contains a single quote or backslash. No quoting form is" \
+           "read identically by '.'-sourcing, 'docker compose --env-file', and" \
+           "python-dotenv, so this value cannot be written to $OUT without one" \
+           "consumer silently seeing a different secret. Rotate the credential" \
+           "to drop ' and \\." >&2
+      exit 2 ;;
   esac
-  printf "%s='%s'\n" "$1" "${v//$q/$esc}"
+  printf "%s='%s'\n" "$1" "$v"
 }
 
 # ─── Load the layers ─────────────────────────────────────────────────────────
@@ -73,6 +87,22 @@ fi
 [ -f "$LOCAL_ENV" ] || { echo "local overlay '$LOCAL_ENV' not found" >&2; exit 1; }
 
 # Read one key out of an env file without polluting this shell.
+# Prove a layer parses before any lookup reads from it. val_from() below sources
+# in a subshell and cannot abort the script from every call site (several are in
+# `||` lists, where set -e does not apply), so a parse error there was
+# indistinguishable from a missing key: an unterminated quote anywhere in the
+# file aborted the source, every subsequent lookup returned empty, and a MinIO
+# secret containing ' was emitted as MINIO_SECRET_KEY='' — an opaque 403 later.
+require_parsable() {
+  [ -f "$1" ] || return 0
+  ( set -a; . "$1" >/dev/null 2>&1 ) && return 0
+  echo "error: $1 is not valid shell — it is read by '.'-sourcing, so every" \
+       "value must be quoted (NAME='value'). A single unbalanced quote makes" \
+       "every value in the file read as empty." >&2
+  exit 2
+}
+for f in "$BASE_ENV" "$LOCAL_ENV" "$REMOTE_ENV"; do require_parsable "$f"; done
+
 val_from() {
   local file="$1" key="$2"
   [ -f "$file" ] || return 0
@@ -243,8 +273,15 @@ if [ "$SHOW_ONLY" = 1 ]; then
   echo "resolved profile (nothing written):"
   summary
 else
-  grep -vE "$MANAGED" "$BASE_ENV" > "$OUT"
-  cat >> "$OUT" <<EOF
+  # Build in a temp file and rename only on success. emit() can abort partway
+  # through (an unserializable credential), and a truncated .env.active is worse
+  # than none: it is what every other target sources, so it would fail later
+  # with a missing-variable error rather than the real reason.
+  TMP="$(mktemp "${OUT}.XXXXXX")"
+  chmod 600 "$TMP"
+  trap 'rm -f "$TMP"' EXIT
+  grep -vE "$MANAGED" "$BASE_ENV" > "$TMP"
+  cat >> "$TMP" <<EOF
 
 # ─── Resolved by scripts/env_profile.sh — DO NOT EDIT ────────────────────────
 # Regenerate with 'make env'. Values below are single-quoted by emit() so the
@@ -268,8 +305,9 @@ EOF
     # Emitted as a real variable, not just the comment above, so make targets
     # can guard on the resolved toggle (see the compose-docling recipe).
     emit PI_DOCLING                 "$PI_DOCLING"
-  } >> "$OUT"
-  chmod 600 "$OUT"
+  } >> "$TMP"
+  mv "$TMP" "$OUT"
+  trap - EXIT
   echo "wrote $OUT (mode 600)"
   summary
 fi
