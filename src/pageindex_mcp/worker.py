@@ -317,9 +317,9 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 pdf_class.get("pages_needing_ocr", []),
                 pdf_class.get("has_encoding_issues", False),
             )
-            if (
-                PDF_INSPECTOR_PRECLASSIFY
-                and pdf_class.get("pdf_type") in ("scanned", "image_based")
+            if PDF_INSPECTOR_PRECLASSIFY and pdf_class.get("pdf_type") in (
+                "scanned",
+                "image_based",
             ):
                 # RFC-032 D9: 3x was the unmeasured lower-end estimate. Wall-clock
                 # calibration on 4 scanned corpus docs (2026-08-06) measured OCR-pass

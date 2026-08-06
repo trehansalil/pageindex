@@ -47,7 +47,7 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
     - At `converters_cli.py` line 129, pass `pdf_classification=pdf_classification` to the `client.index()` call. The `pdf_classification` variable already exists in scope (returned by `probe_conversion_route()` at line 98).
     - No new imports or logic — a single kwarg addition.
     - _Requirements:_ [RFC-032 D0](../rfcs/032-pdf-inspector-tier1-activation.md#d0-thread-pdf_classification-from-converters_cli-into-clientindex) | [Design AD1](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad1-thread-classification-param-d0) | [Design §2 converters_cli.py](../designs/design-rfc032-pdf-inspector-tier1-activation.md#2-converters-clipy)
-  - [ ] <a id="13-checkpoint--batch-0"></a>1.3 Checkpoint — Batch 0
+  - [x] <a id="13-checkpoint--batch-0"></a>1.3 Checkpoint — Batch 0
     - Confirm `uv run pytest` passes with the new parameter defaulting to `None` and no behavioral change.
     - Verify all existing `client.index()` call sites still work without passing `pdf_classification`.
 
@@ -65,7 +65,7 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
     - Add a new Counter `pdf_inspector_preclassify_forced_ocr_total` to `src/pageindex_mcp/metrics.py`.
     - Increment the counter in `client.py::index()` when `inspector_force_ocr` is set to `True`.
     - _Requirements:_ [RFC-032 D1](../rfcs/032-pdf-inspector-tier1-activation.md#d1-document-level-ocr-routing-decision-in-index) | [Design AD2](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad2-ocr-routing-decision-d1) | [Design §5 metrics.py](../designs/design-rfc032-pdf-inspector-tier1-activation.md#5-metricspy)
-  - [ ] <a id="23-checkpoint--batch-1"></a>2.3 Checkpoint — Batch 1
+  - [x] <a id="23-checkpoint--batch-1"></a>2.3 Checkpoint — Batch 1
     - Confirm `inspector_force_ocr` is `True` when `PRECLASSIFY=1` + `pdf_type=scanned` + `confidence>=0.90`.
     - Confirm `inspector_force_ocr` is `False` when `PRECLASSIFY=0`, or `pdf_type=text_based`, or `confidence<0.90`, or `pdf_classification=None`.
     - Confirm Prometheus counter increments only on `inspector_force_ocr=True`.
@@ -79,7 +79,7 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
     - **Interaction with `pre_garbled`:** Both signals fire independently. If `pre_garbled` is `True`, OCR is forced regardless of inspector classification. If only `inspector_force_ocr` is `True`, OCR is forced by this new path. If both fire, the result is the same: first-pass OCR. No conflict.
     - `validate_tree()` remains unconditional at line 987 ([Design Property 5](../designs/design-rfc032-pdf-inspector-tier1-activation.md#property-5-validate-tree-unconditional)). Fix-3 OCR retry remains unconditional at lines 1008-1094 ([Design Property 6](../designs/design-rfc032-pdf-inspector-tier1-activation.md#property-6-fix-3-retry-unconditional)).
     - _Requirements:_ [RFC-032 D2](../rfcs/032-pdf-inspector-tier1-activation.md#d2-converter-loop-wiring--force-ocr-on-first-pass) | [Design AD3](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad3-converter-loop-force-ocr-d2) | [Design §3 client.py](../designs/design-rfc032-pdf-inspector-tier1-activation.md#3-clientpy) | [Design OCR Routing Flow](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ocr-routing-flow--d0--d1--d2)
-  - [ ] <a id="32-checkpoint--batch-2"></a>3.2 Checkpoint — Batch 2
+  - [x] <a id="32-checkpoint--batch-2"></a>3.2 Checkpoint — Batch 2
     - Confirm `force_full_page_ocr=True` is passed to converter when `inspector_force_ocr` is set.
     - Confirm `force_full_page_ocr` is not passed (or `False`) when `inspector_force_ocr` is `False`.
     - Confirm `validate_tree()` at line 987 is unconditional and unaffected.
@@ -91,7 +91,7 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
     - Scanned and image-based docs going straight to full-page OCR on the first pass are 3-10x slower than text-layer extraction. The existing `effective_timeout` (1770s or dynamic from `chunked_docling_timeout_s`) is sized for the text-layer-first path. A 3x multiplier covers the lower end of the 3-10x range. The scope matches D1/D2: both `scanned` and `image_based` get forced OCR, so both need the extended timeout.
     - The `pdf_classification` dict is already available in worker scope from the handshake parsing landed in [RFC-031 task 3.2](tasks-rfc031-pdf-inspector-shadow.md#32-extend-worker-handshake-parsing) (~line 311).
     - _Requirements:_ [RFC-032 D3](../rfcs/032-pdf-inspector-tier1-activation.md#d3-worker-timeout-multiplier) | [Design AD4](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad4-worker-timeout-multiplier-d3) | [Design §4 worker.py](../designs/design-rfc032-pdf-inspector-tier1-activation.md#4-workerpy)
-  - [ ] <a id="42-checkpoint--batch-3"></a>4.2 Checkpoint — Batch 3
+  - [x] <a id="42-checkpoint--batch-3"></a>4.2 Checkpoint — Batch 3
     - Confirm timeout is 3x when `PRECLASSIFY=1` and `pdf_type in (scanned, image_based)`.
     - Confirm timeout is unchanged for `text_based`, `mixed`, or when `PRECLASSIFY=0`.
 
@@ -113,11 +113,11 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
   - [x] <a id="53-remote-path-test"></a>5.3 Remote-path test ([D4](../rfcs/032-pdf-inspector-tier1-activation.md#d4-tests))
     - Add a test confirming `_remote_pdf_to_markdown` receives `force_full_page_ocr=True` when `inspector_force_ocr` is set.
     - _Requirements:_ [RFC-032 D4](../rfcs/032-pdf-inspector-tier1-activation.md#d4-tests) | [Design AD5](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad5-tests-d4) | [Design AD3](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad3-converter-loop-force-ocr-d2) | [Design Testing Strategy](../designs/design-rfc032-pdf-inspector-tier1-activation.md#testing-strategy)
-  - [ ] <a id="54-checkpoint--batch-4"></a>5.4 Checkpoint — Batch 4
+  - [x] <a id="54-checkpoint--batch-4"></a>5.4 Checkpoint — Batch 4
     - Full `uv run pytest tests/test_pdf_inspector_tier1.py` green.
     - Full `uv run pytest` green with zero regressions in existing test suites.
 
-- [x] <a id="6-batch-5--pre-activation-d5"></a>6. Batch 5 — Pre-Activation ([D5](../rfcs/032-pdf-inspector-tier1-activation.md#d5-pre-activation-shadow-agreement-measurement))
+- [ ] <a id="6-batch-5--pre-activation-d5"></a>6. Batch 5 — Pre-Activation ([D5](../rfcs/032-pdf-inspector-tier1-activation.md#d5-pre-activation-shadow-agreement-measurement))
   - [x] <a id="61-shadow-agreement-measurement"></a>6.1 Shadow agreement measurement ([D5](../rfcs/032-pdf-inspector-tier1-activation.md#d5-pre-activation-shadow-agreement-measurement))
     - Before flipping `PDF_INSPECTOR_PRECLASSIFY=1` in production, run a shadow comparison:
       1. Ingest the 4 scanned + 1 mixed corpus docs with the flag **off** (baseline).
@@ -126,11 +126,12 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
     - No code changes. Process step before production activation.
     - Record results in the [PDF Inspector Viability Report](../../audit/PDF_INSPECTOR_VIABILITY_REPORT.md).
     - _Requirements:_ [RFC-032 D5](../rfcs/032-pdf-inspector-tier1-activation.md#d5-pre-activation-shadow-agreement-measurement) | [Design AD6](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad6-shadow-agreement-measurement-d5)
-  - [x] <a id="62-full-corpus-regression-gate"></a>6.2 Full corpus regression gate ([D6](../rfcs/032-pdf-inspector-tier1-activation.md#d6-full-corpus-regression-gate-pre-activation))
+  - [ ] <a id="62-full-corpus-regression-gate"></a>6.2 Full corpus regression gate ([D6](../rfcs/032-pdf-inspector-tier1-activation.md#d6-full-corpus-regression-gate-pre-activation))
     - Run full 60-doc corpus ingest with `PDF_INSPECTOR_PRECLASSIFY=1`.
     - Compare verdict distribution (PASS/MARGINAL/FAIL) against the `PRECLASSIFY=0` baseline.
     - Any PASS→MARGINAL or PASS→FAIL regression **blocks activation**.
     - No code changes. Process step before production activation.
+    - **Status (2026-08-06): NOT SATISFIED — blocked.** No `PDF_INSPECTOR_PRECLASSIFY=1` corpus run has been executed; see [Phase 2 Activation Report §10](../../audit/PDF_INSPECTOR_PHASE2_ACTIVATION_REPORT.md#10-d6--full-corpus-regression-gate-pre-activation), which records the gate as unmet and states this task "should not be marked complete until this section is updated with an actual before/after verdict table". Mark complete only after a real `PRECLASSIFY=0`/`PRECLASSIFY=1` pair over the full 60-doc corpus shows zero PASS→MARGINAL / PASS→FAIL regressions.
     - _Requirements:_ [RFC-032 D6](../rfcs/032-pdf-inspector-tier1-activation.md#d6-full-corpus-regression-gate-pre-activation) | [Design AD7](../designs/design-rfc032-pdf-inspector-tier1-activation.md#ad7-corpus-regression-gate-d6) | Phase 2 Activation Report Rec-2b
   - [x] <a id="63-final-checkpoint"></a>6.3 Final Checkpoint
     - Full `uv run pytest` green with all Tier 1 tests passing.
@@ -140,24 +141,27 @@ agreement measurement (D5). Total: ~30 LOC (D0-D3) + tests + 1h corpus run (D5) 
     - Shadow agreement measurement (6.1) passes with zero disagreements.
     - Full corpus regression (6.2) shows no verdict regressions.
     - RFC-032 status updated to "Implementation Complete".
+    - **Outcome (2026-08-06):** Checkpoint executed and recorded in [RFC-032 § Final Checkpoint](../rfcs/032-pdf-inspector-tier1-activation.md#final-checkpoint-task-63). `uv run pytest`: 1558 passed, 12 skipped, 1 xfailed, 0 failed (`tests/test_pdf_inspector_tier1.py` 13/13). Properties 1, 5, 6 verified — line numbers have drifted from those quoted above (RFC-029/030 landed on this branch since drafting): `validate_tree()` is now `client.py:1035`, the Fix-3 retry starts at `client.py:1056`; both remain unconditional. 6.1/D5 passed. **6.2/D6 was not satisfied**, so the RFC status was set to the accurate `Code Complete (D0-D4), Pre-Activation Gate D5 Passed — Activation Blocked on D6` rather than "Implementation Complete"; promote it to Implementation Complete only once D6 has actually run and passed.
 
-- [x] <a id="7-batch-6--post-activation-monitoring-d7-d9"></a>7. Batch 6 — Post-Activation Monitoring ([D7](../rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement), [D8](../rfcs/032-pdf-inspector-tier1-activation.md#d8-shadow-deployment-window-1-2-weeks-sustained), [D9](../rfcs/032-pdf-inspector-tier1-activation.md#d9-scanned-pdf-wall-clock-timing-calibration))
+- [ ] <a id="7-batch-6--post-activation-monitoring-d7-d9"></a>7. Batch 6 — Post-Activation Monitoring ([D7](../rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement), [D8](../rfcs/032-pdf-inspector-tier1-activation.md#d8-shadow-deployment-window-1-2-weeks-sustained), [D9](../rfcs/032-pdf-inspector-tier1-activation.md#d9-scanned-pdf-wall-clock-timing-calibration))
   - [x] <a id="71-wall-clock-timing-calibration"></a>7.1 Scanned-PDF wall-clock timing calibration ([D9](../rfcs/032-pdf-inspector-tier1-activation.md#d9-scanned-pdf-wall-clock-timing-calibration))
     - Measured OCR-pass (`force_full_page_ocr=True`, tesseract ara+eng) vs text-layer-pass wall-clock on the 4 scanned corpus docs via `pdf_to_markdown_docling()`: MOU MOHRE (9pp) 2.32x, SLA Ministry of Economy (20pp) 4.26x, Cabinet Resolution 1/2022 (21pp) 11.00x, Cabinet Resolution 106/2022 (15pp) 7.08x — mean 6.16x, max 11.00x.
     - Measured ratio exceeds both the 3x D3 baseline and the D9 5x recalibration threshold.
     - Multiplier adjusted per D9 formula `max(observed_ratio * 1.5, 3.0)`, `observed_ratio` = max 11.00x -> 16.5x, applied in `worker.py::_run_converter_subprocess()` (`effective_timeout *= 3` -> `*= 16.5`).
     - _Requirements:_ [RFC-032 D9](../rfcs/032-pdf-inspector-tier1-activation.md#d9-scanned-pdf-wall-clock-timing-calibration) | Grilling Report I3, Q4
-  - [x] <a id="72-prometheus-savings-measurement"></a>7.2 Prometheus wall-clock savings measurement ([D7](../rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement))
+  - [ ] <a id="72-prometheus-savings-measurement"></a>7.2 Prometheus wall-clock savings measurement ([D7](../rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement))
     - After `PRECLASSIFY=1` is active in production, compare per-document processing time for scanned/image_based PDFs vs the `PRECLASSIFY=0` baseline.
     - Validate that modeled savings of ~600-2000ms per affected document are achieved.
     - Use existing `PDF_INSPECTOR_LATENCY` histogram + ingestion timing metrics.
     - No code changes. Analysis step during shadow deployment window.
+    - **Status (2026-08-06): BLOCKED — precondition not met.** `PDF_INSPECTOR_PRECLASSIFY` has never been `1` in production, so no `PRECLASSIFY=1` sample exists to compare against baseline. Recorded in [Viability Report §9.10](../../audit/PDF_INSPECTOR_VIABILITY_REPORT.md#910-prometheus-wall-clock-savings-measurement-rfc-032-d7-post-activation) with re-run instructions. Mark complete only after a real measurement is taken.
     - _Requirements:_ [RFC-032 D7](../rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement) | Phase 2 Report Sec3-criterion-savings, Rec-4
-  - [x] <a id="73-shadow-deployment-window"></a>7.3 Shadow deployment window (1-2 weeks sustained) ([D8](../rfcs/032-pdf-inspector-tier1-activation.md#d8-shadow-deployment-window-1-2-weeks-sustained))
+  - [ ] <a id="73-shadow-deployment-window"></a>7.3 Shadow deployment window (1-2 weeks sustained) ([D8](../rfcs/032-pdf-inspector-tier1-activation.md#d8-shadow-deployment-window-1-2-weeks-sustained))
     - Run `PDF_INSPECTOR_PRECLASSIFY=1` in production for 1-2 weeks.
     - Monitor for: timeout failures on scanned/image_based docs, false-positive classifications, unexpected verdict regressions, and Prometheus savings vs modeled estimates.
     - Daily check-ins on Prometheus dashboards.
     - No code changes. Operational monitoring step.
+    - **Status (2026-08-06): NOT STARTED — blocked.** `PDF_INSPECTOR_PRECLASSIFY` has never been set to `1` in production (verified in Viability Report §9.10 precondition check), and the D6 corpus regression gate is not satisfied (Phase 2 Activation Report §10). The 1-2 week window cannot begin until D6 passes and the flag is flipped. Mark complete only after the window has actually run and its monitoring outcome is documented in `audit/`.
     - _Requirements:_ [RFC-032 D8](../rfcs/032-pdf-inspector-tier1-activation.md#d8-shadow-deployment-window-1-2-weeks-sustained) | Viability Report Sec9.8-next-step-3
 
 ## Notes

@@ -2,7 +2,8 @@
 ``client.py::index()``.
 
 Covers Task 5.1 (RFC-032 D4): flag on/off, each ``pdf_type``, confidence
-above/below the 0.90 threshold, and classification absent (``None``).
+above/below the 0.90 threshold, and classification absent (``None``), plus
+Task 5.3: the same decision reaching the remote Docling route.
 """
 
 from types import SimpleNamespace
@@ -58,7 +59,9 @@ def _wire_index(monkeypatch, *, preclassify, validate_tree=None):
     # (not the chain entry above) — stub it so a garbling verdict can drive
     # the retry path without touching a real Docling conversion.
     monkeypatch.setattr(
-        client_mod, "pdf_to_markdown_docling", MagicMock(return_value="# Heading\n\nRecovered text\n")
+        client_mod,
+        "pdf_to_markdown_docling",
+        MagicMock(return_value="# Heading\n\nRecovered text\n"),
     )
     # The retry path also calls ensure_tessdata() before OCR — stub it so tests
     # never probe the real tessdata dir (or download traineddata when
@@ -104,7 +107,6 @@ async def _run_index(monkeypatch, pdf_file, *, preclassify, pdf_classification, 
 
 
 class TestInspectorForceOcrDecisionMatrix:
-
     async def test_forces_ocr_for_scanned_at_high_confidence(self, monkeypatch, pdf_file):
         mocks = await _run_index(
             monkeypatch,
@@ -142,6 +144,30 @@ class TestInspectorForceOcrDecisionMatrix:
         mocks["conv_fn"].assert_called_once_with(pdf_file)
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
+    async def test_confidence_exactly_at_threshold_forces_ocr(self, monkeypatch, pdf_file):
+        """The gate is ``>= 0.90``, so 0.90 itself must be admitted (RFC-032 D1)."""
+        mocks = await _run_index(
+            monkeypatch,
+            pdf_file,
+            preclassify=True,
+            pdf_classification={"pdf_type": "scanned", "confidence": 0.90},
+        )
+
+        assert mocks["conv_fn"].call_args.args[1] is True
+        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_called_once()
+
+    async def test_missing_confidence_key_does_not_force_ocr(self, monkeypatch, pdf_file):
+        """A classification dict without ``confidence`` defaults to 0 → no force."""
+        mocks = await _run_index(
+            monkeypatch,
+            pdf_file,
+            preclassify=True,
+            pdf_classification={"pdf_type": "scanned"},
+        )
+
+        mocks["conv_fn"].assert_called_once_with(pdf_file)
+        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
+
     async def test_text_based_never_forces_ocr(self, monkeypatch, pdf_file):
         mocks = await _run_index(
             monkeypatch,
@@ -165,9 +191,7 @@ class TestInspectorForceOcrDecisionMatrix:
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
     async def test_classification_none_preserves_normal_behavior(self, monkeypatch, pdf_file):
-        mocks = await _run_index(
-            monkeypatch, pdf_file, preclassify=True, pdf_classification=None
-        )
+        mocks = await _run_index(monkeypatch, pdf_file, preclassify=True, pdf_classification=None)
 
         mocks["conv_fn"].assert_called_once_with(pdf_file)
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
@@ -196,9 +220,7 @@ class TestSafetyNetsIntactAfterInspectorForcedOcr:
         mocks["save_doc"].assert_called_once()
         mocks["save_flat_doc"].assert_not_called()
 
-    async def test_no_retry_when_validate_tree_passes_after_forced_ocr(
-        self, monkeypatch, pdf_file
-    ):
+    async def test_no_retry_when_validate_tree_passes_after_forced_ocr(self, monkeypatch, pdf_file):
         validate = MagicMock(return_value=(True, None))
         mocks = await _run_index(
             monkeypatch,
@@ -213,3 +235,68 @@ class TestSafetyNetsIntactAfterInspectorForcedOcr:
         mocks["OCR_ESCALATION_TOTAL"].labels.assert_not_called()
         mocks["save_doc"].assert_called_once()
         mocks["save_flat_doc"].assert_not_called()
+
+
+class TestInspectorForcedOcrOnRemoteDoclingRoute:
+    """Task 5.3 (RFC-032 D4 / Design AD3) — remote-path counterpart of the
+    decision matrix above.
+
+    Task 3.1 wired ``inspector_force_ocr`` into BOTH converter-loop branches,
+    but the tests above only exercise the local ``conv_fn`` branch
+    (``_use_remote`` is False because ``_fake_settings()`` has no
+    ``docling_service_url``). These cover the remote
+    ``_remote_pdf_to_markdown()`` branch, proving the D2 wiring is symmetric."""
+
+    @staticmethod
+    def _wire_remote(monkeypatch, *, preclassify=True):
+        mocks = _wire_index(monkeypatch, preclassify=preclassify)
+        monkeypatch.setattr(
+            client_mod,
+            "settings",
+            _fake_settings(docling_service_url="http://docling.test"),
+        )
+        remote = AsyncMock(return_value=("# Heading\n\nBody text\n", []))
+        monkeypatch.setattr(client_mod, "_remote_pdf_to_markdown", remote)
+        mocks["remote"] = remote
+        return mocks
+
+    async def _run(self, monkeypatch, pdf_file, *, pdf_classification, preclassify=True):
+        mocks = self._wire_remote(monkeypatch, preclassify=preclassify)
+        c = _make_client()
+        c._staging_key = "uploads/doc.pdf"
+        monkeypatch.setattr(
+            c, "_run_md_to_tree", AsyncMock(return_value={"structure": [], "doc_description": "ok"})
+        )
+        await c.index(pdf_file, pdf_classification=pdf_classification)
+        return mocks
+
+    async def test_remote_route_forces_full_page_ocr_for_scanned(self, monkeypatch, pdf_file):
+        mocks = await self._run(
+            monkeypatch, pdf_file, pdf_classification={"pdf_type": "scanned", "confidence": 0.95}
+        )
+
+        mocks["remote"].assert_awaited_once()
+        assert mocks["remote"].await_args.kwargs["force_full_page_ocr"] is True
+        assert mocks["remote"].await_args.kwargs["ocr_lang_override"]
+        mocks["conv_fn"].assert_not_called()
+        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_called_once()
+
+    async def test_remote_route_does_not_force_ocr_below_confidence_threshold(
+        self, monkeypatch, pdf_file
+    ):
+        mocks = await self._run(
+            monkeypatch, pdf_file, pdf_classification={"pdf_type": "scanned", "confidence": 0.80}
+        )
+
+        mocks["remote"].assert_awaited_once()
+        assert "force_full_page_ocr" not in mocks["remote"].await_args.kwargs
+        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
+
+    async def test_remote_route_does_not_force_ocr_for_text_based(self, monkeypatch, pdf_file):
+        mocks = await self._run(
+            monkeypatch, pdf_file, pdf_classification={"pdf_type": "text_based", "confidence": 0.99}
+        )
+
+        mocks["remote"].assert_awaited_once()
+        assert "force_full_page_ocr" not in mocks["remote"].await_args.kwargs
+        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()

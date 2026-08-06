@@ -665,17 +665,18 @@ class CustomPageIndexClient(PageIndexClient):
     # ------------------------------------------------------------------
 
     # Complexity grandfathered (core indexing pipeline); see pyproject [tool.ruff].
-    async def index(
+    async def index(  # noqa: C901, PLR0915
         self, file_path: str, mode: str = "auto", pdf_classification: dict | None = None
-    ) -> str:  # noqa: C901, PLR0915
+    ) -> str:
         """Index a document and persist it to MinIO. Returns the 8-char doc_id.
 
         Skips reprocessing if the file content is unchanged (SHA-256 dedup).
         Supported extensions: .pdf, .md, .markdown, .txt, .docx, .pptx, .html
 
         pdf_classification: optional pre-computed classification dict from
-        converters_cli's probe_conversion_route() (RFC-032 D0). Threaded but
-        not consumed until Batch 1 (D1); no behavioral change when None.
+        converters_cli's probe_conversion_route() (RFC-032 D0). Consumed by the
+        D1 Tier-1 activation below to force full-page OCR upfront when the PDF
+        is confidently scanned/image-based; no behavioral change when None.
         """
         # Reset per call so a prior flat doc's content_class can't leak into a
         # subsequent tree doc when this client instance is reused. The flat

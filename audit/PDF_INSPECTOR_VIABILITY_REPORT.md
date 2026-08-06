@@ -367,6 +367,8 @@ pdf-inspector earns a **PILOT**, not full adoption: its classification path is a
 
 **Exit criteria for promoting past shadow mode:** Run shadow-mode classification across a sampled batch of the German T&C corpus (minimum 50 documents per Section 1's stated validation threshold) and compare pdf-inspector's `text_based`/`scanned` classification against `validate_tree()`'s implicit OCR signal (i.e., whether the document passed without garbling at `DOCLING_DO_OCR=0`). Promotion requires **≥99% agreement** between the two signals. Below that threshold, remain in shadow mode and re-evaluate after the next pdf-inspector release addressing #252 (indexing) or #266/#267/#254 (confidence tuning).
 
+> **Retracted (2026-08-06):** The "≥99% agreement" threshold above is superseded by [§9.9](#99-shadow-agreement-measurement-rfc-032-d5-pre-activation). At the corpus's N=5 non-`text_based` documents a percentage threshold is not meaningful; per RFC-032 D5 the gate is **zero observed disagreements on all available non-`text_based` documents**.
+
 **Rollback plan:** Trivial. Shadow mode makes zero ingestion-path changes — pdf-inspector's output is write-only to logs and metrics. Disabling the integration is a config flip (`PDF_INSPECTOR_PRECLASSIFY=0`, the default) with no data migration, no re-ingestion, and no risk to already-stored trees. Even after promotion, the same flag reverts routing to the pre-pilot reactive-retry flow instantly.
 
 **Non-goals (explicit):**
@@ -476,7 +478,7 @@ All 27 PDFs in `issue/data/` were classified using `pdf_inspector.detect_pdf(pat
 | Routing invariance (shadow mode)       | 0 changes               | 0 changes   | **MET**                                               |
 | Corpus size                            | ≥50 docs for promotion | 27 docs     | **NOT MET** (sufficient for pilot, not for promotion) |
 
-**Verdict update:** All pilot exit criteria are met. The corpus is sufficient for validating shadow-mode behavior (27 docs, 100% agreement). However, the **promotion** exit criterion (≥99% agreement on ≥50 docs with `validate_tree()` implicit OCR signal) requires a larger corpus with mixed document types (scanned, image-based). The current corpus contains only born-digital text-based PDFs and cannot validate the classifier's ability to detect scanned or mixed documents.
+**Verdict update:** All pilot exit criteria are met. The corpus is sufficient for validating shadow-mode behavior (27 docs, 100% agreement). However, the **promotion** exit criterion (≥99% agreement on ≥50 docs with `validate_tree()` implicit OCR signal — threshold retracted, see [§9.9](#99-shadow-agreement-measurement-rfc-032-d5-pre-activation)) requires a larger corpus with mixed document types (scanned, image-based). The current corpus contains only born-digital text-based PDFs and cannot validate the classifier's ability to detect scanned or mixed documents.
 
 **Next step for promotion:** Acquire or generate a mixed corpus with at least 23 additional documents including scanned and mixed-type PDFs. Re-run corpus validation with `validate_tree()` comparison before flipping `PDF_INSPECTOR_PRECLASSIFY=1`.
 
@@ -645,3 +647,22 @@ The extended corpus changes the promotion calculus significantly:
 **Caveat — this is a spot-check, not a statistical measurement:** N=5. A single disagreement would drop measured agreement to 80%. Earlier drafts of this report and the D5 exit-criteria language quoted "≥99% agreement" as a promotion threshold — that number is not achievable or meaningful at N=5 and is retracted here in favor of the honest framing used by RFC-032 D5: **zero observed disagreements on all available non-`text_based` documents.** The gate strengthens automatically as more scanned/mixed/image_based documents enter the corpus; today it proves absence of failure, not statistical confidence.
 
 **Gate verdict: PASS.** Zero disagreements on N=5 satisfies RFC-032 D5's pre-activation requirement. Per RFC-032, this measurement alone does not clear `PDF_INSPECTOR_PRECLASSIFY=1` for production — it must be paired with D6 (full corpus regression) and D8 (1–2 week shadow deployment window) before the flag is flipped.
+
+### 9.10 Prometheus Wall-Clock Savings Measurement (RFC-032 D7, post-activation)
+
+**Purpose:** Validate the modeled savings from Section 4.4 (~600ms per scanned document, ~2000ms per text-based document that would otherwise trigger a garble retry) against actual production `PDF_INSPECTOR_LATENCY` histogram and ingestion timing data, per [RFC-032 D7](../.agents/rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement).
+
+**Precondition check (2026-08-06):** `PDF_INSPECTOR_PRECLASSIFY` defaults to `"0"` in `src/pageindex_mcp/config.py` and is absent from `.env` and `.env.active`, present only as a commented-out `# PDF_INSPECTOR_PRECLASSIFY=0` line in `.env.example`, and unset in the environment of the running `arq` worker and `gunicorn` server processes on this host. The flag has **not** been flipped to `1` in production.
+
+**Result: measurement blocked — precondition not met.** D7 requires "per-document processing time for scanned/image_based PDFs under `PRECLASSIFY=1` ... vs. the `PRECLASSIFY=0` baseline," measured in production. With the flag still at its default (`0`), the D0–D2 decision path is inert (Design Property 1) — no document has been routed through inspector-forced OCR in production, so there is no `PRECLASSIFY=1` sample in the `PDF_INSPECTOR_LATENCY` histogram or ingestion-duration metrics to compare against baseline. This is consistent with the task sequencing in `tasks-rfc032-pdf-inspector-tier1-activation.md` Batch 6: D6 (full corpus regression gate) is a precondition for activation and is not recorded as executed against production traffic in this report.
+
+**No savings figure is recorded here.** Reporting a number now would either restate the Section 4.4 model (already labeled a best-case upper bound, not a measurement) or fabricate a production result that does not exist. Per the Hard Rules in `CLAUDE.md`, unvalidated claims are not to be presented as confirmed.
+
+**Re-run instructions (once `PDF_INSPECTOR_PRECLASSIFY=1` is active in production):**
+1. Query `pageindex_pdf_inspector_preclassify_forced_ocr_total` to confirm forced-OCR activations are occurring (non-zero, growing).
+2. For documents where forced OCR fired, pull end-to-end conversion duration from the existing ingestion timing metrics (worker job duration / `MINIO_DURATION`+conversion span) and compare against the pre-activation baseline distribution for the same `pdf_type` (scanned/`image_based`) captured while `PRECLASSIFY=0`.
+3. Compute the per-document delta and compare against the modeled 600–2000ms range from Section 4.4.
+   - **Expect the scanned-PDF savings line to be refuted.** The D9 calibration ([Task 7.1](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#71-wall-clock-timing-calibration)) measured the OCR pass at **6.16x mean / 11.00x max** the text-layer pass on the 4 scanned corpus docs. Section 4.4's "Scanned PDF → 600ms saved" row assumes OCR-from-start (~3500ms) is *cheaper* than a failed text pass plus OCR retry (~4100ms); at a 6.16x ratio that assumption does not hold, and forced first-pass OCR is likely a wall-clock **cost**, not a saving, for scanned documents. The credible remaining savings case is the text-based-with-garble row (skipping an unnecessary OCR retry), not the scanned row. D7 must report the measured sign, not assume a positive delta.
+4. Cross-reference `PDF_INSPECTOR_LATENCY` (classification overhead, ~50ms per Section 9.8) to confirm it remains a small fraction of any measured savings.
+
+**Gate verdict: NOT YET MEASURABLE.** D7 remains open pending production activation (D6 gate + flag flip) and a subsequent Prometheus observation window (see D8, Section 9.8 recommendation item 3).

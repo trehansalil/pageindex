@@ -95,9 +95,7 @@ async def main() -> int:  # noqa: PLR0915
         # re-derive page count itself (avoids worker/child disagreement).
         from pageindex_mcp.converters import probe_conversion_route
 
-        chunk_count, is_docling_route, pdf_classification = probe_conversion_route(
-            args.input_path
-        )
+        chunk_count, is_docling_route, pdf_classification = probe_conversion_route(args.input_path)
         handshake_payload = {
             "handshake": True,
             "chunk_count": chunk_count,

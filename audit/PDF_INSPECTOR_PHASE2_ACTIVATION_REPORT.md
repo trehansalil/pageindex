@@ -170,3 +170,35 @@ No new env vars are strictly required for Tier 1 activation.
 4. During the 1-2 week shadow window, use Prometheus wall-clock data to replace the modeled savings figures (~600-2000ms/doc) with measured ones before citing throughput gains anywhere.
 
 **Key file anchors:** `src/pageindex_mcp/client.py` (`index()` line 667, PDF branch ~726, converter loop ~770-815, `validate_tree` 987, Fix-3 retry 1008-1094); `src/pageindex_mcp/converters_cli.py` (~98-129); `src/pageindex_mcp/worker.py` (~279, 312-319); `src/pageindex_mcp/config.py` (21-23).
+
+---
+
+## 10. D6 — FULL CORPUS REGRESSION GATE (PRE-ACTIVATION)
+
+**Task:** [Task 6.2](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#62-full-corpus-regression-gate) · **RFC:** [D6](../.agents/rfcs/032-pdf-inspector-tier1-activation.md#d6-full-corpus-regression-gate-pre-activation) · **Design:** [AD7](../.agents/designs/design-rfc032-pdf-inspector-tier1-activation.md#ad7-corpus-regression-gate-d6) · **Recommended by:** Rec-2b (this report)
+
+**Status: GATE NOT SATISFIED — no PRECLASSIFY=1 corpus run has been executed. Activation remains blocked on this task.**
+
+### What was checked
+
+- Confirmed D0-D2 are landed in `client.py` (`PDF_INSPECTOR_PRECLASSIFY` import at line 19, `inspector_force_ocr` decision at lines 744-751, converter-loop wiring at lines 814/844) — the flag is live code, no longer dead. A `PRECLASSIFY=1` run today would exercise the real routing path.
+- The 60-doc source corpus exists locally as `issue/data/*.pdf` (27 German T&C docs) + `issue/data2/*.pdf` (33 Arabic/English/international docs) = 60 total, per RFC-031's corpus definition.
+- Remote MinIO (`10.43.23.66:9000`) answers `/minio/health/live` with `200` — infra reachable from this environment.
+- Searched `audit/` for any prior `PRECLASSIFY=1` ingest record: none found. The most recent full-corpus scoring pass (`CORPUS_REINGESTION_AUDIT_RUN-15.md`, 2026-08-06) predates this RFC's code landing and was produced with the flag off by construction (it was dead code at ingest time) — Tally: **11 PASS, 12 MARGINAL, 1 FAIL, 1 ERROR** (25/25 docs audited in that run's scope; run-over-run verdict churn on ~10 docs was already flagged there as scorer non-determinism unrelated to pdf-inspector).
+- The local `doc_store/` used by `make ingest` currently holds 9 unrelated HR onboarding docs, not the 60-doc legal/insurance corpus — a `make ingest` run today would not exercise the corpus this gate requires; the run must target `issue/data/` + `issue/data2/` (e.g. via `make ingest-minio` after upload, or two `DIR=... make ingest` passes).
+- No app server / arq worker process was running in this session (`localhost:8201` connection refused).
+
+### Why the run was not executed here
+
+A full 60-doc regression is a real ingestion: each document goes through live Docling conversion and LLM tree-building against the configured Azure OpenAI deployment (RFC-032 estimates ~2h wall-clock). That is a materially costly, long-running operation requiring a running server + worker pair and real LLM spend — outside what this task should trigger unattended as a side effect of an audit-report edit. It needs to be run explicitly, by a human or an operator-authorized job, not inferred from existing data: the pre-code Run 15 baseline is not a valid `PRECLASSIFY=0` substitute (the flag was inert when Run 15 ran, but Run 15 also predates the D0-D2 code path entirely, so a fresh `PRECLASSIFY=0` control run should be taken with the current code before diffing against a `PRECLASSIFY=1` run, to avoid attributing unrelated scorer/pipeline drift to this feature).
+
+### What running the gate requires
+
+1. `make up` (or `make serve` + `make worker` in separate shells) with `.env.active` pointed at remote MinIO/Redis/Postgres/Docling.
+2. `PDF_INSPECTOR_PRECLASSIFY=0` control run over `issue/data/` + `issue/data2/` (27 + 33 = 60 docs) — capture verdict distribution via the existing corpus scoring path (`corpus-score-diff` skill / scorer).
+3. `PDF_INSPECTOR_PRECLASSIFY=1` treatment run over the same 60 docs, same code, same session window.
+4. Diff verdict distributions per-doc (not just aggregate tallies — a regression can hide inside an unchanged total). Any doc that moves PASS→MARGINAL or PASS→FAIL blocks activation per RFC-032 D6.
+
+### Disposition
+
+Recorded here as an explicit outstanding blocker. `PDF_INSPECTOR_PRECLASSIFY` must remain `0` in production until this gate is run with a real `PRECLASSIFY=0`/`PRECLASSIFY=1` pair on the full 60-doc corpus and shows zero PASS→MARGINAL / PASS→FAIL regressions. [Task 6.2](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#62-full-corpus-regression-gate) and the RFC-032 [Final Checkpoint](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#63-final-checkpoint) should not be marked complete until this section is updated with an actual before/after verdict table.
