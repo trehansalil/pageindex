@@ -2357,21 +2357,62 @@ def chunked_docling_timeout_s(chunk_count: int) -> int:
     return _CHUNKED_DOCLING_BASE_TIMEOUT_S + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
 
 
-def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
+try:
+    from pdf_inspector import detect_pdf as _detect_pdf
+
+    _pdf_inspector_available = True
+except ImportError:
+    _pdf_inspector_available = False
+    _detect_pdf = None  # type: ignore[assignment]
+
+
+def _run_pdf_inspector(pdf_path: str) -> dict | None:
+    """Run pdf-inspector classification and return a dict, or None on failure."""
+    if not _pdf_inspector_available:
+        return None
+    try:
+        t0 = time.monotonic()
+        result = _detect_pdf(pdf_path)
+        elapsed = time.monotonic() - t0
+        from .metrics import PDF_INSPECTOR_CLASSIFICATIONS, PDF_INSPECTOR_LATENCY
+
+        PDF_INSPECTOR_LATENCY.observe(elapsed)
+        PDF_INSPECTOR_CLASSIFICATIONS.labels(pdf_type=result.pdf_type).inc()
+        return {
+            "pdf_type": result.pdf_type,
+            "confidence": result.confidence,
+            "pages_needing_ocr": list(result.pages_needing_ocr),
+            "has_encoding_issues": getattr(result, "has_encoding_issues", False),
+        }
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "pdf-inspector classify failed for %s", pdf_path, exc_info=True
+        )
+        return None
+
+
+def probe_conversion_route(pdf_path: str) -> tuple[int, bool, dict | None]:
     """RFC-028 D0: cheap pre-flight probe run by ``converters_cli`` before the
     heavy conversion pipeline starts, so the worker can size its child timeout
     from the child's own startup handshake instead of re-deriving page count
     independently (which risks worker/child disagreement on a page-count failure).
 
-    Returns ``(chunk_count, is_docling_route)`` using the same pymupdf page-count
-    read and ``MAX_DOCLING_PAGES`` threshold as the routing guard at the top of
-    ``pdf_to_markdown_docling``. Non-PDF inputs and PDFs whose page count cannot
-    be read report ``is_docling_route=False`` so the worker falls back to the
-    fixed ``CHILD_TIMEOUT`` unconditionally.
+    Returns ``(chunk_count, is_docling_route, pdf_classification)`` using the
+    same pymupdf page-count read and ``MAX_DOCLING_PAGES`` threshold as the
+    routing guard at the top of ``pdf_to_markdown_docling``.  Non-PDF inputs
+    and PDFs whose page count cannot be read report ``is_docling_route=False``
+    so the worker falls back to the fixed ``CHILD_TIMEOUT`` unconditionally.
+
+    ``pdf_classification`` is a dict with pdf-inspector shadow-mode results
+    (pdf_type, confidence, pages_needing_ocr, has_encoding_issues), or None
+    when pdf-inspector is not installed or classification fails.  Shadow mode:
+    classification is logged and metered but NEVER influences routing.
     """
     if not pdf_path.lower().endswith(".pdf"):
-        return 1, False
+        return 1, False, None
     from .config import MAX_DOCLING_PAGES
+
+    classification = _run_pdf_inspector(pdf_path)
 
     try:
         import fitz  # PyMuPDF
@@ -2379,12 +2420,12 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool]:
         with fitz.open(pdf_path) as doc:
             page_count = doc.page_count
     except Exception:
-        return 1, False
+        return 1, False, classification
     if page_count <= 0:
-        return 1, False
+        return 1, False, classification
     if MAX_DOCLING_PAGES > 0 and page_count > MAX_DOCLING_PAGES:
-        return math.ceil(page_count / MAX_DOCLING_PAGES), True
-    return 1, True
+        return math.ceil(page_count / MAX_DOCLING_PAGES), True, classification
+    return 1, True, classification
 
 
 def _repair_docling_tables(md: str) -> str:

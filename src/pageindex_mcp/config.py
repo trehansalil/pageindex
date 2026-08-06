@@ -18,6 +18,10 @@ CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 # to the chunked-Docling path instead of a single direct conversion call.
 MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 
+PDF_INSPECTOR_PRECLASSIFY: bool = os.environ.get(
+    "PDF_INSPECTOR_PRECLASSIFY", "0"
+).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
 # ---------------------------------------------------------------------------

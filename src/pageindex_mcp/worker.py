@@ -308,6 +308,15 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 chunk_count = 1
             dynamic_timeout = chunked_docling_timeout_s(chunk_count)
             effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
+        pdf_class = handshake.get("pdf_classification")
+        if pdf_class:
+            logger.info(
+                "pdf-inspector shadow: type=%s confidence=%.2f ocr_pages=%s encoding_issues=%s",
+                pdf_class.get("pdf_type", "unknown"),
+                pdf_class.get("confidence", 0.0),
+                pdf_class.get("pages_needing_ocr", []),
+                pdf_class.get("has_encoding_issues", False),
+            )
 
     remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
     stdout_bytes = b""

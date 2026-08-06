@@ -241,6 +241,16 @@ RAG_PARSE_FAILURES = Counter(
     "by the prefilter's top-K candidate set (RFC-006 D2), not the full corpus.",
     ["doc_id"],
 )
+PDF_INSPECTOR_CLASSIFICATIONS = Counter(
+    "pageindex_pdf_inspector_classifications_total",
+    "Shadow-mode pdf-inspector classification results from probe_conversion_route.",
+    ["pdf_type"],
+)
+PDF_INSPECTOR_LATENCY = Histogram(
+    "pageindex_pdf_inspector_latency_seconds",
+    "pdf-inspector detect_pdf latency in probe_conversion_route (shadow mode).",
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
+)
 
 
 # ---------------------------------------------------------------------------

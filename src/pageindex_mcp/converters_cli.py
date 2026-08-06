@@ -48,7 +48,7 @@ def _peak_rss_kib() -> int:
     return raw
 
 
-async def main() -> int:
+async def main() -> int:  # noqa: PLR0915
     """Run the CLI. Returns exit code (0 = success, 1 = failure)."""
     # Redirect sys.stdout to stderr BEFORE argparse so any usage/help/error
     # output from argparse (and any stray print() calls from libraries imported
@@ -95,14 +95,17 @@ async def main() -> int:
         # re-derive page count itself (avoids worker/child disagreement).
         from pageindex_mcp.converters import probe_conversion_route
 
-        chunk_count, is_docling_route = probe_conversion_route(args.input_path)
-        _emit(
-            {
-                "handshake": True,
-                "chunk_count": chunk_count,
-                "is_docling_route": is_docling_route,
-            }
+        chunk_count, is_docling_route, pdf_classification = probe_conversion_route(
+            args.input_path
         )
+        handshake_payload = {
+            "handshake": True,
+            "chunk_count": chunk_count,
+            "is_docling_route": is_docling_route,
+        }
+        if pdf_classification is not None:
+            handshake_payload["pdf_classification"] = pdf_classification
+        _emit(handshake_payload)
 
         try:
             # Heavy import deferred to here so baseline RSS in the parent process
