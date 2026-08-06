@@ -133,7 +133,10 @@ class TestFindPriorVerdictSnapshotFallback:
         assert result is None
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+@pytest.mark.skipif(
+    not HARNESS_JS.exists() or shutil.which("node") is None,
+    reason="workflow JS not present or node not on PATH",
+)
 class TestScoringHarnessStage2Guard:
     """D4: extracts the live Stage 2 guard predicate from the workflow source
     and exercises it via Node so this test fails if the guard regresses to a
