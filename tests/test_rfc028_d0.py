@@ -186,7 +186,7 @@ class TestProbeConversionRoute:
     def test_non_pdf_input_reports_non_docling(self):
         from pageindex_mcp.converters import probe_conversion_route
 
-        assert probe_conversion_route("notes.txt") == (1, False)
+        assert probe_conversion_route("notes.txt") == (1, False, None)
 
     def test_pymupdf_failure_reports_non_docling(self):
         from pageindex_mcp import converters
@@ -194,7 +194,7 @@ class TestProbeConversionRoute:
         # `converters.probe_conversion_route` does a function-local
         # `import fitz`, so `fitz.open` is the patch seam.
         with patch("fitz.open", side_effect=RuntimeError("bad pdf")):
-            assert converters.probe_conversion_route("broken.pdf") == (1, False)
+            assert converters.probe_conversion_route("broken.pdf")[:2] == (1, False)
 
     def test_oversized_pdf_reports_chunked_docling_route(self):
         from pageindex_mcp import converters
@@ -209,7 +209,8 @@ class TestProbeConversionRoute:
             patch("fitz.open", return_value=fake_doc) as fake_open,
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
-            chunk_count, is_docling_route = converters.probe_conversion_route("world-stats.pdf")
+            result = converters.probe_conversion_route("world-stats.pdf")
+            chunk_count, is_docling_route, _classification = result
         fake_open.assert_called_once_with("world-stats.pdf")
         assert is_docling_route is True
         assert chunk_count == 2
