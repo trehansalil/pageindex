@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Tasks: RFC-031 — pdf-inspector Shadow-Mode Pilot -->
+<!-- Folder: Tasks -->
+
 # Tasks: RFC-031 — pdf-inspector Shadow-Mode Pilot
 
 ## Traceability

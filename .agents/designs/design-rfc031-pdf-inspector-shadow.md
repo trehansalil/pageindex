@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: pdf-inspector Shadow-Mode Pilot -->
+<!-- Folder: Designs -->
+
 # Design Document: pdf-inspector Shadow-Mode Pilot
 
 ## Traceability
