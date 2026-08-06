@@ -25,7 +25,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from .cache import get_async_redis
-from .config import settings
+from .config import PDF_INSPECTOR_PRECLASSIFY, settings
 from .converters import chunked_docling_timeout_s
 from .memory_admission import wait_for_memory
 from .metrics import (
@@ -317,6 +317,21 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 pdf_class.get("pages_needing_ocr", []),
                 pdf_class.get("has_encoding_issues", False),
             )
+            if (
+                PDF_INSPECTOR_PRECLASSIFY
+                and pdf_class.get("pdf_type") in ("scanned", "image_based")
+            ):
+                # RFC-032 D9: 3x was the unmeasured lower-end estimate. Wall-clock
+                # calibration on 4 scanned corpus docs (2026-08-06) measured OCR-pass
+                # vs text-layer-pass ratios of 2.32x-11.00x (mean 6.16x, max 11.00x),
+                # exceeding the D9 5x recalibration threshold. Multiplier recalibrated
+                # per D9's formula: max(observed_ratio * 1.5, 3.0) = max(11.00*1.5, 3.0).
+                effective_timeout *= 16.5
+                logger.info(
+                    "pdf-inspector: 16.5x timeout for %s PDF (%ss)",
+                    pdf_class.get("pdf_type"),
+                    effective_timeout,
+                )
 
     remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
     stdout_bytes = b""

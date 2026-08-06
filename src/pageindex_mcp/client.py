@@ -16,7 +16,7 @@ import openai
 from pageindex import PageIndexClient
 
 from .cache import get_doc
-from .config import CURRENT_PIPELINE_VERSION, settings
+from .config import CURRENT_PIPELINE_VERSION, PDF_INSPECTOR_PRECLASSIFY, settings
 from .converters import (
     PictureResult,
     _add_vlm_descriptions,
@@ -58,6 +58,7 @@ from .metrics import (
     LOW_QUALITY_TREES,
     OCR_ESCALATION_TOTAL,
     PDF_EXTRACT_FALLBACKS,
+    PDF_INSPECTOR_FORCED_OCR,
     PDF_PRIMARY_CONVERTER_FAILURES,
     RAW_UPLOAD_FAILURES,
     VLM_FALLBACK_TOTAL,
@@ -664,11 +665,17 @@ class CustomPageIndexClient(PageIndexClient):
     # ------------------------------------------------------------------
 
     # Complexity grandfathered (core indexing pipeline); see pyproject [tool.ruff].
-    async def index(self, file_path: str, mode: str = "auto") -> str:  # noqa: C901, PLR0915
+    async def index(
+        self, file_path: str, mode: str = "auto", pdf_classification: dict | None = None
+    ) -> str:  # noqa: C901, PLR0915
         """Index a document and persist it to MinIO. Returns the 8-char doc_id.
 
         Skips reprocessing if the file content is unchanged (SHA-256 dedup).
         Supported extensions: .pdf, .md, .markdown, .txt, .docx, .pptx, .html
+
+        pdf_classification: optional pre-computed classification dict from
+        converters_cli's probe_conversion_route() (RFC-032 D0). Threaded but
+        not consumed until Batch 1 (D1); no behavioral change when None.
         """
         # Reset per call so a prior flat doc's content_class can't leak into a
         # subsequent tree doc when this client instance is reused. The flat
@@ -729,6 +736,27 @@ class CustomPageIndexClient(PageIndexClient):
                 # the legacy page_index route only if every converter fails.
                 md_content = None
 
+                # RFC-032 D1: pdf-inspector Tier 1 activation. If pre-classification is
+                # enabled and confidently reports a scanned/image-based document, force
+                # full-page OCR on the primary conversion attempt instead of wasting a
+                # non-OCR pass that validate_tree() would just reject.
+                inspector_force_ocr = False
+                if (
+                    PDF_INSPECTOR_PRECLASSIFY
+                    and pdf_classification is not None
+                    and pdf_classification.get("pdf_type") in ("scanned", "image_based")
+                    and pdf_classification.get("confidence", 0) >= 0.90
+                ):
+                    inspector_force_ocr = True
+                    PDF_INSPECTOR_FORCED_OCR.inc()
+                    logger.info(
+                        "RFC-032: pdf-inspector classified %s as %s (confidence=%.2f), "
+                        "forcing full-page OCR upfront",
+                        filename,
+                        pdf_classification.get("pdf_type"),
+                        pdf_classification.get("confidence", 0),
+                    )
+
                 # D3a (RFC-018): pre-conversion text-layer probe. If the raw PDF text
                 # layer is garbled, skip straight to force_full_page_ocr=True instead of
                 # wasting a non-OCR conversion attempt.
@@ -782,6 +810,15 @@ class CustomPageIndexClient(PageIndexClient):
                                     force_full_page_ocr=True,
                                     ocr_lang_override=detect_ocr_langs(filename),
                                 )
+                            elif inspector_force_ocr:
+                                # RFC-032 D2: pdf-inspector pre-classified this doc as
+                                # scanned/image_based with high confidence — force OCR
+                                # on the first pass instead of the reactive Fix-3 retry.
+                                md_content, pic_results = await _remote_pdf_to_markdown(
+                                    self._staging_key,  # type: ignore[arg-type]
+                                    force_full_page_ocr=True,
+                                    ocr_lang_override=detect_ocr_langs(filename),
+                                )
                             else:
                                 if pre_garbled:
                                     logger.info(
@@ -795,6 +832,16 @@ class CustomPageIndexClient(PageIndexClient):
                         elif (
                             pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED
                         ):
+                            md_content, pic_results = _split_converter_output(
+                                await asyncio.to_thread(
+                                    conv_fn,
+                                    file_path,
+                                    True,
+                                    ocr_lang_override=detect_ocr_langs(filename),
+                                )
+                            )
+                        elif inspector_force_ocr and "docling" in conv_name:
+                            # RFC-032 D2: local-path mirror of the remote branch above.
                             md_content, pic_results = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,

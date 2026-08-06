@@ -126,7 +126,7 @@ async def main() -> int:  # noqa: PLR0915
             client = CustomPageIndexClient()
             if args.staging_key:
                 client._staging_key = args.staging_key
-            doc_id = await client.index(args.input_path)
+            doc_id = await client.index(args.input_path, pdf_classification=pdf_classification)
 
             duration_ms = int((time.monotonic() - start) * 1000)
             payload = {

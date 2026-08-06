@@ -251,6 +251,11 @@ PDF_INSPECTOR_LATENCY = Histogram(
     "pdf-inspector detect_pdf latency in probe_conversion_route (shadow mode).",
     buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
 )
+PDF_INSPECTOR_FORCED_OCR = Counter(
+    "pageindex_pdf_inspector_preclassify_forced_ocr_total",
+    "Number of documents where pdf-inspector pre-classification forced first-pass OCR "
+    "(RFC-032 D1).",
+)
 
 
 # ---------------------------------------------------------------------------
