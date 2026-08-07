@@ -78,8 +78,13 @@ _NUM_PARA_RE = re.compile(r"^(?:§\s*)?\d+(\.\d+)+(?=[ \t.:]|$)")
 # signal is script-native — German/English titles never match these, so this tier is
 # additive with zero regression risk on the existing corpus.
 _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
-_AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b")
-_AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b")
+# RFC-033 D8: second alternative in each pattern matches the mirror-reversed
+# (character-order-reversed) form Tesseract produces on some scanned inputs,
+# e.g. 'المادة' -> 'ةداملا' (stem reversed, 'ال' prefix reversed to a trailing
+# 'لا' suffix). Reversed stems: باب->باب (palindrome), فصل->لصف, قسم->مسق,
+# جزء->ءزج, مادة->ةدام, مرسوم->موسرم.
+_AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b|^(?:باب|لصف|مسق|ءزج)(?:لا)?\b")
+_AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b|^ةدام(?:لا)?\b")
 # RFC-028 D1: char limit for wholesale heading promotion, raised from 60 to
 # accommodate Arabic legal headings/titles (66-76+ chars observed).
 _AR_HEADING_CHAR_LIMIT = 100
@@ -93,6 +98,38 @@ _AR_HEADING_CHAR_LIMIT = 100
 # into a heading (see TestInjectArabicStructuralHeadingsBlockStart's
 # wrapped-citation case in test_rfc027_d4.py).
 _AR_MARKER_CAPTURE_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء|مادة)\s*\(\s*\d+\s*\)")
+
+# RFC-033 D8: known-good Arabic structural words used by _detect_arabic_reversal
+# to decide whether a document's OCR output is Tesseract mirror-reversed. Same
+# stems consumed by _AR_WORD_RE plus common additional structural words.
+_AR_KNOWN_WORDS = ("مادة", "باب", "فصل", "قسم", "جزء", "مرسوم", "قرار", "قانون")
+_AR_KNOWN_WORDS_REVERSED = tuple(w[::-1] for w in _AR_KNOWN_WORDS)
+_AR_LETTER_RE = re.compile(r"[؀-ۿ]")
+_AR_REVERSAL_SAMPLE_THRESHOLD = 0.30
+
+
+def _detect_arabic_reversal(text: str) -> bool:
+    """Detect Tesseract mirror-reversed Arabic OCR output (RFC-033 D8).
+
+    Samples every Arabic-bearing line and checks it against the known-good
+    word list ``_AR_KNOWN_WORDS``. A line counts as reversed when it contains
+    a reversed-form stem but NOT its forward-form counterpart. When more than
+    ``_AR_REVERSAL_SAMPLE_THRESHOLD`` of the sampled Arabic-bearing lines are
+    reversed, the document's OCR text is judged mirror-reversed."""
+    sampled = 0
+    reversed_count = 0
+    for line in text.split("\n"):
+        t = line.strip()
+        if not t or not _AR_LETTER_RE.search(t):
+            continue
+        sampled += 1
+        has_forward = any(w in t for w in _AR_KNOWN_WORDS)
+        has_reversed = any(w in t for w in _AR_KNOWN_WORDS_REVERSED)
+        if has_reversed and not has_forward:
+            reversed_count += 1
+    if sampled == 0:
+        return False
+    return (reversed_count / sampled) > _AR_REVERSAL_SAMPLE_THRESHOLD
 
 
 def _inject_arabic_structural_headings(md: str) -> str:
@@ -120,27 +157,106 @@ def _inject_arabic_structural_headings(md: str) -> str:
     parenthetical, e.g. "مادة (3)") becomes a standalone heading and the
     remaining prose is kept as a following line rather than dropped. Depth is
     left to the existing ``_relevel_by_containment``/``_relevel_by_numbering``
-    chain."""
+    chain.
+
+    RFC-033 D8: when ``_detect_arabic_reversal`` judges ``md`` to be
+    Tesseract mirror-reversed, each line is character-reversed before pattern
+    matching (the regexes are forward-oriented) but the ORIGINAL line text —
+    whatever Tesseract actually produced — is what gets promoted to a
+    heading; only the matching step operates on the flipped text."""
+    reversed_ocr = _detect_arabic_reversal(md)
     lines = md.split("\n")
     out = []
     for line in lines:
         t = line.strip()
         if t and not _HEADING_RE.match(t):
-            is_part = bool(_AR_PART_RE.match(t))
-            is_article = is_part is False and bool(_AR_ARTICLE_RE.match(t))
+            match_t = t[::-1] if reversed_ocr else t
+            is_part = bool(_AR_PART_RE.match(match_t))
+            is_article = is_part is False and bool(_AR_ARTICLE_RE.match(match_t))
             if is_part or is_article:
                 level = "#" if is_part else "##"
                 if len(t) <= _AR_HEADING_CHAR_LIMIT:
                     out.append(f"{level} {t}")
                     continue
-                marker_match = _AR_MARKER_CAPTURE_RE.match(t)
+                marker_match = _AR_MARKER_CAPTURE_RE.match(match_t)
                 if marker_match:
-                    marker = marker_match.group(0).strip()
-                    remainder = t[marker_match.end() :].strip()
+                    if reversed_ocr:
+                        marker_len = marker_match.end()
+                        marker = t[len(t) - marker_len :]
+                        remainder = t[: len(t) - marker_len].strip()
+                    else:
+                        marker = marker_match.group(0).strip()
+                        remainder = t[marker_match.end() :].strip()
                     out.append(f"{level} {marker}")
                     if remainder:
                         out.append(remainder)
                     continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_DE_ZIFFER_RE = re.compile(r"^(?:Ziffer|Ziff\.)\s+\d+")
+
+# Line-start anchoring alone does not stop a *clause body* that opens with its
+# own number ("Ziffer 3 gilt entsprechend für ...", "Article (5) shall apply
+# where ...") from being promoted, which would swallow a whole paragraph into a
+# heading title. Real clause titles are short; the limit is deliberately well
+# above the longest realistic one (German AHB titles such as "Ziffer 7
+# Versicherungsfall, Obliegenheiten des Versicherungsnehmers ..." run past 100
+# chars, so the Arabic function's 100-char limit would clip them) and only
+# blocks obvious running prose. Over-limit lines are left untouched — nothing
+# is split or dropped.
+_CLAUSE_HEADING_CHAR_LIMIT = 200
+
+
+def _inject_german_clause_headings(md: str) -> str:
+    """Promote 'Ziffer N'/'Ziff. N' lines to '##' headings (RFC-033 D5).
+
+    German AHB/insurance documents use Ziffer/Ziff. clause numbering that
+    Docling does not detect as headings. The line-start anchor prevents
+    mid-sentence references like "see Ziffer 1 above" from being promoted, and
+    ``_CLAUSE_HEADING_CHAR_LIMIT`` prevents a paragraph that merely opens with
+    a clause reference from becoming a heading."""
+    lines = md.split("\n")
+    out = []
+    for line in lines:
+        t = line.strip()
+        if (
+            t
+            and len(t) <= _CLAUSE_HEADING_CHAR_LIMIT
+            and not _HEADING_RE.match(t)
+            and _DE_ZIFFER_RE.match(t)
+        ):
+            out.append(f"## {t}")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_EN_ARTICLE_PROSE_RE = re.compile(r"^Article\s*\(\s*\d+\s*\)", re.IGNORECASE)
+
+
+def _inject_english_article_headings(md: str) -> str:
+    """Promote 'Article (N)' lines to '##' headings (RFC-033 D5).
+
+    UAE/English legal documents use parenthesised 'Article (N)' numbering
+    that Docling sometimes misses entirely as a heading, leaving it as plain
+    prose. The line-start anchor prevents mid-sentence references like "see
+    Article (1) above" from being promoted, and ``_CLAUSE_HEADING_CHAR_LIMIT``
+    prevents a paragraph that merely opens with an article reference from
+    becoming a heading."""
+    lines = md.split("\n")
+    out = []
+    for line in lines:
+        t = line.strip()
+        if (
+            t
+            and len(t) <= _CLAUSE_HEADING_CHAR_LIMIT
+            and not _HEADING_RE.match(t)
+            and _EN_ARTICLE_PROSE_RE.match(t)
+        ):
+            out.append(f"## {t}")
+            continue
         out.append(line)
     return "\n".join(out)
 
@@ -211,7 +327,11 @@ def _relevel_by_numbering(md: str) -> str:
 _WORD_RE = re.compile(r"^(teil|anhang|abschnitt|kapitel)\b", re.IGNORECASE)
 # Arabic structural words consumed the same way as the Latin _WORD_RE (Fix 1): the
 # label that NESTS is the number/letter that follows المادة/الباب/الفصل/القسم/الجزء/مرسوم.
-_AR_WORD_RE = re.compile(r"^(?:ال)?(?:مادة|باب|فصل|قسم|جزء|مرسوم)\b")
+# RFC-033 D8: reversed-form alternative, same construction as _AR_PART_RE/
+# _AR_ARTICLE_RE above.
+_AR_WORD_RE = re.compile(
+    r"^(?:ال)?(?:مادة|باب|فصل|قسم|جزء|مرسوم)\b|^(?:ةدام|باب|لصف|مسق|ءزج|موسرم)(?:لا)?\b"
+)
 # English "Article N" / "Art. N" and section-symbol "§ N" headings (RFC-015 D3
 # Part B / task 1.4): without this, _segment_label() rejects "Article 5" as
 # prose (its first alnum component is the multi-letter word "Article", which
@@ -223,7 +343,10 @@ _AR_WORD_RE = re.compile(r"^(?:ال)?(?:مادة|باب|فصل|قسم|جزء|م�
 # explicit depth. Recognising the "Art(icle|.) N" / "§ N" prefix as a
 # structural word (consumed the same way as Teil/Abschnitt/Kapitel above)
 # lets the bare number become the label, so containment assigns depth 1.
-_ARTICLE_RE = re.compile(r"^(?:Art(?:icle|\.)\s+\d+|§\s*\d+)", re.IGNORECASE)
+# The number may also be parenthesised — "Article (47)", "§ (12)" — as used by
+# UAE/English legal corpora (RFC-033 D4); the optional '(' is matched here and
+# stripped downstream by _segment_label's head.strip("()").
+_ARTICLE_RE = re.compile(r"^(?:Art(?:icle|\.)\s+\(?\s*\d+|§\s*\(?\s*\d+)", re.IGNORECASE)
 _ARTICLE_WORD_RE = re.compile(r"^(?:Art(?:icle|\.)|§)\s*", re.IGNORECASE)
 
 
@@ -1298,6 +1421,32 @@ def _text_is_logical_order(text: str) -> bool:
     return sampled > 0 and orig_total > 0 and orig_total >= disp_total
 
 
+def _heading_is_logical_order(heading_text: str) -> bool:
+    """Per-heading logical-vs-visual probe (RFC-033 D2 Part A).
+
+    Headings are short (often under the 10-char-per-line floor
+    ``_text_is_logical_order`` uses for its multi-line sampling — e.g.
+    ``المحتويات`` is 9 chars) and are evaluated as a single unit rather than
+    sampled, so the same readability-score comparison is applied directly to
+    the whole heading with no length floor. Falls back to
+    ``_word_has_reversed_morphology`` when neither ordering scores any common
+    words or definite articles."""
+    stripped = heading_text.strip()
+    if not stripped or not any(_is_arabic_char(c) for c in stripped):
+        return True
+    from bidi.algorithm import get_display
+
+    orig_words = stripped.split()
+    disp_words = get_display(stripped).split()
+    orig_score = _arabic_readability_score(orig_words)
+    disp_score = _arabic_readability_score(disp_words)
+    if orig_score == 0 and disp_score == 0:
+        from .helpers import _word_has_reversed_morphology
+
+        return not any(_word_has_reversed_morphology(w) for w in orig_words)
+    return orig_score >= disp_score
+
+
 def reconstruct_bidi_order(text: str) -> str:
     """Reorder visual-order Arabic runs into logical reading order (RFC-015 D7).
 
@@ -1314,8 +1463,13 @@ def reconstruct_bidi_order(text: str) -> str:
     Even when the full-document reorder is skipped (Arabic ratio <=0.15 or already
     logical order), heading markers are still individually corrected via
     ``_BIDI_HEADING_PREFIX_RE`` so bilingual documents don't lose heading structure
-    to md_to_tree() (RFC-023 D9). Documents with zero Arabic characters are still
-    returned untouched with no further processing (perf preserved).
+    to md_to_tree() (RFC-023 D9). RFC-023 D9 made this heading-marker correction
+    unconditional; RFC-033 D2 (Part A) narrows that scope: get_display() is applied
+    to a heading only when ``_heading_is_logical_order`` finds it is NOT already
+    in logical order, so the anti-double-reversal guarantee documented above also
+    holds for headings — an already-logical-order heading is never reversed by us.
+    Documents with zero Arabic characters are still returned untouched with no
+    further processing (perf preserved).
     Pure local computation — no LLM, no network (HR3)."""
     if not text:
         return text
@@ -1330,7 +1484,11 @@ def reconstruct_bidi_order(text: str) -> str:
     for line in text.splitlines(keepends=True):
         m = _BIDI_HEADING_PREFIX_RE.match(line)
         if m:
-            out.append(m.group(1) + get_display(m.group(2)))
+            heading_text = m.group(2)
+            if _heading_is_logical_order(heading_text):
+                out.append(line)
+            else:
+                out.append(m.group(1) + get_display(heading_text))
         elif reorder_body:
             out.append(get_display(line))
         else:
@@ -2758,6 +2916,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
     # (see _pre_inference_normalize for the load-bearing ordering rationale).
     post_md = _inject_arabic_structural_headings(post_md)
     raw_md = _inject_arabic_structural_headings(raw_md)
+    post_md = _inject_german_clause_headings(post_md)
+    raw_md = _inject_german_clause_headings(raw_md)
+    post_md = _inject_english_article_headings(post_md)
+    raw_md = _inject_english_article_headings(raw_md)
     post_md = _pre_inference_normalize(post_md)
     raw_md = _pre_inference_normalize(raw_md)
     post_headings = len(_HEADING_RE.findall(post_md))

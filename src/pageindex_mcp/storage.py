@@ -671,6 +671,10 @@ def list_processed_docs() -> list[dict]:
 # RFC-025 D0: verdict priority for best-ever prior-verdict anchoring.
 _VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
 
+# RFC-033 D0: the hysteresis snapshot lives outside the processed/ prefix so
+# wipe_processed() cannot delete the snapshot it just wrote.
+_PRIOR_VERDICTS_KEY = "snapshots/_prior_verdicts.json"
+
 
 def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str | None:  # noqa: C901
     """Resolve the best-ever verdict from a prior ingestion of the same content.
@@ -725,7 +729,7 @@ def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str |
     # RFC-026 D3: individual sidecars didn't match (e.g. wiped pre-reingestion) --
     # fall back to the pre-wipe snapshot.
     try:
-        response = mc.get_object(settings.minio_bucket, "processed/_prior_verdicts.json")
+        response = mc.get_object(settings.minio_bucket, _PRIOR_VERDICTS_KEY)
         try:
             snapshot = json.loads(response.read())
         finally:
@@ -786,7 +790,7 @@ def snapshot_prior_verdicts() -> None:
         ).encode("utf-8")
         mc.put_object(
             settings.minio_bucket,
-            "processed/_prior_verdicts.json",
+            _PRIOR_VERDICTS_KEY,
             BytesIO(payload),
             length=len(payload),
             content_type="application/json",
@@ -795,6 +799,39 @@ def snapshot_prior_verdicts() -> None:
         logger.warning(
             "snapshot_prior_verdicts: failed, hysteresis snapshot skipped", exc_info=True
         )
+
+
+def wipe_processed() -> None:
+    """Snapshot prior verdicts, then delete all processed/* objects.
+
+    RFC-033 D0: wires snapshot_prior_verdicts() (RFC-026 D3) into the corpus
+    reingestion wipe step. The snapshot is written to snapshots/_prior_verdicts.json
+    -- a prefix outside processed/ -- so it survives the subsequent wipe and
+    find_prior_verdict() can still resolve hysteresis after a full re-ingestion.
+    """
+    snapshot_prior_verdicts()
+    mc = get_minio()
+    # snapshot_prior_verdicts() is fail-open (it swallows MinIO errors), so
+    # confirm the snapshot actually landed before destroying the only other
+    # copy of the verdict history. Wiping without a snapshot would reproduce
+    # exactly the false PASS->MARGINAL regressions D0 exists to prevent.
+    try:
+        mc.stat_object(settings.minio_bucket, _PRIOR_VERDICTS_KEY)
+    except Exception as exc:
+        raise RuntimeError(
+            f"wipe_processed: aborting -- {_PRIOR_VERDICTS_KEY} is absent after "
+            "snapshot_prior_verdicts(); refusing to delete processed/* without a "
+            "verdict snapshot"
+        ) from exc
+    # Materialise the listing before deleting: mutating the bucket while the
+    # paginated list generator is still open can skip objects.
+    names = [
+        obj.object_name
+        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True)
+    ]
+    for name in names:
+        mc.remove_object(settings.minio_bucket, name)
+    logger.info("wipe_processed: removed %d processed/* objects", len(names))
 
 
 # ---------------------------------------------------------------------------

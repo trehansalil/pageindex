@@ -552,17 +552,26 @@ def _tree_depth(nodes: list) -> int:
 
 
 def _flatten_tree_text(nodes: list) -> str:
-    """Concatenate all title+text from a tree structure into a single string."""
+    """Concatenate all title+text from a tree structure into a single string.
+
+    RFC-033 D1: parts are newline-separated so adjacent node boundaries cannot
+    glue an Arabic title onto Latin text and fabricate a mixed-script pattern
+    for `_has_sparse_mojibake`. Empty parts are dropped rather than joined —
+    emitting a separator for an absent title would inflate the character counts
+    that the volume floors in `classify_verdict` measure.
+    """
     parts: list[str] = []
 
     def _walk(ns: list) -> None:
         for n in ns:
-            parts.append(str(n.get("title", "")))
-            parts.append(str(n.get("text", "")))
+            for field in ("title", "text"):
+                value = str(n.get(field, ""))
+                if value:
+                    parts.append(value)
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
-    return "".join(parts)
+    return "\n".join(parts)
 
 
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
@@ -864,9 +873,11 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     """Unified garble-detection heuristics (D7 / RFC-013).
 
     Checks (in order): empty, null/replacement bytes, GLYPH< markers,
-    control-char ratio >5%, PUA ratio >3%, digit ratio >60% (blobs >500 chars),
-    token repetition >30% (>20 alnum tokens, excluding symbolic tokens),
-    Latin-gibberish in non-Latin script context (D2 / RFC-019, optional)."""
+    control-char ratio >5%, PUA ratio >3%, Arabic presentation-forms ratio >50%,
+    single-letter Arabic fragment ratio >40% (D2 / RFC-033), digit ratio >60%
+    (blobs >500 chars), token repetition >30% (>20 alnum tokens, excluding
+    symbolic tokens), Latin-gibberish in non-Latin script context
+    (D2 / RFC-019, optional)."""
     if not blob.strip():
         return True
     if "\x00" in blob or "\ufffd" in blob:
@@ -894,6 +905,17 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     arabic_range_chars = presentation_forms + sum(1 for c in blob if 0x0600 <= ord(c) <= 0x06FF)
     if arabic_range_chars > 0 and (presentation_forms / arabic_range_chars) > 0.50:
         return True
+    # Single-letter Arabic fragment ratio > 40% (D2 / RFC-033): PDF text-layer
+    # extraction failures sometimes decompose Arabic words into individual
+    # letters separated by whitespace (e.g. "م ا د ة" instead of "مادة").
+    # Flag when >40% of whitespace-delimited tokens containing Arabic-script
+    # characters are themselves single characters. The conjunction particle
+    # "wa" (و) is excluded since it is a legitimate single-letter word.
+    arabic_tokens = [t for t in blob.split() if any(_is_arabic_char(c) for c in t)]
+    if arabic_tokens:
+        single_char_fragments = sum(1 for t in arabic_tokens if len(t) == 1 and t != "و")
+        if (single_char_fragments / len(arabic_tokens)) > 0.40:
+            return True
     # Digit ratio > 60% on blobs > 500 chars — numeric junk
     if len(blob) > 500:
         digits = sum(1 for c in blob if c.isdigit())
@@ -1186,9 +1208,9 @@ def _tree_is_rtl_reversed(nodes: list) -> bool:
 
     from bidi.algorithm import get_display
 
-    # `_flatten_tree_text` concatenates title+text with no separator, so
-    # per-node lines have to be collected via the leaf walk rather than
-    # `full_text.splitlines()`.
+    # Per-node lines are collected via the leaf walk rather than
+    # `full_text.splitlines()`: the flattened blob covers every node, while
+    # this comparison is defined over leaf title/text only.
     lines: list[str] = []
     for leaf in _walk_leaves(nodes):
         lines.extend(str(leaf.get("title", "")).splitlines())
@@ -1247,6 +1269,11 @@ def validate_tree(  # noqa: C901
     RFC-029 D2 (Task 3.3): arabic_low_content_ratio — for Arabic-script trees,
     flag when the meaningful Arabic char ratio is low (dominated by
     numeric/OCR-noise junk), reusing _is_garbled_blob's digit-ratio heuristic.
+
+    RFC-033 D2 (Part B): bidi_degraded — verdict-only bidi coherence
+    enforcement. Does NOT gate persistence: `ok` is False but the caller
+    still persists the tree, and classify_verdict caps the verdict at
+    MARGINAL for this reason instead of failing it.
     """
     if _tree_is_garbled(structure, expected_script=expected_script):
         return False, "garbling"
@@ -1278,15 +1305,29 @@ def validate_tree(  # noqa: C901
     # existing garble/structure gates it is additive to.
     if _tree_is_rtl_reversed(structure):
         return False, "rtl_reversal"
-    # RFC-030 D5: bidi coherence gate — catches visual-order Arabic (reversed
-    # morphology) that _tree_is_rtl_reversed does not detect. Deployed
-    # audit-only (BIDI_COHERENCE_ENFORCE=false by default): logs a would-be
-    # failure without gating, to establish the false-positive rate over one
-    # corpus cycle before enabling routing consequences.
+    # RFC-030 D5 / RFC-033 D2 Part B: bidi coherence gate — catches
+    # visual-order Arabic (reversed morphology) that _tree_is_rtl_reversed
+    # does not detect. BIDI_COHERENCE_ENFORCE now defaults to true, promoted
+    # on Task 9.1's scoped re-ingest measurement of `bidi_coherence_violations`
+    # (docs with reversed-heading signatures, post the Task 1.11 heading
+    # guard) -- that measurement is a LOWER BOUND on the clean-doc
+    # false-positive rate, not a corpus-wide estimate, since the sample was
+    # drawn from the population already known to be affected. It is not yet
+    # tight enough to justify persistence-gating (RFC-033 D2 requires <2% FP
+    # across a full corpus cycle for that), so enforcement here is
+    # verdict-only: set `bidi_degraded` (surfaced as the "bidi_degraded"
+    # validate_reason) instead of raising LowQualityTreeError.
+    # classify_verdict caps the returned verdict at MARGINAL when it sees
+    # this reason; persistence is never gated on it.
     _bidi_ok, _bidi_reason = _check_bidi_coherence(full_text)
     if not _bidi_ok:
-        if os.environ.get("BIDI_COHERENCE_ENFORCE", "false").lower() == "true":
-            return False, _bidi_reason
+        if os.environ.get("BIDI_COHERENCE_ENFORCE", "true").lower() == "true":
+            logger.warning(
+                "validate_tree: bidi coherence check failed (%s); setting "
+                "bidi_degraded (verdict-only, not persistence-gating)",
+                _bidi_reason,
+            )
+            return False, "bidi_degraded"
         logger.warning(
             "validate_tree: bidi coherence check would fail (%s) but "
             "BIDI_COHERENCE_ENFORCE is disabled (audit-only mode); not gating",
@@ -1437,23 +1478,26 @@ def hash_pipe_ratio(text: str) -> float:
 
 
 def _garble_ratio(text, expected_script=None):
-    """Dual full-text + windowed garble ratio. Returns max of both (additive-only)."""
-    full_garbled = (
-        1.0
-        if (_is_garbled_blob(text, expected_script=expected_script) or _has_sparse_mojibake(text))
-        else 0.0
-    )
+    """Windowed garble ratio: fraction of fixed-size windows that individually
+    trigger garble detection. RFC-033 D1: no longer re-checks the full text
+    (that duplicates what _tree_is_garbled already gates in classify_verdict)."""
     window = 2000
     if len(text) <= window:
-        return full_garbled
+        return (
+            1.0
+            if (
+                _is_garbled_blob(text, expected_script=expected_script)
+                or _has_sparse_mojibake(text)
+            )
+            else 0.0
+        )
     chunks = [text[i : i + window] for i in range(0, len(text), window)]
     garbled_chunks = sum(
         1
         for c in chunks
         if _is_garbled_blob(c, expected_script=expected_script) or _has_sparse_mojibake(c)
     )
-    window_ratio = garbled_chunks / len(chunks)
-    return max(full_garbled, window_ratio)
+    return garbled_chunks / len(chunks)
 
 
 def _classify_image_verdict(image_enrichment_ratio: float | None) -> tuple[str, str]:
@@ -1492,7 +1536,10 @@ def classify_verdict(  # noqa: C901, PLR0915
     # Runs before every other check/promotion branch, including
     # image_enrichment_promoted -- no content_class, ratio, or hysteresis
     # band can override an empty document (CLAUDE.md Hard Rule 5).
-    if _tree_node_count(structure) == 0 or len(_flatten_tree_text(structure)) == 0:
+    # RFC-033 D1: `_flatten_tree_text` now joins parts with "\n", so an
+    # all-empty tree flattens to whitespace rather than "". Strip before the
+    # emptiness test or the zero-content floor silently stops firing.
+    if _tree_node_count(structure) == 0 or len(_flatten_tree_text(structure).strip()) == 0:
         return "FAIL", "zero_content"
     if validate_reason == "garbling":
         return "FAIL", "garbling"
@@ -1516,6 +1563,18 @@ def classify_verdict(  # noqa: C901, PLR0915
     # (checks the structure directly) so it holds even when validate_reason is None.
     if validate_reason == "reordered" or _tree_is_reordered(structure):
         return "FAIL", "reordered"
+
+    # RFC-033 D2 (Part B): bidi coherence enforcement is verdict-only —
+    # validate_tree sets bidi_degraded (never raises LowQualityTreeError for
+    # it), so the only consequence here is capping what would otherwise be a
+    # PASS at MARGINAL. Worse verdicts (FAIL, from the hard gates above or
+    # max_leaf_ratio below) are untouched.
+    _bidi_degraded = validate_reason == "bidi_degraded"
+
+    def _pass(reason: str) -> tuple[str, str]:
+        if _bidi_degraded:
+            return "MARGINAL", "bidi_degraded"
+        return "PASS", reason
 
     # Task 6.3: image-standalone documents use their own verdict logic.
     if content_class == "image_standalone":
@@ -1548,7 +1607,7 @@ def classify_verdict(  # noqa: C901, PLR0915
         # garbled, fall through to the ordinary max_leaf_ratio/MARGINAL
         # logic below instead of returning PASS.
         if not _is_garbled_blob(_promoted_text):
-            return "PASS", "image_enrichment_promoted"
+            return _pass("image_enrichment_promoted")
 
     _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
     if max_leaf_ratio > 0.75:
@@ -1586,7 +1645,7 @@ def classify_verdict(  # noqa: C901, PLR0915
         and max_leaf_ratio < _effective_max_leaf
         and not effectively_garbled
     ):
-        return "PASS", ""
+        return _pass("")
 
     # Base verdict is MARGINAL — try category-specific promotion.
     # Category B/C use the wider 0.17 threshold (RFC-014 D4).
@@ -1594,7 +1653,7 @@ def classify_verdict(  # noqa: C901, PLR0915
 
     if content_class.startswith("ocr_"):
         if max_leaf_ratio < 0.15 and ocr_noise_ratio(flat_text) < 0.005:
-            return "PASS", "cat_a_promoted"
+            return _pass("cat_a_promoted")
     elif content_class.startswith("flat_"):
         _min_flat_promotion_chars = int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500"))
         _stripped_flat_text = flat_text.strip()
@@ -1611,14 +1670,14 @@ def classify_verdict(  # noqa: C901, PLR0915
             and len(_stripped_flat_text) >= _min_flat_promotion_chars
             and _placeholder_ratio <= 0.5
         ):
-            return "PASS", "cat_b_promoted"
+            return _pass("cat_b_promoted")
     else:
         if (
             not effectively_garbled
             and hash_pipe_ratio(flat_text) < 0.01
             and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
         ):
-            return "PASS", "cat_c_promoted"
+            return _pass("cat_c_promoted")
 
     # QF2c: small-doc exemption — well-formed tiny FLAT docs shouldn't be
     # penalized. Scoped to content_class.startswith("flat_") per RFC-021
@@ -1640,7 +1699,7 @@ def classify_verdict(  # noqa: C901, PLR0915
         and max_leaf_ratio < _small_doc_leaf_ratio_bound
         and 100 <= len(flat_text.strip()) < 15000
     ):
-        return "PASS", "small_doc_promoted"
+        return _pass("small_doc_promoted")
 
     # Build descriptive reason for remaining MARGINAL
     if effectively_garbled:

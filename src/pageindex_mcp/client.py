@@ -20,6 +20,7 @@ from .config import CURRENT_PIPELINE_VERSION, PDF_INSPECTOR_PRECLASSIFY, setting
 from .converters import (
     PictureResult,
     _add_vlm_descriptions,
+    _detect_arabic_reversal,
     _tesseract_ocr_image,
     detect_ocr_langs,
     docx_to_markdown,
@@ -283,6 +284,28 @@ LOW_CONTENT_OCR_CHAR_FLOOR = int(os.getenv("LOW_CONTENT_OCR_CHAR_FLOOR", "300"))
 _IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
     "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
 ).strip().lower() in ("1", "true", "yes")
+
+
+def apply_image_ext_content_class_override(ext: str, content_class: str) -> str:
+    """RFC-033 D7: force ``image_standalone`` for bare image files.
+
+    A ``.jpg``/``.png`` input is OCR'd, so ``route_and_extract_flat`` sees prose
+    blocks alongside the image block and the all-``role="image"`` heuristic in
+    ``index()`` misses it — the file lands as ``flat_prose``/``flat_mixed`` and is
+    scored against the ``MIN_IMAGE_PROMOTED_CHARS`` floor instead of
+    ``_classify_image_verdict``. The extension is authoritative here: the whole
+    document *is* the image.
+
+    Extracted from the inline conditional so tests can exercise the real
+    production predicate — RFC-022 B2 Part A shipped a test that mirrored this
+    logic locally, which is why its absence from ``client.py`` went unnoticed
+    until Run-15.
+    """
+    if _IMAGE_STANDALONE_PIPELINE_ENABLED and ext in _IMAGE_EXTS:
+        return "image_standalone"
+    return content_class
+
+
 # RFC-023 D8a: skip the standalone-image Tesseract recovery below when Docling's
 # md_content already carries this many non-whitespace chars (avoids double-counting).
 MIN_STANDALONE_IMAGE_MD_CHARS = int(os.getenv("MIN_STANDALONE_IMAGE_MD_CHARS", "100"))
@@ -1030,6 +1053,7 @@ class CustomPageIndexClient(PageIndexClient):
             # swallowed the document tail) into per-ordinal sibling nodes BEFORE the HR5
             # gate, so the recovered hierarchy is what gets validated and saved.
             result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
+            result["structure"] = _segment_table_nodes(result.get("structure", []))
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
             ok, reason = validate_tree(
@@ -1280,6 +1304,47 @@ class CustomPageIndexClient(PageIndexClient):
                         "RTL bidi repair failed for %s (%s)", filename, bidi_exc, exc_info=True
                     )
 
+            # RFC-033 D8 (Task 7.5): OCR source quality comparison hook. When the
+            # reconstruct_bidi_order repair above did not converge, the tree-path
+            # source is still carrying reversal artifacts the flip repair couldn't
+            # fully correct. route_and_extract_flat re-derives blocks from the same
+            # OCR markdown without depending on the forward-oriented Arabic stem
+            # regexes, so it can still recover correctly-oriented text even when the
+            # tree-path source can't. Prefer flat when it is not reversed and the
+            # tree-path text still is.
+            if (
+                not ok
+                and reason == "rtl_reversal"
+                and ext == ".pdf"
+                and settings.flat_doc_routing
+                and md_content
+            ):
+                try:
+                    _flat_cmp_cc, _flat_cmp_blocks = await asyncio.to_thread(
+                        route_and_extract_flat, md_content
+                    )
+                    _flat_cmp_text = "\n".join(
+                        _flat_block_primary_text(b) for b in _flat_cmp_blocks
+                    )
+                    _tree_cmp_text = _flatten_tree_text(result.get("structure", []))
+                    if not _detect_arabic_reversal(
+                        _flat_cmp_text
+                    ) and _detect_arabic_reversal(_tree_cmp_text):
+                        logger.warning(
+                            "RFC-033 D8: tree-path text still mirror-reversed after "
+                            "bidi repair for %s; flat-path source is not reversed — "
+                            "preferring flat result",
+                            filename,
+                        )
+                        reason = "node_count<3"
+                except Exception as _flat_cmp_exc:
+                    logger.warning(
+                        "RFC-033 D8: flat-path reversal comparison failed for %s (%s); "
+                        "keeping tree",
+                        filename,
+                        _flat_cmp_exc,
+                    )
+
             # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
             # whose OCR escalation was either skipped or failed.
             if (
@@ -1427,6 +1492,7 @@ class CustomPageIndexClient(PageIndexClient):
                         result["structure"] = split_oversized_leaf_nodes(
                             result.get("structure", [])
                         )
+                        result["structure"] = _segment_table_nodes(result.get("structure", []))
                         ok, reason = validate_tree(
                             result.get("structure", []), expected_script=expected_script
                         )
@@ -1607,6 +1673,17 @@ class CustomPageIndexClient(PageIndexClient):
                                 and all(b.get("role") == "image" for b in blocks)
                             ):
                                 content_class = "image_standalone"
+
+                            # RFC-033 D7 (Task 3.3): bare image files (.jpg/.png/…)
+                            # are always image_standalone regardless of what
+                            # route_and_extract_flat classified the OCR markdown
+                            # as (e.g. a spliced [Chart text] block can pull
+                            # content_class off the all-role="image" heuristic
+                            # above) so classify_verdict scores them via
+                            # _classify_image_verdict.
+                            content_class = apply_image_ext_content_class_override(
+                                ext, content_class
+                            )
 
                             logger.info(
                                 "Routing %s to flat success path: reason=%s content_class=%s",
