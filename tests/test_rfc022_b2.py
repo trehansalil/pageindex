@@ -6,25 +6,21 @@ Validates Design Properties 3-4 (design-rfc022-run5-verdict-bugfixes.md):
   Property 4 - QF2a gate ordering: the image_enrichment_promoted rescue gate
   fires BEFORE the max_leaf_ratio > 0.75 hard-FAIL.
 
-`_apply_extension_override` below mirrors the B2-A override logic as
-specified by RFC-022 / task 2.1 (to be placed inline in client.py's
-`index()` after `route_and_extract_flat`). NOTE: as of this test's
-writing, client.py does NOT yet contain that override (task 2.1 is
-marked done in the tasks file but the code is absent) — only the
-all(role=="image") check at client.py:1012-1018 exists. These tests
-validate the specified override logic and the landed helpers.py gate
-hoist; end-to-end Property 3 behavior requires task 2.1 to land.
+The B2-A override landed in client.py as
+`apply_image_ext_content_class_override` (RFC-033 D7); this file calls it
+directly. It previously mirrored the conditional locally, which is why the
+override's total absence from client.py went undetected until Run-15 — do not
+reintroduce a mirrored predicate.
 """
 
-from pageindex_mcp.client import _IMAGE_EXTS
+from pageindex_mcp import client as client_module
+from pageindex_mcp.client import apply_image_ext_content_class_override
 from pageindex_mcp.helpers import _classify_image_verdict, classify_verdict
 
 
-def _apply_extension_override(content_class: str, ext: str, pipeline_enabled: bool = True) -> str:
-    # B2-A (RFC-022): mirrors client.py's post-route_and_extract_flat override.
-    if pipeline_enabled and ext in _IMAGE_EXTS:
-        content_class = "image_standalone"
-    return content_class
+def _apply_extension_override(content_class: str, ext: str) -> str:
+    # B2-A (RFC-022 / RFC-033 D7): the real client.py override.
+    return apply_image_ext_content_class_override(ext, content_class)
 
 
 def _single_leaf_tree(size: int = 1000) -> list:
@@ -58,8 +54,9 @@ def test_non_image_enriched_doc_still_fails_on_max_leaf_ratio():
     assert reason.startswith("max_leaf_ratio=")
 
 
-def test_pipeline_disabled_falls_back_to_flat_path():
-    content_class = _apply_extension_override("flat_prose", ".jpg", pipeline_enabled=False)
+def test_pipeline_disabled_falls_back_to_flat_path(monkeypatch):
+    monkeypatch.setattr(client_module, "_IMAGE_STANDALONE_PIPELINE_ENABLED", False)
+    content_class = _apply_extension_override("flat_prose", ".jpg")
     assert content_class == "flat_prose"
     # Even with the override disabled, the hoisted QF2a rescue gate (B2-B) is
     # defense-in-depth and still promotes a well-enriched flat doc.

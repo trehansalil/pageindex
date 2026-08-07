@@ -26,7 +26,7 @@ from pageindex_mcp.helpers import (
     _tree_is_garbled,
     classify_verdict,
 )
-
+from tests.conftest import filler_text
 
 # ── synthetic tree builders ─────────────────────────────────────────────────
 
@@ -54,8 +54,8 @@ def _make_tree(leaf_sizes: list[int], depth: int = 2) -> list:
     depth * len(leaf_sizes) and depth == the given `depth`.
     """
     trees = []
-    for size in leaf_sizes:
-        leaf = {"title": "", "text": "x" * size, "nodes": []}
+    for idx, size in enumerate(leaf_sizes):
+        leaf = {"title": "", "text": filler_text(size, idx), "nodes": []}
         node = leaf
         for _ in range(depth - 1):
             node = {"title": "", "text": "", "nodes": [node]}

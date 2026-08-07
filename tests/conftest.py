@@ -58,3 +58,54 @@ def _instant_memory_gate():
     except (ImportError, AttributeError):
         # Worker module not importable in this context — nothing to patch.
         yield
+
+
+_FILLER_WORDS = (
+    "the",
+    "quick",
+    "brown",
+    "fox",
+    "jumps",
+    "over",
+    "a",
+    "lazy",
+    "dog",
+    "and",
+    "then",
+    "runs",
+    "to",
+    "the",
+    "river",
+    "with",
+    "of",
+    "for",
+)
+
+
+def filler_text(n_chars: int, seed: int) -> str:
+    """Return exactly *n_chars* of prose-shaped filler, phase-shifted by *seed*.
+
+    RFC-033 D1 made ``_flatten_tree_text`` newline-separate node parts, so the
+    flattened blob is now tokenized at node boundaries. Fixtures that gave every
+    node the identical ``"x" * n`` snippet therefore hand ``_is_garbled_blob``
+    one token repeated hundreds of times with no dictionary words in sight, and
+    trip its garble heuristics — turning density/leaf-ratio fixtures into
+    garbling fixtures. Real words, rotated per node, keep those tests measuring
+    what they were written to measure. Character counts are exact, so the volume
+    floors in ``classify_verdict`` are unaffected.
+    """
+    words: list[str] = []
+    total = 0
+    i = 0
+    # " ".join(words) is total - 1 chars (no trailing space), so build until
+    # the joined length (total - 1) reaches n_chars before truncating —
+    # otherwise an exact landing returns n_chars - 1 and skews ratio fixtures.
+    while total - 1 < n_chars:
+        word = _FILLER_WORDS[(seed + i) % len(_FILLER_WORDS)]
+        words.append(word)
+        total += len(word) + 1
+        i += 1
+    out = " ".join(words)[:n_chars]
+    # Never end on whitespace: callers assert on char counts that are measured
+    # after a strip(), so a trailing space would silently shorten the fixture.
+    return out[:-1] + "s" if out.endswith(" ") else out

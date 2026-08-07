@@ -293,15 +293,17 @@ class TestLogicalOrderDetection:
         assert _text_is_logical_order(visual) is False
 
     def test_logical_order_skips_get_display(self):
-        # RFC-023 D9: heading-marker lines are now *always* passed through
-        # get_display(), independent of the whole-document logical-order
-        # early-return, to fix bilingual docs whose headings are stored
-        # visual-order even when the body is logical. So an already-logical
-        # heading gets flipped here; only the (non-heading) body line is
-        # skipped by the early-return and stays untouched.
+        # RFC-023 D9 originally passed heading-marker lines through
+        # get_display() unconditionally, independent of the whole-document
+        # logical-order early-return, to fix bilingual docs whose headings
+        # are stored visual-order even when the body is logical. That
+        # unconditional branch double-reversed already-logical headings
+        # (reproduced against حقوق الإنسان's المحتويات/الخلاصة titles).
+        # RFC-033 D2 (Part A) narrows RFC-023 D9's scope: an already-logical
+        # heading is now left untouched, same as the body line.
         logical = "# قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل\nبشأن تنظيم علاقات العمل وتعديلاته"
         result = reconstruct_bidi_order(logical)
-        assert result != logical
+        assert result == logical
         assert result.splitlines()[1] == logical.splitlines()[1]
 
     def test_visual_order_still_reversed(self):

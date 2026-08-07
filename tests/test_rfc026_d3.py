@@ -3,7 +3,7 @@ scoring-harness Stage 2 guard fix.
 
 Validates Design Properties 4 and 5 (design-rfc026-verdict-gate-hardening-rotation-detection.md):
 
-1. ``snapshot_prior_verdicts()`` writes ``processed/_prior_verdicts.json``
+1. ``snapshot_prior_verdicts()`` writes ``snapshots/_prior_verdicts.json``
    containing the best-ever verdict per sha256/doc_name, degrading
    gracefully (no raise) on MinIO failure.
 2. ``find_prior_verdict()`` falls back to the snapshot only when no
@@ -63,7 +63,7 @@ class TestSnapshotPriorVerdicts:
 
         assert mock_minio.put_object.call_count == 1
         args, kwargs = mock_minio.put_object.call_args
-        assert args[1] == "processed/_prior_verdicts.json"
+        assert args[1] == "snapshots/_prior_verdicts.json"
         payload = json.loads(args[2].read())
         entries = payload["entries"]
         assert len(entries) == 2

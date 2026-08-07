@@ -14,6 +14,7 @@ from pageindex_mcp.helpers import (
     _flatten_tree_text,
     _garble_check_nodes,
     _word_has_reversed_morphology,
+    classify_verdict,
     validate_tree,
 )
 
@@ -157,19 +158,41 @@ class TestBidiCoherenceWiredIntoValidateTree:
         assert ok is False
         assert reason == "visual_order_garble"
 
-    def test_validate_tree_returns_visual_order_garble_for_bidi_incoherent_tree(
-        self, monkeypatch
-    ):
+    def test_validate_tree_sets_bidi_degraded_for_bidi_incoherent_tree(self, monkeypatch):
         monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "true")
         tree = _visual_order_tree()
 
         ok, reason = validate_tree(tree)
 
+        # RFC-033 D2 (Part B): verdict-only enforcement — ok is False so the
+        # caller knows the tree is degraded, but the reason is the
+        # persistence-safe "bidi_degraded" flag, not the raw
+        # "visual_order_garble" reason (which client.py's hard-fail list
+        # would raise LowQualityTreeError for).
         assert ok is False
-        assert reason == "visual_order_garble"
+        assert reason == "bidi_degraded"
 
-    def test_bidi_coherence_gate_is_audit_only_by_default(self, monkeypatch):
+    def test_bidi_coherence_gate_is_enforced_by_default(self, monkeypatch):
+        # RFC-033 D2 (Part B): BIDI_COHERENCE_ENFORCE now defaults to true.
         monkeypatch.delenv("BIDI_COHERENCE_ENFORCE", raising=False)
+        tree = _visual_order_tree()
+
+        ok, reason = validate_tree(tree)
+
+        assert ok is False
+        assert reason == "bidi_degraded"
+
+    def test_bidi_degraded_does_not_raise_low_quality_tree_error(self, monkeypatch):
+        # RFC-033 D2 (Part B): enforcement must never gate persistence —
+        # validate_tree itself never raises; it just returns ok=False with
+        # the "bidi_degraded" reason for the caller to persist-with-verdict.
+        monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "true")
+        tree = _visual_order_tree()
+
+        validate_tree(tree)  # must not raise
+
+    def test_bidi_coherence_gate_is_audit_only_when_explicitly_disabled(self, monkeypatch):
+        monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "false")
         tree = _visual_order_tree()
 
         ok, reason = validate_tree(tree)
@@ -194,3 +217,63 @@ class TestCheckBidiCoherenceIsDefinedOnce:
             f"Expected exactly one _check_bidi_coherence definition, "
             f"found {len(definitions)}"
         )
+
+
+def _varied_text(seed: int) -> str:
+    """Non-repeating filler that avoids the garble/token-repetition heuristics
+    (mirrors test_verdict_rfc015.py's fixture helper)."""
+    return " ".join(f"word{seed}n{j}alpha" for j in range(60))
+
+
+def _passing_tree():
+    """A well-formed tree with evenly-sized leaves (low leaf-concentration
+    ratio) that classify_verdict grades PASS, used to prove bidi_degraded
+    caps the verdict rather than upgrading it."""
+    return [
+        {
+            "title": "Chapter",
+            "text": "",
+            "nodes": [_healthy_leaf(f"Leaf {i}", _varied_text(i)) for i in range(5)],
+        }
+    ]
+
+
+class TestClassifyVerdictCapsBidiDegraded:
+    def test_bidi_degraded_caps_would_be_pass_at_marginal(self):
+        # RFC-033 D2 (Part B) / Design Property 2: bidi_degraded caps the
+        # verdict at MARGINAL — it never upgrades a verdict and it never
+        # gates persistence (classify_verdict is only reached for trees
+        # that already persisted).
+        tree = _passing_tree()
+
+        baseline_verdict, _ = classify_verdict(tree, content_class="tree", validate_reason=None)
+        assert baseline_verdict == "PASS"
+
+        capped_verdict, capped_reason = classify_verdict(
+            tree, content_class="tree", validate_reason="bidi_degraded"
+        )
+        assert capped_verdict == "MARGINAL"
+        assert capped_reason == "bidi_degraded"
+
+    def test_bidi_degraded_does_not_upgrade_an_existing_fail(self):
+        # A tree that would FAIL on its own merits (reordered) must stay
+        # FAIL — bidi_degraded only caps PASS, it never softens a worse
+        # verdict.
+        reordered_tree = [
+            {
+                "title": "Chapter",
+                "text": "",
+                "nodes": [
+                    _healthy_leaf("A", "x" * 200) | {"start_index": 10},
+                    _healthy_leaf("B", "x" * 200) | {"start_index": 30},
+                    _healthy_leaf("C", "x" * 200) | {"start_index": 20},
+                ],
+            }
+        ]
+
+        verdict, reason = classify_verdict(
+            reordered_tree, content_class="tree", validate_reason="bidi_degraded"
+        )
+
+        assert verdict == "FAIL"
+        assert reason == "reordered"

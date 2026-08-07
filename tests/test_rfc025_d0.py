@@ -167,11 +167,11 @@ class TestFindPriorVerdictRetrieval:
     def test_k_current_doc_id_excluded_from_self_match(self, mock_minio):
         mock_minio.list_objects.return_value = [_obj("processed/doc-new.meta.json")]
         # RFC-026 D3: no snapshot exists, so the fallback lookup raises (simulating
-        # a missing processed/_prior_verdicts.json) and find_prior_verdict degrades
+        # a missing snapshots/_prior_verdicts.json) and find_prior_verdict degrades
         # to None -- the sidecar scan itself must never call get_object for the
         # current doc_id's own sidecar.
         mock_minio.get_object.side_effect = RuntimeError("NoSuchKey")
         result = find_prior_verdict("abc123", "new.pdf", "doc-new")
         assert result is None
         called_names = [call.args[1] for call in mock_minio.get_object.call_args_list]
-        assert called_names == ["processed/_prior_verdicts.json"]
+        assert called_names == ["snapshots/_prior_verdicts.json"]

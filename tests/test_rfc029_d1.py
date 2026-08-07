@@ -15,7 +15,7 @@ from pageindex_mcp.helpers import (
     _RFC029_MIN_CHARS_PER_NODE,
     validate_tree,
 )
-
+from tests.conftest import filler_text
 
 # ---------------------------------------------------------------------------
 # Tree-factory helpers (mirror pattern from test_rfc029_d8.py)
@@ -40,10 +40,9 @@ def _low_density_tree(n_nodes: int = 210, chars_per_node: int = 5) -> list[dict]
     The root node itself is excluded from validate_tree's node counter, so we
     create n_nodes non-root nodes.
     """
-    text_snippet = "x" * chars_per_node
-    leaves = [_make_leaf(f"L{i}", text_snippet) for i in range(n_nodes - 1)]
-    branch = _make_branch("Section1", text_snippet, leaves)
-    return [{"title": "Root", "text": text_snippet, "nodes": [branch]}]
+    leaves = [_make_leaf(f"L{i}", filler_text(chars_per_node, i)) for i in range(n_nodes - 1)]
+    branch = _make_branch("Section1", filler_text(chars_per_node, n_nodes), leaves)
+    return [{"title": "Root", "text": filler_text(chars_per_node, n_nodes + 1), "nodes": [branch]}]
 
 
 def _canonical_pass_tree(index: int) -> list[dict]:

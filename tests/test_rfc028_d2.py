@@ -25,9 +25,17 @@ _PRESENTATION_FINAL_FORMS = ["ﺎ", "ﺐ", "ﺖ", "ﺚ"]
 def _blob(n_presentation: int, n_logical: int) -> str:
     """Space-separated so the blob has multiple tokens, cycling through
     several distinct code points per category so no single token exceeds
-    the unrelated repetition-ratio check's 30% threshold."""
-    pres = [_PRESENTATION_FINAL_FORMS[i % 4] for i in range(n_presentation)]
-    logi = [_LOGICAL_LETTERS[i % 4] for i in range(n_logical)]
+    the unrelated repetition-ratio check's 30% threshold. Characters are
+    grouped into 3-char tokens (not single-char tokens) so the blob also
+    stays clear of the unrelated D2/RFC-033 single-letter Arabic fragment
+    check -- the char-level presentation/logical ratio this test isolates
+    is unaffected by token grouping."""
+
+    def _grouped(chars: list[str]) -> list[str]:
+        return ["".join(chars[i : i + 3]) for i in range(0, len(chars), 3)]
+
+    pres = _grouped([_PRESENTATION_FINAL_FORMS[i % 4] for i in range(n_presentation)])
+    logi = _grouped([_LOGICAL_LETTERS[i % 4] for i in range(n_logical)])
     return " ".join(pres + logi)
 
 

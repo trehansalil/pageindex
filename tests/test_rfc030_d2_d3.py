@@ -16,6 +16,7 @@ import pytest
 import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
 from pageindex_mcp.helpers import _RFC029_MIN_CHARS_PER_NODE, LowQualityTreeError, validate_tree
+from tests.conftest import filler_text
 
 
 def _make_leaf(title: str, text: str) -> dict:
@@ -31,10 +32,11 @@ def _make_branch(title: str, text: str, children: list[dict]) -> dict:
 def _density_tree(n_nodes: int, chars_per_node: int) -> list[dict]:
     """Build a tree with *n_nodes* total non-root nodes, each carrying
     *chars_per_node* chars. Mirrors the fixture pattern from test_rfc029_d1.py."""
-    text_snippet = "x" * chars_per_node
-    leaves = [_make_leaf(f"L{i}", text_snippet) for i in range(n_nodes - 1)]
-    branch = _make_branch("Section1", text_snippet, leaves)
-    return [{"title": "Root", "text": text_snippet, "nodes": [branch]}]
+    leaves = [_make_leaf(f"L{i}", filler_text(chars_per_node, i)) for i in range(n_nodes - 1)]
+    branch = _make_branch("Section1", filler_text(chars_per_node, n_nodes), leaves)
+    return [
+        {"title": "Root", "text": filler_text(chars_per_node, n_nodes + 1), "nodes": [branch]}
+    ]
 
 
 class TestDensityThresholdBoundary:
