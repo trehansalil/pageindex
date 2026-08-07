@@ -116,3 +116,42 @@ Every per-document figure below was re-pulled from the live MinIO `pageindex` bu
 - **Ministerial Resolution No279 of 2022 Monitoring Mechanisms of Emiratisation Rates in the Private Sec - Copy.pdf** — PASS -> PASS (28 nodes / depth 2 / 7,782 chars, live-verified identical)
 - **cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf** — PASS -> PASS (43 nodes / depth 3 / 16,748 chars, live-verified identical)
 - **world-stats-pocketbook-2023.pdf** — PASS -> PASS (2,591 blocks / 6,193,594 meta chars, live-verified identical)
+
+---
+
+## Finding ID Index
+
+> **Added 2026-08-06 by `audit/RECONCILIATION_REPORT.md`.** This audit was written without finding IDs; the `A33-*` identifiers were introduced by the reconciliation pass so findings can be referenced stably across runs and mapped to RFC decisions. The index is a labeling layer over the sections above — it introduces no new findings and restates no measurements.
+
+| ID | Sev | Finding | Where in this doc | RFC-033 mapping |
+|---|---|---|---|---|
+| **A33-C4a** | critical | Garble-gate false positive: `_garble_ratio` full-text tautology + `_flatten_tree_text` missing separator | Regressions; Scorecard (SLA) | **D1** — closes on D1 delivery |
+| **A33-C4b** | critical | Verdict gate blind to RTL reversal: reversed Arabic headings neither detected nor corrected | Regressions requiring investigation | **D2 Part A** — stays open until the heading-reversal guard lands and the scoped re-ingest confirms clean headings |
+| **A33-S1** | important | Hierarchy-collapse defects persist across runs (compound, 8 docs) | Stalls (8) | D4, D5, D2, D8, OoS [10b] |
+| **A33-S2** | important | `GHV-TKV-Tarif.pdf` tariff table stalled flat — `_segment_table_nodes` not on the primary tree-build path | Stalls (8); Scorecard row 15 | **D6** |
+| **A33-R1** | important | `federal_decree_law_no_33` PASS → MARGINAL (judge-side severity shift) | Regressions (3); Scorecard row 14 | **D0** |
+| **A33-R2** | important | SLA PASS → MARGINAL — garble-gate false positive reappeared | Regressions (3) | **D1** |
+| **A33-I1** | important | Persistence-timing race: القرار التنظيمي scoring miss | Regressions requiring investigation | **D3** |
+| **A33-I2** | important | Char-accounting gap in قرار مجلس الوزراء رقم (106) | Pre-publish Verification (line 24) | OoS [9] — measurement artifact, not a pipeline defect |
+| **A33-C1** | important | حقوق الإنسان node shrinkage / bidi-reversal claim | Improvements (6) | **D2 Part A** — root cause is pipeline-induced (see reconciliation C-3) |
+| **A33-C2** | important | `cabinet_resolution_no_96` Article-5 blob claim | Stalls (8) | **D4** |
+| **A33-C3** | important | FDL No. (47) Articles 3–13 concatenation claim | Stalls (8) | **D4** |
+| **A33-C5** | important | وارد 597 FAIL→MARGINAL is a content-identity/document-swap artifact | Improvements (6); Scorecard row 9 | OoS [10a] — source-file data quality |
+| **A33-I3** | informational | No artifact-swap between Arabic and English sibling docs | Improvements (6) | — (observational; close as no-defect) |
+| **A33-I4** | informational | Image-enrichment promotion below char floor ineffective | Stalls (8) | **D7** |
+
+### Uncovered sub-items
+
+These sit inside findings counted as covered above; no RFC decision addresses them. See `audit/RECONCILIATION_REPORT.md` § Orphaned Audit Findings.
+
+| Sub-item | Parent | Why it is uncovered |
+|---|---|---|
+| **Reitlehrer ~32% char-stripping loss** (2,768 vs original 4,082) | Improvements (6), line 74 | Live content-loss regression from landed RFC-029 D3, **masked by a PASS verdict** — the doc improved only because the judge reclassified the missing image as a non-substantive logo. Highest-priority uncovered item. |
+| **Haftpflicht-Allgemeine** vertical-text garbling + 3 unenriched images | A33-S1, Scorecard row 16 | D5 covers the depth-2 flatness only. |
+| **FDL-33 ToC misparsed into ~130 heading nodes** | A33-R1, Scorecard row 14 | D0 covers only the verdict regression; the structural misparse survives D0. |
+| **SLA doc depth-1 flatness** | A33-S1 | Appears in RFC-033 only under D1 (garble false positive), never for structure. |
+| **A33-I2 residual: char-sum methodology** | A33-I2 | Audit tooling, not `src/`. |
+
+### A33-C4 split note
+
+A33-C4 was originally a single CRITICAL finding mapped to D1 + D2, which made it closable on work addressing only half of it. Split into **C4a** (garble gate, closes on D1) and **C4b** (RTL reversal, closes on D2 Part A) per the 2026-08-06 reconciliation decision. Any cross-run reference to a bare "A33-C4" should be read as **C4a + C4b**.
