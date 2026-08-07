@@ -74,5 +74,5 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
-          scw container container deploy ${{ env.CONTAINER_ID }} region=${{ env.SCW_DEFAULT_REGION }} --wait
+          scw container container deploy ${{ env.CONTAINER_ID }} region=${{ env.SCW_DEFAULT_REGION }} -w
           echo "✓ Docling service deployed successfully"
