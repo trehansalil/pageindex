@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 env:
-  SCW_REGION: nl-ams
+  SCW_DEFAULT_REGION: nl-ams
   SCW_REGISTRY: rg.nl-ams.scw.cloud/wise-demo
   IMAGE_NAME: docling-service
   CONTAINER_ID: 5b6bb7db-66d4-4a72-886a-2102461a3a26
