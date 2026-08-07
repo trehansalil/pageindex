@@ -63,8 +63,11 @@ jobs:
               .
 
       - name: Install Scaleway CLI
+        env:
+          SCW_CLI_VERSION: "2.54.0"
         run: |
-          curl -sSL https://raw.githubusercontent.com/scaleway/scaleway-cli/master/scripts/get.sh | sh
+          curl -sSL -o /usr/local/bin/scw "https://github.com/scaleway/scaleway-cli/releases/download/v${SCW_CLI_VERSION}/scaleway-cli_${SCW_CLI_VERSION}_linux_amd64"
+          chmod +x /usr/local/bin/scw
           scw version
 
       - name: Deploy and wait for ready
@@ -74,5 +77,5 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
-          scw container container deploy ${{ env.CONTAINER_ID }} region=${{ env.SCW_DEFAULT_REGION }} -w
+          scw container container deploy ${{ env.CONTAINER_ID }} region=${{ env.SCW_DEFAULT_REGION }} --wait
           echo "✓ Docling service deployed successfully"
