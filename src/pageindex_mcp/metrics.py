@@ -160,6 +160,11 @@ OCR_ESCALATION_TOTAL = Counter(
     "PDF (Fix 3). Labelled by result: recovered | still_garbled | error.",
     ["result"],
 )
+REMOTE_MD_RENORMALIZED = Counter(
+    "pageindex_remote_md_renormalized_total",
+    "Remote-returned markdown passed through reconstruct_bidi_order as a local "
+    "re-normalization safety net before md_to_tree (RFC-034 D3).",
+)
 VLM_FALLBACK_TOTAL = Counter(
     "pageindex_vlm_fallback_total",
     "VLM last-resort fallback attempts on garble-rejected PDFs whose OCR "
@@ -188,6 +193,11 @@ AGPL_FALLBACK_TOTAL = Counter(
     "pageindex_agpl_fallback_total",
     "PDF conversions that used the AGPL pymupdf4llm path",
     ["reason"],
+)
+DOCLING_VERSION_SKEW = Counter(
+    "pageindex_docling_version_skew_total",
+    "Remote Docling version skew detections",
+    ["signal"],
 )
 
 # ---------------------------------------------------------------------------

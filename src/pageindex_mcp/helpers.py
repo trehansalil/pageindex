@@ -988,6 +988,66 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
     return (len(matches) / max(len(text.split()), 1)) > threshold
 
 
+# RFC-034 D7: Unicode Joining_Type table vendored from ArabicShaping.txt
+# (Unicode 17.0.0), scoped to the three base-Arabic blocks that presentation
+# forms (FB50-FDFF, FE70-FEFF) decompose into under NFKC normalisation:
+# Arabic, Arabic Supplement, Arabic Extended-A. R=Right_Joining,
+# L=Left_Joining, D=Dual_Joining, C=Join_Causing, U=Non_Joining.
+_JOINING_TYPE: dict[int, str] = {
+    # Arabic (U+0600-U+06FF), 160 entries
+    0x0600: "U", 0x0601: "U", 0x0602: "U", 0x0603: "U", 0x0604: "U", 0x0605: "U", 0x0608: "U", 0x060B: "U",
+    0x0620: "D", 0x0621: "U", 0x0622: "R", 0x0623: "R", 0x0624: "R", 0x0625: "R", 0x0626: "D", 0x0627: "R",
+    0x0628: "D", 0x0629: "R", 0x062A: "D", 0x062B: "D", 0x062C: "D", 0x062D: "D", 0x062E: "D", 0x062F: "R",
+    0x0630: "R", 0x0631: "R", 0x0632: "R", 0x0633: "D", 0x0634: "D", 0x0635: "D", 0x0636: "D", 0x0637: "D",
+    0x0638: "D", 0x0639: "D", 0x063A: "D", 0x063B: "D", 0x063C: "D", 0x063D: "D", 0x063E: "D", 0x063F: "D",
+    0x0640: "C", 0x0641: "D", 0x0642: "D", 0x0643: "D", 0x0644: "D", 0x0645: "D", 0x0646: "D", 0x0647: "D",
+    0x0648: "R", 0x0649: "D", 0x064A: "D", 0x066E: "D", 0x066F: "D", 0x0671: "R", 0x0672: "R", 0x0673: "R",
+    0x0674: "U", 0x0675: "R", 0x0676: "R", 0x0677: "R", 0x0678: "D", 0x0679: "D", 0x067A: "D", 0x067B: "D",
+    0x067C: "D", 0x067D: "D", 0x067E: "D", 0x067F: "D", 0x0680: "D", 0x0681: "D", 0x0682: "D", 0x0683: "D",
+    0x0684: "D", 0x0685: "D", 0x0686: "D", 0x0687: "D", 0x0688: "R", 0x0689: "R", 0x068A: "R", 0x068B: "R",
+    0x068C: "R", 0x068D: "R", 0x068E: "R", 0x068F: "R", 0x0690: "R", 0x0691: "R", 0x0692: "R", 0x0693: "R",
+    0x0694: "R", 0x0695: "R", 0x0696: "R", 0x0697: "R", 0x0698: "R", 0x0699: "R", 0x069A: "D", 0x069B: "D",
+    0x069C: "D", 0x069D: "D", 0x069E: "D", 0x069F: "D", 0x06A0: "D", 0x06A1: "D", 0x06A2: "D", 0x06A3: "D",
+    0x06A4: "D", 0x06A5: "D", 0x06A6: "D", 0x06A7: "D", 0x06A8: "D", 0x06A9: "D", 0x06AA: "D", 0x06AB: "D",
+    0x06AC: "D", 0x06AD: "D", 0x06AE: "D", 0x06AF: "D", 0x06B0: "D", 0x06B1: "D", 0x06B2: "D", 0x06B3: "D",
+    0x06B4: "D", 0x06B5: "D", 0x06B6: "D", 0x06B7: "D", 0x06B8: "D", 0x06B9: "D", 0x06BA: "D", 0x06BB: "D",
+    0x06BC: "D", 0x06BD: "D", 0x06BE: "D", 0x06BF: "D", 0x06C0: "R", 0x06C1: "D", 0x06C2: "D", 0x06C3: "R",
+    0x06C4: "R", 0x06C5: "R", 0x06C6: "R", 0x06C7: "R", 0x06C8: "R", 0x06C9: "R", 0x06CA: "R", 0x06CB: "R",
+    0x06CC: "D", 0x06CD: "R", 0x06CE: "D", 0x06CF: "R", 0x06D0: "D", 0x06D1: "D", 0x06D2: "R", 0x06D3: "R",
+    0x06D5: "R", 0x06DD: "U", 0x06EE: "R", 0x06EF: "R", 0x06FA: "D", 0x06FB: "D", 0x06FC: "D", 0x06FF: "D",
+    # Arabic Supplement (U+0750-U+077F), 48 entries
+    0x0750: "D", 0x0751: "D", 0x0752: "D", 0x0753: "D", 0x0754: "D", 0x0755: "D", 0x0756: "D", 0x0757: "D",
+    0x0758: "D", 0x0759: "R", 0x075A: "R", 0x075B: "R", 0x075C: "D", 0x075D: "D", 0x075E: "D", 0x075F: "D",
+    0x0760: "D", 0x0761: "D", 0x0762: "D", 0x0763: "D", 0x0764: "D", 0x0765: "D", 0x0766: "D", 0x0767: "D",
+    0x0768: "D", 0x0769: "D", 0x076A: "D", 0x076B: "R", 0x076C: "R", 0x076D: "D", 0x076E: "D", 0x076F: "D",
+    0x0770: "D", 0x0771: "R", 0x0772: "D", 0x0773: "R", 0x0774: "R", 0x0775: "D", 0x0776: "D", 0x0777: "D",
+    0x0778: "R", 0x0779: "R", 0x077A: "D", 0x077B: "D", 0x077C: "D", 0x077D: "D", 0x077E: "D", 0x077F: "D",
+    # Arabic Extended-A (U+08A0-U+08FF), 42 entries
+    0x08A0: "D", 0x08A1: "D", 0x08A2: "D", 0x08A3: "D", 0x08A4: "D", 0x08A5: "D", 0x08A6: "D", 0x08A7: "D",
+    0x08A8: "D", 0x08A9: "D", 0x08AA: "R", 0x08AB: "R", 0x08AC: "R", 0x08AD: "U", 0x08AE: "R", 0x08AF: "D",
+    0x08B0: "D", 0x08B1: "R", 0x08B2: "R", 0x08B3: "D", 0x08B4: "D", 0x08B5: "D", 0x08B6: "D", 0x08B7: "D",
+    0x08B8: "D", 0x08B9: "R", 0x08BA: "D", 0x08BB: "D", 0x08BC: "D", 0x08BD: "D", 0x08BE: "D", 0x08BF: "D",
+    0x08C0: "D", 0x08C1: "D", 0x08C2: "D", 0x08C3: "D", 0x08C4: "D", 0x08C5: "D", 0x08C6: "D", 0x08C7: "D",
+    0x08C8: "D", 0x08E2: "U",
+}
+
+
+def _arabic_word_joins(word: str) -> int:
+    """Count adjacent-pair cursive joins in *word* as stored, using
+    Joining_Type: a join exists between word[i] and word[i+1] when word[i]
+    can join forward (Dual/Left/Join_Causing) and word[i+1] can join
+    backward (Dual/Right/Join_Causing). Reversing a correctly-ordered word's
+    character order breaks most of its joins (joining is direction-specific),
+    which is the RFC-034 D7 replacement for the presentation-form check."""
+    joins = 0
+    for i in range(len(word) - 1):
+        if _JOINING_TYPE.get(ord(word[i]), "U") in ("D", "L", "C") and _JOINING_TYPE.get(
+            ord(word[i + 1]), "U"
+        ) in ("D", "R", "C"):
+            joins += 1
+    return joins
+
+
 def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
     """Post-NFKC bidi-coherence check for Arabic text (RFC-029 D0/Property 2).
 
@@ -1007,17 +1067,7 @@ def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
     """
 
     def _reversed_morphology(word: str) -> bool:
-        if len(word) < 2:
-            return False
-        try:
-            first_name = unicodedata.name(word[0])
-        except ValueError:
-            first_name = ""
-        try:
-            last_name = unicodedata.name(word[-1])
-        except ValueError:
-            last_name = ""
-        return "FINAL FORM" in first_name or "INITIAL FORM" in last_name
+        return _word_has_reversed_morphology(word)
 
     _AR_RE = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]+")
 
@@ -1026,7 +1076,7 @@ def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
         stripped = line.strip()
         if not stripped:
             continue
-        arabic_chars = sum(1 for c in stripped if "؀" <= c <= "ۿ")
+        arabic_chars = sum(1 for c in stripped if _AR_RE.match(c))
         total_chars = len(stripped.replace(" ", ""))
         if total_chars == 0 or arabic_chars / total_chars < 0.4:
             continue
@@ -1039,7 +1089,15 @@ def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
     if not runs:
         return True, ""
 
-    failed = sum(1 for tokens in runs if any(_reversed_morphology(w) for w in tokens))
+    from bidi.algorithm import get_display
+
+    failed = sum(
+        1
+        for tokens in runs
+        if any(_reversed_morphology(w) for w in tokens)
+        or _arabic_readability_score(get_display(" ".join(tokens)).split())
+        > _arabic_readability_score(tokens)
+    )
     if failed / len(runs) > 0.50:
         return False, "visual_order_garble"
     return True, ""
@@ -1170,23 +1228,27 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
 
 
 def _word_has_reversed_morphology(word: str) -> bool:
-    """RFC-028 D3: vocabulary-independent reversal signal. Arabic Presentation
-    Forms glyphs are contextual (isolated/initial/medial/final); a final-form
-    glyph at word start or an initial-form glyph at word end is a morphologically
-    invalid sequence in correctly-ordered Arabic and indicates the character order
-    was reversed. Plain logical-order Arabic (U+0600-06FF, no presentation-form
-    shaping) never matches this and cannot false-positive."""
-    if len(word) < 2:
+    """RFC-034 D7: vocabulary-independent reversal signal, using Unicode
+    Joining_Type on base Arabic codepoints (via `_JOINING_TYPE`) rather than
+    `unicodedata.name()` presentation-form checks. Since upstream NFKC
+    normalization decomposes presentation forms to base Arabic before this
+    runs, the presentation-form check was a null detector (0% TPR).
+
+    Cursive joining is direction-specific (`_arabic_word_joins`): a
+    correctly-ordered Arabic word almost always has at least one adjacent
+    pair that joins. Reversing the character order breaks nearly all of
+    those joins (a join valid in one direction is not valid in the other),
+    so a word with zero joins as stored that WOULD gain a join if reversed
+    is a strong, vocabulary-independent reversal signal.
+
+    Words shorter than 4 chars are excluded: with only one or two adjacent
+    pairs to sample, common short function words (e.g. "دم", "رب" — a
+    Right_Joining letter followed by a Dual_Joining one, which never joins
+    forward and is a completely ordinary, non-reversed pattern) hit
+    zero-joins-as-stored by chance and would false-positive."""
+    if len(word) < 4:
         return False
-    try:
-        first_name = unicodedata.name(word[0])
-    except ValueError:
-        first_name = ""
-    try:
-        last_name = unicodedata.name(word[-1])
-    except ValueError:
-        last_name = ""
-    return "FINAL FORM" in first_name or "INITIAL FORM" in last_name
+    return _arabic_word_joins(word) == 0 and _arabic_word_joins(word[::-1]) > 0
 
 
 def _tree_is_rtl_reversed(nodes: list) -> bool:
@@ -2662,6 +2724,26 @@ def flag_empty_cells(block: dict) -> dict:
 
 
 _TOC_DOT_LEADER_RE = re.compile(r"\.{4,}\s*\d+\s*\|?\s*$")
+
+
+def _strip_toc_heading_nodes(nodes: list[dict]) -> list[dict]:
+    """RFC-034 D11: remove nodes whose text is empty or consists only of ToC
+    dot-leader lines, where the title also looks like a ToC entry."""
+    result = []
+    for node in nodes:
+        text = (node.get("text") or "").strip()
+        title = (node.get("title") or "").strip()
+        text_lines = [ln for ln in text.splitlines() if ln.strip()]
+        # A ToC node: empty body or all lines match the dot-leader pattern —
+        # stripped only when the title also looks like a ToC entry (or is empty).
+        if (not text_lines or all(_TOC_DOT_LEADER_RE.search(ln) for ln in text_lines)) and (
+            _TOC_DOT_LEADER_RE.search(title) or not title
+        ):
+            continue
+        if "nodes" in node:
+            node["nodes"] = _strip_toc_heading_nodes(node["nodes"])
+        result.append(node)
+    return result
 
 
 _GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"

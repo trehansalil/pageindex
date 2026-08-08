@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import importlib
 import logging
 import os
 import random
@@ -16,7 +17,12 @@ import openai
 from pageindex import PageIndexClient
 
 from .cache import get_doc
-from .config import CURRENT_PIPELINE_VERSION, PDF_INSPECTOR_PRECLASSIFY, settings
+from .config import (
+    CURRENT_PIPELINE_VERSION,
+    PDF_INSPECTOR_PRECLASSIFY,
+    REMOTE_MD_RENORMALIZE,
+    settings,
+)
 from .converters import (
     PictureResult,
     _add_vlm_descriptions,
@@ -47,6 +53,7 @@ from .helpers import (
     _script_from_filename,
     _segment_table_nodes,
     _strip_text,
+    _strip_toc_heading_nodes,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     classify_verdict,
@@ -55,6 +62,7 @@ from .helpers import (
     validate_tree,
 )
 from .metrics import (
+    DOCLING_VERSION_SKEW,
     FLAT_DOCS_TOTAL,
     LOW_QUALITY_TREES,
     OCR_ESCALATION_TOTAL,
@@ -62,6 +70,7 @@ from .metrics import (
     PDF_INSPECTOR_FORCED_OCR,
     PDF_PRIMARY_CONVERTER_FAILURES,
     RAW_UPLOAD_FAILURES,
+    REMOTE_MD_RENORMALIZED,
     VLM_FALLBACK_TOTAL,
 )
 from .storage import (
@@ -129,6 +138,10 @@ class LLMTransientFailure(Exception):
 _LLM_TREE_MAX_RETRIES = int(os.environ.get("LLM_TREE_MAX_RETRIES", "3"))
 _LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
 _RETRY_AFTER_CAP = 60  # seconds
+
+# RFC-034 D1: cached remote Docling /version response, fetched once per process.
+_remote_docling_version: dict | None = None
+_CLIENT_BUILD_SHA = os.environ.get("CLIENT_BUILD_SHA", "unknown")
 
 
 def _is_retryable_llm_error(exc: Exception) -> tuple[bool, int | None]:
@@ -542,6 +555,42 @@ def _split_converter_output(out) -> tuple[str, list]:
     return out, []
 
 
+async def _check_remote_docling_version(httpx_client) -> None:
+    """RFC-034 D1: cache the remote Docling ``/version`` response and warn on skew.
+
+    Fetched once per process. commit_sha is the primary skew signal (catches every
+    converter-behaviour change); pipeline_version is a secondary, coarser signal.
+    """
+    global _remote_docling_version
+    if _remote_docling_version is not None:
+        return
+    try:
+        ver_resp = await httpx_client.get(f"{settings.docling_service_url}/version", timeout=5.0)
+        _remote_docling_version = ver_resp.json()
+        remote_sha = _remote_docling_version.get("commit_sha", "unknown")
+        remote_pv = _remote_docling_version.get("pipeline_version", 0)
+        if remote_sha != _CLIENT_BUILD_SHA:
+            logger.warning("Remote Docling SHA %s != client SHA %s", remote_sha, _CLIENT_BUILD_SHA)
+            DOCLING_VERSION_SKEW.labels(signal="commit_sha").inc()
+        if remote_pv < CURRENT_PIPELINE_VERSION:
+            logger.error("Remote pipeline_version %d < local %d", remote_pv, CURRENT_PIPELINE_VERSION)
+            DOCLING_VERSION_SKEW.labels(signal="pipeline_version").inc()
+    except Exception as e:
+        logger.warning("Could not fetch remote /version: %s; skew detection disabled", e)
+        _remote_docling_version = {"commit_sha": "unavailable"}
+
+
+def _converter_contract(converter_name: str | None) -> str | None:
+    """RFC-034 D5: resolve the winning converter's module ``__version__``."""
+    if not converter_name:
+        return None
+    try:
+        module = importlib.import_module(converter_name)
+        return getattr(module, "__version__", None)
+    except Exception:
+        return None
+
+
 async def _remote_pdf_to_markdown(
     staging_key: str,
     *,
@@ -570,6 +619,7 @@ async def _remote_pdf_to_markdown(
     if settings.docling_service_bearer_token:
         headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
     async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:
+        await _check_remote_docling_version(client)
         resp = await client.post(
             f"{settings.docling_service_url}/convert/pdf",
             json=payload,
@@ -786,24 +836,37 @@ class CustomPageIndexClient(PageIndexClient):
                 # wasting a non-OCR conversion attempt.
                 pre_garbled = False
                 pdf_page_count: int | None = None  # RFC-029 D2: threaded into validate_tree
-                try:
-                    import fitz
+                from .config import ALLOW_AGPL_FALLBACK
 
-                    with fitz.open(file_path) as probe_pdf:
-                        pdf_page_count = probe_pdf.page_count if probe_pdf.page_count > 0 else None
-                        if probe_pdf.page_count > 0:
-                            raw_text = probe_pdf[0].get_text()
-                            if raw_text.strip() and _flat_text_is_garbled(
-                                raw_text, expected_script=expected_script
-                            ):
-                                pre_garbled = True
-                                logger.info(
-                                    "D3a: raw text layer garbled for %s, forcing full-page "
-                                    "OCR upfront",
-                                    filename,
-                                )
-                except Exception:
-                    pass  # probe failure is non-fatal — fall through to the normal chain
+                if not ALLOW_AGPL_FALLBACK:
+                    # RFC-034 D4: fitz (PyMuPDF) is AGPL-3.0. Skip the probe entirely;
+                    # degraded but compliant — the normal chain handles garble escalation.
+                    logger.warning(
+                        "D3a pre-conversion probe skipped for %s: ALLOW_AGPL_FALLBACK=false "
+                        "blocks fitz (PyMuPDF, AGPL-3.0)",
+                        filename,
+                    )
+                else:
+                    try:
+                        import fitz  # PyMuPDF, AGPL-3.0 — gated by ALLOW_AGPL_FALLBACK above
+
+                        with fitz.open(file_path) as probe_pdf:
+                            pdf_page_count = (
+                                probe_pdf.page_count if probe_pdf.page_count > 0 else None
+                            )
+                            if probe_pdf.page_count > 0:
+                                raw_text = probe_pdf[0].get_text()
+                                if raw_text.strip() and _flat_text_is_garbled(
+                                    raw_text, expected_script=expected_script
+                                ):
+                                    pre_garbled = True
+                                    logger.info(
+                                        "D3a: raw text layer garbled for %s, forcing full-page "
+                                        "OCR upfront",
+                                        filename,
+                                    )
+                    except Exception:
+                        pass  # probe failure is non-fatal — fall through to the normal chain
 
                 # QF1 (RFC-021): forcing full-page OCR on the primary conversion
                 # attempt destroys Docling's PictureItem segmentation. Defer to the
@@ -932,6 +995,15 @@ class CustomPageIndexClient(PageIndexClient):
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                         _log_pic_splice_trace(filename, "primary", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
+                    if _use_remote and REMOTE_MD_RENORMALIZE:
+                        _renorm = reconstruct_bidi_order(md_content)
+                        if _renorm != md_content:
+                            REMOTE_MD_RENORMALIZED.inc()
+                            logger.debug(
+                                "D3 re-normalization changed %d chars for %s",
+                                len(md_content) - len(_renorm), filename,
+                            )
+                            md_content = _renorm
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
@@ -1104,6 +1176,11 @@ class CustomPageIndexClient(PageIndexClient):
                 # which extraction was actually used.
                 pre_retry_md_content = md_content
                 pre_retry_pic_results = pic_results
+                # RFC-034 D5: the escalation below re-extracts via docling (remote
+                # service or local pdf_to_markdown_docling) regardless of which
+                # converter won the primary pass — snapshot so provenance reverts
+                # with the rest of the state when the retry loses.
+                pre_retry_used_converter = used_converter
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -1136,9 +1213,19 @@ class CustomPageIndexClient(PageIndexClient):
                         md_content, pic_results = _split_converter_output(
                             await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                         )
+                    used_converter = "docling"  # RFC-034 D5: both branches above are docling
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                         _log_pic_splice_trace(filename, "garble_escalation", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
+                    if _use_remote and REMOTE_MD_RENORMALIZE:
+                        _renorm = reconstruct_bidi_order(md_content)
+                        if _renorm != md_content:
+                            REMOTE_MD_RENORMALIZED.inc()
+                            logger.debug(
+                                "D3 re-normalization changed %d chars for %s",
+                                len(md_content) - len(_renorm), filename,
+                            )
+                            md_content = _renorm
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -1260,6 +1347,7 @@ class CustomPageIndexClient(PageIndexClient):
                         reason = pre_retry_reason
                         md_content = pre_retry_md_content
                         pic_results = pre_retry_pic_results
+                        used_converter = pre_retry_used_converter
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
                         with tempfile.NamedTemporaryFile(
@@ -1894,7 +1982,36 @@ class CustomPageIndexClient(PageIndexClient):
                 "max_leaf_ratio": round(mlr, 4),
                 "pipeline_version": CURRENT_PIPELINE_VERSION,
                 "verdict_computed_at": datetime.now(UTC).isoformat(),
+                "total_tree_chars": len(_flatten_tree_text(structure)),
             }
+            # RFC-034 D5: extraction provenance. `used_converter`/`_use_remote`/
+            # `pdf_page_count` only exist inside the `ext == ".pdf"` branch above, so
+            # these fields are populated for PDF docs only — omit-when-absent for
+            # non-PDF docs (md/docx/txt/html/pptx/xlsx). None values are omitted
+            # (never persisted as null), per the D5 acceptance criteria.
+            if ext == ".pdf":
+                # `_use_remote` only means the remote service is CONFIGURED; the
+                # remote path actually executes only for docling (see the
+                # `_use_remote and "docling" in conv_name` routing above). A
+                # pymupdf4llm fallback after a remote-docling failure is a LOCAL
+                # (AGPL) extraction and must be recorded as such (U-2).
+                _route_remote = bool(
+                    _use_remote and used_converter and "docling" in used_converter
+                )
+                meta["extraction_route"] = "remote" if _route_remote else "local"
+                if used_converter:
+                    meta["converter_name"] = used_converter
+                    contract = _converter_contract(used_converter)
+                    if contract is not None:
+                        meta["converter_contract"] = contract
+                if pdf_page_count is not None:
+                    meta["page_count"] = pdf_page_count
+                if pdf_classification:
+                    meta["inspector_class"] = pdf_classification.get("pdf_type")
+                if _route_remote and _remote_docling_version:
+                    meta["remote_build_sha"] = _remote_docling_version.get(
+                        "commit_sha", "unknown"
+                    )
             await asyncio.to_thread(save_doc_meta, doc_id, meta)
 
             # D7: raw upload persisted only after the processed artifact succeeds.
@@ -2053,5 +2170,8 @@ class CustomPageIndexClient(PageIndexClient):
             result = _synthesize_preamble_node(md_text, result)
         except OSError:
             logger.warning("D10: could not read %s to check for preamble content", md_path)
+
+        # RFC-034 D11: strip ToC-heading nodes before oversized-leaf splitting.
+        result["structure"] = _strip_toc_heading_nodes(result.get("structure", []))
 
         return result

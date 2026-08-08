@@ -413,7 +413,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
 # (audit Finding 9 / registry_backfill._bounded_enrich). The fat-vs-thin
 # decision is made by FIELD PRESENCE (see registry_backfill._is_fat), never by
 # this integer — the marker exists for telemetry/documentation only.
-SIDECAR_VERSION = 2
+SIDECAR_VERSION = 3
 
 # C-3: forward-compat Tier-1 facet fields. Omit-when-absent today (nobody
 # generates them yet — C-1, P2), so writing them is a no-op until C-1 lands;
@@ -435,6 +435,13 @@ _META_FIELDS = (
     "promotion_eligible",
     "verdict_computed_at",
     "flat_char_count",
+    "extraction_route",
+    "converter_name",
+    "converter_contract",
+    "remote_build_sha",
+    "page_count",
+    "inspector_class",
+    "total_tree_chars",
     *_FACET_FIELDS,
 )
 
@@ -492,6 +499,19 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         ):
             if vf in meta:
                 sidecar[vf] = meta[vf]
+        # RFC-034 D5: extraction provenance, omit-when-absent so legacy sidecars
+        # (pre-D5) stay byte-identical when these fields are absent.
+        for pf in (
+            "extraction_route",
+            "converter_name",
+            "converter_contract",
+            "remote_build_sha",
+            "page_count",
+            "inspector_class",
+            "total_tree_chars",
+        ):
+            if pf in meta:
+                sidecar[pf] = meta[pf]
         # C-3 (audit Finding 9): fatten the sidecar with the two registry-critical
         # fields that previously lived ONLY in the full processed JSON, so the
         # reconcile cron can enrich a registry row without a whole-tree GET.

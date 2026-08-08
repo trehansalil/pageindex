@@ -1914,6 +1914,15 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
     """
     if not _PAGE_ROTATION_DETECTION_ENABLED:
         return pdf_path
+    from .config import ALLOW_AGPL_FALLBACK
+
+    if not ALLOW_AGPL_FALLBACK:
+        logger.warning(
+            "rotation normalization skipped for %s: ALLOW_AGPL_FALLBACK=false "
+            "(fitz/PyMuPDF is AGPL-3.0)",
+            pdf_path,
+        )
+        return pdf_path
     try:
         import fitz  # PyMuPDF, AGPL-3.0
 
@@ -1990,9 +1999,17 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     For ``clip_text_already_exported`` the ``clip_text`` is also propagated
     into ``PictureResult.ocr_text`` so ``splice_figure_markers`` can emit a
     ``[Chart text]`` block."""
-    import fitz  # PyMuPDF, AGPL-3.0
+    from .config import ALLOW_AGPL_FALLBACK, settings
 
-    from .config import settings
+    if not ALLOW_AGPL_FALLBACK:
+        logger.warning(
+            "picture-region recovery skipped for %s: ALLOW_AGPL_FALLBACK=false "
+            "(fitz/PyMuPDF is AGPL-3.0)",
+            pdf_path,
+        )
+        return {}, {}
+
+    import fitz  # PyMuPDF, AGPL-3.0
 
     md_norm = _normalize_for_containment(md) if _CLIP_TEXT_CAPTURE_ENABLED else ""
 
@@ -2573,10 +2590,13 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool, dict | None]:
     classification = _run_pdf_inspector(pdf_path)
 
     try:
-        import fitz  # PyMuPDF
+        import pypdfium2 as pdfium  # BSD-3/Apache-2, not fitz/PyMuPDF (AGPL-3.0)
 
-        with fitz.open(pdf_path) as doc:
-            page_count = doc.page_count
+        pdoc = pdfium.PdfDocument(pdf_path)
+        try:
+            page_count = len(pdoc)
+        finally:
+            pdoc.close()
     except Exception:
         return 1, False, classification
     if page_count <= 0:
@@ -2586,7 +2606,7 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool, dict | None]:
     return 1, True, classification
 
 
-def _repair_docling_tables(md: str) -> str:
+def _repair_docling_tables(md: str, doc_name: str = "") -> str:
     """RFC-029 D4 (Task 5.1, Property 6) — post-export table-repair pass.
 
     Runs after every Docling ``export_to_markdown()`` call to correct two
@@ -2615,10 +2635,16 @@ def _repair_docling_tables(md: str) -> str:
     single-cell row; non-collapsed rows are re-emitted with stripped (single-
     space-padded) cell content, preserving every non-whitespace character.
     Separator rows (``|---|``) are re-emitted as ``| --- |`` (minimal form).
+
+    RFC-034 D10 Phase A: logs before/after char counts plus collapsed-row and
+    whitespace-stripped-char counts (read-only diagnostic for Phase B).
     """
     if not _RFC029_TABLE_DEDUP_ENABLED or not md:
         return md
 
+    chars_before = len(md)
+    collapsed_rows = 0
+    whitespace_stripped = 0
     lines = md.split("\n")
     out: list[str] = []
 
@@ -2649,13 +2675,25 @@ def _repair_docling_tables(md: str) -> str:
         unique_vals = set(cells)
         if len(unique_vals) == 1 and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS:
             # Collapse: emit a single cell with the shared value.
+            collapsed_rows += 1
             out.append("| " + cells[0] + " |")
             continue
 
         # Normal row: re-emit with minimal single-space padding (strips GFM alignment).
-        out.append("| " + " | ".join(cells) + " |")
+        new_line = "| " + " | ".join(cells) + " |"
+        whitespace_stripped += max(0, len(line) - len(new_line))
+        out.append(new_line)
 
-    return "\n".join(out)
+    result = "\n".join(out)
+    logger.info(
+        "table_repair: %s chars %d->%d, collapsed_rows=%d, whitespace_stripped=%d",
+        doc_name,
+        chars_before,
+        len(result),
+        collapsed_rows,
+        whitespace_stripped,
+    )
+    return result
 
 
 def _pdf_to_markdown_docling_chunked(
@@ -2680,6 +2718,13 @@ def _pdf_to_markdown_docling_chunked(
     ``_relevel_by_containment`` pass normalizes heading depth across the
     concatenated output.
     """
+    from .config import ALLOW_AGPL_FALLBACK
+
+    if not ALLOW_AGPL_FALLBACK:
+        raise RuntimeError(
+            f"cannot chunk {pdf_path} for the oversized-PDF route: fitz "
+            "(PyMuPDF, AGPL-3.0) is required and ALLOW_AGPL_FALLBACK=false"
+        )
     import fitz  # PyMuPDF
 
     chunk_count = math.ceil(page_count / max_pages)
@@ -2798,21 +2843,29 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
     # pass. Guard the page count via pymupdf (no pymupdf4llm -- CLAUDE.md Hard
     # Rule 4) before touching the Docling converter and route to the chunked
     # path instead.
-    from .config import MAX_DOCLING_PAGES
+    from .config import ALLOW_AGPL_FALLBACK, MAX_DOCLING_PAGES
 
     effective_max_pages = max_pages if max_pages is not None else MAX_DOCLING_PAGES
-    try:
-        import fitz  # PyMuPDF
-
-        with fitz.open(pdf_path) as doc:
-            page_count = doc.page_count
-    except Exception as exc:
+    if not ALLOW_AGPL_FALLBACK:
         logger.warning(
-            "could not read page count for %s (%s); skipping chunked-Docling guard",
+            "chunked-Docling page-count guard skipped for %s: ALLOW_AGPL_FALLBACK=false "
+            "(fitz/PyMuPDF is AGPL-3.0)",
             pdf_path,
-            exc,
         )
         page_count = 0
+    else:
+        try:
+            import fitz  # PyMuPDF
+
+            with fitz.open(pdf_path) as doc:
+                page_count = doc.page_count
+        except Exception as exc:
+            logger.warning(
+                "could not read page count for %s (%s); skipping chunked-Docling guard",
+                pdf_path,
+                exc,
+            )
+            page_count = 0
     if effective_max_pages > 0 and page_count > effective_max_pages:
         return _pdf_to_markdown_docling_chunked(
             pdf_path,
@@ -2842,7 +2895,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
     # mutates result.document in place (it demotes unmatched headings to body text),
     # so this is the only chance to retain the full heading set for the Rank-1
     # over-prune fallback below.
-    raw_md = _repair_docling_tables(result.document.export_to_markdown())
+    raw_md = _repair_docling_tables(result.document.export_to_markdown(), doc_name=pdf_path)
 
     # Snapshot heading -> [page_no, ...] from the RAW (pre-add-on) document: the
     # add-on demotes unmatched headings to body text in place, so this is the only
@@ -2907,7 +2960,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
             exc,
         )
 
-    post_md = _repair_docling_tables(result.document.export_to_markdown())
+    post_md = _repair_docling_tables(result.document.export_to_markdown(), doc_name=pdf_path)
     if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
 
@@ -2993,19 +3046,33 @@ def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list
     """
     import importlib.util
 
+    from .config import ALLOW_AGPL_FALLBACK
+
     primary = os.getenv("PDF_CONVERTER", "docling").strip().lower()
     have_docling = importlib.util.find_spec("docling") is not None
-    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult]]]]] = [
-        ("pymupdf4llm", _pdf_to_markdown_no_pics)
-    ]
+
+    if not have_docling and not ALLOW_AGPL_FALLBACK:
+        from .metrics import AGPL_FALLBACK_TOTAL
+
+        AGPL_FALLBACK_TOTAL.labels(reason="blocked").inc()
+        raise RuntimeError(
+            "docling is not installed and ALLOW_AGPL_FALLBACK=false; "
+            "either install docling (uv sync --extra docling) or set "
+            "ALLOW_AGPL_FALLBACK=true"
+        )
+
+    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult]]]]] = []
+    if ALLOW_AGPL_FALLBACK:
+        chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics))
     if have_docling:
         if primary == "docling":
             chain.insert(0, ("docling", pdf_to_markdown_docling))
         else:
             chain.append(("docling", pdf_to_markdown_docling))
-            from .metrics import AGPL_FALLBACK_TOTAL
+            if ALLOW_AGPL_FALLBACK:
+                from .metrics import AGPL_FALLBACK_TOTAL
 
-            AGPL_FALLBACK_TOTAL.labels(reason="operator_configured").inc()
+                AGPL_FALLBACK_TOTAL.labels(reason="operator_configured").inc()
     elif primary == "docling":
         logger.warning(
             "PDF_CONVERTER=docling but docling is not installed; install the "
@@ -3208,7 +3275,7 @@ def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> 
         force_full_page_ocr=True, ocr_lang_override=ocr_lang_override, for_image=True
     )
     result = converter.convert(path)
-    md = _repair_docling_tables(result.document.export_to_markdown())
+    md = _repair_docling_tables(result.document.export_to_markdown(), doc_name=path)
     if not md or not md.strip():
         raise RuntimeError(f"image_to_markdown produced empty output for {path}")
     return normalize_dashes(md)
@@ -3266,6 +3333,18 @@ def rasterize_pdf_pages_fitz(pdf_path: str, dpi: int = 200) -> list[str]:
     Fallback backend for ``rasterize_pdf_pages`` when pypdfium2 crashes on
     CMap-corrupt PDFs. Reuses the ``fitz.Page.get_pixmap()`` pattern already
     proven for image cropping in ``_recover_picture_text``."""
+    from .config import ALLOW_AGPL_FALLBACK
+
+    if not ALLOW_AGPL_FALLBACK:
+        # RFC-034 D4 step 4: this is a literal fallback backend, so a blocked
+        # invocation is a prevented AGPL fallback — meter it for observability.
+        from .metrics import AGPL_FALLBACK_TOTAL
+
+        AGPL_FALLBACK_TOTAL.labels(reason="blocked").inc()
+        raise RuntimeError(
+            f"cannot rasterize {pdf_path} via the fitz fallback backend: fitz "
+            "(PyMuPDF, AGPL-3.0) is required and ALLOW_AGPL_FALLBACK=false"
+        )
     import base64
 
     import fitz  # PyMuPDF, AGPL-3.0

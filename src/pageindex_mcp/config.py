@@ -22,6 +22,20 @@ PDF_INSPECTOR_PRECLASSIFY: bool = os.environ.get(
     "PDF_INSPECTOR_PRECLASSIFY", "0"
 ).strip().lower() in ("1", "true", "yes")
 
+# RFC-034 D3: local re-normalization safety net for remote-returned markdown —
+# runs reconstruct_bidi_order on remote Docling output before md_to_tree.
+REMOTE_MD_RENORMALIZE: bool = os.environ.get(
+    "REMOTE_MD_RENORMALIZE", "1"
+).strip().lower() in ("1", "true", "yes")
+
+# RFC-034 D4: AGPL exposure gate (CLAUDE.md Hard Rule 4). When false, the
+# pymupdf4llm converter chain link and every direct `import fitz` (PyMuPDF,
+# AGPL-3.0) site in converters.py are refused/skipped. Default true preserves
+# current fallback behavior for backward compatibility.
+ALLOW_AGPL_FALLBACK: bool = os.environ.get(
+    "ALLOW_AGPL_FALLBACK", "1"
+).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
 # ---------------------------------------------------------------------------
