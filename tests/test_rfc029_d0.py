@@ -98,16 +98,12 @@ class TestBidiCoherenceCheck:
         assert reason == ""
 
     def test_visual_order_reversed_arabic_flagged(self):
-        # Arrange: construct multi-word runs where the FIRST character of each
-        # word is a FINAL-FORM presentation glyph and/or the LAST character is
-        # an INITIAL-FORM glyph. These are >40% Arabic per line.
-        # U+FE8E ARABIC LETTER ALEF FINAL FORM (final-form at word start)
-        # U+FE91 ARABIC LETTER BEH INITIAL FORM (initial-form at word end)
-        final_alef = "ﺎ"
-        initial_beh = "ﺑ"
-        # Pad each word with U+0627 (base Arabic ALEF) so the Arabic-ratio
-        # gate treats the line as Arabic-dominant.
-        word = final_alef + "ااا" + initial_beh
+        # Arrange: construct multi-word runs of a character-reversed base
+        # Arabic word ("قرار" reversed to "رارق" -- RFC-034 D7's
+        # Joining_Type-based morphological reversal fixture, since
+        # presentation-form glyphs decompose to base Arabic under NFKC
+        # before `_check_bidi_coherence` runs).
+        word = "رارق"
         line = f"{word} {word} {word}"
         text = "\n".join([line, line, line])
 

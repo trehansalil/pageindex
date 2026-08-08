@@ -199,14 +199,12 @@ class TestProbeConversionRoute:
     def test_oversized_pdf_reports_chunked_docling_route(self):
         from pageindex_mcp import converters
 
-        # `fitz.open(...)` is used as a context manager and read via
-        # `doc.page_count`.
+        # RFC-034 D4: page count is read via pypdfium2 (BSD-3/Apache-2), not
+        # fitz (AGPL-3.0) -- `pypdfium2.PdfDocument(path)` and `len(doc)`.
         fake_doc = MagicMock()
-        fake_doc.page_count = 292
-        fake_doc.__enter__.return_value = fake_doc
-        fake_doc.__exit__.return_value = False
+        fake_doc.__len__ = MagicMock(return_value=292)
         with (
-            patch("fitz.open", return_value=fake_doc) as fake_open,
+            patch("pypdfium2.PdfDocument", return_value=fake_doc) as fake_open,
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             result = converters.probe_conversion_route("world-stats.pdf")

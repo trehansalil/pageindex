@@ -104,9 +104,12 @@ class _FakeResponse:
 class _MockAsyncClient:
     """Async context manager that captures and responds to POST calls."""
 
-    def __init__(self, response_data, capture_headers=None):
+    def __init__(self, response_data, capture_headers=None, version_data=None):
         self._response = _FakeResponse(response_data)
         self._capture = capture_headers
+        self._version_response = _FakeResponse(
+            version_data if version_data is not None else {"commit_sha": "unknown", "pipeline_version": 0}
+        )
 
     async def __aenter__(self):
         return self
@@ -118,6 +121,19 @@ class _MockAsyncClient:
         if self._capture is not None and headers:
             self._capture.update(headers)
         return self._response
+
+    async def get(self, url, *, timeout=None):
+        return self._version_response
+
+
+@pytest.fixture(autouse=True)
+def _reset_remote_docling_version_cache():
+    """RFC-034 D1: the version check caches its result on a module-level global."""
+    import pageindex_mcp.client as client_module
+
+    client_module._remote_docling_version = None
+    yield
+    client_module._remote_docling_version = None
 
 
 class TestRemotePdfToMarkdown:
@@ -201,6 +217,119 @@ class TestRemotePdfToMarkdown:
             await _remote_pdf_to_markdown("staging/key.pdf")
 
         assert "Authorization" not in captured
+
+    @pytest.mark.asyncio
+    async def test_commit_sha_mismatch_warns_and_increments_counter(self):
+        response_data = {"markdown": "test", "picture_results": []}
+        mock_client = _MockAsyncClient(
+            response_data,
+            version_data={"commit_sha": "remote-sha", "pipeline_version": 4},
+        )
+
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client._CLIENT_BUILD_SHA", "client-sha"),
+            patch("pageindex_mcp.client.CURRENT_PIPELINE_VERSION", 4),
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+            patch("pageindex_mcp.client.logger") as mock_logger,
+            patch("pageindex_mcp.client.DOCLING_VERSION_SKEW") as mock_metric,
+        ):
+            mock_settings.docling_service_url = "http://docling:8080"
+            mock_settings.docling_service_timeout_s = 600
+            mock_settings.docling_service_bearer_token = ""
+
+            from pageindex_mcp.client import _remote_pdf_to_markdown
+
+            await _remote_pdf_to_markdown("staging/key.pdf")
+
+        mock_logger.warning.assert_any_call(
+            "Remote Docling SHA %s != client SHA %s", "remote-sha", "client-sha"
+        )
+        mock_metric.labels.assert_any_call(signal="commit_sha")
+        mock_logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_version_behind_errors_and_increments_counter(self):
+        response_data = {"markdown": "test", "picture_results": []}
+        mock_client = _MockAsyncClient(
+            response_data,
+            version_data={"commit_sha": "client-sha", "pipeline_version": 3},
+        )
+
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client._CLIENT_BUILD_SHA", "client-sha"),
+            patch("pageindex_mcp.client.CURRENT_PIPELINE_VERSION", 4),
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+            patch("pageindex_mcp.client.logger") as mock_logger,
+            patch("pageindex_mcp.client.DOCLING_VERSION_SKEW") as mock_metric,
+        ):
+            mock_settings.docling_service_url = "http://docling:8080"
+            mock_settings.docling_service_timeout_s = 600
+            mock_settings.docling_service_bearer_token = ""
+
+            from pageindex_mcp.client import _remote_pdf_to_markdown
+
+            await _remote_pdf_to_markdown("staging/key.pdf")
+
+        mock_logger.error.assert_any_call("Remote pipeline_version %d < local %d", 3, 4)
+        mock_metric.labels.assert_any_call(signal="pipeline_version")
+
+    @pytest.mark.asyncio
+    async def test_matching_version_no_warning(self):
+        response_data = {"markdown": "test", "picture_results": []}
+        mock_client = _MockAsyncClient(
+            response_data,
+            version_data={"commit_sha": "client-sha", "pipeline_version": 4},
+        )
+
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client._CLIENT_BUILD_SHA", "client-sha"),
+            patch("pageindex_mcp.client.CURRENT_PIPELINE_VERSION", 4),
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+            patch("pageindex_mcp.client.logger") as mock_logger,
+            patch("pageindex_mcp.client.DOCLING_VERSION_SKEW") as mock_metric,
+        ):
+            mock_settings.docling_service_url = "http://docling:8080"
+            mock_settings.docling_service_timeout_s = 600
+            mock_settings.docling_service_bearer_token = ""
+
+            from pageindex_mcp.client import _remote_pdf_to_markdown
+
+            await _remote_pdf_to_markdown("staging/key.pdf")
+
+        mock_logger.warning.assert_not_called()
+        mock_logger.error.assert_not_called()
+        mock_metric.labels.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_version_fetch_failure_degrades_gracefully(self):
+        response_data = {"markdown": "test", "picture_results": []}
+
+        class _FailingGetClient(_MockAsyncClient):
+            async def get(self, url, *, timeout=None):
+                raise RuntimeError("connection refused")
+
+        mock_client = _FailingGetClient(response_data)
+
+        with (
+            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+        ):
+            mock_settings.docling_service_url = "http://docling:8080"
+            mock_settings.docling_service_timeout_s = 600
+            mock_settings.docling_service_bearer_token = ""
+
+            from pageindex_mcp.client import _remote_pdf_to_markdown
+
+            md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
+
+        assert md == "test"
 
 
 class TestRemoteImageToMarkdown:

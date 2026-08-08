@@ -40,15 +40,17 @@ class FakeMixedResult:
     has_encoding_issues: bool = True
 
 
-def _make_fitz_mock(page_count: int):
-    """Build a mock that works with ``fitz.open(path) as doc``."""
+def _make_pdfium_mock(page_count: int):
+    """Build a mock that works with ``pypdfium2.PdfDocument(path)``.
+
+    RFC-034 D4: ``probe_conversion_route`` reads page count via pypdfium2
+    (BSD-3/Apache-2) rather than fitz (AGPL-3.0), unconditionally.
+    """
     mock_doc = MagicMock()
-    mock_doc.page_count = page_count
-    mock_doc.__enter__ = MagicMock(return_value=mock_doc)
-    mock_doc.__exit__ = MagicMock(return_value=False)
-    mock_fitz = MagicMock()
-    mock_fitz.open.return_value = mock_doc
-    return mock_fitz
+    mock_doc.__len__ = MagicMock(return_value=page_count)
+    mock_pdfium = MagicMock()
+    mock_pdfium.PdfDocument.return_value = mock_doc
+    return mock_pdfium
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +67,7 @@ class TestProbeWithPdfInspector:
         with (
             patch("pageindex_mcp.converters._pdf_inspector_available", True),
             patch("pageindex_mcp.converters._detect_pdf", return_value=FakePdfResult()),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(5)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(5)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route
@@ -87,7 +89,7 @@ class TestProbeWithPdfInspector:
         with (
             patch("pageindex_mcp.converters._pdf_inspector_available", True),
             patch("pageindex_mcp.converters._detect_pdf", return_value=FakeScannedResult()),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(10)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(10)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route
@@ -104,7 +106,7 @@ class TestProbeWithPdfInspector:
         with (
             patch("pageindex_mcp.converters._pdf_inspector_available", True),
             patch("pageindex_mcp.converters._detect_pdf", return_value=FakeMixedResult()),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(20)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(20)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route
@@ -129,7 +131,7 @@ class TestProbeWithoutPdfInspector:
 
         with (
             patch("pageindex_mcp.converters._pdf_inspector_available", False),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(5)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(5)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route
@@ -158,7 +160,7 @@ class TestProbeWithoutPdfInspector:
                 "pageindex_mcp.converters._detect_pdf",
                 side_effect=RuntimeError("Rust panic"),
             ),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(5)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(5)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route
@@ -184,7 +186,7 @@ class TestShadowModeRouting:
         with (
             patch("pageindex_mcp.converters._pdf_inspector_available", True),
             patch("pageindex_mcp.converters._detect_pdf", return_value=FakeScannedResult()),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(10)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(10)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route
@@ -202,7 +204,7 @@ class TestShadowModeRouting:
         with (
             patch("pageindex_mcp.converters._pdf_inspector_available", True),
             patch("pageindex_mcp.converters._detect_pdf", return_value=fake_result),
-            patch.dict("sys.modules", {"fitz": _make_fitz_mock(300)}),
+            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(300)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
             from pageindex_mcp.converters import probe_conversion_route

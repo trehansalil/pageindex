@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pageindex_mcp.storage import save_doc_meta, list_processed_docs, delete_doc
+from pageindex_mcp.storage import (
+    SIDECAR_VERSION,
+    save_doc_meta,
+    list_processed_docs,
+    delete_doc,
+)
 from pageindex_mcp.helpers import _garble_check_nodes, validate_tree
 
 
@@ -33,8 +38,8 @@ def test_save_doc_meta_writes_sidecar(mock_minio):
     sidecar = json.loads(written)
     # C-3 sidecar v2: the 4 base fields are still present verbatim …
     assert {k: sidecar[k] for k in meta} == meta
-    # … and every sidecar now carries the explicit v2 generation marker.
-    assert sidecar["sidecar_version"] == 2
+    # … and every sidecar now carries the explicit generation marker.
+    assert sidecar["sidecar_version"] == SIDECAR_VERSION
 
 
 def test_list_processed_docs_reads_meta_files(mock_minio):
@@ -198,7 +203,7 @@ def test_save_doc_meta_verdict_fields_absent_legacy_compat(mock_minio):
         "processed_at",
         "sidecar_version",
     }
-    assert sidecar["sidecar_version"] == 2
+    assert sidecar["sidecar_version"] == SIDECAR_VERSION
     for vf in (
         "verdict",
         "verdict_reason",
@@ -235,7 +240,7 @@ def test_save_doc_meta_persists_sha256_and_doc_description(mock_minio):
     sidecar = json.loads(written)
     assert sidecar["sha256"] == "deadbeefcafef00d"
     assert sidecar["doc_description"] == "A one-sentence summary of the document."
-    assert sidecar["sidecar_version"] == 2
+    assert sidecar["sidecar_version"] == SIDECAR_VERSION
 
 
 def test_save_doc_meta_doc_description_empty_string_kept(mock_minio):
@@ -271,7 +276,7 @@ def test_save_doc_meta_omits_sha256_when_absent(mock_minio):
     written = mock_minio.put_object.call_args[0][2].read()
     sidecar = json.loads(written)
     assert "sha256" not in sidecar
-    assert sidecar["sidecar_version"] == 2
+    assert sidecar["sidecar_version"] == SIDECAR_VERSION
 
 
 def test_save_doc_meta_persists_forward_compat_facets(mock_minio):
@@ -401,3 +406,86 @@ def test_validate_tree_node_garbling_below_threshold_passes():
     ok, reason = validate_tree(tree)
     assert ok is True
     assert reason == ""
+
+
+# ── RFC-034 D5: extraction provenance fields ─────────────────────────────────
+
+
+def test_save_doc_meta_provenance_fields_present(mock_minio):
+    """RFC-034 D5: all 7 provenance fields are persisted in the sidecar when
+    present in the caller's meta dict."""
+    meta = {
+        "doc_id": "prov0001",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-08T00:00:00+00:00",
+        "extraction_route": "remote",
+        "converter_name": "docling",
+        "converter_contract": "2.1.0",
+        "remote_build_sha": "abc1234",
+        "page_count": 42,
+        "inspector_class": "standard",
+        "total_tree_chars": 123456,
+    }
+    save_doc_meta("prov0001", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar["extraction_route"] == "remote"
+    assert sidecar["converter_name"] == "docling"
+    assert sidecar["converter_contract"] == "2.1.0"
+    assert sidecar["remote_build_sha"] == "abc1234"
+    assert sidecar["page_count"] == 42
+    assert sidecar["inspector_class"] == "standard"
+    assert sidecar["total_tree_chars"] == 123456
+
+
+def test_save_doc_meta_provenance_fields_absent_not_null(mock_minio):
+    """RFC-034 D5: provenance fields are omit-when-absent — a legacy caller that
+    never supplies them must not see them written as null/None."""
+    meta = {
+        "doc_id": "prov0002",
+        "doc_name": "old.pdf",
+        "source_url": "",
+        "processed_at": "2026-01-01T00:00:00+00:00",
+    }
+    save_doc_meta("prov0002", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    for pf in (
+        "extraction_route",
+        "converter_name",
+        "converter_contract",
+        "remote_build_sha",
+        "page_count",
+        "inspector_class",
+        "total_tree_chars",
+    ):
+        assert pf not in sidecar
+
+
+def test_save_doc_meta_extraction_route_remote_and_local(mock_minio):
+    """RFC-034 D5: extraction_route round-trips exactly for both the remote and
+    local extraction paths."""
+    meta_remote = {
+        "doc_id": "prov0003",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-08T00:00:00+00:00",
+        "extraction_route": "remote",
+    }
+    save_doc_meta("prov0003", meta_remote)
+    written = mock_minio.put_object.call_args[0][2].read()
+    assert json.loads(written)["extraction_route"] == "remote"
+
+    meta_local = dict(meta_remote, doc_id="prov0004", extraction_route="local")
+    save_doc_meta("prov0004", meta_local)
+    written = mock_minio.put_object.call_args[0][2].read()
+    assert json.loads(written)["extraction_route"] == "local"
+
+
+def test_sidecar_version_is_3():
+    """RFC-034 D5: SIDECAR_VERSION is bumped to 3 to mark the provenance-field
+    generation of the sidecar format."""
+    assert SIDECAR_VERSION == 3

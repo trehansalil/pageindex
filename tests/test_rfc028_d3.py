@@ -19,11 +19,12 @@ _GOV_LOGICAL = "حوكمة البيانات وسياسة الإدارة والت
 # text -- individual "words" no longer match the vocabulary set.
 _GOV_VISUAL = _GOV_LOGICAL[::-1]
 
-# Arabic Presentation Forms glyphs (contextual shaping variants) used to build
-# a morphologically-invalid (reversed) word: a FINAL FORM glyph at word start
-# is invalid in correctly-ordered Arabic.
-_BEH_FINAL_FORM = "ﺐ"  # ARABIC LETTER BEH FINAL FORM
-_BEH_INITIAL_FORM = "ﺑ"  # ARABIC LETTER BEH INITIAL FORM
+# RFC-034 D7: presentation-form glyphs decompose to base Arabic under NFKC
+# before `_word_has_reversed_morphology` runs, so the morphological reversal
+# signal is now Joining_Type-based (see `_arabic_word_joins`) rather than a
+# presentation-form check. A character-reversed base-Arabic word (like a
+# genuine visual-order OCR/Docling artifact) is the fixture that exercises it.
+_REVERSED_WORD = "رارق"  # "قرار" (decision) reversed at the character level
 
 # Correctly-ordered Arabic with zero `_AR_COMMON_WORDS`/`_AR_DEFINITE_RE`
 # matches (country names -- mirrors RFC-027's `_ZERO_SCORE_TEXT`) and no
@@ -57,19 +58,14 @@ class TestExpandedVocabularyScoresForwardHigher:
 
 
 class TestMorphologicalReversalCheck:
-    def test_final_form_at_word_start_flagged_reversed(self):
-        word = _BEH_FINAL_FORM + "قرار"
-        assert _word_has_reversed_morphology(word) is True
-
-    def test_initial_form_at_word_end_flagged_reversed(self):
-        word = "قرار" + _BEH_INITIAL_FORM
-        assert _word_has_reversed_morphology(word) is True
+    def test_character_reversed_word_flagged_reversed(self):
+        assert _word_has_reversed_morphology(_REVERSED_WORD) is True
 
     def test_plain_logical_word_not_flagged(self):
         assert _word_has_reversed_morphology("قرار") is False
 
     def test_short_word_not_flagged(self):
-        assert _word_has_reversed_morphology(_BEH_FINAL_FORM) is False
+        assert _word_has_reversed_morphology("ق") is False
 
 
 class TestTreeIsRtlReversedCombinedSignal:

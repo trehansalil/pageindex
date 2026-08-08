@@ -18,17 +18,12 @@ from pageindex_mcp.helpers import (
     validate_tree,
 )
 
-# ARABIC LETTER BEH FINAL FORM — reused for bidi-coherence fixtures below;
-# a final-form glyph at word start is morphologically invalid in
-# correctly-ordered Arabic (mirrors RFC-029 D0's test_rfc029_d0.py fixtures).
-_BEH_FINAL_FORM_BIDI = "ﺐ"
-_VISUAL_ORDER_LINE = " ".join([_BEH_FINAL_FORM_BIDI + "غلاطاسي"] * 3)
-
-# ARABIC LETTER BEH FINAL FORM — a final-form glyph is morphologically
-# invalid at word start in correctly-ordered Arabic; mirrors the
-# RFC-028 D3 fixture (test_rfc028_d3.py).
-_BEH_FINAL_FORM = "ﺐ"
-_REVERSED_TITLE_WORD = _BEH_FINAL_FORM + "غلاطاسي"
+# RFC-034 D7: presentation-form glyphs decompose to base Arabic under NFKC
+# before these detectors run, so the morphological reversal fixture is now a
+# character-reversed base-Arabic word (mirrors test_rfc028_d3.py) rather than
+# a raw presentation-form glyph.
+_REVERSED_TITLE_WORD = "رارق"  # "قرار" (decision) reversed at the character level
+_VISUAL_ORDER_LINE = " ".join([_REVERSED_TITLE_WORD] * 3)
 
 
 def _make_leaf(title: str, text: str) -> dict:
