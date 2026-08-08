@@ -1,23 +1,14 @@
-# Audit ↔ RFC Reconciliation Report
+# Audit <-> RFC Reconciliation Report
 
-**Date:** 2026-08-06
-**Audit files:**
-- `audit/CORPUS_REINGESTION_AUDIT_RUN-15.md`
-
-**Matched RFCs:**
-- RFC-033 — run15-reingestion-quality-fixes (`.agents/rfcs/033-run15-run15-reingestion-quality-fixes.md`)
-- RFC-029 — run12-arabic-garble-gates-and-extraction-quality (`.agents/rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md`)
-- RFC-025 — run8-verdict-hysteresis-and-recovery-coverage (`.agents/rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md`)
-
-> **Note:** the prior occupant of this filename (the PDF-Inspector / RFC-032 reconciliation) was preserved as `audit/RECONCILIATION_REPORT_PDF_INSPECTOR_RFC032.md` rather than overwritten.
+**Date:** 2026-08-07
+**Audit files:** `audit/CORPUS_REINGESTION_AUDIT_RUN-15.md`, `audit/BIDI_ROOT_CAUSE_RFC033.md`
+**Matched RFCs:** RFC-033 (Run 15 Re-ingestion Quality Fixes), RFC-025 (Run 8 Verdict Hysteresis and Recovery Coverage)
 
 ---
 
 ## Executive Summary
 
-RFC-033 covers the Run-15 audit well on paper — 8 of 13 findings fully covered (including two, A33-S2 and A33-C5, missing from an earlier pass of this matrix), 4 partially, 1 (purely observational) uncovered — but **none of RFC-033's 35 tasks have landed** (0% complete), so every mapped fix is planned-only. Beneath those totals sit **six uncovered sub-items** (see Orphaned Audit Findings) that the finding-level counts hide — most notably Reitlehrer's ~32% char-stripping loss, which a Run-15 verdict *improvement* is actively masking. Code exploration confirms the mechanisms RFC-033 D1/D2 name are real and present in HEAD, and confirms two audit findings are measurement/narrative errors rather than pipeline defects (A33-S1 Unfallversicherung, A33-I2 char-accounting).
-
-The most consequential result of this reconciliation is **new and in no RFC**: the bidi-reversed Arabic titles that RFC-033 D2 proposes to *penalize* are produced by our own pipeline — `reconstruct_bidi_order()` applies `get_display()` to heading lines unconditionally (`converters.py:1330-1333`), reversing already-correct Arabic. Promoting `BIDI_COHERENCE_ENFORCE` as D2 plans would mass-cap documents at MARGINAL for damage we inflicted. D2 must be blocked on a corrective heading-reversal fix.
+Of 27 audit findings across both reports (14 from the Run-15 audit, 13 from the BiDi root-cause report -- the latter's 7 "genuinely unknown" items U-1..U-7 are all separately enumerated findings, not folded into the 9 named B1-C/I findings), 9 are fully covered by RFC-033 decisions, 4 are partially covered, 10 have no RFC coverage, and **4 are contradicted** by code-verified ground truth -- all four contradictions concentrate on RFC-033 D2's BiDi coherence detector, which is structurally unable to fire on its design-target failure population (canonical-order reversed Arabic text). The overall RFC-033 task completion stands at 85% (34/40), but 3 pending tasks (9.2, 9.3, 10) have code already landed under ambiguous commits -- the tasks file understates actual completion. Orphaned findings requiring new tasks or a follow-up RFC now number six: provenance gap B1-I1, AGPL fallback exposure B1-I2, the **Reitlehrer ~32% char-stripping loss** (a live RFC-029 D3 content-loss regression masked by a PASS verdict -- the highest-priority uncovered item in the whole reconciliation), the FDL-33 ToC misparse into ~130 heading nodes, and unknowns U-6/U-7 (normalizer idempotence; potential non-Arabic table damage from the stale remote image). Critically, **Recommended Actions must follow the source sequencing constraint** (remote-image redeploy and local re-normalization before detector fixes land) -- see the Sequencing note under Recommended Actions.
 
 ---
 
@@ -25,246 +16,229 @@ The most consequential result of this reconciliation is **new and in no RFC**: t
 
 | Audit Finding | Severity | RFC | Decision(s) | Status | Notes |
 |---|---|---|---|---|---|
-| **A33-C4** — Verdict gate blind to RTL reversal and hierarchy collapse | critical | RFC-033 | D1, D2; RFC-029 D0 (landed, insufficient) | partially_covered | D1 fixes the `_garble_ratio` full-text tautology + missing flatten separator (SLA false positive). D2 adds single-letter Arabic fragment detection and promotes `BIDI_COHERENCE_ENFORCE` to verdict-gating. D2 is **verdict-only** (caps at MARGINAL, no `LowQualityTreeError`) — it downgrades detection severity rather than correcting reversed text, so the "blind to RTL reversal" half stays open. RFC-029 D0 landed but is switched off by default. |
-| **A33-S1** — Hierarchy-collapse defects persist across runs | important | RFC-033 | D4, D5, D2, D8, OoS [10b]; RFC-029 D2 + D5c (landed) | partially_covered | Compound finding, 8 docs. FDL(47) + Cabinet-96 → D4. Haftpflicht-Allgemeine → D5. سياسة حوكمة → D2. **Cabinet-1 → D8** (coverage input wrongly called this uncovered). Cabinet-106 → OoS [10b], deliberately deferred as research-grade. Unfallversicherung → false re-open, disproved by RFC-029 OoS. **SLA depth-1 flatness is the only genuinely uncovered sub-item.** RFC-029 D2/D5c are live in HEAD but target density and run-together headings, not depth — "did not durably resolve" misreads their scope. |
-| **A33-I1** — Persistence-timing race: القرار التنظيمي scoring miss | important | RFC-033 | D3 | fully_covered | D3 adds exponential-backoff retry (3 attempts) to `minio_helper.py` cmd_meta/cmd_tree plus a Stage 2 agent-prompt retry instruction. Exact doc, exact root cause. |
-| **A33-R2** — SLA PASS → MARGINAL: garble-gate false positive reappeared | important | RFC-033 | D1 | fully_covered | D1 names the precise mechanism and the exact document, and includes a non-determinism regression test. Mechanism verified in code (see Implementation Status). |
-| **A33-I2** — Accounting gap in قرار مجلس الوزراء رقم (106) | important | RFC-033 | OoS [9] only | partially_covered | No numbered decision. RFC-033 classifies it as an audit measurement-methodology error; code exploration confirms RFC-033 is right. Residual work is in audit tooling, not `src/`. |
-| **A33-C1** — False claim about حقوق الإنسان node shrinkage and bidi-reversal | important | RFC-033 | D2 | partially_covered | D2 names the doc (347 nodes / 394,717 chars, PASS, titles `تايوتحملا` / `ةصالخلا`) and caps it at MARGINAL. **Root cause found in code and unaddressed by any RFC:** the reversed titles are produced by `reconstruct_bidi_order()`. D2 treats the symptom of a corruption we introduce. |
-| **A33-C2** — False claim about cabinet_resolution_no_96 Article-5 blob | important | RFC-033 | D4 | fully_covered | D4 lists the doc and targets the real defect: 85/108 nodes flat at depth 3 because `_ARTICLE_RE` does not match parenthesized `Article (N)`. |
-| **A33-R1** — federal_decree_law PASS → MARGINAL (judge-side severity shift) | important | RFC-033 | D0 | fully_covered | D0 names `federal_decree_law_no_33`; root cause matches (max_leaf_ratio in the 0.30–0.40 band on a byte-identical tree, hysteresis never wired into reingestion). |
-| **A33-C3** — False claim about FDL No. (47) Articles 3–13 concatenation | important | RFC-033 | D4 | fully_covered | D4 lists FDL (47); real defect is 54/69 nodes flat at depth 2 from unmatched parenthesized article numbering. |
-| **A33-I4** — Image enrichment promotion below char floor ineffective | informational | RFC-033 | D7 | fully_covered | D7 implements the extension-based `content_class='image_standalone'` override (originally RFC-022 B2 Part A, marked complete but never implemented), routing the pie-chart JPG through `_classify_image_verdict` instead of the `flat_prose` char-floor gate. |
-| **A33-I3** — No artifact-swap between Arabic and English sibling docs | informational | — | — | not_covered | Purely observational; confirms no defect occurred. No RFC decision needed. |
-| **A33-S2** — GHV-TKV-Tarif.pdf tariff table stalled flat: `_segment_table_nodes` not wired into primary tree-build path | important | RFC-033 | D6 | fully_covered | Scorecard row 15 and the Stalls section state verbatim: "`_segment_table_nodes` still not wired into the primary tree-build path, so the tariff table stays a single flat node (stored `leaf_concentration=0.65`)." D6's Rationale (RFC-033:162) names this exact document and mechanism, and the audit's own Correction 11 lists GHV-TKV at 6,033 chars / 4 nodes / depth 2 stored MARGINAL. D6 is directly audit-backed — not orphaned (see Orphaned RFC Decisions, corrected). |
-| **A33-C5** — وارد رقم 597: FAIL→MARGINAL move looks like a content-identity/document-swap artifact, not a genuine extraction fix | important | RFC-033 | OoS [10a] | fully_covered | Scorecard row 9 and the Improvements-section entry both flag that the doc's content (anti-commercial-fraud regulation, Decree-Law 42/2023) is unrelated to its filename (craftwork-skills program) — "document identity is unreliable" / "content-identity/document-swap artifact." RFC-033 OoS [10a] explicitly dispositions this as a source-file-level data-quality issue ("the PDF itself contains wrong content; pipeline correctly extracts what is in the file"), not a pipeline defect requiring a numbered decision. Correctly out of scope, but was missing from this matrix — see corrected Recommended Action 8. |
-
-**Totals:** 13 findings — 8 fully covered, 4 partially covered, 1 not covered (benign), 2 contradictions surfaced.
+| A33-C4a: Garble-gate false positive -- `_garble_ratio` tautology + `_flatten_tree_text` missing separator | critical | RFC-033 | D1 | Fully Covered | D1 removes full-text tautology, adds newline separator. Code landed in helpers.py:1480-1500, 554-562. |
+| A33-C4b: Verdict gate blind to RTL reversal -- reversed Arabic headings not detected/corrected | critical | RFC-033 | D2 | Fully Covered | D2 adds single-letter Arabic fragment detection, promotes BIDI_COHERENCE_ENFORCE to true. |
+| B1-C1: Stale remote converter produces heading reversal | critical | RFC-033 | D2 | **Contradicted** | D2 fixes are committed (f344d6f) but never reach the remote Docling service (Scaleway). No local re-normalization exists. |
+| B1-C2: Null detector on canonical-order reversal | critical | RFC-033 | D2 | **Contradicted** | Detector morphology check only fires on presentation-form Unicode (U+FB50-FEFF); 0% true-positive rate on canonical-order reversed text. |
+| B1-C3: Line selector excludes presentation-form signal range | critical | RFC-033 | D2 | **Contradicted** | helpers.py:1029 scans U+0600-06FF only; discards U+FB50-FEFF lines carrying the reversal signal. Selector and signal are mutually exclusive. |
+| A33-S1: Hierarchy-collapse defects persist across runs (8 docs) | important | RFC-033 | D2, D4, D5, D8 | Partially Covered | 106 document flat-tree is OoS [10b]; SLA flatness and Haftpflicht vertical-text garbling uncovered. |
+| A33-S2: GHV-TKV-Tarif table stalled flat | important | RFC-033 | D6 | Fully Covered | D6 wires `_segment_table_nodes` into primary tree-build path. Code landed at client.py:1056, 1151, 1378, 1495. |
+| A33-R1: federal_decree_law_no_33 PASS->MARGINAL (judge-side severity shift) | important | RFC-033 | D0 | Fully Covered | D0 wires `snapshot_prior_verdicts()` into pipeline. Code landed in storage.py:676, 679, 804. |
+| A33-R2: SLA PASS->MARGINAL garble-gate false positive reappeared | important | RFC-033 | D1 | Partially Covered | D1 fixes root cause but does not investigate why bug reappeared after Run 14 corrected ratio to 0.067. |
+| A33-I1: Persistence-timing race -- scoring miss | important | RFC-033 | D3 | Fully Covered | D3 adds retry-with-backoff to minio_helper.py read path. |
+| A33-I2: Char-accounting gap in 106 document | important | RFC-033 | -- | Not Covered | OoS [9]: audit-methodology error, not a pipeline defect. No fix needed. |
+| A33-C1: Human rights doc node shrinkage / bidi-reversal claim contradiction | important | RFC-033 | D2 | Partially Covered | D2 covers bidi-reversal half (verdict cap at MARGINAL). Node/char-count contradiction is judge-side measurement error. Detector cannot currently fire (B1-C2/C3). |
+| A33-C2: cabinet_resolution_no_96 Article-5 blob claim refuted | important | RFC-033 | D4 | Fully Covered | D4 targets real defect (persistent flat hierarchy), not the refuted blob claim. |
+| A33-C3: FDL No. (47) Articles 3-13 concatenation claim refuted | important | RFC-033 | D4 | Fully Covered | D4 regex extension targets the real defect (shallow depth-2 tree). |
+| A33-C5: ward 597 FAIL->MARGINAL content-identity/document-swap artifact | important | RFC-033 | -- | Not Covered | OoS [10a]: source-file data-quality issue. Pipeline correctly extracts what is in the file. |
+| B1-I1: No extraction provenance is persisted | important | -- | -- | Not Covered | No RFC decision covers persisting extraction route/converter/version to meta.json. |
+| B1-I2: Live AGPL exposure path (Hard Rule 4) | important | -- | -- | Not Covered | pymupdf4llm fallback chain has no ALLOW_AGPL_FALLBACK gate. Hard Rule 4 compliance issue. |
+| B1-I3: BIDI_COHERENCE_ENFORCE justification is backwards | important | RFC-033 | D2 | **Contradicted** | Task 9.1 measured 0 violations = 0% true-positive rate (detector cannot fire), not low false-positive rate. Comment at helpers.py:1310-1321 has inverted interpretation. |
+| A33-I3: No artifact-swap between Arabic and English sibling docs | informational | -- | -- | Not Covered | Swap hypothesis refuted; no code defect identified, no decision needed. |
+| A33-I4: Image-enrichment promotion below char floor ineffective | informational | RFC-033 | D7 | Fully Covered | D7 implements `image_standalone` content_class override for .jpg files. |
+| B1-I4: Unknown U-1: Why human rights doc escaped the stale flip | informational | -- | -- | Not Covered | Open investigative question with no RFC decision. |
+| B1-I5: Unknown U-2: Whether AGPL route executed for cc4533aa | informational | -- | -- | Not Covered | Overlaps B1-I2; no converter route logging exists. |
+| B1-I6: Unknown U-3: False-positive rate of title-level detector | informational | -- | -- | Not Covered | No decision commits to corpus-wide generalization testing beyond n=4 sample. |
+| B1-I7: Unknown U-4: Whether 38f1fefe (mixed-signature doc) is corrupt or clean | informational | -- | -- | Not Covered | Its tree was never cached; not covered by any of the four F2 measurements. No RFC decision addresses it. |
+| B1-I8: Unknown U-5: Exact commit the remote image was built from | informational | -- | -- | Not Covered | Only bounded to a 2026-07-30..2026-08-04 window by table-separator fingerprinting; no `/version` endpoint exists yet (blocked on F1-C). |
+| B1-I9: Unknown U-6: Whether `_pre_inference_normalize` is idempotent in general | informational | -- | -- | Not Covered | Verified idempotent only on one captured remote markdown sample; F1-B's safety net deliberately avoids depending on this unproven property, but the property itself is untested corpus-wide. |
+| B1-I10: Unknown U-7: Whether non-Arabic table-heavy docs are affected by the stale remote image | **important** | -- | -- | Not Covered | Every BiDi probe targeted Arabic PDFs. The stale build also lacks `_repair_docling_tables` (landed 2026-08-04 in `08b6eea`), so German/English table-heavy documents ingested via the remote route in the stale window may carry unrepaired table markup -- a potential silent corpus-quality regression outside the Arabic/BiDi scope this report otherwise tracks. |
 
 ---
 
 ## Orphaned Audit Findings (No RFC Coverage)
 
-> This table tracks **uncovered sub-items** as well as the one uncovered top-level finding. A sub-item can be uncovered while its parent finding is `partially_covered` or even `fully_covered` — the parent's mapped decision addresses one half of a compound observation. These do **not** change the 13-finding totals above; they are the residue those totals hide.
+### Important Severity
 
-| Finding | Status | Recommended action |
-|---|---|---|
-| **A33-I3** (informational) | Genuinely uncovered, correctly so | **No action.** Observational confirmation that no swap occurred. Mark closed in the audit. |
-| **A33-S1 sub-item: SLA doc depth-1 flatness** | Uncovered sub-item hidden inside a compound finding | **Action required.** The SLA doc appears in RFC-033 only under D1 (garble false positive), never for structural depth. Add either a new RFC-033 decision or an explicit Out-of-Scope entry with a stated reason, so it stops floating between runs. |
-| **A33-S1 sub-item: Haftpflicht-Allgemeine vertical-text garbling + 3 unenriched images** | Uncovered sub-item inside a partially-covered finding | **Action required.** Audit row 16 (`RUN-15.md:55`) reports "preamble has undetected vertical-text garbling and 3 images lack enrichment" alongside the depth-2 flatness. RFC-033 **D5 covers the depth half only** — no decision addresses vertical-text garble detection or the missing image enrichment. Add a decision or an explicit Out-of-Scope entry. |
-| **Reitlehrer: RFC-029 D3 char-stripping loss (2,768 vs original 4,082)** | Uncovered; masked by a verdict improvement | **Action required.** Reitlehrer moved MARGINAL → PASS in Run 15, but `RUN-15.md:74` states the char count is "unchanged from Run 14's regressed value (2,768 live-verified, same RFC-029 D3 stripping loss vs original 4,082)" — the verdict improved only because the judge re-classified the missing image as a non-substantive company logo. **~32% of the source text is still being stripped by a landed RFC-029 decision, and no RFC-033 decision addresses it.** A PASS verdict is actively hiding this regression. |
-| **A33-R1 sub-item: FDL-33 ToC misparsed into ~130 heading nodes** | Uncovered sub-item inside a fully-covered finding | **Action required.** `RUN-15.md:53` reports "ToC misparsed into ~130 heading nodes, sub-clauses not nested under parent Articles" for federal_decree_law_no_33. RFC-033 **D0 covers only the verdict-hysteresis regression** (PASS → MARGINAL), not the underlying ToC misparse that ~26% of the node count consists of. D0 landing will restore the PASS verdict while leaving the structural defect in place. |
-| **A33-C1 root cause: pipeline-induced heading reversal** | **Resolved 2026-08-06** — folded into RFC-033 **D2 Part A** | Now covered. D2 becomes a two-part decision: Part A is the heading-reversal guard (Batch 0), Part B the `BIDI_COHERENCE_ENFORCE` promotion (Batch 3+). See C-3 and H-1. |
-| **A33-I2 residual: audit char-sum methodology** | Outside the RFC decision surface (tooling, not `src/`) | **Tooling task**, not an RFC decision. Replace the prose instruction in the scoring workflows with a mandatory shared helper. |
+| Finding | Recommendation |
+|---|---|
+| **B1-I1: No extraction provenance is persisted** | Create a new task (or RFC-033 amendment) to implement F1-E from the BiDi root cause report: add `extraction_route`, `converter_name`, `converter_contract`, `remote_build_sha`, `page_count`, `inspector_class` to `_META_FIELDS` in storage.py:423-439 and populate them in client.py:1885-1897. Effort: ~30 lines. Without provenance, diagnosing extraction failures requires live re-probing of production services. |
+| **B1-I2: Live AGPL exposure path (Hard Rule 4)** | Create a new task to implement F1-D from the BiDi root cause report: gate pymupdf4llm behind `ALLOW_AGPL_FALLBACK` env var (default false) at converters.py:2998. **Requires human decision** on whether to break the current silent fallback behavior. Hard Rule 4 compliance issue. |
+| **A33-I2: Char-accounting gap in 106 document** | No action required. Correctly disposed as OoS [9] -- audit-methodology measurement artifact, not a pipeline defect. The gap closes if audit tooling accounts for table `row_records` in its char-sum calculation. |
+| **A33-C5: ward 597 content-identity/document-swap artifact** | No action required. Correctly disposed as OoS [10a] -- source-file data-quality issue. Pipeline faithfully extracts the content of the file it receives. |
+| **Reitlehrer ~32% char-stripping loss (2,768 vs original 4,082 chars) -- sub-item of A33 Improvements (6), line 74** | **Highest-priority uncovered item.** This is a live content-loss regression from landed RFC-029 D3, masked by a PASS verdict: the doc only improved because the judge reclassified the missing image as a non-substantive logo, not because the content loss was fixed. No RFC-033 decision addresses it. Create a new investigative task to quantify the stripped content and determine whether RFC-029 D3 needs a follow-up fix or a scoped exception. |
+| **FDL-33 ToC misparsed into ~130 heading nodes -- sub-item of A33-R1, Scorecard row 14** | D0 (prior-verdict snapshot) covers only the verdict regression (`federal_decree_law_no_33` PASS->MARGINAL); the underlying structural misparse -- a table of contents exploded into ~130 separate heading nodes -- survives D0 untouched. Create a new task under a future RFC to fix ToC-vs-heading disambiguation in the tree builder. |
+| **B1-I10: Unknown U-7 -- non-Arabic table-heavy docs may carry unrepaired table markup from the stale remote image** | The stale build (2026-07-30..2026-08-04) lacks `_repair_docling_tables` (landed 2026-08-04 in `08b6eea`). No probe has targeted non-Arabic documents, so this is an **unquantified, potentially corpus-wide risk** outside the Arabic/BiDi scope this report otherwise tracks. Cheap to check: compare `\|----\|` vs `\| --- \|` separator counts across stored trees ingested in that window, read-only. Create a task to run this check before closing out RFC-033's remote-image remediation. |
+
+### Informational Severity
+
+| Finding | Recommendation |
+|---|---|
+| **A33-I3: No artifact-swap between Arabic/English sibling docs** | No action. Swap hypothesis was refuted; no code defect exists. |
+| **B1-I4: Why human rights doc escaped the stale flip** | Deferred. Would be answered by provenance fields (B1-I1 fix). |
+| **B1-I5: Whether AGPL route executed for cc4533aa** | Deferred. Would be answered by converter route logging (B1-I2 fix). |
+| **B1-I6: False-positive rate of title-level detector** | Deferred until detector fixes (F2-A/F2-B/F2-C) land; testing a non-firing detector is meaningless. |
+| **B1-I7: Unknown U-4 -- whether 38f1fefe is corrupt or clean** | Cheap, minutes of compute: fetch the cached tree read-only and run the §0.1 M-B measurement on it. No RFC decision required beyond doing the check. |
+| **B1-I8: Unknown U-5 -- exact remote build commit** | Blocked on F1-C's `/version` endpoint. Until then the 2026-07-30..2026-08-04 window bound is sufficient for the F1 conclusion; no separate action needed ahead of F1-C. |
+| **B1-I9: Unknown U-6 -- `_pre_inference_normalize` idempotence** | Deferred. Needs a property test over the full `doc_store/` markdown corpus asserting `f(f(x)) == f(x)`; local, no LLM cost, but not yet scheduled under any task. |
 
 ---
 
 ## Orphaned RFC Decisions (No Audit Backing)
 
-| RFC | Decision | Assessment |
-|---|---|---|
-| RFC-033 | **D8** — Harden Arabic OCR tree-building against Tesseract RTL-reversed text | **Not orphaned — mis-classified.** D8 targets قرار مجلس الوزراء رقم (1), which *is* a Run-15 defect: it is the "Cabinet 1 depth-1 flatness" sub-item of A33-S1 that was separately marked `not_covered`. **Re-map A33-S1/Cabinet-1 → D8** and remove D8 from the orphan list. Bookkeeping error caused by A33-S1 being a compound finding. |
+All five orphaned decisions belong to **RFC-025** (Run 8 cycle) and are prior-art from the previous audit iteration. None represent scope creep.
 
-**D6 was removed from this table — it is not orphaned.** D6 ("Call `_segment_table_nodes` on primary tree-build path") targets `GHV-TKV-Tarif.pdf`, which the Run-15 audit's Stalls section names directly: "`_segment_table_nodes` still not wired into the primary tree-build path, so the tariff table stays a single flat node (stored `leaf_concentration=0.65`)" — matched verbatim by D6's own Rationale (RFC-033:162). Scorecard row 15 corroborates the same stored `leaf_concentration=0.65` MARGINAL. D6 is directly audit-backed (see Coverage Matrix, new row **A33-S2**), not a proactive carry-forward requiring a provenance disclaimer. It is a genuine Run-15 fix that happens to also complete a deferral RFC-030 left open — both things are true, and the audit-backing is the primary fact.
+| RFC | Decision | Title | Status |
+|---|---|---|---|
+| RFC-025 | D0 | Implement hysteresis band for max_leaf_ratio verdict gate | Landed. Prior-art that RFC-033 D0 builds on (relocated snapshot prefix). |
+| RFC-025 | D1 | Region-aware text-layer check for picture coverage exemption | Landed. Addresses Run 8 Human-Rights doc issue; no Run 15 finding references it. |
+| RFC-025 | D2 | Fix short-text garble gate bypass and orphaned rotation decorative flag | Landed. Run-8-specific; not referenced by any current finding. |
+| RFC-025 | D3 | Extend recovery triggers to match node_garbling reason | Landed. Run-8-specific; not referenced by any current finding. |
+| RFC-025 | D4 | Harden audit data verification against MinIO ground truth | Landed. Cited only as methodology precedent in Run-15 audit. |
 
-Net: **0 proactive-only decisions, 0 scope creep, 2 false orphans (D6, D8).**
+**Verdict:** These are completed prior-cycle decisions, not scope creep. No action needed.
 
 ---
 
 ## Contradictions
 
-### C-1 — A33-S1 vs RFC-029 Out of Scope: Unfallversicherung empty cells
+Four contradictions all concentrate on **RFC-033 D2** (BiDi coherence enforcement). They form a single coherent failure chain:
 
-**Audit says:** Unfallversicherung cell-extraction gaps are an unresolved structural defect requiring root-cause work.
-**RFC-029 says (line 286):** investigated and **disproved** — empty cells are intentional source-PDF structure (category headers / unavailable benefits). "No fix needed." RFC-033 OoS [7] independently restates the same conclusion.
+### 1. B1-C1: Stale remote converter (RFC-033 D2)
 
-**Ground truth (code):** `flag_empty_cells()` at `src/pageindex_mcp/helpers.py:2570-2602` computes `block['quality'] = {'empty_cell_ratio', 'suspected_miss'}`; sole call site `helpers.py:2797`. Its docstring states the contract: **"annotate (never drop)"**. Grep across `src/` shows **zero consumers** of `empty_cell_ratio` or `suspected_miss` — the value is written to stored artifacts and read only by the audit scorer. An `empty_cell_ratio` of 0.75 is precisely what RFC-010 Gap 6b designed the function to report; it is not evidence extraction lost data. The audit's own Correction 10 (`CORPUS_REINGESTION_AUDIT_RUN-15.md:29`) even acknowledges "table blocks carry cell payloads outside `text`" for this document. The doc's MARGINAL verdict is driven by `depth=1` flatness, **not** cell extraction.
+**Claim:** D2's bidi-coherence fixes will apply to production behavior once merged.
+**Reality:** The committed code (f344d6f) runs only on the local worker. The remote Docling service (Scaleway) still runs a stale image from 2026-07-30 to 2026-08-04. No local re-normalization (`REMOTE_MD_RENORMALIZE`, post-remote `reconstruct_bidi_order` call) exists in client.py.
+**Impact:** D2's heading guard cannot reach markdown produced by the remote service.
 
-**Resolution:** **RFC wins.** No code change. Audit correction only.
-**Evidence:** `helpers.py:2570-2602`, `helpers.py:2797`; `CORPUS_REINGESTION_AUDIT_RUN-15.md:29,63,105`; RFC-029:286; RFC-033:258 (OoS [7]).
-**Process root cause:** the Run-15 scoring pass carried the Run-14 narrative forward instead of re-deriving it.
+### 2. B1-C2: Null detector on canonical-order reversal (RFC-033 D2)
 
----
+**Claim:** Promoting `BIDI_COHERENCE_ENFORCE` to true enables `_check_bidi_coherence` to catch reversed titles.
+**Reality:** The detector's `_reversed_morphology` check (helpers.py:1009-1020) only fires on Arabic Presentation Forms (U+FB50-FEFF). `get_display()`-reversed text uses canonical U+06xx letters and will never trigger this check. Measured true-positive rate: **0%** on corruption-enriched sample.
+**Impact:** Enforcing a non-firing detector produces no behavioral change.
 
-### C-2 — A33-I2 vs RFC-033 OoS [9]: the ~48% char-accounting gap
+### 3. B1-C3: Line selector excludes signal range (RFC-033 D2)
 
-**Audit says:** the ~48% gap between `meta.flat_char_count` and the live block-text sum for قرار مجلس الوزراء رقم (106) is an open pipeline-accounting question.
-**RFC-033 OoS [9] says:** it is an audit measurement-methodology error, not a code bug.
+**Claim:** Same as B1-C2 (detector enforcement catches reversal).
+**Reality:** The line selector at helpers.py:1029 scans U+0600-06FF only. Lines composed of presentation-form characters (U+FB50-FEFF) score `arabic_chars=0` and are discarded before `_reversed_morphology` is ever consulted. The selector and the signal are mutually exclusive by encoding range.
+**Impact:** Independent second reason the detector cannot fire. Even fixing B1-C2 alone would not help.
 
-**Ground truth (code): RFC-033 is correct.** `flat_char_count` is computed at `client.py:1695` as `sum(len(_flat_block_primary_text(b)) for b in blocks)` and stored at `client.py:1715`. `_flat_block_primary_text()` (`helpers.py:2812-2825`) returns `block['text']` when present and, for `role == 'table'`, falls back to `'\n'.join(block.get('row_records', []))` (`helpers.py:2823-2824`). Table blocks carry **no** `text` key by design (FLAT-05-C1, documented `helpers.py:2831-2833`). Any audit sum using `block.get('text','')` therefore reads 0 chars for every table block — exactly the observed one-sided deficit.
+### 4. B1-I3: Task 9.1 measurement interpretation inverted (RFC-033 D2)
 
-Aggravating factor: the correct method is **already written into the audit tooling**. Both `.claude/workflows/corpus-score-diff.js:146` and `.claude/workflows/corpus-ingest-score.js:263` instruct "mirror `_flat_block_text()` … rather than reading `block.get("text", "")` alone … Reading `"text"` alone undercounts table-heavy documents to near zero." The Run-15 scoring pass did not follow its own instruction. It applied the correct reasoning to Unfallversicherung (Correction 10) but not to قرار 106.
-
-**Resolution:** **RFC wins.** No code fix. Re-measure and rewrite audit line 24; the ~48% gap will collapse toward 0. Downgrade A33-I2 to "resolved — measurement artifact". Note the same error also produced the wrong Unfallversicherung 492-char block sum at audit line 29.
-**Evidence:** `client.py:1695,1715`; `helpers.py:2812-2825,2828-2837`; `corpus-score-diff.js:146`; `corpus-ingest-score.js:263`; audit lines 24, 29; RFC-033:260.
-
----
-
-### C-3 — NEW: A33-C1's reversed titles are produced by our own pipeline
-
-Not a document-vs-document contradiction, but a contradiction between **RFC-033 D2's framing and the code**. D2 treats bidi-reversed Arabic titles as an upstream condition to be *detected and penalized*. Code exploration shows we **cause** them.
-
-> **This is a design defect in a prior RFC decision, not an accidental slip — and that changes how it must be fixed.** The unconditional heading branch is documented, deliberate behavior per **RFC-023 D9**. The `reconstruct_bidi_order()` docstring states it verbatim (`converters.py:1314-1318`): *"Even when the full-document reorder is skipped (Arabic ratio <=0.15 or already logical order), heading markers are still individually corrected via `_BIDI_HEADING_PREFIX_RE` so bilingual documents don't lose heading structure to md_to_tree() (RFC-023 D9)."*
->
-> The consequence: **H-1 cannot be handled as a bugfix.** Someone reading the code sees intended behavior working as documented, so a silent "correction" would regress the bilingual case RFC-023 D9 was written to protect. The fix must supersede D9's scope explicitly — amending RFC-023's decision record, not just patching the branch.
->
-> The sharpest evidence that this is an *incomplete* design rather than a correct one: the same docstring advertises a safeguard it never applies here — *"Includes a logical-vs-visual order probe: if the text already reads correctly ... get_display() is skipped to prevent double-reversal."* That probe (`_text_is_logical_order`) gates **only** the body via `reorder_body` (line 1325). The heading branch (1330-1333) never consults it. The anti-double-reversal guarantee the function documents is therefore **not honored for headings** — which is exactly the failure the audit observed.
-
-In `reconstruct_bidi_order()` (`converters.py:1301-1339`):
-- Line 1325 correctly gates the body: `reorder_body = arabic / len(text) > 0.15 and not _text_is_logical_order(text)`.
-- Lines 1330-1333 apply `get_display(m.group(2))` to **every** line matching `_BIDI_HEADING_PREFIX_RE` **unconditionally** — never consulting `reorder_body` or `_text_is_logical_order` (`converters.py:1270-1298`).
-
-Since `get_display()` maps logical → **visual** order, an already-correct Arabic heading is reversed by us.
-
-**Reproduced empirically:** `get_display('المحتويات') == 'تايوتحملا'` and `get_display('الخلاصة') == 'ةصالخلا'` — byte-for-byte the two reversed titles the audit reports for حقوق الإنسان. Running `reconstruct_bidi_order` on synthetic fully-logical-order Arabic markdown emits `# تايوتحملا` / `## ةصالخلا` with the body untouched — exactly the observed signature (reversed titles, clean body).
-
-The function is on the hot path: `converters.py:2202` (`text = reconstruct_bidi_order(text)  # D7`) runs for any document containing ≥1 Arabic character (early return only at `arabic == 0`, lines 1322-1323). The secondary repair path at `client.py:1255-1280` re-applies the same function to node titles when `validate_tree` returns `rtl_reversal`, so a document entering that path can be reversed **twice**.
-
-**Consequence for RFC-033:** promoting `BIDI_COHERENCE_ENFORCE` (D2) before fixing this would mass-flag documents the pipeline itself corrupted, converting a self-inflicted extraction bug into a corpus-wide MARGINAL cap. D2's own blast-radius document (حقوق الإنسان) is the first casualty. **D2's cited false-positive baseline was measured against pipeline-corrupted titles and is therefore invalid.**
-
-**Evidence:** `converters.py:1301-1339` (esp. 1325 vs 1330-1333), `1270-1298`, `1341-1343`, `2202`, `1322-1323`; `client.py:1255-1280`.
+**Claim:** Task 9.1 measured 0 `bidi_coherence_violations` across 5 Arabic docs = low false-positive risk supporting enforcement.
+**Reality:** This is 0% true-positive rate (the detector cannot fire at all, per B1-C2/B1-C3). The comment at helpers.py:1310-1321 characterizing it as "a LOWER BOUND on the clean-doc false-positive rate" is factually wrong.
+**Impact:** The stated rationale for the default is contradicted, though the default value (true) is coincidentally correct (the detector is currently a no-op; when fixes land, enforcement will be needed).
 
 ---
 
 ## Implementation Status
 
-### Task files
-
-> **Counting convention:** counts are raw `- [ ]` / `- [x]` checkboxes, including batch and checkpoint items, not just leaf tasks. RFC-033 verified directly: 35 unchecked, 0 checked. (An earlier pass of this report stated 34; that was an arithmetic error, not a different convention.)
+### Task Completion
 
 | Tasks File | Total | Done | Pending | % |
-|---|---:|---:|---:|---:|
-| `.agents/tasks/tasks-rfc033-run15-reingestion-quality-fixes.md` | 35 | 0 | 35 | **0%** |
-| `.agents/tasks/tasks-rfc029-run12-arabic-garble-gates-and-extraction-quality.md` | 34 | 34 | 0 | 100% |
-| `.agents/tasks/tasks-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md` | 24 | 22 | 2 | 91.7% |
+|---|---|---|---|---|
+| `tasks-rfc033-run15-reingestion-quality-fixes.md` | 40 | 34 | 6 | 85.0% |
+| `tasks-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md` | 24 | 22 | 2 | 91.7% |
 
-Current branch is `feat/pdf-inspector-shadow-pilot` (RFC-032 work); **no RFC-033 code has landed.**
+### Code Verification Results
 
-### Code verification
+All checked decisions have code landed and verified:
 
-| Decision | Expected change | File | Landed | Evidence |
-|---|---|---|:---:|---|
-| RFC-033 **D0** | `wipe_processed()` utility + wire `snapshot_prior_verdicts()` into both skills' and both workflows' wipe call sites | `storage.py` | ❌ | `storage.py:747` `snapshot_prior_verdicts()` exists (landed under RFC-026, commit `6113ba3`, predating RFC-033) and writes `processed/_prior_verdicts.json`, but **no `wipe_processed()` exists anywhere in the repo** and the function has **zero call sites outside `storage.py`** — defined but never invoked. Tasks 1.1/1.2 correctly unchecked. |
-| RFC-033 **D1** | Remove `_garble_ratio` full-text tautology; add newline separator in `_flatten_tree_text` | `helpers.py` | ❌ | Both functions exist (`helpers.py:554`, `:1439`) unmodified. **Both bugs confirmed present:** `_garble_ratio` (1439-1456) sets `full_garbled = 1.0` when `_is_garbled_blob(text) or _has_sparse_mojibake(text)`, then returns `max(full_garbled, window_ratio)` — the windowed ratio at 1455 is provably dead once the full-text check trips, pinning the result to 1.00. `_flatten_tree_text` (554-565) appends title then text per node and returns `''.join(parts)` — **zero separator**, gluing Arabic titles onto adjacent Latin text and manufacturing the mixed-script pattern `_has_sparse_mojibake` scores. |
-| RFC-033 **D2** | Single-letter Arabic fragment detection in `_is_garbled_blob`; promote `BIDI_COHERENCE_ENFORCE` to verdict-gating | `helpers.py` | ❌ | `helpers.py:1288` still reads `BIDI_COHERENCE_ENFORCE` with default `"false"` (audit-only): `_check_bidi_coherence(full_text)` runs but only returns False when the env var is `"true"`, so it logs a warning and does not gate (1286-1295). No single-letter fragment check in `_is_garbled_blob` (`helpers.py:863`). Tasks 5.1/5.3 correctly unchecked. **Nuance:** RFC-029/030's landed bidi check is not "insufficient in logic" so much as **switched off by default**. |
-| RFC-033 **D4** | Widen `_ARTICLE_RE` to accept `Article (N)` | `converters.py` | ❌ | `converters.py:226` — `_ARTICLE_RE = re.compile(r'^(?:Art(?:icle\|.)\s+\d+\|§\s*\d+)', re.IGNORECASE)`, no parenthesized alternative; unchanged from pre-RFC-033. Task 1.9 correctly unchecked. |
-| RFC-033 **D5** | New `_inject_german_clause_headings` / `_inject_english_article_headings` | `converters.py` or `helpers.py` | ❌ | Grep across `src/pageindex_mcp/*.py` returns zero matches for either name. Tasks 5.5/5.6 correctly unchecked. |
-| RFC-029 **D0** | NFKC normalization for Arabic Presentation Forms + post-NFKC bidi-coherence check → `visual_order_garble` | `helpers.py` | ✅ | `helpers.py:970` docstring "Post-NFKC bidi-coherence check for Arabic text (RFC-029 D0/Property 2)"; `helpers.py:1022` returns `(False, 'visual_order_garble')`; NFKC normalize calls at `helpers.py:1854` and elsewhere. Matches checked tasks 1.1/1.2. Landed but **default-disabled** for enforcement. |
-| RFC-029 **D2** | Scanned-density floor | `helpers.py` | ✅ | `_RFC029_MIN_SCANNED_DENSITY_FLOOR` (default 1500) at `helpers.py:1042-1045`, applied `1323-1330`, surfaced `1508-1511`. Live — but targets density, not depth collapse. |
-| RFC-029 **D5c** | Run-together heading splitting | `converters.py` | ✅ | `converters.py:1215-1226`, call site `2200`. Live — but targets run-together headings, not depth collapse. |
+| Decision | File | Landed | Evidence |
+|---|---|---|---|
+| RFC-033 D0 (prior verdict snapshot) | storage.py | Yes | storage.py:676, 679, 804 -- snapshot key relocated, `wipe_processed()` snapshots before delete |
+| RFC-033 D1 (garble-ratio fix) | helpers.py | Yes | helpers.py:1480-1500 windowed-only ratio; helpers.py:554-562 newline separator |
+| RFC-033 D2 Part A (heading guard) | converters.py | Yes | converters.py:1486-1491 `_heading_is_logical_order` gate on `get_display()` |
+| RFC-033 D2 Part B (BIDI_COHERENCE_ENFORCE) | helpers.py | Yes | helpers.py:1324 default "true"; helpers.py:1330 returns bidi_degraded; helpers.py:1572-1576 caps verdict |
+| RFC-033 D6 (table segmentation) | client.py | Yes | client.py:1056, 1151, 1378, 1495 -- four call sites on primary + escalation paths |
 
 ---
 
 ## Stale Tasks
 
-**None.** Every RFC-033 task inspected is unchecked, and every corresponding code path is confirmed absent from HEAD — task status and code state agree. RFC-029's checked tasks 1.1/1.2 likewise map to live code (`helpers.py:970,1022`).
+| Task | Tasks File | Issue |
+|---|---|---|
+| **9.2** (flip BIDI_COHERENCE_ENFORCE default to true; wire bidi_degraded capping) | tasks-rfc033 | Marked `[ ]` pending but code is landed: helpers.py:1324 defaults to "true", helpers.py:1330 returns bidi_degraded, helpers.py:1572-1576 caps verdict. Tests exist in tests/test_rfc030_d4_d5.py labeled 'RFC-033 D2 (Part B)'. |
+| **9.3** (property test for D2 Part B) | tasks-rfc033 | Marked `[ ]` pending but tests already exist under RFC-033 D2 Part B labels in test_rfc030_d4_d5.py. |
+| **9.1** (scoped re-ingest/re-measurement) | tasks-rfc033 | Manual corpus step -- may genuinely be outstanding. Cannot verify from code alone. |
+| **10, 11** (Batch 4 final checkpoint tasks) | tasks-rfc033 | Likely blocked on 9.1 completion. Verify whether 9.1 is truly pending or also completed under the ambiguous `feat(rfc-undefined)` commits. |
 
-One **near-miss worth recording** (a stale *claim*, not a stale task): **RFC-022 B2 Part A was marked complete but never implemented** — RFC-033 D7 re-implements it. This is exactly the failure mode a stale-task check exists to catch, and it survived because the completion was asserted in a different RFC's tracking than the one owning the code.
+**Action:** Flip tasks 9.2 and 9.3 to `[x]` in the tasks file, or explain the discrepancy if re-verification under this decision's own commit is needed.
 
 ---
 
 ## Items Requiring Human Decision
 
-### H-1 — Sequencing: RFC-033 D2 must be blocked on a heading-reversal fix
+### 1. AGPL Fallback Gate (B1-I2) -- Hard Rule 4 Compliance
 
-> **RESOLVED 2026-08-06 (user decision).**
-> **(a) Scope:** the heading-reversal guard is **folded into existing D2** — no new D9, no RFC-034. D2 therefore becomes a two-part decision with a mandatory internal ordering (below).
-> **(b) Re-ingest:** **scoped to affected documents only** (Arabic docs exhibiting reversed-heading signatures), not the full Arabic corpus.
->
-> **Two consequences the implementer must carry, since neither is self-evident from D2's text:**
-> 1. **The RFC-023 D9 supersede still has to be written down inside D2.** Folding removes the separate decision record, so D2's text must explicitly state that it narrows RFC-023 D9's scope, and RFC-023's own decision record should carry a pointer to D2. Without this, the code reads as working-as-documented (`converters.py:1314-1318`) and the next reader restores the unconditional branch as a "regression fix". This is the same failure mode that let RFC-022 B2 Part A be marked complete without landing.
-> 2. **The scoped re-ingest yields a biased false-positive rate.** Measuring only on docs already known to show reversed headings over-samples the affected population, so the resulting `bidi_coherence_violations` rate is a **lower bound on the clean-doc false-positive rate, not an unbiased estimate**. Record the sampling frame alongside the number, and do not present it as a corpus-wide FP rate when justifying the `BIDI_COHERENCE_ENFORCE` promotion.
+**Context:** converters.py:2998 unconditionally seeds the converter chain with `('pymupdf4llm', _pdf_to_markdown_no_pics)`. When Docling fails (e.g., HTTP 504 on large Arabic PDFs), the chain walker silently falls through to pymupdf4llm (AGPL-3.0). No `ALLOW_AGPL_FALLBACK` gate exists.
 
-**Why a human is needed:** D2 as written would cap documents at MARGINAL for corruption our own `reconstruct_bidi_order()` introduces (C-3). The false-positive rate D2 cites was measured against pipeline-corrupted titles, so the decision's justification is unsound until the corpus is re-ingested post-fix. This changes RFC-033's batch ordering and may require budget for a re-ingest run.
+**Decision needed:** Should the pymupdf4llm fallback be gated behind `ALLOW_AGPL_FALLBACK=false` (default)? This would mean Docling failures produce an error instead of silently falling back to AGPL code -- potentially breaking ingestion for documents where Docling times out. The alternative is to accept the AGPL exposure for operational continuity.
 
-**Proposed fix (technical, low ambiguity):** gate the heading branch the way the body branch is gated — apply `get_display` to a heading only when that heading is not already in logical order: `if not _text_is_logical_order(heading_text)` per heading, or the cheaper `any(_word_has_reversed_morphology(w) for w in heading_text.split())` (`helpers.py:1150`), which is designed for short 10–100 char titles. This preserves the RFC-023 D9 intent (bilingual docs with logical bodies but genuinely reversed headings — that case still trips the guard). **Because the current behavior is documented RFC-023 D9 intent (see C-3), the fix must also amend RFC-023's decision record to narrow D9's scope** — otherwise the next reader restores the unconditional branch as a regression fix.
+**CLAUDE.md Hard Rule 4:** "pymupdf4llm/PyMuPDF are AGPL-3.0. Serving them over a network is a legal decision to clear, not a settled safe-harbor."
 
-**Correct sequencing — now *internal to D2* (per the H-1 decision):** folding the guard into D2 does not remove the ordering constraint, it moves it inside the decision. D2 must be implemented in two ordered parts, and the tasks file must keep them as separate, separately-checkable batches:
+### 2. Remote Docling Service Redeployment (B1-C1)
 
-1. **D2 Part A — heading-reversal guard lands first (Batch 0).** Gate `converters.py:1330-1333` per-heading. Must ship and be verified before Part B is touched.
-2. **Scoped re-ingest** of Arabic docs with reversed-heading signatures (per H-1(b)).
-3. **Re-measure** the `bidi_coherence_violations` counter; record the sampling frame with the number.
-4. **D2 Part B — promote `BIDI_COHERENCE_ENFORCE` (Batch 3+)**, justified by the measured rate *as a lower bound*.
+**Context:** The remote Scaleway Docling service runs a stale image from 2026-07-30 to 2026-08-04. Committed fixes (heading guard, bidi logic) cannot reach markdown produced by the remote service. No local re-normalization compensates.
 
-> ⚠️ **The single largest risk introduced by folding:** D2 Parts A and B are now one decision but must not land in one batch. If a future implementer reads "D2" as a single unit and ships it in Batch 2, `BIDI_COHERENCE_ENFORCE` goes live against pipeline-corrupted titles — precisely the outcome this reconciliation exists to prevent. **The batch separation is load-bearing and must be explicit in the tasks file.**
+**Decision needed:** (a) Rebuild and redeploy the remote Docling image from current HEAD. (b) Implement F1-B (local re-normalization in client.py after receiving remote markdown) as a safety net against future remote/local code skew. Both are recommended; (a) is operational, (b) is a new code task.
 
-**Regression tests required:** (a) logical-order Arabic headings survive `reconstruct_bidi_order` byte-identical; (b) genuinely visual-order headings are still corrected; (c) the `client.py:1255-1280` double-application path is idempotent.
+### 3. Persistence-Gating Re-Enablement (RFC-034 D13/Task 11.2)
 
-**Consequence if ignored:** A33-C4 and A33-C1 both remain open after D1+D2 as written, and the corpus acquires a wave of unjustified MARGINAL verdicts.
+**Context:** Per `BIDI_ROOT_CAUSE_RFC033.md` §5 step 7 and RFC-034's own sequencing constraint, persistence-gating is the *last* step in the remediation sequence and may only be reopened after Task 11.1 (D13, the full 25-doc corpus cycle on an unbiased frame) validates that all D0-D12 fixes hold together. As of this writing, Task 11.1 is unchecked in `tasks-rfc034-run15-reconciliation-remediation.md` -- no `audit/CORPUS_REINGESTION_AUDIT_RUN-16.md` exists, and (per `audit/TASK_9_5_STALE_WINDOW_REINGEST_STATUS_2026-08-08.md`) this sandbox has no live route to the remote k3s `infra` namespace or Scaleway Docling endpoint, so D13 cannot be executed from here either.
 
-### H-2 — A33-C4 closure criteria
+**Decision:** **Persistence-gating remains disabled (verdict-only, per `helpers.py:1389`).** It is NOT reopened by this session. This is not a deferral of judgment -- it is the correct outcome of applying the RFC's own gate: D13 has not run, so there are no full-corpus results to evaluate. Reopening now would mean gating tree persistence on a detector chain (D6-D9) and provenance/redeploy fixes (D2, D5) that have never been exercised together against the full 25-doc corpus.
 
-> **RESOLVED 2026-08-06 (user decision): split into A33-C4a / A33-C4b.**
-
-A33-C4 is CRITICAL and was mapped to D1 + D2 as an undifferentiated whole, which made it closable on delivery of work that addresses only half of it. It is now split:
-
-| Sub-finding | Scope | Closed by | Status |
-|---|---|---|---|
-| **A33-C4a** | Garble-gate false positive: `_garble_ratio` full-text tautology + `_flatten_tree_text` missing separator | **D1** (verified-correct in HEAD, ships as written) | Closes on D1 delivery |
-| **A33-C4b** | Verdict gate blind to RTL reversal: reversed Arabic headings are produced by `reconstruct_bidi_order()` and neither detected nor corrected | **D2 Part A** (heading-reversal guard), *not* D2 Part B | Stays open until D2 Part A lands and the scoped re-ingest confirms clean headings |
-
-This lets D1's verified-correct work be credited on delivery without marking a CRITICAL finding closed while the reversal defect is live. **Renumbering caveat (resolved):** the audit had no finding-ID scheme at all (`A33-` occurs zero times) — the IDs are a reconciliation-layer construct. A **Finding ID Index** has been appended to the audit defining all 13 IDs and the C4a/C4b split, so the labels now have a durable home. A bare "A33-C4" in any earlier document should be read as C4a + C4b.
+**What would change this decision:** Once Task 11.1 executes from a host with real `kubectl`/Scaleway access and produces `audit/CORPUS_REINGESTION_AUDIT_RUN-16.md` showing (a) no ERROR-verdict docs, (b) the governance-policy doc's garble correctly detected (PASS -> FAIL/MARGINAL), and (c) no unexplained MARGINAL/FAIL regressions versus the D13 expected-changes list in RFC-034, persistence-gating can be reopened as a follow-up operational action -- flip `helpers.py:1389`'s comment and wire `bidi_degraded` into the actual save-path gate (currently `save_doc` only logs the verdict; see `helpers.py:1378-1389`).
 
 ---
 
 ## Recommended Actions
 
-1. **[CRITICAL] Extend RFC-033 D2 into Part A / Part B; the guard is D2 Part A.** *(H-1 resolved: fold into D2 — no D9, no RFC-034.)* Change `converters.py:1330-1333` to apply `get_display` per-heading only when `not _text_is_logical_order(heading_text)` (or `_word_has_reversed_morphology`, `helpers.py:1150`). This is the root cause of A33-C1 and of A33-C4b. **D2's text must also state that it narrows RFC-023 D9's scope, and RFC-023's decision record must point back to D2** — folding removed the standalone record that would otherwise carry this.
+### Sequencing constraint (do not reorder)
 
-2. **[CRITICAL] Split D2 across two batches in the tasks file — the separation is load-bearing.** D2 Part A (heading guard) → **Batch 0**; D2 Part B (`BIDI_COHERENCE_ENFORCE` promotion) → **Batch 3+**, gated on a scoped re-ingest and a re-measured `bidi_coherence_violations` counter. Because Parts A and B are now one decision (H-1), the tasks file must make the batch split explicit and separately checkable, with an inline warning that shipping D2 as a single unit enables enforcement against pipeline-corrupted titles. Update `.agents/tasks/tasks-rfc033-run15-reingestion-quality-fixes.md` **via Serena `replace_content`** per dispatch rules.
+`BIDI_ROOT_CAUSE_RFC033.md` §5 mandates a strict landing order and warns explicitly: **"Landing [detector fixes] before [redeploy] would cap documents at MARGINAL for damage the pipeline is still inflicting -- the exact failure the tasks file's batch separation was written to prevent."** The numbering below reflects that order; do not sequence the detector-fix items (1, 2) ahead of the redeploy (3) or the local re-normalization safety net (4) regardless of the CRITICAL/IMPORTANT severity split, since severity tracks impact, not landing order. The mandated order is:
 
-3. **[CRITICAL] Split A33-C4 into A33-C4a / A33-C4b in the audit.** *(H-2 resolved.)* C4a (garble-gate false positive) closes on **D1** delivery; C4b (blind to RTL reversal) closes only on **D2 Part A** + scoped-re-ingest confirmation. **Premise correction (verified 2026-08-06):** the audit contains **zero** occurrences of `A33-` — it was written without any finding-ID scheme, and the `A33-*` IDs used throughout this report were introduced by the reconciliation pass itself. There was therefore nothing to "apply the split to". **Done:** a **Finding ID Index** was appended to `audit/CORPUS_REINGESTION_AUDIT_RUN-15.md` defining all 13 IDs against their audit sections, carrying the C4a/C4b split, and listing the five uncovered sub-items. This is what makes cross-run references possible rather than merely non-dangling.
+1. F1-A -- commit the heading guard + its property tests (already landed, D2 Part A).
+2. F1-C -- `/version` + skew detection; **rebuild and redeploy the remote image** (action 1 below).
+3. F1-B -- local re-normalization safety net (action 2 below).
+4. F1-D, F1-E -- AGPL gate, provenance in meta (actions 3, 4 below).
+5. F2-A, F2-B, F2-C -- detector fixes (actions 5, 6 below), landing only once `BIDI_COHERENCE_ENFORCE=true` is already the deployed default.
+6. Full corpus cycle -- measure `BIDI_REVERSAL_RATE` on an unbiased frame (all 17 Arabic docs + German/English negative controls).
+7. Only then reopen persistence-gating.
 
-4. **[IMPORTANT] Implement RFC-033 D1 as written — both bugs verified in HEAD.** `_garble_ratio` `max()` tautology (`helpers.py:1439-1456`, `window_ratio` dead) and `_flatten_tree_text` missing separator (`helpers.py:554-565`, bare `''.join(parts)`). No amendment needed. Closes A33-R2.
+### CRITICAL
 
-5. **[IMPORTANT] Wire RFC-033 D0.** `snapshot_prior_verdicts()` (`storage.py:747`) has existed since RFC-026 commit `6113ba3` with **zero call sites**. Add `wipe_processed()` and invoke the snapshot from both skills' and both workflows' wipe call sites (tasks 1.1/1.2). Closes A33-R1.
+1. **Rebuild and redeploy remote Docling service image (B1-C1, F1-C).** The stale Scaleway image (2026-07-30..2026-08-04) does not include the `_heading_is_logical_order` guard or any D2 fixes, and also predates `_repair_docling_tables` (see B1-I10/U-7 below). Add the `/version` endpoint for future skew detection. Operational action; must land **before** the detector fixes below per the sequencing constraint.
 
-6. **[IMPORTANT] Correct the audit: close A33-S1's Unfallversicherung sub-item as DISPROVED.** Edit `audit/CORPUS_REINGESTION_AUDIT_RUN-15.md` rows 63 and 105 to drop "suggest table extraction gaps", cite RFC-029 OoS + RFC-033 OoS [7] as prior disproof, and restate the residual defect as `depth=1` flatness only. No `helpers.py` change.
+2. **Implement local re-normalization for remote markdown (B1-C1, F1-B).** Add a `reconstruct_bidi_order()` call in client.py after receiving remote markdown when `_use_remote` is true. Safety net against future remote/local code skew. Create task under RFC-033. Must land **before** the detector fixes below.
 
-7. **[IMPORTANT] Correct the audit: re-measure A33-I2 and downgrade it.** Re-run the char-sum for قرار مجلس الوزراء رقم (106) using `_flat_block_primary_text` semantics (`text`, else `row_records` for tables) and rewrite audit line 24 plus the A33-I2 finding — the ~48% gap will collapse toward 0. Downgrade from "important / open question" to "resolved — measurement artifact".
+3. **Gate pymupdf4llm behind `ALLOW_AGPL_FALLBACK` env var (B1-I2, F1-D).** Default false at converters.py:2998. **Requires human decision** on operational trade-off. Hard Rule 4 compliance issue. Create task under RFC-033 or separate RFC. Per the sequencing constraint this lands before the detector fixes even though tagged IMPORTANT below.
 
-8. **[IMPORTANT] Split A33-S1 into per-document sub-findings and re-map.** Cabinet-1 → **D8** (covered — removes D8 from the orphan list); Cabinet-106 → OoS [10b] (deliberately deferred, research-grade); FDL(47) → D4; Haftpflicht → D5; سياسة حوكمة → D2; Unfallversicherung → closed as disproved; landscape-chart fragmentation → re-scope note (RFC-029 D2/D5c address density and run-together headings, not depth — not a regression). Use Serena `replace_content` for the tasks file. **وارد-597 is not part of A33-S1** — it is tracked separately as **A33-C5** (content-identity/document-swap concern, Scorecard row 9), already dispositioned by RFC-033 OoS [10a] as a source-file data-quality issue rather than a pipeline defect (see Coverage Matrix).
+4. **Add extraction provenance fields to meta.json (B1-I1, F1-E).** Add `extraction_route`, `converter_name`, `converter_contract`, `remote_build_sha`, `page_count`, `inspector_class` to `_META_FIELDS` in storage.py and populate in client.py. ~30 lines. Create task under RFC-033. Also resolves U-1/U-2 (B1-I4, B1-I5) once landed. Per the sequencing constraint this lands before the detector fixes.
 
-9. **[IMPORTANT] Disposition the five uncovered sub-items.** Each needs either a decision or an explicit Out-of-Scope entry with a stated reason (see Orphaned Audit Findings):
-   - **Reitlehrer ~32% char-stripping loss** (2,768 vs 4,082, landed RFC-029 D3) — **highest priority of the five**: a live content-loss regression currently masked by a PASS verdict.
-   - **Haftpflicht-Allgemeine** vertical-text garbling + 3 unenriched images (D5 covers depth only).
-   - **FDL-33 ToC** misparsed into ~130 heading nodes (D0 covers only the verdict regression).
-   - **A33-I2 residual** — audit char-sum methodology (tooling, see action 10).
-   - **SLA doc depth-1 flatness.** Add it as a new RFC-033 decision or as an explicit Out-of-Scope entry with a stated reason. It currently appears in RFC-033 only under D1, which fixes its garble false positive, not its structure.
+5. **Fix BiDi detector line selector range (B1-C3, F2-A).** Change helpers.py:1029 to use `_AR_RE.match(c)` instead of the hardcoded `U+0600-06FF` range comparison. One-line fix. Without this, the detector's input pipeline discards all reversal signal. Create task under RFC-033 or follow-up RFC. **Must land after actions 1-4 above**, not before.
 
-10. **[MINOR] Harden the scoring workflows against the char-sum methodology error.** Replace the prose instruction at `.claude/workflows/corpus-score-diff.js:146` and `.claude/workflows/corpus-ingest-score.js:263` with a mandatory shared helper mirroring `_flat_block_primary_text`, so `block.get("text","")` cannot be used ad hoc. Add a self-check flagging any per-doc `|flat_char_count - measured_sum| > 10%` as a measurement error **before** it is written up as a pipeline finding. Tooling task, not an RFC decision.
+6. **Add canonical-order reversal prong to `_check_bidi_coherence` (B1-C2, F2-B).** Implement a per-run readability comparison (forward vs reversed) using `_arabic_readability_score`. Without this, `BIDI_COHERENCE_ENFORCE=true` is a no-op on the actual failure population. Create task under RFC-033. **Must land after actions 1-4 above**, not before -- landing this first would cap documents at MARGINAL for damage the stale remote image is still inflicting.
 
-11. **[MINOR] Add a "disproved findings ledger" step to `.claude/workflows/corpus-score-diff.js`.** A finding closed as DISPROVED in an RFC Out-of-Scope section must not re-enter a later audit as an open defect without an explicit re-open note. This is the process fix for contradiction C-1.
+### IMPORTANT
 
-12. **[IMPORTANT] Re-map RFC-033 D6 in the audit as covered, not orphaned.** D6 (`_segment_table_nodes` on the primary tree-build path) is directly backed by Run-15 Scorecard row 15 and the Stalls section entry for `GHV-TKV-Tarif.pdf` ("`_segment_table_nodes` still not wired into the primary tree-build path"). Add finding ID **A33-S2** to the audit (or the reconciliation tracker) for this stall and map it to D6 in `.agents/tasks/tasks-rfc033-run15-reingestion-quality-fixes.md` via Serena `replace_content`, per dispatch rules. Do not annotate D6 as "not a Run-15 finding" — that provenance claim is false; D6 also happens to complete an RFC-030 deferral, but the Run-15 audit backing is primary.
+7. **Correct the Task 9.1 measurement comment (B1-I3).** Replace helpers.py:1310-1321 comment with corrected wording from BiDi root cause report section 5. The default value (true) should remain; only the justification text is wrong. Documentation/comment fix.
 
-13. **[MINOR] Close A33-I3 as observational.** No defect, no RFC decision needed.
+8. **Flip stale task checkboxes 9.2/9.3 to `[x]`.** Code and tests are landed. Tasks file understates completion. Use Serena `replace_content` to update.
 
-14. **[MINOR] Sweep prior RFCs for other "marked complete, never implemented" claims.** RFC-022 B2 Part A was marked complete yet never landed (now re-implemented as RFC-033 D7). Verify other completion claims against HEAD for the same failure mode.
+9. **Investigate the Reitlehrer ~32% char-stripping loss (uncovered sub-item, highest priority per Run-15 audit).** A live RFC-029 D3 content-loss regression (2,768 vs original 4,082 chars) masked by a PASS verdict, because the judge reclassified the missing content as a non-substantive logo rather than the loss being fixed. No RFC-033 decision addresses this. Create a new investigative task to quantify the stripped content and determine whether RFC-029 D3 needs a follow-up fix.
+
+10. **Check whether non-Arabic table-heavy docs were damaged by the stale remote image (B1-I10, U-7).** The stale build lacks `_repair_docling_tables` and no probe has targeted non-Arabic documents. Compare `\|----\|` vs `\| --- \|` separator counts across stored trees ingested in the 2026-07-30..2026-08-04 window -- read-only, cheap. Run this before closing out action 1 (redeploy) so the redeploy's before/after delta is measured against a known baseline.
+
+### MINOR
+
+11. **Track uncovered hierarchy-collapse sub-items for future RFC.** SLA doc depth-1 flatness, Haftpflicht vertical-text garbling, unenriched images, and the **FDL-33 ToC misparse into ~130 heading nodes** (sub-item of A33-R1; D0 covers only the verdict regression, not the underlying structural misparse) are acknowledged gaps in RFC-033 scope. Log them as backlog items for the next corpus quality cycle.
+
+12. **Investigate Run 14/15 non-determinism for SLA doc (A33-R2).** D1's fix eliminates the root cause, but understanding why Run 14 escaped the false positive while Run 15 did not would inform regression testing strategy. Low priority -- the fix is deployed.
+
+13. **Defer B1-I4/I5/I6/I7/I8/I9 investigative questions.** B1-I4/I5 (U-1/U-2) are answered by action 4 above (provenance fields). B1-I6 (U-3) is deferred until the detector fixes (actions 5/6) land -- testing a non-firing detector is meaningless. B1-I7 (U-4) is a cheap standalone check (fetch the cached tree, run the existing §0.1 M-B measurement). B1-I8 (U-5) is blocked on action 1's `/version` endpoint. B1-I9 (U-6) needs a standalone property test over the `doc_store/` corpus, independent of the other actions.
 
 ---
 
 ## Appendix: Raw Data
 
-**Data sources used in this reconciliation:**
-
-- **Coverage matrix** — 13 Run-15 audit findings mapped to RFC decisions (11 original + A33-S2 GHV-TKV-Tarif stall + A33-C5 وارد-597 content-identity concern, both previously missing from this matrix); 2 contradictions; 2 candidate orphaned decisions, both resolved as false orphans (D6 and D8); 0 top-level orphaned findings (1 uncovered sub-item surfaced inside compound finding A33-S1).
-- **Implementation check** — task-file completion counts for RFC-033 / RFC-029 / RFC-025; per-decision code verification for RFC-033 D0/D1/D2/D4/D5 and RFC-029 D0/D2/D5c; zero stale tasks detected.
-- **Ambiguity resolutions** — 6 items resolved by direct code exploration (CodeGraph + Serena LSP in parallel per dispatch rules), 2 escalated as `needs_human_decision` (A33-C4 sequencing, A33-C1 root-cause scope).
-
-**Primary source files inspected:**
-
-| Path | Relevance |
+| Source | Description |
 |---|---|
-| `src/pageindex_mcp/converters.py` | `reconstruct_bidi_order` 1301-1339 (root cause C-3); `_text_is_logical_order` 1270-1298; `_BIDI_HEADING_PREFIX_RE` 1341-1343; call site 2202; early return 1322-1323; `_ARTICLE_RE` 226; `_AR_PART_RE`/`_AR_ARTICLE_RE`/`_inject_arabic_structural_headings` 82,98,130,155-214,2759-2760; RFC-029 D5c 1215-1226,2200 |
-| `src/pageindex_mcp/helpers.py` | `_garble_ratio` 1439-1456; `_flatten_tree_text` 554-565; `BIDI_COHERENCE_ENFORCE` 1286-1295; `_tree_is_rtl_reversed` 1279; `_is_garbled_blob` 863; RFC-029 D0 970,1022,1854; density floor 1042-1045,1323-1330,1508-1511; `flag_empty_cells` 2570-2602,2797; `_flat_block_primary_text` 2812-2825; `_flat_block_text` docstring 2828-2837; `_word_has_reversed_morphology` 1150 |
-| `src/pageindex_mcp/client.py` | `flat_char_count` 1695,1715; `_repair_rtl_nodes` 1255-1280 |
-| `src/pageindex_mcp/storage.py` | `snapshot_prior_verdicts` 747 (zero call sites) |
-| `.claude/workflows/corpus-score-diff.js` | Line 146 — char-sum instruction ignored by Run-15 |
-| `.claude/workflows/corpus-ingest-score.js` | Line 263 — same instruction |
-| `audit/CORPUS_REINGESTION_AUDIT_RUN-15.md` | Lines 24, 29 (Correction 10), 63, 105 |
-| `.agents/rfcs/033-run15-run15-reingestion-quality-fixes.md` | D2 74-75; D4 111-120; D5 134-143; D8 200-209; OoS [7] 258, [9] 260, [10b] 262 |
-| `.agents/rfcs/029-run12-arabic-garble-gates-and-extraction-quality.md` | Line 286 (Unfallversicherung "No fix needed") |
-| `.agents/tasks/tasks-rfc033-run15-reingestion-quality-fixes.md` | 0/35 complete |
-
-**Empirical reproduction (C-3):** `get_display('المحتويات') == 'تايوتحملا'`; `get_display('الخلاصة') == 'ةصالخلا'`; `reconstruct_bidi_order` on logical-order Arabic markdown emits `# تايوتحملا` / `## ةصالخلا` with body unchanged.
+| `audit/CORPUS_REINGESTION_AUDIT_RUN-15.md` | Run 15 corpus re-ingestion audit (14 findings: A33-C1 through A33-I4) |
+| `audit/BIDI_ROOT_CAUSE_RFC033.md` | BiDi root cause analysis for RFC-033 D2 (13 findings: B1-C1 through B1-I10, covering all §6 unknowns U-1..U-7) |
+| `.agents/rfcs/033-run15-run15-reingestion-quality-fixes.md` | RFC-033: Run 15 Re-ingestion Quality Fixes (D0-D8) |
+| `.agents/designs/design-rfc033-run15-reingestion-quality-fixes.md` | RFC-033 design document |
+| `.agents/tasks/tasks-rfc033-run15-reingestion-quality-fixes.md` | RFC-033 tasks (40 total, 34 done, 6 pending) |
+| `.agents/rfcs/025-run8-verdict-hysteresis-and-recovery-coverage.md` | RFC-025: Run 8 Verdict Hysteresis and Recovery Coverage (D0-D4) |
+| `.agents/tasks/tasks-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md` | RFC-025 tasks (24 total, 22 done, 2 pending) |
+| Code files verified | `src/pageindex_mcp/helpers.py`, `src/pageindex_mcp/converters.py`, `src/pageindex_mcp/client.py`, `src/pageindex_mcp/storage.py` |
