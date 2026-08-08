@@ -139,6 +139,17 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/version")
+async def version():
+    from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
+
+    return {
+        "commit_sha": os.environ.get("BUILD_SHA", "unknown"),
+        "pipeline_version": CURRENT_PIPELINE_VERSION,
+        "build_date": os.environ.get("BUILD_TIMESTAMP", "unknown"),
+    }
+
+
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
 async def convert_pdf(req: PdfConvertRequest):
     import asyncio
