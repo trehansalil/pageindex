@@ -30,7 +30,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
     - Update `.claude/skills/corpus-ingest-score/SKILL.md` and `.claude/skills/corpus-ingest/SKILL.md` to instruct calling `wipe_processed()` instead of a raw MinIO delete.
     - Update `.claude/workflows/corpus-ingest.js` (~lines 44-58) and `.claude/workflows/corpus-ingest-score.js` (~lines 49-63) — the actual wipe call sites — to invoke `wipe_processed()`.
     - _Requirements: [RFC-033 D0](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d0-wire-hysteresis-snapshot-into-corpus-reingestion-pipeline) | [Design §Property 0 — hysteresis snapshot survives wipe](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-0-hysteresis-snapshot-survives-wipe)_
-  - [x]* <a id="13-property-snapshot-survives-wipe"></a>1.3 Property test: snapshot survives wipe
+  - [x] <a id="13-property-snapshot-survives-wipe"></a>1.3 Property test: snapshot survives wipe
 
     - **Property 1: Snapshot-before-wipe ordering**
     - Call `wipe_processed()`; verify `snapshots/_prior_verdicts.json` exists in MinIO AFTER `processed/*` is deleted (snapshot survives the wipe, and `find_prior_verdict()` reads the relocated prefix and returns the correct prior verdict).
@@ -43,7 +43,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
 
     - In `src/pageindex_mcp/helpers.py`, insert a newline separator between concatenated title/text parts in `_flatten_tree_text()` (lines 555-565) to prevent artificial glued Arabic-Latin-Arabic boundary patterns.
     - _Requirements: [RFC-033 D1](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d1-fix-garble-ratio-full-text-tautology-and-flatten-text-separator) | [Design §Property 1 — garble ratio reflects windowed measurement only](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-1-garble-ratio-reflects-windowed-measurement-only)_
-  - [x]* <a id="16-property-windowed-ratio-and-separator"></a>1.6 Property tests: windowed ratio + separator correctness
+  - [x] <a id="16-property-windowed-ratio-and-separator"></a>1.6 Property tests: windowed ratio + separator correctness
 
     - **Property 2: Windowed garble ratio reflects per-window variance**
     - Build a synthetic tree with Arabic title nodes adjacent to Latin text nodes; verify `_flatten_tree_text` produces newline-separated output. Verify `_garble_ratio` returns the windowed ratio (not a constant 1.0) when individual windows have varying garble levels.
@@ -53,7 +53,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
     - In `scripts/minio_helper.py`, wrap `cmd_meta()` (line 36) and `cmd_tree()` (line 41) with exponential-backoff retry (3 attempts, 2s/4s/8s delays) on transient S3 errors (`NoSuchKey`, `ConnectionError`, network timeouts).
     - Add a retry instruction to the Stage 2 agent prompt in `.claude/workflows/corpus-ingest-score.js` (lines 242-271): "If minio_helper.py returns NoSuchKey, wait 5 seconds and retry up to 3 times before concluding the artifacts are missing."
     - _Requirements: [RFC-033 D3](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d3-add-retry-logic-to-minio-read-path-in-ingestscore-pipeline) | [Design §Property 3 — MinIO read retries recover from transient failures](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-3-minio-read-retries-recover-from-transient-failures)_
-  - [x]* <a id="18-property-retry-transient-vs-permanent"></a>1.8 Property tests: retry succeeds on transient failure, fails clean on permanent failure
+  - [x] <a id="18-property-retry-transient-vs-permanent"></a>1.8 Property tests: retry succeeds on transient failure, fails clean on permanent failure
 
     - **Property 3: Retry masks transient failures without masking permanent ones**
     - Mock `get_object` to raise `NoSuchKey` on first two calls and succeed on the third — verify `cmd_meta` returns valid JSON. Mock `get_object` to raise on all 3 attempts — verify a clean error message (not a silent swallow).
@@ -62,20 +62,20 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
 
     - In `src/pageindex_mcp/converters.py`, change `_ARTICLE_RE` (line 226) from `r'^(?:Art(?:icle|\.)\s+\d+|§\s*\d+)'` to `r'^(?:Art(?:icle|\.)\s+\(?\s*\d+|§\s*\(?\s*\d+)'` so `_segment_label()` (line 298) extracts a label for `Article (47)` and `_containment_depths()` (line 360) / `_relevel_by_containment()` (line 384) can assign proper nested depth.
     - _Requirements: [RFC-033 D4](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d4-extend-_article_re-to-match-parenthesized-article-numbering) | [Design §Property 4 — parenthesized article numbering yields containment depth](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-4-parenthesized-article-numbering-yields-containment-depth)_
-  - [x]* <a id="110-property-article-label-extraction"></a>1.10 Property tests: article label extraction, parenthesized and plain
+  - [x] <a id="110-property-article-label-extraction"></a>1.10 Property tests: article label extraction, parenthesized and plain
 
     - **Property 4: `_segment_label` extracts the numeric label regardless of parenthesization**
     - Verify `_segment_label('Article (47) - Title')` returns `['47']`. Verify `_segment_label('Article 47 - Title')` still returns `['47']` (no regression on the plain form).
     - **Validates: [RFC-033 D4](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d4-extend-_article_re-to-match-parenthesized-article-numbering)**
 
-  - [x] <a id="111-heading-reversal-guard-d2-part-a"></a>1.11 **[D2 Part A]** Gate the heading branch of `reconstruct_bidi_order()`
+  - [x] <a id="111-heading-reversal-guard-d2-part-a"></a>1.11 **[D2 Part A]* Gate the heading branch of `reconstruct_bidi_order()`
 
     - In `src/pageindex_mcp/converters.py`, `reconstruct_bidi_order()` (lines 1301-1339) applies `get_display()` to **every** line matching `_BIDI_HEADING_PREFIX_RE` **unconditionally** (lines 1330-1333), never consulting `reorder_body` or `_text_is_logical_order` (lines 1270-1298). Since `get_display()` maps logical → visual order, **already-correct Arabic headings are reversed by us.** Empirically reproduced: `get_display('المحتويات') == 'تايوتحملا'` and `get_display('الخلاصة') == 'ةصالخلا'` — byte-for-byte the reversed titles the Run-15 audit reports for حقوق الإنسان.
     - Fix: apply `get_display` to a heading only when that heading is not already in logical order — `if not _text_is_logical_order(heading_text)` per heading, or the cheaper `any(_word_has_reversed_morphology(w) for w in heading_text.split())` (`helpers.py:1150`), which is designed for short 10–100 char titles.
     - **Also update the docstring.** It currently advertises a safeguard it does not apply here: *"Includes a logical-vs-visual order probe: if the text already reads correctly ... get_display() is skipped to prevent double-reversal."* That probe gates only the body via `reorder_body` (line 1325). The anti-double-reversal guarantee must actually hold for headings after this fix.
     - **Record the RFC-023 D9 supersede.** The unconditional heading branch is *documented intentional behavior* per RFC-023 D9 (docstring, `converters.py:1314-1318`) — this is a design defect in a prior decision, not an accidental slip. D2's text must state that it narrows RFC-023 D9's scope, and RFC-023's decision record must point back to D2. Without this, the code reads as working-as-documented and the next reader restores the unconditional branch as a "regression fix".
     - _Requirements: [RFC-033 D2](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d2-arabic-single-letter-fragment-detection-and-bidi-coherence-enforcement) (Part A) | Reconciliation C-3 / H-1 (`../../audit/RECONCILIATION_REPORT.md`)_
-  - [x]* <a id="112-property-heading-guard-idempotence"></a>1.12 Property tests: logical-order headings survive untouched; repair path is idempotent
+  - [x] <a id="112-property-heading-guard-idempotence"></a>1.12 Property tests: logical-order headings survive untouched; repair path is idempotent
 
     - **Property 10: `reconstruct_bidi_order` never reverses an already-logical heading**
     - (a) Logical-order Arabic headings (`# المحتويات`, `## الخلاصة`) survive `reconstruct_bidi_order` **byte-identical**. (b) Genuinely visual-order headings are still corrected (the RFC-023 D9 bilingual case must not regress). (c) The secondary repair path at `client.py:1255-1280`, which re-applies the same function to node titles when `validate_tree` returns `rtl_reversal`, is **idempotent** — a document entering that path must not be reversed twice.
@@ -94,7 +94,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
     - In `src/pageindex_mcp/client.py`, add `result['structure'] = _segment_table_nodes(result.get('structure', []))` after line 1031 (primary tree-build path, after `split_oversized_leaf_nodes`) and after line 1428 (image-escalation path).
     - Ensure segmentation runs BEFORE `validate_tree` so the validated structure is the segmented one.
     - _Requirements: [RFC-033 D6](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d6-call-_segment_table_nodes-on-primary-tree-build-path) | [Design §Property 6 — table segmentation runs on all tree-build paths](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-6-table-segmentation-runs-on-all-tree-build-paths)_
-  - [x]* <a id="32-property-table-node-segmentation"></a>3.2 Property + regression tests: table segmentation fires on primary path without altering garble-recovery output
+  - [x] <a id="32-property-table-node-segmentation"></a>3.2 Property + regression tests: table segmentation fires on primary path without altering garble-recovery output
 
     - **Property 5: Table segmentation is path-agnostic**
     - Build a tree with a single large TABLE node; verify `_segment_table_nodes` splits it into per-section sub-nodes when invoked from the primary path. Verify documents already on garble-recovery paths (where `_segment_table_nodes` already ran pre-fix) produce byte-identical output after the change.
@@ -103,7 +103,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
 
     - In `src/pageindex_mcp/client.py`, after the existing all-blocks-are-image check (line 1608), add: when `ext in _IMAGE_EXTS` and `_IMAGE_STANDALONE_PIPELINE_ENABLED`, force `content_class = 'image_standalone'` regardless of what `route_and_extract_flat` returned, so `classify_verdict` routes through `_classify_image_verdict(image_enrichment_ratio)` (helpers.py:1522).
     - _Requirements: [RFC-033 D7](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d7-implement-rfc-022-b2-part-a-image_standalone-content_class-override) | [Design §Property 7 — image extension forces image_standalone content_class](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-7-image-extension-forces-image_standalone-content_class)_
-  - [x]* <a id="34-property-image-standalone-override-scope"></a>3.4 Property tests: override applies only to bare image extensions
+  - [x] <a id="34-property-image-standalone-override-scope"></a>3.4 Property tests: override applies only to bare image extensions
 
     - **Property 6: image_standalone override is extension-scoped, not content-scoped**
     - Mock a `.jpg` file path with `flat_mixed` content_class; verify the override sets `content_class='image_standalone'`. Verify `.pdf` files with mixed image/text blocks are NOT overridden to `image_standalone`.
@@ -121,7 +121,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
     - In `src/pageindex_mcp/helpers.py`, extend `_is_garbled_blob()` (line 863): when Arabic-script characters are present and >40% of whitespace-delimited tokens containing Arabic chars are single characters (excluding the conjunction particle "wa"), flag as garbled.
     - Wire the same heuristic into `_garble_check_nodes()` for per-node garble-ratio inspection.
     - _Requirements: [RFC-033 D2](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d2-arabic-single-letter-fragment-detection-and-bidi-coherence-enforcement) | [Design §Property 2 — Arabic single-letter fragments detected without false positives on particles](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-2-arabic-single-letter-fragments-detected-without-false-positives-on-particles)_
-  - [x]* <a id="52-property-fragment-detection-and-particle-exclusion"></a>5.2 Property tests: fragment detection fires correctly, particle exclusion holds
+  - [x] <a id="52-property-fragment-detection-and-particle-exclusion"></a>5.2 Property tests: fragment detection fires correctly, particle exclusion holds
 
     - **Property 7: Single-letter fragment ratio ignores the "wa" conjunction**
     - Construct text with Arabic single-letter fragments (e.g. "م ا د ة" instead of "مادة"); verify `_is_garbled_blob` returns True. Verify the conjunction particle "wa" exclusion does not inflate the fragment ratio. Negative test: verify clean Arabic docs (synthetic fixtures modeled on مرسوم 13 / مرسوم 33 phrasing) do not false-trigger the fragment detector.
@@ -136,7 +136,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
     - In `src/pageindex_mcp/converters.py`, add `_inject_english_article_headings()` for "Article (N)" prose lines Docling missed entirely (line-start anchored, same promotion pattern as [5.5](#55-german-clause-heading-injection)).
     - Call it alongside `_inject_german_clause_headings` at the same call site (converters.py line 2759-2760).
     - _Requirements: [RFC-033 D5](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d5-add-german-clause-pattern-heading-injection-zifferziff) | [Design §Property 5 — German and English heading injection is line-start-anchored](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-5-german-and-english-heading-injection-is-line-start-anchored)_
-  - [x]* <a id="57-property-heading-injection-line-start-anchoring"></a>5.7 Property tests: heading injection is line-start anchored, no mid-sentence promotion
+  - [x] <a id="57-property-heading-injection-line-start-anchoring"></a>5.7 Property tests: heading injection is line-start anchored, no mid-sentence promotion
 
     - **Property 9: Structural heading injection never promotes mid-sentence references**
     - Pass markdown with "Ziffer 1 Haftung" as a prose line; verify output has "## Ziffer 1 Haftung". Pass markdown with "Article (3) Definitions" as a prose line; verify output has "## Article (3) Definitions". Negative test: verify lines like "see Ziffer 1 above" mid-sentence are NOT promoted.
@@ -154,7 +154,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
 
     - In `src/pageindex_mcp/converters.py`, extend `_AR_PART_RE`, `_AR_ARTICLE_RE`, `_AR_WORD_RE` (~lines 155-214) to also match mirror-reversed variants of مادة / باب / فصل, so `numbering_depth()` and `_relevel_by_containment()` can match Tesseract RTL-reversed OCR output.
     - _Requirements: [RFC-033 D8](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d8-harden-arabic-ocr-tree-building-against-tesseract-rtl-reversed-text) | [Design §Property 8 — reversed Arabic stems match in numbering_depth](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-8-reversed-arabic-stems-match-in-numbering_depth)_
-  - [x]* <a id="72-property-reversed-regex-equivalence"></a>7.2 Property tests: reversed regex variants match forward-equivalent stems
+  - [x] <a id="72-property-reversed-regex-equivalence"></a>7.2 Property tests: reversed regex variants match forward-equivalent stems
 
     - **Property 10: Reversed Arabic stem regexes are equivalent to their forward form**
     - Verify reversed regex variants match "ةداملا" as equivalent to "المادة" (and the corresponding باب/فصل reversed forms).
@@ -163,7 +163,7 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
 
     - In `src/pageindex_mcp/converters.py`, add a reversal-detection function that checks candidate lines against a known-good Arabic word list; when reversal is detected, flip the text before feeding it into `_inject_arabic_structural_headings`.
     - _Requirements: [RFC-033 D8](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d8-harden-arabic-ocr-tree-building-against-tesseract-rtl-reversed-text) | [Design §Property 8 — reversed Arabic stems match in numbering_depth](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-8-reversed-arabic-stems-match-in-numbering_depth)_
-  - [x]* <a id="74-property-reversal-detection-and-repair-correctness"></a>7.4 Property tests: reversal detection identifies and correctly flips mirror-reversed text
+  - [x] <a id="74-property-reversal-detection-and-repair-correctness"></a>7.4 Property tests: reversal detection identifies and correctly flips mirror-reversed text
 
     - **Property 11: Reversal detection is precise — no false positives on non-reversed Arabic**
     - Verify reversal detection correctly identifies mirror-reversed Arabic text and returns the corrected form. Negative test: verify non-reversed Arabic fixtures (modeled on مرسوم 13 / مرسوم 33 phrasing) are not affected by the reversal detector (no false positives).
@@ -183,20 +183,20 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
 
   > ⚠️ **THE BATCH SEPARATION IS LOAD-BEARING — DO NOT MERGE THIS INTO BATCH 2.** D2 was folded into a single decision with two parts (reconciliation H-1), but Parts A and B **must not land together**. If an implementer reads "D2" as one unit and ships it in Batch 2, `BIDI_COHERENCE_ENFORCE` goes live against titles **our own pipeline corrupted** ([Task 1.11](#111-heading-reversal-guard-d2-part-a)) — mass-capping documents at MARGINAL for damage we inflicted. D2's own blast-radius document (حقوق الإنسان) is the first casualty. This batch is blocked until Part A has landed and the scoped re-ingest below has run.
 
-  - [ ] <a id="91-scoped-reingest-and-remeasure"></a>9.1 **[GATE]** Scoped re-ingest and re-measurement of `bidi_coherence_violations`
+  - [ ] <a id="91-scoped-reingest-and-remeasure"></a>9.1 **[GATE]* Scoped re-ingest and re-measurement of `bidi_coherence_violations`
 
     - **Blocked on [Task 1.11](#111-heading-reversal-guard-d2-part-a) landing and its property tests ([1.12](#112-property-heading-guard-idempotence)) passing.**
     - Re-ingest the Arabic documents exhibiting reversed-heading signatures (**scoped re-ingest**, per the 2026-08-06 H-1(b) decision — not the full Arabic corpus). Hand off to the `corpus-ingest-score` / `corpus-cycle` skills; this file does not perform ingestion.
     - Re-measure the `bidi_coherence_violations` counter against the post-fix corpus.
     - ⚠️ **Record the sampling frame alongside the number.** Measuring only on docs already known to show reversed headings over-samples the affected population, so the resulting rate is a **lower bound on the clean-doc false-positive rate, not an unbiased corpus-wide estimate.** Do not present it as a corpus-wide FP rate when justifying the promotion below.
     - _Requirements: Reconciliation H-1(b) (`../../audit/RECONCILIATION_REPORT.md`)_
-  - [ ] <a id="92-bidi-coherence-verdict-only-enforcement"></a>9.2 **[D2 Part B]** Promote `BIDI_COHERENCE_ENFORCE` to verdict-only enforcement
+  - [x] <a id="92-bidi-coherence-verdict-only-enforcement"></a>9.2 **[D2 Part B]* Promote `BIDI_COHERENCE_ENFORCE` to verdict-only enforcement
 
     - In `src/pageindex_mcp/helpers.py`, flip `BIDI_COHERENCE_ENFORCE` default to `true` (~line 1288). Change the enforcement path in `validate_tree` from raising `LowQualityTreeError` to setting a `bidi_degraded` flag.
     - Wire `classify_verdict()` to read `bidi_degraded` and cap the verdict at MARGINAL — enforcement must never gate persistence, only the returned verdict.
     - Justify the promotion with the [Task 9.1](#91-scoped-reingest-and-remeasure) measurement, stated explicitly as a lower bound.
     - _Requirements: [RFC-033 D2](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d2-arabic-single-letter-fragment-detection-and-bidi-coherence-enforcement) (Part B) | [Design §Property 2](../designs/design-rfc033-run15-reingestion-quality-fixes.md#property-2-arabic-single-letter-fragments-detected-without-false-positives-on-particles)_
-  - [ ]* <a id="93-property-bidi-degraded-caps-verdict-not-persistence"></a>9.3 Property tests: `bidi_degraded` caps verdict without blocking persistence
+  - [x] <a id="93-property-bidi-degraded-caps-verdict-not-persistence"></a>9.3 Property tests: `bidi_degraded` caps verdict without blocking persistence
 
     - **Property 8: Bidi enforcement is verdict-only, never persistence-gating**
     - Construct a tree with bidi-reversed node titles (e.g. modeled on تايوتحملا / ةصالخلا); verify `bidi_degraded` is set and the verdict is capped at MARGINAL, but `validate_tree` does NOT raise `LowQualityTreeError` (the tree is still persisted).
