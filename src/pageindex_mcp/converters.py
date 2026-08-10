@@ -1955,6 +1955,182 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
         return pdf_path
 
 
+def _probe_landscape_pages(pdf_path: str) -> list[dict]:
+    """RFC-035 D2 Phase 1: read-only pre-extraction landscape orientation probe.
+
+    Tags each page landscape via PyMuPDF's `page.rotation` (rotation % 180 != 0)
+    OR a `width > height` geometric heuristic, threading the result as
+    extraction metadata for the Phase 2 rasterize-rotate-reextract fallback.
+    Does not mutate the PDF or the primary extraction path — portrait-only
+    documents yield an all-False probe and are otherwise unaffected.
+    """
+    from .config import ALLOW_AGPL_FALLBACK
+
+    if not ALLOW_AGPL_FALLBACK:
+        return []
+    try:
+        import fitz  # PyMuPDF, AGPL-3.0
+
+        pages = []
+        with fitz.open(pdf_path) as doc:
+            for page_no, page in enumerate(doc):
+                try:
+                    rotate = page.rotation
+                    width = page.rect.width
+                    height = page.rect.height
+                    is_landscape = (rotate % 180 != 0) or (width > height)
+                except Exception:
+                    rotate, width, height, is_landscape = 0, 0.0, 0.0, False
+                pages.append(
+                    {
+                        "page_no": page_no,
+                        "rotate": rotate,
+                        "width": width,
+                        "height": height,
+                        "is_landscape": is_landscape,
+                    }
+                )
+        return pages
+    except Exception as exc:
+        logger.warning("landscape orientation probe failed for %s (%s)", pdf_path, exc)
+        return []
+
+
+# RFC-035 D2 Phase 2 trigger: below this char count, a landscape-tagged page's
+# primary extraction is considered failed and the rasterize-rotate-reextract
+# fallback should engage. Configurable per corpus (chart-heavy pages may need
+# a different floor than the 748-char stalled baseline this threshold targets).
+LANDSCAPE_CHAR_THRESHOLD: int = int(os.environ.get("LANDSCAPE_CHAR_THRESHOLD", "500"))
+
+
+def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> list[dict]:
+    """RFC-035 D2 Phase 2 trigger: for pages tagged landscape by
+    ``_probe_landscape_pages``, count the chars Docling's primary extraction
+    yielded for that page and flag pages below ``LANDSCAPE_CHAR_THRESHOLD``
+    as needing the rasterize-rotate-reextract fallback.
+    """
+    below = []
+    for p in landscape_pages:
+        if not p["is_landscape"]:
+            continue
+        # PyMuPDF page_no is 0-indexed; Docling's prov.page_no (and
+        # iterate_items' page_no kwarg) is 1-indexed.
+        page_no = p["page_no"] + 1
+        char_count = 0
+        try:
+            for item, _ in document.iterate_items(page_no=page_no):
+                text = getattr(item, "text", None) or getattr(item, "orig", None) or ""
+                char_count += len(text)
+        except Exception as exc:
+            logger.warning(
+                "landscape char-count probe failed for page %d (%s)", page_no, exc
+            )
+            continue
+        if char_count < LANDSCAPE_CHAR_THRESHOLD:
+            below.append({**p, "char_count": char_count})
+    return below
+
+
+def _rasterize_rotate_page(pdf_path: str, page_no: int, dpi: int = 300) -> str:
+    """RFC-035 D2 Phase 2: rasterize a single page at ``dpi`` (fitz already
+    applies ``/Rotate`` when rendering) and, if the rendered raster is still
+    landscape (width > height — the aspect-ratio case ``/Rotate`` doesn't cover),
+    rotate the raster image itself to portrait. Returns the path to a temp PNG.
+    Raises on any failure — the caller catches this and falls through to the
+    page's original extraction (Design Error Handling item 6)."""
+    import io
+
+    import fitz  # PyMuPDF, AGPL-3.0
+    from PIL import Image
+
+    with fitz.open(pdf_path) as pdf:
+        page = pdf[page_no]
+        zoom = dpi / 72
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+        png_bytes = pix.tobytes("png")
+    img = Image.open(io.BytesIO(png_bytes))
+    if img.width > img.height:
+        img = img.rotate(-90, expand=True)
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)  # noqa: SIM115
+    img.save(tmp.name, format="PNG")
+    tmp.close()
+    return tmp.name
+
+
+def _landscape_rasterize_rotate_reextract(
+    pdf_path: str, pages: list[dict], ocr_lang_override: list[str] | None = None
+) -> list[dict]:
+    """RFC-035 D2 Phase 2: for each landscape page flagged below
+    ``LANDSCAPE_CHAR_THRESHOLD`` by ``_landscape_pages_below_threshold``,
+    rasterize at 300 DPI, rotate to portrait, and re-extract via Docling's
+    image pipeline (falling back to local Tesseract OCR if Docling itself
+    errors on the rasterized page — HR3-clean, no LLM egress).
+
+    Rasterization/rotation failure logs a warning and skips the page — the
+    caller falls through to the page's original (degraded) extraction so
+    ``classify_verdict``'s node_count/depth/max_leaf_ratio logic surfaces the
+    resulting MARGINAL/FAIL verdict naturally rather than raising (Design
+    Error Handling item 6). Routing re-evaluation (feeding recovered
+    PictureResults back into flat-mixed classification) is Phase 2's
+    follow-on, not this function's concern.
+    """
+    from .config import ALLOW_AGPL_FALLBACK
+
+    if not ALLOW_AGPL_FALLBACK:
+        return []
+    results: list[dict] = []
+    for p in pages:
+        page_no = p["page_no"]
+        try:
+            png_path = _rasterize_rotate_page(pdf_path, page_no, dpi=300)
+        except Exception as exc:
+            logger.warning(
+                "landscape rasterize/rotate failed for page %d of %s (%s); "
+                "falling through to original extraction",
+                page_no,
+                pdf_path,
+                exc,
+            )
+            continue
+        try:
+            try:
+                converter = _docling_converter(
+                    force_full_page_ocr=True,
+                    ocr_lang_override=ocr_lang_override,
+                    for_image=True,
+                )
+                result = converter.convert(png_path)
+                md = _repair_docling_tables(
+                    result.document.export_to_markdown(), doc_name=png_path
+                )
+                has_pictures = bool(getattr(result.document, "pictures", None))
+            except Exception as exc:
+                logger.warning(
+                    "landscape Docling re-extraction failed for page %d of %s (%s); "
+                    "falling back to Tesseract OCR",
+                    page_no,
+                    pdf_path,
+                    exc,
+                )
+                md = _tesseract_ocr_image(png_path, ocr_lang_override or ["eng"])
+                has_pictures = False
+        except Exception as exc:
+            logger.warning(
+                "landscape re-extraction failed for page %d of %s (%s); "
+                "falling through to original extraction",
+                page_no,
+                pdf_path,
+                exc,
+            )
+            continue
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(png_path)
+        if md and md.strip():
+            results.append({"page_no": page_no, "markdown": md, "has_pictures": has_pictures})
+    return results
+
+
 def _recover_picture_text(  # noqa: PLR0915, C901
     pdf_path: str,
     regions: list[dict],
@@ -2647,6 +2823,7 @@ def _repair_docling_tables(md: str, doc_name: str = "") -> str:
     whitespace_stripped = 0
     lines = md.split("\n")
     out: list[str] = []
+    prev_was_separator = False
 
     for line in lines:
         stripped = line.strip()
@@ -2669,20 +2846,44 @@ def _repair_docling_tables(md: str, doc_name: str = "") -> str:
         ):
             # Re-emit in minimal form: | --- | --- | ...
             out.append("| " + " | ".join("---" for _ in cells) + " |")
+            prev_was_separator = True
             continue
 
         # Check for all-identical degenerate row.
         unique_vals = set(cells)
         if len(unique_vals) == 1 and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS:
+            # RFC-034 D17: mixed-script rows (Arabic + Latin) are likely
+            # legitimate bilingual data, not a Docling merge artefact --
+            # skip the collapse and re-emit the row unchanged.
+            cell_text = cells[0]
+            has_arabic = any(_is_arabic_char(c) for c in cell_text)
+            has_latin = bool(re.search(r"[A-Za-z]", cell_text))
+            if has_arabic and has_latin:
+                new_line = "| " + " | ".join(cells) + " |"
+                whitespace_stripped += max(0, len(line) - len(new_line))
+                out.append(new_line)
+                prev_was_separator = False
+                continue
+            # RFC-035 D0: the row immediately after a separator is the first
+            # body row, not a Docling merge artefact -- repeated labels here
+            # (e.g. a sub-header row) are structural. Skip the collapse.
+            if prev_was_separator:
+                new_line = "| " + " | ".join(cells) + " |"
+                whitespace_stripped += max(0, len(line) - len(new_line))
+                out.append(new_line)
+                prev_was_separator = False
+                continue
             # Collapse: emit a single cell with the shared value.
             collapsed_rows += 1
             out.append("| " + cells[0] + " |")
+            prev_was_separator = False
             continue
 
         # Normal row: re-emit with minimal single-space padding (strips GFM alignment).
         new_line = "| " + " | ".join(cells) + " |"
         whitespace_stripped += max(0, len(line) - len(new_line))
         out.append(new_line)
+        prev_was_separator = False
 
     result = "\n".join(out)
     logger.info(
@@ -2803,7 +3004,7 @@ def _pdf_to_markdown_docling_chunked(
     return "\n\n".join(md_parts), pic_results
 
 
-def pdf_to_markdown_docling(  # noqa: PLR0915
+def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     pdf_path: str,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
@@ -2880,6 +3081,16 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
     converter = _docling_converter(
         force_full_page_ocr=force_full_page_ocr, ocr_lang_override=ocr_lang_override
     )
+    # RFC-035 D2 Phase 1: read-only landscape probe, tags pages for the future
+    # rasterize-rotate-reextract fallback (Phase 2). Does not alter extraction.
+    landscape_pages = _probe_landscape_pages(pdf_path)
+    if any(p["is_landscape"] for p in landscape_pages):
+        logger.info(
+            "landscape pages detected in %s: %s",
+            pdf_path,
+            [p["page_no"] for p in landscape_pages if p["is_landscape"]],
+        )
+
     # RFC-026 D2: normalize per-page rotation before extraction so landscape/
     # rotated pages get correct coordinate mapping instead of fragmenting text
     # into near-empty nodes. Returns pdf_path unchanged when no page needs it.
@@ -2890,6 +3101,34 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
         if docling_input_path != pdf_path:
             with contextlib.suppress(OSError):
                 os.unlink(docling_input_path)
+
+    # RFC-035 D2 Phase 2 trigger: for pages tagged landscape above, compare the
+    # primary extraction's char count against LANDSCAPE_CHAR_THRESHOLD. Detection
+    # only here — the rasterize-rotate-reextract fallback itself is Phase 2 proper.
+    landscape_below_threshold = _landscape_pages_below_threshold(
+        result.document, landscape_pages
+    )
+    landscape_fallback_pages: list[dict] = []
+    if landscape_below_threshold:
+        logger.info(
+            "landscape pages below LANDSCAPE_CHAR_THRESHOLD (%d chars) in %s: %s",
+            LANDSCAPE_CHAR_THRESHOLD,
+            pdf_path,
+            [(p["page_no"], p["char_count"]) for p in landscape_below_threshold],
+        )
+        # RFC-035 D2 Phase 2: rasterize-rotate-reextract fallback. Never fatal —
+        # a failure here falls through to the original (degraded) extraction and
+        # classify_verdict surfaces the resulting MARGINAL/FAIL verdict naturally.
+        landscape_fallback_pages = _landscape_rasterize_rotate_reextract(
+            pdf_path, landscape_below_threshold, ocr_lang_override=ocr_lang_override
+        )
+        if landscape_fallback_pages:
+            logger.info(
+                "landscape rasterize-rotate-reextract recovered %d page(s) for %s: %s",
+                len(landscape_fallback_pages),
+                pdf_path,
+                [p["page_no"] for p in landscape_fallback_pages],
+            )
 
     # Capture the RAW Docling markdown BEFORE the add-on runs: ResultPostprocessor
     # mutates result.document in place (it demotes unmatched headings to body text),
@@ -3011,6 +3250,12 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
             md = md_raw
     md = _normalize_indented_headings(md)
     md = _document_level_text_fallback(md, pdf_path)
+    # RFC-035 D2 Phase 2: splice in content recovered by the rasterize-rotate-
+    # reextract fallback. Routing re-evaluation (PictureResults -> flat-mixed) is
+    # a separate follow-on; this only restores the char count classify_verdict
+    # scores against.
+    if landscape_fallback_pages:
+        md = md + "\n\n" + "\n\n".join(p["markdown"] for p in landscape_fallback_pages)
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was
     # invisible to the event loop and pinned crop bytes for the process life).
@@ -3019,6 +3264,22 @@ def pdf_to_markdown_docling(  # noqa: PLR0915
     pic_results = _recover_picture_results(
         md, result.document, pdf_path, os.path.basename(pdf_path)
     )
+    # RFC-035 D2 Fix (Routing interaction / task-5-4): the rasterize-rotate-
+    # reextract fallback re-runs Docling on a standalone rasterized page image,
+    # so any Picture regions it detects live in that re-extraction's own
+    # result.document, not the primary result.document _recover_picture_results
+    # just scanned. Surface a routing-only marker per fallback page that fired
+    # Docling picture detection so client.index() can re-evaluate classification/
+    # routing the same way the portrait companion does (Design Property 3) —
+    # this is a signal for the flat-mixed routing decision, not a content-
+    # bearing crop, so it deliberately carries no ocr_text/png_bytes and is
+    # inert to splice_figure_markers' marker-count alignment (degrades to
+    # neutral on mismatch per that function's docstring).
+    for p in landscape_fallback_pages:
+        if p.get("has_pictures"):
+            pic_results.append(
+                PictureResult(page=p["page_no"], skipped_reason="landscape_fallback_picture")
+            )
     return md, pic_results
 
 

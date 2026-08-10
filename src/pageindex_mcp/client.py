@@ -53,7 +53,7 @@ from .helpers import (
     _script_from_filename,
     _segment_table_nodes,
     _strip_text,
-    _strip_toc_heading_nodes,
+    _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     classify_verdict,
@@ -62,6 +62,7 @@ from .helpers import (
     validate_tree,
 )
 from .metrics import (
+    BIDI_RENORM_SKIPPED,
     DOCLING_VERSION_SKEW,
     FLAT_DOCS_TOTAL,
     LOW_QUALITY_TREES,
@@ -88,6 +89,45 @@ from .storage import (
 logger = logging.getLogger(__name__)
 
 _MAX_DESC_CHARS = 4000
+
+# RFC-034 D17: bilingual documents (>30% Latin interleaved with Arabic) skip
+# the D3 reconstruct_bidi_order re-normalization pass -- it collapses blocks
+# on mixed-script content instead of correcting stale-remote heading reversal.
+_BIDI_RENORM_LATIN_GUARD = 0.30
+
+
+def _latin_fraction(md_content: str) -> float:
+    """Fraction of `md_content` that is ASCII-alphabetic (RFC-034 D17)."""
+    return sum(1 for c in md_content if c.isascii() and c.isalpha()) / max(len(md_content), 1)
+
+
+def _renormalize_bidi_guarded(md_content: str, filename: str) -> str:
+    """RFC-034 D3 re-normalization with the D17 bilingual guard.
+
+    Applies `reconstruct_bidi_order` unless the document's Latin-character
+    fraction exceeds `_BIDI_RENORM_LATIN_GUARD`, in which case the pass is
+    skipped (it collapses blocks on mixed-script content) and the skip is
+    logged plus counted so it is observable in Prometheus.
+    """
+    latin_frac = _latin_fraction(md_content)
+    if latin_frac > _BIDI_RENORM_LATIN_GUARD:
+        BIDI_RENORM_SKIPPED.inc()
+        logger.info(
+            "bidi_renorm_skipped: %s latin_frac=%.2f -- bilingual guard",
+            filename,
+            latin_frac,
+        )
+        return md_content
+    renorm = reconstruct_bidi_order(md_content)
+    if renorm != md_content:
+        REMOTE_MD_RENORMALIZED.inc()
+        logger.debug(
+            "D3 re-normalization changed %d chars for %s",
+            len(md_content) - len(renorm),
+            filename,
+        )
+    return renorm
+
 
 TREE_PATH_PICTURE_SPLICE_ENABLED = os.getenv(
     "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
@@ -667,6 +707,15 @@ async def _remote_image_to_markdown(
     return data["markdown"]
 
 
+def _ocr_information_density(text: str) -> float:
+    """Score text by alnum+digit density; digits carry chart/table signal."""
+    if not text:
+        return 0.0
+    alnum = sum(1 for c in text if c.isalnum())
+    digits = sum(1 for c in text if c.isdigit())
+    return (alnum + digits) / max(len(text), 1)
+
+
 async def _enrich_image_blocks(
     blocks: list[dict],
     pic_results: list,
@@ -699,8 +748,21 @@ async def _enrich_image_blocks(
             pr.pop("png_bytes", None)
         block["page"] = pr.get("page", 0)
         block["bbox"] = pr.get("bbox", {})
-        if not block.get("ocr_text"):
-            block["ocr_text"] = pr.get("ocr_text", "")
+        existing_ocr = block.get("ocr_text", "")
+        new_ocr = pr.get("ocr_text", "")
+        if existing_ocr and new_ocr:
+            existing_density = _ocr_information_density(existing_ocr)
+            new_density = _ocr_information_density(new_ocr)
+            if existing_density > new_density * 1.5:
+                logger.info(
+                    "ocr_preserve: keeping existing OCR (%d chars, density=%.2f) over "
+                    "enrichment (%d chars, density=%.2f)",
+                    len(existing_ocr), existing_density, len(new_ocr), new_density,
+                )
+            else:
+                block["ocr_text"] = existing_ocr + "\n" + new_ocr
+        elif new_ocr:
+            block["ocr_text"] = new_ocr
         desc = pr.get("description")
         if desc:
             block["description"] = desc
@@ -996,14 +1058,7 @@ class CustomPageIndexClient(PageIndexClient):
                         _log_pic_splice_trace(filename, "primary", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
                     if _use_remote and REMOTE_MD_RENORMALIZE:
-                        _renorm = reconstruct_bidi_order(md_content)
-                        if _renorm != md_content:
-                            REMOTE_MD_RENORMALIZED.inc()
-                            logger.debug(
-                                "D3 re-normalization changed %d chars for %s",
-                                len(md_content) - len(_renorm), filename,
-                            )
-                            md_content = _renorm
+                        md_content = _renormalize_bidi_guarded(md_content, filename)
                     with tempfile.NamedTemporaryFile(
                         suffix=".md", delete=False, mode="w", encoding="utf-8"
                     ) as md_tmp:
@@ -1218,14 +1273,7 @@ class CustomPageIndexClient(PageIndexClient):
                         _log_pic_splice_trace(filename, "garble_escalation", pic_results)
                         md_content = splice_picture_text_for_tree(md_content, pic_results)
                     if _use_remote and REMOTE_MD_RENORMALIZE:
-                        _renorm = reconstruct_bidi_order(md_content)
-                        if _renorm != md_content:
-                            REMOTE_MD_RENORMALIZED.inc()
-                            logger.debug(
-                                "D3 re-normalization changed %d chars for %s",
-                                len(md_content) - len(_renorm), filename,
-                            )
-                            md_content = _renorm
+                        md_content = _renormalize_bidi_guarded(md_content, filename)
                     if tmp_md_path and os.path.exists(tmp_md_path):
                         os.unlink(tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -1630,6 +1678,28 @@ class CustomPageIndexClient(PageIndexClient):
                             _flat_exc,
                         )
 
+            # RFC-035 D2 Fix (Routing interaction / task-5-4): the landscape
+            # rasterize-rotate-reextract fallback (converters.py) can recover a
+            # structurally valid tree from a rotated page while Docling's picture
+            # detection ALSO fires on the rotated re-extraction. The portrait
+            # companion of the same content routes to flat-mixed with PictureResults
+            # (Design Property 3) — a tree that quietly passes validate_tree here
+            # would strand that chart content on the tree path instead. Re-evaluate
+            # routing the same way RFC-029 D1 does: force the flat branch below so
+            # route_and_extract_flat can classify the doc flat_mixed. This must NOT
+            # suppress the bidi_degraded/visual_order_garble gates below — those run
+            # unconditionally on flat_md inside the flat branch (D3B garble gate).
+            if ok and settings.flat_doc_routing and any(
+                pr.get("skipped_reason") == "landscape_fallback_picture" for pr in pic_results
+            ):
+                logger.warning(
+                    "RFC-035 D2: landscape fallback re-extraction triggered picture "
+                    "detection for %s — re-routing tree pass to flat-mixed",
+                    filename,
+                )
+                ok = False
+                reason = "node_count<3"
+
             if not ok:
                 # FLAT-03-C1: a non-garbling rejection (node_count<3 / depth<2) is a
                 # *flat* document, not a defective one — route it to the flat success
@@ -1967,7 +2037,11 @@ class CustomPageIndexClient(PageIndexClient):
             structure = result.get("structure", [])
             prior_verdict = await asyncio.to_thread(find_prior_verdict, sha256, filename, doc_id)
             verdict, verdict_reason = classify_verdict(
-                structure, "", reason or None, prior_verdict=prior_verdict
+                structure,
+                "",
+                reason or None,
+                prior_verdict=prior_verdict,
+                inspector_class=pdf_classification.get("pdf_type") if pdf_classification else None,
             )
             _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
@@ -2172,6 +2246,10 @@ class CustomPageIndexClient(PageIndexClient):
             logger.warning("D10: could not read %s to check for preamble content", md_path)
 
         # RFC-034 D11: strip ToC-heading nodes before oversized-leaf splitting.
-        result["structure"] = _strip_toc_heading_nodes(result.get("structure", []))
+        # RFC-034 D16: guarded against over-stripping long legal statutes --
+        # see _strip_toc_heading_nodes_guarded.
+        result["structure"] = _strip_toc_heading_nodes_guarded(
+            result.get("structure", []), doc_name=str(md_path)
+        )
 
         return result

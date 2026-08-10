@@ -1,6 +1,7 @@
 """RAG helpers: LLM call + tree-search pipeline."""
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from .metrics import (
     RAG_DURATION,
     RAG_PARSE_FAILURES,
     RAG_SEARCHES,
+    TOC_STRIP_SKIPPED,
 )
 
 logger = logging.getLogger(__name__)
@@ -1593,6 +1595,7 @@ def classify_verdict(  # noqa: C901, PLR0915
     validate_reason: str | None,
     image_enrichment_ratio: float | None = None,
     prior_verdict: str | None = None,
+    inspector_class: str | None = None,
 ) -> tuple[str, str]:
     # RFC-026 D0: unconditional hard-FAIL floor for zero-content documents.
     # Runs before every other check/promotion branch, including
@@ -1734,10 +1737,34 @@ def classify_verdict(  # noqa: C901, PLR0915
         ):
             return _pass("cat_b_promoted")
     else:
+        # RFC-035 D1 (Task 3.1) investigation: Reitlehrer regressed PASS (Run
+        # 16) -> MARGINAL (Run 18) on the same tree-path cat_c branch. Diffed
+        # this function against commit 932d634 (in effect for both Run 16 and
+        # Run 18) and the current uncommitted RFC-034 D16-D19 changes: neither
+        # touches classify_verdict, CATEGORY_BC_PROMOTION_THRESHOLD, or any
+        # cat_c condition above -- the branch and its thresholds are
+        # byte-identical across both runs. content_class has never been
+        # populated for tree-path docs (by design, FLAT-02-C1/C3), so its
+        # "absence" cannot be a code-level scoring-criteria change either.
+        # Conclusion: no threshold revert is warranted -- the Run 16->18 delta
+        # is an audit-report framing drift (content_class absence newly
+        # flagged as a defect in the Run 18 write-up), not a pipeline data or
+        # classify_verdict regression. D1 (thread inspector_class through this
+        # branch) is confirmed as the correct remediation; proceeding with
+        # 3.2-3.4 as designed.
+        # RFC-035 D1 (Task 3.2): tree-path docs never carry content_class, so
+        # inspector_class (pdf_classification.pdf_type, e.g. "text_based")
+        # is the only classification signal available here. It informs the
+        # promotion threshold's confidence -- it never changes which branch
+        # is selected (content_class remains the sole cat_a/cat_b/cat_c
+        # selector) and has no effect unless content_class is empty/falsy.
+        _cat_c_threshold = CATEGORY_BC_PROMOTION_THRESHOLD
+        if not content_class and inspector_class == "text_based":
+            _cat_c_threshold = CATEGORY_BC_PROMOTION_THRESHOLD * 1.2
         if (
             not effectively_garbled
             and hash_pipe_ratio(flat_text) < 0.01
-            and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
+            and max_leaf_ratio < _cat_c_threshold
         ):
             return _pass("cat_c_promoted")
 
@@ -2744,6 +2771,28 @@ def _strip_toc_heading_nodes(nodes: list[dict]) -> list[dict]:
             node["nodes"] = _strip_toc_heading_nodes(node["nodes"])
         result.append(node)
     return result
+
+
+def _strip_toc_heading_nodes_guarded(nodes: list[dict], doc_name: str = "") -> list[dict]:
+    """RFC-034 D16: guard D11's `_strip_toc_heading_nodes` against
+    over-stripping long legal statutes. All-or-nothing per document: if the
+    strip would reduce max depth by more than 1, or remove more than 20% of
+    nodes, discard the stripped result and keep the original tree."""
+    depth_before = _tree_depth(nodes)
+    count_before = _tree_node_count(nodes)
+    candidate = _strip_toc_heading_nodes(copy.deepcopy(nodes))
+    depth_after = _tree_depth(candidate)
+    count_after = _tree_node_count(candidate)
+    if (depth_before - depth_after > 1) or (
+        count_before > 0 and (count_before - count_after) / count_before > 0.20
+    ):
+        logger.warning(
+            "toc_strip_skipped: %s depth %d->%d, nodes %d->%d — over-strip guard fired",
+            doc_name, depth_before, depth_after, count_before, count_after,
+        )
+        TOC_STRIP_SKIPPED.inc()
+        return nodes
+    return candidate
 
 
 _GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"

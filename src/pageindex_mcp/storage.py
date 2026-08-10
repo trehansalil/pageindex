@@ -13,7 +13,7 @@ from minio import Minio  # for type annotations; construction goes through make_
 from minio.error import S3Error
 
 from .config import settings
-from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES
+from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES, WRITE_BARRIER_RETRIES
 from .minio_client import make_minio
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,38 @@ DEFAULT_PRESIGN_REGION = "us-east-1"
 
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
+
+# RFC-034 D18: 4 attempts, same backoff schedule as RFC-033 D3's read-side retry.
+_WRITE_BARRIER_DELAYS = (0.1, 0.3, 1.0, 3.0)
+
+
+class PersistenceNotVisibleError(RuntimeError):
+    """Raised when a MinIO write is still not visible after exhausting retries."""
+
+
+def _confirm_write_visible(mc: Minio, bucket: str, key: str) -> None:
+    """Read-after-write barrier: stat_object with bounded retry + backoff.
+
+    RFC-034 D18: put_object alone races MinIO's read-after-write consistency
+    window, causing intermittent persistence-timing ERRORs in the scoring
+    pipeline. Follows the confirm-before-destroy pattern already used by
+    wipe_processed() (below), but as a positive "confirm the write landed"
+    check rather than a pre-delete guard.
+    """
+    for delay in _WRITE_BARRIER_DELAYS:
+        try:
+            mc.stat_object(bucket, key)
+            return
+        except Exception:
+            WRITE_BARRIER_RETRIES.inc()
+            time.sleep(delay)
+    try:
+        mc.stat_object(bucket, key)
+    except Exception as exc:
+        raise PersistenceNotVisibleError(
+            f"{key}: not visible in MinIO after {len(_WRITE_BARRIER_DELAYS)} "
+            "write-barrier retries"
+        ) from exc
 
 
 def get_minio() -> Minio:
@@ -169,13 +201,15 @@ def save_doc(doc_id: str, data: dict) -> None:
     mc = get_minio()
     try:
         content = json.dumps(data, indent=2).encode()
+        key = f"processed/{doc_id}.json"
         mc.put_object(
             settings.minio_bucket,
-            f"processed/{doc_id}.json",
+            key,
             BytesIO(content),
             len(content),
             content_type="application/json",
         )
+        _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
 
@@ -530,13 +564,15 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         # freshly written v2 sidecar from a legacy one (which carries no marker).
         sidecar["sidecar_version"] = SIDECAR_VERSION
         content = json.dumps(sidecar, indent=2).encode()
+        key = f"processed/{doc_id}.meta.json"
         mc.put_object(
             settings.minio_bucket,
-            f"processed/{doc_id}.meta.json",
+            key,
             BytesIO(content),
             len(content),
             content_type="application/json",
         )
+        _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)

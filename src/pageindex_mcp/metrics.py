@@ -165,6 +165,11 @@ REMOTE_MD_RENORMALIZED = Counter(
     "Remote-returned markdown passed through reconstruct_bidi_order as a local "
     "re-normalization safety net before md_to_tree (RFC-034 D3).",
 )
+BIDI_RENORM_SKIPPED = Counter(
+    "pageindex_bidi_renorm_skipped_total",
+    "reconstruct_bidi_order skipped because the document's Latin character "
+    "fraction exceeded the bilingual guard threshold (RFC-034 D17).",
+)
 VLM_FALLBACK_TOTAL = Counter(
     "pageindex_vlm_fallback_total",
     "VLM last-resort fallback attempts on garble-rejected PDFs whose OCR "
@@ -198,6 +203,12 @@ DOCLING_VERSION_SKEW = Counter(
     "pageindex_docling_version_skew_total",
     "Remote Docling version skew detections",
     ["signal"],
+)
+WRITE_BARRIER_RETRIES = Counter(
+    "pageindex_write_barrier_retries_total",
+    "_confirm_write_visible stat_object retries after a put_object to "
+    "processed/* (RFC-034 D18). Rising counts signal MinIO read-after-write "
+    "consistency pressure ahead of a persistence_not_visible failure.",
 )
 
 # ---------------------------------------------------------------------------
@@ -265,6 +276,11 @@ PDF_INSPECTOR_FORCED_OCR = Counter(
     "pageindex_pdf_inspector_preclassify_forced_ocr_total",
     "Number of documents where pdf-inspector pre-classification forced first-pass OCR "
     "(RFC-032 D1).",
+)
+TOC_STRIP_SKIPPED = Counter(
+    "pageindex_toc_strip_skipped_total",
+    "ToC-heading strip skipped by the RFC-034 D16 over-strip guard "
+    "(depth reduced >1 or >20% of nodes removed).",
 )
 
 
