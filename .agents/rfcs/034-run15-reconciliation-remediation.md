@@ -7,13 +7,31 @@
 **Run:** 15 (post-reconciliation)
 **Audit:** [audit/RECONCILIATION_REPORT.md](../../audit/RECONCILIATION_REPORT.md), [audit/BIDI_ROOT_CAUSE_RFC033.md](../../audit/BIDI_ROOT_CAUSE_RFC033.md)
 **Predecessor:** RFC-033 (Run-15 Corpus Re-ingestion Quality Fixes, 85% complete -- 34/40 tasks)
-**Status:** Draft (Rev 2 -- post adversarial review)
+**Status:** Draft (Rev 3 -- post Run-16 watchdog amendment)
+**Amendment source:** [audit/REGRESSION_WATCHDOG_RUN-16.md](../../audit/REGRESSION_WATCHDOG_RUN-16.md)
 
 ## Summary
 
 RFC-033 addressed 9 of 27 audit findings from the Run-15 corpus re-ingestion and BiDi root-cause reports. Reconciliation against code-verified ground truth reveals **4 critical contradictions** where RFC-033 D2's BiDi coherence detector is structurally unable to fire on its design-target population, plus **5 orphaned important findings** with no RFC coverage. All four contradictions share the same chain failure: upstream NFKC normalization (converters.py:2357) decomposes Arabic Presentation Forms (U+FB50-FEFF) into base Arabic (U+0600-06FF), but the downstream detectors were written assuming presentation forms would survive normalization. Additionally, the remote Docling service was deployed from a 2026-07-30 build until 2026-08-07, lacking all converter improvements from RFC-025 through RFC-033.
 
 This RFC addresses the gaps RFC-033 leaves behind, strictly respecting the sequencing constraint from BIDI_ROOT_CAUSE_RFC033.md section 5: remote-image redeploy and version observability (F1-C) before local re-normalization safety net (F1-B) before AGPL gate and provenance (F1-D, F1-E) before detector fixes (F2-A, F2-B, F2-C) before full corpus cycle. Additionally, orphaned findings U-6 (normalizer idempotence) and U-4 (38f1fefe corruption check) now have explicit decisions or out-of-scope entries, and coverage gaps for Recommended Actions 4, 8, 10, 12 are resolved.
+
+**Rev 3 (post Run-16 watchdog amendment).** The Run-16 regression watchdog (`audit/REGRESSION_WATCHDOG_RUN-16.md`) found **6 regressions and 7 stalls** after the RFC-034 implementation commits (`932d634`, `f344d6f`, `daefd11`) landed. Two of the six are self-inflicted by RFC-034's own decisions: D11's ToC stripping over-strips long legal statutes (R1), and D3's re-normalization safety net is implicated in a bilingual block-merging collapse (R2). One (R3) is a second consecutive persistence-timing race that RFC-033 D3's read-retry does not cover. Decisions **D16-D21** are added to close these; D21 is not new code but the operational RFC-033 Task 9.1 gate that was never run and which blocks validating the garble-gate fixes behind R5/R6.
+
+### Run-16 Regressions (watchdog, post-`932d634`)
+
+| ID | Document | Transition | Root-cause surface | Coverage | Decision |
+|---|---|---|---|---|---|
+| R1 | FEDERAL LAW NO. 3/1987 (Penal Code) | PASS -> MARGINAL | `_strip_toc_heading_nodes` (D11) over-strips; depth 3 -> 2, 493/595 nodes flattened to top level | covered_landed (fix landed, broke hierarchy) | D16 |
+| R2 | MOU MOHRE & Nafis | PASS -> MARGINAL | Block-merging / re-normalization collapsed 134 -> 20 nodes, 13,422 -> 12,344 chars, 11/13 unenriched images | uncovered | D17 |
+| R3 | cabinet_resolution_no_96 | MARGINAL -> ERROR | Persistence-timing race, 2nd consecutive run (different doc); RFC-033 D3 retry insufficient | covered_landed (fix did not hold) | D18 |
+| R4 | image pie chart | MARGINAL -> FAIL | Enrichment replaces 489 chars of real OCR digits with 1,203 chars of placeholder text; `image_enrichment_partial(ratio=0.50)` | uncovered | D19 |
+| R5 | قرار 106 | MARGINAL -> FAIL | 40% Latin mojibake in Arabic text; garble gate detects 0 | covered_pending (RFC-033 D2 Part B) | D21 |
+| R6 | مرسوم 13 | PASS -> FAIL | 36% Latin OCR garbage **and** depth 4 -> 2 | garble: covered_pending (D2 Part B); depth: uncovered | D21 (garble), D20 (depth) |
+
+**Stalls (7, no verdict change but no improvement either):** Federal Decree-Law 47, GHV-TKV, Unfallversicherung, سياسة حوكمة, قرار رقم (1), وارد 597, uae_numbers landscape.
+
+**Suspect commits:** `932d634` (RFC-034 implementation -- helpers.py, converters.py, client.py, config.py, storage.py, metrics.py, 399+/74-), `f344d6f` (RFC-undefined -- converters.py, helpers.py, client.py, storage.py, 383+/48-), `daefd11` (RFC-032 Tier-1 activation -- client.py).
 
 ### Contradictions (RFC-033 D2 structurally broken)
 
@@ -528,6 +546,145 @@ The actual root cause is in the tree-path pipeline between Run 11 and Run 14 (pi
 
 **Test Strategy:** Verify the checkboxes are flipped and the tasks file's completion count updates accordingly.
 
+---
+
+## Run-16 Watchdog Amendment Decisions (Rev 3)
+
+The following decisions are added in Rev 3, after the Run-16 regression watchdog scored the corpus against a build containing this RFC's Batch 1-5 implementation commits. D16, D19, and D20 correct regressions introduced by RFC-034's own decisions; D17 and D18 address uncovered surfaces; D21 is an operational gate pulled forward from RFC-033.
+
+---
+
+### D16: Guard `_strip_toc_heading_nodes` against over-stripping long legal statutes
+
+**Addresses:** R1 (FEDERAL LAW NO. 3/1987 Penal Code, PASS -> MARGINAL, depth 3 -> 2)
+**Sequencing:** Batch 7 -- first, because D20 may be resolved by it
+**Amends:** D11
+
+**Root Cause:** D11's ToC filter (`helpers.py:2729-2746`) is a purely local per-node heuristic with **no depth guard and no node-count threshold**. It strips a node when its body text is empty or every line matches `_TOC_DOT_LEADER_RE`, and the title also looks like a ToC entry (or is empty), then recurses unconditionally into every remaining node's children with zero awareness of overall document size, node count, or resulting tree depth. On long legal statutes (595+ nodes) whose heading-like text is genuinely structural rather than a table of contents, this over-strips: the Penal Code collapsed from depth 3 to depth 2 with 493 of 595 nodes flattened to top level, turning a PASS into a MARGINAL.
+
+**Files / Functions:**
+
+- `src/pageindex_mcp/helpers.py` (`_strip_toc_heading_nodes` -- add the guard inside, comparing pre/post metrics), or
+- `src/pageindex_mcp/client.py` (the post-`_run_md_to_tree` call site -- guard at the boundary and keep the helper pure)
+
+**Fix:** Make the strip pass **all-or-nothing per document**. Compute `max_depth` and node count on the tree before and after the candidate strip. If the strip would reduce `max_depth` by more than 1, **or** remove more than 20% of nodes, discard the stripped result, keep the original tree, and emit a `WARNING` log (`toc_strip_skipped` with the doc id, before/after depth, and before/after node counts) plus a counter increment so the skip is observable in Prometheus rather than silent. Prefer implementing the guard at the `client.py` call site so `_strip_toc_heading_nodes` stays a pure transform and the guard is unit-testable independently.
+
+**Effort:** Small (~20 lines, 1 hour).
+
+**Test Strategy:** Unit test: a synthetic tree of 600 nodes at depth 3 where 490 nodes match the ToC pattern -- assert the tree is returned unchanged and the warning fires. Unit test: the existing D11 FDL-33 case (~130 ToC nodes out of ~502, depth preserved) -- assert stripping still occurs, i.e. the guard does not regress D11's intended behavior. Integration: re-ingest the Penal Code and assert depth >= 3 and top-level node count well below 493.
+
+---
+
+### D17: Investigate and fix the MOU bilingual block-merging regression
+
+**Addresses:** R2 (MOU MOHRE & Nafis, PASS -> MARGINAL, 134 -> 20 nodes)
+**Sequencing:** Batch 7
+**Coverage before this RFC:** uncovered
+
+**Root Cause:** Not yet isolated -- this decision is investigate-then-fix. Between `932d634` and `f344d6f` the bilingual Arabic/English MOU collapsed from 134 to 20 nodes, chars dropped 13,422 -> 12,344, and 11 of 13 image markers came back unenriched. Two concrete suspects are present in current code and neither is proven:
+
+1. `_repair_docling_tables()` (`converters.py:2609-2696`, RFC-029 D4) collapses pipe-table rows where every cell is byte-identical above `_RFC029_TABLE_MIN_COLLAPSE_COLS` (default 3) and re-emits all pipe rows with minimal single-space padding. This is aggressive on wide bilingual tables where columns may legitimately repeat short tokens.
+2. **D3's re-normalization safety net** (`reconstruct_bidi_order` wired into `client.py` around the converter-selection / tmpfile-write site, ~line 919) applies bidi reordering to *all* remote-returned markdown, which may interact badly with heading and block-boundary detection upstream of `route_and_extract_flat` and tree construction on mixed-script content.
+
+**Files / Functions:**
+
+- `src/pageindex_mcp/converters.py` (`_repair_docling_tables`)
+- `src/pageindex_mcp/client.py` (D3 re-normalization pass, block/heading boundary handling)
+
+**Fix:** Phase A (diagnostic): re-run the MOU through the pipeline with per-stage node/char counts logged at the converter output, post-`_repair_docling_tables`, post-D3-renormalization, and post-tree-build, to attribute the 134 -> 20 collapse to a single stage. Phase B (fix): depending on attribution, either (a) add a bilingual/mixed-script guard that skips D3 re-normalization when a document contains a substantial Latin fraction interleaved with Arabic, or (b) tighten `_repair_docling_tables`'s identical-cell collapse so it does not fire on rows whose cells differ by script, or (c) both. Do **not** revert D3 wholesale -- it is load-bearing for the B1-C1 heading-reversal chain.
+
+**Effort:** Medium (~40 lines investigation instrumentation + fix, 4-6 hours).
+
+**Test Strategy:** Regression fixture from the MOU's converter output asserting node count stays within 10% of 134 and chars within 5% of 13,422 after the pipeline. Unit test on `_repair_docling_tables` with a mixed-script row whose cells are visually similar but not byte-identical -- assert no collapse. Verify the 11/13 unenriched image markers resolve (or are separately attributed to D19).
+
+---
+
+### D18: Add a write-visibility barrier before scoring in the incremental ingest pipeline
+
+**Addresses:** R3 (cabinet_resolution_no_96, MARGINAL -> ERROR -- 2nd consecutive persistence-timing race, different doc each run)
+**Sequencing:** Batch 7
+**Amends:** RFC-033 D3 (retry-with-backoff)
+
+**Root Cause:** RFC-033 D3's retry logic retries the **read** side only. `get_object_with_retry()` (`scripts/minio_helper.py:32-59`) tries every key in order per attempt with backoff and re-raises after exhausting attempts -- a read retry, not a write-visibility barrier. `save_doc()` (`storage.py:165-184`) calls `mc.put_object(...)` and returns immediately: there is **no `head_object`/read-back verification and no read-after-write consistency check anywhere in the persistence path**. The scoring step therefore races the MinIO write. `wipe_processed()` (`storage.py:824-854`) already demonstrates the correct pattern -- it confirms the prior-verdict snapshot landed via `mc.stat_object()` and raises `RuntimeError` if absent -- but that confirm-before-destroy check covers only the snapshot, not the downstream artifact writes. This is the second consecutive run with a persistence-timing ERROR, so the RFC-033 D3 mitigation is demonstrably insufficient.
+
+**Files / Functions:**
+
+- `src/pageindex_mcp/storage.py` (`save_doc`, `save_doc_meta` -- add read-back confirmation)
+- `src/pageindex_mcp/worker.py` (do not signal "ready to score" until the barrier passes)
+
+**Fix:** After each `put_object` for a processed artifact (`processed/*.json`, `processed/*.meta.json`), perform a read-back verification -- `stat_object` (or `get_object`) on the key just written, with bounded retry and exponential backoff reusing the existing `RETRY_DELAYS` schedule. Only after the read-back succeeds does the worker mark the document ready to score. On exhaustion, raise a distinct, non-silent error (`persistence_not_visible`) so the failure is attributable rather than surfacing downstream as a generic scoring ERROR. Emit a metric for barrier retries so pressure is observable ahead of failure.
+
+**Effort:** Small (~25 lines, 1-2 hours).
+
+**Test Strategy:** Unit test with a mocked MinIO client whose first N `stat_object` calls raise `NoSuchKey` -- assert the barrier retries and eventually succeeds. Unit test for exhaustion -- assert `persistence_not_visible` is raised, not swallowed. Integration: run the incremental ingest+score pipeline at the D13 concurrency level and assert zero ERROR verdicts attributable to missing `processed/` objects across a full corpus cycle.
+
+---
+
+### D19: Preserve real OCR content through the enrichment promotion path
+
+**Addresses:** R4 (image pie chart, MARGINAL -> FAIL -- 489 chars of real OCR digits replaced by 1,203 chars of placeholder text)
+**Sequencing:** Batch 7
+**Coverage before this RFC:** uncovered
+
+**Root Cause:** The enrichment route now emits boilerplate placeholder/description text in place of, rather than alongside, existing per-picture OCR content. `_enrich_image_blocks()` (`client.py:670-706`) writes `ocr_text` only when not already set (`if not block.get("ocr_text")`), but the upstream picture-text recovery path changed in `f344d6f` (`converters.py`, 188 lines) and the promoted text now scores as `image_enrichment_partial(ratio=0.50)` with the digit content gone. Candidate displacement sites: `_recover_picture_text` (`converters.py:1958-2250`), `splice_picture_text_for_tree` (`converters.py:2259-2296`), and `_dedupe_chart_text_lines` (`helpers.py:1574-1587`) -- any of which can drop or overwrite the OCR field in favor of a `description` field during promotion. Losing the digits is strictly worse than losing the description: the digits are the chart's information content, and `classify_verdict`'s `MIN_IMAGE_PROMOTED_CHARS` floor (default 500) is satisfied by boilerplate, so the char-count check does not catch the swap.
+
+**Files / Functions:**
+
+- `src/pageindex_mcp/converters.py` (`_recover_picture_text`, `splice_picture_text_for_tree`, and the enrichment promotion site)
+- `src/pageindex_mcp/helpers.py` (`_dedupe_chart_text_lines`) -- verify it is not the deduper discarding the digit lines
+
+**Fix:** Add a **char-density comparison guard** at the promotion site. Compute an information-density score for the existing OCR text and for the enrichment result -- non-whitespace character ratio, weighted to not reward pure boilerplate (e.g. penalize a high stopword/template-phrase fraction). If the existing OCR text has the higher density, keep the original; otherwise take the enrichment result. Where both carry signal, prefer concatenation (OCR text first, description appended) over replacement, consistent with `splice_picture_text_for_tree`'s existing append-after-marker contract. Never let a description silently replace OCR digits.
+
+**Effort:** Small (~15 lines, 1-2 hours).
+
+**Test Strategy:** Unit test: existing `ocr_text` of 489 chars of digits/labels vs a 1,203-char boilerplate enrichment result -- assert the OCR text survives. Unit test: empty existing OCR + real description -- assert the description is used (no regression to the enrichment feature). Integration: re-score the pie-chart document and assert verdict recovers to at least MARGINAL with the digit content present in the promoted text.
+
+---
+
+### D20: Investigate the مرسوم 13 depth regression (depth 4 -> 2)
+
+**Addresses:** R6, depth component only (R6's garble component is covered by D21 / RFC-033 D2 Part B)
+**Sequencing:** Batch 7 -- **after D16**
+**Coverage before this RFC:** uncovered (the garble half was already `covered_pending`)
+
+**Root Cause:** مرسوم 13 regressed PASS -> FAIL with two independent defects: 36% Latin OCR garbage (garble, D21) **and** a structural depth regression from 4 to 2. The depth half is not explained by the garble gate. The most likely cause is the same unguarded D11 ToC stripping behind R1, which would make this a duplicate of D16; the alternative is a splitter behavior change on short Arabic decrees, where heading detection interacts with the bidi normalization ordering (D5c -> D4 -> D7 -> D2).
+
+**Files / Functions:**
+
+- `src/pageindex_mcp/helpers.py` (`_strip_toc_heading_nodes`, splitter / heading-detection path)
+
+**Fix:** Sequenced verification. Step 1: land D16, re-ingest مرسوم 13, and check whether depth recovers to 4. If it does, D20 closes as resolved-by-D16 with a regression test recorded and no additional code. Step 2 (only if depth does not recover): instrument the splitter on this document, compare heading detection before and after `932d634`/`f344d6f`, and fix the specific short-Arabic-decree behavior found.
+
+**Effort:** Small (~15 lines, may be zero if resolved by D16).
+
+**Test Strategy:** Integration: re-ingest مرسوم 13 post-D16 and assert `max_depth >= 4`. If step 2 is needed, add a unit test on the splitter with the document's heading sequence asserting the depth-4 structure is produced. Note the verdict will remain FAIL until D21's garble work also lands -- assert on the **depth metric**, not the verdict, for this decision.
+
+---
+
+### D21: Pull in RFC-033 D2 Part B -- run the `BIDI_COHERENCE_ENFORCE` scoped re-ingest gate (Task 9.1)
+
+**Addresses:** R5 (قرار 106 garble gate miss), R6 garble component, stall S5 (سياسة حوكمة)
+**Sequencing:** Batch 7 -- after D16-D20 land, **before** the Batch 8 corpus cycle
+**References:** RFC-033 Tasks 9.1, 9.2, 9.3; Reconciliation H-1(b); RFC-034 D8
+
+**Root Cause:** RFC-033 Batch 4 Task 9.1 -- the scoped Arabic re-ingest that measures `bidi_coherence_violations` -- **never ran**. Tasks 9.2 and 9.3 code is landed (helpers.py:1324 defaults `BIDI_COHERENCE_ENFORCE` to "true"; helpers.py:1330 returns `bidi_degraded`; helpers.py:1572-1576 caps the verdict; property tests exist), and D15 flipped their checkboxes to reflect that. But enforcement has never been validated against a measurement, so the Run-16 findings that the garble gate "detects 0" on 40% Latin mojibake (R5) and 36% Latin OCR garbage (R6) cannot be attributed: it is unknown whether the gate is mis-wired, correctly wired but under-sensitive, or wired and sensitive but never exercised because the gate measurement was skipped. D8 already flagged that a 0-violation reading from a broken instrument carries no information.
+
+**This is not new code.** It is the operational gate from RFC-033 Task 9.1, pulled into RFC-034 Batch 7 because it blocks closing R5 and R6.
+
+**Fix:** Execute Task 9.1 as specified:
+
+1. Define and **record the sampling frame** up front -- the exact Arabic document set, selected before results are seen, so the measurement is not post-hoc filtered (per D13's unbiased-frame requirement).
+2. Run the scoped Arabic re-ingest against the confirmed-fresh remote build.
+3. Measure `bidi_coherence_violations` across the frame and record the raw counts.
+4. Validate the landed 9.2/9.3 behavior against that measurement -- confirm the enforcement default and verdict capping fire where violations are recorded and do not fire where they are not.
+5. If the gate still reads 0 on قرار 106 and مرسوم 13 despite visible Latin mojibake, escalate as a **new finding** for a follow-on RFC rather than patching blind: the likely surface is that `classify_verdict()` computes its garble ratio via `_garble_ratio(flat_text, expected_script=None)` -- hardcoded `None`, with no `expected_script` parameter on `classify_verdict` at all -- while `validate_tree`'s per-node check correctly threads `expected_script`. The "Latin-gibberish in non-Latin script context" prong in `_is_garbled_blob` (`helpers.py:923-931`) is gated behind `expected_script and expected_script != "Latn"` and therefore **can never fire from `classify_verdict`**. Confirm this before proposing a fix.
+
+**Effort:** Operational -- 0 code lines, 1-2 hours (plus re-ingest wall time). Step 5's escalation, if triggered, is scoped to a follow-on RFC.
+
+**Test Strategy:** The gate itself is the test. Deliverables: the pre-registered sampling frame, the raw `bidi_coherence_violations` counts, and an explicit pass/fail statement on whether 9.2/9.3 enforcement behaves as designed. RFC-033 Batch 4 Checkpoint and RFC-033 Final Checkpoint close on this result.
+
+---
+
 ## Implementation Plan
 
 | Batch | Decisions | Sequencing Constraint | Rationale |
@@ -537,7 +694,9 @@ The actual root cause is in the tree-path pipeline between Run 11 and Run 14 (pi
 | 3 | D4, D5 | F1-D, F1-E | AGPL gate (all six fitz import sites) + extraction provenance (all six mandated fields + total_tree_chars for D10). Both are governance/compliance fixes independent of detector logic. Must land BEFORE detector fixes so re-ingested docs carry provenance and AGPL exposure is gated. |
 | 4 | D6, D7, D8, D9 | F2-A, F2-B, F2-C | Detector fixes. BLOCKED until Batches 1-3 land. D6 (line selector, defence-in-depth), D7 (Joining_Type table + `get_display()` readability prong), D8 (comment correction + re-validation), D9 (integration test). |
 | 5 | D10, D11, D12 | None (independent) | Reitlehrer content-loss investigation (all three call sites), FDL-33 ToC filter, stale-window table doc re-ingestion (against D2.5 baseline). No sequencing dependency on detector fixes but should complete before the final corpus cycle. |
-| 6 | D13 | All prior batches | Full corpus cycle. LAST step per sequencing constraint. Validates all fixes together. |
+| 6 | D13 | All prior batches | Full corpus cycle. Validates Batches 1-5 together. Run 16 executed this and surfaced the regressions below. |
+| 7 | D16, D17, D18, D19, D20, D21 | Batches 1-6 landed; D20 after D16; D21 after D16-D20 | **Run-16 watchdog amendment.** Regression remediation: D16 (ToC strip guard -- first, may resolve D20), D17 (MOU block-merging investigation + fix), D18 (write-visibility barrier), D19 (OCR-preserving enrichment promotion), D20 (مرسوم 13 depth, verify against D16), D21 (operational RFC-033 Task 9.1 gate -- LAST in batch, closes RFC-033 Batch 4 + Final Checkpoints). |
+| 8 | -- | Batch 7 complete | Re-run the full corpus cycle and the regression watchdog. Verifies R1-R6 are closed and no new regressions were introduced. This is now the LAST step per the sequencing constraint. |
 
 ## Risks
 
@@ -550,6 +709,11 @@ The actual root cause is in the tree-path pipeline between Run 11 and Run 14 (pi
 - **D3 double-application of `reconstruct_bidi_order` (D3/D14):** If D14 finds the function is NOT idempotent, D3 must switch to the flag-based suppression approach (option a), adding ~10 lines and a threading concern. Mitigation: D14 runs first; D3's implementation is gated on the result.
 - **Concurrency in full corpus cycle (D13):** The persistence-timing race (C4) was addressed by RFC-033 D3 retries but the root cause (25-doc concurrent processing pressure on remote MinIO) remains. If retries prove insufficient under load, the corpus cycle may still produce ERROR verdicts. Mitigation: D13 includes a concurrency-limit option (max 4-5 docs in-flight) to reduce pressure.
 - **Vendored page_index_md.py (D11):** The ToC filter is applied as a post-tree-build transform in client.py/helpers.py (safe, survives pip install) rather than modifying the vendored `page_index_md.py` (at `.venv/lib/python3.12/site-packages/pageindex/page_index_md.py:32-59`). This is the correct approach but means the vendored library continues to emit ToC-as-heading nodes that are filtered downstream.
+- **D16 guard thresholds are heuristic:** The ">1 depth reduction or >20% node removal" thresholds are calibrated against exactly two data points -- FDL-33 (where stripping is correct: ~130 of ~502 nodes, ~26%) and the Penal Code (where it is wrong: 493 of 595, ~83%). FDL-33 sits close to the 20% line. Mitigation: unit-test both documents' node profiles explicitly, and make the thresholds env-tunable so the calibration can be corrected without a code change. If the two cases cannot be separated by these metrics, the guard must move to a stronger signal (e.g. requiring a contiguous ToC *region* rather than scattered matches) rather than having its threshold nudged to fit.
+- **D17 may implicate D3, which is load-bearing (D17/D3):** If the MOU collapse is attributed to D3's re-normalization safety net, the fix cannot be a revert -- D3 is the local safety net for the B1-C1 stale-remote heading-reversal chain. The fix must be a narrowing (mixed-script guard), which risks reintroducing the reversal on bilingual documents. Mitigation: any D17 narrowing must be validated against D21's `bidi_coherence_violations` measurement on the bilingual subset, not only against the MOU's node count.
+- **D19 density heuristic can misfire on legitimately verbose descriptions (D19):** A non-whitespace-ratio comparison will prefer dense digit strings over prose even when the prose is a *correct* VLM description carrying real information. Mitigation: prefer concatenation over replacement wherever both sides carry signal, so the guard only has to decide ordering, not which content to discard.
+- **D20 may be a no-op (D20):** If D16 resolves the depth regression, D20 costs only a re-ingest and a regression test. If it does not, the splitter investigation is open-ended on short Arabic decrees and could exceed its "small" estimate. Mitigation: D20 is explicitly sequenced after D16 so the cheap outcome is tested first; escalate to a follow-on RFC if step 2 exceeds a day.
+- **D21 may produce another uninterpretable 0 (D21/D8):** If the gate reads 0 violations on documents with visibly 40% Latin mojibake, the reading is again uninformative -- exactly the D8 failure mode. Mitigation: D21 step 5 pre-registers the most likely explanation (`classify_verdict` passing `expected_script=None`, disabling the Latin-gibberish-in-non-Latin-context prong in `_is_garbled_blob`) so a 0 reading is immediately triaged as instrument-vs-signal rather than recorded as a clean result.
 
 ## Open Questions
 
@@ -571,12 +735,24 @@ The reconciliation report calls this "a cheap standalone check, minutes of compu
 
 - **Hierarchy collapse for remaining MARGINAL stalls (C5):** Top-level saturation detection, same-level sibling coalescing, and Arabic chapter/part marker recognition for depth-1 flat blobs (Federal Decree-Law 47, cabinet_resolution_96, two council resolutions). SLA doc depth-1 flatness and Haftpflicht vertical-text garbling are also in this category. These are long-standing stalls requiring tree-builder heuristic redesign -- research-grade complexity beyond this remediation RFC. The C5 trace findings are documented for a future RFC.
 - **Table-cell OCR enrichment for empty cells (C6 D3):** Unfallversicherung's 0.75 empty-cell ratio represents checkmark/icon image content that Docling's TableFormer cannot extract as text. Per-cell VLM/OCR enrichment is ~150 lines, high risk, and depends on Docling's cell-coordinate API availability. Deferred.
-- **Chart/visual data extraction (C8):** uae_numbers landscape chart fragmentation and image pie chart visual data loss are architectural limitations of text-extraction pipelines. The designed escape hatch is VLM image description (`vlm_describe_images` config gate) with a non-Granite model. Granite-258M is user-LOCKED rejected per project memory.
-- **Persistence-gating re-enablement:** Per sequencing constraint, persistence-gating is the LAST step and should only be reopened after D13 validates. It is not a code decision in this RFC -- it is a post-validation operational decision.
+- **Chart/visual data extraction (C8):** uae_numbers landscape chart fragmentation and image pie chart visual data loss are architectural limitations of text-extraction pipelines. The designed escape hatch is VLM image description (`vlm_describe_images` config gate) with a non-Granite model. Granite-258M is user-LOCKED rejected per project memory. **Rev 3 narrowing:** R4's *regression* -- enrichment actively **replacing** already-extracted OCR digits with placeholder text -- is a defect, not an architectural limit, and is in scope as D19. Recovering chart data that was never extracted remains out of scope.
+- **Persistence-gating re-enablement:** Per sequencing constraint, persistence-gating is the LAST step and should only be reopened after the final corpus cycle validates -- **Batch 8 as of Rev 3**, not D13/Batch 6, since Run 16 surfaced six regressions. It is not a code decision in this RFC -- it is a post-validation operational decision.
 - **Provenance backfill for legacy documents (C2 D3):** After D5 lands and new documents carry provenance, legacy docs without provenance need a backfill script. This is ~60 lines, medium risk, and lower priority than the active fixes. Deferred.
 - **Full BSD alternatives for fitz bbox cropping:** Lines 1918, 1993, 2683, 2805, 3271 in converters.py use fitz for bbox-based PDF operations. Replacing these with pypdfium2 or Pillow-based cropping is a separate engineering effort. D4 degrades gracefully when AGPL is disallowed; full alternatives are a future RFC.
-- **C4-PERSISTENCE-RACE and القرار التنظيمي PASS->ERROR regression:** The persistence-timing race is carried by RFC-033 D3 (retry-with-backoff). D13's full corpus cycle re-validates that the retries are sufficient under load; the concurrency-limit mitigation in D13's Risks section addresses the case where retries prove insufficient. The PASS->ERROR regression on القرار التنظيمي is expected to resolve once the race fix is exercised under D13. No additional RFC-034 code decision is needed.
+- ~~**C4-PERSISTENCE-RACE and القرار التنظيمي PASS->ERROR regression:**~~ **REOPENED in Rev 3 -- now in scope as D18.** The original position was that the race is carried by RFC-033 D3 (retry-with-backoff) and re-validated by D13's corpus cycle, requiring no RFC-034 code decision. D13 ran as Run 16 and the race recurred on a *different* document (`cabinet_resolution_no_96`, MARGINAL -> ERROR) -- the second consecutive run with a persistence-timing ERROR. RFC-033 D3's read-side retry is therefore insufficient, and D18 adds the missing write-visibility barrier.
 - **`_pre_inference_normalize` full idempotence (broader U-6):** D14 covers the specific `reconstruct_bidi_order` idempotence that D3 depends on. The broader question of whether the full `_pre_inference_normalize` pipeline is idempotent remains open. The full property test across `doc_store/` is deferred to a future RFC because: (a) D3 deliberately avoids calling the full normalizer, so its safety does not depend on the broader property, and (b) the test requires cataloguing all normalizer sub-functions and their interaction, which is research-grade work. The specific `reconstruct_bidi_order` test in D14 is sufficient for D3.
+- **Pending from RFC-032 (operational):** Tasks 6-7 (pre-activation measurement for D5, post-activation monitoring for D7-D9) remain open. These are operational/monitoring tasks, not code fixes. They should be completed as part of the next full deployment cycle but **do not block regression remediation** and are therefore not sequenced into Batch 7.
+
+## Carried-Forward Work from Prior RFCs
+
+Rev 3 makes the following prior-RFC obligations explicit so they are not lost across the RFC-033 -> RFC-034 boundary.
+
+| Item | Origin | Nature | Disposition in RFC-034 |
+|---|---|---|---|
+| Task 9.1 -- scoped Arabic re-ingest + remeasure `bidi_coherence_violations` | RFC-033 Batch 4 | Operational gate (0 code lines) | **Pulled in as D21, Batch 7.** Blocked previously on the heading-reversal guard; that guard landed via D3, so the gate can now run. Blocks closing R5/R6. |
+| Batch 4 Checkpoint | RFC-033 | Checkpoint | Closes on D21's result. |
+| Final Checkpoint | RFC-033 | Checkpoint | Closes on D21's result plus the Batch 8 corpus cycle. |
+| Tasks 6-7 -- pre-activation measurement (D5), post-activation monitoring (D7-D9) | RFC-032 | Operational / monitoring | **Out of Scope for Batch 7.** Complete during the next full deployment cycle; does not block regression remediation. |
 
 ## Appendix: Finding-to-Decision Traceability
 
@@ -596,4 +772,12 @@ The reconciliation report calls this "a cheap standalone check, minutes of compu
 | A33-R2 | important | Open Question 2 (non-determinism); D13 validates | 6 |
 | B1-I7/U-4 | informational | Open Question 3 (cheap standalone check alongside D13) | 6 |
 | Rec. Action 8 | housekeeping | D15 (flip task checkboxes) | 1 |
-| C4-PERSISTENCE-RACE | -- | Out of Scope (carried by RFC-033 D3; re-validated in D13) | -- |
+| C4-PERSISTENCE-RACE | -- | ~~Out of Scope (carried by RFC-033 D3)~~ -- **reopened by R3**: D18 (write-visibility barrier) | 7 |
+| R1 (Run-16) | regression | D16 (guard D11's ToC strip) | 7 |
+| R2 (Run-16) | regression | D17 (MOU block-merging investigation + fix) | 7 |
+| R3 (Run-16) | regression | D18 (write-visibility barrier; amends RFC-033 D3) | 7 |
+| R4 (Run-16) | regression | D19 (OCR-preserving enrichment promotion) | 7 |
+| R5 (Run-16) | regression | D21 (RFC-033 Task 9.1 gate; D2 Part B validation) | 7 |
+| R6 (Run-16) | regression | D21 (garble component) + D20 (depth component, verify against D16) | 7 |
+| Run-16 stalls (7) | stall | No new decision -- covered by existing Out of Scope entries (C5 hierarchy collapse, C6 table-cell OCR, C8 chart extraction); سياسة حوكمة garble measured under D21 | -- |
+| RFC-032 Tasks 6-7 | operational | Out of Scope (deployment-cycle monitoring; does not block regression remediation) | -- |

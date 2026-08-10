@@ -15,7 +15,7 @@
 
 ## Overview
 
-RFC-034 lands 16 decisions (D0-D15) addressing 4 critical contradictions in RFC-033 D2's bidi coherence detector (structurally unable to fire on NFKC-normalized text), 5 orphaned important findings with no prior RFC coverage, and housekeeping/coverage gaps. Work proceeds in **6 batches** with strict sequencing: remote observability (Batch 1) before re-normalization safety net (Batch 2) before AGPL/provenance (Batch 3) before detector fixes (Batch 4) before independent investigations (Batch 5) before final corpus validation (Batch 6). Each batch has a verification gate that must pass before the next begins.
+RFC-034 lands 22 decisions (D0-D21) addressing 4 critical contradictions in RFC-033 D2's bidi coherence detector (structurally unable to fire on NFKC-normalized text), 5 orphaned important findings with no prior RFC coverage, housekeeping/coverage gaps, and 6 Run-16 watchdog regressions (Rev 3: D16-D21). Work proceeds in **8 batches** with strict sequencing: remote observability (Batch 1) before re-normalization safety net (Batch 2) before AGPL/provenance (Batch 3) before detector fixes (Batch 4) before independent investigations (Batch 5) before final corpus validation (Batch 6) before Run-16 watchdog remediation (Batch 7) before post-watchdog corpus validation (Batch 8). Each batch has a verification gate that must pass before the next begins.
 
 **Key files touched:** `services/docling-service/app.py`, `services/docling-service/Dockerfile`, `.github/workflows/deploy-docling-service.yml`, `src/pageindex_mcp/client.py`, `src/pageindex_mcp/helpers.py`, `src/pageindex_mcp/converters.py`, `src/pageindex_mcp/config.py`, `src/pageindex_mcp/metrics.py`, `src/pageindex_mcp/storage.py`.
 
@@ -334,13 +334,110 @@ RFC-034 lands 16 decisions (D0-D15) addressing 4 critical contradictions in RFC-
     - This is a post-validation operational decision, not a code change in this RFC.
     - **Acceptance:** Decision documented in audit report.
 
-- [x] <a id="12-gate-g6--rfc-034-complete"></a>12. Gate G6 -- RFC-034 Complete
+- [x] <a id="12-gate-g6--batch-6-complete"></a>12. Gate G6 -- Batch 6 Complete (Batches 1-6 / D0-D15)
 
   - Full corpus cycle results documented in `audit/CORPUS_REINGESTION_AUDIT_RUN-16.md`.
   - All 16 decisions (D0-D15) either implemented (code decisions) or completed (operational decisions).
   - All test files passing: `test_rfc034_d14_bidi_idempotence.py`, `test_rfc034_d4_agpl_gate.py`, `test_rfc034_d9_nfkc_detector_chain.py`.
   - Open Question 1 (AGPL default) human decision recorded.
-  - **Gate condition:** RFC-034 fully closed; Run-16 audit report written.
+  - **Gate condition:** Batches 1-6 fully closed; Run-16 audit report written.
+
+- [x] <a id="13-batch-7--run-16-watchdog-remediation"></a>13. Batch 7 -- Run-16 Watchdog Remediation ([D16](#task-13-1), [D17](#task-13-3), [D18](#task-13-5), [D19](#task-13-7), [D20](#task-13-9), [D21](#task-13-10))
+
+  **Blocked until:** [Gate G6](#12-gate-g6--batch-6-complete) passes (all Batch 1-6 decisions landed).
+  **NOTE:** Gate G6 is already complete -- these are POST-RUN-16 amendments.
+
+  - [x] <a id="task-13-1"></a>13.1 Guard `_strip_toc_heading_nodes` depth preservation (D16)
+
+    - In `src/pageindex_mcp/helpers.py`, add depth-preservation guard to `_strip_toc_heading_nodes`: if stripping would reduce `max_depth` by >1 or remove >20% of nodes, skip stripping and log warning.
+    - **Effort:** ~25 lines, 1 hour.
+    - **Acceptance:** Penal Code re-ingested with depth >= 3; documents < 100 nodes still stripped correctly.
+    - _Requirements: [RFC-034 D16](../rfcs/034-run15-reconciliation-remediation.md#d16) | [Design D16](../designs/design-rfc034-run15-reconciliation-remediation.md#design-d16)_
+
+  - [x] <a id="task-13-2"></a>13.2 Unit tests: ToC strip depth guard (D16)*
+
+    - Test with synthetic 600-node tree: verify stripping skipped when depth would drop >1. Test with 50-node tree: verify stripping still applies. Test edge case: exactly at threshold.
+    - **Effort:** ~40 lines, 30 minutes.
+    - **Validates: [D16](../rfcs/034-run15-reconciliation-remediation.md#d16)**
+
+  - [x] <a id="task-13-3"></a>13.3 Investigate MOU block-merging regression (D17)
+
+    - Bisect between commits a52a1f9..932d634 on MOU document. Check if `_repair_docling_tables` or NFKC re-normalization causes 134->20 node collapse. Identify root function.
+    - **Effort:** ~0 lines (investigative), 2-3 hours.
+    - **Acceptance:** Root cause identified, fix PR'd or documented as deferred.
+    - _Requirements: [RFC-034 D17](../rfcs/034-run15-reconciliation-remediation.md#d17) | [Design D17](../designs/design-rfc034-run15-reconciliation-remediation.md#design-d17)_
+
+  - [x] <a id="task-13-4"></a>13.4 Fix MOU block-merging (D17)
+
+    - Apply fix based on 13.3 findings. If re-normalization, add bilingual guard. If block-merging, adjust merging threshold.
+    - **Effort:** ~30-50 lines, 1-2 hours.
+    - **Acceptance:** MOU re-ingested with >= 100 nodes and no garbled images.
+    - _Requirements: [RFC-034 D17](../rfcs/034-run15-reconciliation-remediation.md#d17) | [Design D17](../designs/design-rfc034-run15-reconciliation-remediation.md#design-d17)_
+
+  - [x] <a id="task-13-5"></a>13.5 Write-visibility barrier for MinIO persistence (D18)
+
+    - In `src/pageindex_mcp/storage.py`, after MinIO `put_object` for processed artifacts, add `head_object` read-back verification with retry+backoff before marking doc as scoreable. Amends RFC-033 D3.
+    - **Effort:** ~35 lines, 1-2 hours.
+    - **Acceptance:** No persistence-timing ERROR on 3 consecutive full corpus cycles.
+    - _Requirements: [RFC-034 D18](../rfcs/034-run15-reconciliation-remediation.md#d18) | [Design D18](../designs/design-rfc034-run15-reconciliation-remediation.md#design-d18)_
+
+  - [x] <a id="task-13-6"></a>13.6 Unit tests: write-visibility barrier (D18)*
+
+    - Mock MinIO to simulate delayed write visibility. Verify barrier retries and eventually succeeds. Verify it raises after max retries with clear error.
+    - **Effort:** ~45 lines, 30 minutes.
+    - **Validates: [D18](../rfcs/034-run15-reconciliation-remediation.md#d18)**
+
+  - [x] <a id="task-13-7"></a>13.7 Fix enrichment content preservation (D19)
+
+    - In `src/pageindex_mcp/converters.py`, add char-density comparison in enrichment promotion: if existing OCR text has higher non-whitespace density than enrichment result, keep original.
+    - **Effort:** ~25 lines, 1-2 hours.
+    - **Acceptance:** image pie chart re-ingested with real OCR digits preserved (489+ chars real content, not placeholder).
+    - _Requirements: [RFC-034 D19](../rfcs/034-run15-reconciliation-remediation.md#d19) | [Design D19](../designs/design-rfc034-run15-reconciliation-remediation.md#design-d19)_
+
+  - [x] <a id="task-13-8"></a>13.8 Unit tests: enrichment preservation (D19)*
+
+    - Test: existing OCR "42% Labor" vs enrichment "Image placeholder text" -> keeps OCR. Test: existing empty vs enrichment with content -> takes enrichment. Test: both empty -> no crash.
+    - **Effort:** ~35 lines, 30 minutes.
+    - **Validates: [D19](../rfcs/034-run15-reconciliation-remediation.md#d19)**
+
+  - [x] <a id="task-13-9"></a>13.9 Investigate marsoom 13 depth regression (D20)
+
+    - Check if D16 guard (Task 13.1) resolves this. If not, trace splitter on short Arabic decrees (< 50 nodes) to find depth-loss cause.
+    - **Effort:** ~0 lines (investigative), 1-2 hours.
+    - **Acceptance:** Root cause documented. If D16 resolves it, note and close.
+    - _Requirements: [RFC-034 D20](../rfcs/034-run15-reconciliation-remediation.md#d20) | [Design D20](../designs/design-rfc034-run15-reconciliation-remediation.md#design-d20)_
+
+  - [x] <a id="task-13-10"></a>13.10 RFC-033 D2 Part B gate: scoped Arabic re-ingest (D21)
+
+    - Run scoped re-ingest of Arabic documents with reversed-heading signatures. Measure `bidi_coherence_violations`. Record sampling frame (lower-bound estimate, not corpus-wide FP rate).
+    - **REFERENCES RFC-033 Task 9.1 -- this task supersedes it.** Mark RFC-033 Task 9.1 as "Superseded by RFC-034 Task 13.10".
+    - **Effort:** ~0 lines (operational), 2-3 hours.
+    - **Acceptance:** Measurement documented with sampling frame. Tasks 9.2/9.3 from RFC-033 validated against measurement.
+    - _Requirements: [RFC-034 D21](../rfcs/034-run15-reconciliation-remediation.md#d21) | RFC-033 D2 Part B_
+
+- [x] <a id="14-gate-g7--batch-7-complete"></a>14. Gate G7 -- Batch 7 Complete
+
+  - Run `uv run pytest` and verify all Batch 7 tests pass plus full Batch 1-6 regression.
+  - Confirm: Penal Code depth >= 3, MOU >= 100 nodes, no persistence ERROR, image pie chart has real OCR, marsoom 13 investigated.
+  - Confirm D21 measurement documented.
+  - **Gate condition:** All D16-D21 landed or investigated; test suite green; ready for Batch 8 corpus cycle.
+
+- [x] <a id="15-batch-8--post-watchdog-corpus-validation"></a>15. Batch 8 -- Post-Watchdog Corpus Validation
+
+  **Blocked until:** [Gate G7](#14-gate-g7--batch-7-complete) passes.
+
+  - [x] <a id="task-15-1"></a>15.1 Full corpus cycle with D16-D21 fixes (operational)
+
+    - Run 25-doc ingest+score with all D16-D21 changes. Document in `audit/CORPUS_REINGESTION_AUDIT_RUN-17.md`.
+    - **No code changes.** Operational validation step.
+    - **Acceptance:** R1-R4 regressions resolved. R5/R6 improved (garble detection active after D21). No new regressions.
+    - _Requirements: RFC-034 D16-D21 validation_
+
+- [x] <a id="16-gate-g8--rfc-034-rev-3-complete"></a>16. Gate G8 -- RFC-034 Rev 3 Complete
+
+  - All decisions D0-D21 either implemented (code decisions) or completed (operational/investigative decisions).
+  - Run-17 audit documented in `audit/CORPUS_REINGESTION_AUDIT_RUN-17.md`.
+  - **Gate condition:** RFC-034 fully closed; Run-17 audit report written.
 
 ## Effort Summary
 
@@ -352,7 +449,9 @@ RFC-034 lands 16 decisions (D0-D15) addressing 4 critical contradictions in RFC-
 | 4 | D6, D7, D8, D9 | ~143-163 lines | 1-1.5 days |
 | 5 | D10, D11, D12 | ~55-105 lines | 0.5-1 day |
 | 6 | D13 | 0 lines | 2-3 hours (operational) |
-| **Total** | **16 decisions** | **~493-583 lines** | **~4-5 days** |
+| 7 | D16, D17, D18, D19, D20, D21 | ~235-255 lines | 1.5-2 days |
+| 8 | D16-D21 validation | 0 lines | 2-3 hours (operational) |
+| **Total** | **22 decisions** | **~728-838 lines** | **~6-8 days** |
 
 ## Dependency Graph
 
@@ -368,6 +467,10 @@ Batch 4:         D6 + D7 → D8 + D9
 Batch 5:     D10 + D11 + D12 (parallel)
                               ↓
 Batch 6:                    D13
+                              ↓
+Batch 7: D16 + D17 + D18 + D19 (parallel) → D20 (depends on D16) + D21
+                              ↓
+Batch 8:              D16-D21 validation
 ```
 
 ## Notes
@@ -377,3 +480,5 @@ Batch 6:                    D13
 - D10 Phase C (Task 9.2c) is conditional -- only implemented if Phase B confirms real content loss. If whitespace-only, D10 closes as a measurement correction.
 - The RFC-033 tasks file completion count should update after Task 1.6 (D15) flips checkboxes 9.2/9.3.
 - Open Question 1 (AGPL default) is flagged as requiring human decision. D4 ships with default `true`; switching to `false` is a post-implementation operator decision.
+- RFC-033 Task 9.1 is superseded by Task 13.10 in this file (D21). RFC-033 Batch 4 Checkpoint and Final Checkpoint are unblocked once 13.10 completes.
+- RFC-032 Tasks 6-7 (pre/post-activation monitoring) remain open as operational tasks in their own tasks file.

@@ -16,7 +16,7 @@
 
 ## Overview
 
-RFC-034 addresses residual gaps left by RFC-033's 85%-complete remediation of the Run-15 corpus re-ingestion audit. Four critical contradictions (B1-C1 through B1-C3, B1-I3) stem from a single chain failure: upstream NFKC normalization decomposes Arabic Presentation Forms into base Arabic, but downstream detectors (`_reversed_morphology`, `_word_has_reversed_morphology`) were written assuming presentation forms survive. Five orphaned important findings (B1-I1, B1-I2, REIT, FDL33-TOC, B1-I10) had no prior RFC coverage. The design spans 16 decisions (D0-D15) across 6 sequenced batches, strictly respecting the ordering from BIDI_ROOT_CAUSE_RFC033.md section 5: remote redeploy before re-normalization before AGPL/provenance before detector fixes before corpus cycle.
+RFC-034 addresses residual gaps left by RFC-033's 85%-complete remediation of the Run-15 corpus re-ingestion audit. Four critical contradictions (B1-C1 through B1-C3, B1-I3) stem from a single chain failure: upstream NFKC normalization decomposes Arabic Presentation Forms into base Arabic, but downstream detectors (`_reversed_morphology`, `_word_has_reversed_morphology`) were written assuming presentation forms survive. Five orphaned important findings (B1-I1, B1-I2, REIT, FDL33-TOC, B1-I10) had no prior RFC coverage. The design spans 22 decisions (D0-D21) across 8 sequenced batches, strictly respecting the ordering from BIDI_ROOT_CAUSE_RFC033.md section 5: remote redeploy before re-normalization before AGPL/provenance before detector fixes before corpus cycle.
 
 ## Key Design Principles
 
@@ -794,6 +794,476 @@ No code changes.
 
 ---
 
+### <a id="design-d16"></a>D16: Guard `_strip_toc_heading_nodes` against over-stripping long statutes
+
+**RFC Reference:** [RFC-034 D16](../rfcs/034-run15-reconciliation-remediation.md#d16-guard-_strip_toc_heading_nodes-against-over-stripping-long-legal-statutes)
+**Addresses:** R1 (FEDERAL LAW NO. 3/1987 Penal Code, PASS -> MARGINAL, depth 3 -> 2)
+**Amends:** D11
+
+#### Module/File
+
+| File | Lines | Symbol/Region | Change |
+|---|---|---|---|
+| `src/pageindex_mcp/helpers.py` | 2729-2746 | `_strip_toc_heading_nodes()` | No change to the helper itself -- keep it as a pure transform |
+| `src/pageindex_mcp/client.py` | ~line after `_strip_toc_heading_nodes(result.get("structure", []))` | Post-tree-build call site | Add all-or-nothing guard wrapping the strip call |
+
+#### Current Behavior (verified via codebase-memory + grep)
+
+`_strip_toc_heading_nodes` (helpers.py:2729-2746) is a purely local per-node heuristic with **no depth guard and no node-count threshold**. It recurses unconditionally into every remaining node's children. On the Penal Code (595 nodes, depth 3), the pattern over-strips structural heading nodes whose body text happens to be empty (legal statutes frequently have section headings with no body text -- the content is in sub-sections), collapsing depth 3 to 2 with 493 of 595 nodes flattened to top-level.
+
+```python
+# Current: strip fires unconditionally, no size/depth awareness
+def _strip_toc_heading_nodes(nodes: list[dict]) -> list[dict]:
+    result = []
+    for node in nodes:
+        text = (node.get("text") or "").strip()
+        title = (node.get("title") or "").strip()
+        text_lines = [ln for ln in text.splitlines() if ln.strip()]
+        if (not text_lines or all(_TOC_DOT_LEADER_RE.search(ln) for ln in text_lines)) and (
+            _TOC_DOT_LEADER_RE.search(title) or not title
+        ):
+            continue
+        if "nodes" in node:
+            node["nodes"] = _strip_toc_heading_nodes(node["nodes"])
+        result.append(node)
+    return result
+```
+
+#### Target Behavior
+
+Make the strip pass **all-or-nothing per document**. The guard lives at the `client.py` call site so the helper remains a pure transform. Compute `max_depth` and total node count on the tree before and after the candidate strip. If the strip would reduce `max_depth` by more than 1, **or** remove more than 20% of nodes, discard the stripped result, keep the original tree, and emit a `WARNING` log plus a Prometheus counter increment.
+
+#### Implementation Notes
+
+1. **Add `_tree_max_depth` and `_tree_node_count` utility** (helpers.py, near existing tree utilities if not already present):
+   ```python
+   def _tree_max_depth(nodes: list[dict], depth: int = 1) -> int:
+       if not nodes:
+           return depth - 1
+       return max(_tree_max_depth(n.get("nodes", []), depth + 1) for n in nodes)
+
+   def _tree_total_node_count(nodes: list[dict]) -> int:
+       return sum(1 + _tree_total_node_count(n.get("nodes", [])) for n in nodes)
+   ```
+   Note: `_tree_node_count` may already exist (helpers.py:1604 uses it). Verify and reuse if so; only add `_tree_max_depth` if missing.
+
+2. **Guard at client.py call site**:
+   ```python
+   original_structure = result.get("structure", [])
+   candidate = _strip_toc_heading_nodes(copy.deepcopy(original_structure))
+   depth_before = _tree_max_depth(original_structure)
+   depth_after = _tree_max_depth(candidate)
+   count_before = _tree_total_node_count(original_structure)
+   count_after = _tree_total_node_count(candidate)
+
+   if (depth_before - depth_after > 1) or (count_before > 0 and (count_before - count_after) / count_before > 0.20):
+       logger.warning(
+           "toc_strip_skipped: %s depth %d->%d, nodes %d->%d — over-strip guard fired",
+           doc_name, depth_before, depth_after, count_before, count_after,
+       )
+       TOC_STRIP_SKIPPED.inc()
+       # Keep original_structure unchanged
+   else:
+       result["structure"] = candidate
+   ```
+
+3. **Metric** in `metrics.py`:
+   ```python
+   TOC_STRIP_SKIPPED = Counter("toc_strip_skipped_total", "ToC strip skipped by over-strip guard")
+   ```
+
+4. **Edge cases**: Trees with depth 1 or fewer than 10 nodes skip the strip entirely (no ToC to remove). The `deepcopy` ensures the original is not mutated by the recursive helper.
+
+#### Test Strategy
+
+- Unit test: synthetic tree of 600 nodes at depth 3 where 490 nodes match the ToC dot-leader pattern -- assert the tree is returned unchanged and the warning fires.
+- Unit test: the existing D11 FDL-33 case (~130 ToC nodes out of ~502, depth preserved) -- assert stripping still occurs, i.e. the guard does not regress D11's intended behavior.
+- Integration: re-ingest Penal Code and assert depth >= 3 and top-level node count well below 493.
+
+**Backlink:** [RFC-034 D16](../rfcs/034-run15-reconciliation-remediation.md#d16-guard-_strip_toc_heading_nodes-against-over-stripping-long-legal-statutes)
+
+---
+
+### <a id="design-d17"></a>D17: Investigate and fix MOU bilingual block-merging regression
+
+**RFC Reference:** [RFC-034 D17](../rfcs/034-run15-reconciliation-remediation.md#d17-investigate-and-fix-the-mou-bilingual-block-merging-regression)
+**Addresses:** R2 (MOU MOHRE & Nafis, PASS -> MARGINAL, 134 -> 20 nodes, chars 13,422 -> 12,344)
+
+#### Module/File
+
+| File | Lines | Symbol/Region | Change |
+|---|---|---|---|
+| `src/pageindex_mcp/converters.py` | 2609-2696 | `_repair_docling_tables()` | Phase A diagnostic logging + Phase B bilingual guard |
+| `src/pageindex_mcp/client.py` | ~999, ~1221 | `reconstruct_bidi_order` call sites | Phase A diagnostic logging + Phase B mixed-script guard |
+
+#### Current Behavior (verified via codebase-memory)
+
+Two suspects, neither proven as root cause:
+
+1. **`_repair_docling_tables()`** (converters.py:2609-2696): collapses pipe-table rows where every cell is byte-identical above `_RFC029_TABLE_MIN_COLLAPSE_COLS` (default 3) into a single cell and re-emits all pipe rows with minimal single-space padding. On wide bilingual tables where Arabic and English columns may legitimately repeat short tokens (e.g. "Yes" / "No" / status values), this can aggressively collapse legitimate data rows.
+
+2. **D3's `reconstruct_bidi_order` pass** (client.py:999, 1221): applies bidi reordering to all remote-returned markdown for bilingual Arabic/English content. On mixed-script documents this can interact badly with heading/block-boundary detection upstream of tree construction, potentially merging what should be separate blocks.
+
+Block count collapsed 134 -> 20 nodes, chars dropped 13,422 -> 12,344, and 11 of 13 image markers came back unenriched.
+
+#### Target Behavior
+
+Phase A (diagnostic): identify which pipeline stage causes the 134 -> 20 collapse via per-stage instrumentation. Phase B (fix): apply the targeted fix at the identified stage without reverting D3 wholesale (it is load-bearing for B1-C1 heading-reversal).
+
+#### Implementation Notes
+
+**Phase A -- Diagnostic instrumentation** (~15 lines):
+
+1. Add per-stage node/char count logging at four checkpoints in the pipeline:
+   - After converter output (raw markdown char count)
+   - After `_repair_docling_tables` (post-repair char count -- already logged by D10 Phase A)
+   - After `reconstruct_bidi_order` (post-renormalization char count)
+   - After tree build (node count + max depth)
+
+2. Re-run the MOU through the pipeline with logging enabled and attribute the collapse to a single stage.
+
+**Phase B -- Fix (conditional on Phase A attribution)**:
+
+- **If `_repair_docling_tables` is the cause**: add a mixed-script row guard. Before collapsing a degenerate row, check whether the cells contain characters from multiple Unicode script blocks (Arabic + Latin). If so, skip the collapse:
+  ```python
+  # In _repair_docling_tables, before the degenerate-row collapse:
+  if len(unique_vals) == 1 and len(cells) > _RFC029_TABLE_MIN_COLLAPSE_COLS:
+      cell_text = cells[0]
+      has_arabic = bool(_AR_RE.search(cell_text))
+      has_latin = bool(re.search(r"[A-Za-z]", cell_text))
+      if has_arabic and has_latin:
+          # Mixed-script cell: do not collapse, likely bilingual content
+          new_line = "| " + " | ".join(cells) + " |"
+          out.append(new_line)
+          continue
+      collapsed_rows += 1
+      out.append("| " + cells[0] + " |")
+      continue
+  ```
+
+- **If `reconstruct_bidi_order` is the cause**: add a bilingual-document guard. When a document's Latin character fraction exceeds 30% interleaved with Arabic, skip the D3 re-normalization pass and log the skip:
+  ```python
+  # In client.py at the reconstruct_bidi_order call site:
+  latin_frac = sum(1 for c in md_content if c.isascii() and c.isalpha()) / max(len(md_content), 1)
+  if latin_frac > 0.30:
+      logger.info("bidi_renorm_skipped: %s latin_frac=%.2f — bilingual guard", doc_name, latin_frac)
+      BIDI_RENORM_SKIPPED.inc()
+  else:
+      md_content = reconstruct_bidi_order(md_content)
+  ```
+
+- **If both contribute**: apply both guards.
+
+**Phase A must complete before Phase B code is written.** Do not guess the fix.
+
+#### Test Strategy
+
+- Phase A: verify logging output with per-stage char/node counts on the MOU.
+- Phase B (table guard): unit test on `_repair_docling_tables` with a mixed-script row whose cells are visually similar but contain Arabic+Latin -- assert no collapse.
+- Phase B (bidi guard): unit test with 40% Latin bilingual markdown -- assert `reconstruct_bidi_order` is skipped.
+- Regression fixture from the MOU's converter output asserting node count stays within 10% of 134 and chars within 5% of 13,422.
+
+**Backlink:** [RFC-034 D17](../rfcs/034-run15-reconciliation-remediation.md#d17-investigate-and-fix-the-mou-bilingual-block-merging-regression)
+
+---
+
+### <a id="design-d18"></a>D18: Add write-visibility barrier before scoring in incremental ingest pipeline
+
+**RFC Reference:** [RFC-034 D18](../rfcs/034-run15-reconciliation-remediation.md#d18-add-a-write-visibility-barrier-before-scoring-in-the-incremental-ingest-pipeline)
+**Addresses:** R3 (cabinet_resolution_no_96, MARGINAL -> ERROR, 2nd consecutive persistence-timing race)
+**Amends:** RFC-033 D3
+
+#### Module/File
+
+| File | Lines | Symbol/Region | Change |
+|---|---|---|---|
+| `src/pageindex_mcp/storage.py` | 165-184 | `save_doc()` | Add read-back verification after `put_object` |
+| `src/pageindex_mcp/storage.py` | 449+ | `save_doc_meta()` | Add read-back verification after `put_object` |
+| `src/pageindex_mcp/metrics.py` | new | `WRITE_BARRIER_RETRIES` | Counter for barrier retry attempts |
+
+#### Current Behavior (verified via codebase-memory + grep)
+
+`save_doc()` (storage.py:165-184) calls `mc.put_object(...)` and returns immediately after the MinIO SDK call. There is **no `head_object`/read-back verification, no write-visibility barrier, and no read-after-write consistency check** anywhere in the persistence path. The scoring step therefore races the MinIO write.
+
+```python
+# Current: fire-and-forget write
+def save_doc(doc_id: str, data: dict) -> None:
+    mc = get_minio()
+    content = json.dumps(data, indent=2).encode()
+    mc.put_object(
+        settings.minio_bucket,
+        f"processed/{doc_id}.json",
+        BytesIO(content),
+        len(content),
+        content_type="application/json",
+    )
+    logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
+    doc_cache_delete(doc_id)
+```
+
+RFC-033 D3's `get_object_with_retry()` (scripts/minio_helper.py:32-59) retries the **read** side only -- it is not a write-visibility barrier. `wipe_processed()` (storage.py:824-854) already demonstrates the correct pattern: it confirms the prior-verdict snapshot landed via `mc.stat_object()` and raises `RuntimeError` if absent. This pattern is not applied to `save_doc`/`save_doc_meta`.
+
+#### Target Behavior
+
+After each `put_object` for a processed artifact, perform a read-back verification via `stat_object` with bounded retry and exponential backoff. Only after the read-back succeeds does the function return. On exhaustion, raise a distinct `PersistenceNotVisibleError` so the failure is attributable rather than surfacing downstream as a generic scoring ERROR.
+
+#### Implementation Notes
+
+1. **Add `_confirm_write_visible` helper** (storage.py, near `save_doc`):
+   ```python
+   _WRITE_BARRIER_DELAYS = (0.1, 0.3, 1.0, 3.0)  # seconds, 4 attempts
+
+   class PersistenceNotVisibleError(RuntimeError):
+       """Raised when a MinIO write is not visible after exhausting retries."""
+
+   def _confirm_write_visible(mc, bucket: str, key: str) -> None:
+       """Read-back barrier: stat_object with bounded retry.
+       Follows the pattern established by wipe_processed() (storage.py:839)."""
+       for delay in _WRITE_BARRIER_DELAYS:
+           try:
+               mc.stat_object(bucket, key)
+               return  # visible
+           except Exception:
+               WRITE_BARRIER_RETRIES.inc()
+               time.sleep(delay)
+       # Final attempt -- let it raise
+       try:
+           mc.stat_object(bucket, key)
+       except Exception as exc:
+           raise PersistenceNotVisibleError(
+               f"Object {key} not visible after {len(_WRITE_BARRIER_DELAYS)} retries"
+           ) from exc
+   ```
+
+2. **Wire into `save_doc`** (storage.py:165-184):
+   ```python
+   def save_doc(doc_id: str, data: dict) -> None:
+       # ... existing put_object call ...
+       key = f"processed/{doc_id}.json"
+       mc.put_object(settings.minio_bucket, key, BytesIO(content), len(content), ...)
+       _confirm_write_visible(mc, settings.minio_bucket, key)  # NEW
+       logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
+       doc_cache_delete(doc_id)
+   ```
+
+3. **Wire into `save_doc_meta`** (storage.py:449+) -- same pattern for `processed/{doc_id}.meta.json`.
+
+4. **Metric** in `metrics.py`:
+   ```python
+   WRITE_BARRIER_RETRIES = Counter("write_barrier_retries_total", "MinIO write-barrier stat_object retries")
+   ```
+
+5. **Edge case**: The barrier adds latency only when MinIO is slow to make the write visible. On healthy MinIO, `stat_object` succeeds on the first attempt (no sleep). The 4-attempt schedule totals 4.4s max -- well within arq job timeout defaults.
+
+#### Test Strategy
+
+- Unit test: mock MinIO client whose first 2 `stat_object` calls raise `S3Error`/`NoSuchKey` -- assert barrier retries and eventually succeeds.
+- Unit test: exhaustion (all retries fail) -- assert `PersistenceNotVisibleError` is raised, not swallowed.
+- Unit test: healthy MinIO (first `stat_object` succeeds) -- assert zero retries, no added latency.
+- Integration: run incremental ingest+score pipeline at D13 concurrency and assert zero ERROR verdicts attributable to missing `processed/` objects.
+
+**Backlink:** [RFC-034 D18](../rfcs/034-run15-reconciliation-remediation.md#d18-add-a-write-visibility-barrier-before-scoring-in-the-incremental-ingest-pipeline)
+
+---
+
+### <a id="design-d19"></a>D19: Preserve real OCR content through enrichment promotion path
+
+**RFC Reference:** [RFC-034 D19](../rfcs/034-run15-reconciliation-remediation.md#d19-preserve-real-ocr-content-through-the-enrichment-promotion-path)
+**Addresses:** R4 (image pie chart, MARGINAL -> FAIL, 489 chars OCR digits replaced by 1,203 chars placeholder text)
+
+#### Module/File
+
+| File | Lines | Symbol/Region | Change |
+|---|---|---|---|
+| `src/pageindex_mcp/converters.py` | 1958-2250 | `_recover_picture_text()` | Investigate: is this where OCR text is displaced? |
+| `src/pageindex_mcp/converters.py` | 2259-2296 | `splice_picture_text_for_tree()` | Investigate: does splicing overwrite rather than append? |
+| `src/pageindex_mcp/client.py` | 670-706 | `_enrich_image_blocks()` | Fix: add char-density comparison guard |
+| `src/pageindex_mcp/helpers.py` | 1574-1587 | `_dedupe_chart_text_lines()` | Investigate: is the deduper discarding digit lines? |
+
+#### Current Behavior (verified via codebase-memory)
+
+`_enrich_image_blocks()` (client.py:670-706) matches each `{"role": "image"}` block's `index` against ordered `pic_results`, writes `figure_path`, `page`, `bbox`, `ocr_text` (only if not already set -- `if not block.get("ocr_text")`), and `description` if present. The guard `if not block.get("ocr_text")` should protect existing OCR content, but the upstream picture-text recovery path changed in commit `f344d6f` (converters.py, 188 lines). The promoted text now scores as `image_enrichment_partial(ratio=0.50)` with the digit content gone -- enrichment fires but replaces real content with boilerplate.
+
+The `classify_verdict` image-promotion path (helpers.py:1660-1672) promotes to PASS when `image_enrichment_ratio >= 0.8` AND total chars clear `MIN_IMAGE_PROMOTED_CHARS` (default 500) AND the promoted text is not `_is_garbled_blob`. The 500-char floor is satisfied by 1,203 chars of boilerplate, so the char-count check does not catch the content swap.
+
+#### Target Behavior
+
+Never let enrichment description/boilerplate text silently replace existing per-picture OCR content that carries real information (digits, labels, data). When both OCR text and enrichment description exist, prefer concatenation (OCR first, description appended) over replacement.
+
+#### Implementation Notes
+
+1. **Root-cause attribution first**: diff `_recover_picture_text` (converters.py:1958-2250) and `splice_picture_text_for_tree` (converters.py:2259-2296) between HEAD and pre-`f344d6f` to identify where the OCR text field is being cleared or overwritten before `_enrich_image_blocks` runs. The `if not block.get("ocr_text")` guard in `_enrich_image_blocks` is correct in isolation -- the problem is upstream.
+
+2. **Add information-density guard** at the enrichment write site in `_enrich_image_blocks` (client.py:~690):
+   ```python
+   def _ocr_information_density(text: str) -> float:
+       """Score text by digit+alphanumeric density, penalizing pure boilerplate."""
+       if not text:
+           return 0.0
+       alnum = sum(1 for c in text if c.isalnum())
+       digits = sum(1 for c in text if c.isdigit())
+       # Digits carry high information density for chart/table content
+       return (alnum + digits) / max(len(text), 1)
+   ```
+
+3. **Guard logic** in `_enrich_image_blocks`:
+   ```python
+   existing_ocr = block.get("ocr_text", "")
+   new_ocr = pic.get("ocr_text", "")
+   if existing_ocr and new_ocr:
+       # Both exist: keep the one with higher information density,
+       # or concatenate if both carry signal
+       existing_density = _ocr_information_density(existing_ocr)
+       new_density = _ocr_information_density(new_ocr)
+       if existing_density > new_density * 1.5:
+           # Existing OCR is substantially richer -- keep it, append description only
+           logger.info("ocr_preserve: keeping existing OCR (%d chars, density=%.2f) over enrichment (%d chars, density=%.2f)",
+                       len(existing_ocr), existing_density, len(new_ocr), new_density)
+           block["ocr_text"] = existing_ocr
+       else:
+           block["ocr_text"] = existing_ocr + "\n" + new_ocr
+   elif new_ocr:
+       block["ocr_text"] = new_ocr
+   # else: keep existing_ocr unchanged
+   ```
+
+4. **Description field**: always append `description` alongside (not replacing) OCR text:
+   ```python
+   if pic.get("description") and pic["description"] not in block.get("ocr_text", ""):
+       block["ocr_text"] = (block.get("ocr_text", "") + "\n" + pic["description"]).strip()
+   ```
+
+5. **Edge case**: Empty existing OCR (no text layer detected) -- new enrichment OCR should still be written without the guard blocking it.
+
+#### Test Strategy
+
+- Unit test: existing `ocr_text` of 489 chars of digits/labels vs a 1,203-char boilerplate enrichment result -- assert the OCR text survives and boilerplate does not replace it.
+- Unit test: empty existing OCR + real description -- assert the description is used (no regression to the enrichment feature).
+- Unit test: both OCR and description carry real content -- assert concatenation.
+- Integration: re-score the pie-chart document and assert verdict recovers to at least MARGINAL with digit content present.
+
+**Backlink:** [RFC-034 D19](../rfcs/034-run15-reconciliation-remediation.md#d19-preserve-real-ocr-content-through-the-enrichment-promotion-path)
+
+---
+
+### <a id="design-d20"></a>D20: Investigate the marsoom 13 depth regression (depth 4 -> 2)
+
+**RFC Reference:** [RFC-034 D20](../rfcs/034-run15-reconciliation-remediation.md#d20-investigate-the-%D9%85%D8%B1%D8%B3%D9%88%D9%85-13-depth-regression-depth-4---2)
+**Addresses:** R6, depth component only (garble component covered by D21)
+**Sequencing:** After D16 -- may be resolved by D16's guard
+
+#### Module/File
+
+| File | Lines | Symbol/Region | Change |
+|---|---|---|---|
+| `src/pageindex_mcp/helpers.py` | 2729-2746 | `_strip_toc_heading_nodes()` | Likely resolved by D16's over-strip guard |
+| `src/pageindex_mcp/helpers.py` | splitter / heading-detection | `route_and_extract_flat` | Step 2 fallback if D16 does not resolve |
+
+#### Current Behavior
+
+marsoom 13 regressed PASS -> FAIL with two independent defects: 36% Latin OCR garbage (garble, covered by D21) and a structural depth regression from 4 to 2. The depth half is not explained by the garble gate. The most likely cause is the same unguarded D11 ToC stripping behind R1 (D16). The alternative is a splitter behavior change on short Arabic decrees where heading detection interacts with bidi normalization ordering.
+
+#### Target Behavior
+
+Depth recovers to >= 4 after D16 lands. If not, the splitter behavior on short Arabic decrees is fixed to preserve the depth-4 structure.
+
+#### Implementation Notes
+
+**Step 1 (sequenced after D16):**
+1. Land D16 (over-strip guard).
+2. Re-ingest marsoom 13.
+3. Check `max_depth` in the resulting tree.
+4. If depth >= 4, D20 closes as resolved-by-D16. Record a regression test asserting `max_depth >= 4` for this document.
+
+**Step 2 (only if depth does not recover):**
+1. Instrument the splitter (`route_and_extract_flat` and heading-detection path) on this document.
+2. Compare heading detection before and after commits `932d634`/`f344d6f`.
+3. Identify the specific short-Arabic-decree behavior that changed.
+4. Fix: add a heading-detection guard for short Arabic documents (< 50 headings) that preserves sub-section nesting. The fix must not regress the general heading-detection behavior on longer documents.
+
+**Note:** The verdict will remain FAIL until D21's garble work also lands -- assert on the **depth metric** (not the verdict) for this decision.
+
+#### Test Strategy
+
+- Integration: re-ingest marsoom 13 post-D16 and assert `max_depth >= 4`.
+- If step 2 needed: unit test on the splitter with marsoom 13's heading sequence asserting depth-4 structure.
+- Regression test: assert depth >= 4 is maintained on future re-ingests regardless of garble verdict.
+
+**Backlink:** [RFC-034 D20](../rfcs/034-run15-reconciliation-remediation.md#d20-investigate-the-%D9%85%D8%B1%D8%B3%D9%88%D9%85-13-depth-regression-depth-4---2)
+
+---
+
+### <a id="design-d21"></a>D21: Pull in RFC-033 D2 Part B -- `BIDI_COHERENCE_ENFORCE` scoped re-ingest gate (Task 9.1)
+
+**RFC Reference:** [RFC-034 D21](../rfcs/034-run15-reconciliation-remediation.md#d21-pull-in-rfc-033-d2-part-b----run-the-bidi_coherence_enforce-scoped-re-ingest-gate-task-91)
+**Addresses:** R5 (qurar 106 garble gate miss, 40% Latin mojibake), R6 garble component (marsoom 13, 36% Latin OCR garbage), stall S5 (siyasat hawkama)
+
+#### Module/File
+
+| File | Lines | Symbol/Region | Change |
+|---|---|---|---|
+| `src/pageindex_mcp/helpers.py` | 1590-1693 | `classify_verdict()` | **No code change in this decision** -- operational gate only |
+| `src/pageindex_mcp/helpers.py` | 1542-1559 | `_garble_ratio()` | Escalation target if gate reads 0 (see step 5) |
+| `src/pageindex_mcp/helpers.py` | 923-931 | `_is_garbled_blob()` Latin-gibberish prong | Root cause of garble miss if step 5 triggers |
+
+#### Current Behavior (verified via grep)
+
+RFC-033 Batch 4 Task 9.1 -- the scoped Arabic re-ingest that measures `bidi_coherence_violations` -- **never ran**. The landed code (helpers.py:1324 defaults `BIDI_COHERENCE_ENFORCE` to "true"; helpers.py:1330 returns `bidi_degraded`; helpers.py:1572-1576 caps the verdict) has never been validated against a measurement.
+
+A critical finding confirmed via code inspection: `classify_verdict()` (helpers.py:1590) computes its garble ratio via `_garble_ratio(flat_text, expected_script=None)` at line 1693 -- **hardcoded `None`**, with **no `expected_script` parameter on `classify_verdict` at all**. Meanwhile, `validate_tree`'s per-node check correctly threads `expected_script`. The "Latin-gibberish in non-Latin script context" prong in `_is_garbled_blob` (helpers.py:923-931) is gated behind:
+
+```python
+if (
+    expected_script
+    and expected_script != "Latn"
+    and os.environ.get("GARBLE_LATIN_GIBBERISH_ENABLED", "true").lower() != "false"
+):
+```
+
+With `expected_script=None` always passed from `classify_verdict`, this prong **can never fire there**. This explains why R5's 40% Latin-character mojibake inside Arabic-script text goes undetected at the verdict level.
+
+#### Target Behavior
+
+Execute the Task 9.1 operational gate to determine whether the enforcement mechanism works. If the gate still reads 0 on documents with visible Latin mojibake, escalate the `expected_script=None` gap as a new finding for a follow-on RFC.
+
+#### Implementation Notes
+
+**This decision is operational (0 code lines). It is the measurement gate from RFC-033 Task 9.1, pulled into RFC-034 Batch 7 because it blocks closing R5 and R6.**
+
+1. **Define the sampling frame** up front -- the exact Arabic document set, selected before results are seen, so the measurement is not post-hoc filtered (per D13's unbiased-frame requirement):
+   - qurar 106 (R5: 40% Latin mojibake)
+   - marsoom 13 (R6: 36% Latin OCR garbage)
+   - siyasat hawkama (stall S5)
+   - marsoom 33 (clean Arabic control)
+   - cabinet_resolution_no_96 (R3, Arabic control)
+   - qurar raqm 1 (stall S6)
+   - ward 597 (stall S7)
+
+2. **Run the scoped Arabic re-ingest** against the confirmed-fresh remote build (D2 verified).
+
+3. **Measure `bidi_coherence_violations`** across the frame and record raw counts.
+
+4. **Validate 9.2/9.3 behavior** -- confirm enforcement default and verdict capping fire where violations are recorded and do not fire where they are not.
+
+5. **If the gate reads 0 on qurar 106 and marsoom 13 despite visible Latin mojibake**, escalate as a **new finding** for a follow-on RFC:
+   - Confirmed root cause: `classify_verdict()` passes `expected_script=None` to `_garble_ratio()` (helpers.py:1693), which propagates to `_is_garbled_blob()`.
+   - The Latin-gibberish prong (helpers.py:944-945) requires `expected_script and expected_script != "Latn"` -- impossible with `None`.
+   - Prescribed fix (for the follow-on RFC, not this decision): add `expected_script: str | None = None` parameter to `classify_verdict()`, thread it from the caller (which already computes `doc_script` / `expected_script`), and pass it through to `_garble_ratio()`. This aligns `classify_verdict`'s garble detection with `validate_tree`'s per-node detection.
+
+6. **RFC-033 Batch 4 Checkpoint and Final Checkpoint** close on the result of this gate.
+
+#### Test Strategy
+
+The gate itself is the test. Deliverables:
+- The pre-registered sampling frame (defined above).
+- Raw `bidi_coherence_violations` counts per document.
+- Explicit pass/fail statement on whether 9.2/9.3 enforcement behaves as designed.
+- If step 5 triggers: documented evidence of the `expected_script=None` gap with the line-level code reference.
+
+**Backlink:** [RFC-034 D21](../rfcs/034-run15-reconciliation-remediation.md#d21-pull-in-rfc-033-d2-part-b----run-the-bidi_coherence_enforce-scoped-re-ingest-gate-task-91)
+
+---
+
 ## Cross-Cutting Concerns
 
 ### Metric Additions Summary
@@ -803,6 +1273,9 @@ No code changes.
 | `DOCLING_VERSION_SKEW` (Counter, labels: `signal`) | `metrics.py` | D1 |
 | `REMOTE_MD_RENORMALIZED` (Counter) | `metrics.py` | D3 |
 | `AGPL_FALLBACK_TOTAL` add `reason='blocked'` label | `metrics.py:187-188` | D4 |
+| `TOC_STRIP_SKIPPED` (Counter) | `metrics.py` | D16 |
+| `BIDI_RENORM_SKIPPED` (Counter) | `metrics.py` | D17 (if bidi guard needed) |
+| `WRITE_BARRIER_RETRIES` (Counter) | `metrics.py` | D18 |
 
 ### Config Additions Summary
 
@@ -827,3 +1300,7 @@ No code changes.
 | `tests/test_rfc034_d4_agpl_gate.py` | D4 | Unit + CI grep-guard |
 | `tests/test_rfc034_d9_nfkc_detector_chain.py` | D9 | Integration test |
 | `scripts/table_separator_baseline.py` | D2.5 | Read-only probe script |
+| `tests/test_rfc034_d16_toc_strip_guard.py` | D16 | Unit + integration |
+| `tests/test_rfc034_d17_bilingual_block_merge.py` | D17 | Unit + regression fixture |
+| `tests/test_rfc034_d18_write_barrier.py` | D18 | Unit (mock MinIO) |
+| `tests/test_rfc034_d19_ocr_preserve.py` | D19 | Unit + integration |
