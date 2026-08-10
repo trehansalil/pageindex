@@ -49,31 +49,43 @@ def _padded_row(value: str, cols: int, pad: int) -> str:
 class TestProperty6Primary:
     def test_five_identical_columns_collapse_to_one(self):
         """Pipe-table with 5 byte-identical columns (1000-char padding) must collapse
-        each data row to a single cell containing the shared value."""
-        # Arrange — build a 5-column table where every data row is all-identical
+        each data row to a single cell containing the shared value.
+
+        RFC-035 D0: the first post-separator body row is exempt from collapse
+        (guards against Docling's legitimate repeated sub-header labels), so
+        this fixture carries a distinct leading row and asserts collapse on
+        the *second* (genuinely degenerate) row.
+        """
+        # Arrange — build a 5-column table where the second data row is all-identical
         pad = 1000
         header_cells = [f"Col{i}" + " " * pad for i in range(5)]
         value = "Gesamtschadenersatz"
+        leading_row = "| " + " | ".join(["lead"] * 5) + " |\n"
         data_row_raw = _padded_row(value, cols=5, pad=pad)
         md = (
             "| " + " | ".join(header_cells) + " |\n"
             "| --- | --- | --- | --- | --- |\n"
+            + leading_row
             + data_row_raw
         )
 
         # Act
         result = _repair_docling_tables(md)
 
-        # Assert — data row collapsed, only one cell with the value
+        # Assert — degenerate row collapsed, only one cell with the value
         data_lines = [ln for ln in result.splitlines() if ln.startswith("|") and "---" not in ln]
-        # The header row is the first pipe row
-        data_only = data_lines[1:]  # skip header
+        # The header row is the first pipe row, the leading row is second
+        data_only = data_lines[2:]  # skip header + leading row
         assert len(data_only) == 1
         cells = [c.strip() for c in data_only[0].strip().split("|") if c.strip()]
         assert cells == [value], f"Expected single cell [{value!r}], got {cells}"
 
     def test_collapsed_row_has_minimal_padding(self):
-        """The collapsed single-cell row must not carry excess whitespace."""
+        """The collapsed single-cell row must not carry excess whitespace.
+
+        RFC-035 D0: the degenerate row must NOT be the first post-separator
+        row, so a distinct leading row precedes it.
+        """
         # Arrange
         pad = 500
         value = "Haftung"
@@ -81,6 +93,7 @@ class TestProperty6Primary:
         md = (
             "| A | B | C | D | E |\n"
             "| --- | --- | --- | --- | --- |\n"
+            "| p | q | r | s | t |\n"
             + data_row_raw
         )
 
@@ -127,13 +140,18 @@ class TestLegitDifferentColumns:
 
     def test_mixed_table_some_rows_identical_some_not(self):
         """Only the all-identical rows (>3 cols) must be collapsed; distinct rows
-        survive unchanged."""
-        # Arrange — 5-col table; first data row all-"X", second mixed
+        survive unchanged.
+
+        RFC-035 D0: the first post-separator row is guarded regardless of
+        content, so the mixed (non-degenerate) row leads and the genuinely
+        degenerate row follows it.
+        """
+        # Arrange — 5-col table; first data row mixed, second all-"X"
         md = (
             "| A | B | C | D | E |\n"
             "| --- | --- | --- | --- | --- |\n"
-            "| X | X | X | X | X |\n"
             "| P | Q | R | S | T |\n"
+            "| X | X | X | X | X |\n"
         )
 
         # Act
@@ -144,13 +162,13 @@ class TestLegitDifferentColumns:
         data_only = data_lines[1:]  # skip header row
         assert len(data_only) == 2
 
-        # First row collapsed
+        # First row kept intact (guarded, immediately post-separator)
         first_cells = [c.strip() for c in data_only[0].split("|") if c.strip()]
-        assert first_cells == ["X"]
+        assert first_cells == ["P", "Q", "R", "S", "T"]
 
-        # Second row kept intact
+        # Second row collapsed (genuinely degenerate, not post-separator)
         second_cells = [c.strip() for c in data_only[1].split("|") if c.strip()]
-        assert second_cells == ["P", "Q", "R", "S", "T"]
+        assert second_cells == ["X"]
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +197,16 @@ class TestUnderThreshold:
         assert len(cells) == 3, f"Expected 3 cells (not collapsed), got {cells}"
 
     def test_four_identical_columns_are_collapsed(self):
-        """A 4-column all-identical row (count == 4, strictly > 3) MUST be collapsed."""
+        """A 4-column all-identical row (count == 4, strictly > 3) MUST be collapsed.
+
+        RFC-035 D0: the degenerate row must not be the first post-separator
+        row, so a distinct leading row precedes it.
+        """
         # Arrange — exactly 4 cols
         md = (
             "| A | B | C | D |\n"
             "| --- | --- | --- | --- |\n"
+            "| p | q | r | s |\n"
             "| val | val | val | val |\n"
         )
 
@@ -192,7 +215,7 @@ class TestUnderThreshold:
 
         # Assert — collapsed to 1 cell
         data_lines = [ln for ln in result.splitlines() if ln.startswith("|") and "---" not in ln]
-        data_only = data_lines[1:]
+        data_only = data_lines[2:]
         cells = [c.strip() for c in data_only[0].split("|") if c.strip()]
         assert cells == ["val"], f"Expected collapse to ['val'], got {cells}"
 
@@ -315,12 +338,17 @@ class TestNonTableMarkdown:
         assert result == md
 
     def test_mixed_prose_and_table(self):
-        """Prose lines interleaved with a table: prose untouched, table normalised."""
+        """Prose lines interleaved with a table: prose untouched, table normalised.
+
+        RFC-035 D0: the degenerate row must not be the first post-separator
+        row, so a distinct leading row precedes it.
+        """
         # Arrange
         md = (
             "Introduction paragraph.\n"
             "| A | B | C | D | E |\n"
             "| --- | --- | --- | --- | --- |\n"
+            "| p | q | r | s | t |\n"
             "| x | x | x | x | x |\n"
             "Concluding paragraph.\n"
         )
@@ -334,6 +362,6 @@ class TestNonTableMarkdown:
         assert lines[-1] == "Concluding paragraph."
         # Data row collapsed
         data_lines = [ln for ln in lines if ln.startswith("|") and "---" not in ln]
-        data_only = data_lines[1:]
+        data_only = data_lines[2:]
         cells = [c.strip() for c in data_only[0].split("|") if c.strip()]
         assert cells == ["x"]
