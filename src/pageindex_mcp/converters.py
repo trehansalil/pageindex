@@ -21,6 +21,12 @@ from typing import TYPE_CHECKING, TypedDict, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
+from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
+from .script import AR_CHAR_RE as _AR_LETTER_RE
+from .script import AR_CHAR_RE as _AR_SCRIPT_RE
+from .script import arabic_readability_score as _arabic_readability_score
+from .script import is_arabic_char as _is_arabic_char
+
 logger = logging.getLogger(__name__)
 
 _DASH_TRANSLATION = {
@@ -112,7 +118,6 @@ _AR_MARKER_CAPTURE_RE = re.compile(
 # stems consumed by _AR_WORD_RE plus common additional structural words.
 _AR_KNOWN_WORDS = ("مادة", "باب", "فصل", "قسم", "جزء", "مرسوم", "قرار", "قانون")
 _AR_KNOWN_WORDS_REVERSED = tuple(w[::-1] for w in _AR_KNOWN_WORDS)
-_AR_LETTER_RE = re.compile(r"[؀-ۿ]")
 _AR_REVERSAL_SAMPLE_THRESHOLD = 0.30
 
 
@@ -1010,7 +1015,6 @@ _LATIN_LANGS = frozenset(
 
 # --- Fix 5: OCR language auto-detection + on-demand tessdata (RFC fizzy-forging-pearl) ---
 # Deterministic, no model, no network for detection: classify by Unicode-script ratio.
-_AR_SCRIPT_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
 _LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ɏ]")
 _DE_HINT_RE = re.compile(r"[äöüÄÖÜß]")
 _AR_SCRIPT_MIN_RATIO = 0.15  # Arabic letters / all letters above which the doc is Arabic
@@ -1559,58 +1563,6 @@ def reconstruct_bidi_order(text: str) -> str:
 # only the title text, leaving the '#' prefix in place for depth inference.
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
 
-_AR_COMMON_WORDS = frozenset(
-    [
-        "في",
-        "من",
-        "على",
-        "إلى",
-        "أن",
-        "هذا",
-        "هذه",
-        "التي",
-        "الذي",
-        "عن",
-        "مع",
-        "بين",
-        "كان",
-        "ما",
-        # RFC-028 D3: governance/legal domain terms (siyasat-hawkama gap — specialized
-        # vocabulary scored 0 for both forward and reversed text, so the readability
-        # comparison never fired).
-        "حوكمة",
-        "بيانات",
-        "سياسة",
-        "إدارة",
-        "تنظيم",
-        "قرار",
-        "وزارة",
-        "لائحة",
-        "تنفيذية",
-        "مرسوم",
-        "قانون",
-        "نظام",
-        "مادة",
-        "حكومة",
-        "هيئة",
-    ]
-)
-_AR_DEFINITE_RE = re.compile(r"\bال\w+")
-
-
-def _is_arabic_char(c: str) -> bool:
-    cp = ord(c)
-    return 0x0600 <= cp <= 0x06FF or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF
-
-
-def _arabic_readability_score(words: list[str]) -> int:
-    score = 0
-    for w in words:
-        if w in _AR_COMMON_WORDS:
-            score += 2
-        if _AR_DEFINITE_RE.match(w):
-            score += 1
-    return score
 
 
 def _fix_residual_rtl_reversal(text: str) -> str:
@@ -2534,23 +2486,25 @@ def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
         return md
     marker = _IMAGE_MARKER
     marker_count = md.count(marker)
-    if marker_count != len(pics):
+    real_pics = [p for p in pics if p.get("skipped_reason") != "landscape_fallback_picture"]
+    if marker_count != len(real_pics):
         logger.warning(
             "splice_picture_text_for_tree: marker/region count mismatch "
-            "(%d marker(s) vs %d picture result(s)); skipping OCR splice",
+            "(%d marker(s) vs %d real picture result(s), %d landscape fabricated); "
+            "skipping OCR splice",
             marker_count,
-            len(pics),
+            len(real_pics),
+            len(pics) - len(real_pics),
         )
         return md
 
     parts: list[str] = []
     remaining = md
-    for pic in pics:
+    for pic in real_pics:
         idx = remaining.find(marker)
-        # idx should always be >= 0 given the count check above
         parts.append(remaining[: idx + len(marker)])
         remaining = remaining[idx + len(marker) :]
-        ocr_text = pic.pop("ocr_text", "")
+        ocr_text = pic.get("ocr_text", "")
         if ocr_text:
             parts.append("\n> [Chart text]: " + ocr_text + "\n")
     parts.append(remaining)
@@ -2572,25 +2526,28 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
     marker so no unresolvable ``[Figure: fig-k]`` reference is ever emitted."""
     if not pics:
         return md
+    real_pics = [p for p in pics if p.get("skipped_reason") != "landscape_fallback_picture"]
     marker_count = md.count(_IMAGE_MARKER)
-    if marker_count != len(pics):
+    if marker_count != len(real_pics):
         logger.warning(
-            "figure marker/region count mismatch (%d marker(s) vs %d picture result(s)); "
-            "splicing by ordinal, stripping/neutralizing excess markers",
+            "figure marker/region count mismatch (%d marker(s) vs %d real picture result(s), "
+            "%d landscape fabricated); splicing by ordinal, stripping/neutralizing excess markers",
             marker_count,
-            len(pics),
+            len(real_pics),
+            len(pics) - len(real_pics),
         )
     counter = {"i": 0}
+    _spliced_indices: set[int] = set()
 
     def _repl(m: "re.Match[str]") -> str:
         k = counter["i"]
         counter["i"] += 1
-        if k >= len(pics):
+        if k >= len(real_pics):
             strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
             if strip_env != "false":
                 return ""
             return m.group(0)
-        result = pics[k]
+        result = real_pics[k]
         ocr = result.get("ocr_text", "")
         desc = result.get("description", "")
         if not (ocr or desc or result.get("png_bytes")):
@@ -2604,15 +2561,14 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         else:
             marker = f"[Figure: fig-{k}]"
         if ocr:
-            # RFC-028 D5: pop rather than get — the OCR text is spliced into the
-            # prose stream here, so pop it so _enrich_image_blocks (which reads
-            # this SAME result dict) does not also persist it onto the
-            # role:"image" block and double the stored fragment.
-            result.pop("ocr_text", None)
+            _spliced_indices.add(k)
             return marker + "\n\n> [Chart text]: " + ocr
         return marker
 
-    return re.sub(re.escape(_IMAGE_MARKER), _repl, md)
+    spliced = re.sub(re.escape(_IMAGE_MARKER), _repl, md)
+    for idx in _spliced_indices:
+        real_pics[idx].pop("ocr_text", None)
+    return spliced
 
 
 def _pre_inference_normalize(text: str) -> str:
@@ -2842,7 +2798,11 @@ def probe_conversion_route(pdf_path: str) -> tuple[int, bool, dict | None]:
     ``pdf_classification`` is a dict with pdf-inspector shadow-mode results
     (pdf_type, confidence, pages_needing_ocr, has_encoding_issues), or None
     when pdf-inspector is not installed or classification fails.  Shadow mode:
-    classification is logged and metered but NEVER influences routing.
+    classification is logged and metered. When PDF_INSPECTOR_PRECLASSIFY=1
+    (config.py), the classification influences behavior: scanned/image-based
+    documents with confidence >= 0.90 force first-pass OCR (client.py) and
+    receive a 16.5x timeout multiplier (worker.py). When the flag is disabled
+    (default), classification is shadow-mode only.
     """
     if not pdf_path.lower().endswith(".pdf"):
         return 1, False, None

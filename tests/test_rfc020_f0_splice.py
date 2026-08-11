@@ -71,30 +71,24 @@ class TestSplicePictureTextForTree:
         assert out.count(_MARKER) == md.count(_MARKER) == 3
 
     def test_composition_with_splice_figure_markers(self):
-        """RFC-028 D5: chaining both splice functions on the same markdown must
-        not duplicate the chart-text fragment.
-
-        Production never does this: the tree branch calls only
-        `splice_picture_text_for_tree` (markers stay neutral for some other
-        downstream tree consumer) and the flat branch calls only
-        `splice_figure_markers` (markers get resolved to `[Figure: fig-N]`).
-        `splice_picture_text_for_tree` deliberately leaves the marker intact
-        (see its docstring) so that `splice_figure_markers` can still match
-        it, but it now pops ``ocr_text`` off the shared ``PictureResult`` dict
-        once spliced, so a later `splice_figure_markers` pass over the same
-        `pics` list finds no `ocr_text` left to re-append — one representation
-        per fragment.
+        """Zone-3 fix: tree splice is non-destructive (no pop), so chaining
+        both splice functions produces the chart text in both the tree-spliced
+        annotation AND the figure marker.  Production never chains them on the
+        same document — tree branch uses only splice_picture_text_for_tree,
+        flat branch uses only splice_figure_markers.  splice_figure_markers
+        does a deferred pop after splicing so subsequent consumers (e.g.
+        _enrich_image_blocks) don't double-persist.
         """
         md = f"# Title\n\n{_MARKER}\n\nBody text."
         pics = [_pic("Chart shows growth", png_bytes=b"\x89PNG")]
 
         tree_out = splice_picture_text_for_tree(md, pics)
-        composed = splice_figure_markers(tree_out, pics)
+        assert pics[0].get("ocr_text") == "Chart shows growth"
 
+        composed = splice_figure_markers(tree_out, pics)
         assert "[Figure: fig-0]" in composed
         assert _MARKER not in composed
-        # De-duplicated: the chart-text line appears exactly once.
-        assert composed.count("> [Chart text]: Chart shows growth") == 1
+        assert "ocr_text" not in pics[0]
 
     def test_no_ocr_text_leaves_marker_alone(self):
         md = f"# Title\n\n{_MARKER}\n\nBody."
