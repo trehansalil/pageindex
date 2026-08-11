@@ -150,14 +150,14 @@ class TestChunkedSplitMath:
             path, *, force_full_page_ocr, ocr_lang_override, timeout_s
         ):
             calls.append(path)
-            return "chunk-md", []
+            return "chunk-md", [], []
 
         monkeypatch.setattr(
             converters, "_run_docling_chunk_with_timeout", _fake_chunk_runner
         )
 
         assert math.ceil(292 / 150) == 2
-        md, pics = converters._pdf_to_markdown_docling_chunked(
+        md, pics, _stages = converters._pdf_to_markdown_docling_chunked(
             "fake.pdf", page_count=292, max_pages=150
         )
         assert len(calls) == 2
@@ -182,7 +182,7 @@ class TestChunkedSplitMath:
             "_run_docling_chunk_with_timeout",
             lambda path, *, force_full_page_ocr, ocr_lang_override, timeout_s: (
                 calls.append(path),
-                ("chunk-md", []),
+                ("chunk-md", [], []),
             )[1],
         )
 
@@ -235,7 +235,7 @@ class TestChunkTimeoutFallback:
 
         monkeypatch.setattr(converters, "pdf_to_markdown_docling", _slow_docling)
 
-        md, pics = converters._pdf_to_markdown_docling_chunked(
+        md, pics, _stages = converters._pdf_to_markdown_docling_chunked(
             "fake.pdf", page_count=2, max_pages=1
         )
         assert "FALLBACK_TEXT" in md

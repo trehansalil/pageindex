@@ -2,7 +2,7 @@
 rasterize-rotate-reextract fallback.
 
 Covers:
-  Task 5.5. ``_probe_landscape_pages`` (Phase 1) correctly tags landscape
+  Task 5.5. ``_tag_landscape_pages_for_fallback`` (Phase 1) correctly tags landscape
      pages (rotated or wide-aspect) and leaves portrait pages untagged.
   Task 5.6. ``_landscape_pages_below_threshold`` (Phase 2 trigger) only
      flags pages that are BOTH landscape-tagged AND below
@@ -38,7 +38,7 @@ from pageindex_mcp.client import CustomPageIndexClient
 from pageindex_mcp.converters import (
     _landscape_pages_below_threshold,
     _landscape_rasterize_rotate_reextract,
-    _probe_landscape_pages,
+    _tag_landscape_pages_for_fallback,
 )
 
 
@@ -58,14 +58,14 @@ class TestOrientationProbe:
 
     def test_rotated_wide_page_is_tagged_landscape(self, tmp_path):
         path = _make_pdf(tmp_path, "rot90.pdf", width=600, height=800, rotate=90)
-        pages = _probe_landscape_pages(path)
+        pages = _tag_landscape_pages_for_fallback(path)
         assert len(pages) == 1
         assert pages[0]["is_landscape"] is True
         assert pages[0]["rotate"] == 90
 
     def test_portrait_page_is_not_tagged_landscape(self, tmp_path):
         path = _make_pdf(tmp_path, "portrait.pdf", width=600, height=800, rotate=0)
-        pages = _probe_landscape_pages(path)
+        pages = _tag_landscape_pages_for_fallback(path)
         assert len(pages) == 1
         assert pages[0]["is_landscape"] is False
         assert pages[0]["rotate"] == 0

@@ -1,6 +1,6 @@
 """RFC-026 D2: unit tests for page-level rotation detection.
 
-Covers Task 2.1 (`_detect_page_rotation`) and Task 2.2 (`_normalize_pdf_page_rotation`
+Covers Task 2.1 (`_page_rotation_correction_info`) and Task 2.2 (`_normalize_pdf_page_rotation`
 + `PAGE_ROTATION_DETECTION_ENABLED` gate) using synthetic in-memory PDFs (not
 corpus files), per the RFC's own isolation requirement. Validates Design
 Property 3 (rotation-aware extraction).
@@ -14,7 +14,7 @@ pytest.importorskip("fitz")
 import fitz
 
 from pageindex_mcp import converters
-from pageindex_mcp.converters import _detect_page_rotation, _normalize_pdf_page_rotation
+from pageindex_mcp.converters import _page_rotation_correction_info, _normalize_pdf_page_rotation
 
 
 def _make_pdf(tmp_path, name, width, height, rotate=0):
@@ -31,7 +31,7 @@ def _make_pdf(tmp_path, name, width, height, rotate=0):
 def test_rotate_90_reports_rotate_90(tmp_path):
     path = _make_pdf(tmp_path, "rot90.pdf", width=600, height=800, rotate=90)
     doc = fitz.open(path)
-    result = _detect_page_rotation(doc[0])
+    result = _page_rotation_correction_info(doc[0])
     doc.close()
     assert result["rotate"] == 90
 
@@ -39,7 +39,7 @@ def test_rotate_90_reports_rotate_90(tmp_path):
 def test_rotate_0_wide_page_reports_likely_landscape_true(tmp_path):
     path = _make_pdf(tmp_path, "landscape.pdf", width=800, height=600, rotate=0)
     doc = fitz.open(path)
-    result = _detect_page_rotation(doc[0])
+    result = _page_rotation_correction_info(doc[0])
     doc.close()
     assert result["rotate"] == 0
     assert result["likely_landscape"] is True
@@ -48,7 +48,7 @@ def test_rotate_0_wide_page_reports_likely_landscape_true(tmp_path):
 def test_rotate_0_tall_page_reports_likely_landscape_false(tmp_path):
     path = _make_pdf(tmp_path, "portrait.pdf", width=600, height=800, rotate=0)
     doc = fitz.open(path)
-    result = _detect_page_rotation(doc[0])
+    result = _page_rotation_correction_info(doc[0])
     doc.close()
     assert result["rotate"] == 0
     assert result["likely_landscape"] is False
@@ -61,7 +61,7 @@ def test_rotate_authoritative_over_aspect_heuristic(tmp_path):
     path = _make_pdf(tmp_path, "disagree.pdf", width=800, height=600, rotate=180)
     doc = fitz.open(path)
     page = doc[0]
-    result = _detect_page_rotation(page)
+    result = _page_rotation_correction_info(page)
     assert result["rotate"] == 180
     assert result["likely_landscape"] is False
     doc.close()
@@ -97,8 +97,8 @@ def test_mixed_orientation_document_independent_per_page(tmp_path):
     doc.close()
 
     reopened = fitz.open(path)
-    portrait_result = _detect_page_rotation(reopened[0])
-    landscape_result = _detect_page_rotation(reopened[1])
+    portrait_result = _page_rotation_correction_info(reopened[0])
+    landscape_result = _page_rotation_correction_info(reopened[1])
     reopened.close()
 
     assert portrait_result["likely_landscape"] is False

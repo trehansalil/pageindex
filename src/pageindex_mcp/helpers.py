@@ -18,14 +18,6 @@ from typing import Iterator
 
 from .cache import get_doc
 from .config import settings
-from .script import (
-    ARABIC_RANGES,
-    AR_RUN_RE,
-    PRESENTATION_RANGES,
-    arabic_readability_score as _arabic_readability_score,
-    is_arabic_char as _is_arabic_char,
-)
-from .converters import normalize_dashes
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
@@ -33,6 +25,25 @@ from .metrics import (
     RAG_PARSE_FAILURES,
     RAG_SEARCHES,
     TOC_STRIP_SKIPPED,
+)
+
+# _JOINING_TYPE is unused here directly; re-exported because tests import it
+# from pageindex_mcp.helpers rather than pageindex_mcp.script.
+from .script import (
+    _JOINING_TYPE as _JOINING_TYPE,
+)
+from .script import (
+    AR_RUN_RE,
+    ARABIC_RANGES,
+    PRESENTATION_RANGES,
+    _word_has_reversed_morphology,
+    normalize_dashes,
+)
+from .script import (
+    arabic_readability_score as _arabic_readability_score,
+)
+from .script import (
+    is_arabic_char as _is_arabic_char,
 )
 
 logger = logging.getLogger(__name__)
@@ -1030,36 +1041,31 @@ def _is_morphologically_nonsense(token: str) -> bool:
     return token.lower() not in _COMMON_WORDS
 
 
-def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
-    """Unified garble-detection heuristics (D7 / RFC-013).
+def garble_prongs(blob: str, expected_script: str | None = None) -> frozenset[str]:
+    """Return the set of garble-detection prongs that fired on *blob*.
 
-    Checks (in order): empty, null/replacement bytes, GLYPH< markers,
-    control-char ratio >5%, PUA ratio >3%, Arabic presentation-forms ratio >50%,
-    single-letter Arabic fragment ratio >40% (D2 / RFC-033), digit ratio >60%
-    (blobs >500 chars), token repetition >30% (>20 alnum tokens, excluding
-    symbolic tokens), Latin-gibberish in non-Latin script context
-    (D2 / RFC-019, optional)."""
+    Each prong name corresponds to a specific heuristic check. An empty
+    frozenset means no garbling detected. See ``_is_garbled_blob`` for the
+    boolean wrapper used by all existing call sites."""
+    prongs: set[str] = set()
+
     if not blob.strip():
-        return True
+        return frozenset({"empty"})
+
     if "\x00" in blob or "\ufffd" in blob:
-        return True
+        prongs.add("null_replacement_bytes")
     if "GLYPH<" in blob:
-        return True
+        prongs.add("glyph_marker")
+
     bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
     if (bad / len(blob)) > 0.05:
-        return True
-    # PUA-char ratio > 3% — font/CMap mojibake
+        prongs.add("control_chars")
+
     pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
     if (pua / len(blob)) > 0.03:
-        return True
-    # Arabic Presentation-Forms ratio > 50% (RFC-028 D2): font-encoded
-    # garble emits positional glyph variants (U+FB50-FDFF, U+FE70-FEFF)
-    # instead of logical-order Arabic Unicode (U+0600-06FF). `_infer_script`
-    # correctly counts these as Arabic-script text, so that classification
-    # alone let 93%+ presentation-forms blobs (e.g. huquq-al-insan) sail
-    # through every other check here. Denominator is all Arabic-range chars
-    # (logical + presentation) so plain non-Arabic text never divides by
-    # zero and never false-positives.
+        prongs.add("pua_chars")
+
+    # Arabic Presentation-Forms ratio > 50% (RFC-028 D2)
     presentation_forms = sum(
         1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
     )
@@ -1067,42 +1073,30 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
         1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
     )
     if arabic_range_chars > 0 and (presentation_forms / arabic_range_chars) > 0.50:
-        return True
-    # Single-letter Arabic fragment ratio > 40% (D2 / RFC-033): PDF text-layer
-    # extraction failures sometimes decompose Arabic words into individual
-    # letters separated by whitespace (e.g. "م ا د ة" instead of "مادة").
-    # Flag when >40% of whitespace-delimited tokens containing Arabic-script
-    # characters are themselves single characters. The conjunction particle
-    # "wa" (و) is excluded since it is a legitimate single-letter word.
+        prongs.add("presentation_forms")
+
+    # Single-letter Arabic fragment ratio > 40% (D2 / RFC-033)
     arabic_tokens = [t for t in blob.split() if any(_is_arabic_char(c) for c in t)]
     if arabic_tokens:
-        single_char_fragments = sum(1 for t in arabic_tokens if len(t) == 1 and t != "و")
+        single_char_fragments = sum(1 for t in arabic_tokens if len(t) == 1 and t != "\u0648")
         if (single_char_fragments / len(arabic_tokens)) > 0.40:
-            return True
-    # Digit ratio > 60% on blobs > 500 chars — numeric junk
+            prongs.add("single_letter_fragments")
+
+    # Digit ratio > 60% on blobs > 500 chars
     if len(blob) > 500:
         digits = sum(1 for c in blob if c.isdigit())
         if (digits / len(blob)) > 0.60:
-            return True
-    # Single-token repetition > 30% on blobs with enough tokens. Purely
-    # symbolic tokens ('|' table delimiters, '€'/currency signs) are excluded:
-    # a wide price table legitimately produces dozens of these per row, which
-    # is not garbling. Structural HTML comment markers (e.g. `<!-- image -->`)
-    # are stripped first (D3 / RFC-023) so their repetition doesn't falsely
-    # trip the check on image-only pages.
+            prongs.add("digit_ratio")
+
+    # Single-token repetition > 30% (>20 alnum tokens)
     stripped = re.sub(r"<!--.*?-->", "", blob)
     tokens = [t for t in stripped.split() if any(c.isalnum() for c in t)]
     if len(tokens) > 20:
         most_common_count = Counter(tokens).most_common(1)[0][1]
         if (most_common_count / len(tokens)) > 0.30:
-            return True
+            prongs.add("token_repetition")
+
     # Latin-gibberish in non-Latin script context (D2 / RFC-019)
-    # QF3 (RFC-021): replaced _COMMON_WORDS whitelist with morphological
-    # plausibility check.  The whitelist (~160 stopwords) mis-classified
-    # legitimate bilingual domain English (e.g. "service", "agreement",
-    # "infrastructure") as nonsense, false-FAILing Arabic+English SLAs.
-    # Morphological check: a Latin token is nonsense when it has NO vowels
-    # (len>=3, non-acronym) or mixes digits with letters ("xKjQ7").
     if (
         expected_script
         and expected_script != "Latn"
@@ -1114,8 +1108,14 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
         if ratio > latin_ratio_threshold and len(latin_tokens) >= 5:
             nonsense = sum(1 for t in latin_tokens if _is_morphologically_nonsense(t))
             if nonsense / len(latin_tokens) > nonsense_threshold:
-                return True
-    return False
+                prongs.add("latin_gibberish")
+
+    return frozenset(prongs)
+
+
+def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
+    """Boolean wrapper around ``garble_prongs`` -- True when any prong fires."""
+    return bool(garble_prongs(blob, expected_script))
 
 
 # RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
@@ -1151,64 +1151,8 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
     return (len(matches) / max(len(text.split()), 1)) > threshold
 
 
-# RFC-034 D7: Unicode Joining_Type table vendored from ArabicShaping.txt
-# (Unicode 17.0.0), scoped to the three base-Arabic blocks that presentation
-# forms (FB50-FDFF, FE70-FEFF) decompose into under NFKC normalisation:
-# Arabic, Arabic Supplement, Arabic Extended-A. R=Right_Joining,
-# L=Left_Joining, D=Dual_Joining, C=Join_Causing, U=Non_Joining.
-_JOINING_TYPE: dict[int, str] = {
-    # Arabic (U+0600-U+06FF), 160 entries
-    0x0600: "U", 0x0601: "U", 0x0602: "U", 0x0603: "U", 0x0604: "U", 0x0605: "U", 0x0608: "U", 0x060B: "U",
-    0x0620: "D", 0x0621: "U", 0x0622: "R", 0x0623: "R", 0x0624: "R", 0x0625: "R", 0x0626: "D", 0x0627: "R",
-    0x0628: "D", 0x0629: "R", 0x062A: "D", 0x062B: "D", 0x062C: "D", 0x062D: "D", 0x062E: "D", 0x062F: "R",
-    0x0630: "R", 0x0631: "R", 0x0632: "R", 0x0633: "D", 0x0634: "D", 0x0635: "D", 0x0636: "D", 0x0637: "D",
-    0x0638: "D", 0x0639: "D", 0x063A: "D", 0x063B: "D", 0x063C: "D", 0x063D: "D", 0x063E: "D", 0x063F: "D",
-    0x0640: "C", 0x0641: "D", 0x0642: "D", 0x0643: "D", 0x0644: "D", 0x0645: "D", 0x0646: "D", 0x0647: "D",
-    0x0648: "R", 0x0649: "D", 0x064A: "D", 0x066E: "D", 0x066F: "D", 0x0671: "R", 0x0672: "R", 0x0673: "R",
-    0x0674: "U", 0x0675: "R", 0x0676: "R", 0x0677: "R", 0x0678: "D", 0x0679: "D", 0x067A: "D", 0x067B: "D",
-    0x067C: "D", 0x067D: "D", 0x067E: "D", 0x067F: "D", 0x0680: "D", 0x0681: "D", 0x0682: "D", 0x0683: "D",
-    0x0684: "D", 0x0685: "D", 0x0686: "D", 0x0687: "D", 0x0688: "R", 0x0689: "R", 0x068A: "R", 0x068B: "R",
-    0x068C: "R", 0x068D: "R", 0x068E: "R", 0x068F: "R", 0x0690: "R", 0x0691: "R", 0x0692: "R", 0x0693: "R",
-    0x0694: "R", 0x0695: "R", 0x0696: "R", 0x0697: "R", 0x0698: "R", 0x0699: "R", 0x069A: "D", 0x069B: "D",
-    0x069C: "D", 0x069D: "D", 0x069E: "D", 0x069F: "D", 0x06A0: "D", 0x06A1: "D", 0x06A2: "D", 0x06A3: "D",
-    0x06A4: "D", 0x06A5: "D", 0x06A6: "D", 0x06A7: "D", 0x06A8: "D", 0x06A9: "D", 0x06AA: "D", 0x06AB: "D",
-    0x06AC: "D", 0x06AD: "D", 0x06AE: "D", 0x06AF: "D", 0x06B0: "D", 0x06B1: "D", 0x06B2: "D", 0x06B3: "D",
-    0x06B4: "D", 0x06B5: "D", 0x06B6: "D", 0x06B7: "D", 0x06B8: "D", 0x06B9: "D", 0x06BA: "D", 0x06BB: "D",
-    0x06BC: "D", 0x06BD: "D", 0x06BE: "D", 0x06BF: "D", 0x06C0: "R", 0x06C1: "D", 0x06C2: "D", 0x06C3: "R",
-    0x06C4: "R", 0x06C5: "R", 0x06C6: "R", 0x06C7: "R", 0x06C8: "R", 0x06C9: "R", 0x06CA: "R", 0x06CB: "R",
-    0x06CC: "D", 0x06CD: "R", 0x06CE: "D", 0x06CF: "R", 0x06D0: "D", 0x06D1: "D", 0x06D2: "R", 0x06D3: "R",
-    0x06D5: "R", 0x06DD: "U", 0x06EE: "R", 0x06EF: "R", 0x06FA: "D", 0x06FB: "D", 0x06FC: "D", 0x06FF: "D",
-    # Arabic Supplement (U+0750-U+077F), 48 entries
-    0x0750: "D", 0x0751: "D", 0x0752: "D", 0x0753: "D", 0x0754: "D", 0x0755: "D", 0x0756: "D", 0x0757: "D",
-    0x0758: "D", 0x0759: "R", 0x075A: "R", 0x075B: "R", 0x075C: "D", 0x075D: "D", 0x075E: "D", 0x075F: "D",
-    0x0760: "D", 0x0761: "D", 0x0762: "D", 0x0763: "D", 0x0764: "D", 0x0765: "D", 0x0766: "D", 0x0767: "D",
-    0x0768: "D", 0x0769: "D", 0x076A: "D", 0x076B: "R", 0x076C: "R", 0x076D: "D", 0x076E: "D", 0x076F: "D",
-    0x0770: "D", 0x0771: "R", 0x0772: "D", 0x0773: "R", 0x0774: "R", 0x0775: "D", 0x0776: "D", 0x0777: "D",
-    0x0778: "R", 0x0779: "R", 0x077A: "D", 0x077B: "D", 0x077C: "D", 0x077D: "D", 0x077E: "D", 0x077F: "D",
-    # Arabic Extended-A (U+08A0-U+08FF), 42 entries
-    0x08A0: "D", 0x08A1: "D", 0x08A2: "D", 0x08A3: "D", 0x08A4: "D", 0x08A5: "D", 0x08A6: "D", 0x08A7: "D",
-    0x08A8: "D", 0x08A9: "D", 0x08AA: "R", 0x08AB: "R", 0x08AC: "R", 0x08AD: "U", 0x08AE: "R", 0x08AF: "D",
-    0x08B0: "D", 0x08B1: "R", 0x08B2: "R", 0x08B3: "D", 0x08B4: "D", 0x08B5: "D", 0x08B6: "D", 0x08B7: "D",
-    0x08B8: "D", 0x08B9: "R", 0x08BA: "D", 0x08BB: "D", 0x08BC: "D", 0x08BD: "D", 0x08BE: "D", 0x08BF: "D",
-    0x08C0: "D", 0x08C1: "D", 0x08C2: "D", 0x08C3: "D", 0x08C4: "D", 0x08C5: "D", 0x08C6: "D", 0x08C7: "D",
-    0x08C8: "D", 0x08E2: "U",
-}
-
-
-def _arabic_word_joins(word: str) -> int:
-    """Count adjacent-pair cursive joins in *word* as stored, using
-    Joining_Type: a join exists between word[i] and word[i+1] when word[i]
-    can join forward (Dual/Left/Join_Causing) and word[i+1] can join
-    backward (Dual/Right/Join_Causing). Reversing a correctly-ordered word's
-    character order breaks most of its joins (joining is direction-specific),
-    which is the RFC-034 D7 replacement for the presentation-form check."""
-    joins = 0
-    for i in range(len(word) - 1):
-        if _JOINING_TYPE.get(ord(word[i]), "U") in ("D", "L", "C") and _JOINING_TYPE.get(
-            ord(word[i + 1]), "U"
-        ) in ("D", "R", "C"):
-            joins += 1
-    return joins
+# _JOINING_TYPE, _arabic_word_joins, _word_has_reversed_morphology moved to script.py
+# (Zone 5: break circular import, dependency-free leaf)
 
 
 def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
@@ -1386,30 +1330,6 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
     # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
     # mixed-script. Never narrows the existing gate.
     return _is_garbled_blob(blob, expected_script=expected_script) or _has_sparse_mojibake(blob)
-
-
-def _word_has_reversed_morphology(word: str) -> bool:
-    """RFC-034 D7: vocabulary-independent reversal signal, using Unicode
-    Joining_Type on base Arabic codepoints (via `_JOINING_TYPE`) rather than
-    `unicodedata.name()` presentation-form checks. Since upstream NFKC
-    normalization decomposes presentation forms to base Arabic before this
-    runs, the presentation-form check was a null detector (0% TPR).
-
-    Cursive joining is direction-specific (`_arabic_word_joins`): a
-    correctly-ordered Arabic word almost always has at least one adjacent
-    pair that joins. Reversing the character order breaks nearly all of
-    those joins (a join valid in one direction is not valid in the other),
-    so a word with zero joins as stored that WOULD gain a join if reversed
-    is a strong, vocabulary-independent reversal signal.
-
-    Words shorter than 4 chars are excluded: with only one or two adjacent
-    pairs to sample, common short function words (e.g. "دم", "رب" — a
-    Right_Joining letter followed by a Dual_Joining one, which never joins
-    forward and is a completely ordinary, non-reversed pattern) hit
-    zero-joins-as-stored by chance and would false-positive."""
-    if len(word) < 4:
-        return False
-    return _arabic_word_joins(word) == 0 and _arabic_word_joins(word[::-1]) > 0
 
 
 def _tree_is_rtl_reversed(nodes: list) -> bool:
@@ -1754,7 +1674,7 @@ def _dedupe_chart_text_lines(text: str) -> str:
     return "".join(kept)
 
 
-def classify_verdict(  # noqa: C901, PLR0915
+def classify_verdict(  # noqa: C901
     structure: list,
     content_class: str,
     validate_reason: str | None,
@@ -1763,9 +1683,22 @@ def classify_verdict(  # noqa: C901, PLR0915
     inspector_class: str | None = None,
     expected_script: str | None = None,
 ) -> tuple[str, str]:
-    """Grouped-rule verdict: HARD_FAILs → PROMOTIONS → CAPS.
+    """Grouped-rule verdict engine.
 
-    Within each group, rule order is semantically irrelevant.
+    GROUP 1 -- HARD_FAILs: any match returns FAIL immediately (takes priority
+               over all content-class dispatch, including image_standalone).
+    DISPATCH - image_standalone: own verdict logic after hard-fails clear.
+    GROUP 2 -- PROMOTIONS: image-enrichment rescue, base PASS, category
+               promotions (cat_a/b/c), small-doc exemption, MARGINAL fallback.
+    CAPS    -- bidi_degraded and depth-adequacy applied uniformly via _pass()
+               to every PASS-returning branch in Group 2.
+
+    The image-enrichment rescue is intentionally positioned before the
+    max_leaf_ratio structural hard-fail: flat image-enriched documents render
+    as a single leaf (max_leaf_ratio=1.0), so the structural metric is not
+    meaningful for them.  This ordering is locked by RFC-022 B2.  Genuine
+    image-only documents should be routed upstream to content_class=
+    'image_standalone' (GROUP 0), which is already exempt.
     """
     # ── Pre-compute signals and thresholds once ──────────────────────────
     th = VerdictThresholds.from_env()
@@ -1776,7 +1709,9 @@ def classify_verdict(  # noqa: C901, PLR0915
 
     sig = TreeSignals.from_tree(structure, expected_script=expected_script, garble_threshold=th.garble_threshold)
 
-    # ── GROUP 1: HARD_FAILs (any one is terminal, within-group order irrelevant) ──
+    # ── GROUP 1: HARD_FAILs (any one is terminal) ────────────────────────
+    # Hard-fails take priority over all content-class dispatch, including
+    # image_standalone (a garbled image doc still FAILs).
 
     if validate_reason == "garbling":
         return "FAIL", "garbling"
@@ -1791,24 +1726,36 @@ def classify_verdict(  # noqa: C901, PLR0915
     if validate_reason == "reordered" or sig.is_reordered:
         return "FAIL", "reordered"
 
-    # ── bidi_degraded cap setup (applied in GROUP 3) ─────────────────────
+    # ── Content-class dispatch: image_standalone ─────────────────────────
+    # image_standalone has its own verdict logic; tree-shape metrics are
+    # structurally meaningless for single-image documents.  Placed after
+    # GROUP 1 so garbling/reordered still hard-fail image docs.
+    if content_class == "image_standalone":
+        return _classify_image_verdict(image_enrichment_ratio)
+
+    # ── CAPS: shared _pass() wrapper ─────────────────────────────────────
+    # Every Group-2 branch returning PASS funnels through _pass(), which
+    # applies two uniform caps:
+    #   1. bidi_degraded -> MARGINAL (RFC-018 D2)
+    #   2. depth-adequacy -> MARGINAL when the tree is shallower than its
+    #      node count warrants (RFC-036 D6).  Previously only applied in
+    #      the base-PASS branch; now uniform across all promotions.
     _bidi_degraded = validate_reason == "bidi_degraded"
 
     def _pass(reason: str) -> tuple[str, str]:
         if _bidi_degraded:
             return "MARGINAL", "bidi_degraded"
+        if sig.depth < sig.expected_min_depth and not sig.effectively_garbled:
+            return (
+                "MARGINAL",
+                f"depth_inadequate:expected_min_depth={sig.expected_min_depth},actual_depth={sig.depth}",
+            )
         return "PASS", reason
 
     # ── GROUP 2: PROMOTIONS (tried only when no HARD_FAIL fired) ─────────
 
-    # 2a: image-standalone (has its own verdict logic; max_leaf_ratio
-    # is structurally meaningless for these docs)
-    if content_class == "image_standalone":
-        return _classify_image_verdict(image_enrichment_ratio)
-
-    # 2b: image-enrichment rescue (B2) — checked BEFORE the structural
-    # max_leaf_ratio gate because flat image-enriched documents are
-    # expected to have high leaf ratios (single-leaf is normal).
+    # 2b: image-enrichment rescue (RFC-022 B2) — intentionally before
+    # max_leaf_ratio hard-fail; see docstring for rationale.
     if (
         content_class in ("flat_prose", "flat_mixed")
         and image_enrichment_ratio is not None
@@ -1821,12 +1768,13 @@ def classify_verdict(  # noqa: C901, PLR0915
         if not _is_garbled_blob(_promoted_text):
             return _pass("image_enrichment_promoted")
 
-    # 2a½: max_leaf_ratio structural hard FAIL — blocks all non-image
-    # promotions below.
+    # max_leaf_ratio structural hard FAIL — blocks all non-image promotions
+    # below.  Image-enrichment rescue above may bypass this for flat docs
+    # with high enrichment ratios (RFC-022 B2 explicit exception).
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
         return "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}"
 
-    # 2c: base PASS + depth-adequacy
+    # 2c: base PASS (hysteresis widens threshold for previously-PASS docs)
     _effective_max_leaf = th.pass_max_leaf_ratio
     if prior_verdict == "PASS":
         _effective_max_leaf = th.pass_max_leaf_ratio + th.hysteresis_band
@@ -1836,11 +1784,6 @@ def classify_verdict(  # noqa: C901, PLR0915
         and sig.max_leaf_ratio < _effective_max_leaf
         and not sig.effectively_garbled
     ):
-        if sig.depth < sig.expected_min_depth:
-            return (
-                "MARGINAL",
-                f"depth_inadequate:expected_min_depth={sig.expected_min_depth},actual_depth={sig.depth}",
-            )
         return _pass("")
 
     # 2d-2f: category-specific promotions

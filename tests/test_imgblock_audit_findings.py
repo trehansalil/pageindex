@@ -171,7 +171,7 @@ class TestFinding1TupleReturnNoThreadLocal:
     def test_finding1_pymupdf_chain_entry_returns_tuple(self, monkeypatch):
         monkeypatch.setattr(converters, "pdf_to_markdown", lambda p: "# md")
         chain = dict(converters.pdf_markdown_converters())
-        assert chain["pymupdf4llm"]("dummy.pdf") == ("# md", [])
+        assert chain["pymupdf4llm"]("dummy.pdf") == ("# md", [], [])
 
     def test_finding1_finding6_docling_returns_tuple_with_neutral_md(self, monkeypatch):
         md = "# Title\n\n## Section\n\n<!-- image -->\n\nbody text"
@@ -186,10 +186,10 @@ class TestFinding1TupleReturnNoThreadLocal:
         monkeypatch.setattr(converters, "_repromote_numbered_headings", lambda d: 0)
         pr = PictureResult(ocr_text="Revenue 2024 up 42 percent", png_bytes=b"p", page=1, bbox={})
         monkeypatch.setattr(
-            converters, "_recover_picture_results", lambda md_, doc, path, filename=None: [pr]
+            converters, "_recover_picture_results", lambda md_, doc, path, filename=None, body_for_containment=None: [pr]
         )
 
-        out_md, pics = converters.pdf_to_markdown_docling("dummy.pdf")
+        out_md, pics, _stages = converters.pdf_to_markdown_docling("dummy.pdf")
 
         assert pics == [pr]
         # Finding 6: the converter output (shared by the TREE route) stays neutral.

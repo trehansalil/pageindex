@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import resource
 import sys
 import time
@@ -121,10 +122,26 @@ async def main() -> int:  # noqa: PLR0915
             validate_llm_config()
             configure_litellm()
 
+            # Zone-7: threaded via env var (not argv/stdin) so it never touches
+            # the stdout JSON-lines contract this module's docstring guards.
+            job_start_config = None
+            raw_job_start_config = os.environ.get("PAGEINDEX_JOB_START_CONFIG")
+            if raw_job_start_config:
+                try:
+                    job_start_config = json.loads(raw_job_start_config)
+                except json.JSONDecodeError:
+                    logging.getLogger(__name__).warning(
+                        "PAGEINDEX_JOB_START_CONFIG was not valid JSON; ignoring"
+                    )
+
             client = CustomPageIndexClient()
             if args.staging_key:
                 client._staging_key = args.staging_key
-            doc_id = await client.index(args.input_path, pdf_classification=pdf_classification)
+            doc_id = await client.index(
+                args.input_path,
+                pdf_classification=pdf_classification,
+                job_start_config=job_start_config,
+            )
 
             duration_ms = int((time.monotonic() - start) * 1000)
             payload = {
