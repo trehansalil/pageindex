@@ -13,7 +13,13 @@ from minio import Minio  # for type annotations; construction goes through make_
 from minio.error import S3Error
 
 from .config import settings
-from .metrics import MINIO_DURATION, MINIO_OPS, STAGING_DELETE_FAILURES, WRITE_BARRIER_RETRIES
+from .metrics import (
+    MINIO_DURATION,
+    MINIO_OPS,
+    STAGING_DELETE_FAILURES,
+    WRITE_BARRIER_EXHAUSTED,
+    WRITE_BARRIER_RETRIES,
+)
 from .minio_client import make_minio
 
 logger = logging.getLogger(__name__)
@@ -25,8 +31,10 @@ DEFAULT_PRESIGN_REGION = "us-east-1"
 _minio_client: Minio | None = None
 _minio_lock = Lock()  # guards double-checked locking in get_minio()
 
-# RFC-034 D18: 4 attempts, same backoff schedule as RFC-033 D3's read-side retry.
-_WRITE_BARRIER_DELAYS = (0.1, 0.3, 1.0, 3.0)
+# RFC-036 D1: reduced from (0.1, 0.3, 1.0, 3.0) -- 4.4s was over-provisioned for
+# MinIO's sub-100ms read-after-write consistency and risked doubling job time
+# under arq retry on exhaustion.
+_WRITE_BARRIER_DELAYS = (0.05, 0.1, 0.3)
 
 
 class PersistenceNotVisibleError(RuntimeError):
@@ -209,7 +217,11 @@ def save_doc(doc_id: str, data: dict) -> None:
             len(content),
             content_type="application/json",
         )
-        _confirm_write_visible(mc, settings.minio_bucket, key)
+        try:
+            _confirm_write_visible(mc, settings.minio_bucket, key)
+        except PersistenceNotVisibleError:
+            logger.warning("save_doc: write barrier exhausted for %s", key)
+            WRITE_BARRIER_EXHAUSTED.inc()
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
 
@@ -572,7 +584,11 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             len(content),
             content_type="application/json",
         )
-        _confirm_write_visible(mc, settings.minio_bucket, key)
+        try:
+            _confirm_write_visible(mc, settings.minio_bucket, key)
+        except PersistenceNotVisibleError:
+            logger.warning("save_doc_meta: write barrier exhausted for %s", key)
+            WRITE_BARRIER_EXHAUSTED.inc()
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)

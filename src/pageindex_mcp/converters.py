@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import logging
 import math
+import multiprocessing
 import os
+import queue as queue_mod
 import re
 import shutil
 import subprocess
@@ -82,8 +84,12 @@ _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 # (character-order-reversed) form Tesseract produces on some scanned inputs,
 # e.g. 'المادة' -> 'ةداملا' (stem reversed, 'ال' prefix reversed to a trailing
 # 'لا' suffix). Reversed stems: باب->باب (palindrome), فصل->لصف, قسم->مسق,
-# جزء->ءزج, مادة->ةدام, مرسوم->موسرم.
-_AR_PART_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء)\b|^(?:باب|لصف|مسق|ءزج)(?:لا)?\b")
+# جزء->ءزج, مادة->ةدام, مرسوم->موسرم. RFC-036 D5: same treatment for
+# قرار->رارق, قانون->نوناق (gazette-style decree/law markers, part-level).
+_AR_PART_RE = re.compile(
+    r"^(?:ال)?(?:باب|فصل|قسم|جزء|قرار|مرسوم|قانون)\b"
+    r"|^(?:باب|لصف|مسق|ءزج|رارق|موسرم|نوناق)(?:لا)?\b"
+)
 _AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b|^ةدام(?:لا)?\b")
 # RFC-028 D1: char limit for wholesale heading promotion, raised from 60 to
 # accommodate Arabic legal headings/titles (66-76+ chars observed).
@@ -97,7 +103,9 @@ _AR_HEADING_CHAR_LIMIT = 100
 # prose ("Article 2 OF this law..."), not a title, so it must NOT be split
 # into a heading (see TestInjectArabicStructuralHeadingsBlockStart's
 # wrapped-citation case in test_rfc027_d4.py).
-_AR_MARKER_CAPTURE_RE = re.compile(r"^(?:ال)?(?:باب|فصل|قسم|جزء|مادة)\s*\(\s*\d+\s*\)")
+_AR_MARKER_CAPTURE_RE = re.compile(
+    r"^(?:ال)?(?:باب|فصل|قسم|جزء|مادة|قرار|مرسوم|قانون)\s*\(\s*\d+\s*\)"
+)
 
 # RFC-033 D8: known-good Arabic structural words used by _detect_arabic_reversal
 # to decide whether a document's OCR output is Tesseract mirror-reversed. Same
@@ -784,6 +792,57 @@ def _relevel_by_outline(md: str, heading_pages: dict[str, list[int]], pdf_path: 
         _max_heading_level(result_md),
     )
     return result_md
+
+
+def _splice_landscape_fallback(
+    md: str, landscape_fallback_pages: list[dict], heading_pages: dict[str, list[int]]
+) -> str:
+    """RFC-036 D0d: insert landscape-fallback markdown at its original page
+    position in the document's block sequence, instead of appending after the
+    last block.
+
+    Insertion offset = the start of the first heading (in ``md``, matched to a
+    page via ``heading_pages`` the same way ``_apply_outline_levels`` does)
+    whose page number exceeds the fallback page's ``page_no`` — i.e. the next
+    heading following that page. Falls back to document end when no such
+    heading exists (the fallback page is on/after the document's last heading),
+    which reproduces the prior append-at-end behaviour for that case. A no-op
+    when ``landscape_fallback_pages`` is empty — documents that never trigger
+    the landscape path see no ordering change."""
+    if not landscape_fallback_pages:
+        return md
+    from collections import deque
+
+    matches = list(_HLINE_RE.finditer(md))
+    page_q: dict[str, deque] = {k: deque(v) for k, v in heading_pages.items()}
+    heading_offsets: list[tuple[int, int | None]] = []
+    for m in matches:
+        norm_h = _outline_norm(m.group(1))
+        q = page_q.get(norm_h)
+        heading_offsets.append((m.start(), q.popleft() if q else None))
+
+    inserts: list[tuple[int, int, str]] = []
+    for p in landscape_fallback_pages:
+        block = p["markdown"].strip()
+        if not block:
+            continue
+        # Fallback page_no is PyMuPDF 0-indexed (_probe_landscape_pages);
+        # heading_pages values are Docling prov.page_no, 1-indexed — same
+        # correction as _landscape_pages_below_threshold.
+        fallback_page_1idx = p["page_no"] + 1
+        insert_at = len(md)
+        for offset, page_no in heading_offsets:
+            if page_no is not None and page_no > fallback_page_1idx:
+                insert_at = offset
+                break
+        inserts.append((insert_at, fallback_page_1idx, block))
+
+    # Descending offset so earlier insertions don't shift later ones; the
+    # secondary page_no key keeps same-offset blocks in ascending page order
+    # in the final document (last-inserted lands first at a shared offset).
+    for insert_at, _page, block in sorted(inserts, reverse=True):
+        md = md[:insert_at] + "\n\n" + block + "\n\n" + md[insert_at:]
+    return md
 
 
 def _has_recoverable_structure(md: str) -> bool:
@@ -2002,13 +2061,27 @@ def _probe_landscape_pages(pdf_path: str) -> list[dict]:
 # a different floor than the 748-char stalled baseline this threshold targets).
 LANDSCAPE_CHAR_THRESHOLD: int = int(os.environ.get("LANDSCAPE_CHAR_THRESHOLD", "500"))
 
+# RFC-036 D0a: hard caps on the per-page reextraction loop below, so a
+# document with many low-char landscape pages cannot serially rasterize/OCR
+# its way past the chunk timeout budget.
+MAX_LANDSCAPE_PAGES: int = int(os.environ.get("MAX_LANDSCAPE_PAGES", "10"))
+LANDSCAPE_REEXTRACT_DEADLINE_SECONDS: float = float(
+    os.environ.get("LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", "600")
+)
+
 
 def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> list[dict]:
     """RFC-035 D2 Phase 2 trigger: for pages tagged landscape by
     ``_probe_landscape_pages``, count the chars Docling's primary extraction
     yielded for that page and flag pages below ``LANDSCAPE_CHAR_THRESHOLD``
-    as needing the rasterize-rotate-reextract fallback.
+    that also have a detectable picture/graphic region (RFC-036 D0c) as
+    needing the rasterize-rotate-reextract fallback. Dense numeric-table
+    pages (e.g. world-stats-pocketbook) fall below the char threshold but
+    carry no picture region, so they no longer false-positive trigger.
     """
+    if not any(p["is_landscape"] for p in landscape_pages):
+        return []
+    picture_pages = {r["page"] for r in _collect_picture_regions(document)}
     below = []
     for p in landscape_pages:
         if not p["is_landscape"]:
@@ -2016,6 +2089,8 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
         # PyMuPDF page_no is 0-indexed; Docling's prov.page_no (and
         # iterate_items' page_no kwarg) is 1-indexed.
         page_no = p["page_no"] + 1
+        if page_no not in picture_pages:
+            continue
         char_count = 0
         try:
             for item, _ in document.iterate_items(page_no=page_no):
@@ -2079,7 +2154,17 @@ def _landscape_rasterize_rotate_reextract(
     if not ALLOW_AGPL_FALLBACK:
         return []
     results: list[dict] = []
+    deadline = time.monotonic() + LANDSCAPE_REEXTRACT_DEADLINE_SECONDS
     for p in pages:
+        if len(results) >= MAX_LANDSCAPE_PAGES or time.monotonic() >= deadline:
+            logger.warning(
+                "landscape reextraction bailing early (%d/%d pages, deadline=%s) for %s",
+                len(results),
+                MAX_LANDSCAPE_PAGES,
+                time.monotonic() >= deadline,
+                pdf_path,
+            )
+            break
         page_no = p["page_no"]
         try:
             png_path = _rasterize_rotate_page(pdf_path, page_no, dpi=300)
@@ -2897,6 +2982,103 @@ def _repair_docling_tables(md: str, doc_name: str = "") -> str:
     return result
 
 
+def _docling_chunk_worker(
+    result_queue: "multiprocessing.Queue",
+    pdf_path: str,
+    force_full_page_ocr: bool,
+    ocr_lang_override: list[str] | None,
+) -> None:
+    """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
+
+    Executed as the target of a ``multiprocessing.Process`` so the parent can
+    ``terminate()`` it on timeout and guarantee the work actually stops --
+    unlike a ``ThreadPoolExecutor`` thread, which keeps running past
+    ``future.result(timeout=...)`` because that only abandons the wait.
+    """
+    try:
+        result_queue.put(("ok", pdf_to_markdown_docling(
+            pdf_path,
+            force_full_page_ocr=force_full_page_ocr,
+            ocr_lang_override=ocr_lang_override,
+        )))
+    except Exception as exc:  # noqa: BLE001 -- re-raised in parent
+        try:
+            result_queue.put(("error", exc))
+        except Exception:  # exc itself unpicklable -- send a picklable stand-in
+            result_queue.put(
+                ("error", RuntimeError(f"{type(exc).__name__}: {exc}"))
+            )
+
+
+def _run_docling_chunk_with_timeout(
+    pdf_path: str,
+    *,
+    force_full_page_ocr: bool,
+    ocr_lang_override: list[str] | None,
+    timeout_s: float,
+) -> tuple[str, list[PictureResult]]:
+    """Run one Docling chunk conversion in a killable subprocess (D0 fix).
+
+    Replaces the plain ``ThreadPoolExecutor`` used previously: a
+    ``multiprocessing.Process`` can be ``terminate()``-d on timeout, which
+    actually stops the in-flight Docling work rather than merely abandoning
+    the wait for it. This lets the arq worker's child process exit cleanly
+    within its own timeout budget instead of surviving to ``JOB_TIMEOUT``.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    result_queue: multiprocessing.Queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_docling_chunk_worker,
+        args=(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override),
+        daemon=True,
+    )
+    proc.start()
+    # Drain the queue BEFORE join()ing: a large result (markdown +
+    # PictureResult png_bytes) exceeds the queue's pipe buffer, and the child
+    # cannot exit until the parent reads it -- join-first would deadlock until
+    # the timeout and misreport a *successful* chunk as timed out. The poll
+    # loop also detects a child that died without reporting (native segfault
+    # in Docling/OCR), which a bare blocking get() would hang on forever.
+    deadline = time.monotonic() + timeout_s
+    outcome: tuple[str, object] | None = None
+    while outcome is None:
+        try:
+            outcome = result_queue.get(timeout=1.0)
+        except queue_mod.Empty:
+            if time.monotonic() >= deadline:
+                break
+            if not proc.is_alive():
+                # Child exited; give the queue feeder one final grace read in
+                # case the result landed between the Empty and the liveness
+                # check, then treat silence as a crash.
+                try:
+                    outcome = result_queue.get(timeout=1.0)
+                except queue_mod.Empty:
+                    break
+    if outcome is None:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            raise FuturesTimeoutError(
+                f"Docling chunk timed out after {timeout_s}s: {pdf_path}"
+            )
+        raise RuntimeError(
+            "Docling chunk worker died without a result "
+            f"(exitcode={proc.exitcode}): {pdf_path}"
+        )
+    proc.join(5)
+    if proc.is_alive():  # lingering after reporting -- reap it
+        proc.kill()
+        proc.join()
+    status, payload = outcome
+    if status == "error":
+        raise cast(Exception, payload)
+    return cast("tuple[str, list[PictureResult]]", payload)
+
+
 def _pdf_to_markdown_docling_chunked(
     pdf_path: str,
     page_count: int,
@@ -2956,19 +3138,12 @@ def _pdf_to_markdown_docling_chunked(
                 finally:
                     writer.close()
                 try:
-                    pool = ThreadPoolExecutor(max_workers=1)
-                    future = pool.submit(
-                        pdf_to_markdown_docling,
+                    chunk_md, chunk_pics = _run_docling_chunk_with_timeout(
                         tmp.name,
                         force_full_page_ocr=force_full_page_ocr,
                         ocr_lang_override=ocr_lang_override,
+                        timeout_s=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
                     )
-                    try:
-                        chunk_md, chunk_pics = future.result(
-                            timeout=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
-                        )
-                    finally:
-                        pool.shutdown(wait=False, cancel_futures=True)
                 except FuturesTimeoutError:
                     # RFC-027 D7: an individually heavy chunk still times out on the
                     # Docling pipeline -- fall back to pymupdf text-layer-only
@@ -3236,6 +3411,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     # recovers real depth. raw Docling is ligature-correct + MIT (HR4). The real
     # gate (validate_tree) still runs downstream; this only picks the better source.
     md = _recover_heading_depth(post_md, heading_pages_post, pdf_path)
+    heading_pages_for_md = heading_pages_post
     if not _has_recoverable_structure(md) and raw_headings >= 3 and raw_headings > post_headings:
         md_raw = _recover_heading_depth(raw_md, heading_pages_raw, pdf_path)
         if _has_recoverable_structure(md_raw):
@@ -3248,14 +3424,16 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
                 raw_headings,
             )
             md = md_raw
+            heading_pages_for_md = heading_pages_raw
     md = _normalize_indented_headings(md)
     md = _document_level_text_fallback(md, pdf_path)
-    # RFC-035 D2 Phase 2: splice in content recovered by the rasterize-rotate-
-    # reextract fallback. Routing re-evaluation (PictureResults -> flat-mixed) is
-    # a separate follow-on; this only restores the char count classify_verdict
-    # scores against.
-    if landscape_fallback_pages:
-        md = md + "\n\n" + "\n\n".join(p["markdown"] for p in landscape_fallback_pages)
+    # RFC-035 D2 Phase 2 / RFC-036 D0d: splice in content recovered by the
+    # rasterize-rotate-reextract fallback at its original page position (not
+    # appended at document end — ordering is part of correctness for downstream
+    # chunking and node structure). Routing re-evaluation (PictureResults ->
+    # flat-mixed) is a separate follow-on; this only restores the char count
+    # classify_verdict scores against.
+    md = _splice_landscape_fallback(md, landscape_fallback_pages, heading_pages_for_md)
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was
     # invisible to the event loop and pinned crop bytes for the process life).

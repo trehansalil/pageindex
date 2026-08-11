@@ -57,6 +57,7 @@ from .helpers import (
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     classify_verdict,
+    compute_image_enrichment_ratio,
     route_and_extract_flat,
     split_oversized_leaf_nodes,
     validate_tree,
@@ -766,6 +767,10 @@ async def _enrich_image_blocks(
         desc = pr.get("description")
         if desc:
             block["description"] = desc
+        if pr.get("skipped_reason"):
+            block["skipped_reason"] = pr["skipped_reason"]
+        if pr.get("decorative"):
+            block["decorative"] = True
 
 
 class CustomPageIndexClient(PageIndexClient):
@@ -817,6 +822,10 @@ class CustomPageIndexClient(PageIndexClient):
         # subsequent tree doc when this client instance is reused. The flat
         # routing path re-sets it below when (and only when) it applies.
         self.last_content_class = None
+
+        from .config import effective_config_snapshot
+
+        _effective_cfg = effective_config_snapshot()
 
         file_path = os.path.abspath(file_path)
         if not os.path.isfile(file_path):
@@ -1706,7 +1715,14 @@ class CustomPageIndexClient(PageIndexClient):
                 # path instead of raising. FLAT-03-C2: 'garbling' is the only remaining
                 # terminal low_quality_tree reason and always raises. FLAT-03-C3: the
                 # flat_doc_routing kill-switch reverts to legacy reject-on-any-failure.
-                if settings.flat_doc_routing and reason in ("node_count<3", "depth<2"):
+                # RFC-036 D3: 'rtl_reversal' joins the whitelist -- when the RTL repair
+                # (reconstruct_bidi_order) above fails to converge, the flat-path garble
+                # gate below is the safety net, not a terminal raise.
+                if settings.flat_doc_routing and reason in (
+                    "node_count<3",
+                    "depth<2",
+                    "rtl_reversal",
+                ):
                     flat_md = md_content
                     if flat_md is None and tmp_md_path is not None:
                         flat_md = await asyncio.to_thread(
@@ -1853,17 +1869,10 @@ class CustomPageIndexClient(PageIndexClient):
                             await _enrich_image_blocks(blocks, pic_results, doc_id)
 
                             image_blocks = [b for b in blocks if b.get("role") == "image"]
-                            if image_blocks:
-                                enriched_count = sum(
-                                    1
-                                    for b in image_blocks
-                                    if b.get("ocr_text")
-                                    or b.get("description")
-                                    or b.get("figure_path")
-                                )
-                                image_enrichment_ratio = enriched_count / len(image_blocks)
-                            else:
-                                image_enrichment_ratio = None
+                            # RFC-036 D4: decorative/skipped blocks are excluded from
+                            # the unenriched-count denominator inside
+                            # compute_image_enrichment_ratio.
+                            image_enrichment_ratio = compute_image_enrichment_ratio(image_blocks)
 
                             protocol = "https" if settings.minio_secure else "http"
                             source_url = (
@@ -1983,6 +1992,14 @@ class CustomPageIndexClient(PageIndexClient):
                             self.last_content_class = content_class
                             return doc_id
 
+                # RFC-036 D3: 'rtl_reversal' stays in the terminal tuple. When
+                # flat_doc_routing is enabled the whitelist branch above handles it
+                # (persisted flat artifact and return, reason overridden to
+                # 'garbling' by the flat-path garble gate, or flat_zero_block
+                # raise) — so reaching here with reason still == 'rtl_reversal'
+                # means the flat fallback was unavailable (routing disabled, or
+                # flat_md was None for a binary input with no markdown) and the
+                # HR5 reject must fire.
                 if reason in (
                     "garbling",
                     "node_garbling",

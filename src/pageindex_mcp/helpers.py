@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -1564,6 +1565,27 @@ def _garble_ratio(text, expected_script=None):
     return garbled_chunks / len(chunks)
 
 
+def compute_image_enrichment_ratio(image_blocks: list[dict]) -> float | None:
+    """RFC-036 D4: excludes intentionally-skipped blocks (``decorative`` is
+    True, or ``skipped_reason`` truthy -- e.g. decorative-icon filter,
+    OCR min-chars gate, page_coverage threshold, clip_text_already_exported,
+    or D0's landscape_fallback_picture) from both the enriched numerator
+    and the total denominator, so correctly-skipped picture regions never
+    count as unenriched gaps toward classify_verdict's image_enrichment_promoted
+    path."""
+    scored_blocks = [
+        b for b in image_blocks if not b.get("decorative") and not b.get("skipped_reason")
+    ]
+    if not scored_blocks:
+        return None
+    enriched_count = sum(
+        1
+        for b in scored_blocks
+        if b.get("ocr_text") or b.get("description") or b.get("figure_path")
+    )
+    return enriched_count / len(scored_blocks)
+
+
 def _classify_image_verdict(image_enrichment_ratio: float | None) -> tuple[str, str]:
     """Verdict for image-standalone documents."""
     if image_enrichment_ratio is not None and image_enrichment_ratio >= 0.8:
@@ -1710,6 +1732,17 @@ def classify_verdict(  # noqa: C901, PLR0915
         and max_leaf_ratio < _effective_max_leaf
         and not effectively_garbled
     ):
+        # RFC-036 D6: complexity-proportional depth-adequacy check. A binary
+        # depth >= 2 floor lets high-complexity documents (many nodes)
+        # PASS with a structurally collapsed hierarchy. Scale the expected
+        # minimum depth with node_count so large documents are held to a
+        # deeper standard; capped at 5 so simple documents aren't punished.
+        expected_min_depth = min(5, 2 + math.floor(math.log2(node_count / 50)))
+        if depth < expected_min_depth:
+            return (
+                "MARGINAL",
+                f"depth_inadequate:expected_min_depth={expected_min_depth},actual_depth={depth}",
+            )
         return _pass("")
 
     # Base verdict is MARGINAL — try category-specific promotion.
@@ -2426,6 +2459,12 @@ def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
     threshold are touched — avoids fragmenting already-thin trees that D1 may
     route to flat.
 
+    RFC-036 D0 singleton-ratio guard: a candidate table is only segmented out
+    if <= 60% of its data rows are single-value cells (chart axis labels).
+    Above that ratio the table is chart content, not a real multi-column
+    table, and segmenting it would explode into dozens of singleton kv nodes
+    — the block is left intact instead.
+
     Split contract (content-preservation invariant): the concatenated child
     body text equals the original node text when joined with a single newline.
     Edge cases handled:
@@ -2462,6 +2501,24 @@ def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
                 count += 1
         return count
 
+    def _singleton_row_ratio(table_lines: list[str]) -> float:
+        """RFC-036 D0 — fraction of data rows that are single-value cells
+        (axis labels), e.g. ``| 42 |`` rather than a real ``| key | value |``
+        row. High ratio ⇒ chart content, not a fragmentable table."""
+        total = 0
+        singleton = 0
+        past_sep = False
+        for ln in table_lines:
+            if _is_sep_row(ln):
+                past_sep = True
+                continue
+            if past_sep and _is_pipe_row(ln):
+                cells = [c.strip() for c in ln.strip().split("|") if c.strip()]
+                total += 1
+                if len(cells) <= 1:
+                    singleton += 1
+        return singleton / total if total else 0.0
+
     def _extract_header_text(table_lines: list[str]) -> str:
         """Return first non-separator pipe-row cell text as heading candidate."""
         for ln in table_lines:
@@ -2495,8 +2552,13 @@ def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
                     end -= 1
                 # Only consider it a qualifying table
                 table_block = lines[start:end]
-                data_rows = _count_table_data_rows([ln.rstrip("\n") for ln in table_block])
-                if data_rows >= _RFC029_TABLE_SEGMENT_MIN_ROWS:
+                table_block_stripped = [ln.rstrip("\n") for ln in table_block]
+                data_rows = _count_table_data_rows(table_block_stripped)
+                if (
+                    data_rows >= _RFC029_TABLE_SEGMENT_MIN_ROWS
+                    and _singleton_row_ratio(table_block_stripped)
+                    <= _RFC036_SINGLETON_ROW_RATIO_THRESHOLD
+                ):
                     table_spans.append((start, end))
             else:
                 i += 1
@@ -2805,6 +2867,15 @@ _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD: int = int(
 # Minimum pipe-table data rows (excluding header + separator) required to
 # trigger segmentation — avoids fragmenting small 2-3 row reference tables.
 _RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5"))
+
+# RFC-036 D0 — singleton-ratio fragmentation guard. When more than this
+# fraction of a table's data rows are single-value cells (chart axis
+# labels), the table is chart-content, not a real multi-column table —
+# segmenting it explodes into dozens of singleton kv nodes. Skip segmentation
+# and keep the block intact instead.
+_RFC036_SINGLETON_ROW_RATIO_THRESHOLD: float = float(
+    os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
+)
 
 
 def _flat_text_is_garbled(

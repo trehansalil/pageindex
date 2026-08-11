@@ -249,3 +249,57 @@ def _load_settings() -> Settings:
 
 # Module-level singleton — all other modules do `from .config import settings`
 settings: Settings = _load_settings()
+
+
+def _envbool(key: str, default: str) -> bool:
+    return os.environ.get(key, default).strip().lower() in ("1", "true", "yes")
+
+
+def effective_config_snapshot() -> dict:
+    """Snapshot the 20 behavior-altering flags at call time for sidecar persistence."""
+    return {
+        "pipeline_version": CURRENT_PIPELINE_VERSION,
+        "pdf_inspector_preclassify": PDF_INSPECTOR_PRECLASSIFY,
+        "allow_agpl_fallback": ALLOW_AGPL_FALLBACK,
+        "remote_md_renormalize": REMOTE_MD_RENORMALIZE,
+        "ocr_escalation": _envbool("OCR_ESCALATION", "1"),
+        "pre_garble_force_ocr_enabled": os.environ.get(
+            "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
+        ).lower() == "true",
+        "d7_garble_recovery_enabled": _envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
+        "image_standalone_pipeline_enabled": _envbool(
+            "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
+        ),
+        "image_dominant_ocr_escalation_enabled": _envbool(
+            "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "true"
+        ),
+        "vlm_tesseract_fallback_enabled": _envbool(
+            "VLM_TESSERACT_FALLBACK_ENABLED", "true"
+        ),
+        "garble_latin_gibberish_enabled": _envbool(
+            "GARBLE_LATIN_GIBBERISH_ENABLED", "true"
+        ),
+        "garble_latin_ratio": float(
+            os.environ.get("GARBLE_LATIN_RATIO", "0.4")
+        ),
+        "garble_node_ratio_threshold": float(
+            os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", "0.10")
+        ),
+        "pass_max_leaf_ratio": float(
+            os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")
+        ),
+        "bidi_coherence_enforce": _envbool("BIDI_COHERENCE_ENFORCE", "true"),
+        "small_doc_promotion_enabled": _envbool(
+            "SMALL_DOC_PROMOTION_ENABLED", "true"
+        ),
+        "leaf_concentration_paragraph_split_enabled": _envbool(
+            "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
+        ),
+        "pdf_converter": os.environ.get("PDF_CONVERTER", "docling"),
+        "text_layer_garble_check_enabled": _envbool(
+            "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
+        ),
+        "region_aware_text_check_enabled": _envbool(
+            "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
+        ),
+    }

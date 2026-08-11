@@ -210,6 +210,12 @@ WRITE_BARRIER_RETRIES = Counter(
     "processed/* (RFC-034 D18). Rising counts signal MinIO read-after-write "
     "consistency pressure ahead of a persistence_not_visible failure.",
 )
+WRITE_BARRIER_EXHAUSTED = Counter(
+    "pageindex_write_barrier_exhausted_total",
+    "_confirm_write_visible exhausted its retry budget and raised "
+    "PersistenceNotVisibleError, caught by save_doc/save_doc_meta and "
+    "downgraded to a warning instead of propagating (RFC-036 D1).",
+)
 
 # ---------------------------------------------------------------------------
 # Subprocess-isolated converter metrics (Plan 01 / Phase 3)
