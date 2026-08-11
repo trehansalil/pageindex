@@ -105,7 +105,9 @@ class TestTextIsLogicalOrderZeroScoreFix:
 
 class TestValidateTreeRtlReversal:
     def test_reversed_arabic_tree_flagged(self):
-        assert validate_tree(_reversed_tree()) == (False, "rtl_reversal")
+        result = validate_tree(_reversed_tree())
+        ok, reason = result
+        assert (ok, reason) == (False, "rtl_reversal")
 
     def test_logical_arabic_tree_not_flagged(self):
         ok, reason = validate_tree(_logical_tree())

@@ -295,6 +295,12 @@ def effective_config_snapshot() -> dict:
         "leaf_concentration_paragraph_split_enabled": _envbool(
             "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
         ),
+        "leaf_split_ratio": float(
+            os.environ.get(
+                "LEAF_SPLIT_RATIO",
+                os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"),
+            )
+        ),
         "pdf_converter": os.environ.get("PDF_CONVERTER", "docling"),
         "text_layer_garble_check_enabled": _envbool(
             "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"

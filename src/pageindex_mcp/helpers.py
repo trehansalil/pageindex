@@ -1,5 +1,7 @@
 """RAG helpers: LLM call + tree-search pipeline."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import json
@@ -10,10 +12,20 @@ import re
 import time
 import unicodedata
 from collections import Counter
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Iterator
 
 from .cache import get_doc
 from .config import settings
-from .converters import _arabic_readability_score, _is_arabic_char, normalize_dashes
+from .script import (
+    ARABIC_RANGES,
+    AR_RUN_RE,
+    PRESENTATION_RANGES,
+    arabic_readability_score as _arabic_readability_score,
+    is_arabic_char as _is_arabic_char,
+)
+from .converters import normalize_dashes
 from .metrics import (
     LLM_CALLS,
     LLM_DURATION,
@@ -30,6 +42,152 @@ _FILTER_MODEL = settings.llm_filter_model
 _SEARCH_MODEL = settings.llm_search_model
 _ANSWER_MODEL = settings.llm_model
 _SEARCH_CONCURRENCY = settings.llm_search_concurrency
+
+
+# ---------------------------------------------------------------------------
+# Zone-1: Typed reason protocol for validate_tree
+# ---------------------------------------------------------------------------
+
+
+class TreeDefect(StrEnum):
+    OK = ""
+    GARBLING = "garbling"
+    NODE_GARBLING = "node_garbling"
+    NODE_COUNT_LOW = "node_count<3"
+    DEPTH_LOW = "depth<2"
+    REORDERED = "reordered"
+    RTL_REVERSAL = "rtl_reversal"
+    BIDI_DEGRADED = "bidi_degraded"
+    EMPTY_NODE_CONTAMINATION = "empty_node_contamination"
+    LOW_CONTENT_DENSITY = "low_content_density"
+    SUSPECT_DENSITY = "suspect_density"
+    ARABIC_LOW_CONTENT_RATIO = "arabic_low_content_ratio"
+
+
+@dataclass(frozen=True)
+class TreeGateResult:
+    ok: bool
+    defect: TreeDefect
+    detail: str = ""
+
+    def __str__(self) -> str:
+        if self.detail:
+            return f"{self.defect.value}({self.detail})"
+        return self.defect.value
+
+    def __iter__(self) -> Iterator[bool | str]:
+        yield self.ok
+        yield str(self)
+
+
+class _ReasonPolicy(StrEnum):
+    RAISE = "raise"
+    RETRY_OCR = "retry_ocr"
+    RETRY_RTL = "retry_rtl"
+    PERSIST_FAIL = "persist_fail"
+    CAP_MARGINAL = "cap_marginal"
+    OK = "ok"
+
+
+REASON_POLICY: dict[TreeDefect, _ReasonPolicy] = {
+    TreeDefect.OK: _ReasonPolicy.OK,
+    TreeDefect.GARBLING: _ReasonPolicy.RETRY_OCR,
+    TreeDefect.NODE_GARBLING: _ReasonPolicy.RETRY_OCR,
+    TreeDefect.NODE_COUNT_LOW: _ReasonPolicy.RAISE,
+    TreeDefect.DEPTH_LOW: _ReasonPolicy.RAISE,
+    TreeDefect.REORDERED: _ReasonPolicy.RAISE,
+    TreeDefect.RTL_REVERSAL: _ReasonPolicy.RETRY_RTL,
+    TreeDefect.BIDI_DEGRADED: _ReasonPolicy.CAP_MARGINAL,
+    TreeDefect.EMPTY_NODE_CONTAMINATION: _ReasonPolicy.PERSIST_FAIL,
+    TreeDefect.LOW_CONTENT_DENSITY: _ReasonPolicy.PERSIST_FAIL,
+    TreeDefect.SUSPECT_DENSITY: _ReasonPolicy.PERSIST_FAIL,
+    TreeDefect.ARABIC_LOW_CONTENT_RATIO: _ReasonPolicy.PERSIST_FAIL,
+}
+
+assert set(REASON_POLICY) == set(TreeDefect), (
+    f"REASON_POLICY missing: {set(TreeDefect) - set(REASON_POLICY)}"
+)
+
+
+# ---------------------------------------------------------------------------
+# Zone-2: Typed verdict signals + threshold snapshot for classify_verdict
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VerdictThresholds:
+    hard_fail_max_leaf_ratio: float
+    pass_max_leaf_ratio: float
+    hysteresis_band: float
+    garble_threshold: float
+    cat_bc_promotion_threshold: float
+    min_image_promoted_chars: int
+    min_flat_promotion_chars: int
+    small_doc_enabled: bool
+    small_doc_leaf_ratio_bound_low: float
+    small_doc_leaf_ratio_bound_high: float
+
+    @classmethod
+    def from_env(cls) -> "VerdictThresholds":
+        from .config import CATEGORY_BC_PROMOTION_THRESHOLD
+
+        return cls(
+            hard_fail_max_leaf_ratio=0.75,
+            pass_max_leaf_ratio=float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")),
+            hysteresis_band=float(os.environ.get("PASS_HYSTERESIS_BAND", "0.10")),
+            garble_threshold=float(os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")),
+            cat_bc_promotion_threshold=CATEGORY_BC_PROMOTION_THRESHOLD,
+            min_image_promoted_chars=int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")),
+            min_flat_promotion_chars=int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")),
+            small_doc_enabled=os.environ.get("SMALL_DOC_PROMOTION_ENABLED", "true").lower() == "true",
+            small_doc_leaf_ratio_bound_low=0.20,
+            small_doc_leaf_ratio_bound_high=0.40,
+        )
+
+
+@dataclass(frozen=True)
+class TreeSignals:
+    node_count: int
+    depth: int
+    max_leaf_ratio: float
+    flat_text: str
+    garbled: bool
+    garble_ratio: float
+    effectively_garbled: bool
+    is_reordered: bool
+    expected_min_depth: int
+
+    @classmethod
+    def from_tree(
+        cls,
+        structure: list,
+        expected_script: str | None = None,
+        garble_threshold: float = 0.05,
+    ) -> "TreeSignals":
+        node_count = _tree_node_count(structure)
+        depth = _tree_depth(structure)
+        _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
+        flat_text = _flatten_tree_text(structure)
+        garbled = _tree_is_garbled(structure, expected_script=expected_script)
+        if garbled:
+            gr = _garble_ratio(flat_text, expected_script=expected_script)
+            effectively_garbled = gr >= garble_threshold
+        else:
+            gr = 0.0
+            effectively_garbled = False
+        is_reordered = _tree_is_reordered(structure)
+        expected_min_depth = min(5, 2 + math.floor(math.log2(max(node_count, 1) / 50)))
+        return cls(
+            node_count=node_count,
+            depth=depth,
+            max_leaf_ratio=max_leaf_ratio,
+            flat_text=flat_text,
+            garbled=garbled,
+            garble_ratio=gr,
+            effectively_garbled=effectively_garbled,
+            is_reordered=is_reordered,
+            expected_min_depth=expected_min_depth,
+        )
 
 
 async def _llm(prompt: str, model: str | None = None) -> str:
@@ -903,9 +1061,11 @@ def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
     # (logical + presentation) so plain non-Arabic text never divides by
     # zero and never false-positives.
     presentation_forms = sum(
-        1 for c in blob if 0xFB50 <= ord(c) <= 0xFDFF or 0xFE70 <= ord(c) <= 0xFEFF
+        1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
     )
-    arabic_range_chars = presentation_forms + sum(1 for c in blob if 0x0600 <= ord(c) <= 0x06FF)
+    arabic_range_chars = sum(
+        1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
+    )
     if arabic_range_chars > 0 and (presentation_forms / arabic_range_chars) > 0.50:
         return True
     # Single-letter Arabic fragment ratio > 40% (D2 / RFC-033): PDF text-layer
@@ -1072,18 +1232,16 @@ def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
     def _reversed_morphology(word: str) -> bool:
         return _word_has_reversed_morphology(word)
 
-    _AR_RE = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]+")
-
     runs: list[list[str]] = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        arabic_chars = sum(1 for c in stripped if _AR_RE.match(c))
+        arabic_chars = sum(1 for c in stripped if AR_RUN_RE.match(c))
         total_chars = len(stripped.replace(" ", ""))
         if total_chars == 0 or arabic_chars / total_chars < 0.4:
             continue
-        tokens = [t for t in stripped.split() if _AR_RE.search(t)]
+        tokens = [t for t in stripped.split() if AR_RUN_RE.search(t)]
         if len(tokens) >= 2:
             runs.append(tokens)
         if len(runs) >= n_samples:
@@ -1131,19 +1289,19 @@ _RFC029_MIN_SCANNED_DENSITY_FLOOR = float(
 
 def _infer_script(text: str) -> str | None:
     """Infer the dominant Unicode script of text by character-block majority.
-    Returns 'Arab', 'Latn', or None if ambiguous/empty."""
+
+    Returns 'Arab', 'Latn', or None if ambiguous/empty.
+    Thin wrapper over script.infer_script preserving the original guards:
+    short-text (< 10 chars) and low-signal (< 5 script chars) return None,
+    and extended Latin (U+00C0-U+024F) is counted as Latin.
+    """
     if len(text.strip()) < 10:
         return None
     arab_count = 0
     latn_count = 0
     for ch in text:
         cp = ord(ch)
-        if (
-            0x0600 <= cp <= 0x06FF
-            or 0x0750 <= cp <= 0x077F
-            or 0xFB50 <= cp <= 0xFDFF
-            or 0xFE70 <= cp <= 0xFEFF
-        ):
+        if any(lo <= cp <= hi for lo, hi in ARABIC_RANGES):
             arab_count += 1
         elif (0x0041 <= cp <= 0x005A) or (0x0061 <= cp <= 0x007A) or (0x00C0 <= cp <= 0x024F):
             latn_count += 1
@@ -1310,42 +1468,21 @@ def validate_tree(  # noqa: C901
     structure: list,
     expected_script: str | None = None,
     page_count: int | None = None,
-) -> tuple[bool, str]:
+) -> TreeGateResult:
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
-    Returns (ok, reason); reason is '' when ok. Fails (priority order) on
-    garbling (null/replacement bytes or a high ratio of control characters —
-    the validated German-insurance failure mode), node_count < 3, or
-    depth < 2. RFC-026 D5: garbling is checked first so a thin tree whose
-    only content is garbled reports 'garbling', not a shadowing structural
-    reason.
-
-    RFC-029 D10: empty_node_contamination — checked last (additive prong).
-    More than 30 % of non-root nodes with empty body text indicates a
-    structural extraction failure where sections were split into shell nodes
-    with no content; persisting such a tree silently violates Hard Rule 5.
-
-    RFC-029 D1 (Task 3.1): low_content_density — when total_nodes >= 200, flag
-    trees whose chars-per-node falls below _RFC029_MIN_CHARS_PER_NODE.
-
-    RFC-029 D2 (Task 3.3): suspect_density — when page_count is provided,
-    flag trees whose chars-per-page falls below _RFC029_MIN_SCANNED_DENSITY_FLOOR.
-
-    RFC-029 D2 (Task 3.3): arabic_low_content_ratio — for Arabic-script trees,
-    flag when the meaningful Arabic char ratio is low (dominated by
-    numeric/OCR-noise junk), reusing _is_garbled_blob's digit-ratio heuristic.
-
-    RFC-033 D2 (Part B): bidi_degraded — verdict-only bidi coherence
-    enforcement. Does NOT gate persistence: `ok` is False but the caller
-    still persists the tree, and classify_verdict caps the verdict at
-    MARGINAL for this reason instead of failing it.
+    Returns a ``TreeGateResult`` (iterable as ``(ok, reason_str)`` for
+    backward-compat tuple unpacking).  Fails (priority order) on garbling,
+    node_count < 3, depth < 2, node_garbling, reordered, rtl_reversal,
+    bidi_degraded, empty_node_contamination, low_content_density,
+    suspect_density, arabic_low_content_ratio.
     """
     if _tree_is_garbled(structure, expected_script=expected_script):
-        return False, "garbling"
+        return TreeGateResult(False, TreeDefect.GARBLING)
     if _tree_node_count(structure) < 3:
-        return False, "node_count<3"
+        return TreeGateResult(False, TreeDefect.NODE_COUNT_LOW)
     if _tree_depth(structure) < 2:
-        return False, "depth<2"
+        return TreeGateResult(False, TreeDefect.DEPTH_LOW)
     # RFC-018 D3b: per-node garble ratio — catches documents where a minority of
     # nodes are garbled but the flattened full-text dilutes below the bulk gate.
     total_nodes = _tree_node_count(structure)
@@ -1359,17 +1496,17 @@ def validate_tree(  # noqa: C901
         )
         > _GARBLE_NODE_RATIO_THRESHOLD
     ):
-        return False, "node_garbling"
+        return TreeGateResult(False, TreeDefect.NODE_GARBLING)
     # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
     # surfaces this reason as a low_quality_tree error rather than persisting.
     if _tree_is_reordered(structure):
-        return False, "reordered"
+        return TreeGateResult(False, TreeDefect.REORDERED)
     # RFC-027 D3: additive prong — correctly-encoded but reversed Arabic text
     # passes every check above (no garbling, real node/depth counts, in-order
     # start_indexes) but reads backwards. Checked last so it never shadows the
     # existing garble/structure gates it is additive to.
     if _tree_is_rtl_reversed(structure):
-        return False, "rtl_reversal"
+        return TreeGateResult(False, TreeDefect.RTL_REVERSAL)
     # RFC-030 D5 / RFC-033 D2 Part B: bidi coherence gate — catches
     # visual-order Arabic (reversed morphology) that _tree_is_rtl_reversed
     # does not detect. BIDI_COHERENCE_ENFORCE now defaults to true, promoted
@@ -1392,7 +1529,7 @@ def validate_tree(  # noqa: C901
                 "bidi_degraded (verdict-only, not persistence-gating)",
                 _bidi_reason,
             )
-            return False, "bidi_degraded"
+            return TreeGateResult(False, TreeDefect.BIDI_DEGRADED)
         logger.warning(
             "validate_tree: bidi coherence check would fail (%s) but "
             "BIDI_COHERENCE_ENFORCE is disabled (audit-only mode); not gating",
@@ -1404,12 +1541,13 @@ def validate_tree(  # noqa: C901
     if _total_non_root > 0:
         _empty_fraction = (_empty_leaf + _empty_non_leaf) / _total_non_root
         if _empty_fraction > _EMPTY_NODE_FRACTION_THRESHOLD:
-            return False, (
-                f"empty_node_contamination"
-                f"(fraction={_empty_fraction:.2f}"
+            return TreeGateResult(
+                False,
+                TreeDefect.EMPTY_NODE_CONTAMINATION,
+                f"fraction={_empty_fraction:.2f}"
                 f",empty_leaf={_empty_leaf}"
                 f",empty_non_leaf={_empty_non_leaf}"
-                f",total_non_root={_total_non_root})"
+                f",total_non_root={_total_non_root}",
             )
     # RFC-029 D1 (Task 3.1): content-density gate — only when total_nodes >= 200.
     # The target failure mode is scanned-garble trees with many hundreds of shell
@@ -1421,17 +1559,22 @@ def validate_tree(  # noqa: C901
     if total_nodes >= 200:
         chars_per_node = len(full_text) / total_nodes
         if chars_per_node < _RFC029_MIN_CHARS_PER_NODE:
-            return False, (
-                f"low_content_density"
-                f"(chars_per_node={chars_per_node:.1f}"
-                f",threshold={_RFC029_MIN_CHARS_PER_NODE:.1f})"
+            return TreeGateResult(
+                False,
+                TreeDefect.LOW_CONTENT_DENSITY,
+                f"chars_per_node={chars_per_node:.1f}"
+                f",threshold={_RFC029_MIN_CHARS_PER_NODE:.1f}",
             )
     # RFC-029 D2 (Task 3.3): scanned-density floor — only when page_count is
     # provided and positive (guard against zero-page edge-cases).
     if page_count is not None and page_count > 0:
         chars_per_page = len(full_text) / page_count
         if chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR:
-            return False, (f"suspect_density(chars_per_page={chars_per_page:.1f})")
+            return TreeGateResult(
+                False,
+                TreeDefect.SUSPECT_DENSITY,
+                f"chars_per_page={chars_per_page:.1f}",
+            )
     # RFC-029 D2 (Task 3.3): Arabic low-content ratio — for Arabic-script docs,
     # when the meaningful Arabic char ratio is low (dominated by numeric/OCR noise),
     # flag via _is_garbled_blob's digit-ratio check on the flattened text.
@@ -1440,8 +1583,8 @@ def validate_tree(  # noqa: C901
     if (
         doc_script == "Arab" or (expected_script == "Arab" and doc_script is None)
     ) and _is_garbled_blob(full_text, expected_script=expected_script):
-        return False, "arabic_low_content_ratio"
-    return True, ""
+        return TreeGateResult(False, TreeDefect.ARABIC_LOW_CONTENT_RATIO)
+    return TreeGateResult(True, TreeDefect.OK)
 
 
 # ── RFC-014 D1: verdict computation helpers ─────────────────────────────────────
@@ -1618,44 +1761,37 @@ def classify_verdict(  # noqa: C901, PLR0915
     image_enrichment_ratio: float | None = None,
     prior_verdict: str | None = None,
     inspector_class: str | None = None,
+    expected_script: str | None = None,
 ) -> tuple[str, str]:
-    # RFC-026 D0: unconditional hard-FAIL floor for zero-content documents.
-    # Runs before every other check/promotion branch, including
-    # image_enrichment_promoted -- no content_class, ratio, or hysteresis
-    # band can override an empty document (CLAUDE.md Hard Rule 5).
-    # RFC-033 D1: `_flatten_tree_text` now joins parts with "\n", so an
-    # all-empty tree flattens to whitespace rather than "". Strip before the
-    # emptiness test or the zero-content floor silently stops firing.
+    """Grouped-rule verdict: HARD_FAILs → PROMOTIONS → CAPS.
+
+    Within each group, rule order is semantically irrelevant.
+    """
+    # ── Pre-compute signals and thresholds once ──────────────────────────
+    th = VerdictThresholds.from_env()
+
+    # Zero-content fast path (before signals, which need non-empty tree)
     if _tree_node_count(structure) == 0 or len(_flatten_tree_text(structure).strip()) == 0:
         return "FAIL", "zero_content"
+
+    sig = TreeSignals.from_tree(structure, expected_script=expected_script, garble_threshold=th.garble_threshold)
+
+    # ── GROUP 1: HARD_FAILs (any one is terminal, within-group order irrelevant) ──
+
     if validate_reason == "garbling":
         return "FAIL", "garbling"
-    # RFC-029 D10: zero-body contamination gate — a high fraction of structurally
-    # empty nodes means the extraction produced shell nodes with no content; this
-    # is a hard FAIL (CLAUDE.md Hard Rule 5), not a MARGINAL, so no promotion
-    # branch can override it.
     if validate_reason is not None and validate_reason.startswith("empty_node_contamination"):
         return "FAIL", validate_reason
-    # RFC-029 D1 (Task 3.1): low content density — tree chars-per-node too low.
     if validate_reason is not None and validate_reason.startswith("low_content_density"):
         return "FAIL", validate_reason
-    # RFC-029 D2 (Task 3.3): suspect scanned density — chars-per-page too low.
     if validate_reason is not None and validate_reason.startswith("suspect_density"):
         return "FAIL", validate_reason
-    # RFC-029 D2 (Task 3.3): Arabic low content ratio — meaningful Arabic chars
-    # dominated by numeric/OCR-noise junk.
     if validate_reason == "arabic_low_content_ratio":
         return "FAIL", validate_reason
-    # RFC-015 D2: content-ordering regression forces the lowest tier. Self-contained
-    # (checks the structure directly) so it holds even when validate_reason is None.
-    if validate_reason == "reordered" or _tree_is_reordered(structure):
+    if validate_reason == "reordered" or sig.is_reordered:
         return "FAIL", "reordered"
 
-    # RFC-033 D2 (Part B): bidi coherence enforcement is verdict-only —
-    # validate_tree sets bidi_degraded (never raises LowQualityTreeError for
-    # it), so the only consequence here is capping what would otherwise be a
-    # PASS at MARGINAL. Worse verdicts (FAIL, from the hard gates above or
-    # max_leaf_ratio below) are untouched.
+    # ── bidi_degraded cap setup (applied in GROUP 3) ─────────────────────
     _bidi_degraded = validate_reason == "bidi_degraded"
 
     def _pass(reason: str) -> tuple[str, str]:
@@ -1663,98 +1799,56 @@ def classify_verdict(  # noqa: C901, PLR0915
             return "MARGINAL", "bidi_degraded"
         return "PASS", reason
 
-    # Task 6.3: image-standalone documents use their own verdict logic.
+    # ── GROUP 2: PROMOTIONS (tried only when no HARD_FAIL fired) ─────────
+
+    # 2a: image-standalone (has its own verdict logic; max_leaf_ratio
+    # is structurally meaningless for these docs)
     if content_class == "image_standalone":
         return _classify_image_verdict(image_enrichment_ratio)
 
-    # B2-B (RFC-022): rescue gate for classification-changing promotions must
-    # fire BEFORE hard-exits based on pre-promotion state. Hoisted above the
-    # max_leaf_ratio hard-FAIL (defense-in-depth for when
-    # IMAGE_STANDALONE_PIPELINE_ENABLED=false) since image-enriched flat docs
-    # have their content captured in enriched image blocks, not tree nodes —
-    # the structural leaf-ratio metric is misleading for these docs.
+    # 2b: image-enrichment rescue (B2) — checked BEFORE the structural
+    # max_leaf_ratio gate because flat image-enriched documents are
+    # expected to have high leaf ratios (single-leaf is normal).
     if (
         content_class in ("flat_prose", "flat_mixed")
         and image_enrichment_ratio is not None
         and image_enrichment_ratio >= 0.8
     ):
-        # RFC-026 D1: ratio-only gate is scale-blind (a doc with one tiny
-        # enriched image can hit ratio=1.0). Pair the promotion with an
-        # absolute character floor.
-        _min_promoted_chars = int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500"))
-        # RFC-027 D1: drop duplicate '> [Chart text]:' lines first so a
-        # single spliced OCR read isn't double-counted toward the floor.
-        _promoted_text = _dedupe_chart_text_lines(_flatten_tree_text(structure))
+        _promoted_text = _dedupe_chart_text_lines(sig.flat_text)
         total_chars = len(_promoted_text)
-        if total_chars < _min_promoted_chars:
+        if total_chars < th.min_image_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
-        # RFC-027 D1: the char floor alone is insufficient -- digit/token
-        # noise (e.g. barcode OCR junk) can clear it while still being
-        # garbage. Reuse the existing calibrated garble detector; if
-        # garbled, fall through to the ordinary max_leaf_ratio/MARGINAL
-        # logic below instead of returning PASS.
         if not _is_garbled_blob(_promoted_text):
             return _pass("image_enrichment_promoted")
 
-    _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
-    if max_leaf_ratio > 0.75:
-        return "FAIL", f"max_leaf_ratio={max_leaf_ratio:.2f}"
+    # 2a½: max_leaf_ratio structural hard FAIL — blocks all non-image
+    # promotions below.
+    if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
+        return "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}"
 
-    node_count = _tree_node_count(structure)
-    depth = _tree_depth(structure)
-    garbled = _tree_is_garbled(structure)
-
-    # QF4 (RFC-021): a small garbled prefix (e.g. cover-page OCR noise)
-    # should not condemn the whole document. `garbled` remains the binary
-    # gate (all existing _tree_is_garbled prongs, incl. sparse-mojibake,
-    # stay intact); `effectively_garbled` refines it with the fraction of
-    # text that is actually garbled. Hoisted here (flat_text is needed by
-    # both this check and the category-specific promotions below) so it is
-    # computed once and wired into every gate that previously used the
-    # binary `garbled` flag.
-    flat_text = _flatten_tree_text(structure)
-    _garble_threshold = float(os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05"))
-    if garbled:
-        garble_ratio = _garble_ratio(flat_text, expected_script=None)
-        effectively_garbled = garble_ratio >= _garble_threshold
-    else:
-        garble_ratio = 0.0
-        effectively_garbled = False
-
-    _pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"))
-    _effective_max_leaf = _pass_max_leaf
+    # 2c: base PASS + depth-adequacy
+    _effective_max_leaf = th.pass_max_leaf_ratio
     if prior_verdict == "PASS":
-        _hysteresis_band = float(os.environ.get("PASS_HYSTERESIS_BAND", "0.10"))
-        _effective_max_leaf = _pass_max_leaf + _hysteresis_band
+        _effective_max_leaf = th.pass_max_leaf_ratio + th.hysteresis_band
     if (
-        node_count >= 3
-        and depth >= 2
-        and max_leaf_ratio < _effective_max_leaf
-        and not effectively_garbled
+        sig.node_count >= 3
+        and sig.depth >= 2
+        and sig.max_leaf_ratio < _effective_max_leaf
+        and not sig.effectively_garbled
     ):
-        # RFC-036 D6: complexity-proportional depth-adequacy check. A binary
-        # depth >= 2 floor lets high-complexity documents (many nodes)
-        # PASS with a structurally collapsed hierarchy. Scale the expected
-        # minimum depth with node_count so large documents are held to a
-        # deeper standard; capped at 5 so simple documents aren't punished.
-        expected_min_depth = min(5, 2 + math.floor(math.log2(node_count / 50)))
-        if depth < expected_min_depth:
+        if sig.depth < sig.expected_min_depth:
             return (
                 "MARGINAL",
-                f"depth_inadequate:expected_min_depth={expected_min_depth},actual_depth={depth}",
+                f"depth_inadequate:expected_min_depth={sig.expected_min_depth},actual_depth={sig.depth}",
             )
         return _pass("")
 
-    # Base verdict is MARGINAL — try category-specific promotion.
-    # Category B/C use the wider 0.17 threshold (RFC-014 D4).
-    from .config import CATEGORY_BC_PROMOTION_THRESHOLD
-
+    # 2d-2f: category-specific promotions
     if content_class.startswith("ocr_"):
-        if max_leaf_ratio < 0.15 and ocr_noise_ratio(flat_text) < 0.005:
+        if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
             return _pass("cat_a_promoted")
     elif content_class.startswith("flat_"):
-        _min_flat_promotion_chars = int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500"))
-        _stripped_flat_text = flat_text.strip()
+        _stripped_flat_text = sig.flat_text.strip()
         _text_blocks = [b for b in _stripped_flat_text.splitlines() if b.strip()]
         _placeholder_ratio = (
             sum(1 for b in _text_blocks if b.strip() == "<!-- image -->") / len(_text_blocks)
@@ -1762,76 +1856,48 @@ def classify_verdict(  # noqa: C901, PLR0915
             else 0.0
         )
         if (
-            not effectively_garbled
-            and max_leaf_ratio < CATEGORY_BC_PROMOTION_THRESHOLD
-            and node_count >= 3
-            and len(_stripped_flat_text) >= _min_flat_promotion_chars
+            not sig.effectively_garbled
+            and sig.max_leaf_ratio < th.cat_bc_promotion_threshold
+            and sig.node_count >= 3
+            and len(_stripped_flat_text) >= th.min_flat_promotion_chars
             and _placeholder_ratio <= 0.5
         ):
             return _pass("cat_b_promoted")
     else:
-        # RFC-035 D1 (Task 3.1) investigation: Reitlehrer regressed PASS (Run
-        # 16) -> MARGINAL (Run 18) on the same tree-path cat_c branch. Diffed
-        # this function against commit 932d634 (in effect for both Run 16 and
-        # Run 18) and the current uncommitted RFC-034 D16-D19 changes: neither
-        # touches classify_verdict, CATEGORY_BC_PROMOTION_THRESHOLD, or any
-        # cat_c condition above -- the branch and its thresholds are
-        # byte-identical across both runs. content_class has never been
-        # populated for tree-path docs (by design, FLAT-02-C1/C3), so its
-        # "absence" cannot be a code-level scoring-criteria change either.
-        # Conclusion: no threshold revert is warranted -- the Run 16->18 delta
-        # is an audit-report framing drift (content_class absence newly
-        # flagged as a defect in the Run 18 write-up), not a pipeline data or
-        # classify_verdict regression. D1 (thread inspector_class through this
-        # branch) is confirmed as the correct remediation; proceeding with
-        # 3.2-3.4 as designed.
-        # RFC-035 D1 (Task 3.2): tree-path docs never carry content_class, so
-        # inspector_class (pdf_classification.pdf_type, e.g. "text_based")
-        # is the only classification signal available here. It informs the
-        # promotion threshold's confidence -- it never changes which branch
-        # is selected (content_class remains the sole cat_a/cat_b/cat_c
-        # selector) and has no effect unless content_class is empty/falsy.
-        _cat_c_threshold = CATEGORY_BC_PROMOTION_THRESHOLD
+        _cat_c_threshold = th.cat_bc_promotion_threshold
         if not content_class and inspector_class == "text_based":
-            _cat_c_threshold = CATEGORY_BC_PROMOTION_THRESHOLD * 1.2
+            _cat_c_threshold = th.cat_bc_promotion_threshold * 1.2
         if (
-            not effectively_garbled
-            and hash_pipe_ratio(flat_text) < 0.01
-            and max_leaf_ratio < _cat_c_threshold
+            not sig.effectively_garbled
+            and hash_pipe_ratio(sig.flat_text) < 0.01
+            and sig.max_leaf_ratio < _cat_c_threshold
         ):
             return _pass("cat_c_promoted")
 
-    # QF2c: small-doc exemption — well-formed tiny FLAT docs shouldn't be
-    # penalized. Scoped to content_class.startswith("flat_") per RFC-021
-    # audit correction — without this, hierarchical/cat_c docs with a
-    # handful of nodes and short text would also get swept into this
-    # promotion path, which is not what QF2c is for and breaks the
-    # existing cat_c threshold-boundary guardrails.
-    _small_doc_enabled = os.environ.get("SMALL_DOC_PROMOTION_ENABLED", "true").lower() == "true"
-    # RFC-027 D5: very small trees (node_count<=5) have a structurally
-    # unreachable leaf-concentration floor below 0.20, so the ratio bound
-    # is relaxed to 0.40 for them; 6-10 node docs keep the 0.20 bound.
-    _small_doc_leaf_ratio_bound = 0.40 if node_count <= 5 else 0.20
+    # 2g: small-doc exemption (flat_ only)
+    _small_doc_leaf_ratio_bound = (
+        th.small_doc_leaf_ratio_bound_high if sig.node_count <= 5 else th.small_doc_leaf_ratio_bound_low
+    )
     if (
-        _small_doc_enabled
-        and not effectively_garbled
+        th.small_doc_enabled
+        and not sig.effectively_garbled
         and content_class.startswith("flat_")
-        and node_count >= 1
-        and node_count <= 10
-        and max_leaf_ratio < _small_doc_leaf_ratio_bound
-        and 100 <= len(flat_text.strip()) < 15000
+        and sig.node_count >= 1
+        and sig.node_count <= 10
+        and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
+        and 100 <= len(sig.flat_text.strip()) < 15000
     ):
         return _pass("small_doc_promoted")
 
-    # Build descriptive reason for remaining MARGINAL
-    if effectively_garbled:
-        reason = f"garbling(ratio={garble_ratio:.2f})"
-    elif node_count < 3:
-        reason = f"node_count={node_count}"
-    elif depth < 2:
-        reason = f"depth={depth}"
+    # ── MARGINAL fallback ────────────────────────────────────────────────
+    if sig.effectively_garbled:
+        reason = f"garbling(ratio={sig.garble_ratio:.2f})"
+    elif sig.node_count < 3:
+        reason = f"node_count={sig.node_count}"
+    elif sig.depth < 2:
+        reason = f"depth={sig.depth}"
     else:
-        reason = f"leaf_concentration={max_leaf_ratio:.2f}"
+        reason = f"leaf_concentration={sig.max_leaf_ratio:.2f}"
     return "MARGINAL", reason
 
 
@@ -2310,14 +2376,16 @@ def _has_heading_markers(text: str) -> bool:
 
 def _blank_line_fallback_enabled(tree_ratio: float) -> bool:
     """RFC-024 D3 (Task 2.3): gate for the blank-line paragraph-boundary
-    fallback. Reuses the SAME ``PASS_MAX_LEAF_RATIO`` env var as D0's
-    ``classify_verdict`` PASS gate (not an independently hard-coded threshold),
-    so the two mechanisms stay aligned."""
+    fallback.  Uses its own ``LEAF_SPLIT_RATIO`` env var (defaulting to the
+    current ``PASS_MAX_LEAF_RATIO`` value) so that tuning the scoring
+    threshold does not change the tree shape that produces the metric
+    being scored (Zone-2 feedback-loop fix)."""
     enabled = os.environ.get("LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true")
     if enabled.strip().lower() in {"false", "0", "no", "off"}:
         return False
-    pass_max_leaf = float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"))
-    return tree_ratio > pass_max_leaf
+    default = os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")
+    leaf_split_ratio = float(os.environ.get("LEAF_SPLIT_RATIO", default))
+    return tree_ratio > leaf_split_ratio
 
 
 def split_oversized_leaf_nodes(

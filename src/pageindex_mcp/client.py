@@ -1220,7 +1220,7 @@ class CustomPageIndexClient(PageIndexClient):
             if (
                 not ok
                 and (
-                    reason in ("garbling", "node_garbling", "visual_order_garble")
+                    reason in ("garbling", "node_garbling")
                     or low_content_ocr_eligible
                 )
                 and ext == ".pdf"
@@ -1294,8 +1294,11 @@ class CustomPageIndexClient(PageIndexClient):
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
                     result["structure"] = _segment_table_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
-                        result.get("structure", []), expected_script=expected_script
+                        result.get("structure", []),
+                        expected_script=expected_script,
+                        page_count=pdf_page_count if ext == ".pdf" else None,
                     )
+                    original_reason = reason
                     # D4 (RFC-028): keep-best, not unconditional overwrite. Compare
                     # post-retry char count against the pre-retry snapshot; on a
                     # near-tie (equal char count), a retry that now VALIDATES ok
@@ -1437,8 +1440,11 @@ class CustomPageIndexClient(PageIndexClient):
 
                     _repair_rtl_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
-                        result.get("structure", []), expected_script=expected_script
+                        result.get("structure", []),
+                        expected_script=expected_script,
+                        page_count=pdf_page_count if ext == ".pdf" else None,
                     )
+                    original_reason = reason
                     logger.warning(
                         "RTL reversal on %s; reconstruct_bidi_order repair %s",
                         filename,
@@ -1494,7 +1500,7 @@ class CustomPageIndexClient(PageIndexClient):
             # whose OCR escalation was either skipped or failed.
             if (
                 not ok
-                and reason in ("garbling", "node_garbling", "visual_order_garble")
+                and reason in ("garbling", "node_garbling")
                 and ext == ".pdf"
                 and settings.vlm_fallback
             ):
@@ -1522,8 +1528,11 @@ class CustomPageIndexClient(PageIndexClient):
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
                     result["structure"] = _segment_table_nodes(result.get("structure", []))
                     ok, reason = validate_tree(
-                        result.get("structure", []), expected_script=expected_script
+                        result.get("structure", []),
+                        expected_script=expected_script,
+                        page_count=pdf_page_count if ext == ".pdf" else None,
                     )
+                    original_reason = reason
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
 
                     # RFC-024 D5: the VLM *succeeded* but the tree is still garbled
@@ -1533,7 +1542,7 @@ class CustomPageIndexClient(PageIndexClient):
                     # recovery here (supersedes RFC-023 D7 test case (d)).
                     if (
                         not ok
-                        and reason in ("garbling", "node_garbling", "visual_order_garble")
+                        and reason in ("garbling", "node_garbling")
                         and _D7_GARBLE_RECOVERY_ENABLED
                     ):
                         recovered_md = await _attempt_tesseract_raster_recovery(
@@ -1639,8 +1648,11 @@ class CustomPageIndexClient(PageIndexClient):
                         )
                         result["structure"] = _segment_table_nodes(result.get("structure", []))
                         ok, reason = validate_tree(
-                            result.get("structure", []), expected_script=expected_script
+                            result.get("structure", []),
+                            expected_script=expected_script,
+                            page_count=pdf_page_count if ext == ".pdf" else None,
                         )
+                        original_reason = reason
                         OCR_ESCALATION_TOTAL.labels(
                             result="recovered" if ok else "still_image_only"
                         ).inc()
@@ -1922,6 +1934,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 None,
                                 image_enrichment_ratio=image_enrichment_ratio,
                                 prior_verdict=f_prior_verdict,
+                                expected_script=expected_script,
                             )
                             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
@@ -1959,6 +1972,8 @@ class CustomPageIndexClient(PageIndexClient):
                                     "flat_char_count": flat_char_count,
                                     "pipeline_version": CURRENT_PIPELINE_VERSION,
                                     "verdict_computed_at": datetime.now(UTC).isoformat(),
+                                    "build_sha": _CLIENT_BUILD_SHA,
+                                    "effective_config": _effective_cfg,
                                 },
                             )
                             FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
@@ -2003,7 +2018,6 @@ class CustomPageIndexClient(PageIndexClient):
                 if reason in (
                     "garbling",
                     "node_garbling",
-                    "visual_order_garble",
                     "node_count<3",
                     "depth<2",
                     "rtl_reversal",
@@ -2056,9 +2070,10 @@ class CustomPageIndexClient(PageIndexClient):
             verdict, verdict_reason = classify_verdict(
                 structure,
                 "",
-                reason or None,
+                original_reason or None,
                 prior_verdict=prior_verdict,
                 inspector_class=pdf_classification.get("pdf_type") if pdf_classification else None,
+                expected_script=expected_script,
             )
             _, _, mlr = _tree_max_leaf_ratio(structure)
             meta = {
@@ -2074,6 +2089,8 @@ class CustomPageIndexClient(PageIndexClient):
                 "pipeline_version": CURRENT_PIPELINE_VERSION,
                 "verdict_computed_at": datetime.now(UTC).isoformat(),
                 "total_tree_chars": len(_flatten_tree_text(structure)),
+                "build_sha": _CLIENT_BUILD_SHA,
+                "effective_config": _effective_cfg,
             }
             # RFC-034 D5: extraction provenance. `used_converter`/`_use_remote`/
             # `pdf_page_count` only exist inside the `ext == ".pdf"` branch above, so

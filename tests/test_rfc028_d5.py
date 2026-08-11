@@ -81,20 +81,17 @@ class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
 
 
 class TestPictureOcrOutputDeduplication:
-    def test_prose_splice_pops_ocr_text_so_image_block_gets_nothing(self):
-        # Simulates the shared PictureResult dict flowing through both the
-        # tree-branch prose splice (`splice_picture_text_for_tree`) and the
-        # later `_enrich_image_blocks` role:"image" enrichment in client.py,
-        # which reads the SAME dict via `pr.get("ocr_text", "")`.
+    def test_prose_splice_preserves_ocr_text_for_flat_reroute(self):
+        # Zone-3 fix: splice_picture_text_for_tree is now non-destructive —
+        # it reads ocr_text via .get() instead of .pop() so that a tree→flat
+        # reroute still has the OCR text available for splice_figure_markers.
         pics = [{"ocr_text": "recovered chart text", "page": 1, "bbox": {}}]
         md = "prose before\n" + _IMAGE_MARKER + "\nprose after"
 
         spliced = splice_picture_text_for_tree(md, pics)
 
         assert "[Chart text]: recovered chart text" in spliced
-        # De-duplicated: the fragment was popped from the shared dict, so a
-        # later role:"image" enrichment step sees nothing to persist.
-        assert pics[0].get("ocr_text", "") == ""
+        assert pics[0].get("ocr_text") == "recovered chart text"
 
     def test_marker_region_count_mismatch_skips_splice_and_keeps_ocr_text(self):
         # Guard path: ordinal correspondence broken -> no splice, no pop --
