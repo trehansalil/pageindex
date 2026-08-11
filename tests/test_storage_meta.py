@@ -485,7 +485,63 @@ def test_save_doc_meta_extraction_route_remote_and_local(mock_minio):
     assert json.loads(written)["extraction_route"] == "local"
 
 
-def test_sidecar_version_is_3():
-    """RFC-034 D5: SIDECAR_VERSION is bumped to 3 to mark the provenance-field
-    generation of the sidecar format."""
-    assert SIDECAR_VERSION == 3
+def test_sidecar_version_is_4():
+    """Zone-7 observability: SIDECAR_VERSION bumped to 4 for build_sha +
+    effective_config fields."""
+    assert SIDECAR_VERSION == 4
+
+
+# ---------------------------------------------------------------------------
+# Zone 6: read-merge-write
+# ---------------------------------------------------------------------------
+
+
+def test_save_doc_meta_merges_with_existing_sidecar(mock_minio):
+    """save_doc_meta reads the existing sidecar and merges new fields on top,
+    preserving fields the current caller doesn't carry (Zone-6 fix)."""
+    existing = {
+        "doc_id": "merge01",
+        "doc_name": "report.pdf",
+        "source_url": "http://example.com",
+        "processed_at": "2026-01-01",
+        "sha256": "abc123",
+        "extraction_route": "remote",
+        "node_count": 42,
+        "sidecar_version": 3,
+    }
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(existing).encode()
+    mock_minio.get_object.return_value = resp
+
+    meta = {
+        "doc_id": "merge01",
+        "verdict": "PASS",
+        "verdict_reason": "base_pass",
+        "pipeline_version": "2.0",
+    }
+    save_doc_meta("merge01", meta)
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+
+    assert sidecar["sha256"] == "abc123"
+    assert sidecar["extraction_route"] == "remote"
+    assert sidecar["node_count"] == 42
+    assert sidecar["verdict"] == "PASS"
+    assert sidecar["verdict_reason"] == "base_pass"
+    assert sidecar["sidecar_version"] == SIDECAR_VERSION
+
+
+def test_save_doc_meta_barrier_raises_on_exhaustion(mock_minio):
+    """Zone-6 fix: barrier exhaustion is now a hard failure, not a warning."""
+    from pageindex_mcp.storage import PersistenceNotVisibleError
+
+    mock_minio.stat_object.side_effect = Exception("not visible")
+
+    meta = {
+        "doc_id": "barrier01",
+        "doc_name": "test.pdf",
+        "source_url": "",
+        "processed_at": "2026-01-01",
+    }
+    with pytest.raises(PersistenceNotVisibleError):
+        save_doc_meta("barrier01", meta)

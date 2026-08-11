@@ -17,7 +17,7 @@ from .metrics import (
     MINIO_DURATION,
     MINIO_OPS,
     STAGING_DELETE_FAILURES,
-    WRITE_BARRIER_EXHAUSTED,
+
     WRITE_BARRIER_RETRIES,
 )
 from .minio_client import make_minio
@@ -217,11 +217,7 @@ def save_doc(doc_id: str, data: dict) -> None:
             len(content),
             content_type="application/json",
         )
-        try:
-            _confirm_write_visible(mc, settings.minio_bucket, key)
-        except PersistenceNotVisibleError:
-            logger.warning("save_doc: write barrier exhausted for %s", key)
-            WRITE_BARRIER_EXHAUSTED.inc()
+        _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
 
@@ -272,13 +268,15 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
     mc = get_minio()
     try:
         content = json.dumps(data, indent=2).encode()
+        key = f"processed/{doc_id}.flat.json"
         mc.put_object(
             settings.minio_bucket,
-            f"processed/{doc_id}.flat.json",
+            key,
             BytesIO(content),
             len(content),
             content_type="application/json",
         )
+        _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved flat doc %s to MinIO (%d bytes)", doc_id, len(content))
         from .cache import doc_cache_delete  # lazy: no top-level storage->cache edge
 
@@ -459,7 +457,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
 # (audit Finding 9 / registry_backfill._bounded_enrich). The fat-vs-thin
 # decision is made by FIELD PRESENCE (see registry_backfill._is_fat), never by
 # this integer — the marker exists for telemetry/documentation only.
-SIDECAR_VERSION = 3
+SIDECAR_VERSION = 4
 
 # C-3: forward-compat Tier-1 facet fields. Omit-when-absent today (nobody
 # generates them yet — C-1, P2), so writing them is a no-op until C-1 lands;
@@ -485,6 +483,7 @@ _META_FIELDS = (
     "converter_name",
     "converter_contract",
     "remote_build_sha",
+    "build_sha",
     "page_count",
     "inspector_class",
     "total_tree_chars",
@@ -492,8 +491,25 @@ _META_FIELDS = (
 )
 
 
+def _read_existing_sidecar(mc: Minio, doc_id: str) -> dict:
+    """Best-effort read of the existing sidecar for merge semantics."""
+    key = f"processed/{doc_id}.meta.json"
+    try:
+        response = mc.get_object(settings.minio_bucket, key)
+        try:
+            return json.loads(response.read())
+        finally:
+            response.close()
+            response.release_conn()
+    except Exception:
+        return {}
+
+
 def save_doc_meta(doc_id: str, meta: dict) -> None:
-    """Write a lightweight sidecar with only listing-relevant fields.
+    """Read-merge-write sidecar: reads the existing sidecar (if any), merges
+    new fields from *meta* on top, and writes the result.  This prevents
+    subset-payload callers (promotion_sweep, registry_backfill) from
+    accidentally dropping fields they don't carry.
 
     NOTE (RFC-006): the Postgres registry dual-write is NOT done here. This
     function is invoked from the ``pageindex`` fork inside the isolated
@@ -507,23 +523,19 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
     start = time.monotonic()
     mc = get_minio()
     try:
-        # Only the original 4 fields are defaulted to "" when absent; the
-        # RFC-014 D2 verdict fields (also listed in _META_FIELDS for registry
-        # projection purposes) are handled separately below as omit-when-absent
-        # so legacy callers stay byte-identical.
+        existing = _read_existing_sidecar(mc, doc_id)
+
         _base_fields = ("doc_id", "doc_name", "source_url", "processed_at")
-        sidecar = {k: meta.get(k, "") for k in _base_fields}
-        # FLAT-02-C1/C3: carry content_class only when present (flat docs) so the
-        # tree-doc sidecar shape is unchanged.
+        sidecar = {k: existing.get(k, "") for k in _base_fields}
+        for k in _base_fields:
+            if k in meta:
+                sidecar[k] = meta[k]
+
         if meta.get("content_class"):
             sidecar["content_class"] = meta["content_class"]
-        # D2 (RFC-009 / ISS-05): persist node_count at save time so
-        # recent_documents can paginate without deserializing each tree. Prefer an
-        # explicit node_count; otherwise derive it from the tree structure when the
-        # caller supplies one. Computed only for trees that already passed
-        # validate_tree() (HR5) — this adds no new store path. Omitted when no
-        # structure/node_count is available so legacy-shaped callers stay
-        # byte-identical and reads default to None (backward compatible).
+        elif "content_class" in existing:
+            sidecar["content_class"] = existing["content_class"]
+
         node_count = meta.get("node_count")
         if node_count is None and "structure" in meta:
             from .helpers import _tree_node_count  # lazy: avoid import cycle
@@ -531,9 +543,10 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             node_count = _tree_node_count(meta.get("structure") or [])
         if node_count is not None:
             sidecar["node_count"] = int(node_count)
-        # RFC-014 D2: persist verdict fields when present so legacy sidecars
-        # (pre-D2) stay byte-identical when these fields are absent.
-        for vf in (
+        elif "node_count" in existing:
+            sidecar["node_count"] = existing["node_count"]
+
+        _MERGE_FIELDS = (
             "verdict",
             "verdict_reason",
             "max_leaf_ratio",
@@ -542,12 +555,6 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             "promotion_eligible",
             "verdict_computed_at",
             "flat_char_count",
-        ):
-            if vf in meta:
-                sidecar[vf] = meta[vf]
-        # RFC-034 D5: extraction provenance, omit-when-absent so legacy sidecars
-        # (pre-D5) stay byte-identical when these fields are absent.
-        for pf in (
             "extraction_route",
             "converter_name",
             "converter_contract",
@@ -555,25 +562,23 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             "page_count",
             "inspector_class",
             "total_tree_chars",
-        ):
-            if pf in meta:
-                sidecar[pf] = meta[pf]
-        # C-3 (audit Finding 9): fatten the sidecar with the two registry-critical
-        # fields that previously lived ONLY in the full processed JSON, so the
-        # reconcile cron can enrich a registry row without a whole-tree GET.
-        #   * sha256 — omit-when-absent (legacy/thin callers stay minimal).
-        #   * doc_description — written by KEY PRESENCE, not truthiness: an empty
-        #     string is a valid description and must persist so _is_fat sees it.
-        if "sha256" in meta:
-            sidecar["sha256"] = meta["sha256"]
-        if "doc_description" in meta:
-            sidecar["doc_description"] = meta["doc_description"]
-        # C-3 forward-compat: Tier-1 facets, omit-when-absent (no-op until C-1).
+            "sha256",
+            "doc_description",
+            "build_sha",
+            "effective_config",
+        )
+        for f in _MERGE_FIELDS:
+            if f in meta:
+                sidecar[f] = meta[f]
+            elif f in existing:
+                sidecar[f] = existing[f]
+
         for ff in _FACET_FIELDS:
             if ff in meta:
                 sidecar[ff] = meta[ff]
-        # Always stamp the generation marker so telemetry/backfill can tell a
-        # freshly written v2 sidecar from a legacy one (which carries no marker).
+            elif ff in existing:
+                sidecar[ff] = existing[ff]
+
         sidecar["sidecar_version"] = SIDECAR_VERSION
         content = json.dumps(sidecar, indent=2).encode()
         key = f"processed/{doc_id}.meta.json"
@@ -584,11 +589,7 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             len(content),
             content_type="application/json",
         )
-        try:
-            _confirm_write_visible(mc, settings.minio_bucket, key)
-        except PersistenceNotVisibleError:
-            logger.warning("save_doc_meta: write barrier exhausted for %s", key)
-            WRITE_BARRIER_EXHAUSTED.inc()
+        _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)

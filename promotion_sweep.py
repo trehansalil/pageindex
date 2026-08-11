@@ -69,7 +69,22 @@ async def run_sweep() -> dict:
                 structure = data.get("structure") or []
                 content_class = data.get("content_class", "")
 
-                verdict, verdict_reason = classify_verdict(structure, content_class, None)
+                existing_key = f"processed/{doc_id}.meta.json"
+                stored_reason = None
+                try:
+                    resp = mc.get_object(settings.minio_bucket, existing_key)
+                    try:
+                        existing_meta = json.loads(resp.read())
+                    finally:
+                        resp.close()
+                        resp.release_conn()
+                    stored_reason = existing_meta.get("verdict_reason") or None
+                except Exception:
+                    pass
+
+                verdict, verdict_reason = classify_verdict(
+                    structure, content_class, stored_reason
+                )
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
                 meta = {

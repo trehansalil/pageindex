@@ -73,38 +73,30 @@ class TestProperty5WriteBarrierBudgetCapped:
         assert elapsed <= 0.45 + 0.1  # small scheduler-jitter allowance
 
 
-class TestProperty6PersistenceNotVisibleErrorNeverPropagates:
-    def test_save_doc_catches_and_downgrades(self, mock_minio, monkeypatch, caplog):
-        """Property 6: save_doc catches PersistenceNotVisibleError, logs a
-        warning, increments write_barrier_exhausted, and returns normally."""
+class TestProperty6BarrierExhaustionPropagates:
+    def test_save_doc_raises_on_barrier_exhaustion(self, mock_minio, monkeypatch):
+        """Zone-6 fix: save_doc now propagates PersistenceNotVisibleError
+        instead of swallowing it as a warning."""
         monkeypatch.setattr(
             "pageindex_mcp.storage._confirm_write_visible",
             MagicMock(side_effect=PersistenceNotVisibleError("processed/doc.json")),
         )
-        before = _counter_value(WRITE_BARRIER_EXHAUSTED)
 
         with (
             patch("pageindex_mcp.cache.doc_cache_delete"),
-            caplog.at_level(logging.WARNING),
+            pytest.raises(PersistenceNotVisibleError),
         ):
             save_doc("doc123", {"doc_id": "doc123", "structure": []})
 
-        mock_minio.put_object.assert_called_once()
-        assert _counter_value(WRITE_BARRIER_EXHAUSTED) == before + 1
-        assert any(
-            "write barrier exhausted" in rec.message for rec in caplog.records
-        )
-
-    def test_save_doc_meta_catches_and_downgrades(self, mock_minio, monkeypatch, caplog):
-        """Property 6: save_doc_meta catches PersistenceNotVisibleError, logs
-        a warning, increments write_barrier_exhausted, and returns normally."""
+    def test_save_doc_meta_raises_on_barrier_exhaustion(self, mock_minio, monkeypatch):
+        """Zone-6 fix: save_doc_meta now propagates PersistenceNotVisibleError
+        instead of swallowing it as a warning."""
         monkeypatch.setattr(
             "pageindex_mcp.storage._confirm_write_visible",
             MagicMock(side_effect=PersistenceNotVisibleError("processed/doc.meta.json")),
         )
-        before = _counter_value(WRITE_BARRIER_EXHAUSTED)
 
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(PersistenceNotVisibleError):
             save_doc_meta(
                 "doc123",
                 {
@@ -114,12 +106,6 @@ class TestProperty6PersistenceNotVisibleErrorNeverPropagates:
                     "processed_at": "2026-08-10T00:00:00Z",
                 },
             )
-
-        mock_minio.put_object.assert_called_once()
-        assert _counter_value(WRITE_BARRIER_EXHAUSTED) == before + 1
-        assert any(
-            "write barrier exhausted" in rec.message for rec in caplog.records
-        )
 
     def test_save_doc_no_exception_when_barrier_healthy(self, mock_minio, monkeypatch):
         """Sanity: when _confirm_write_visible succeeds, no exception, no
@@ -143,33 +129,22 @@ class TestArabicSlaDocIntegration:
     process cannot be killed/retried for this reason, and processing_at
     SHALL land within the scorer's polling window."""
 
-    def test_sla_doc_completes_within_scorer_polling_window(self, mock_minio, monkeypatch):
+    def test_sla_doc_barrier_exhaustion_propagates(self, mock_minio, monkeypatch):
+        """Zone-6 fix: barrier exhaustion propagates as PersistenceNotVisibleError,
+        giving the arq retry mechanism a chance to re-attempt the write."""
         monkeypatch.setattr(
             "pageindex_mcp.storage._confirm_write_visible",
             MagicMock(side_effect=PersistenceNotVisibleError("processed/d58be46f.json")),
         )
         doc_id = "d58be46f"
-        batch_start = datetime.now(UTC)
 
         with patch("pageindex_mcp.cache.doc_cache_delete"):
-            save_doc(
-                doc_id,
-                {
-                    "doc_id": doc_id,
-                    "doc_name": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
-                    "structure": [{"title": "Root", "nodes": []}],
-                },
-            )
-            save_doc_meta(
-                doc_id,
-                {
-                    "doc_id": doc_id,
-                    "doc_name": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
-                    "source_url": "s3://doc_store/sla.pdf",
-                    "processed_at": batch_start.isoformat(),
-                },
-            )
-
-        processing_at = datetime.now(UTC)
-        assert processing_at - batch_start < timedelta(minutes=2)
-        assert mock_minio.put_object.call_count == 2
+            with pytest.raises(PersistenceNotVisibleError):
+                save_doc(
+                    doc_id,
+                    {
+                        "doc_id": doc_id,
+                        "doc_name": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+                        "structure": [{"title": "Root", "nodes": []}],
+                    },
+                )

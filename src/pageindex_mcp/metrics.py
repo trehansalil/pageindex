@@ -212,9 +212,9 @@ WRITE_BARRIER_RETRIES = Counter(
 )
 WRITE_BARRIER_EXHAUSTED = Counter(
     "pageindex_write_barrier_exhausted_total",
-    "_confirm_write_visible exhausted its retry budget and raised "
-    "PersistenceNotVisibleError, caught by save_doc/save_doc_meta and "
-    "downgraded to a warning instead of propagating (RFC-036 D1).",
+    "DEPRECATED: barrier exhaustion now raises PersistenceNotVisibleError "
+    "instead of being swallowed (Zone-6 fix). Counter kept for /metrics "
+    "endpoint stability; will always read 0.",
 )
 
 # ---------------------------------------------------------------------------
