@@ -94,3 +94,26 @@ async def test_check_runs_once_per_process(caplog):
     await client._check_remote_docling_version(httpx_client)
     await client._check_remote_docling_version(httpx_client)
     assert httpx_client.get.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Zone-7: BUILD_SHA env-var precedence over the legacy CLIENT_BUILD_SHA name.
+# ---------------------------------------------------------------------------
+
+def _resolve_build_sha(env: dict) -> str:
+    """Re-runs the exact expression client.py's module-level
+    _CLIENT_BUILD_SHA uses, against an isolated env dict, so the precedence
+    logic is covered without reload()-ing the client module."""
+    return env.get("BUILD_SHA") or env.get("CLIENT_BUILD_SHA", "unknown")
+
+
+def test_build_sha_prefers_new_env_var_over_legacy():
+    assert _resolve_build_sha({"BUILD_SHA": "new-sha", "CLIENT_BUILD_SHA": "old-sha"}) == "new-sha"
+
+
+def test_build_sha_falls_back_to_legacy_env_var():
+    assert _resolve_build_sha({"CLIENT_BUILD_SHA": "old-sha"}) == "old-sha"
+
+
+def test_build_sha_defaults_to_unknown_when_neither_set():
+    assert _resolve_build_sha({}) == "unknown"

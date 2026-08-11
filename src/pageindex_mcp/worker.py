@@ -25,7 +25,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from .cache import get_async_redis
-from .config import PDF_INSPECTOR_PRECLASSIFY, settings
+from .config import PDF_INSPECTOR_PRECLASSIFY, effective_config_snapshot, settings
 from .converters import chunked_docling_timeout_s
 from .memory_admission import wait_for_memory
 from .metrics import (
@@ -39,10 +39,17 @@ from .metrics import (
     REGISTRY_WRITE_FAILURES_TOTAL,
     UPLOAD_DURATION,
     UPLOADS,
+    bridge_redis_key,
 )
 from .storage import delete_staging, download_staging, read_registry_fields
 
 logger = logging.getLogger(__name__)
+
+# Zone-7: worker.py inherits the same container image/env as the
+# converters_cli subprocess it spawns, so this matches client.py's
+# _CLIENT_BUILD_SHA once the Dockerfile/CI wire BUILD_SHA. Read once at
+# import time -- it does not change for the life of the process.
+_WORKER_BUILD_SHA = os.environ.get("BUILD_SHA", "unknown")
 
 JOB_TTL = 86_400
 MAX_TRIES = 2
@@ -246,7 +253,10 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
 
 
 async def _run_converter_subprocess(  # noqa: C901, PLR0915
-    pdf_path: str, *, staging_key: str | None = None
+    pdf_path: str,
+    *,
+    staging_key: str | None = None,
+    job_start_config: dict | None = None,
 ) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
 
@@ -270,12 +280,18 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     ]
     if staging_key and settings.docling_service_url:
         cmd.extend(["--staging-key", staging_key])
+    child_env = os.environ.copy()
+    if job_start_config is not None:
+        # Zone-7: env var, not argv/stdin -- converters_cli.py's docstring
+        # reserves stdout exclusively for JSON lines, so this avoids that
+        # contract entirely.
+        child_env["PAGEINDEX_JOB_START_CONFIG"] = json.dumps(job_start_config)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
-        env=os.environ.copy(),
+        env=child_env,
     )
     # RFC-028 D0: the child emits a startup handshake line (chunk_count,
     # is_docling_route) before it starts the heavy conversion, computed from a
@@ -364,6 +380,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
             peak_kib = int(result.get("peak_rss_kib") or 0)
             if peak_kib > 0:
                 CONVERTER_PEAK_RSS_KIB.set(peak_kib)
+                await _mirror_bridged_set("converter_child_peak_rss_kib", peak_kib)
         except (TypeError, ValueError):
             pass
         return result
@@ -384,6 +401,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
 
     if proc.returncode == -signal.SIGKILL:
         CONVERTER_CHILD_OOM_TOTAL.inc()
+        await _mirror_bridged_incr("converter_child_oom_total")
         raise ConverterOOMError(proc.returncode, stderr_tail)
     raise ConverterChildError(proc.returncode, stderr_tail, error_class=child_error_class)
 
@@ -400,11 +418,22 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     then cleans up both.
     """
     redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
+    # Zone-7: captured once, up front, before anything can fail -- this is
+    # the pipeline config/build actually in effect for THIS job, persisted on
+    # every status transition below (including error paths that die before
+    # the subprocess ever reaches save_doc_meta). Previously there was zero
+    # record of pipeline config for a job that never completed successfully.
+    job_start_config = effective_config_snapshot()
+    job_start_fields = {
+        "job_start_config": json.dumps(job_start_config),
+        "job_start_build_sha": _WORKER_BUILD_SHA,
+    }
     # Extract filename from staging key: uploads/staging/<job_id>/<filename>
     filename = os.path.basename(staging_key)
     tmp_dir = tempfile.mkdtemp()
     local_path = os.path.join(tmp_dir, filename)
     ACTIVE_UPLOADS.inc()
+    await _mirror_bridged_incr("active_uploads", 1)
     start = time.monotonic()
     # Default to keeping the staged file; only purge it on terminal outcomes so
     # arq retries can re-download the original document from MinIO.
@@ -416,7 +445,11 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # so reap_stale_jobs can later detect a job orphaned mid-processing.
         await redis.hset(
             _job_key(job_id),
-            mapping={"status": "processing", "processing_started_at": str(int(time.time()))},
+            mapping={
+                "status": "processing",
+                "processing_started_at": str(int(time.time())),
+                **job_start_fields,
+            },
         )
         await redis.expire(_job_key(job_id), JOB_TTL)
         # Download staged file from MinIO to local temp
@@ -428,7 +461,9 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # Fails open (proceeds) on any error or after the wait cap.
         await wait_for_memory(redis)
         try:
-            result = await _run_converter_subprocess(local_path, staging_key=staging_key)
+            result = await _run_converter_subprocess(
+                local_path, staging_key=staging_key, job_start_config=job_start_config
+            )
         except ConverterOOMError as exc:
             await redis.hset(
                 _job_key(job_id),
@@ -436,10 +471,12 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                     "status": "error",
                     "reason": "converter_oom",
                     "error": exc.stderr_tail,
+                    **job_start_fields,
                 },
             )
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
+            await _mirror_bridged_incr("uploads_total:error")
             logger.error("Converter child OOM: job=%s", job_id)
             # Do NOT cleanup staging here: the outer handler will set
             # cleanup_staging=True only on the final retry. Deleting the
@@ -448,15 +485,18 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             raise
         except TimeoutError:
             CONVERTER_CHILD_TIMEOUT_TOTAL.inc()
+            await _mirror_bridged_incr("converter_child_timeout_total")
             await redis.hset(
                 _job_key(job_id),
                 mapping={
                     "status": "error",
                     "reason": "converter_timeout",
+                    **job_start_fields,
                 },
             )
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
+            await _mirror_bridged_incr("uploads_total:error")
             logger.error("Converter child timed out: job=%s", job_id)
             raise
         except ConverterChildError as exc:
@@ -470,10 +510,12 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                     "status": "error",
                     "reason": reason,
                     "error": exc.stderr_tail,
+                    **job_start_fields,
                 },
             )
             await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
+            await _mirror_bridged_incr("uploads_total:error")
             logger.error(
                 "Converter child failed: job=%s rc=%s reason=%s error_class=%s",
                 job_id,
@@ -500,13 +542,18 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # class so downstream consumers can read the flat artifact. A normal
         # tree document has no content_class — the mapping is left unchanged so
         # we never write an empty/None content_class for it.
-        done_mapping: dict[str, str] = {"status": "done", "doc_id": doc_id}
+        done_mapping: dict[str, str] = {
+            "status": "done",
+            "doc_id": doc_id,
+            **job_start_fields,
+        }
         content_class = result.get("content_class")
         if content_class:
             done_mapping["content_class"] = content_class
         await redis.hset(_job_key(job_id), mapping=done_mapping)
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="success").inc()
+        await _mirror_bridged_incr("uploads_total:success")
         logger.info(
             "Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start
         )
@@ -530,9 +577,17 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             cleanup_staging = True
         raise
     except Exception as exc:
-        await redis.hset(_job_key(job_id), mapping={"status": "error", "error": str(exc)})
+        await redis.hset(
+            _job_key(job_id),
+            mapping={
+                "status": "error",
+                "error": str(exc),
+                **job_start_fields,
+            },
+        )
         await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="error").inc()
+        await _mirror_bridged_incr("uploads_total:error")
         job_try = ctx.get("job_try", 1)
         logger.error("Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True)
         if await _dlq_push_on_final_attempt(
@@ -548,6 +603,7 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
     finally:
         UPLOAD_DURATION.observe(time.monotonic() - start)
         ACTIVE_UPLOADS.dec()
+        await _mirror_bridged_incr("active_uploads", -1)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         # Only purge the staged object once the job is terminal (success, low-quality
         # rejection, or max_tries exhausted). Pending retries must keep the original
@@ -556,6 +612,10 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             staging_deleted = await asyncio.to_thread(delete_staging, staging_key)
             if not staging_deleted:
                 logger.warning("Staging object left behind after delete failure: %s", staging_key)
+                # STAGING_DELETE_FAILURES.inc() already ran inside delete_staging
+                # (storage.py) -- worker-parent process, so it needs the same
+                # Zone-7 bridge as everything else touched only here.
+                await _mirror_bridged_incr("staging_delete_failures_total")
 
 
 async def reap_stale_jobs(ctx: dict) -> None:
@@ -650,6 +710,27 @@ async def _mirror_registry_metric_to_redis(key: str, value: str) -> None:
         await redis_client.set(key, value)
     except Exception as exc:
         logger.debug("registry: failed to mirror metric %s to Redis: %s", key, exc)
+
+
+async def _mirror_bridged_incr(name: str, amount: int = 1) -> None:
+    """Best-effort INCRBY for a Zone-7 bridged metric (see metrics.py's
+    _BRIDGED_METRICS / _sync_bridged_metrics_from_redis). Isolated try/except
+    so a Redis hiccup here never masks the caller's own error handling.
+    """
+    try:
+        redis_client = await get_async_redis()
+        await redis_client.incrby(bridge_redis_key(name), amount)
+    except Exception as exc:
+        logger.debug("metrics: failed to mirror %s to Redis: %s", name, exc)
+
+
+async def _mirror_bridged_set(name: str, value: int) -> None:
+    """Best-effort SET for a Zone-7 bridged metric. See _mirror_bridged_incr."""
+    try:
+        redis_client = await get_async_redis()
+        await redis_client.set(bridge_redis_key(name), value)
+    except Exception as exc:
+        logger.debug("metrics: failed to mirror %s to Redis: %s", name, exc)
 
 
 async def _mirror_registry_write_failure_to_redis() -> None:

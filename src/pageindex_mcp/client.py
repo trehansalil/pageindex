@@ -182,7 +182,21 @@ _RETRY_AFTER_CAP = 60  # seconds
 
 # RFC-034 D1: cached remote Docling /version response, fetched once per process.
 _remote_docling_version: dict | None = None
-_CLIENT_BUILD_SHA = os.environ.get("CLIENT_BUILD_SHA", "unknown")
+# Zone-7: BUILD_SHA is the convention services/docling-service's CI/Dockerfile
+# already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
+# permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
+_CLIENT_BUILD_SHA = os.environ.get("BUILD_SHA") or os.environ.get("CLIENT_BUILD_SHA", "unknown")
+
+
+def _detect_config_drift(job_start_config: dict | None, effective_cfg: dict) -> dict | None:
+    """Zone-7: return job_start_config only when it diverges from the config
+    freshly snapshotted at job execution time, else None. A standalone
+    function (rather than inline in index()) so the comparison is unit
+    testable without invoking the full indexing pipeline.
+    """
+    if job_start_config is not None and job_start_config != effective_cfg:
+        return job_start_config
+    return None
 
 
 def _is_retryable_llm_error(exc: Exception) -> tuple[bool, int | None]:
@@ -585,15 +599,19 @@ def validate_llm_config() -> None:
         )
 
 
-def _split_converter_output(out) -> tuple[str, list]:
-    """Normalize a PDF-converter result to ``(markdown, pic_results)``.
+def _split_converter_output(out) -> tuple[str, list, list]:
+    """Normalize a PDF-converter result to ``(markdown, pic_results, extraction_stages)``.
 
-    Chain callables return ``(md, pics)`` (audit finding 1); a bare string from a
-    legacy/test double is tolerated and mapped to an empty pic_results list."""
+    Chain callables return ``(md, pics, stages)``; a 2-tuple (legacy chain
+    entries, remote-docling branch) is tolerated and mapped to empty stages;
+    a bare string maps to empty pic_results and stages."""
     if isinstance(out, tuple):
-        md, pics = out
-        return md, list(pics or [])
-    return out, []
+        if len(out) >= 3:
+            md, pics, stages = out[0], out[1], out[2]
+            return md, list(pics or []), list(stages or [])
+        md, pics = out[0], out[1]
+        return md, list(pics or []), []
+    return out, [], []
 
 
 async def _check_remote_docling_version(httpx_client) -> None:
@@ -806,7 +824,11 @@ class CustomPageIndexClient(PageIndexClient):
 
     # Complexity grandfathered (core indexing pipeline); see pyproject [tool.ruff].
     async def index(  # noqa: C901, PLR0915
-        self, file_path: str, mode: str = "auto", pdf_classification: dict | None = None
+        self,
+        file_path: str,
+        mode: str = "auto",
+        pdf_classification: dict | None = None,
+        job_start_config: dict | None = None,
     ) -> str:
         """Index a document and persist it to MinIO. Returns the 8-char doc_id.
 
@@ -817,6 +839,13 @@ class CustomPageIndexClient(PageIndexClient):
         converters_cli's probe_conversion_route() (RFC-032 D0). Consumed by the
         D1 Tier-1 activation below to force full-page OCR upfront when the PDF
         is confidently scanned/image-based; no behavioral change when None.
+
+        job_start_config: optional effective_config_snapshot() captured by the
+        worker parent when the job was enqueued (Zone-7). Compared against the
+        snapshot taken fresh here at the top of this subprocess call; a mismatch
+        means config drifted between enqueue and execution (e.g. a mid-flight
+        env/deploy change) and is stamped into the sidecar as
+        effective_config_at_job_start so that drift is observable, not silent.
         """
         # Reset per call so a prior flat doc's content_class can't leak into a
         # subsequent tree doc when this client instance is reused. The flat
@@ -826,6 +855,13 @@ class CustomPageIndexClient(PageIndexClient):
         from .config import effective_config_snapshot
 
         _effective_cfg = effective_config_snapshot()
+        _effective_config_at_job_start = _detect_config_drift(job_start_config, _effective_cfg)
+        if _effective_config_at_job_start is not None:
+            logger.warning(
+                "Config drift: job_start_config != effective_config at job "
+                "execution time for %s",
+                file_path,
+            )
 
         file_path = os.path.abspath(file_path)
         if not os.path.isfile(file_path):
@@ -950,6 +986,7 @@ class CustomPageIndexClient(PageIndexClient):
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
+                extraction_stages_captured: list = []
                 _use_remote = bool(
                     getattr(settings, "docling_service_url", None) and self._staging_key
                 )
@@ -990,7 +1027,7 @@ class CustomPageIndexClient(PageIndexClient):
                         elif (
                             pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED
                         ):
-                            md_content, pic_results = _split_converter_output(
+                            md_content, pic_results, stages_out = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,
                                     file_path,
@@ -998,9 +1035,11 @@ class CustomPageIndexClient(PageIndexClient):
                                     ocr_lang_override=detect_ocr_langs(filename),
                                 )
                             )
+                            if stages_out:
+                                extraction_stages_captured = stages_out
                         elif inspector_force_ocr and "docling" in conv_name:
                             # RFC-032 D2: local-path mirror of the remote branch above.
-                            md_content, pic_results = _split_converter_output(
+                            md_content, pic_results, stages_out = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,
                                     file_path,
@@ -1008,6 +1047,8 @@ class CustomPageIndexClient(PageIndexClient):
                                     ocr_lang_override=detect_ocr_langs(filename),
                                 )
                             )
+                            if stages_out:
+                                extraction_stages_captured = stages_out
                         else:
                             if pre_garbled and "docling" in conv_name:
                                 logger.info(
@@ -1015,9 +1056,11 @@ class CustomPageIndexClient(PageIndexClient):
                                     "active; deferring to Fix-3 retry path",
                                     filename,
                                 )
-                            md_content, pic_results = _split_converter_output(
+                            md_content, pic_results, stages_out = _split_converter_output(
                                 await asyncio.to_thread(conv_fn, file_path)
                             )
+                            if stages_out:
+                                extraction_stages_captured = stages_out
                         used_converter = conv_name
                         break
                     except Exception as conv_exc:
@@ -1274,9 +1317,11 @@ class CustomPageIndexClient(PageIndexClient):
                             ocr_lang_override=langs,
                         )
                     else:
-                        md_content, pic_results = _split_converter_output(
+                        md_content, pic_results, stages_out = _split_converter_output(
                             await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
                         )
+                        if stages_out:
+                            extraction_stages_captured = stages_out
                     used_converter = "docling"  # RFC-034 D5: both branches above are docling
                     if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                         _log_pic_splice_trace(filename, "garble_escalation", pic_results)
@@ -1625,11 +1670,13 @@ class CustomPageIndexClient(PageIndexClient):
                                 ocr_lang_override=langs,
                             )
                         else:
-                            md_content, pic_results = _split_converter_output(
+                            md_content, pic_results, stages_out = _split_converter_output(
                                 await asyncio.to_thread(
                                     pdf_to_markdown_docling, file_path, True, langs
                                 )
                             )
+                            if stages_out:
+                                extraction_stages_captured = stages_out
                         if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                             _log_pic_splice_trace(
                                 filename, "image_dominant_escalation", pic_results
@@ -1954,28 +2001,29 @@ class CustomPageIndexClient(PageIndexClient):
                             # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
                             # no tree artifact processed/<doc_id>.json is written (HR2: no
                             # un-cascaded derivative).
-                            await asyncio.to_thread(
-                                save_flat_doc,
-                                doc_id,
-                                {
-                                    "doc_id": doc_id,
-                                    "doc_name": filename,
-                                    "source_url": source_url,
-                                    "processed_at": processed_at,
-                                    "sha256": sha256,
-                                    "content_class": content_class,
-                                    "blocks": blocks,
-                                    "doc_description": flat_desc,
-                                    "verdict": f_verdict,
-                                    "verdict_reason": f_verdict_reason,
-                                    "max_leaf_ratio": round(f_mlr, 4),
-                                    "flat_char_count": flat_char_count,
-                                    "pipeline_version": CURRENT_PIPELINE_VERSION,
-                                    "verdict_computed_at": datetime.now(UTC).isoformat(),
-                                    "build_sha": _CLIENT_BUILD_SHA,
-                                    "effective_config": _effective_cfg,
-                                },
-                            )
+                            flat_meta = {
+                                "doc_id": doc_id,
+                                "doc_name": filename,
+                                "source_url": source_url,
+                                "processed_at": processed_at,
+                                "sha256": sha256,
+                                "content_class": content_class,
+                                "blocks": blocks,
+                                "doc_description": flat_desc,
+                                "verdict": f_verdict,
+                                "verdict_reason": f_verdict_reason,
+                                "max_leaf_ratio": round(f_mlr, 4),
+                                "flat_char_count": flat_char_count,
+                                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                                "verdict_computed_at": datetime.now(UTC).isoformat(),
+                                "build_sha": _CLIENT_BUILD_SHA,
+                                "effective_config": _effective_cfg,
+                            }
+                            if _effective_config_at_job_start is not None:
+                                flat_meta["effective_config_at_job_start"] = (
+                                    _effective_config_at_job_start
+                                )
+                            await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
                             FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
 
                             # D7: raw upload persisted only after the processed artifact
@@ -2092,6 +2140,8 @@ class CustomPageIndexClient(PageIndexClient):
                 "build_sha": _CLIENT_BUILD_SHA,
                 "effective_config": _effective_cfg,
             }
+            if _effective_config_at_job_start is not None:
+                meta["effective_config_at_job_start"] = _effective_config_at_job_start
             # RFC-034 D5: extraction provenance. `used_converter`/`_use_remote`/
             # `pdf_page_count` only exist inside the `ext == ".pdf"` branch above, so
             # these fields are populated for PDF docs only — omit-when-absent for
@@ -2116,6 +2166,8 @@ class CustomPageIndexClient(PageIndexClient):
                     meta["page_count"] = pdf_page_count
                 if pdf_classification:
                     meta["inspector_class"] = pdf_classification.get("pdf_type")
+                if extraction_stages_captured:
+                    meta["extraction_stages"] = extraction_stages_captured
                 if _route_remote and _remote_docling_version:
                     meta["remote_build_sha"] = _remote_docling_version.get(
                         "commit_sha", "unknown"

@@ -48,4 +48,8 @@ async def test_worker_redis_fallback_uses_singleton(mock_get_redis):
         ctx: dict = {}
         await process_document_job(ctx, "uploads/staging/job-1/report.pdf", "job-1")
 
-    mock_get_redis.assert_called_once()
+    # Zone-7 added several best-effort Redis metric-bridge mirror calls
+    # (each independently resolving the singleton), so the fallback is no
+    # longer called exactly once -- but every call must still resolve through
+    # get_async_redis(), never a fresh aioredis.from_url().
+    mock_get_redis.assert_called()

@@ -291,6 +291,60 @@ TOC_STRIP_SKIPPED = Counter(
 
 
 # ---------------------------------------------------------------------------
+# Zone-7: generalized bridge for worker-parent-only metrics
+# ---------------------------------------------------------------------------
+# The arq worker parent runs in its own OS process with its own in-memory
+# prometheus_client REGISTRY, never scraped by /metrics (only the server
+# process's registry is). Any Counter/Gauge touched only inside worker.py is
+# structurally dead unless mirrored through Redis, following the pattern
+# REGISTRY_WRITE_FAILURES_TOTAL already established above. This table makes
+# adding a new bridged metric a one-line entry instead of a bespoke pair of
+# sync/mirror functions each time.
+_BRIDGE_REDIS_PREFIX = "pageindex:metrics:bridge:"
+
+_BRIDGED_METRICS = {
+    "active_uploads": ACTIVE_UPLOADS,
+    "uploads_total:success": UPLOADS.labels(status="success"),
+    "uploads_total:error": UPLOADS.labels(status="error"),
+    "converter_child_oom_total": CONVERTER_CHILD_OOM_TOTAL,
+    "converter_child_timeout_total": CONVERTER_CHILD_TIMEOUT_TOTAL,
+    "converter_child_peak_rss_kib": CONVERTER_PEAK_RSS_KIB,
+    "staging_delete_failures_total": STAGING_DELETE_FAILURES,
+}
+
+
+def bridge_redis_key(name: str) -> str:
+    """Redis key for a bridged metric name. Shared by worker.py's mirror
+    helpers and this module's sync helper so the two sides can't drift."""
+    return f"{_BRIDGE_REDIS_PREFIX}{name}"
+
+
+async def _sync_bridged_metrics_from_redis() -> None:
+    """Pull worker-parent-mirrored values out of Redis into this process's
+    local metric objects before a scrape. Uses each metric's internal
+    ``_value`` (shared by Counter/Gauge/Histogram-without-buckets) so a single
+    generic helper covers both types, mirroring the REGISTRY_WRITE_FAILURES_TOTAL
+    approach above without needing every bridged metric to be a Gauge.
+    Best-effort: a Redis outage degrades to stale-but-present values, never
+    breaks the /metrics endpoint itself.
+    """
+    try:
+        from .cache import get_async_redis
+
+        redis_client = await get_async_redis()
+        names = list(_BRIDGED_METRICS.keys())
+        values = await redis_client.mget([bridge_redis_key(n) for n in names])
+        for name, value in zip(names, values, strict=True):
+            if value is None:
+                continue
+            _BRIDGED_METRICS[name]._value.set(float(value))
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "metrics: failed to sync bridged metrics from Redis", exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 async def _sync_registry_metrics_from_redis() -> None:
@@ -334,6 +388,7 @@ async def registry_metrics_sync_loop(interval: float = REGISTRY_METRICS_SYNC_INT
     while True:
         try:
             await _sync_registry_metrics_from_redis()
+            await _sync_bridged_metrics_from_redis()
         except asyncio.CancelledError:
             raise
         except Exception:  # a sync blip must not kill the loop
