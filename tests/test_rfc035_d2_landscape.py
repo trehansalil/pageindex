@@ -82,7 +82,13 @@ class TestFallbackTriggerSkip:
         doc.iterate_items.return_value = [(item, 0)]
         return doc
 
-    def test_landscape_page_below_threshold_is_flagged(self):
+    def test_landscape_page_below_threshold_is_flagged(self, monkeypatch):
+        # RFC-036 D0c: a below-threshold landscape page is only flagged when
+        # it also carries a detectable picture/graphic region (page 1,
+        # 1-indexed) — otherwise dense numeric-table pages false-positive.
+        monkeypatch.setattr(
+            converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
+        )
         landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
         document = self._mock_document(200)
         below = _landscape_pages_below_threshold(document, landscape_pages)
@@ -90,15 +96,33 @@ class TestFallbackTriggerSkip:
         assert below[0]["page_no"] == 0
         assert below[0]["char_count"] == 200
 
-    def test_landscape_page_above_threshold_is_not_flagged(self):
+    def test_landscape_page_below_threshold_without_picture_is_not_flagged(
+        self, monkeypatch
+    ):
+        # RFC-036 D0c: dense numeric-table pages fall below the char
+        # threshold but carry no picture region, so they no longer
+        # false-positive trigger the rasterize-rotate-reextract fallback.
+        monkeypatch.setattr(converters, "_collect_picture_regions", lambda doc: [])
+        landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
+        document = self._mock_document(200)
+        below = _landscape_pages_below_threshold(document, landscape_pages)
+        assert below == []
+
+    def test_landscape_page_above_threshold_is_not_flagged(self, monkeypatch):
+        monkeypatch.setattr(
+            converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
+        )
         landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
         document = self._mock_document(2000)
         below = _landscape_pages_below_threshold(document, landscape_pages)
         assert below == []
 
-    def test_portrait_page_below_threshold_is_not_flagged(self):
+    def test_portrait_page_below_threshold_is_not_flagged(self, monkeypatch):
         # Guards against false-positive rescue of legitimately sparse
         # portrait pages (e.g. cover/divider pages).
+        monkeypatch.setattr(
+            converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
+        )
         landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": False}]
         document = self._mock_document(200)
         below = _landscape_pages_below_threshold(document, landscape_pages)

@@ -571,9 +571,15 @@ class TestRtlReversalRepairFirst:
     async def test_raises_low_quality_tree_error_when_the_bidi_repair_itself_fails(
         self, monkeypatch, pdf_file
     ):
-        # Arrange — reconstruct_bidi_order blows up mid-repair.
+        # Arrange — reconstruct_bidi_order blows up mid-repair. Flat routing is
+        # disabled so the rtl_reversal verdict stays terminal (RFC-036 D3 added
+        # 'rtl_reversal' to the flat-routing whitelist; with routing enabled the
+        # document would fall back to flat extraction instead of raising).
         validate = MagicMock(return_value=(False, "rtl_reversal"))
         mocks = _wire_index(monkeypatch, validate_tree=validate)
+        monkeypatch.setattr(
+            client_mod, "settings", _fake_settings(flat_doc_routing=False)
+        )
 
         def _explode(_value):
             raise ValueError("bidi algorithm failed")

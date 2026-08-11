@@ -143,11 +143,18 @@ class TestChunkedSplitMath:
         fake_fitz = _patch_fitz(monkeypatch, 292)
         calls = []
 
-        def _fake_docling(path, force_full_page_ocr=False, ocr_lang_override=None):
+        # RFC-036 D0b: chunks now run in a killable spawn subprocess, so patch
+        # the subprocess seam (a spawned child would re-import the real module
+        # and never see a parent-side pdf_to_markdown_docling monkeypatch).
+        def _fake_chunk_runner(
+            path, *, force_full_page_ocr, ocr_lang_override, timeout_s
+        ):
             calls.append(path)
             return "chunk-md", []
 
-        monkeypatch.setattr(converters, "pdf_to_markdown_docling", _fake_docling)
+        monkeypatch.setattr(
+            converters, "_run_docling_chunk_with_timeout", _fake_chunk_runner
+        )
 
         assert math.ceil(292 / 150) == 2
         md, pics = converters._pdf_to_markdown_docling_chunked(
@@ -168,10 +175,12 @@ class TestChunkedSplitMath:
         the same 292-page document."""
         fake_fitz = _patch_fitz(monkeypatch, 292)
         calls = []
+        # RFC-036 D0b: patch the subprocess seam, not pdf_to_markdown_docling
+        # (spawn children never see parent-side monkeypatches).
         monkeypatch.setattr(
             converters,
-            "pdf_to_markdown_docling",
-            lambda path, force_full_page_ocr=False, ocr_lang_override=None: (
+            "_run_docling_chunk_with_timeout",
+            lambda path, *, force_full_page_ocr, ocr_lang_override, timeout_s: (
                 calls.append(path),
                 ("chunk-md", []),
             )[1],

@@ -121,7 +121,10 @@ def test_qf2a_threshold_boundary():
 
 def test_qf2b_ratio_016_passes():
     # 0.16 sits between the old (0.15) and new (0.17) thresholds.
-    tree = _make_tree([160] + [10] * 84, depth=2)
+    # depth=4 (rather than 2) so RFC-036 D6's complexity-proportional
+    # depth-adequacy check (node_count=340 -> expected_min_depth=4) doesn't
+    # cap this leaf-ratio-focused test at MARGINAL for an unrelated reason.
+    tree = _make_tree([160] + [10] * 84, depth=4)
     verdict, reason = classify_verdict(tree, "default", None)
     assert (verdict, reason) == ("PASS", "")
 
