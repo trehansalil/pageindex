@@ -172,6 +172,62 @@ class TestCaps:
         )
         assert (verdict, reason) == ("MARGINAL", "bidi_degraded")
 
+    def test_depth_adequacy_caps_cat_b_promoted(self):
+        """depth-adequacy now applies uniformly to all promotions, not just
+        the base-PASS branch.  A cat_b-eligible flat tree with 200 nodes
+        at depth 1 is too shallow for its complexity -> MARGINAL."""
+        import math
+
+        node_count = 200
+        expected_min_depth = min(5, 2 + math.floor(math.log2(max(node_count, 1) / 50)))
+        assert expected_min_depth == 4
+
+        # 200 equal-sized leaves at depth 1 -> max_leaf_ratio = 1/200 = 0.005
+        # (well below cat_bc_promotion_threshold 0.17).
+        # Unique text per node avoids the token-repetition garble heuristic.
+        nodes = [
+            {
+                "node_id": str(i),
+                "title": f"Section{i}",
+                "text": " ".join(f"term{i}x{j}" for j in range(20)),
+                "nodes": [],
+            }
+            for i in range(node_count)
+        ]
+        verdict, reason = classify_verdict(nodes, "flat_prose", None)
+        assert verdict == "MARGINAL"
+        assert reason.startswith("depth_inadequate")
+        assert "expected_min_depth=4" in reason
+        assert "actual_depth=1" in reason
+
+    def test_depth_adequacy_caps_cat_c_promoted(self):
+        """cat_c promotion also gains depth-adequacy cap."""
+        import math
+
+        node_count = 200
+        nodes = [
+            {
+                "node_id": str(i),
+                "title": f"Part{i}",
+                "text": " ".join(f"item{i}y{j}" for j in range(20)),
+                "nodes": [],
+            }
+            for i in range(node_count)
+        ]
+        # "default" content_class -> cat_c path (not flat_, not ocr_)
+        verdict, reason = classify_verdict(nodes, "default", None)
+        assert verdict == "MARGINAL"
+        assert reason.startswith("depth_inadequate")
+
+    def test_depth_adequacy_does_not_fire_for_small_promotions(self):
+        """Small node counts (typical for promotions) produce
+        expected_min_depth <= 0, so depth-adequacy never fires."""
+        import math
+
+        for nc in [1, 3, 5, 10]:
+            emd = min(5, 2 + math.floor(math.log2(max(nc, 1) / 50)))
+            assert emd <= 0, f"node_count={nc} should have expected_min_depth<=0"
+
 
 # ---------------------------------------------------------------------------
 # expected_script parameter threading
