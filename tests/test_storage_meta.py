@@ -491,6 +491,45 @@ def test_sidecar_version_is_4():
     assert SIDECAR_VERSION == 4
 
 
+def test_save_doc_meta_effective_config_at_job_start_round_trips(mock_minio):
+    """Zone-7: a config-drift stamp (job_start_config != effective_config at
+    completion) must survive the sidecar read-merge-write allow-list."""
+    meta = {
+        "doc_id": "drift0001",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-11T00:00:00+00:00",
+        "build_sha": "abc123",
+        "effective_config": {"pipeline_version": 4, "ocr_escalation": True},
+        "effective_config_at_job_start": {"pipeline_version": 4, "ocr_escalation": False},
+    }
+    save_doc_meta("drift0001", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar["effective_config"] == {"pipeline_version": 4, "ocr_escalation": True}
+    assert sidecar["effective_config_at_job_start"] == {
+        "pipeline_version": 4,
+        "ocr_escalation": False,
+    }
+
+
+def test_save_doc_meta_effective_config_at_job_start_absent_when_not_supplied(mock_minio):
+    meta = {
+        "doc_id": "drift0002",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-11T00:00:00+00:00",
+        "build_sha": "abc123",
+        "effective_config": {"pipeline_version": 4},
+    }
+    save_doc_meta("drift0002", meta)
+
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert "effective_config_at_job_start" not in sidecar
+
+
 # ---------------------------------------------------------------------------
 # Zone 6: read-merge-write
 # ---------------------------------------------------------------------------

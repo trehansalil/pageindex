@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import dataclasses
+import functools
 import logging
 import math
 import multiprocessing
@@ -24,27 +26,11 @@ if TYPE_CHECKING:
 from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
 from .script import AR_CHAR_RE as _AR_LETTER_RE
 from .script import AR_CHAR_RE as _AR_SCRIPT_RE
+from .script import _word_has_reversed_morphology, normalize_dashes
 from .script import arabic_readability_score as _arabic_readability_score
 from .script import is_arabic_char as _is_arabic_char
 
 logger = logging.getLogger(__name__)
-
-_DASH_TRANSLATION = {
-    0x2010: "-",  # hyphen
-    0x2011: "-",  # non-breaking hyphen — used in PHV clause codes (e.g. A1‑6.1)
-    0x2013: "-",  # en-dash
-    0x2014: "-",  # em-dash
-    0x2212: "-",  # minus sign
-}
-
-
-def normalize_dashes(s: str) -> str:
-    """Map Unicode hyphen/dash variants to ASCII '-' (CONV-01-C2).
-
-    Includes the non-breaking hyphen (U+2011) the German PHV PDFs use inside
-    clause codes like ``A1‑6.1``; normalising it lets numbering-depth recovery
-    (``numbering_depth``) parse those codes."""
-    return s.translate(_DASH_TRANSLATION)
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})(?=\s)", re.MULTILINE)
@@ -831,7 +817,7 @@ def _splice_landscape_fallback(
         block = p["markdown"].strip()
         if not block:
             continue
-        # Fallback page_no is PyMuPDF 0-indexed (_probe_landscape_pages);
+        # Fallback page_no is PyMuPDF 0-indexed (_tag_landscape_pages_for_fallback);
         # heading_pages values are Docling prov.page_no, 1-indexed — same
         # correction as _landscape_pages_below_threshold.
         fallback_page_1idx = p["page_no"] + 1
@@ -1504,8 +1490,6 @@ def _heading_is_logical_order(heading_text: str) -> bool:
     orig_score = _arabic_readability_score(orig_words)
     disp_score = _arabic_readability_score(disp_words)
     if orig_score == 0 and disp_score == 0:
-        from .helpers import _word_has_reversed_morphology
-
         return not any(_word_has_reversed_morphology(w) for w in orig_words)
     return orig_score >= disp_score
 
@@ -1872,7 +1856,7 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
     return f"{md}\n\n{full_text}"
 
 
-def _detect_page_rotation(page) -> dict:
+def _page_rotation_correction_info(page) -> dict:
     """RFC-026 D2: read a single page's /Rotate metadata plus an aspect-ratio
     fallback. Reuses the `page.rotation` accessor already used at the D6
     crop-normalization site (~line 1746). Per-page, not per-document — a
@@ -1941,7 +1925,7 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
         try:
             changed = False
             for page in pdf:
-                info = _detect_page_rotation(page)
+                info = _page_rotation_correction_info(page)
                 effective_rotation = (
                     info["rotate"] if info["rotate"] else (90 if info["likely_landscape"] else 0)
                 )
@@ -1966,7 +1950,7 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
         return pdf_path
 
 
-def _probe_landscape_pages(pdf_path: str) -> list[dict]:
+def _tag_landscape_pages_for_fallback(pdf_path: str) -> list[dict]:
     """RFC-035 D2 Phase 1: read-only pre-extraction landscape orientation probe.
 
     Tags each page landscape via PyMuPDF's `page.rotation` (rotation % 180 != 0)
@@ -2024,7 +2008,7 @@ LANDSCAPE_REEXTRACT_DEADLINE_SECONDS: float = float(
 
 def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> list[dict]:
     """RFC-035 D2 Phase 2 trigger: for pages tagged landscape by
-    ``_probe_landscape_pages``, count the chars Docling's primary extraction
+    ``_tag_landscape_pages_for_fallback``, count the chars Docling's primary extraction
     yielded for that page and flag pages below ``LANDSCAPE_CHAR_THRESHOLD``
     that also have a detectable picture/graphic region (RFC-036 D0c) as
     needing the rasterize-rotate-reextract fallback. Dense numeric-table
@@ -2597,7 +2581,11 @@ def _pre_inference_normalize(text: str) -> str:
 
 
 def _recover_picture_results(
-    md: str, document, pdf_path: str, filename: str | None = None
+    md: str,
+    document,
+    pdf_path: str,
+    filename: str | None = None,
+    body_for_containment: str | None = None,
 ) -> list[PictureResult]:
     """Recover chart/infographic text Docling bucketed into Picture bboxes (RFC-015 D6).
 
@@ -2611,6 +2599,13 @@ def _recover_picture_results(
     region whose crop failed — sparse recovery must never shift ordinals
     (finding 4).
 
+    ``body_for_containment``: when provided, the containment check
+    (``_normalize_for_containment`` / ``_clip_text_contained``) measures against
+    this text instead of ``md``. This fixes the RFC-024 D1 suppression bug where
+    ``_document_level_text_fallback`` appends the full pdfium text layer to ``md``
+    before containment runs, making every picture's clipped OCR text look "already
+    contained" and wrongly skipping legitimate recovery.
+
     Language detection (RFC-028 D5): ``md`` is the Docling markdown export, which
     is near-empty or all-digits for scanned Arabic PDFs, so ``detect_ocr_langs(md)``
     alone falls through to ``['eng']``. Union with ``detect_ocr_langs(filename)``
@@ -2618,6 +2613,7 @@ def _recover_picture_results(
     even when the export carries no usable signal."""
     if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
         return []
+    containment_md = body_for_containment if body_for_containment is not None else md
     try:
         regions = _collect_picture_regions(document)
         if not regions:
@@ -2628,7 +2624,7 @@ def _recover_picture_results(
                 if lg not in lang_sources:
                     lang_sources.append(lg)
         langs = ensure_tessdata(lang_sources)
-        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=md)
+        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=containment_md)
         if not recovered and not skip_reasons:
             return []
         logger.info(
@@ -3036,7 +3032,7 @@ def _run_docling_chunk_with_timeout(
     status, payload = outcome
     if status == "error":
         raise cast(Exception, payload)
-    return cast("tuple[str, list[PictureResult]]", payload)
+    return cast("tuple[str, list[PictureResult], list[dict]]", payload)
 
 
 def _pdf_to_markdown_docling_chunked(
@@ -3045,7 +3041,7 @@ def _pdf_to_markdown_docling_chunked(
     max_pages: int,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
-) -> tuple[str, list[PictureResult]]:
+) -> tuple[str, list[PictureResult], list[dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
     Splits ``pdf_path`` into ``ceil(page_count / max_pages)`` page-boundary
@@ -3098,7 +3094,7 @@ def _pdf_to_markdown_docling_chunked(
                 finally:
                     writer.close()
                 try:
-                    chunk_md, chunk_pics = _run_docling_chunk_with_timeout(
+                    chunk_md, chunk_pics, _chunk_stages = _run_docling_chunk_with_timeout(
                         tmp.name,
                         force_full_page_ocr=force_full_page_ocr,
                         ocr_lang_override=ocr_lang_override,
@@ -3136,7 +3132,90 @@ def _pdf_to_markdown_docling_chunked(
             pic_results.extend(chunk_pics)
     finally:
         src.close()
-    return "\n\n".join(md_parts), pic_results
+    # Per-chunk stage tables are not merged -- out of scope for Zone 4 initial
+    # landing. extraction_stages is empty for chunked/oversized PDFs.
+    return "\n\n".join(md_parts), pic_results, []
+
+
+def _build_candidate(md: str) -> str:
+    """Normalise a candidate markdown source BEFORE heading-depth inference.
+
+    Ordering matters: Arabic structural headings must be injected before
+    _pre_inference_normalize runs its NFKC fold + bidi reconstruction, because
+    the injection regex matches raw Arabic text that NFKC would alter. German
+    clause and English article headings follow, then the pipeline-level
+    normalize pass that splits run-together headings, fixes fi-hash
+    substitutions, and reconstructs bidi order.
+    """
+    md = _inject_arabic_structural_headings(md)
+    md = _inject_german_clause_headings(md)
+    md = _inject_english_article_headings(md)
+    md = _pre_inference_normalize(md)
+    return md
+
+
+@dataclasses.dataclass
+class StageRecord:
+    """Per-stage provenance entry for the extraction pipeline."""
+
+    name: str
+    chars_before: int
+    chars_after: int
+    char_delta: int
+    headings_before: int
+    headings_after: int
+    heading_delta: int
+    error: str | None = None
+
+
+def _run_stages(
+    md: str, stages: list[tuple[str, Callable[[str], str]]]
+) -> tuple[str, list[dict]]:
+    """Run a sequence of string-mutating stages with per-stage provenance.
+
+    Each ``(name, fn)`` pair is called independently: a failure in stage N
+    does not skip stages N+1..last. On failure the stage's error is recorded
+    and ``md`` is left unchanged for that stage.
+    """
+    records: list[dict] = []
+    for name, fn in stages:
+        chars_before = len(md)
+        headings_before = len(_HEADING_RE.findall(md))
+        try:
+            result = fn(md)
+            chars_after = len(result)
+            headings_after = len(_HEADING_RE.findall(result))
+            records.append(
+                dataclasses.asdict(
+                    StageRecord(
+                        name=name,
+                        chars_before=chars_before,
+                        chars_after=chars_after,
+                        char_delta=chars_after - chars_before,
+                        headings_before=headings_before,
+                        headings_after=headings_after,
+                        heading_delta=headings_after - headings_before,
+                    )
+                )
+            )
+            md = result
+        except Exception as exc:
+            logger.warning("extraction stage %r failed: %s", name, exc)
+            records.append(
+                dataclasses.asdict(
+                    StageRecord(
+                        name=name,
+                        chars_before=chars_before,
+                        chars_after=chars_before,
+                        char_delta=0,
+                        headings_before=headings_before,
+                        headings_after=headings_before,
+                        heading_delta=0,
+                        error=str(exc),
+                    )
+                )
+            )
+    return md, records
 
 
 def pdf_to_markdown_docling(  # noqa: PLR0915, C901
@@ -3144,11 +3223,12 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     max_pages: int | None = None,
-) -> tuple[str, list[PictureResult]]:
+) -> tuple[str, list[PictureResult], list[dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
-    Returns ``(markdown, pic_results)``. The markdown keeps bare ``<!-- image -->``
-    markers (no figure references — audit finding 6); ``pic_results[i]`` corresponds
+    Returns ``(markdown, pic_results, extraction_stages)``. The markdown keeps
+    bare ``<!-- image -->`` markers (no figure references — audit finding 6);
+    ``pic_results[i]`` corresponds
     to the i-th PictureItem in ``iterate_items`` order and always has
     ``len == number of picture regions`` when non-empty (dense — finding 4).
 
@@ -3218,7 +3298,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     )
     # RFC-035 D2 Phase 1: read-only landscape probe, tags pages for the future
     # rasterize-rotate-reextract fallback (Phase 2). Does not alter extraction.
-    landscape_pages = _probe_landscape_pages(pdf_path)
+    landscape_pages = _tag_landscape_pages_for_fallback(pdf_path)
     if any(p["is_landscape"] for p in landscape_pages):
         logger.info(
             "landscape pages detected in %s: %s",
@@ -3338,17 +3418,34 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
 
-    # RFC-015 D5c/D4/D7: normalise BOTH candidate markdown sources BEFORE heading-depth
-    # inference so the heading regexes see split, في-restored, logically-ordered text
-    # (see _pre_inference_normalize for the load-bearing ordering rationale).
-    post_md = _inject_arabic_structural_headings(post_md)
-    raw_md = _inject_arabic_structural_headings(raw_md)
-    post_md = _inject_german_clause_headings(post_md)
-    raw_md = _inject_german_clause_headings(raw_md)
-    post_md = _inject_english_article_headings(post_md)
-    raw_md = _inject_english_article_headings(raw_md)
-    post_md = _pre_inference_normalize(post_md)
-    raw_md = _pre_inference_normalize(raw_md)
+    extraction_stages: list[dict] = []
+
+    # Provenance: docling convert (non-string-mutation, manual entry).
+    extraction_stages.append({
+        "name": "docling_convert",
+        "chars_before": 0,
+        "chars_after": len(raw_md),
+        "char_delta": len(raw_md),
+        "headings_before": 0,
+        "headings_after": len(_HEADING_RE.findall(raw_md)),
+        "heading_delta": len(_HEADING_RE.findall(raw_md)),
+        "error": None,
+    })
+
+    # Provenance: hierarchical add-on (non-string-mutation, manual entry).
+    extraction_stages.append({
+        "name": "hierarchical_addon",
+        "chars_before": len(raw_md),
+        "chars_after": len(post_md),
+        "char_delta": len(post_md) - len(raw_md),
+        "headings_before": len(_HEADING_RE.findall(raw_md)),
+        "headings_after": len(_HEADING_RE.findall(post_md)),
+        "heading_delta": len(_HEADING_RE.findall(post_md)) - len(_HEADING_RE.findall(raw_md)),
+        "error": None,
+    })
+
+    post_md = _build_candidate(post_md)
+    raw_md = _build_candidate(raw_md)
     post_headings = len(_HEADING_RE.findall(post_md))
     raw_headings = len(_HEADING_RE.findall(raw_md))
 
@@ -3385,22 +3482,40 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             )
             md = md_raw
             heading_pages_for_md = heading_pages_raw
-    md = _normalize_indented_headings(md)
-    md = _document_level_text_fallback(md, pdf_path)
-    # RFC-035 D2 Phase 2 / RFC-036 D0d: splice in content recovered by the
-    # rasterize-rotate-reextract fallback at its original page position (not
-    # appended at document end — ordering is part of correctness for downstream
-    # chunking and node structure). Routing re-evaluation (PictureResults ->
-    # flat-mixed) is a separate follow-on; this only restores the char count
-    # classify_verdict scores against.
-    md = _splice_landscape_fallback(md, landscape_fallback_pages, heading_pages_for_md)
+
+    # String-mutating stages, each independently fail-open with provenance.
+    # Split into pre-fallback and post-fallback so body_for_containment is
+    # captured between them (RFC-024 D1 suppression fix).
+    pre_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
+        ("normalize_indented_headings", _normalize_indented_headings),
+    ]
+    md, pre_records = _run_stages(md, pre_fallback_stages)
+    extraction_stages.extend(pre_records)
+
+    # RFC-024 D1 fix: snapshot md BEFORE _document_level_text_fallback appends
+    # the raw pdfium text layer, so the containment check in picture recovery
+    # measures against genuine Docling-exported content only.
+    body_for_containment = md
+
+    post_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
+        ("document_level_text_fallback", functools.partial(_document_level_text_fallback, pdf_path=pdf_path)),
+        ("splice_landscape_fallback", functools.partial(
+            _splice_landscape_fallback,
+            landscape_fallback_pages=landscape_fallback_pages,
+            heading_pages=heading_pages_for_md,
+        )),
+    ]
+    md, post_records = _run_stages(md, post_fallback_stages)
+    extraction_stages.extend(post_records)
+
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was
     # invisible to the event loop and pinned crop bytes for the process life).
     # The markdown keeps neutral `<!-- image -->` markers — the [Figure: fig-N]
     # splice and the VLM describe step run only in client.index()'s flat branch.
     pic_results = _recover_picture_results(
-        md, result.document, pdf_path, os.path.basename(pdf_path)
+        md, result.document, pdf_path, os.path.basename(pdf_path),
+        body_for_containment=body_for_containment,
     )
     # RFC-035 D2 Fix (Routing interaction / task-5-4): the rasterize-rotate-
     # reextract fallback re-runs Docling on a standalone rasterized page image,
@@ -3418,19 +3533,35 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             pic_results.append(
                 PictureResult(page=p["page_no"], skipped_reason="landscape_fallback_picture")
             )
-    return md, pic_results
+
+    # Provenance: picture recovery (non-string-mutation, manual entry).
+    recovered_count = sum(1 for pr in pic_results if pr.get("ocr_text"))
+    extraction_stages.append({
+        "name": "picture_recovery",
+        "chars_before": len(md),
+        "chars_after": len(md),
+        "char_delta": 0,
+        "headings_before": len(_HEADING_RE.findall(md)),
+        "headings_after": len(_HEADING_RE.findall(md)),
+        "heading_delta": 0,
+        "error": None,
+        "regions": len(pic_results),
+        "recovered": recovered_count,
+    })
+
+    return md, pic_results, extraction_stages
 
 
-def _pdf_to_markdown_no_pics(pdf_path: str) -> tuple[str, list[PictureResult]]:
-    """Adapter: the pymupdf4llm route recovers no picture regions, so it returns
-    an empty pic_results list to match the ``(md, pics)`` chain contract."""
-    return pdf_to_markdown(pdf_path), []
+def _pdf_to_markdown_no_pics(pdf_path: str) -> tuple[str, list[PictureResult], list[dict]]:
+    """Adapter: the pymupdf4llm route recovers no picture regions and no
+    per-stage provenance to match the ``(md, pics, stages)`` chain contract."""
+    return pdf_to_markdown(pdf_path), [], []
 
 
-def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list[PictureResult]]]]]:
+def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list[PictureResult], list[dict]]]]]:
     """Ordered ``(name, fn)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
 
-    Every chain callable returns ``(markdown, pic_results)`` (audit finding 1).
+    Every chain callable returns ``(markdown, pic_results, extraction_stages)``.
 
     INDEX-01: ``pymupdf4llm`` (AGPL, fast, default) and ``docling`` (MIT,
     layout-aware, German-ligature-correct — the RFC-003 D3 / HR4 residency escape).
@@ -3460,7 +3591,7 @@ def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list
             "ALLOW_AGPL_FALLBACK=true"
         )
 
-    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult]]]]] = []
+    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult], list[dict]]]]] = []
     if ALLOW_AGPL_FALLBACK:
         chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics))
     if have_docling:
