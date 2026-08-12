@@ -110,7 +110,7 @@ def test_classify_verdict_reordered_not_pass():
     """D2: a reordered tree with an otherwise-fine ratio yields FAIL, not PASS,
     with 'reordered' in the reason."""
     verdict, reason = classify_verdict(
-        _wellformed_tree([10, 30, 20]), content_class="tree", validate_reason=None
+        _wellformed_tree([10, 30, 20]), content_class="tree", validate_result=None
     )
     assert verdict != "PASS"
     assert verdict == "FAIL"
@@ -120,7 +120,7 @@ def test_classify_verdict_reordered_not_pass():
 def test_classify_verdict_ordered_can_pass():
     """D2 control: same shape but in order is not forced to FAIL by the ordering gate."""
     verdict, _ = classify_verdict(
-        _wellformed_tree([10, 20, 30]), content_class="tree", validate_reason=None
+        _wellformed_tree([10, 20, 30]), content_class="tree", validate_result=None
     )
     assert verdict != "FAIL", "ordering gate must not force FAIL for in-order tree"
     # Specifically: the reordering gate does not fire.

@@ -220,7 +220,7 @@ class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
         _verdict, reason = classify_verdict(
             structure,
             content_class="flat_prose",
-            validate_reason=None,
+            validate_result=None,
             image_enrichment_ratio=image_enrichment_ratio,
         )
 
@@ -242,7 +242,7 @@ class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
         verdict, reason = classify_verdict(
             structure,
             content_class="flat_prose",
-            validate_reason=None,
+            validate_result=None,
             image_enrichment_ratio=image_enrichment_ratio,
         )
 

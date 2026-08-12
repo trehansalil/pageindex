@@ -169,3 +169,42 @@ def test_all_validate_tree_calls_pass_page_count():
             f"validate_tree call at client.py:{site_line} "
             f"does not pass page_count"
         )
+
+
+# --- HARD_FAIL_DEFECTS exhaustiveness ---
+
+from pageindex_mcp.helpers import HARD_FAIL_DEFECTS, _ReasonPolicy
+
+
+def test_hard_fail_defects_subset_of_reason_policy():
+    """Every member of HARD_FAIL_DEFECTS must have a REASON_POLICY entry."""
+    for defect in HARD_FAIL_DEFECTS:
+        assert defect in REASON_POLICY, (
+            f"{defect!r} is in HARD_FAIL_DEFECTS but missing from REASON_POLICY"
+        )
+
+
+def test_hard_fail_defects_matches_policy_entries():
+    """HARD_FAIL_DEFECTS should be exactly the union of PERSIST_FAIL entries
+    plus GARBLING and REORDERED (per the comment in helpers.py)."""
+    expected = frozenset(
+        td for td, policy in REASON_POLICY.items()
+        if policy == _ReasonPolicy.PERSIST_FAIL
+    ) | {TreeDefect.GARBLING, TreeDefect.REORDERED}
+    assert HARD_FAIL_DEFECTS == expected, (
+        f"HARD_FAIL_DEFECTS drift: "
+        f"extra={HARD_FAIL_DEFECTS - expected}, "
+        f"missing={expected - HARD_FAIL_DEFECTS}"
+    )
+
+
+def test_every_tree_defect_has_reason_policy():
+    """Exhaustiveness: every TreeDefect member has a REASON_POLICY entry."""
+    missing = set(TreeDefect) - set(REASON_POLICY.keys())
+    assert not missing, f"TreeDefect members without REASON_POLICY: {missing}"
+
+
+def test_reason_policy_has_no_non_defect_keys():
+    """REASON_POLICY must not contain keys that are not TreeDefect members."""
+    extra = set(REASON_POLICY.keys()) - set(TreeDefect)
+    assert not extra, f"REASON_POLICY keys not in TreeDefect: {extra}"

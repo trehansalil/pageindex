@@ -241,11 +241,11 @@ class TestClassifyVerdictCapsBidiDegraded:
         # that already persisted).
         tree = _passing_tree()
 
-        baseline_verdict, _ = classify_verdict(tree, content_class="tree", validate_reason=None)
+        baseline_verdict, _ = classify_verdict(tree, content_class="tree", validate_result=None)
         assert baseline_verdict == "PASS"
 
         capped_verdict, capped_reason = classify_verdict(
-            tree, content_class="tree", validate_reason="bidi_degraded"
+            tree, content_class="tree", validate_result="bidi_degraded"
         )
         assert capped_verdict == "MARGINAL"
         assert capped_reason == "bidi_degraded"
@@ -267,7 +267,7 @@ class TestClassifyVerdictCapsBidiDegraded:
         ]
 
         verdict, reason = classify_verdict(
-            reordered_tree, content_class="tree", validate_reason="bidi_degraded"
+            reordered_tree, content_class="tree", validate_result="bidi_degraded"
         )
 
         assert verdict == "FAIL"

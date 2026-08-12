@@ -197,7 +197,7 @@ class TestClassifyVerdictFail:
         verdict, reason = classify_verdict(
             structure=tree,
             content_class="structured",
-            validate_reason=validate_reason,
+            validate_result=validate_reason,
         )
 
         # Assert
@@ -214,7 +214,7 @@ class TestClassifyVerdictFail:
         _, reason = classify_verdict(
             structure=tree,
             content_class="structured",
-            validate_reason=validate_reason,
+            validate_result=validate_reason,
         )
 
         # Assert
@@ -231,7 +231,7 @@ class TestClassifyVerdictFail:
         verdict, _ = classify_verdict(
             structure=tree,
             content_class="structured",
-            validate_reason=validate_reason,
+            validate_result=validate_reason,
             prior_verdict="PASS",
         )
 

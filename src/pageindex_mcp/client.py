@@ -45,6 +45,7 @@ from .converters import (
 )
 from .helpers import (
     LowQualityTreeError,
+    TreeGateResult,
     _extract_page_hits,
     _flat_block_primary_text,
     _flat_text_is_garbled,
@@ -1235,16 +1236,22 @@ class CustomPageIndexClient(PageIndexClient):
             result["structure"] = _segment_table_nodes(result.get("structure", []))
 
             # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
-            ok, reason = validate_tree(
+            _vt_raw = validate_tree(
                 result.get("structure", []),
                 expected_script=expected_script,
                 page_count=pdf_page_count if ext == ".pdf" else None,
             )
+            # validate_tree returns TreeGateResult (iterable as (ok, reason_str)).
+            # Capture the typed result for classify_verdict signal reuse, then
+            # unpack for legacy string-based branching below.
+            gate_result: TreeGateResult | None = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+            ok, reason = _vt_raw
             # D2 (RFC-025): the tree-build's original failure reason, captured before
             # any recovery retry below overwrites `reason` (e.g. to "node_count<3" so
             # the flat-routing branch is entered) — threaded to the flat-path garble
             # gate so garble-by-default can key off the true first-pass reason.
             original_reason = reason
+            original_gate_result: TreeGateResult | None = gate_result
 
             # RFC-027 D2: a PDF rejected as node_count<3 with fewer than
             # LOW_CONTENT_OCR_CHAR_FLOOR chars (zero-content or near-zero/garbled scanned
@@ -1275,6 +1282,7 @@ class CustomPageIndexClient(PageIndexClient):
                 pre_retry_result = result
                 pre_retry_ok = ok
                 pre_retry_reason = reason
+                pre_retry_gate_result = gate_result
                 pre_retry_chars = total_chars
                 # RFC-030 D1: snapshot the mutable extraction state alongside
                 # result/ok/reason so a lost retry reverts ALL six variables
@@ -1338,12 +1346,15 @@ class CustomPageIndexClient(PageIndexClient):
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
                     result["structure"] = _segment_table_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(
+                    _vt_raw = validate_tree(
                         result.get("structure", []),
                         expected_script=expected_script,
                         page_count=pdf_page_count if ext == ".pdf" else None,
                     )
+                    gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+                    ok, reason = _vt_raw
                     original_reason = reason
+                    original_gate_result = gate_result
                     # D4 (RFC-028): keep-best, not unconditional overwrite. Compare
                     # post-retry char count against the pre-retry snapshot; on a
                     # near-tie (equal char count), a retry that now VALIDATES ok
@@ -1443,13 +1454,15 @@ class CustomPageIndexClient(PageIndexClient):
                         else:
                             retry_wins = True
                     if not retry_wins:
-                        # RFC-030 D1: atomic revert -- restore all six mutable
+                        # RFC-030 D1: atomic revert -- restore all seven mutable
                         # variables together so the tree (result) and the
                         # flat-routing markdown (md_content/tmp_md_path/
                         # pic_results) cannot diverge on which extraction won.
                         result = pre_retry_result
                         ok = pre_retry_ok
                         reason = pre_retry_reason
+                        gate_result = pre_retry_gate_result
+                        original_gate_result = pre_retry_gate_result
                         md_content = pre_retry_md_content
                         pic_results = pre_retry_pic_results
                         used_converter = pre_retry_used_converter
@@ -1484,12 +1497,15 @@ class CustomPageIndexClient(PageIndexClient):
                             _repair_rtl_nodes(n.get("nodes") or [])
 
                     _repair_rtl_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(
+                    _vt_raw = validate_tree(
                         result.get("structure", []),
                         expected_script=expected_script,
                         page_count=pdf_page_count if ext == ".pdf" else None,
                     )
+                    gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+                    ok, reason = _vt_raw
                     original_reason = reason
+                    original_gate_result = gate_result
                     logger.warning(
                         "RTL reversal on %s; reconstruct_bidi_order repair %s",
                         filename,
@@ -1572,12 +1588,15 @@ class CustomPageIndexClient(PageIndexClient):
                     result = await self._run_md_to_tree(tmp_md_path)
                     result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
                     result["structure"] = _segment_table_nodes(result.get("structure", []))
-                    ok, reason = validate_tree(
+                    _vt_raw = validate_tree(
                         result.get("structure", []),
                         expected_script=expected_script,
                         page_count=pdf_page_count if ext == ".pdf" else None,
                     )
+                    gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+                    ok, reason = _vt_raw
                     original_reason = reason
+                    original_gate_result = gate_result
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
 
                     # RFC-024 D5: the VLM *succeeded* but the tree is still garbled
@@ -1694,12 +1713,15 @@ class CustomPageIndexClient(PageIndexClient):
                             result.get("structure", [])
                         )
                         result["structure"] = _segment_table_nodes(result.get("structure", []))
-                        ok, reason = validate_tree(
+                        _vt_raw = validate_tree(
                             result.get("structure", []),
                             expected_script=expected_script,
                             page_count=pdf_page_count if ext == ".pdf" else None,
                         )
+                        gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+                        ok, reason = _vt_raw
                         original_reason = reason
+                        original_gate_result = gate_result
                         OCR_ESCALATION_TOTAL.labels(
                             result="recovered" if ok else "still_image_only"
                         ).inc()
@@ -2118,7 +2140,7 @@ class CustomPageIndexClient(PageIndexClient):
             verdict, verdict_reason = classify_verdict(
                 structure,
                 "",
-                original_reason or None,
+                original_gate_result or original_reason or None,
                 prior_verdict=prior_verdict,
                 inspector_class=pdf_classification.get("pdf_type") if pdf_classification else None,
                 expected_script=expected_script,

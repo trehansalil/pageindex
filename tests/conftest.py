@@ -60,6 +60,24 @@ def _instant_memory_gate():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_verdict_thresholds_cache():
+    """Clear the VerdictThresholds cache before each test.
+
+    ``classify_verdict`` uses ``_get_verdict_thresholds()`` which caches
+    ``VerdictThresholds.from_env()`` at the module level.  Tests that set
+    threshold env vars (e.g. ``PASS_MAX_LEAF_RATIO``, ``HYSTERESIS_BAND``)
+    need the cache cleared so the new env values take effect.  Without this,
+    test ordering determines which env snapshot is cached and later tests
+    silently read stale thresholds.
+    """
+    from pageindex_mcp.helpers import reset_verdict_thresholds
+
+    reset_verdict_thresholds()
+    yield
+    reset_verdict_thresholds()
+
+
 _FILLER_WORDS = (
     "the",
     "quick",

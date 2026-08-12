@@ -334,6 +334,8 @@ def test_classify_verdict_garble_ratio_threshold():
     assert reason == "garbling(ratio=1.00)"
 
     with patch.dict(os.environ, {"GARBLE_WINDOW_RATIO_THRESHOLD": "2.0"}):
+        from pageindex_mcp.helpers import reset_verdict_thresholds
+        reset_verdict_thresholds()
         verdict, reason = classify_verdict(tree, "default", None)
     assert (verdict, reason) == ("PASS", "")
     assert "garbling" not in reason
