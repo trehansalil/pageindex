@@ -28,7 +28,7 @@ class TestRunStages:
 
         md, records = _run_stages("# Hello", [("append", append_text)])
         assert len(records) == 1
-        rec = records[0]
+        rec = records["append"]
         assert rec["name"] == "append"
         assert rec["chars_before"] == len("# Hello")
         assert rec["chars_after"] == len(md)
@@ -40,9 +40,9 @@ class TestRunStages:
             return md + "\n\n## New Section\n\nBody text."
 
         md, records = _run_stages("# Title\n\nIntro.", [("add_heading", add_heading)])
-        assert records[0]["headings_before"] == 1
-        assert records[0]["headings_after"] == 2
-        assert records[0]["heading_delta"] == 1
+        assert records["add_heading"]["headings_before"] == 1
+        assert records["add_heading"]["headings_after"] == 2
+        assert records["add_heading"]["heading_delta"] == 1
 
     def test_error_preserves_md_and_records_error(self):
         original = "# Keep me unchanged"
@@ -53,10 +53,10 @@ class TestRunStages:
         md, records = _run_stages(original, [("broken", bad_stage)])
         assert md == original
         assert len(records) == 1
-        assert records[0]["error"] == "stage broke"
-        assert records[0]["char_delta"] == 0
-        assert records[0]["heading_delta"] == 0
-        assert records[0]["chars_after"] == records[0]["chars_before"]
+        assert records["broken"]["error"] == "stage broke"
+        assert records["broken"]["char_delta"] == 0
+        assert records["broken"]["heading_delta"] == 0
+        assert records["broken"]["chars_after"] == records["broken"]["chars_before"]
 
     def test_stage_n_failure_does_not_skip_stage_n_plus_1(self):
         """A failure in stage 0 must not prevent stage 1 from running."""
@@ -69,8 +69,8 @@ class TestRunStages:
 
         md, records = _run_stages("start", [("fail", fail), ("succeed", succeed)])
         assert len(records) == 2
-        assert records[0]["error"] is not None
-        assert records[1]["error"] is None
+        assert records["fail"]["error"] is not None
+        assert records["succeed"]["error"] is None
         assert md == "start ok"
 
     def test_multiple_stages_accumulate(self):
@@ -82,14 +82,14 @@ class TestRunStages:
 
         md, records = _run_stages("x", [("double", double), ("heading", add_heading)])
         assert len(records) == 2
-        assert records[0]["name"] == "double"
-        assert records[1]["name"] == "heading"
+        assert records["double"]["name"] == "double"
+        assert records["heading"]["name"] == "heading"
         assert md == "xx\n## H2"
 
     def test_empty_stages_list_returns_md_unchanged(self):
         md, records = _run_stages("hello", [])
         assert md == "hello"
-        assert records == []
+        assert records == {}
 
 
 class TestStageRecord:

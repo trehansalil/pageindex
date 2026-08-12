@@ -171,7 +171,7 @@ class TestFinding1TupleReturnNoThreadLocal:
     def test_finding1_pymupdf_chain_entry_returns_tuple(self, monkeypatch):
         monkeypatch.setattr(converters, "pdf_to_markdown", lambda p: "# md")
         chain = dict(converters.pdf_markdown_converters())
-        assert chain["pymupdf4llm"]("dummy.pdf") == ("# md", [], [])
+        assert chain["pymupdf4llm"]("dummy.pdf") == ("# md", [], {})
 
     def test_finding1_finding6_docling_returns_tuple_with_neutral_md(self, monkeypatch):
         md = "# Title\n\n## Section\n\n<!-- image -->\n\nbody text"

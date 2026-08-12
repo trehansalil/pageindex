@@ -837,7 +837,7 @@ def _splice_landscape_fallback(
     return md
 
 
-def _has_recoverable_structure(md: str) -> bool:
+def _has_structural_depth(md: str) -> bool:
     """Structural proxy for validate_tree's ``node_count>=3 AND depth>=2`` — used
     only to SELECT the better markdown SOURCE; the real HR5 gate still runs in the
     client. md_to_tree makes one tree node per heading and nests by '#'-level, so a
@@ -867,6 +867,22 @@ def _recover_heading_depth(md: str, heading_pages: dict[str, list[int]], pdf_pat
                 exc,
             )
     return md
+
+
+def _candidate_from_document(
+    md: str, heading_pages: dict[str, list[int]], pdf_path: str
+) -> "Candidate":
+    """Build and depth-recover a single pipeline candidate.
+
+    Runs ``_build_candidate`` (injection + normalisation) then
+    ``_recover_heading_depth`` (containment -> numbering -> outline) and
+    returns an immutable ``Candidate`` bundling the result with its heading-
+    page map.  Pure function — does NOT call ``_collect_heading_pages`` (the
+    caller owns that) and does NOT touch ``extraction_stages``.
+    """
+    built = _build_candidate(md)
+    recovered = _recover_heading_depth(built, heading_pages, pdf_path)
+    return Candidate(md=recovered, heading_pages=heading_pages)
 
 
 # RFC-015 D5d: a valid sub-clause component is a digit run with an OPTIONAL single
@@ -2985,7 +3001,7 @@ def _run_docling_chunk_with_timeout(
     status, payload = outcome
     if status == "error":
         raise cast(Exception, payload)
-    return cast("tuple[str, list[PictureResult], list[dict]]", payload)
+    return cast("tuple[str, list[PictureResult], dict[str, dict]]", payload)
 
 
 def _pdf_to_markdown_docling_chunked(
@@ -2994,7 +3010,7 @@ def _pdf_to_markdown_docling_chunked(
     max_pages: int,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
-) -> tuple[str, list[PictureResult], list[dict]]:
+) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
     Splits ``pdf_path`` into ``ceil(page_count / max_pages)`` page-boundary
@@ -3087,7 +3103,7 @@ def _pdf_to_markdown_docling_chunked(
         src.close()
     # Per-chunk stage tables are not merged -- out of scope for Zone 4 initial
     # landing. extraction_stages is empty for chunked/oversized PDFs.
-    return "\n\n".join(md_parts), pic_results, []
+    return "\n\n".join(md_parts), pic_results, {}
 
 
 def _build_candidate(md: str) -> str:
@@ -3121,16 +3137,28 @@ class StageRecord:
     error: str | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class Candidate:
+    """Immutable (md, heading_pages) pair — keeps the two values that describe
+    a single pipeline candidate in lock-step so they can never drift apart."""
+
+    md: str
+    heading_pages: dict[str, list[int]] = dataclasses.field(default_factory=dict)
+
+
 def _run_stages(
     md: str, stages: list[tuple[str, Callable[[str], str]]]
-) -> tuple[str, list[dict]]:
+) -> tuple[str, dict[str, dict]]:
     """Run a sequence of string-mutating stages with per-stage provenance.
 
     Each ``(name, fn)`` pair is called independently: a failure in stage N
     does not skip stages N+1..last. On failure the stage's error is recorded
     and ``md`` is left unchanged for that stage.
+
+    Returns ``(md, records)`` where ``records`` is a name-keyed dict — stage
+    names are unique per call.
     """
-    records: list[dict] = []
+    records: dict[str, dict] = {}
     for name, fn in stages:
         chars_before = len(md)
         headings_before = len(_HEADING_RE.findall(md))
@@ -3138,34 +3166,30 @@ def _run_stages(
             result = fn(md)
             chars_after = len(result)
             headings_after = len(_HEADING_RE.findall(result))
-            records.append(
-                dataclasses.asdict(
-                    StageRecord(
-                        name=name,
-                        chars_before=chars_before,
-                        chars_after=chars_after,
-                        char_delta=chars_after - chars_before,
-                        headings_before=headings_before,
-                        headings_after=headings_after,
-                        heading_delta=headings_after - headings_before,
-                    )
+            records[name] = dataclasses.asdict(
+                StageRecord(
+                    name=name,
+                    chars_before=chars_before,
+                    chars_after=chars_after,
+                    char_delta=chars_after - chars_before,
+                    headings_before=headings_before,
+                    headings_after=headings_after,
+                    heading_delta=headings_after - headings_before,
                 )
             )
             md = result
         except Exception as exc:
             logger.warning("extraction stage %r failed: %s", name, exc)
-            records.append(
-                dataclasses.asdict(
-                    StageRecord(
-                        name=name,
-                        chars_before=chars_before,
-                        chars_after=chars_before,
-                        char_delta=0,
-                        headings_before=headings_before,
-                        headings_after=headings_before,
-                        heading_delta=0,
-                        error=str(exc),
-                    )
+            records[name] = dataclasses.asdict(
+                StageRecord(
+                    name=name,
+                    chars_before=chars_before,
+                    chars_after=chars_before,
+                    char_delta=0,
+                    headings_before=headings_before,
+                    headings_after=headings_before,
+                    heading_delta=0,
+                    error=str(exc),
                 )
             )
     return md, records
@@ -3176,7 +3200,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     max_pages: int | None = None,
-) -> tuple[str, list[PictureResult], list[dict]]:
+) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
     Returns ``(markdown, pic_results, extraction_stages)``. The markdown keeps
@@ -3371,10 +3395,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     if not post_md or not post_md.strip():
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
 
-    extraction_stages: list[dict] = []
+    extraction_stages: dict[str, dict] = {}
 
     # Provenance: docling convert (non-string-mutation, manual entry).
-    extraction_stages.append({
+    extraction_stages["docling_convert"] = {
         "name": "docling_convert",
         "chars_before": 0,
         "chars_after": len(raw_md),
@@ -3383,10 +3407,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         "headings_after": len(_HEADING_RE.findall(raw_md)),
         "heading_delta": len(_HEADING_RE.findall(raw_md)),
         "error": None,
-    })
+    }
 
     # Provenance: hierarchical add-on (non-string-mutation, manual entry).
-    extraction_stages.append({
+    extraction_stages["hierarchical_addon"] = {
         "name": "hierarchical_addon",
         "chars_before": len(raw_md),
         "chars_after": len(post_md),
@@ -3395,12 +3419,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         "headings_after": len(_HEADING_RE.findall(post_md)),
         "heading_delta": len(_HEADING_RE.findall(post_md)) - len(_HEADING_RE.findall(raw_md)),
         "error": None,
-    })
-
-    post_md = _build_candidate(post_md)
-    raw_md = _build_candidate(raw_md)
-    post_headings = len(_HEADING_RE.findall(post_md))
-    raw_headings = len(_HEADING_RE.findall(raw_md))
+    }
 
     # Page map for the post-add-on candidate's outline step (the RAW map captured
     # before the add-on is used for the raw candidate, keeping each map in sync with
@@ -3411,6 +3430,14 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         logger.warning("could not collect post-add-on heading pages for %s (%s)", pdf_path, exc)
         heading_pages_post = {}
 
+    # Build immutable Candidate pairs (md + heading_pages) via the unified
+    # _candidate_from_document entry point so the two values never drift.
+    post_candidate = _candidate_from_document(post_md, heading_pages_post, pdf_path)
+    raw_candidate = _candidate_from_document(raw_md, heading_pages_raw, pdf_path)
+
+    post_headings = len(_HEADING_RE.findall(post_candidate.md))
+    raw_headings = len(_HEADING_RE.findall(raw_candidate.md))
+
     # Gate-aware source selection (HR5 / over-prune). Recover depth on the CLEANER
     # post-add-on markdown first; if that tree would still fail the structural gate
     # (node_count<3 or depth<2) but the RICHER raw Docling markdown recovers a valid
@@ -3420,21 +3447,29 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     # 4 is not <3 so the count guard never fired, yet raw_md's numbering chain
     # recovers real depth. raw Docling is ligature-correct + MIT (HR4). The real
     # gate (validate_tree) still runs downstream; this only picks the better source.
-    md = _recover_heading_depth(post_md, heading_pages_post, pdf_path)
-    heading_pages_for_md = heading_pages_post
-    if not _has_recoverable_structure(md) and raw_headings >= 3 and raw_headings > post_headings:
-        md_raw = _recover_heading_depth(raw_md, heading_pages_raw, pdf_path)
-        if _has_recoverable_structure(md_raw):
+    selected = post_candidate
+    if not _has_structural_depth(post_candidate.md) and raw_headings >= 3 and raw_headings > post_headings:
+        if _has_structural_depth(raw_candidate.md):
             logger.warning(
                 "post-add-on tree failed the structural gate (%d heading(s), max-level %d) "
                 "for %s; using raw docling markdown (%d headings)",
                 post_headings,
-                _max_heading_level(md),
+                _max_heading_level(post_candidate.md),
                 pdf_path,
                 raw_headings,
             )
-            md = md_raw
-            heading_pages_for_md = heading_pages_raw
+            selected = raw_candidate
+
+    # Runtime contract: the selected source must be a Candidate so the
+    # downstream pipeline can rely on .md / .heading_pages being present
+    # and the pair being frozen (immutable).
+    if not isinstance(selected, Candidate):
+        raise TypeError(
+            f"source selection must yield a Candidate, got {type(selected).__name__}"
+        )
+
+    md = selected.md
+    heading_pages_for_md = selected.heading_pages
 
     # String-mutating stages, each independently fail-open with provenance.
     # Split into pre-fallback and post-fallback so body_for_containment is
@@ -3443,7 +3478,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         ("normalize_indented_headings", _normalize_indented_headings),
     ]
     md, pre_records = _run_stages(md, pre_fallback_stages)
-    extraction_stages.extend(pre_records)
+    extraction_stages.update(pre_records)
 
     # RFC-024 D1 fix: snapshot md BEFORE _document_level_text_fallback appends
     # the raw pdfium text layer, so the containment check in picture recovery
@@ -3459,7 +3494,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         )),
     ]
     md, post_records = _run_stages(md, post_fallback_stages)
-    extraction_stages.extend(post_records)
+    extraction_stages.update(post_records)
 
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was
@@ -3489,7 +3524,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
 
     # Provenance: picture recovery (non-string-mutation, manual entry).
     recovered_count = sum(1 for pr in pic_results if pr.get("ocr_text"))
-    extraction_stages.append({
+    extraction_stages["picture_recovery"] = {
         "name": "picture_recovery",
         "chars_before": len(md),
         "chars_after": len(md),
@@ -3500,18 +3535,18 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         "error": None,
         "regions": len(pic_results),
         "recovered": recovered_count,
-    })
+    }
 
     return md, pic_results, extraction_stages
 
 
-def _pdf_to_markdown_no_pics(pdf_path: str) -> tuple[str, list[PictureResult], list[dict]]:
+def _pdf_to_markdown_no_pics(pdf_path: str) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """Adapter: the pymupdf4llm route recovers no picture regions and no
     per-stage provenance to match the ``(md, pics, stages)`` chain contract."""
-    return pdf_to_markdown(pdf_path), [], []
+    return pdf_to_markdown(pdf_path), [], {}
 
 
-def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list[PictureResult], list[dict]]]]]:
+def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list[PictureResult], dict[str, dict]]]]]:
     """Ordered ``(name, fn)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
 
     Every chain callable returns ``(markdown, pic_results, extraction_stages)``.
@@ -3544,7 +3579,7 @@ def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list
             "ALLOW_AGPL_FALLBACK=true"
         )
 
-    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult], list[dict]]]]] = []
+    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult], dict[str, dict]]]]] = []
     if ALLOW_AGPL_FALLBACK:
         chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics))
     if have_docling:
