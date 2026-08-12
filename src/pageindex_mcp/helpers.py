@@ -97,6 +97,75 @@ class TreeGateResult:
         yield str(self)
 
 
+@dataclass(frozen=True)
+class ExtractionSnapshot:
+    """Zone-5: frozen snapshot of pre-retry extraction state.
+
+    Consolidates the six+ separate ``pre_retry_*`` variables into a single
+    immutable object.  ``first_defect`` is intentionally excluded -- it is
+    write-once per extraction attempt and must NOT be reverted on retry loss.
+    """
+    result: dict
+    ok: bool
+    defect: TreeDefect
+    reason_str: str
+    gate_result: TreeGateResult | None
+    total_chars: int
+    md_content: str | None
+    pic_results: list
+    used_converter: str | None
+
+    @classmethod
+    def from_state(
+        cls,
+        *,
+        result: dict,
+        ok: bool,
+        defect: TreeDefect,
+        reason_str: str,
+        gate_result: TreeGateResult | None,
+        total_chars: int,
+        md_content: str | None,
+        pic_results: list,
+        used_converter: str | None,
+    ) -> "ExtractionSnapshot":
+        return cls(
+            result=result,
+            ok=ok,
+            defect=defect,
+            reason_str=reason_str,
+            gate_result=gate_result,
+            total_chars=total_chars,
+            md_content=md_content,
+            pic_results=pic_results,
+            used_converter=used_converter,
+        )
+
+    def restore(self) -> tuple:
+        """Return all fields as a tuple for easy destructuring.
+
+        Usage::
+
+            result, ok, reason, gate_result, original_gate_result, \
+                md_content, pic_results, used_converter = snapshot.restore()
+            total_chars = snapshot.total_chars
+
+        ``gate_result`` appears twice (for both ``gate_result`` and
+        ``original_gate_result``) because both must revert to the
+        pre-retry value on a lost retry.
+        """
+        return (
+            self.result,
+            self.ok,
+            self.reason_str,
+            self.gate_result,
+            self.gate_result,  # original_gate_result
+            self.md_content,
+            self.pic_results,
+            self.used_converter,
+        )
+
+
 class _ReasonPolicy(StrEnum):
     RAISE = "raise"
     RETRY_OCR = "retry_ocr"
@@ -137,6 +206,55 @@ HARD_FAIL_DEFECTS: frozenset[TreeDefect] = frozenset({
     TreeDefect.SUSPECT_DENSITY,
     TreeDefect.ARABIC_LOW_CONTENT_RATIO,
 })
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Route StrEnum + decide_route — sole routing decider
+# ---------------------------------------------------------------------------
+
+
+class Route(StrEnum):
+    TREE = "tree"
+    FLAT = "flat"
+    REJECT = "reject"
+    PERSIST_FAIL = "persist_fail"
+
+
+def decide_route(defect: TreeDefect, flat_routing_enabled: bool = True) -> Route:
+    """Determine the extraction route from a :class:`TreeDefect`.
+
+    Performs an exhaustive :data:`REASON_POLICY` lookup:
+
+    * OK / CAP_MARGINAL -> TREE (tree is usable)
+    * RETRY_OCR -> TREE (retry handled upstream)
+    * RETRY_RTL -> FLAT when ``flat_routing_enabled`` (RFC-036 D3: flat
+      is the fallback after RTL repair exhausted), else REJECT
+    * RAISE -> FLAT when ``flat_routing_enabled`` and defect is
+      NODE_COUNT_LOW or DEPTH_LOW, else REJECT
+    * PERSIST_FAIL -> PERSIST_FAIL
+
+    This is the **sole** routing decider -- no competing definitions.
+    """
+    policy = REASON_POLICY[defect]
+    if policy == _ReasonPolicy.OK:
+        return Route.TREE
+    if policy == _ReasonPolicy.RETRY_OCR:
+        return Route.TREE  # retry handled upstream
+    if policy == _ReasonPolicy.RETRY_RTL:
+        # After retry exhausted, flat is the fallback (RFC-036 D3)
+        return Route.FLAT if flat_routing_enabled else Route.REJECT
+    if policy == _ReasonPolicy.CAP_MARGINAL:
+        return Route.TREE
+    if policy == _ReasonPolicy.PERSIST_FAIL:
+        return Route.PERSIST_FAIL
+    if policy == _ReasonPolicy.RAISE:
+        if flat_routing_enabled and defect in (
+            TreeDefect.NODE_COUNT_LOW,
+            TreeDefect.DEPTH_LOW,
+        ):
+            return Route.FLAT
+        return Route.REJECT
+    assert False, f"unhandled policy {policy!r} for defect {defect!r}"  # exhaustiveness
 
 
 # ---------------------------------------------------------------------------
@@ -1731,13 +1849,15 @@ def _dedupe_chart_text_lines(text: str) -> str:
     return "".join(kept)
 
 
-def _defect_from_reason_str(reason: str) -> TreeDefect:
+def _defect_from_reason_str(reason: str | None) -> TreeDefect:
     """Parse a validate_reason string back into a :class:`TreeDefect`.
 
     Handles both exact matches (``"garbling"``) and prefix matches with
     parenthesised detail (``"empty_node_contamination(fraction=0.35,...)"``)
     by matching against each ``TreeDefect.value``.
     """
+    if not reason:
+        return TreeDefect.OK
     for td in TreeDefect:
         if td.value and (reason == td.value or reason.startswith(td.value + "(")):
             return td

@@ -142,10 +142,10 @@ class TestFalsePositiveRegressionGuard:
         """Anchor the characterization helpers above to the REAL module:
         client.py must gate all three recovery paths (OCR escalation, VLM
         fallback, D7 Tesseract-raster) on exact-set membership against
-        {"garbling", "node_garbling"}.  Zone-1 removed dead
-        "visual_order_garble" (never produced by validate_tree)."""
+        {GARBLING, NODE_GARBLING}.  Zone-5 replaced string checks with
+        TreeDefect enum comparisons."""
         source = inspect.getsource(client_mod)
-        assert source.count('reason in ("garbling", "node_garbling")') >= 3
+        assert source.count('first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)') >= 3
         assert 'reason == "garbling" and ext' not in source
 
     def test_source_gates_use_tuple_membership_not_substring_match(self):

@@ -44,8 +44,12 @@ from .converters import (
     zdr_egress_gate,
 )
 from .helpers import (
+    ExtractionSnapshot,
     LowQualityTreeError,
+    Route,
+    TreeDefect,
     TreeGateResult,
+    _defect_from_reason_str,
     _extract_page_hits,
     _flat_block_primary_text,
     _flat_text_is_garbled,
@@ -59,6 +63,7 @@ from .helpers import (
     _tree_max_leaf_ratio,
     classify_verdict,
     compute_image_enrichment_ratio,
+    decide_route,
     route_and_extract_flat,
     split_oversized_leaf_nodes,
     validate_tree,
@@ -1246,10 +1251,17 @@ class CustomPageIndexClient(PageIndexClient):
             # unpack for legacy string-based branching below.
             gate_result: TreeGateResult | None = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
             ok, reason = _vt_raw
-            # D2 (RFC-025): the tree-build's original failure reason, captured before
-            # any recovery retry below overwrites `reason` (e.g. to "node_count<3" so
-            # the flat-routing branch is entered) — threaded to the flat-path garble
-            # gate so garble-by-default can key off the true first-pass reason.
+            # Zone-5: typed first_defect — write-once per extraction attempt.
+            # Captures the ORIGINAL validate_tree defect before any recovery
+            # branch overwrites `reason`.  Used for routing decisions and
+            # garble-by-default keying (replaces string-based original_reason).
+            first_defect: TreeDefect = (
+                gate_result.defect if gate_result else _defect_from_reason_str(reason)
+            )
+            # Zone-5: decide the extraction route from the original defect.
+            # Recovery branches may override this to Route.FLAT when they
+            # produce usable markdown (replacing reason = "node_count<3" hijack).
+            route = decide_route(first_defect, settings.flat_doc_routing)
             original_reason = reason
             original_gate_result: TreeGateResult | None = gate_result
 
@@ -1260,7 +1272,8 @@ class CustomPageIndexClient(PageIndexClient):
             # without an attempted recovery.
             total_chars = len(_flatten_tree_text(result.get("structure", [])))
             low_content_ocr_eligible = (
-                reason == "node_count<3" and total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
+                first_defect == TreeDefect.NODE_COUNT_LOW
+                and total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
             )
 
             # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
@@ -1270,32 +1283,27 @@ class CustomPageIndexClient(PageIndexClient):
             if (
                 not ok
                 and (
-                    reason in ("garbling", "node_garbling")
+                    first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
                     or low_content_ocr_eligible
                 )
                 and ext == ".pdf"
                 and _OCR_ESCALATION
             ):
-                # D4 (RFC-028): snapshot the pre-retry result so a retry that produces
-                # LESS content (e.g. the retry's OCR also fails on the same underlying
-                # defect) doesn't unconditionally overwrite an already-better result.
-                pre_retry_result = result
-                pre_retry_ok = ok
-                pre_retry_reason = reason
-                pre_retry_gate_result = gate_result
-                pre_retry_chars = total_chars
-                # RFC-030 D1: snapshot the mutable extraction state alongside
-                # result/ok/reason so a lost retry reverts ALL six variables
-                # atomically -- otherwise the tree path (result) and the
-                # downstream flat-routing path (md_content) can diverge on
-                # which extraction was actually used.
-                pre_retry_md_content = md_content
-                pre_retry_pic_results = pic_results
-                # RFC-034 D5: the escalation below re-extracts via docling (remote
-                # service or local pdf_to_markdown_docling) regardless of which
-                # converter won the primary pass — snapshot so provenance reverts
-                # with the rest of the state when the retry loses.
-                pre_retry_used_converter = used_converter
+                # D4 (RFC-028) + Zone-5: snapshot the pre-retry extraction state
+                # so a retry that produces LESS content doesn't unconditionally
+                # overwrite an already-better result.  ExtractionSnapshot
+                # consolidates all mutable variables into a single frozen object.
+                pre_retry = ExtractionSnapshot(
+                    result=result,
+                    ok=ok,
+                    defect=first_defect,
+                    reason_str=reason,
+                    gate_result=gate_result,
+                    total_chars=total_chars,
+                    md_content=md_content,
+                    pic_results=pic_results,
+                    used_converter=used_converter,
+                )
                 try:
                     # The existing text layer garbled, so it is an UNRELIABLE language
                     # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
@@ -1385,12 +1393,12 @@ class CustomPageIndexClient(PageIndexClient):
                             return None
                         return Counter(tokens).most_common(1)[0][1] / len(tokens)
 
-                    if post_retry_chars < pre_retry_chars:
+                    if post_retry_chars < pre_retry.total_chars:
                         retry_wins = False
-                    elif post_retry_chars == pre_retry_chars:
+                    elif post_retry_chars == pre_retry.total_chars:
                         retry_wins = ok or (
                             _is_garbled_blob(
-                                _flatten_tree_text(pre_retry_result.get("structure", [])),
+                                _flatten_tree_text(pre_retry.result.get("structure", [])),
                                 expected_script=expected_script,
                             )
                             and not _is_garbled_blob(
@@ -1406,12 +1414,12 @@ class CustomPageIndexClient(PageIndexClient):
                         # and the post-retry density is within 20% of the pre-retry density,
                         # the retry has not meaningfully de-garbled — revert to pre-retry.
                         _pre_garble_flag = _is_garbled_blob(
-                            _flatten_tree_text(pre_retry_result.get("structure", [])),
+                            _flatten_tree_text(pre_retry.result.get("structure", [])),
                             expected_script=expected_script,
                         )
                         if _pre_garble_flag:
                             _pre_density = _repeating_token_density(
-                                _flatten_tree_text(pre_retry_result.get("structure", []))
+                                _flatten_tree_text(pre_retry.result.get("structure", []))
                             )
                             _post_density = _repeating_token_density(
                                 _flatten_tree_text(result.get("structure", []))
@@ -1458,14 +1466,10 @@ class CustomPageIndexClient(PageIndexClient):
                         # variables together so the tree (result) and the
                         # flat-routing markdown (md_content/tmp_md_path/
                         # pic_results) cannot diverge on which extraction won.
-                        result = pre_retry_result
-                        ok = pre_retry_ok
-                        reason = pre_retry_reason
-                        gate_result = pre_retry_gate_result
-                        original_gate_result = pre_retry_gate_result
-                        md_content = pre_retry_md_content
-                        pic_results = pre_retry_pic_results
-                        used_converter = pre_retry_used_converter
+                        # Zone-5: atomic revert via ExtractionSnapshot
+                        result, ok, reason, gate_result, original_gate_result, \
+                            md_content, pic_results, used_converter = pre_retry.restore()
+                        total_chars = pre_retry.total_chars
                         if tmp_md_path and os.path.exists(tmp_md_path):
                             os.unlink(tmp_md_path)
                         with tempfile.NamedTemporaryFile(
@@ -1485,7 +1489,7 @@ class CustomPageIndexClient(PageIndexClient):
             # defect (`reconstruct_bidi_order` already exists). Attempt the repair and
             # re-validate BEFORE deciding the verdict; only fall through to
             # LowQualityTreeError if the reversed reading still scores higher post-repair.
-            if not ok and reason == "rtl_reversal" and ext == ".pdf":
+            if not ok and first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf":
                 try:
 
                     def _repair_rtl_nodes(nodes: list) -> None:
@@ -1526,7 +1530,7 @@ class CustomPageIndexClient(PageIndexClient):
             # tree-path text still is.
             if (
                 not ok
-                and reason == "rtl_reversal"
+                and first_defect == TreeDefect.RTL_REVERSAL
                 and ext == ".pdf"
                 and settings.flat_doc_routing
                 and md_content
@@ -1548,7 +1552,7 @@ class CustomPageIndexClient(PageIndexClient):
                             "preferring flat result",
                             filename,
                         )
-                        reason = "node_count<3"
+                        route = Route.FLAT
                 except Exception as _flat_cmp_exc:
                     logger.warning(
                         "RFC-033 D8: flat-path reversal comparison failed for %s (%s); "
@@ -1561,7 +1565,7 @@ class CustomPageIndexClient(PageIndexClient):
             # whose OCR escalation was either skipped or failed.
             if (
                 not ok
-                and reason in ("garbling", "node_garbling")
+                and first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
                 and ext == ".pdf"
                 and settings.vlm_fallback
             ):
@@ -1606,7 +1610,7 @@ class CustomPageIndexClient(PageIndexClient):
                     # recovery here (supersedes RFC-023 D7 test case (d)).
                     if (
                         not ok
-                        and reason in ("garbling", "node_garbling")
+                        and first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
                         and _D7_GARBLE_RECOVERY_ENABLED
                     ):
                         recovered_md = await _attempt_tesseract_raster_recovery(
@@ -1618,7 +1622,7 @@ class CustomPageIndexClient(PageIndexClient):
                             # ordinals no longer apply (finding 4/7), matching the
                             # VLM-recovery convention above.
                             pic_results = []
-                            reason = "node_count<3"
+                            route = Route.FLAT
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
                     logger.error(
@@ -1644,7 +1648,7 @@ class CustomPageIndexClient(PageIndexClient):
                             # picture ordinals no longer apply (finding 4/7),
                             # matching the VLM-recovery convention above.
                             pic_results = []
-                            reason = "node_count<3"
+                            route = Route.FLAT
 
             # D1/RFC-023 D11: image-dominant PDFs (>50% <!-- image --> lines) get one
             # OCR retry before falling through to flat routing — rescues scanned PDFs
@@ -1653,7 +1657,7 @@ class CustomPageIndexClient(PageIndexClient):
             # image-only markdown produces too few tree nodes (node_count<3/depth<2).
             if (
                 not ok
-                and reason in ("node_count<3", "depth<2")
+                and first_defect in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW)
                 and ext == ".pdf"
                 and _OCR_ESCALATION
                 and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
@@ -1760,7 +1764,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 filename,
                             )
                             ok = False
-                            reason = "node_count<3"
+                            route = Route.FLAT
                     except Exception as _flat_exc:
                         logger.warning(
                             "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
@@ -1788,22 +1792,20 @@ class CustomPageIndexClient(PageIndexClient):
                     filename,
                 )
                 ok = False
-                reason = "node_count<3"
+                route = Route.FLAT
 
             if not ok:
-                # FLAT-03-C1: a non-garbling rejection (node_count<3 / depth<2) is a
-                # *flat* document, not a defective one — route it to the flat success
-                # path instead of raising. FLAT-03-C2: 'garbling' is the only remaining
-                # terminal low_quality_tree reason and always raises. FLAT-03-C3: the
-                # flat_doc_routing kill-switch reverts to legacy reject-on-any-failure.
-                # RFC-036 D3: 'rtl_reversal' joins the whitelist -- when the RTL repair
+                # FLAT-03-C1: Zone-5 route-based flat routing. When
+                # decide_route (or a recovery branch) determined Route.FLAT,
+                # route the document to the flat success path instead of
+                # raising.  FLAT-03-C2: garbling/reordered/persist_fail
+                # routes still raise or persist-as-FAIL below.  FLAT-03-C3:
+                # the flat_doc_routing kill-switch is embedded in decide_route
+                # (flat_routing_enabled parameter).
+                # RFC-036 D3: 'rtl_reversal' joins the flat route -- when the RTL repair
                 # (reconstruct_bidi_order) above fails to converge, the flat-path garble
                 # gate below is the safety net, not a terminal raise.
-                if settings.flat_doc_routing and reason in (
-                    "node_count<3",
-                    "depth<2",
-                    "rtl_reversal",
-                ):
+                if route == Route.FLAT:
                     flat_md = md_content
                     if flat_md is None and tmp_md_path is not None:
                         flat_md = await asyncio.to_thread(
@@ -1841,11 +1843,16 @@ class CustomPageIndexClient(PageIndexClient):
                         # passed the tree gate (e.g. numeric-junk docs routed
                         # here via node_count<3). Runs post-splice (D1) so
                         # image-OCR-derived content is included.
+                        # Zone-5: _flat_garble_unrecovered replaces the
+                        # reason != "garbling" string check as the garble-gate
+                        # status flag (reason is no longer the routing decider).
+                        _flat_garble_unrecovered = False
                         if _flat_text_is_garbled(
                             flat_md,
                             expected_script=expected_script,
-                            original_reason=original_reason,
+                            original_reason=first_defect,
                         ):
+                            _flat_garble_unrecovered = True
                             reason = "garbling"
                             logger.warning(
                                 "Flat-path garble gate triggered for %s; "
@@ -1875,7 +1882,7 @@ class CustomPageIndexClient(PageIndexClient):
                                         # New markdown source — converter picture
                                         # ordinals no longer apply (finding 4/7).
                                         pic_results = []
-                                        reason = "node_count<3"
+                                        _flat_garble_unrecovered = False
                                         VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
                                     else:
                                         VLM_FALLBACK_TOTAL.labels(result="still_garbled").inc()
@@ -1887,7 +1894,7 @@ class CustomPageIndexClient(PageIndexClient):
                                         vlm_exc,
                                         exc_info=True,
                                     )
-                        if reason != "garbling":
+                        if not _flat_garble_unrecovered:
                             doc_id = str(uuid.uuid4())
 
                             # RFC-004 user-locked: VLM describe stays OFF by default;
@@ -2077,25 +2084,17 @@ class CustomPageIndexClient(PageIndexClient):
                             self.last_content_class = content_class
                             return doc_id
 
-                # RFC-036 D3: 'rtl_reversal' stays in the terminal tuple. When
-                # flat_doc_routing is enabled the whitelist branch above handles it
-                # (persisted flat artifact and return, reason overridden to
-                # 'garbling' by the flat-path garble gate, or flat_zero_block
-                # raise) — so reaching here with reason still == 'rtl_reversal'
-                # means the flat fallback was unavailable (routing disabled, or
-                # flat_md was None for a binary input with no markdown) and the
-                # HR5 reject must fire.
-                if reason in (
-                    "garbling",
-                    "node_garbling",
-                    "node_count<3",
-                    "depth<2",
-                    "rtl_reversal",
-                    "reordered",
-                ):
-                    LOW_QUALITY_TREES.labels(reason=reason).inc()
-                    logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, reason)
-                    raise LowQualityTreeError(reason)
+                # Zone-5: route-based terminal reject.  Route.REJECT covers
+                # defects that always raise (garbling, node_garbling, reordered
+                # when flat routing is off).  Route.FLAT reaching here means
+                # the flat fallback was unavailable (flat_md was None for a
+                # binary input with no markdown) or the flat-path garble gate
+                # overrode reason to 'garbling'.  Both must raise.
+                if route in (Route.REJECT, Route.FLAT) or reason == "garbling":
+                    _reject_reason = reason if reason == "garbling" else first_defect.value
+                    LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
+                    logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, _reject_reason)
+                    raise LowQualityTreeError(_reject_reason)
 
                 # RFC-030 D2: unhandled validate_tree reason (low_content_density,
                 # suspect_density, empty_node_contamination, arabic_low_content_ratio)
