@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
 from .script import AR_CHAR_RE as _AR_LETTER_RE
 from .script import AR_CHAR_RE as _AR_SCRIPT_RE
-from .script import _word_has_reversed_morphology, normalize_dashes
+from .script import BlobKind, RtlDecision, _word_has_reversed_morphology, apply_rtl, decide_rtl, normalize_dashes
 from .script import arabic_readability_score as _arabic_readability_score
 from .script import is_arabic_char as _is_arabic_char
 
@@ -1440,107 +1440,66 @@ def _fix_fi_hash_substitution(md: str) -> str:
 
 
 def _text_is_logical_order(text: str) -> bool:
-    """Detect whether Arabic text is already in correct logical reading order.
+    """Zone-3: thin shim -- True when ``decide_rtl`` says text is NOT reversed.
 
-    Samples Arabic-heavy lines and compares readability scores of the original
-    vs get_display() output. If the original scores equal or higher, the text
-    is already logical order and get_display() would double-reverse it."""
-    from bidi.algorithm import get_display
-
-    sampled = 0
-    orig_total = 0
-    disp_total = 0
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or len(stripped) < 10:
-            continue
-        ar_count = sum(1 for c in stripped if _is_arabic_char(c))
-        if ar_count / len(stripped) <= 0.3:
-            continue
-        orig_words = stripped.split()
-        disp_line = get_display(stripped)
-        disp_words = disp_line.split()
-        orig_total += _arabic_readability_score(orig_words)
-        disp_total += _arabic_readability_score(disp_words)
-        sampled += 1
-        if sampled >= 8:
-            break
-    if sampled == 0:
-        return False
-    return sampled > 0 and orig_total > 0 and orig_total >= disp_total
+    Previously a standalone 30-line sampling function; now delegates to
+    ``decide_rtl`` from script.py. Kept for internal callers that need
+    the boolean sense (is-logical vs. is-reversed).
+    """
+    decision: RtlDecision = decide_rtl(text)
+    return not decision.reversed
 
 
 def _heading_is_logical_order(heading_text: str) -> bool:
-    """Per-heading logical-vs-visual probe (RFC-033 D2 Part A).
+    """Zone-3: thin shim for per-heading logical-order probe.
 
-    Headings are short (often under the 10-char-per-line floor
-    ``_text_is_logical_order`` uses for its multi-line sampling — e.g.
-    ``المحتويات`` is 9 chars) and are evaluated as a single unit rather than
-    sampled, so the same readability-score comparison is applied directly to
-    the whole heading with no length floor. Falls back to
-    ``_word_has_reversed_morphology`` when neither ordering scores any common
-    words or definite articles."""
+    Delegates to ``decide_rtl`` on the heading text (sample_count=1
+    since headings are a single unit).
+    """
     stripped = heading_text.strip()
     if not stripped or not any(_is_arabic_char(c) for c in stripped):
         return True
-    from bidi.algorithm import get_display
-
-    orig_words = stripped.split()
-    disp_words = get_display(stripped).split()
-    orig_score = _arabic_readability_score(orig_words)
-    disp_score = _arabic_readability_score(disp_words)
-    if orig_score == 0 and disp_score == 0:
-        return not any(_word_has_reversed_morphology(w) for w in orig_words)
-    return orig_score >= disp_score
+    decision: RtlDecision = decide_rtl(stripped, sample_count=1)
+    return not decision.reversed
 
 
-def reconstruct_bidi_order(text: str) -> str:
-    """Reorder visual-order Arabic runs into logical reading order (RFC-015 D7).
+def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str:
+    """Zone-3: apply_rtl shim replacing the old bidi reconstructor.
 
-    Some PDFs store Arabic in visual/glyph order (presentation forms) rather than
-    logical reading order — the characters are correct, just reversed. ``python-bidi``
-    (pure-Python, MIT, Unicode BiDi Algorithm UAX #9) restores logical order. Applied
-    per line and gated on an Arabic ratio > 0.15 over the WHOLE text, so German/English
-    documents are byte-for-byte untouched (zero false-positive risk). A leading markdown
-    heading marker is split off and re-prefixed so BiDi reordering never moves the
-    ``#`` prefix — heading-depth inference runs right after D7 and must still see it.
-    Includes a logical-vs-visual order probe: if the text already reads correctly
-    (docling outputs logical order for modern PDFs), get_display() is skipped to
-    prevent double-reversal.
-    Even when the full-document reorder is skipped (Arabic ratio <=0.15 or already
-    logical order), heading markers are still individually corrected via
-    ``_BIDI_HEADING_PREFIX_RE`` so bilingual documents don't lose heading structure
-    to md_to_tree() (RFC-023 D9). RFC-023 D9 made this heading-marker correction
-    unconditional; RFC-033 D2 (Part A) narrows that scope: get_display() is applied
-    to a heading only when ``_heading_is_logical_order`` finds it is NOT already
-    in logical order, so the anti-double-reversal guarantee documented above also
-    holds for headings — an already-logical-order heading is never reversed by us.
-    Documents with zero Arabic characters are still returned untouched with no
-    further processing (perf preserved).
-    Pure local computation — no LLM, no network (HR3)."""
+    Two-level strategy (preserves RFC-023 D9 per-heading correction):
+    1. Document-level: if decide_rtl says the whole text is reversed,
+       apply_rtl repairs all lines.
+    2. Per-heading: even when the document is NOT reversed overall,
+       each heading line is checked individually — a visual-order
+       heading in an otherwise-logical document still gets corrected.
+
+    ``expected_script`` is accepted for call-site compatibility but is
+    unused (``decide_rtl`` infers script from content).
+    """
     if not text:
         return text
     arabic = len(_AR_SCRIPT_RE.findall(text))
     if arabic == 0:
         return text
-    reorder_body = arabic / len(text) > 0.15 and not _text_is_logical_order(text)
 
-    from bidi.algorithm import get_display
+    decision: RtlDecision = decide_rtl(text)
+    if decision.reversed:
+        return apply_rtl(text, reversed_flag=True)
 
     out: list[str] = []
+    changed = False
     for line in text.splitlines(keepends=True):
         m = _BIDI_HEADING_PREFIX_RE.match(line)
         if m:
             heading_text = m.group(2)
-            if _heading_is_logical_order(heading_text):
-                out.append(line)
-            else:
-                out.append(m.group(1) + get_display(heading_text))
-        elif reorder_body:
-            out.append(get_display(line))
-        else:
-            out.append(line)
-    return "".join(out)
+            if not _heading_is_logical_order(heading_text):
+                repaired = apply_rtl(heading_text.rstrip(), reversed_flag=True)
+                eol = line[len(line.rstrip()):]
+                out.append(m.group(1) + repaired + eol)
+                changed = True
+                continue
+        out.append(line)
+    return "".join(out) if changed else text
 
 
 # Split a leading markdown heading marker off a line so reconstruct_bidi_order reorders
@@ -1548,31 +1507,18 @@ def reconstruct_bidi_order(text: str) -> str:
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
 
 
-
 def _fix_residual_rtl_reversal(text: str) -> str:
+    """Zone-3: thin shim delegating to ``apply_rtl``.
+
+    Previously a standalone per-line word-reversal function with a 0.5
+    Arabic-ratio threshold; now delegates to the consolidated decider.
+    """
     if not text:
         return text
-    out: list[str] = []
-    for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        if not stripped:
-            out.append(line)
-            continue
-        arabic = sum(1 for c in stripped if _is_arabic_char(c))
-        if arabic / len(stripped) <= 0.5:
-            out.append(line)
-            continue
-        words = stripped.split()
-        reversed_words = list(reversed(words))
-        fwd_score = _arabic_readability_score(words)
-        rev_score = _arabic_readability_score(reversed_words)
-        if rev_score > fwd_score:
-            indent = line[: len(line) - len(line.lstrip())]
-            trail = line[len(line.rstrip()) :]
-            out.append(indent + " ".join(reversed_words) + trail)
-        else:
-            out.append(line)
-    return "".join(out)
+    decision: RtlDecision = decide_rtl(text)
+    if decision.reversed:
+        return apply_rtl(text, reversed_flag=True)
+    return text
 
 
 # RFC-015 D6 gate. Mirrors client.py:66 VERBATIM — two independent module-level copies
@@ -1742,8 +1688,9 @@ def _text_layer_has_content(page) -> bool:
         return False
     if _TEXT_LAYER_GARBLE_CHECK_ENABLED:
         from .helpers import _is_garbled_blob
+        from .script import infer_script
 
-        if _is_garbled_blob(text):
+        if _is_garbled_blob(text, expected_script=infer_script(text), blob_kind=BlobKind.TREE_TEXT):
             return False
     return True
 
@@ -1840,8 +1787,9 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
     from .helpers import _is_garbled_blob
+    from .script import infer_script
 
-    if _is_garbled_blob(full_text):
+    if _is_garbled_blob(full_text, expected_script=infer_script(full_text), blob_kind=BlobKind.TREE_TEXT):
         logger.warning(
             "document-level text-layer fallback skipped for %s: text layer is garbled",
             pdf_path,

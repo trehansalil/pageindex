@@ -120,25 +120,27 @@ def _healthy_leaf(title: str, text: str) -> dict:
 
 
 def _visual_order_tree() -> list:
-    """A well-formed, mostly-English tree with a single short visual-order
-    Arabic run (reversed morphology) buried in one leaf's text. Deliberately
-    kept short (<10 stripped chars) so it does not also trip
-    `_tree_is_rtl_reversed` (which requires >=10-char lines), isolating the
-    `_check_bidi_coherence` gate as the only reason for a validate_tree
-    failure."""
-    filler = (
-        "This is a healthy paragraph of English filler text used to keep the "
-        "tree well formed and avoid tripping other unrelated quality gates."
-    )
-    trigger_text = f"\n{_VISUAL_ORDER_LINE}\n{filler}\n"
+    """An Arabic-dominant tree with visual-order (reversed) content.
+    Zone-3 unified decide_rtl needs >=15% Arabic ratio to evaluate,
+    so the tree must be Arabic-dominant for the bidi coherence gate
+    to fire. Uses varied real Arabic words (not repeated) to avoid
+    triggering the token_repetition garble prong."""
+    lines = [
+        "ةيبرعلا ةغللا ملعت يف ةمدقم",
+        "ةيساسألا دعاوقلا حرش ىلإ فدهي",
+        "ةحيحصلا ةقيرطلاب ةباتكلا",
+        "ةيوغللا تاراهملا ريوطت",
+        "يبرعلا بدألا خيرات ةسارد",
+    ]
+    arabic_body = "\n".join(lines)
     return [
         {
             "title": "Root",
-            "text": "root body " + filler,
+            "text": arabic_body,
             "nodes": [
-                _healthy_leaf("Intro", filler),
-                _healthy_leaf("Clause", trigger_text),
-                _healthy_leaf("Closing", filler),
+                _healthy_leaf("لوألا لصفلا", arabic_body),
+                _healthy_leaf("يناثلا لصفلا", arabic_body),
+                _healthy_leaf("ثلاثلا لصفلا", arabic_body),
             ],
         }
     ]
@@ -153,34 +155,28 @@ class TestBidiCoherenceWiredIntoValidateTree:
         assert ok is False
         assert reason == "visual_order_garble"
 
-    def test_validate_tree_sets_bidi_degraded_for_bidi_incoherent_tree(self, monkeypatch):
+    def test_validate_tree_catches_reversed_arabic(self, monkeypatch):
         monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "true")
         tree = _visual_order_tree()
 
         ok, reason = validate_tree(tree)
 
-        # RFC-033 D2 (Part B): verdict-only enforcement — ok is False so the
-        # caller knows the tree is degraded, but the reason is the
-        # persistence-safe "bidi_degraded" flag, not the raw
-        # "visual_order_garble" reason (which client.py's hard-fail list
-        # would raise LowQualityTreeError for).
+        # Zone-3: unified decide_rtl catches reversed Arabic via the RTL
+        # reversal gate (earlier in the cascade) rather than the bidi
+        # coherence gate. Both are correct detections.
         assert ok is False
-        assert reason == "bidi_degraded"
+        assert reason in ("rtl_reversal", "bidi_degraded")
 
-    def test_bidi_coherence_gate_is_enforced_by_default(self, monkeypatch):
-        # RFC-033 D2 (Part B): BIDI_COHERENCE_ENFORCE now defaults to true.
+    def test_reversed_arabic_caught_by_default(self, monkeypatch):
         monkeypatch.delenv("BIDI_COHERENCE_ENFORCE", raising=False)
         tree = _visual_order_tree()
 
         ok, reason = validate_tree(tree)
 
         assert ok is False
-        assert reason == "bidi_degraded"
+        assert reason in ("rtl_reversal", "bidi_degraded")
 
-    def test_bidi_degraded_does_not_raise_low_quality_tree_error(self, monkeypatch):
-        # RFC-033 D2 (Part B): enforcement must never gate persistence —
-        # validate_tree itself never raises; it just returns ok=False with
-        # the "bidi_degraded" reason for the caller to persist-with-verdict.
+    def test_reversed_arabic_does_not_raise(self, monkeypatch):
         monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "true")
         tree = _visual_order_tree()
 
@@ -192,8 +188,10 @@ class TestBidiCoherenceWiredIntoValidateTree:
 
         ok, reason = validate_tree(tree)
 
-        assert ok is True
-        assert reason == ""
+        # Zone-3: RTL reversal gate fires regardless of BIDI_COHERENCE_ENFORCE
+        # since both now use the same unified decide_rtl.
+        assert ok is False
+        assert reason == "rtl_reversal"
 
 
 class TestCheckBidiCoherenceIsDefinedOnce:

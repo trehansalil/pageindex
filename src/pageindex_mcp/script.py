@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 
 # ---------------------------------------------------------------------------
 # Canonical Unicode block ranges
@@ -405,3 +406,167 @@ def order_verdict(
 
     reason = reason_on_fail if is_reversed else ""
     return OrderVerdict(reversed=is_reversed, sampled=sampled, reason=reason)
+
+
+# ---------------------------------------------------------------------------
+# Zone-3 consolidated RTL deciders
+# ---------------------------------------------------------------------------
+
+GARBLE_DIGIT_FLOOR: int = 500
+"""Minimum blob length for digit-ratio garble prong (Zone-3 constant)."""
+
+
+class BlobKind(StrEnum):
+    """Discriminates raw-markdown from tree-extracted text for garble
+    normalization (Zone-3: normalize_for_garble)."""
+    RAW_MARKDOWN = "RAW_MARKDOWN"
+    TREE_TEXT = "TREE_TEXT"
+
+
+_GARBLE_STRIP_RE = re.compile(r"#{1,6}\s|<!--.*?-->|\|", re.DOTALL)
+
+
+def normalize_for_garble(blob: str, kind: BlobKind) -> str:
+    """Normalize *blob* before garble ratio computation.
+
+    ``RAW_MARKDOWN`` strips heading markers (``#``), table pipes (``|``),
+    HTML comments (``<!-- ... -->``), and collapses whitespace so that
+    markdown scaffolding does not inflate the denominator.
+
+    ``TREE_TEXT`` returns the blob as-is (tree text is already stripped
+    of markdown syntax).
+    """
+    if kind == BlobKind.TREE_TEXT:
+        return blob
+    cleaned = _GARBLE_STRIP_RE.sub(" ", blob)
+    return " ".join(cleaned.split())
+
+
+@dataclass(frozen=True)
+class RtlDecision:
+    """Result of the consolidated RTL decision (Zone-3: decide_rtl)."""
+    reversed: bool
+    repair_effective: bool
+    sampled: int
+    method: str
+
+
+def decide_rtl(text: str, *, sample_count: int = 8) -> RtlDecision:
+    """Consolidated RTL decider -- ONE threshold, ONE sample count.
+
+    Wraps ``order_verdict`` with a fixed Arabic-ratio floor of 0.15 and
+    the ``morphology_or_display`` method (vocabulary + morphology signals
+    OR-combined). Returns an ``RtlDecision`` whose ``repair_effective``
+    field is True when ``apply_rtl`` would improve readability.
+
+    This replaces the six separate RTL decision sites that previously
+    existed across helpers.py and converters.py.
+    """
+    # Quick bail: not enough Arabic content.
+    if not text:
+        return RtlDecision(reversed=False, repair_effective=False,
+                           sampled=0, method="morphology_or_display")
+    ar_count = sum(1 for c in text if is_arabic_char(c))
+    if ar_count / max(len(text), 1) <= 0.15:
+        return RtlDecision(reversed=False, repair_effective=False,
+                           sampled=0, method="morphology_or_display")
+
+    verdict = order_verdict(
+        text,
+        unit="line",
+        min_len=10,
+        arabic_ratio_min=0.3,
+        density="chars",
+        method="morphology_or_display",
+        aggregate=True,
+        sample_count=sample_count,
+    )
+
+    if not verdict.reversed:
+        return RtlDecision(reversed=False, repair_effective=False,
+                           sampled=verdict.sampled,
+                           method="morphology_or_display")
+
+    # Probe whether apply_rtl would actually improve readability.
+    from bidi.algorithm import get_display
+
+    probe_lines = text.splitlines()
+    orig_score = 0
+    repaired_score = 0
+    for line in probe_lines[:sample_count]:
+        stripped = line.strip()
+        if not stripped or len(stripped) < 10:
+            continue
+        ar = sum(1 for c in stripped if is_arabic_char(c))
+        if ar / len(stripped) <= 0.3:
+            continue
+        orig_words = stripped.split()
+        orig_score += arabic_readability_score(orig_words)
+        disp_words = get_display(stripped).split()
+        repaired_score += arabic_readability_score(disp_words)
+
+    repair_effective = repaired_score > orig_score
+
+    return RtlDecision(
+        reversed=True,
+        repair_effective=repair_effective,
+        sampled=verdict.sampled,
+        method="morphology_or_display",
+    )
+
+
+def apply_rtl(text: str, *, reversed_flag: bool) -> str:
+    """Single-pass best-candidate RTL repair (Zone-3).
+
+    Evaluates three candidates for each line (as-is, get_display,
+    word-reversed) and picks the one with the highest Arabic
+    readability score. Applied uniformly to headings and body.
+
+    When *reversed_flag* is False the text is returned unchanged.
+    """
+    if not reversed_flag or not text:
+        return text
+
+    from bidi.algorithm import get_display
+
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+        ar_count = sum(1 for c in stripped if is_arabic_char(c))
+        if ar_count / max(len(stripped), 1) <= 0.15:
+            out.append(line)
+            continue
+
+        # Detect and preserve leading markdown heading prefix.
+        heading_prefix = ""
+        body = stripped
+        hdr_match = re.match(r"^(\s*#{1,6}[ \t]+)(.*)", stripped, re.DOTALL)
+        if hdr_match:
+            heading_prefix = hdr_match.group(1)
+            body = hdr_match.group(2)
+
+        # Three candidates
+        candidate_asis = body
+        candidate_display = get_display(body)
+        candidate_word_rev = " ".join(reversed(body.split()))
+
+        best = candidate_asis
+        best_score = arabic_readability_score(candidate_asis.split())
+
+        disp_score = arabic_readability_score(candidate_display.split())
+        if disp_score > best_score:
+            best = candidate_display
+            best_score = disp_score
+
+        rev_score = arabic_readability_score(candidate_word_rev.split())
+        if rev_score > best_score:
+            best = candidate_word_rev
+
+        # Reconstruct line preserving original indent/trailing whitespace.
+        indent = line[: len(line) - len(line.lstrip())]
+        trail = line[len(line.rstrip()):]
+        out.append(indent + heading_prefix + best + trail)
+    return "".join(out)

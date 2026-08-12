@@ -26,7 +26,6 @@ from .config import (
 from .converters import (
     PictureResult,
     _add_vlm_descriptions,
-    _detect_arabic_reversal,
     _tesseract_ocr_image,
     detect_ocr_langs,
     docx_to_markdown,
@@ -43,6 +42,7 @@ from .converters import (
     xlsx_to_markdown,
     zdr_egress_gate,
 )
+from .script import decide_rtl
 from .helpers import (
     ExtractionSnapshot,
     LowQualityTreeError,
@@ -1543,9 +1543,9 @@ class CustomPageIndexClient(PageIndexClient):
                         _flat_block_primary_text(b) for b in _flat_cmp_blocks
                     )
                     _tree_cmp_text = _flatten_tree_text(result.get("structure", []))
-                    if not _detect_arabic_reversal(
+                    if not decide_rtl(
                         _flat_cmp_text
-                    ) and _detect_arabic_reversal(_tree_cmp_text):
+                    ).reversed and decide_rtl(_tree_cmp_text).reversed:
                         logger.warning(
                             "RFC-033 D8: tree-path text still mirror-reversed after "
                             "bidi repair for %s; flat-path source is not reversed — "
@@ -2160,6 +2160,7 @@ class CustomPageIndexClient(PageIndexClient):
                 "total_tree_chars": len(_flatten_tree_text(structure)),
                 "build_sha": _CLIENT_BUILD_SHA,
                 "effective_config": _effective_cfg,
+                "decider_version": "zone3_decide_rtl_v1",
             }
             if _effective_config_at_job_start is not None:
                 meta["effective_config_at_job_start"] = _effective_config_at_job_start

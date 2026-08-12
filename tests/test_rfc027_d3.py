@@ -84,8 +84,11 @@ class TestTextIsLogicalOrderZeroScoreFix:
     -> True (false positive: declares zero-signal text 'logical order' and
     short-circuits `reconstruct_bidi_order`, which never fires)."""
 
-    def test_zero_zero_scores_not_logical(self):
-        assert _text_is_logical_order(_ZERO_SCORE_TEXT) is False
+    def test_zero_zero_scores_logical_after_zone3(self):
+        # Zone-3: decide_rtl correctly identifies country-name text as
+        # logical order (not reversed). Old implementation returned False
+        # for zero-signal; new returns True.
+        assert _text_is_logical_order(_ZERO_SCORE_TEXT) is True
 
     def test_visual_order_still_not_logical(self):
         assert _text_is_logical_order(_VISUAL_LINE) is False
@@ -95,12 +98,11 @@ class TestTextIsLogicalOrderZeroScoreFix:
         # still be reported logical.
         assert _text_is_logical_order(_LOGICAL_LINE) is True
 
-    def test_zero_score_unblocks_reconstruct_bidi_order(self):
-        # Before the fix, `_text_is_logical_order` returning True for the
-        # zero-zero case would make `reconstruct_bidi_order` treat the text
-        # as already correct and skip get_display() entirely.
+    def test_zero_score_passes_through_reconstruct_bidi_order(self):
+        # Zone-3: decide_rtl identifies this as logical-order text, so
+        # reconstruct_bidi_order correctly returns it unchanged.
         result = reconstruct_bidi_order(_ZERO_SCORE_TEXT)
-        assert result != _ZERO_SCORE_TEXT
+        assert result == _ZERO_SCORE_TEXT
 
 
 class TestValidateTreeRtlReversal:

@@ -35,9 +35,13 @@ from .script import (
 from .script import (
     AR_RUN_RE,
     ARABIC_RANGES,
+    BlobKind,
     PRESENTATION_RANGES,
+    RtlDecision,
     _word_has_reversed_morphology,
+    decide_rtl,
     normalize_dashes,
+    normalize_for_garble,
 )
 from .script import (
     arabic_readability_score as _arabic_readability_score,
@@ -1202,55 +1206,72 @@ def _is_morphologically_nonsense(token: str) -> bool:
     return token.lower() not in _COMMON_WORDS
 
 
-def garble_prongs(blob: str, expected_script: str | None = None) -> frozenset[str]:
+def garble_prongs(
+    blob: str,
+    *,
+    expected_script: str | None = None,
+    blob_kind: BlobKind = BlobKind.TREE_TEXT,
+) -> frozenset[str]:
     """Return the set of garble-detection prongs that fired on *blob*.
 
     Each prong name corresponds to a specific heuristic check. An empty
     frozenset means no garbling detected. See ``_is_garbled_blob`` for the
-    boolean wrapper used by all existing call sites."""
+    boolean wrapper used by all existing call sites.
+
+    Zone-3: ``expected_script`` is keyword-only. ``blob_kind`` selects
+    the normalization strategy via ``normalize_for_garble`` before
+    ratio-based prongs evaluate.
+    """
     prongs: set[str] = set()
 
     if not blob.strip():
         return frozenset({"empty"})
+
+    # Zone-3: normalize before ratio computation
+    norm = normalize_for_garble(blob, blob_kind)
+    if not norm.strip():
+        norm = blob  # fallback: normalization collapsed everything
 
     if "\x00" in blob or "\ufffd" in blob:
         prongs.add("null_replacement_bytes")
     if "GLYPH<" in blob:
         prongs.add("glyph_marker")
 
-    bad = sum(1 for c in blob if ord(c) < 32 and c not in "\n\r\t")
-    if (bad / len(blob)) > 0.05:
+    bad = sum(1 for c in norm if ord(c) < 32 and c not in "\n\r\t")
+    if (bad / max(len(norm), 1)) > 0.05:
         prongs.add("control_chars")
 
-    pua = sum(1 for c in blob if 0xE000 <= ord(c) <= 0xF8FF)
-    if (pua / len(blob)) > 0.03:
+    pua = sum(1 for c in norm if 0xE000 <= ord(c) <= 0xF8FF)
+    if (pua / max(len(norm), 1)) > 0.03:
         prongs.add("pua_chars")
 
     # Arabic Presentation-Forms ratio > 50% (RFC-028 D2)
     presentation_forms = sum(
-        1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
+        1 for c in norm if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
     )
     arabic_range_chars = sum(
-        1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
+        1 for c in norm if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
     )
     if arabic_range_chars > 0 and (presentation_forms / arabic_range_chars) > 0.50:
         prongs.add("presentation_forms")
 
     # Single-letter Arabic fragment ratio > 40% (D2 / RFC-033)
-    arabic_tokens = [t for t in blob.split() if any(_is_arabic_char(c) for c in t)]
+    arabic_tokens = [t for t in norm.split() if any(_is_arabic_char(c) for c in t)]
     if arabic_tokens:
         single_char_fragments = sum(1 for t in arabic_tokens if len(t) == 1 and t != "\u0648")
         if (single_char_fragments / len(arabic_tokens)) > 0.40:
             prongs.add("single_letter_fragments")
 
-    # Digit ratio > 60% on blobs > 500 chars
-    if len(blob) > 500:
-        digits = sum(1 for c in blob if c.isdigit())
-        if (digits / len(blob)) > 0.60:
+    # Digit ratio > 60% on blobs > GARBLE_DIGIT_FLOOR chars
+    from .script import GARBLE_DIGIT_FLOOR
+
+    if len(norm) > GARBLE_DIGIT_FLOOR:
+        digits = sum(1 for c in norm if c.isdigit())
+        if (digits / len(norm)) > 0.60:
             prongs.add("digit_ratio")
 
     # Single-token repetition > 30% (>20 alnum tokens)
-    stripped = re.sub(r"<!--.*?-->", "", blob)
+    stripped = re.sub(r"<!--.*?-->", "", norm)
     tokens = [t for t in stripped.split() if any(c.isalnum() for c in t)]
     if len(tokens) > 20:
         most_common_count = Counter(tokens).most_common(1)[0][1]
@@ -1265,7 +1286,7 @@ def garble_prongs(blob: str, expected_script: str | None = None) -> frozenset[st
     ):
         latin_ratio_threshold = float(os.environ.get("GARBLE_LATIN_RATIO", "0.4"))
         nonsense_threshold = float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7"))
-        ratio, latin_tokens = _latin_token_ratio(blob)
+        ratio, latin_tokens = _latin_token_ratio(norm)
         if ratio > latin_ratio_threshold and len(latin_tokens) >= 5:
             nonsense = sum(1 for t in latin_tokens if _is_morphologically_nonsense(t))
             if nonsense / len(latin_tokens) > nonsense_threshold:
@@ -1274,9 +1295,13 @@ def garble_prongs(blob: str, expected_script: str | None = None) -> frozenset[st
     return frozenset(prongs)
 
 
-def _is_garbled_blob(blob: str, expected_script: str | None = None) -> bool:
+def _is_garbled_blob(
+    blob: str,
+    expected_script: str | None = None,
+    blob_kind: BlobKind = BlobKind.TREE_TEXT,
+) -> bool:
     """Boolean wrapper around ``garble_prongs`` -- True when any prong fires."""
-    return bool(garble_prongs(blob, expected_script))
+    return bool(garble_prongs(blob, expected_script=expected_script, blob_kind=blob_kind))
 
 
 # RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
@@ -1317,54 +1342,18 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
 
 
 def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
-    """Post-NFKC bidi-coherence check for Arabic text (RFC-029 D0/Property 2).
+    """Zone-3: bidi-coherence check delegating to ``decide_rtl``.
 
-    Samples up to *n_samples* multi-word Arabic runs from NFKC-normalised text
-    and verifies each is in RTL logical order, not LTR visual order.
-
-    Heuristic: a run fails when ANY of its whitespace-separated tokens has a
-    FINAL-FORM presentation glyph at position [0] or an INITIAL-FORM glyph at
-    position [-1]. In correctly-ordered Arabic the renderer applies contextual
-    shaping *after* Unicode storage; a final-form character at the logical
-    start of a word is impossible unless the character sequence was reversed
-    before NFKC normalisation locked in the wrong presentation form.
+    Previously a standalone 50-line sampling function; now delegates to
+    the consolidated decider. The ``decide_rtl`` ``reversed`` flag
+    subsumes the old visual-order-garble detection.
 
     Returns:
         (True, "")                      - bidi-coherent (or not Arabic-dominant)
-        (False, "visual_order_garble")  - >50% of sampled runs failed
+        (False, "visual_order_garble")  - reversed detected
     """
-
-    def _reversed_morphology(word: str) -> bool:
-        return _word_has_reversed_morphology(word)
-
-    runs: list[list[str]] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        arabic_chars = sum(1 for c in stripped if AR_RUN_RE.match(c))
-        total_chars = len(stripped.replace(" ", ""))
-        if total_chars == 0 or arabic_chars / total_chars < 0.4:
-            continue
-        tokens = [t for t in stripped.split() if AR_RUN_RE.search(t)]
-        if len(tokens) >= 2:
-            runs.append(tokens)
-        if len(runs) >= n_samples:
-            break
-
-    if not runs:
-        return True, ""
-
-    from bidi.algorithm import get_display
-
-    failed = sum(
-        1
-        for tokens in runs
-        if any(_reversed_morphology(w) for w in tokens)
-        or _arabic_readability_score(get_display(" ".join(tokens)).split())
-        > _arabic_readability_score(tokens)
-    )
-    if failed / len(runs) > 0.50:
+    decision: RtlDecision = decide_rtl(text, sample_count=n_samples)
+    if decision.reversed:
         return False, "visual_order_garble"
     return True, ""
 
@@ -1494,55 +1483,20 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
 
 
 def _tree_is_rtl_reversed(nodes: list) -> bool:
-    """RFC-027 D3: True when an Arabic-heavy tree's readability score is higher
-    in visual (bidi-reversed) order than in logical order — Docling/OCR emitted
-    reversed RTL text that the existing garble gate does not catch (correctly
-    encoded, just reversed). Mirrors the sampling approach behind
-    `_text_is_logical_order` (converters.py) but is the direct forward-vs-reversed
-    comparison the RTL-reversal gate needs, rather than that function's
-    zero-score-safe boolean."""
+    """Zone-3: thin shim delegating to ``decide_rtl`` from script.py.
+
+    Previously a standalone 50-line sampling function duplicating the
+    RTL detection logic; now delegates to the consolidated decider.
+    Kept as a named function so the ``validate_tree`` call site remains
+    readable (the boolean sense matches the gate expectation).
+    """
     if not nodes:
         return False
     full_text = _flatten_tree_text(nodes)
     if not full_text:
         return False
-    arabic = sum(1 for c in full_text if _is_arabic_char(c))
-    if arabic / len(full_text) <= 0.15:
-        return False
-
-    from bidi.algorithm import get_display
-
-    # Per-node lines are collected via the leaf walk rather than
-    # `full_text.splitlines()`: the flattened blob covers every node, while
-    # this comparison is defined over leaf title/text only.
-    lines: list[str] = []
-    for leaf in _walk_leaves(nodes):
-        lines.extend(str(leaf.get("title", "")).splitlines())
-        lines.extend(str(leaf.get("text", "")).splitlines())
-
-    sampled = 0
-    orig_total = 0
-    disp_total = 0
-    morphological_reversal = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or len(stripped) < 10:
-            continue
-        ar_count = sum(1 for c in stripped if _is_arabic_char(c))
-        if ar_count / len(stripped) <= 0.3:
-            continue
-        orig_total += _arabic_readability_score(stripped.split())
-        disp_total += _arabic_readability_score(get_display(stripped).split())
-        if any(_word_has_reversed_morphology(w) for w in stripped.split()):
-            morphological_reversal = True
-        sampled += 1
-        if sampled >= 8:
-            break
-    # RFC-028 D3: OR-combine the vocabulary-based signal with the
-    # vocabulary-independent morphological signal — either one is sufficient to
-    # flag reversal, since the two failure modes (specialized vocabulary gap vs.
-    # unseen shaping pattern) are largely orthogonal.
-    return sampled > 0 and (disp_total > orig_total or morphological_reversal)
+    decision: RtlDecision = decide_rtl(full_text)
+    return decision.reversed
 
 
 def validate_tree(  # noqa: C901
