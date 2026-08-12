@@ -19,6 +19,7 @@ from pageindex import PageIndexClient
 from .cache import get_doc
 from .config import (
     CURRENT_PIPELINE_VERSION,
+    OCR_ESCALATION as _OCR_ESCALATION,
     PDF_INSPECTOR_PRECLASSIFY,
     REMOTE_MD_RENORMALIZE,
     settings,
@@ -41,6 +42,13 @@ from .converters import (
     splice_picture_text_for_tree,
     xlsx_to_markdown,
     zdr_egress_gate,
+)
+from .picture_plane import (
+    OcrMode,
+    PictureRegion,
+    SkipReason,
+    decide_ocr_mode,
+    skip_reason_from_str,
 )
 from .script import decide_rtl
 from .helpers import (
@@ -346,8 +354,7 @@ def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_i
 # Image inputs route through OCR (Fix 4); .xlsx routes through openpyxl -> flat tables.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
-# Fix 3 kill-switch (default on): one force_full_page_ocr retry when a PDF garbles.
-_OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+# _OCR_ESCALATION is now imported from config.py (canonical source).
 # RFC-027 D2: PDFs rejected as node_count<3 with fewer than this many chars (zero or
 # near-zero/garbled scanned content) also earn the force_full_page_ocr retry, not just
 # the garbling reasons above -- calibrated to the Run-10 corpus (highest affected doc
@@ -989,6 +996,17 @@ class CustomPageIndexClient(PageIndexClient):
                     os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
                 )
 
+                # Zone-6: centralised OCR-mode decision replaces the ad-hoc
+                # inspector_force_ocr / pre_garbled boolean checks below.
+                ocr_mode = decide_ocr_mode(
+                    ocr_escalation_enabled=_OCR_ESCALATION,
+                    has_image_markers=False,  # not yet known pre-conversion
+                    force_full_page=(
+                        inspector_force_ocr
+                        or (pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED)
+                    ),
+                )
+
                 chain = pdf_markdown_converters()
                 primary_name = chain[0][0] if chain else None
                 used_converter = None
@@ -1005,16 +1023,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 filename,
                                 settings.docling_service_url,
                             )
-                            if pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED:
-                                md_content, pic_results = await _remote_pdf_to_markdown(
-                                    self._staging_key,  # type: ignore[arg-type]
-                                    force_full_page_ocr=True,
-                                    ocr_lang_override=detect_ocr_langs(filename),
-                                )
-                            elif inspector_force_ocr:
-                                # RFC-032 D2: pdf-inspector pre-classified this doc as
-                                # scanned/image_based with high confidence — force OCR
-                                # on the first pass instead of the reactive Fix-3 retry.
+                            if ocr_mode == OcrMode.FULL_PAGE:
                                 md_content, pic_results = await _remote_pdf_to_markdown(
                                     self._staging_key,  # type: ignore[arg-type]
                                     force_full_page_ocr=True,
@@ -1030,21 +1039,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 md_content, pic_results = await _remote_pdf_to_markdown(
                                     self._staging_key,  # type: ignore[arg-type]
                                 )
-                        elif (
-                            pre_garbled and "docling" in conv_name and PRE_GARBLE_FORCE_OCR_ENABLED
-                        ):
-                            md_content, pic_results, stages_out = _split_converter_output(
-                                await asyncio.to_thread(
-                                    conv_fn,
-                                    file_path,
-                                    True,
-                                    ocr_lang_override=detect_ocr_langs(filename),
-                                )
-                            )
-                            if stages_out:
-                                extraction_stages_captured = stages_out
-                        elif inspector_force_ocr and "docling" in conv_name:
-                            # RFC-032 D2: local-path mirror of the remote branch above.
+                        elif ocr_mode == OcrMode.FULL_PAGE and "docling" in conv_name:
                             md_content, pic_results, stages_out = _split_converter_output(
                                 await asyncio.to_thread(
                                     conv_fn,
@@ -1784,7 +1779,11 @@ class CustomPageIndexClient(PageIndexClient):
             # suppress the bidi_degraded/visual_order_garble gates below — those run
             # unconditionally on flat_md inside the flat branch (D3B garble gate).
             if ok and settings.flat_doc_routing and any(
-                pr.get("skipped_reason") == "landscape_fallback_picture" for pr in pic_results
+                isinstance(
+                    skip_reason_from_str(pr.get("skipped_reason")),
+                    SkipReason,
+                ) and skip_reason_from_str(pr.get("skipped_reason")) is SkipReason.LANDSCAPE_FALLBACK
+                for pr in pic_results
             ):
                 logger.warning(
                     "RFC-035 D2: landscape fallback re-extraction triggered picture "

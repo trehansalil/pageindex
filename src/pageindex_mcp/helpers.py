@@ -1758,16 +1758,30 @@ def _garble_ratio(text, expected_script=None):
 
 
 def compute_image_enrichment_ratio(image_blocks: list[dict]) -> float | None:
-    """RFC-036 D4: excludes intentionally-skipped blocks (``decorative`` is
-    True, or ``skipped_reason`` truthy -- e.g. decorative-icon filter,
-    OCR min-chars gate, page_coverage threshold, clip_text_already_exported,
-    or D0's landscape_fallback_picture) from both the enriched numerator
-    and the total denominator, so correctly-skipped picture regions never
-    count as unenriched gaps toward classify_verdict's image_enrichment_promoted
-    path."""
-    scored_blocks = [
-        b for b in image_blocks if not b.get("decorative") and not b.get("skipped_reason")
-    ]
+    """RFC-036 D4: excludes intentionally-skipped blocks from both the
+    enriched numerator and the total denominator, so correctly-skipped
+    picture regions never count as unenriched gaps toward
+    classify_verdict's image_enrichment_promoted path.
+
+    Uses ``SkipReason.counts_in_denominator`` policy when a typed
+    SkipReason is available; falls back to the prior string-based
+    exclusion for backward compatibility with blocks that carry raw
+    ``skipped_reason`` strings."""
+    from .picture_plane import SkipReason, skip_reason_from_str
+
+    scored_blocks: list[dict] = []
+    for b in image_blocks:
+        if b.get("decorative"):
+            continue
+        raw_reason = b.get("skipped_reason")
+        if raw_reason:
+            typed = skip_reason_from_str(raw_reason)
+            if typed is not None and not typed.counts_in_denominator:
+                # Intentional skip -- exclude from denominator
+                continue
+            # Unknown/error skips or unrecognised strings: include in
+            # denominator so they surface as potential quality gaps.
+        scored_blocks.append(b)
     if not scored_blocks:
         return None
     enriched_count = sum(

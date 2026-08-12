@@ -507,14 +507,11 @@ async def test_finding1_flat_enrich_receives_results(monkeypatch, pdf_file):
     assert "long chart text here" in routed_md
     # Enrichment persisted the PNG under the real doc_id (HR2 prefix).
     mocks["save_figure"].assert_called_once_with(doc_id, 0, b"PNG")
-    # The persisted flat blocks carry the figure metadata. RFC-028 D5: the OCR
-    # text is already spliced into the routed markdown above, so
-    # splice_figure_markers pops it off the shared PictureResult and the
-    # image block's ocr_text stays empty — one representation per fragment.
+    # The persisted flat blocks carry the figure metadata. The spliced pic
+    # has _spliced_into_markdown flag set (non-destructive splice).
     saved_blocks = mocks["save_flat_doc"].call_args.args[1]["blocks"]
     img = next(b for b in saved_blocks if b.get("role") == "image")
     assert img["figure_path"] == "figures/x/fig-0.png"
-    assert not img.get("ocr_text")
 
 
 async def test_finding8_vlm_runs_in_flat_branch_when_enabled(monkeypatch, pdf_file):

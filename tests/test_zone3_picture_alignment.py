@@ -104,14 +104,19 @@ def test_figure_markers_excludes_landscape():
     assert "real" in result
 
 
-def test_figure_markers_deferred_pop():
-    """splice_figure_markers pops ocr_text only after splice completes."""
+def test_figure_markers_sets_spliced_flag():
+    """splice_figure_markers sets _spliced_into_markdown flag instead of popping ocr_text."""
     md = "<!-- image -->"
     pics = [{"ocr_text": "data", "page": 1}]
     result = splice_figure_markers(md, pics)
     assert "data" in result
-    # After splice, ocr_text should be popped (deferred cleanup)
-    assert "ocr_text" not in pics[0]
+    # After splice, ocr_text is preserved and _spliced_into_markdown is set
+    assert pics[0].get("ocr_text") == "data", (
+        "ocr_text must be preserved (non-destructive splice)"
+    )
+    assert pics[0].get("_spliced_into_markdown") is True, (
+        "_spliced_into_markdown flag must be set after splice"
+    )
 
 
 def test_figure_markers_no_pop_without_ocr():

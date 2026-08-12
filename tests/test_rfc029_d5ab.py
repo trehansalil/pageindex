@@ -119,9 +119,10 @@ class TestRetainedSkipClipTextAlreadyExported:
         assert "[Figure: fig-0]" in out
         assert f"> [Chart text]: {ocr}" in out
 
-    def test_splice_ocr_text_popped_after_emission(self):
-        """After splice_figure_markers runs, ocr_text is popped from the shared
-        dict so _enrich_image_blocks cannot double-persist it (RFC-028 D5)."""
+    def test_splice_sets_spliced_flag_after_emission(self):
+        """After splice_figure_markers runs, _spliced_into_markdown flag is set
+        so downstream consumers know the text was already emitted (RFC-028 D5).
+        ocr_text is preserved (non-destructive splice)."""
         # Arrange
         md = f"{_MARKER}"
         pics = [_retained_skip_result(ocr_text="chart data")]
@@ -129,9 +130,11 @@ class TestRetainedSkipClipTextAlreadyExported:
         # Act
         splice_figure_markers(md, pics)
 
-        # Assert — dict mutated: key removed
-        assert pics[0].get("ocr_text", "") == "", \
-            "ocr_text must be popped after splice to prevent double-persistence"
+        # Assert -- flag set, ocr_text preserved
+        assert pics[0].get("_spliced_into_markdown") is True, \
+            "_spliced_into_markdown flag must be set after splice"
+        assert pics[0].get("ocr_text") == "chart data", \
+            "ocr_text must be preserved (non-destructive splice)"
 
 
 # ---------------------------------------------------------------------------

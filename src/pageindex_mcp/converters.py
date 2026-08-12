@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
+from .picture_plane import OcrMode, PictureRegion, SkipReason, decide_ocr_mode
 from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
 from .script import AR_CHAR_RE as _AR_LETTER_RE
 from .script import AR_CHAR_RE as _AR_SCRIPT_RE
@@ -1521,10 +1522,9 @@ def _fix_residual_rtl_reversal(text: str) -> str:
     return text
 
 
-# RFC-015 D6 gate. Mirrors client.py:66 VERBATIM — two independent module-level copies
-# (converters.py must not import client.py: that would create an import cycle). If you
-# change the default or the accepted truthy values here, change client.py:66 too.
-_OCR_ESCALATION = os.getenv("OCR_ESCALATION", "1").strip().lower() in ("1", "true", "yes")
+# RFC-015 D6 gate. Consolidated in config.py (canonical source); imported here
+# to eliminate the prior client.py / converters.py double-definition.
+from .config import OCR_ESCALATION as _OCR_ESCALATION
 
 _IMAGE_MARKER = "<!-- image -->"
 _PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
@@ -2186,35 +2186,40 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         if _REGION_AWARE_TEXT_CHECK_ENABLED
                         else _text_layer_has_content(page)
                     )
-                    if fullpage_ocr_region_count >= _MAX_FULLPAGE_PICTURE_OCR_REGIONS:
-                        logger.warning(
-                            "MAX_FULLPAGE_PICTURE_OCR_REGIONS (%d) exceeded for %s; "
-                            "skipping further full-page picture exemptions",
-                            _MAX_FULLPAGE_PICTURE_OCR_REGIONS,
-                            pdf_path,
-                        )
-                        skip_reasons[i] = "page_coverage"
-                        # D5a: retain crop bytes even though OCR is skipped.
-                        try:
-                            orig_rotation = page.rotation
-                            page.set_rotation(0)
-                            try:
-                                pix = page.get_pixmap(clip=rect, dpi=300)
-                            finally:
-                                page.set_rotation(orig_rotation)
-                            retained_skips[i] = {
-                                "png_bytes": pix.tobytes("png"),
-                                "region": region,
-                                "skipped_reason": "page_coverage",
-                            }
-                        except Exception as _crop_exc:
-                            logger.debug(
-                                "D5a: png_bytes crop failed for page_coverage region %d: %s",
-                                i,
-                                _crop_exc,
-                            )
-                        continue
+                    # Reordered: coverage exemption BEFORE MAX_FULLPAGE cap.
+                    # A page with no text layer is always exempt (the picture
+                    # IS the content) regardless of whether the cap has been
+                    # reached — the cap only limits how many exempt pages
+                    # actually get the expensive OCR pass.
                     if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not has_own_text:
+                        if fullpage_ocr_region_count >= _MAX_FULLPAGE_PICTURE_OCR_REGIONS:
+                            logger.warning(
+                                "MAX_FULLPAGE_PICTURE_OCR_REGIONS (%d) exceeded for %s; "
+                                "skipping further full-page picture exemptions",
+                                _MAX_FULLPAGE_PICTURE_OCR_REGIONS,
+                                pdf_path,
+                            )
+                            skip_reasons[i] = "page_coverage"
+                            # D5a: retain crop bytes even though OCR is skipped.
+                            try:
+                                orig_rotation = page.rotation
+                                page.set_rotation(0)
+                                try:
+                                    pix = page.get_pixmap(clip=rect, dpi=300)
+                                finally:
+                                    page.set_rotation(orig_rotation)
+                                retained_skips[i] = {
+                                    "png_bytes": pix.tobytes("png"),
+                                    "region": region,
+                                    "skipped_reason": "page_coverage",
+                                }
+                            except Exception as _crop_exc:
+                                logger.debug(
+                                    "D5a: png_bytes crop failed for page_coverage region %d: %s",
+                                    i,
+                                    _crop_exc,
+                                )
+                            continue
                         fullpage_ocr_region_count += 1
                         logger.warning(
                             "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
@@ -2410,37 +2415,14 @@ def splice_picture_text_for_tree(md: str, pics: list[PictureResult]) -> str:
     The ``<!-- image -->`` markers are left **intact** so that the flat branch's
     ``splice_figure_markers`` can still resolve them later if needed.
 
-    Guard: if the marker count differs from ``len(pics)`` the ordinal
-    correspondence is broken and we return ``md`` unchanged rather than
-    attaching OCR text to the wrong picture block.
+    Uses ``bind_markers`` from ``picture_plane`` for per-marker alignment
+    instead of bailing entirely on a count mismatch.
     """
+    from .picture_plane import SkipReason, bind_markers
+
     if not pics:
         return md
-    marker = _IMAGE_MARKER
-    marker_count = md.count(marker)
-    real_pics = [p for p in pics if p.get("skipped_reason") != "landscape_fallback_picture"]
-    if marker_count != len(real_pics):
-        logger.warning(
-            "splice_picture_text_for_tree: marker/region count mismatch "
-            "(%d marker(s) vs %d real picture result(s), %d landscape fabricated); "
-            "skipping OCR splice",
-            marker_count,
-            len(real_pics),
-            len(pics) - len(real_pics),
-        )
-        return md
-
-    parts: list[str] = []
-    remaining = md
-    for pic in real_pics:
-        idx = remaining.find(marker)
-        parts.append(remaining[: idx + len(marker)])
-        remaining = remaining[idx + len(marker) :]
-        ocr_text = pic.get("ocr_text", "")
-        if ocr_text:
-            parts.append("\n> [Chart text]: " + ocr_text + "\n")
-    parts.append(remaining)
-    return "".join(parts)
+    return bind_markers(md, pics, inject_chart_text=True)
 
 
 def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
@@ -2455,10 +2437,16 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
     neutral markers, matching the existing skipped/decorative behavior below.
 
     Decorative results (no png/ocr/description — finding 12) keep their neutral
-    marker so no unresolvable ``[Figure: fig-k]`` reference is ever emitted."""
+    marker so no unresolvable ``[Figure: fig-k]`` reference is ever emitted.
+
+    Sets ``spliced_into_markdown`` flag on spliced pics instead of the prior
+    destructive ``pop('ocr_text')``."""
+    from .picture_plane import SkipReason
+
     if not pics:
         return md
-    real_pics = [p for p in pics if p.get("skipped_reason") != "landscape_fallback_picture"]
+    _LANDSCAPE_REASONS = {SkipReason.LANDSCAPE_FALLBACK.value, "landscape_fallback_picture"}
+    real_pics = [p for p in pics if p.get("skipped_reason") not in _LANDSCAPE_REASONS]
     marker_count = md.count(_IMAGE_MARKER)
     if marker_count != len(real_pics):
         logger.warning(
@@ -2498,8 +2486,9 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         return marker
 
     spliced = re.sub(re.escape(_IMAGE_MARKER), _repl, md)
+    # Set spliced_into_markdown flag instead of destructive pop('ocr_text')
     for idx in _spliced_indices:
-        real_pics[idx].pop("ocr_text", None)
+        real_pics[idx]["_spliced_into_markdown"] = True
     return spliced
 
 
@@ -2559,7 +2548,12 @@ def _recover_picture_results(
     alone falls through to ``['eng']``. Union with ``detect_ocr_langs(filename)``
     (matching the escalation sites in client.py) so filename script hints survive
     even when the export carries no usable signal."""
-    if not (_OCR_ESCALATION and _IMAGE_MARKER in md):
+    # Zone-6: centralised OCR-mode dispatch replaces ad-hoc boolean gate.
+    _ocr_mode = decide_ocr_mode(
+        ocr_escalation_enabled=_OCR_ESCALATION,
+        has_image_markers=_IMAGE_MARKER in md,
+    )
+    if _ocr_mode == OcrMode.NONE:
         return []
     containment_md = body_for_containment if body_for_containment is not None else md
     try:
@@ -3479,7 +3473,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     for p in landscape_fallback_pages:
         if p.get("has_pictures"):
             pic_results.append(
-                PictureResult(page=p["page_no"], skipped_reason="landscape_fallback_picture")
+                PictureResult(page=p["page_no"], skipped_reason=SkipReason.LANDSCAPE_FALLBACK.value)
             )
 
     # Provenance: picture recovery (non-string-mutation, manual entry).

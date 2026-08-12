@@ -70,9 +70,14 @@ def test_effective_config_snapshot_returns_all_keys():
 # ---------------------------------------------------------------------------
 
 def test_effective_config_snapshot_respects_env_overrides(monkeypatch):
-    monkeypatch.setenv("OCR_ESCALATION", "0")
     monkeypatch.setenv("GARBLE_LATIN_RATIO", "0.5")
     monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
+
+    # OCR_ESCALATION is a module-level constant (consolidated in config.py).
+    # To test it, patch the constant directly rather than setting the env var
+    # after import.
+    import pageindex_mcp.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "OCR_ESCALATION", False)
 
     from pageindex_mcp.config import effective_config_snapshot
 

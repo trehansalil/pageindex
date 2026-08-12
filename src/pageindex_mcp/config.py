@@ -36,6 +36,12 @@ ALLOW_AGPL_FALLBACK: bool = os.environ.get(
     "ALLOW_AGPL_FALLBACK", "1"
 ).strip().lower() in ("1", "true", "yes")
 
+# Canonical OCR escalation toggle — consumed by client.py and converters.py.
+# Default ON: a garbled PDF gets one force_full_page_ocr retry.
+OCR_ESCALATION: bool = os.environ.get(
+    "OCR_ESCALATION", "1"
+).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
 # ---------------------------------------------------------------------------
@@ -262,7 +268,7 @@ def effective_config_snapshot() -> dict:
         "pdf_inspector_preclassify": PDF_INSPECTOR_PRECLASSIFY,
         "allow_agpl_fallback": ALLOW_AGPL_FALLBACK,
         "remote_md_renormalize": REMOTE_MD_RENORMALIZE,
-        "ocr_escalation": _envbool("OCR_ESCALATION", "1"),
+        "ocr_escalation": OCR_ESCALATION,
         "pre_garble_force_ocr_enabled": os.environ.get(
             "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
         ).lower() == "true",

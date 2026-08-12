@@ -48,19 +48,24 @@ class TestSplicePictureTextForTree:
 
         assert out == md
 
-    def test_count_mismatch_returns_unchanged(self, caplog):
+    def test_count_mismatch_splices_available(self, caplog):
+        """On count mismatch, splice what we can (not bail entirely)."""
         md = f"# Title\n\n{_MARKER}\n\nText.\n\n{_MARKER}\n\nMore."
         pics = [_pic("a"), _pic("b"), _pic("c")]
 
         with caplog.at_level("WARNING"):
             out = splice_picture_text_for_tree(md, pics)
 
-        assert out == md
+        # First two pics are spliced into first two markers
+        assert "> [Chart text]: a" in out
+        assert "> [Chart text]: b" in out
+        # Third pic has no marker to bind to
+        assert "c" not in out or "> [Chart text]: c" not in out
+        # Warning is logged about the mismatch
         assert any(
-            "mismatch" in record.message or "WARNING" in record.levelname
+            "mismatch" in record.message
             for record in caplog.records
-        )
-        assert caplog.records, "expected a warning to be logged on count mismatch"
+        ), "expected a warning to be logged on count mismatch"
 
     def test_markers_preserved_after_splice(self):
         md = f"# Title\n\n{_MARKER}\n\nA\n\n{_MARKER}\n\nB\n\n{_MARKER}\n\nC"
@@ -74,10 +79,9 @@ class TestSplicePictureTextForTree:
         """Zone-3 fix: tree splice is non-destructive (no pop), so chaining
         both splice functions produces the chart text in both the tree-spliced
         annotation AND the figure marker.  Production never chains them on the
-        same document — tree branch uses only splice_picture_text_for_tree,
+        same document -- tree branch uses only splice_picture_text_for_tree,
         flat branch uses only splice_figure_markers.  splice_figure_markers
-        does a deferred pop after splicing so subsequent consumers (e.g.
-        _enrich_image_blocks) don't double-persist.
+        sets ``_spliced_into_markdown`` flag instead of destructive pop.
         """
         md = f"# Title\n\n{_MARKER}\n\nBody text."
         pics = [_pic("Chart shows growth", png_bytes=b"\x89PNG")]
@@ -88,7 +92,9 @@ class TestSplicePictureTextForTree:
         composed = splice_figure_markers(tree_out, pics)
         assert "[Figure: fig-0]" in composed
         assert _MARKER not in composed
-        assert "ocr_text" not in pics[0]
+        # ocr_text is preserved (non-destructive); _spliced_into_markdown is set
+        assert pics[0].get("ocr_text") == "Chart shows growth"
+        assert pics[0].get("_spliced_into_markdown") is True
 
     def test_no_ocr_text_leaves_marker_alone(self):
         md = f"# Title\n\n{_MARKER}\n\nBody."
