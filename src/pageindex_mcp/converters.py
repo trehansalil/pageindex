@@ -2181,11 +2181,22 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 page_area = page.rect.width * page.rect.height
                 coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
                 if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
-                    has_own_text = (
-                        _region_has_own_text_layer(page, rect)
-                        if _REGION_AWARE_TEXT_CHECK_ENABLED
-                        else _text_layer_has_content(page)
-                    )
+                    if _REGION_AWARE_TEXT_CHECK_ENABLED:
+                        has_own_text = _region_has_own_text_layer(page, rect)
+                        if has_own_text and _TEXT_LAYER_GARBLE_CHECK_ENABLED:
+                            region_text = page.get_text("text", clip=rect).strip()
+                            if region_text:
+                                from .helpers import _is_garbled_blob
+                                from .script import infer_script
+
+                                if _is_garbled_blob(
+                                    region_text,
+                                    expected_script=infer_script(region_text),
+                                    blob_kind=BlobKind.TREE_TEXT,
+                                ):
+                                    has_own_text = False
+                    else:
+                        has_own_text = _text_layer_has_content(page)
                     # Reordered: coverage exemption BEFORE MAX_FULLPAGE cap.
                     # A page with no text layer is always exempt (the picture
                     # IS the content) regardless of whether the cap has been

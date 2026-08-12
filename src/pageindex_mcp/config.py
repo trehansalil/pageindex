@@ -302,10 +302,7 @@ def effective_config_snapshot() -> dict:
             "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
         ),
         "leaf_split_ratio": float(
-            os.environ.get(
-                "LEAF_SPLIT_RATIO",
-                os.environ.get("PASS_MAX_LEAF_RATIO", "0.30"),
-            )
+            os.environ.get("LEAF_SPLIT_RATIO", "0.30")
         ),
         "pdf_converter": os.environ.get("PDF_CONVERTER", "docling"),
         "text_layer_garble_check_enabled": _envbool(
@@ -313,5 +310,17 @@ def effective_config_snapshot() -> dict:
         ),
         "region_aware_text_check_enabled": _envbool(
             "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
+        ),
+        "tree_path_picture_splice_enabled": _envbool(
+            "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
+        ),
+        "low_content_ocr_char_floor": int(
+            os.environ.get("LOW_CONTENT_OCR_CHAR_FLOOR", "300")
+        ),
+        "rfc029_flat_prefer_multiplier": float(
+            os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
+        ),
+        "rfc029_min_chars_per_node": float(
+            os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")
         ),
     }

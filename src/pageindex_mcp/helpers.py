@@ -2493,15 +2493,14 @@ def _has_heading_markers(text: str) -> bool:
 
 def _blank_line_fallback_enabled(tree_ratio: float) -> bool:
     """RFC-024 D3 (Task 2.3): gate for the blank-line paragraph-boundary
-    fallback.  Uses its own ``LEAF_SPLIT_RATIO`` env var (defaulting to the
-    current ``PASS_MAX_LEAF_RATIO`` value) so that tuning the scoring
+    fallback.  Uses its own ``LEAF_SPLIT_RATIO`` env var (default 0.30,
+    independent of ``PASS_MAX_LEAF_RATIO``) so that tuning the scoring
     threshold does not change the tree shape that produces the metric
     being scored (Zone-2 feedback-loop fix)."""
     enabled = os.environ.get("LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true")
     if enabled.strip().lower() in {"false", "0", "no", "off"}:
         return False
-    default = os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")
-    leaf_split_ratio = float(os.environ.get("LEAF_SPLIT_RATIO", default))
+    leaf_split_ratio = float(os.environ.get("LEAF_SPLIT_RATIO", "0.30"))
     return tree_ratio > leaf_split_ratio
 
 

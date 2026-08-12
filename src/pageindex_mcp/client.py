@@ -2202,7 +2202,7 @@ class CustomPageIndexClient(PageIndexClient):
                         meta["converter_contract"] = contract
                 if pdf_page_count is not None:
                     meta["page_count"] = pdf_page_count
-                if pdf_classification:
+                if pdf_classification and PDF_INSPECTOR_PRECLASSIFY:
                     meta["inspector_class"] = pdf_classification.get("pdf_type")
                 if extraction_stages_captured:
                     meta["extraction_stages"] = extraction_stages_captured

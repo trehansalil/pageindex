@@ -39,19 +39,27 @@ def test_effective_config_snapshot_returns_all_keys():
         "pdf_converter",
         "text_layer_garble_check_enabled",
         "region_aware_text_check_enabled",
+        "tree_path_picture_splice_enabled",
+        "low_content_ocr_char_floor",
+        "rfc029_flat_prefer_multiplier",
+        "rfc029_min_chars_per_node",
     }
 
     assert set(snap.keys()) == expected_keys, (
         f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
         f"  Extra:   {set(snap.keys()) - expected_keys}"
     )
-    assert len(snap) == 21
+    assert len(snap) == 25
 
     # Type checks
     assert isinstance(snap["pipeline_version"], int)
-    for fk in ("garble_latin_ratio", "garble_node_ratio_threshold", "pass_max_leaf_ratio"):
+    for fk in (
+        "garble_latin_ratio", "garble_node_ratio_threshold", "pass_max_leaf_ratio",
+        "leaf_split_ratio", "rfc029_flat_prefer_multiplier", "rfc029_min_chars_per_node",
+    ):
         assert isinstance(snap[fk], float), f"{fk} should be float, got {type(snap[fk])}"
     assert isinstance(snap["pdf_converter"], str)
+    assert isinstance(snap["low_content_ocr_char_floor"], int)
 
     bool_keys = expected_keys - {
         "pipeline_version",
@@ -60,6 +68,9 @@ def test_effective_config_snapshot_returns_all_keys():
         "pass_max_leaf_ratio",
         "leaf_split_ratio",
         "pdf_converter",
+        "low_content_ocr_char_floor",
+        "rfc029_flat_prefer_multiplier",
+        "rfc029_min_chars_per_node",
     }
     for bk in bool_keys:
         assert isinstance(snap[bk], bool), f"{bk} should be bool, got {type(snap[bk])}"
