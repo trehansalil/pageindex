@@ -145,6 +145,7 @@ def _wire_index(monkeypatch, *, validate_return, flat_doc_routing: bool = True):
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
+        "write_verdict": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "find_prior_verdict": MagicMock(return_value=None),
@@ -195,10 +196,10 @@ class TestPersistWithFailRouting:
 
         await c.index(md_file)
 
-        meta = mocks["save_doc_meta"].call_args.args[1]
-        assert meta["verdict"] == "FAIL", (
+        wv_args = mocks["write_verdict"].call_args.args
+        assert wv_args[1] == "FAIL", (
             f"Expected FAIL verdict for unhandled reason {reason!r}, "
-            f"got verdict={meta['verdict']!r} reason={meta['verdict_reason']!r}"
+            f"got verdict={wv_args[1]!r} reason={wv_args[2]!r}"
         )
 
     async def test_no_flat_routing_no_ocr_retry(self, monkeypatch, md_file, reason):
@@ -267,8 +268,8 @@ class TestPassPathTreesUnaffected:
 
         await c.index(md_file)
 
-        meta = mocks["save_doc_meta"].call_args.args[1]
-        assert meta["verdict"] == "PASS"
+        wv_args = mocks["write_verdict"].call_args.args
+        assert wv_args[1] == "PASS"
 
     @pytest.mark.parametrize("reason", ["garbling", "node_count<3", "depth<2"])
     async def test_handled_reasons_still_raise(self, monkeypatch, md_file, reason):

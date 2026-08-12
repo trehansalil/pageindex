@@ -16,7 +16,13 @@ import logging
 from datetime import UTC, datetime
 
 from pageindex_mcp.config import CURRENT_PIPELINE_VERSION, settings
-from pageindex_mcp.helpers import _tree_max_leaf_ratio, classify_verdict, detect_regression
+from pageindex_mcp.helpers import (
+    TreeDefect,
+    TreeGateResult,
+    _defect_from_reason_str,
+    _tree_max_leaf_ratio,
+    classify_verdict,
+)
 from pageindex_mcp.registry import (
     close_registry,
     init_registry,
@@ -82,8 +88,16 @@ async def run_sweep() -> dict:
                 except Exception:
                     pass
 
+                # Zone-8 Target 7: parse stored verdict_reason via
+                # TreeDefect enum to prevent sticky permanent FAILs from
+                # prefix-matching on raw strings.
+                validate_result = None
+                if stored_reason:
+                    defect = _defect_from_reason_str(stored_reason)
+                    if defect != TreeDefect.OK:
+                        validate_result = TreeGateResult(ok=False, defect=defect)
                 verdict, verdict_reason = classify_verdict(
-                    structure, content_class, stored_reason
+                    structure, content_class, validate_result
                 )
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 

@@ -136,6 +136,7 @@ async def test_upsert_maps_all_fields_in_order():
         "",  # RFC-014 D2: verdict (default empty)
         None,  # RFC-014 D2: pipeline_version (default None)
         False,  # RFC-014 D2: permanent_marginal (default False)
+        "",  # Zone-6: verdict_computed_at (default empty)
     )
 
 
@@ -153,6 +154,7 @@ async def test_upsert_defaults_missing_keys_to_empty_string():
     assert args[13] == ""  # verdict
     assert args[14] is None  # pipeline_version
     assert args[15] is False  # permanent_marginal
+    assert args[16] == ""  # verdict_computed_at
     assert all(a == "" for a in args[3:12])
 
 

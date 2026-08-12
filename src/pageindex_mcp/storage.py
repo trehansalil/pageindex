@@ -505,6 +505,43 @@ def _read_existing_sidecar(mc: Minio, doc_id: str) -> dict:
         return {}
 
 
+# Zone-8: verdict fields guarded by temporal CAS in save_doc_meta.
+_VERDICT_CAS_FIELDS = frozenset({
+    "verdict", "verdict_reason", "pipeline_version",
+    "verdict_computed_at", "max_leaf_ratio",
+})
+
+
+def _verdict_cas_guard(existing: dict, incoming: dict) -> bool:
+    """Soft CAS guard: return True when existing verdict is newer than incoming.
+
+    Compares ``existing.get('verdict_computed_at')`` vs
+    ``incoming.get('verdict_computed_at')``; if existing is strictly newer
+    (lexicographic ISO-8601 comparison), the caller should skip verdict
+    fields in the merge.  Only verdict/verdict_reason/pipeline_version/
+    verdict_computed_at/max_leaf_ratio get the temporal guard -- all
+    other fields are merged unconditionally.
+
+    Returns False (allow the write) when either timestamp is absent so
+    existing rows with NULL/missing verdict_computed_at always accept any
+    incoming verdict.
+    """
+    existing_ts = existing.get("verdict_computed_at", "")
+    incoming_ts = incoming.get("verdict_computed_at", "")
+    if not existing_ts or not incoming_ts:
+        return False  # no timestamp to compare -- allow the write
+    if existing_ts > incoming_ts:
+        logger.warning(
+            "_verdict_cas_guard: existing verdict_computed_at=%s > incoming=%s; "
+            "skipping verdict field merge for doc_id=%s",
+            existing_ts,
+            incoming_ts,
+            incoming.get("doc_id", "?"),
+        )
+        return True
+    return False
+
+
 def save_doc_meta(doc_id: str, meta: dict) -> None:
     """Read-merge-write sidecar: reads the existing sidecar (if any), merges
     new fields from *meta* on top, and writes the result.  This prevents
@@ -569,7 +606,14 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             "effective_config_at_job_start",
             "extraction_stages",
         )
+        # Zone-8: soft CAS guard -- skip verdict fields when existing is newer
+        _skip_verdict = _verdict_cas_guard(existing, meta)
         for f in _MERGE_FIELDS:
+            if _skip_verdict and f in _VERDICT_CAS_FIELDS:
+                # CAS guard fired -- preserve existing verdict fields
+                if f in existing:
+                    sidecar[f] = existing[f]
+                continue
             if f in meta:
                 sidecar[f] = meta[f]
             elif f in existing:
@@ -595,6 +639,93 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+
+
+def write_verdict(
+    doc_id: str,
+    verdict: str,
+    verdict_reason: str,
+    pipeline_version: int,
+    verdict_computed_at: str,
+    max_leaf_ratio: float,
+    content_class: str | None = None,
+) -> None:
+    """Zone-8: atomic dual-write of verdict fields to artifact + sidecar.
+
+    Single entry point for verdict persistence.  Reads the existing processed
+    artifact (``processed/<id>.json`` or ``processed/<id>.flat.json``),
+    injects verdict fields, re-writes via ``_confirm_write_visible``, then
+    calls ``save_doc_meta`` with the full metadata so the sidecar carries the
+    same verdict.
+
+    Must not change the ``processed/<id>.json`` shape beyond adding verdict
+    fields.  ``save_doc_meta`` read-merge-write semantics are preserved for
+    non-verdict fields.
+    """
+    mc = get_minio()
+
+    verdict_fields = {
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "pipeline_version": pipeline_version,
+        "verdict_computed_at": verdict_computed_at,
+        "max_leaf_ratio": round(max_leaf_ratio, 4),
+    }
+
+    # Determine artifact key
+    key = (
+        f"processed/{doc_id}.flat.json"
+        if content_class
+        else f"processed/{doc_id}.json"
+    )
+
+    # Read existing artifact, inject verdict fields, re-write
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
+    try:
+        response = None
+        try:
+            response = mc.get_object(settings.minio_bucket, key)
+            data = json.loads(response.read())
+        except S3Error as e:
+            if e.code == "NoSuchKey":
+                logger.debug(
+                    "write_verdict: artifact %s not found, writing sidecar only",
+                    key,
+                )
+                data = None
+            else:
+                raise
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                    response.release_conn()
+                except Exception:
+                    pass
+
+        # Inject verdict fields into artifact and re-write
+        if data is not None:
+            data.update(verdict_fields)
+            content_bytes = json.dumps(data, indent=2).encode()
+            mc.put_object(
+                settings.minio_bucket,
+                key,
+                BytesIO(content_bytes),
+                len(content_bytes),
+                content_type="application/json",
+            )
+            _confirm_write_visible(mc, settings.minio_bucket, key)
+            logger.debug("write_verdict: updated artifact %s", key)
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+
+    # Write sidecar via save_doc_meta (read-merge-write preserves non-verdict fields)
+    meta = dict(verdict_fields)
+    meta["doc_id"] = doc_id
+    if content_class:
+        meta["content_class"] = content_class
+    save_doc_meta(doc_id, meta)
 
 
 # RFC-006: the registry needs richer fields (sha256, doc_description) than the
@@ -644,10 +775,25 @@ def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict 
         from .helpers import _tree_node_count  # lazy: avoid import cycle
 
         fields["node_count"] = _tree_node_count(data.get("structure") or [])
-        # RFC-014 D2: carry verdict fields from sidecar to registry
-        for vf in ("verdict", "pipeline_version", "permanent_marginal"):
-            if vf in data:
+        # RFC-014 D2 / Zone-8: carry verdict fields to registry.
+        # With artifact-carries-verdict (Zone-8 Target 3), new artifacts
+        # include verdict fields; pull them all here.
+        _verdict_keys = (
+            "verdict", "verdict_reason", "pipeline_version",
+            "permanent_marginal", "verdict_computed_at", "max_leaf_ratio",
+        )
+        for vf in _verdict_keys:
+            if vf in data and data[vf] not in (None, ""):
                 fields[vf] = data[vf]
+        # Zone-8 Target 4: sidecar fallback for legacy docs whose artifact
+        # was written before artifact-carries-verdict landed.  Defensive
+        # fallback only -- no extra MinIO GET on the happy path.
+        if not fields.get("verdict"):
+            sidecar = _read_existing_sidecar(mc, doc_id)
+            if sidecar.get("verdict"):
+                for vf in _verdict_keys:
+                    if vf in sidecar and not fields.get(vf):
+                        fields[vf] = sidecar[vf]
         return fields
     except S3Error as e:
         logger.warning("read_registry_fields: %s not readable (%s)", key, e.code)

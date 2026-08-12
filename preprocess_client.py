@@ -223,7 +223,13 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     import json
     from datetime import UTC, datetime
     from pageindex_mcp.config import _load_settings
-    from pageindex_mcp.helpers import _tree_max_leaf_ratio, classify_verdict
+    from pageindex_mcp.helpers import (
+        HARD_FAIL_DEFECTS,
+        _defect_from_reason_str,
+        _tree_max_leaf_ratio,
+        classify_verdict,
+        validate_tree,
+    )
     from pageindex_mcp.storage import get_minio, save_doc_meta
 
     settings = _load_settings()
@@ -283,10 +289,21 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
             if is_flat:
                 verdict = data.get("verdict", "")
                 verdict_reason = data.get("verdict_reason", "")
+                # Zone-1: parse stored verdict_reason through TreeDefect enum
+                # (Zone-8 Target 7 pattern from promotion_sweep). Prevents
+                # stale sidecars where a hard-fail defect reason incorrectly
+                # pairs with a PASS verdict.
+                defect = _defect_from_reason_str(verdict_reason)
+                if defect in HARD_FAIL_DEFECTS and verdict == "PASS":
+                    verdict = "FAIL"
                 mlr = data.get("max_leaf_ratio", 0.0)
             else:
                 structure = data.get("structure") or []
-                verdict, verdict_reason = classify_verdict(structure, content_class, None)
+                # Zone-8 Target 8: re-run validate_tree on stored structure
+                # and pass its result to classify_verdict instead of None.
+                # Prevents silently promoting gate-rejected docs.
+                vt_result = validate_tree(structure)
+                verdict, verdict_reason = classify_verdict(structure, content_class, vt_result)
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
             meta = {

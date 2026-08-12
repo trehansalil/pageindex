@@ -99,6 +99,7 @@ from .storage import (
     save_figure,
     save_flat_doc,
     save_raw,
+    write_verdict,
 )
 
 logger = logging.getLogger(__name__)
@@ -2107,9 +2108,9 @@ class CustomPageIndexClient(PageIndexClient):
                     reason,
                 )
 
-            # Persist processed result first (D7): the tree must succeed validation
-            # and persist before the raw upload is committed, so a save_doc failure
-            # never leaves an orphaned raw upload with no referencing artifact.
+            # Zone-8: classify verdict BEFORE save_doc so the artifact carries
+            # verdict fields from birth -- eliminates the lost-update window
+            # between save_doc and save_doc_meta.
             doc_id = str(uuid.uuid4())
 
             protocol = "https" if settings.minio_secure else "http"
@@ -2119,21 +2120,9 @@ class CustomPageIndexClient(PageIndexClient):
             )
 
             processed_at = datetime.now(UTC).isoformat()
-            await asyncio.to_thread(
-                save_doc,
-                doc_id,
-                {
-                    "doc_id": doc_id,
-                    "doc_name": filename,
-                    "source_url": source_url,
-                    "processed_at": processed_at,
-                    "sha256": sha256,
-                    "doc_description": result.get("doc_description", ""),
-                    "structure": result.get("structure", []),
-                },
-            )
-
             structure = result.get("structure", [])
+
+            # Zone-8: prior_verdict lookup moved before save_doc
             prior_verdict = await asyncio.to_thread(find_prior_verdict, sha256, filename, doc_id)
             verdict, verdict_reason = classify_verdict(
                 structure,
@@ -2144,6 +2133,44 @@ class CustomPageIndexClient(PageIndexClient):
                 expected_script=expected_script,
             )
             _, _, mlr = _tree_max_leaf_ratio(structure)
+            _verdict_computed_at = datetime.now(UTC).isoformat()
+
+            # Persist processed result (D7): the tree must succeed validation
+            # and persist before the raw upload is committed, so a save_doc failure
+            # never leaves an orphaned raw upload with no referencing artifact.
+            # Zone-8: verdict fields included in the artifact payload so the
+            # processed/<id>.json carries verdict from birth.
+            await asyncio.to_thread(
+                save_doc,
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "doc_name": filename,
+                    "source_url": source_url,
+                    "processed_at": processed_at,
+                    "sha256": sha256,
+                    "doc_description": result.get("doc_description", ""),
+                    "structure": structure,
+                    "verdict": verdict,
+                    "verdict_reason": verdict_reason,
+                    "max_leaf_ratio": round(mlr, 4),
+                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                    "verdict_computed_at": _verdict_computed_at,
+                },
+            )
+
+            # Zone-6: write_verdict atomically persists verdict to both
+            # artifact and sidecar, then save_doc_meta writes the remaining
+            # non-verdict provenance fields.
+            await asyncio.to_thread(
+                write_verdict,
+                doc_id,
+                verdict,
+                verdict_reason,
+                CURRENT_PIPELINE_VERSION,
+                _verdict_computed_at,
+                round(mlr, 4),
+            )
             meta = {
                 "doc_id": doc_id,
                 "doc_name": filename,
@@ -2151,11 +2178,6 @@ class CustomPageIndexClient(PageIndexClient):
                 "processed_at": processed_at,
                 "sha256": sha256,  # C-3: fatten sidecar so reconcile skips full-JSON GET
                 "doc_description": result.get("doc_description", ""),  # C-3
-                "verdict": verdict,
-                "verdict_reason": verdict_reason,
-                "max_leaf_ratio": round(mlr, 4),
-                "pipeline_version": CURRENT_PIPELINE_VERSION,
-                "verdict_computed_at": datetime.now(UTC).isoformat(),
                 "total_tree_chars": len(_flatten_tree_text(structure)),
                 "build_sha": _CLIENT_BUILD_SHA,
                 "effective_config": _effective_cfg,
@@ -2169,11 +2191,6 @@ class CustomPageIndexClient(PageIndexClient):
             # non-PDF docs (md/docx/txt/html/pptx/xlsx). None values are omitted
             # (never persisted as null), per the D5 acceptance criteria.
             if ext == ".pdf":
-                # `_use_remote` only means the remote service is CONFIGURED; the
-                # remote path actually executes only for docling (see the
-                # `_use_remote and "docling" in conv_name` routing above). A
-                # pymupdf4llm fallback after a remote-docling failure is a LOCAL
-                # (AGPL) extraction and must be recorded as such (U-2).
                 _route_remote = bool(
                     _use_remote and used_converter and "docling" in used_converter
                 )

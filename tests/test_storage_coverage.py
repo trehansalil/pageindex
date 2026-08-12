@@ -295,7 +295,7 @@ def test_read_registry_fields_flat_doc_reads_flat_json(mock_minio):
 
     fields = read_registry_fields("flat0001", content_class="flat_prose")
 
-    assert mock_minio.get_object.call_args[0][1] == "processed/flat0001.flat.json"
+    assert mock_minio.get_object.call_args_list[0][0][1] == "processed/flat0001.flat.json"
     assert fields["content_class"] == "flat_prose"
     assert fields["node_count"] == 0
 

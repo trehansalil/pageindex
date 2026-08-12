@@ -104,6 +104,11 @@ ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS pipeline_version INTEGER;
 ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS permanent_marginal BOOLEAN NOT NULL DEFAULT false;
 """
 
+# Zone-8: verdict_computed_at column for temporal CAS guard in upsert.
+_MIGRATE_VERDICT_COMPUTED_AT_SQL = """
+ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS verdict_computed_at TEXT NOT NULL DEFAULT '';
+"""
+
 _CREATE_VERDICT_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS doc_registry_verdict_idx
     ON doc_registry (verdict, pipeline_version);
@@ -133,6 +138,7 @@ async def init_registry(dsn: str) -> None:
         await conn.execute(_CREATE_TABLE_SQL)
         await conn.execute(_MIGRATE_NODE_COUNT_SQL)
         await conn.execute(_MIGRATE_VERDICT_SQL)
+        await conn.execute(_MIGRATE_VERDICT_COMPUTED_AT_SQL)
         await conn.execute(_CREATE_GIN_INDEX_SQL)
         await conn.execute(_CREATE_TIME_INDEX_SQL)
         await conn.execute(_CREATE_VERDICT_INDEX_SQL)
@@ -162,8 +168,9 @@ INSERT INTO doc_registry (
     doc_id, doc_name, source_url, processed_at,
     content_class, sha256, product, tier, doc_family,
     effective_date, doc_description, node_count,
-    verdict, pipeline_version, permanent_marginal
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    verdict, pipeline_version, permanent_marginal,
+    verdict_computed_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT (doc_id) DO UPDATE SET
     doc_name        = EXCLUDED.doc_name,
     source_url      = EXCLUDED.source_url,
@@ -176,14 +183,31 @@ ON CONFLICT (doc_id) DO UPDATE SET
     effective_date  = EXCLUDED.effective_date,
     doc_description = EXCLUDED.doc_description,
     node_count      = EXCLUDED.node_count,
-    -- Preserve the existing verdict when the incoming payload doesn't carry
-    -- one (empty string): periodic reconciliation upserts from MinIO
-    -- .meta.json sidecars, and older/partial sidecars may predate the
-    -- verdict system. Overwriting with '' would silently un-suppress a
-    -- previously verdict='FAIL' doc from the read path.
-    verdict         = COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict),
-    pipeline_version = EXCLUDED.pipeline_version,
-    permanent_marginal = EXCLUDED.permanent_marginal;
+    -- Zone-8: temporal CAS guard — prefer newer verdict_computed_at.
+    -- Existing rows with NULL/empty verdict_computed_at always accept any
+    -- incoming verdict (COALESCE to '' ensures '' < any ISO timestamp).
+    -- When the incoming payload carries no verdict (empty string), preserve
+    -- the existing verdict regardless of timestamps.
+    verdict         = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict)
+        ELSE doc_registry.verdict
+    END,
+    pipeline_version = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN EXCLUDED.pipeline_version
+        ELSE doc_registry.pipeline_version
+    END,
+    permanent_marginal = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN EXCLUDED.permanent_marginal
+        ELSE doc_registry.permanent_marginal
+    END,
+    verdict_computed_at = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN EXCLUDED.verdict_computed_at
+        ELSE doc_registry.verdict_computed_at
+    END;
 """
 
 
@@ -222,6 +246,8 @@ async def upsert_doc(meta: dict) -> None:
         meta.get("verdict", ""),
         meta.get("pipeline_version"),
         meta.get("permanent_marginal", False),
+        # Zone-8: verdict_computed_at for temporal CAS guard.
+        meta.get("verdict_computed_at", ""),
     )
     logger.debug("registry: upserted doc_id=%s", doc_id)
 

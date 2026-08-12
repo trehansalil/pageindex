@@ -336,6 +336,25 @@ async def _heal_orphans(orphans: dict[str, str | None]) -> tuple[int, int]:
             if not rich:
                 # Unreadable full JSON — can't heal this tick; retried next tick.
                 return doc_id, False
+            # Zone-8 Target 5: if read_registry_fields result lacks verdict,
+            # attempt sidecar read and merge verdict fields.  Graceful
+            # degradation if sidecar is also missing.
+            if not rich.get("verdict"):
+                try:
+                    from pageindex_mcp.storage import _read_existing_sidecar
+
+                    sidecar = await asyncio.to_thread(
+                        _read_existing_sidecar, get_minio(), doc_id
+                    )
+                    if sidecar.get("verdict"):
+                        for vf in (
+                            "verdict", "verdict_reason", "pipeline_version",
+                            "verdict_computed_at", "max_leaf_ratio",
+                        ):
+                            if vf in sidecar and not rich.get(vf):
+                                rich[vf] = sidecar[vf]
+                except Exception:
+                    pass  # graceful degradation — sidecar also missing
             await asyncio.to_thread(save_doc_meta, doc_id, rich)  # write fat v2 sidecar
             try:
                 await upsert_doc(rich)
