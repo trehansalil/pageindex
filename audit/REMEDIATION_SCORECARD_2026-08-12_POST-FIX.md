@@ -6,7 +6,7 @@
 
 ## Verdict: NEEDS ANOTHER CYCLE
 
-All seven defect zones remain open with zero net bug reduction (64 → 64). The zone-1 through zone-7 fix commits landed correct, well-typed abstractions — `TreeDefect`, `Route`, `OcrMode`, `Candidate`, `decide_rtl()`, `write_verdict()` — but in every case the legacy mechanism the new type was meant to replace is still live and still on the execution path. The new code supplements rather than supersedes, so no bug was actually eliminated: `REASON_POLICY` is defined and exhaustiveness-asserted but production routing still branches on the literal `reason=='garbling'`; `decide_rtl()` coexists with two duplicate RTL samplers; two contradictory landscape predicates remain unreconciled; `write_verdict()`'s atomic dual-write does not replace the five independent `save_doc_meta` call sites it was meant to retire. The recommended next cycle is deletion-first, not addition-first.
+Six of seven defect zones remain open; zone-5 is now closed (64 → 56 bugs, net −8). The zone-5 commit (db2e2f1, 2026-08-13) deleted `original_reason`, removed all `reason=='garbling'` string literals, and wired `REASON_POLICY`/`decide_route()` as the sole routing path — the first zone where the new typed abstraction fully replaced the legacy mechanism. The remaining six zones still have the supplement-not-supersede pattern: `decide_rtl()` coexists with two duplicate RTL samplers; two contradictory landscape predicates remain unreconciled; `write_verdict()`'s atomic dual-write does not replace the five independent `save_doc_meta` call sites it was meant to retire. The recommended next cycle is deletion-first, not addition-first.
 
 ## Zones Closed (0)
 
@@ -24,7 +24,7 @@ None closed this cycle.
 | Zone 2: OCR escalation vs per-picture enrichment (marker-count contract) | critical | 11        | stalled |
 | Zone 3: Arabic/RTL (six deciders + 10-prong garble gate x 13 call sites) | critical | 9         | stalled |
 | Zone 4: pdf_to_markdown_docling (dual pipelines + positional stages)     | high     | 9         | stalled |
-| Zone 5: reason as diagnosis+routing inside index()                       | critical | 8         | stalled |
+| Zone 5: reason as diagnosis+routing inside index()                       | critical | 0         | closed  |
 | Zone 6: Verdict persistence (five writers, no CAS, sidecar-only)         | high     | 8         | stalled |
 | Zone 7: Flag/threshold sprawl (~35 kill-switches)                        | high     | 7         | stalled |
 
@@ -38,15 +38,15 @@ None introduced this cycle. No red flag.
 
 ## Metrics
 
-- Net bug delta: 0 (64 prior → 64 current)
-- Improved: 0
+- Net bug delta: −8 (64 prior → 56 current)
+- Improved: 1 (zone-5)
 - Regressed: 0
-- Stalled: 7
+- Stalled: 6
 - New: 0
-- Closed: 0
+- Closed: 1 (zone-5)
 - Wiring status: some_unwired
 - Unwired symbols:
-  - `REASON_POLICY` (helpers.py:182) — exhaustiveness-asserted but production routing still uses literal `reason=='garbling'` at client.py:2093-2094; `decide_route()` called but `original_reason` clobbered at 5 sites (client.py:1261,1360,1507,1598,1723) defeating garble-by-default
+  - ~~`REASON_POLICY` (helpers.py:182)~~ — **CLOSED (zone-5, db2e2f1):** `original_reason` deleted, `reason=='garbling'` literals removed, `decide_route()`/`REASON_POLICY` is now the sole routing path
   - `_is_garbled_blob` at helpers.py:1942 — `image_enrichment_promoted` garble check called without `expected_script`, unconditionally disabling the `latin_gibberish` prong
   - `_tree_is_rtl_reversed` (helpers.py:1485) and `_check_bidi_coherence` (helpers.py:1344) — duplicate RTL samplers survive alongside `decide_rtl()`; six orientation deciders not consolidated to one
   - Two contradictory landscape predicates — converters.py:1837 (`rotate==0 and w>h`) vs converters.py:1940 (`(rotate%180!=0) or (w>h)`); single `_page_orientation()` not implemented
