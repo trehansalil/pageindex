@@ -4,11 +4,8 @@ Covers:
   1. Property 8: _garble_check_nodes inspects node.get('title') in addition
      to node.get('text'), including RTL-reversed-morphology detection.
   2. Property 9: _flatten_tree_text includes title text for every node.
-  3. Property 10: _check_bidi_coherence wired into validate_tree, deduplicated.
+  3. Bidi coherence wired into validate_tree (inline via decide_rtl).
 """
-
-import ast
-from pathlib import Path
 
 from pageindex_mcp.helpers import (
     _flatten_tree_text,
@@ -111,7 +108,7 @@ class TestFlattenTreeTextIncludesTitle:
 
 
 # ---------------------------------------------------------------------------
-# Property 10: _check_bidi_coherence wired into validate_tree, deduplicated
+# Bidi coherence wired into validate_tree (inline via decide_rtl)
 # ---------------------------------------------------------------------------
 
 
@@ -147,14 +144,6 @@ def _visual_order_tree() -> list:
 
 
 class TestBidiCoherenceWiredIntoValidateTree:
-    def test_visual_order_arabic_triggers_bidi_coherence_failure(self):
-        from pageindex_mcp.helpers import _check_bidi_coherence
-
-        ok, reason = _check_bidi_coherence(_VISUAL_ORDER_LINE)
-
-        assert ok is False
-        assert reason == "visual_order_garble"
-
     def test_validate_tree_catches_reversed_arabic(self, monkeypatch):
         monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "true")
         tree = _visual_order_tree()
@@ -192,24 +181,6 @@ class TestBidiCoherenceWiredIntoValidateTree:
         # since both now use the same unified decide_rtl.
         assert ok is False
         assert reason == "rtl_reversal"
-
-
-class TestCheckBidiCoherenceIsDefinedOnce:
-    def test_only_one_definition_of_check_bidi_coherence_in_helpers(self):
-        import pageindex_mcp.helpers as helpers_module
-
-        source = Path(helpers_module.__file__).read_text()
-        tree = ast.parse(source)
-        definitions = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "_check_bidi_coherence"
-        ]
-
-        assert len(definitions) == 1, (
-            f"Expected exactly one _check_bidi_coherence definition, "
-            f"found {len(definitions)}"
-        )
 
 
 def _varied_text(seed: int) -> str:

@@ -14,8 +14,8 @@ order). This test would have caught that defect.
 import unicodedata
 
 from pageindex_mcp.helpers import (
-    _check_bidi_coherence,
     _word_has_reversed_morphology,
+    decide_rtl,
     validate_tree,
 )
 
@@ -36,12 +36,10 @@ def _nfkc(text: str) -> str:
 
 
 def test_nfkc_reversed_arabic_bidi_coherence_detects_violation():
-    """Case 1: NFKC-normalized reversed Arabic through `_check_bidi_coherence`
-    must be flagged -- not silently pass with (True, "")."""
+    """Case 1: NFKC-normalized reversed Arabic through decide_rtl
+    must be flagged as reversed."""
     text = _nfkc(_VISUAL_LINE + "\n" + _VISUAL_LINE_2)
-    ok, reason = _check_bidi_coherence(text)
-    assert ok is False
-    assert reason == "visual_order_garble"
+    assert decide_rtl(text).reversed
 
 
 def test_nfkc_reversed_word_morphology_detected():
@@ -54,9 +52,7 @@ def test_nfkc_reversed_word_morphology_detected():
 def test_nfkc_clean_arabic_zero_violations():
     """Case 3: clean NFKC-normalized Arabic must produce zero violations."""
     text = _nfkc(_LOGICAL_LINE)
-    ok, reason = _check_bidi_coherence(text)
-    assert ok is True
-    assert reason == ""
+    assert not decide_rtl(text).reversed
     assert not any(_word_has_reversed_morphology(w) for w in text.split())
 
 

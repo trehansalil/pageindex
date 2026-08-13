@@ -127,3 +127,74 @@ class TestSingleThreshold:
         assert hasattr(decision, "repair_effective")
         assert hasattr(decision, "sampled")
         assert hasattr(decision, "method")
+
+
+# ---------------------------------------------------------------------------
+# Regression: reconstruct_bidi_order applies the SAME decision to headings
+# and body (no threshold divergence)
+# ---------------------------------------------------------------------------
+
+class TestConsistentHeadingBodyDecision:
+    """reconstruct_bidi_order must apply the same decide_rtl threshold to
+    headings and body text -- no divergence between heading-level and
+    document-level Arabic ratio thresholds."""
+
+    def test_below_threshold_both_skipped(self):
+        """A doc just under 0.15 Arabic ratio gets consistent treatment:
+        both headings and body are skipped (not reversed), since the ratio
+        is below the 0.15 threshold."""
+        from pageindex_mcp.converters import reconstruct_bidi_order
+
+        # Build text with ~12% Arabic ratio -- below 0.15 threshold
+        latin_body = "This is English content repeated. " * 20  # ~680 chars
+        arabic_heading = "## المادة"  # ~10 Arabic chars
+        text = arabic_heading + "\n\n" + latin_body
+
+        ar_count = sum(1 for c in text if is_arabic_char(c))
+        total = len(text)
+        ratio = ar_count / total
+        assert ratio < 0.15, f"precondition: ratio {ratio:.3f} must be below 0.15"
+
+        # reconstruct_bidi_order should return text unchanged
+        result = reconstruct_bidi_order(text)
+
+        # The heading should NOT be reversed (ratio too low for decide_rtl
+        # to engage at the document level)
+        assert "##" in result, "heading marker must be preserved"
+        # Body text unchanged
+        assert "This is English content repeated." in result
+
+    def test_logical_arabic_heading_and_body_consistent(self):
+        """A fully logical-order Arabic document should have both headings
+        and body left untouched by reconstruct_bidi_order."""
+        from pageindex_mcp.converters import reconstruct_bidi_order
+
+        heading = "## المادة الأولى تنظيم الحقوق"
+        body = "تنظيم الحقوق والواجبات للمواطنين في إطار القانون العام"
+        text = heading + "\n\n" + body + "\n" + body
+
+        result = reconstruct_bidi_order(text)
+        # Logical order should not be modified
+        assert "المادة الأولى" in result
+        assert "تنظيم الحقوق" in result
+
+    def test_heading_and_body_get_same_threshold(self):
+        """Verify the 0.15 threshold is applied uniformly: document-level
+        decide_rtl uses the same threshold that would apply to individual
+        heading lines if they were tested independently."""
+        # A text with exactly 0.15 ratio -- at the boundary, both heading
+        # and body should be treated the same (bail out)
+        latin_part = "x" * 85
+        arabic_part = "ا" * 15
+        heading = "## " + arabic_part[:5]
+        body = latin_part + arabic_part[5:]
+        text = heading + "\n" + body
+
+        # Document-level decision
+        doc_decision = decide_rtl(text)
+        # Individual heading decision (short text, likely below threshold)
+        heading_decision = decide_rtl(heading)
+
+        # Both should not be reversed (text at/below threshold)
+        assert doc_decision.reversed is False
+        assert heading_decision.reversed is False

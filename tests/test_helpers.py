@@ -101,7 +101,7 @@ def test_is_garbled_blob_detects_single_letter_arabic_fragments():
     """D2-P1: "مادة" decomposed into single-letter tokens is flagged garbled."""
     fragmented = "م ا د ة"
 
-    assert _is_garbled_blob(fragmented) is True
+    assert _is_garbled_blob(fragmented, expected_script=None) is True
 
 
 def test_is_garbled_blob_detects_fragmented_heading_among_whole_words():
@@ -109,7 +109,7 @@ def test_is_garbled_blob_detects_fragmented_heading_among_whole_words():
     as long as single-letter tokens exceed 40% of Arabic-bearing tokens."""
     heading = "م ا د ة رقم 1: أحكام عامة"
 
-    assert _is_garbled_blob(heading) is True
+    assert _is_garbled_blob(heading, expected_script=None) is True
 
 
 def test_is_garbled_blob_wa_particle_exclusion_prevents_false_positive():
@@ -120,7 +120,7 @@ def test_is_garbled_blob_wa_particle_exclusion_prevents_false_positive():
 
     ratio_would_exceed_threshold_without_exclusion = 4 / 9
     assert ratio_would_exceed_threshold_without_exclusion > 0.40
-    assert _is_garbled_blob(text) is False
+    assert _is_garbled_blob(text, expected_script=None) is False
 
 
 def test_is_garbled_blob_clean_decree_text_not_flagged():
@@ -129,5 +129,5 @@ def test_is_garbled_blob_clean_decree_text_not_flagged():
     marsoom_13 = "مرسوم اتحادي رقم 13 لسنة 2021 في شأن تنظيم علاقات العمل الحكومي"
     marsoom_33 = "مرسوم بقانون اتحادي رقم 33 لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته"
 
-    assert _is_garbled_blob(marsoom_13) is False
-    assert _is_garbled_blob(marsoom_33) is False
+    assert _is_garbled_blob(marsoom_13, expected_script=None) is False
+    assert _is_garbled_blob(marsoom_33, expected_script=None) is False

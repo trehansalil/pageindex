@@ -283,7 +283,7 @@ class TestGarbleProngs:
             "normal clean text " * 10,
         ]
         for blob in fixtures:
-            assert _is_garbled_blob(blob) == bool(garble_prongs(blob)), (
+            assert _is_garbled_blob(blob, expected_script=None) == bool(garble_prongs(blob)), (
                 f"Mismatch on: {blob!r}"
             )
 

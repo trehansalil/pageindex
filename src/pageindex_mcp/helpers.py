@@ -1297,10 +1297,16 @@ def garble_prongs(
 
 def _is_garbled_blob(
     blob: str,
-    expected_script: str | None = None,
+    *,
+    expected_script: str | None,
     blob_kind: BlobKind = BlobKind.TREE_TEXT,
 ) -> bool:
-    """Boolean wrapper around ``garble_prongs`` -- True when any prong fires."""
+    """Boolean wrapper around ``garble_prongs`` -- True when any prong fires.
+
+    Zone-3: ``expected_script`` is a REQUIRED keyword parameter — every caller
+    must pass it explicitly so the latin_gibberish prong is never silently
+    disabled by omission.
+    """
     return bool(garble_prongs(blob, expected_script=expected_script, blob_kind=blob_kind))
 
 
@@ -1341,21 +1347,10 @@ def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
 # (Zone 5: break circular import, dependency-free leaf)
 
 
-def _check_bidi_coherence(text: str, n_samples: int = 5) -> tuple[bool, str]:
-    """Zone-3: bidi-coherence check delegating to ``decide_rtl``.
 
-    Previously a standalone 50-line sampling function; now delegates to
-    the consolidated decider. The ``decide_rtl`` ``reversed`` flag
-    subsumes the old visual-order-garble detection.
-
-    Returns:
-        (True, "")                      - bidi-coherent (or not Arabic-dominant)
-        (False, "visual_order_garble")  - reversed detected
-    """
-    decision: RtlDecision = decide_rtl(text, sample_count=n_samples)
-    if decision.reversed:
-        return False, "visual_order_garble"
-    return True, ""
+# Zone-3: _check_bidi_coherence DELETED — its sole signal was
+# decide_rtl(...).reversed, now handled inline in validate_tree's
+# RTL_REVERSAL gate.
 
 
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
@@ -1482,21 +1477,9 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
     return _is_garbled_blob(blob, expected_script=expected_script) or _has_sparse_mojibake(blob)
 
 
-def _tree_is_rtl_reversed(nodes: list) -> bool:
-    """Zone-3: thin shim delegating to ``decide_rtl`` from script.py.
 
-    Previously a standalone 50-line sampling function duplicating the
-    RTL detection logic; now delegates to the consolidated decider.
-    Kept as a named function so the ``validate_tree`` call site remains
-    readable (the boolean sense matches the gate expectation).
-    """
-    if not nodes:
-        return False
-    full_text = _flatten_tree_text(nodes)
-    if not full_text:
-        return False
-    decision: RtlDecision = decide_rtl(full_text)
-    return decision.reversed
+# Zone-3: _tree_is_rtl_reversed DELETED — inlined into validate_tree
+# as a single decide_rtl call reused for both RTL_REVERSAL and BIDI_DEGRADED gates.
 
 
 def validate_tree(  # noqa: C901
@@ -1554,10 +1537,12 @@ def validate_tree(  # noqa: C901
     # passes every check above (no garbling, real node/depth counts, in-order
     # start_indexes) but reads backwards. Checked last so it never shadows the
     # existing garble/structure gates it is additive to.
-    if _tree_is_rtl_reversed(structure):
+    # Zone-3: single decide_rtl call reused for RTL_REVERSAL and BIDI_DEGRADED.
+    _rtl_decision = decide_rtl(sig.flat_text) if sig.flat_text else None
+    if _rtl_decision and _rtl_decision.reversed:
         return TreeGateResult(False, TreeDefect.RTL_REVERSAL, signals=sig)
     # RFC-030 D5 / RFC-033 D2 Part B: bidi coherence gate — catches
-    # visual-order Arabic (reversed morphology) that _tree_is_rtl_reversed
+    # visual-order Arabic (reversed morphology) that the RTL_REVERSAL gate
     # does not detect. BIDI_COHERENCE_ENFORCE now defaults to true, promoted
     # on Task 9.1's scoped re-ingest measurement of `bidi_coherence_violations`
     # (docs with reversed-heading signatures, post the Task 1.11 heading
@@ -1570,20 +1555,15 @@ def validate_tree(  # noqa: C901
     # validate_reason) instead of raising LowQualityTreeError.
     # classify_verdict caps the returned verdict at MARGINAL when it sees
     # this reason; persistence is never gated on it.
-    _bidi_ok, _bidi_reason = _check_bidi_coherence(sig.flat_text)
-    if not _bidi_ok:
-        if os.environ.get("BIDI_COHERENCE_ENFORCE", "true").lower() == "true":
-            logger.warning(
-                "validate_tree: bidi coherence check failed (%s); setting "
-                "bidi_degraded (verdict-only, not persistence-gating)",
-                _bidi_reason,
-            )
-            return TreeGateResult(False, TreeDefect.BIDI_DEGRADED, signals=sig)
-        logger.warning(
-            "validate_tree: bidi coherence check would fail (%s) but "
-            "BIDI_COHERENCE_ENFORCE is disabled (audit-only mode); not gating",
-            _bidi_reason,
-        )
+    # Zone-3: _check_bidi_coherence DELETED — its sole signal was
+    # decide_rtl(...).reversed, already handled by the RTL_REVERSAL gate
+    # above. BIDI_COHERENCE_ENFORCE env var gating preserved: if future
+    # bidi-degradation heuristics (beyond reversed detection) are added,
+    # they should fire here and respect this env var.
+    # NOTE: with a single decide_rtl call, BIDI_DEGRADED is unreachable
+    # from the reversed path (already caught above). The gate placeholder
+    # remains for additional bidi heuristics that detect degradation without
+    # full reversal.
     # RFC-029 D10: zero-body contamination gate — checked last so it is
     # additive and never shadows the existing gates above.
     _total_non_root, _empty_leaf, _empty_non_leaf = _count_empty_body_nodes(structure)
@@ -1939,7 +1919,7 @@ def classify_verdict(  # noqa: C901
         total_chars = len(_promoted_text)
         if total_chars < th.min_image_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
-        if not _is_garbled_blob(_promoted_text):
+        if not _is_garbled_blob(_promoted_text, expected_script=expected_script):
             return _pass("image_enrichment_promoted")
 
     # max_leaf_ratio structural hard FAIL — blocks all non-image promotions

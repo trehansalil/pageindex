@@ -13,13 +13,12 @@ from pageindex_mcp.converters import (
     _arabic_readability_score,
     _bbox_to_fitz_rect,
     _fix_fi_hash_substitution,
-    _fix_residual_rtl_reversal,
     _is_arabic_char,
     _is_numeric_extension,
     _normalize_indented_headings,
     _recover_picture_text,
     _split_run_together_headings,
-    _text_is_logical_order,
+    decide_rtl,
     reconstruct_bidi_order,
     splice_figure_markers,
 )
@@ -286,11 +285,11 @@ class TestLogicalOrderDetection:
 
     def test_logical_order_arabic_detected(self):
         logical = "قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل"
-        assert _text_is_logical_order(logical) is True
+        assert not decide_rtl(logical).reversed
 
     def test_visual_order_arabic_not_detected_as_logical(self):
         visual = "رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا"
-        assert _text_is_logical_order(visual) is False
+        assert decide_rtl(visual).reversed
 
     def test_logical_order_skips_get_display(self):
         # RFC-023 D9 originally passed heading-marker lines through
@@ -351,36 +350,32 @@ class TestArabicReadabilityScore:
 
 
 class TestFixResidualRtlReversal:
-    """RFC-018 D2: _fix_residual_rtl_reversal() re-orders reversed-Arabic-word lines."""
+    """RFC-018 D2: reconstruct_bidi_order() re-orders reversed-Arabic-word lines.
+
+    Zone-3 consolidation: _fix_residual_rtl_reversal was a thin shim over
+    reconstruct_bidi_order; tests now call the replacement directly.
+    """
 
     def test_reversed_arabic_word_order_fixed(self):
-        # "كتاب كتاب كتاب في من" — fwd: في(2)+من(2)=4; rev: "من في كتاب كتاب كتاب" rev: في(2)+من(2)=4 — equal.
-        # Need asymmetric: common words concentrated at the END of the reversed form.
-        # "كتاب كتاب في" fwd: في=2; rev: "في كتاب كتاب" rev: في=2 — still symmetric.
-        # Use definite-article words which only score in one position:
-        # "كتاب الموارد في" fwd: الموارد(1)+في(2)=3; rev: "في الموارد كتاب" rev: في(2)+الموارد(1)=3
-        # The scoring function is position-independent so symmetric inputs always tie.
         # Test the no-flip case: correctly ordered Arabic text stays unchanged.
         text = "في المكتبة هذا"
-        result = _fix_residual_rtl_reversal(text)
-        # fwd: في(2)+المكتبة(1)+هذا(2)=5; rev: "هذا المكتبة في" rev: هذا(2)+المكتبة(1)+في(2)=5
-        # Equal scores → no flip, text unchanged.
+        result = reconstruct_bidi_order(text)
         assert result == text
 
     def test_non_arabic_text_unchanged(self):
         text = "This is English text"
-        result = _fix_residual_rtl_reversal(text)
+        result = reconstruct_bidi_order(text)
         assert result == text
 
     def test_correct_arabic_unchanged(self):
         text = "وزارة الموارد"
-        assert _fix_residual_rtl_reversal(text) == text
+        assert reconstruct_bidi_order(text) == text
 
     def test_mixed_arabic_latin_preserved(self):
         # Arabic makes up well under 50% of the stripped line, so the line is
         # skipped rather than treated as a reversal candidate.
         text = "Hello World مرحبا"
-        assert _fix_residual_rtl_reversal(text) == text
+        assert reconstruct_bidi_order(text) == text
 
 
 class TestIsNumericExtension:

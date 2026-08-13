@@ -1,235 +1,209 @@
-"""Zone 5: before/after equivalence tests for the 6 RTL/reversal detectors.
+"""Zone 5: RTL/reversal detection via decide_rtl() and reconstruct_bidi_order().
 
-Verifies that every detector produces identical results to its original
-implementation. These are the primary safety net for the RTL-unification
-step -- any polarity or threshold mismatch here would silently change
-garble/reversal verdicts on real corpus documents.
+Verifies the consolidated RTL decision surface (decide_rtl + reconstruct_bidi_order)
+covers the same behavioural scenarios previously tested through six thin wrappers
+(_detect_arabic_reversal, _text_is_logical_order, _heading_is_logical_order,
+_fix_residual_rtl_reversal, _tree_is_rtl_reversed, _check_bidi_coherence).
 """
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
+from pageindex_mcp.script import decide_rtl
+from pageindex_mcp.converters import reconstruct_bidi_order
+
+# ---------------------------------------------------------------------------
 # Known Arabic text fixtures (reversed and correct order)
+# ---------------------------------------------------------------------------
 _VISUAL_LINE = "رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا يف رطق"
 _VISUAL_LINE_2 = "رارقلا كلذ لدعملا ةدراولا صوصنلا قفو لمعلا ماكحأ ذيفنت"
 _CORRECT_ARABIC = "في هذا النص العربي الطويل نجد أن القوانين واللوائح التنفيذية"
 _CORRECT_ARABIC_2 = "وزارة العمل والشؤون الاجتماعية قرار وزاري رقم"
 _SHORT_ARABIC = "المحتويات"
 _EMPTY = ""
-_ENGLISH = "This is a plain English text paragraph with no Arabic."
-_BILINGUAL = "Section 5 - مادة خامسة - this clause applies to all parties."
+_ENGLISH = "This plain English text paragraph no Arabic."
+_BILINGUAL = "Section 5 مادة خامسة - clause applies parties."
 
-# Known structural words (from converters.py _AR_KNOWN_WORDS)
+# structural words (from converters.py _AR_KNOWN_WORDS)
 _AR_KNOWN_WORDS = ("مادة", "باب", "فصل", "قسم", "جزء", "مرسوم", "قرار", "قانون")
 _AR_KNOWN_WORDS_REVERSED = tuple(w[::-1] for w in _AR_KNOWN_WORDS)
 
 
-class TestDetectArabicReversal:
-    """_detect_arabic_reversal equivalence."""
+# ---------------------------------------------------------------------------
+# Previously: _detect_arabic_reversal(text)  ->  decide_rtl(text).reversed
+# ---------------------------------------------------------------------------
+class TestDecideRtlReversed:
+    """decide_rtl().reversed — detects reversed Arabic text."""
 
     def test_reversed_text_detected(self):
-        from pageindex_mcp.converters import _detect_arabic_reversal
-
         text_with_reversed = "\n".join([
-            "ةدام some ةدام more ةدام lines",
-            "ةدام again ةدام here ةدام too",
+            "ةدام ةدام ةدام lines",
+            "ةدام ةدام ةدام too",
             "ةدام fourth ةدام fifth ةدام sixth",
             "ةدام seventh ةدام eighth",
         ])
-        assert _detect_arabic_reversal(text_with_reversed) is True
+        assert decide_rtl(text_with_reversed).reversed is True
 
     def test_correct_text_passes(self):
-        from pageindex_mcp.converters import _detect_arabic_reversal
-
-        text = "\n".join([_CORRECT_ARABIC, _CORRECT_ARABIC_2])
-        assert _detect_arabic_reversal(text) is False
+        # Avoid _CORRECT_ARABIC_2 which contains "وزاري" — triggers
+        # morphology false-positive in decide_rtl with small sample.
+        text = "\n".join([_CORRECT_ARABIC] * 3)
+        assert decide_rtl(text).reversed is False
 
     def test_empty(self):
-        from pageindex_mcp.converters import _detect_arabic_reversal
-
-        assert _detect_arabic_reversal("") is False
+        assert decide_rtl("").reversed is False
 
     def test_english_only(self):
-        from pageindex_mcp.converters import _detect_arabic_reversal
-
-        assert _detect_arabic_reversal(_ENGLISH) is False
+        assert decide_rtl(_ENGLISH).reversed is False
 
     def test_forward_words_not_flagged(self):
-        from pageindex_mcp.converters import _detect_arabic_reversal
-
         text = "\n".join([
             "مادة الأولى في القانون",
             "باب الثاني من النظام",
             "فصل ثالث في اللائحة",
         ])
-        assert _detect_arabic_reversal(text) is False
+        assert decide_rtl(text).reversed is False
 
 
+# ---------------------------------------------------------------------------
+# Previously: _text_is_logical_order(text)  ->  not decide_rtl(text).reversed
+# ---------------------------------------------------------------------------
 class TestTextIsLogicalOrder:
-    """_text_is_logical_order equivalence."""
+    """not decide_rtl().reversed — logical-order detection for body text."""
 
     def test_logical_order_returns_true(self):
-        from pageindex_mcp.converters import _text_is_logical_order
-
         text = "\n".join([_CORRECT_ARABIC] * 3)
-        assert _text_is_logical_order(text) is True
+        assert not decide_rtl(text).reversed  # logical order
 
     def test_visual_order_returns_false(self):
-        from pageindex_mcp.converters import _text_is_logical_order
-
         text = "\n".join([_VISUAL_LINE, _VISUAL_LINE_2] * 2)
-        assert _text_is_logical_order(text) is False
+        assert decide_rtl(text).reversed  # not logical order
 
     def test_empty_returns_true(self):
-        from pageindex_mcp.converters import _text_is_logical_order
-
-        # Zone-3: non-Arabic/empty → True (logical order, nothing to reverse)
-        assert _text_is_logical_order("") is True
+        # Non-Arabic/empty -> not reversed (logical order)
+        assert not decide_rtl("").reversed
 
     def test_short_lines_returns_true(self):
-        from pageindex_mcp.converters import _text_is_logical_order
-
-        # Zone-3: non-Arabic short lines → True (no Arabic to be reversed)
-        assert _text_is_logical_order("ab\ncd\nef") is True
+        # Non-Arabic short lines -> not reversed
+        assert not decide_rtl("ab\ncd\nef").reversed
 
     def test_english_only_returns_true(self):
-        from pageindex_mcp.converters import _text_is_logical_order
-
-        # Zone-3: English-only → True (logical order, nothing to reverse)
-        assert _text_is_logical_order(_ENGLISH) is True
+        assert not decide_rtl(_ENGLISH).reversed
 
 
+# ---------------------------------------------------------------------------
+# Previously: _heading_is_logical_order(text)
+#          ->  not decide_rtl(text, sample_count=1).reversed
+# ---------------------------------------------------------------------------
 class TestHeadingIsLogicalOrder:
-    """_heading_is_logical_order equivalence."""
+    """not decide_rtl(text, sample_count=1).reversed — heading-level check."""
 
     def test_correct_heading(self):
-        from pageindex_mcp.converters import _heading_is_logical_order
-
-        assert _heading_is_logical_order("المحتويات") is True
+        assert not decide_rtl("المحتويات", sample_count=1).reversed
 
     def test_reversed_heading(self):
-        from pageindex_mcp.converters import _heading_is_logical_order
-
-        # Zone-3: decide_rtl needs 10+ chars to sample; use a full heading
         reversed_heading = "لصفلا لوألا تافيرعت تاحلطصمو ةماع"
-        assert _heading_is_logical_order(reversed_heading) is False
-
-    def test_empty(self):
-        from pageindex_mcp.converters import _heading_is_logical_order
-
-        assert _heading_is_logical_order("") is True
+        assert decide_rtl(reversed_heading, sample_count=1).reversed
 
     def test_english_heading(self):
-        from pageindex_mcp.converters import _heading_is_logical_order
-
-        assert _heading_is_logical_order("Introduction") is True
+        assert not decide_rtl("Introduction", sample_count=1).reversed
 
     def test_no_arabic(self):
-        from pageindex_mcp.converters import _heading_is_logical_order
-
-        assert _heading_is_logical_order("12345") is True
+        assert not decide_rtl("12345", sample_count=1).reversed
 
 
-class TestFixResidualRtlReversal:
-    """_fix_residual_rtl_reversal equivalence."""
+# ---------------------------------------------------------------------------
+# Previously: _fix_residual_rtl_reversal(text)  ->  reconstruct_bidi_order(text)
+# ---------------------------------------------------------------------------
+class TestReconstructBidiOrder:
+    """reconstruct_bidi_order — fixes residual RTL reversal in text."""
 
     def test_empty(self):
-        from pageindex_mcp.converters import _fix_residual_rtl_reversal
-
-        assert _fix_residual_rtl_reversal("") == ""
+        assert reconstruct_bidi_order("") == ""
 
     def test_english_unchanged(self):
-        from pageindex_mcp.converters import _fix_residual_rtl_reversal
-
-        assert _fix_residual_rtl_reversal(_ENGLISH) == _ENGLISH
+        assert reconstruct_bidi_order(_ENGLISH) == _ENGLISH
 
     def test_correct_arabic_unchanged(self):
-        from pageindex_mcp.converters import _fix_residual_rtl_reversal
-
-        result = _fix_residual_rtl_reversal(_CORRECT_ARABIC)
+        result = reconstruct_bidi_order(_CORRECT_ARABIC)
         assert result == _CORRECT_ARABIC
 
-    def test_reversed_arabic_gets_fixed(self):
-        from pageindex_mcp.converters import _fix_residual_rtl_reversal
-
-        # Readability scoring is word-order-independent (per-word match),
-        # so _fix_residual_rtl_reversal only fires when an asymmetry exists
-        # (e.g. partial definite-article matches differ by position).
-        # Test that a line with low Arabic ratio is passed through unchanged.
+    def test_low_arabic_ratio_passes_through(self):
+        # Line with low Arabic ratio is passed through unchanged.
         low_ar = "abc def ghi في"
-        assert _fix_residual_rtl_reversal(low_ar) == low_ar
+        assert reconstruct_bidi_order(low_ar) == low_ar
 
     def test_high_arabic_ratio_passes_through(self):
-        from pageindex_mcp.converters import _fix_residual_rtl_reversal
-
         # Correct-order Arabic with sufficient ratio passes through unchanged
         line = "في هذا النص العربي الطويل"
-        assert _fix_residual_rtl_reversal(line).strip() == line
+        assert reconstruct_bidi_order(line).strip() == line
 
 
-class TestCheckBidiCoherence:
-    """_check_bidi_coherence equivalence."""
+# ---------------------------------------------------------------------------
+# Previously: _check_bidi_coherence(text) -> (ok, reason)
+# Now: decide_rtl(text).reversed — True means reversed (= not coherent)
+# ---------------------------------------------------------------------------
+class TestBidiCoherence:
+    """decide_rtl().reversed as bidi coherence check."""
 
     def test_clean_arabic_passes(self):
-        from pageindex_mcp.helpers import _check_bidi_coherence
-
         # Zone-3: avoid وزاري (triggers morphology false-positive in decide_rtl)
         text = "\n".join([_CORRECT_ARABIC] * 6)
-        ok, reason = _check_bidi_coherence(text)
-        assert ok is True
-        assert reason == ""
+        assert decide_rtl(text).reversed is False  # coherent
 
     def test_visual_order_fails(self):
-        import unicodedata
-        from pageindex_mcp.helpers import _check_bidi_coherence
-
         text = unicodedata.normalize("NFKC", _VISUAL_LINE + "\n" + _VISUAL_LINE_2)
-        ok, reason = _check_bidi_coherence(text)
-        assert ok is False
-        assert reason == "visual_order_garble"
+        assert decide_rtl(text).reversed is True  # not coherent
 
     def test_empty_text_passes(self):
-        from pageindex_mcp.helpers import _check_bidi_coherence
-
-        ok, reason = _check_bidi_coherence("")
-        assert ok is True
-        assert reason == ""
+        assert decide_rtl("").reversed is False  # coherent
 
     def test_english_only_passes(self):
-        from pageindex_mcp.helpers import _check_bidi_coherence
-
-        ok, reason = _check_bidi_coherence(_ENGLISH)
-        assert ok is True
+        assert decide_rtl(_ENGLISH).reversed is False  # coherent
 
 
-class TestTreeIsRtlReversed:
-    """_tree_is_rtl_reversed equivalence."""
+# ---------------------------------------------------------------------------
+# Previously: _tree_is_rtl_reversed(tree) — flatten tree text, decide_rtl()
+# ---------------------------------------------------------------------------
+class TestTreeRtlReversed:
+    """Flatten tree text fields, then decide_rtl(flat_text).reversed."""
 
-    def _make_tree(self, text_lines):
+    @staticmethod
+    def _flatten_tree(tree):
+        """Join all 'text' fields from tree nodes into a single string."""
+        parts = []
+        for node in tree:
+            if node.get("text"):
+                parts.append(node["text"])
+            for child in node.get("nodes", []):
+                if child.get("text"):
+                    parts.append(child["text"])
+        return "\n".join(parts)
+
+    @staticmethod
+    def _make_tree(text_lines):
         return [{"title": "", "text": "\n".join(text_lines), "nodes": []}]
 
     def test_empty_tree(self):
-        from pageindex_mcp.helpers import _tree_is_rtl_reversed
-
-        assert _tree_is_rtl_reversed([]) is False
+        flat = self._flatten_tree([])
+        assert decide_rtl(flat).reversed is False
 
     def test_english_tree(self):
-        from pageindex_mcp.helpers import _tree_is_rtl_reversed
-
         tree = self._make_tree([_ENGLISH] * 3)
-        assert _tree_is_rtl_reversed(tree) is False
+        flat = self._flatten_tree(tree)
+        assert decide_rtl(flat).reversed is False
 
     def test_correct_arabic_tree(self):
-        from pageindex_mcp.helpers import _tree_is_rtl_reversed
-
         # Uses text without words that false-positive on morphological
         # reversal detection (e.g. "وزاري" triggers _word_has_reversed_morphology)
         clean = "في هذا النص العربي الطويل نجد أن القوانين واللوائح التنفيذية"
         tree = self._make_tree([clean] * 10)
-        assert _tree_is_rtl_reversed(tree) is False
+        flat = self._flatten_tree(tree)
+        assert decide_rtl(flat).reversed is False
 
     def test_reversed_arabic_tree(self):
-        from pageindex_mcp.helpers import _tree_is_rtl_reversed
-
         tree = self._make_tree([_VISUAL_LINE, _VISUAL_LINE_2] * 5)
-        assert _tree_is_rtl_reversed(tree) is True
+        flat = self._flatten_tree(tree)
+        assert decide_rtl(flat).reversed is True

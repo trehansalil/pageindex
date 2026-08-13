@@ -4,8 +4,7 @@ Validates:
 - Design Property 1: NFKC canonicalization idempotence
 - Design Property 2: Bidi-coherence detection
 """
-from pageindex_mcp.converters import _pre_inference_normalize
-from pageindex_mcp.helpers import _check_bidi_coherence
+from pageindex_mcp.converters import _pre_inference_normalize, decide_rtl
 
 
 # ---------------------------------------------------------------------------
@@ -70,71 +69,38 @@ class TestNFKCCanonicalization:
 
 
 class TestBidiCoherenceCheck:
+    """Zone-3 consolidation: _check_bidi_coherence was deleted; its sole
+    signal was decide_rtl(...).reversed. Tests now use decide_rtl directly."""
+
     def test_non_arabic_text_returns_coherent(self):
-        # Arrange
         text = "The quick brown fox jumps over the lazy dog"
-
-        # Act
-        ok, reason = _check_bidi_coherence(text)
-
-        # Assert
-        assert ok is True
-        assert reason == ""
+        assert not decide_rtl(text).reversed
 
     def test_healthy_arabic_logical_order_passes(self):
-        # Arrange: real Arabic in logical (base) codepoints U+0600-06FF only.
-        # These are logical-order characters; no presentation-form glyphs.
+        # Real Arabic in logical (base) codepoints U+0600-06FF only.
         text = "\n".join([
             "السلام عليكم",
             "مرحبا بكم",
             "كيف حالكم",
         ])
-
-        # Act
-        ok, reason = _check_bidi_coherence(text)
-
-        # Assert
-        assert ok is True
-        assert reason == ""
+        assert not decide_rtl(text).reversed
 
     def test_visual_order_reversed_arabic_flagged(self):
-        # Arrange: construct multi-word runs of a character-reversed base
-        # Arabic word ("قرار" reversed to "رارق" -- RFC-034 D7's
-        # Joining_Type-based morphological reversal fixture, since
-        # presentation-form glyphs decompose to base Arabic under NFKC
-        # before `_check_bidi_coherence` runs).
+        # Construct multi-word runs of a character-reversed base Arabic word.
         word = "رارق"
         line = f"{word} {word} {word}"
         text = "\n".join([line, line, line])
-
-        # Act
-        ok, reason = _check_bidi_coherence(text)
-
-        # Assert
-        assert ok is False
-        assert reason == "visual_order_garble"
+        assert decide_rtl(text).reversed
 
     def test_short_line_ignored(self):
-        # Arrange: single-word Arabic (fewer than 2 tokens) is not a run
+        # Single-word Arabic (fewer than 2 tokens) -- too short to trigger.
         text = "مرحبا"
-
-        # Act
-        ok, reason = _check_bidi_coherence(text)
-
-        # Assert
-        assert ok is True
-        assert reason == ""
+        assert not decide_rtl(text).reversed
 
     def test_low_arabic_ratio_line_ignored(self):
-        # Arrange: mostly ASCII, sparse Arabic — should not trigger detection
+        # Mostly ASCII, sparse Arabic -- should not trigger detection.
         text = "hello world foo bar baz qux مر"
-
-        # Act
-        ok, reason = _check_bidi_coherence(text)
-
-        # Assert
-        assert ok is True
-        assert reason == ""
+        assert not decide_rtl(text).reversed
 
 
 # ---------------------------------------------------------------------------
@@ -150,15 +116,8 @@ class TestNoiseRegression:
         The upstream `_is_garbled_blob` handles this class; the bidi function
         is not expected to duplicate that role.
         """
-        # Arrange
         text = "1234 " * 200
-
-        # Act
-        ok, reason = _check_bidi_coherence(text)
-
-        # Assert: bidi check leaves non-Arabic noise alone
-        assert ok is True
-        assert reason == ""
+        assert not decide_rtl(text).reversed
 
     def test_nfkc_does_not_touch_random_bytes(self):
         # Arrange

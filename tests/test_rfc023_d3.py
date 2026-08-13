@@ -19,13 +19,13 @@ class TestImageMarkerGarbleExemption:
         markers (100% single-token repetition pre-D3) must NOT be flagged
         garbled -- these are structural markers, not mojibake."""
         blob = "\n\n".join([_IMAGE_MARKER] * 45)
-        assert _is_garbled_blob(blob) is False
+        assert _is_garbled_blob(blob, expected_script=None) is False
 
     def test_genuine_repeated_tokens_still_garbled(self):
         """Real repeated-token garble (no HTML comments involved) is
         unaffected by the comment-stripping pre-filter."""
         blob = " ".join(["xkjqz"] * 40)
-        assert _is_garbled_blob(blob) is True
+        assert _is_garbled_blob(blob, expected_script=None) is True
 
     def test_mixed_content_image_markers_excluded_from_repetition_count(self):
         """Real prose interleaved with <!-- image --> markers: the markers
@@ -36,13 +36,13 @@ class TestImageMarkerGarbleExemption:
             "contents of the document in full sentences. "
         )
         blob = f"{prose}\n\n{_IMAGE_MARKER}\n\n{prose}\n\n{_IMAGE_MARKER}\n\n{prose}"
-        assert _is_garbled_blob(blob) is False
+        assert _is_garbled_blob(blob, expected_script=None) is False
 
     def test_other_html_comment_markers_also_exempted(self):
         """The fix generalizes to any <!-- ... --> structural comment, not
         just <!-- image -->, per the RFC's regex-strip design choice."""
         blob = "\n\n".join(["<!-- page-break -->"] * 30)
-        assert _is_garbled_blob(blob) is False
+        assert _is_garbled_blob(blob, expected_script=None) is False
 
     def test_empty_blob_still_garbled(self):
-        assert _is_garbled_blob("") is True
+        assert _is_garbled_blob("", expected_script=None) is True

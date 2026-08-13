@@ -6,8 +6,8 @@ Validates Design Property 4 (RTL-reversal detection is vocabulary AND
 morphology aware).
 """
 
-from pageindex_mcp.converters import _AR_COMMON_WORDS, _arabic_readability_score
-from pageindex_mcp.helpers import _tree_is_rtl_reversed, _word_has_reversed_morphology
+from pageindex_mcp.converters import _AR_COMMON_WORDS, _arabic_readability_score, decide_rtl
+from pageindex_mcp.helpers import _flatten_tree_text, _word_has_reversed_morphology
 
 # Governance/legal sentence built from the RFC-028 D3 vocabulary additions
 # (siyasat-hawkama gap: specialized governance terms, not general-purpose
@@ -75,11 +75,13 @@ class TestTreeIsRtlReversedCombinedSignal:
         # correctly-ordered text -- the OR-combination must not
         # false-positive when both prongs are legitimately silent.
         tree = _tree_from_lines([_ZERO_SCORE_LOGICAL_TEXT] * 3)
-        assert _tree_is_rtl_reversed(tree) is False
+        flat_text = _flatten_tree_text(tree)
+        assert decide_rtl(flat_text).reversed is False
 
     def test_siyasat_hawkama_style_governance_reversal_flagged(self):
         # Mirrors siyasat-hawkama: 100% reversed node titles/text using
         # specialized governance vocabulary that, before the D3 fix, scored
         # 0 in both forward and reversed directions and went undetected.
         tree = _tree_from_lines([_GOV_VISUAL, _GOV_VISUAL, _GOV_VISUAL])
-        assert _tree_is_rtl_reversed(tree) is True
+        flat_text = _flatten_tree_text(tree)
+        assert decide_rtl(flat_text).reversed is True

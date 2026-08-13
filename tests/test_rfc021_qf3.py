@@ -118,7 +118,7 @@ class TestBilingualArabicEnglishNotGarbled:
 
     def test_pure_english_no_expected_script(self):
         """English text without expected_script must still pass."""
-        assert _is_garbled_blob(_PURE_ENGLISH) is False
+        assert _is_garbled_blob(_PURE_ENGLISH, expected_script=None) is False
 
     def test_pure_english_with_latn_script(self):
         """English text with expected_script=Latn must pass."""
@@ -132,17 +132,17 @@ class TestActualGarbledStillDetected:
     """Safety: garble detection must NOT be weakened by QF3."""
 
     def test_null_bytes_detected(self):
-        assert _is_garbled_blob("some text\x00 with nulls") is True
+        assert _is_garbled_blob("some text\x00 with nulls", expected_script=None) is True
 
     def test_replacement_char_detected(self):
-        assert _is_garbled_blob("some text � with replacement") is True
+        assert _is_garbled_blob("some text � with replacement", expected_script=None) is True
 
     def test_glyph_marker_detected(self):
-        assert _is_garbled_blob("text GLYPH<0042> more text") is True
+        assert _is_garbled_blob("text GLYPH<0042> more text", expected_script=None) is True
 
     def test_pua_chars_detected(self):
         pua_text = "normal " + "" * 20 + " text"
-        assert _is_garbled_blob(pua_text) is True
+        assert _is_garbled_blob(pua_text, expected_script=None) is True
 
     def test_consonant_cluster_gibberish_still_garbled(self):
         """Latin gibberish (no vowels) in Arabic context must still be caught."""
@@ -153,8 +153,8 @@ class TestActualGarbledStillDetected:
         assert _is_garbled_blob(_GARBLED_LATIN_IN_ARABIC, expected_script="Arab") is True
 
     def test_empty_blob_detected(self):
-        assert _is_garbled_blob("") is True
-        assert _is_garbled_blob("   ") is True
+        assert _is_garbled_blob("", expected_script=None) is True
+        assert _is_garbled_blob("   ", expected_script=None) is True
 
 
 # ── 3. Sparse mojibake still flagged ─────────────────────────────────────────

@@ -261,7 +261,7 @@ def test_garble_ratio_partially_garbled():
     clean_chunk = _diverse_words(2000)
     text = garbled_chunk + clean_chunk
 
-    assert _is_garbled_blob(text) is False  # full-text check alone misses it
+    assert _is_garbled_blob(text, expected_script=None) is False  # full-text check alone misses it
     ratio = _garble_ratio(text)
     assert 0.0 < ratio < 0.5
 
@@ -288,7 +288,7 @@ def test_garble_ratio_additive_only():
     clean_chunk = _diverse_words(2000)
     text = garbled_chunk + clean_chunk
 
-    full_only = 1.0 if _is_garbled_blob(text) else 0.0
+    full_only = 1.0 if _is_garbled_blob(text, expected_script=None) else 0.0
     assert full_only == 0.0
     assert _garble_ratio(text) > full_only
 
@@ -310,7 +310,7 @@ def test_garble_ratio_sparse_mojibake_preserved():
             tokens.append(words[i % 8])
     text = " ".join(tokens)
 
-    assert _is_garbled_blob(text) is False  # bulk heuristics alone miss it
+    assert _is_garbled_blob(text, expected_script=None) is False  # bulk heuristics alone miss it
     assert _garble_ratio(text) == 1.0
 
 

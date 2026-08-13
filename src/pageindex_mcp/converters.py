@@ -100,36 +100,9 @@ _AR_MARKER_CAPTURE_RE = re.compile(
     r"^(?:ال)?(?:باب|فصل|قسم|جزء|مادة|قرار|مرسوم|قانون)\s*\(\s*\d+\s*\)"
 )
 
-# RFC-033 D8: known-good Arabic structural words used by _detect_arabic_reversal
-# to decide whether a document's OCR output is Tesseract mirror-reversed. Same
-# stems consumed by _AR_WORD_RE plus common additional structural words.
-_AR_KNOWN_WORDS = ("مادة", "باب", "فصل", "قسم", "جزء", "مرسوم", "قرار", "قانون")
-_AR_KNOWN_WORDS_REVERSED = tuple(w[::-1] for w in _AR_KNOWN_WORDS)
-_AR_REVERSAL_SAMPLE_THRESHOLD = 0.30
-
-
-def _detect_arabic_reversal(text: str) -> bool:
-    """Detect Tesseract mirror-reversed Arabic OCR output (RFC-033 D8).
-
-    Samples every Arabic-bearing line and checks it against the known-good
-    word list ``_AR_KNOWN_WORDS``. A line counts as reversed when it contains
-    a reversed-form stem but NOT its forward-form counterpart. When more than
-    ``_AR_REVERSAL_SAMPLE_THRESHOLD`` of the sampled Arabic-bearing lines are
-    reversed, the document's OCR text is judged mirror-reversed."""
-    sampled = 0
-    reversed_count = 0
-    for line in text.split("\n"):
-        t = line.strip()
-        if not t or not _AR_LETTER_RE.search(t):
-            continue
-        sampled += 1
-        has_forward = any(w in t for w in _AR_KNOWN_WORDS)
-        has_reversed = any(w in t for w in _AR_KNOWN_WORDS_REVERSED)
-        if has_reversed and not has_forward:
-            reversed_count += 1
-    if sampled == 0:
-        return False
-    return (reversed_count / sampled) > _AR_REVERSAL_SAMPLE_THRESHOLD
+# Zone-3: _detect_arabic_reversal DELETED — replaced by decide_rtl (morphology+
+# readability scorer) which is strictly stronger than the vocab-list method.
+# _AR_KNOWN_WORDS, _AR_KNOWN_WORDS_REVERSED, _AR_REVERSAL_SAMPLE_THRESHOLD removed.
 
 
 def _inject_arabic_structural_headings(md: str) -> str:
@@ -159,12 +132,12 @@ def _inject_arabic_structural_headings(md: str) -> str:
     left to the existing ``_relevel_by_containment``/``_relevel_by_numbering``
     chain.
 
-    RFC-033 D8: when ``_detect_arabic_reversal`` judges ``md`` to be
-    Tesseract mirror-reversed, each line is character-reversed before pattern
+    RFC-033 D8: when ``decide_rtl`` judges ``md`` to be Tesseract
+    mirror-reversed, each line is character-reversed before pattern
     matching (the regexes are forward-oriented) but the ORIGINAL line text —
     whatever Tesseract actually produced — is what gets promoted to a
     heading; only the matching step operates on the flipped text."""
-    reversed_ocr = _detect_arabic_reversal(md)
+    reversed_ocr = decide_rtl(md).reversed
     lines = md.split("\n")
     out = []
     for line in lines:
@@ -1456,28 +1429,6 @@ def _fix_fi_hash_substitution(md: str) -> str:
     return "".join(out)
 
 
-def _text_is_logical_order(text: str) -> bool:
-    """Zone-3: thin shim -- True when ``decide_rtl`` says text is NOT reversed.
-
-    Previously a standalone 30-line sampling function; now delegates to
-    ``decide_rtl`` from script.py. Kept for internal callers that need
-    the boolean sense (is-logical vs. is-reversed).
-    """
-    decision: RtlDecision = decide_rtl(text)
-    return not decision.reversed
-
-
-def _heading_is_logical_order(heading_text: str) -> bool:
-    """Zone-3: thin shim for per-heading logical-order probe.
-
-    Delegates to ``decide_rtl`` on the heading text (sample_count=1
-    since headings are a single unit).
-    """
-    stripped = heading_text.strip()
-    if not stripped or not any(_is_arabic_char(c) for c in stripped):
-        return True
-    decision: RtlDecision = decide_rtl(stripped, sample_count=1)
-    return not decision.reversed
 
 
 def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str:
@@ -1509,7 +1460,7 @@ def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str
         m = _BIDI_HEADING_PREFIX_RE.match(line)
         if m:
             heading_text = m.group(2)
-            if not _heading_is_logical_order(heading_text):
+            if decide_rtl(heading_text.strip(), sample_count=1).reversed:
                 repaired = apply_rtl(heading_text.rstrip(), reversed_flag=True)
                 eol = line[len(line.rstrip()):]
                 out.append(m.group(1) + repaired + eol)
@@ -1524,18 +1475,9 @@ def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
 
 
-def _fix_residual_rtl_reversal(text: str) -> str:
-    """Zone-3: thin shim delegating to ``apply_rtl``.
 
-    Previously a standalone per-line word-reversal function with a 0.5
-    Arabic-ratio threshold; now delegates to the consolidated decider.
-    """
-    if not text:
-        return text
-    decision: RtlDecision = decide_rtl(text)
-    if decision.reversed:
-        return apply_rtl(text, reversed_flag=True)
-    return text
+# Zone-3: _fix_residual_rtl_reversal DELETED — redundant with
+# reconstruct_bidi_order which already covers decide_rtl+apply_rtl.
 
 
 # RFC-015 D6 gate. Consolidated in config.py (canonical source); imported here
@@ -2539,8 +2481,7 @@ def _pre_inference_normalize(text: str) -> str:
         text = unicodedata.normalize("NFKC", text)
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
-    text = reconstruct_bidi_order(text)  # D7
-    text = _fix_residual_rtl_reversal(text)  # D2 (RFC-018)
+    text = reconstruct_bidi_order(text)  # D7 (Zone-3: sole bidi normalization step)
     return text
 
 

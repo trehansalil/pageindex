@@ -17,8 +17,8 @@ import unicodedata
 
 from pageindex_mcp.helpers import (
     _JOINING_TYPE,
-    _check_bidi_coherence,
     _word_has_reversed_morphology,
+    decide_rtl,
 )
 
 # Reused from tests/test_rfc034_d9_nfkc_detector_chain.py -- genuinely
@@ -48,11 +48,10 @@ def test_nfkc_reversed_arabic_word_morphology_returns_true():
 
 
 def test_correctly_ordered_arabic_bidi_coherence_is_clean():
-    """Test 2: correctly-ordered Arabic through `_check_bidi_coherence`
-    returns (True, "") -- no false positive."""
+    """Test 2: correctly-ordered Arabic through decide_rtl
+    returns not-reversed -- no false positive."""
     text = _nfkc(_LOGICAL_LINE + "\n" + _CLEAN_LINE_2)
-    ok, reason = _check_bidi_coherence(text)
-    assert (ok, reason) == (True, "")
+    assert not decide_rtl(text).reversed
 
 
 def test_joining_type_table_completeness():
@@ -83,12 +82,11 @@ def test_joining_type_table_completeness():
 
 def test_canonical_order_prong_detects_reversed_visual_order():
     """Test 4: the canonical-order prong (`get_display()` readability
-    comparison, OR-combined into `_check_bidi_coherence`) detects reversed
+    comparison, OR-combined into decide_rtl) detects reversed
     visual order even for words whose Joining_Type endpoints alone are
     inconclusive."""
     text = _nfkc(_VISUAL_LINE + "\n" + _VISUAL_LINE_2)
-    ok, reason = _check_bidi_coherence(text)
-    assert (ok, reason) == (False, "visual_order_garble")
+    assert decide_rtl(text).reversed
 
 
 def test_clean_arabic_docs_do_not_false_trigger():
@@ -105,5 +103,4 @@ def test_clean_arabic_docs_do_not_false_trigger():
     for word in text.split():
         assert _word_has_reversed_morphology(word) is False, word
 
-    ok, reason = _check_bidi_coherence(text)
-    assert (ok, reason) == (True, "")
+    assert not decide_rtl(text).reversed

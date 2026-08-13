@@ -6,7 +6,7 @@ re-validate -> accept or FAIL) wired into the OCR-escalation flow.
 Validates Design Property 4 (RTL reversal detection and repair-first flow).
 """
 
-from pageindex_mcp.converters import _text_is_logical_order, reconstruct_bidi_order
+from pageindex_mcp.converters import decide_rtl, reconstruct_bidi_order
 from pageindex_mcp.helpers import validate_tree
 
 # Arabic text with no `_AR_COMMON_WORDS` hits and no `ال`-prefixed definite
@@ -88,15 +88,15 @@ class TestTextIsLogicalOrderZeroScoreFix:
         # Zone-3: decide_rtl correctly identifies country-name text as
         # logical order (not reversed). Old implementation returned False
         # for zero-signal; new returns True.
-        assert _text_is_logical_order(_ZERO_SCORE_TEXT) is True
+        assert not decide_rtl(_ZERO_SCORE_TEXT).reversed
 
     def test_visual_order_still_not_logical(self):
-        assert _text_is_logical_order(_VISUAL_LINE) is False
+        assert decide_rtl(_VISUAL_LINE).reversed
 
     def test_logical_order_still_detected(self):
         # Non-regression: real logical-order text with a positive score must
         # still be reported logical.
-        assert _text_is_logical_order(_LOGICAL_LINE) is True
+        assert not decide_rtl(_LOGICAL_LINE).reversed
 
     def test_zero_score_passes_through_reconstruct_bidi_order(self):
         # Zone-3: decide_rtl identifies this as logical-order text, so

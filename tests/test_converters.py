@@ -9,11 +9,11 @@ from pageindex_mcp.converters import (
     _AR_PART_RE,
     _AR_WORD_RE,
     _containment_depths,
-    _detect_arabic_reversal,
     _inject_arabic_structural_headings,
     _inject_english_article_headings,
     _inject_german_clause_headings,
     _segment_label,
+    decide_rtl,
     numbering_depth,
     reconstruct_bidi_order,
 )
@@ -266,12 +266,12 @@ _REVERSED_DOC = _mirror_reverse(_FORWARD_DOC)
 
 class TestArabicReversalDetection:
     def test_detects_mirror_reversed_document(self):
-        assert _detect_arabic_reversal(_REVERSED_DOC) is True
+        assert decide_rtl(_REVERSED_DOC).reversed is True
 
     def test_no_false_positive_on_forward_document(self):
         """Negative test: a non-reversed Arabic document modeled on the
         مرسوم 13 / مرسوم 33 corpus fixtures must not trigger the detector."""
-        assert _detect_arabic_reversal(_FORWARD_DOC) is False
+        assert decide_rtl(_FORWARD_DOC).reversed is False
 
     def test_no_false_positive_on_second_forward_fixture(self):
         """مرسوم 33-style fixture -- a second, independent non-reversed
@@ -287,7 +287,7 @@ class TestArabicReversalDetection:
 
 المادة (2)
 تسري أحكام هذا المرسوم بقانون على جميع العاملين في القطاع الخاص بالدولة."""
-        assert _detect_arabic_reversal(forward_doc_33) is False
+        assert decide_rtl(forward_doc_33).reversed is False
 
 
 class TestArabicReversalRepairCorrectness:
@@ -312,4 +312,4 @@ class TestArabicReversalRepairCorrectness:
         result_lines = result.split("\n")
         assert "# الباب الأول" in result_lines
         assert "## المادة (1)" in result_lines
-        assert _detect_arabic_reversal(_FORWARD_DOC) is False
+        assert decide_rtl(_FORWARD_DOC).reversed is False

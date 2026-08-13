@@ -9,7 +9,7 @@ dependency, per Design Property-Based Testing Configuration).
     headings, exactly like the existing باب/فصل/قسم/جزء markers; مادة stays
     '##' (article-level). Mirror-reversed OCR variants of the new markers
     (e.g. رارق for قرار) inject correctly via the existing
-    ``_detect_arabic_reversal`` repair path. Mid-paragraph citations
+    ``decide_rtl`` repair path. Mid-paragraph citations
     referencing قرار/مرسوم/قانون are NOT promoted -- the line-start anchor
     that already protects مادة citations (RFC-028 D1) covers the new markers
     for free since they share the same gating logic.
@@ -28,8 +28,8 @@ import pytest
 from pageindex_mcp.converters import (
     _AR_MARKER_CAPTURE_RE,
     _AR_PART_RE,
-    _detect_arabic_reversal,
     _inject_arabic_structural_headings,
+    decide_rtl,
 )
 
 
@@ -106,7 +106,7 @@ class TestInjectArabicStructuralHeadingsNewMarkers:
 
 class TestReversedOcrVariantsInjectCorrectly:
     """Property 12(b): mirror-reversed OCR variants of the new markers
-    (e.g. رارق for قرار) inject correctly via _detect_arabic_reversal."""
+    (e.g. رارق for قرار) inject correctly via decide_rtl."""
 
     _FORWARD_DOC = """مرسوم اتحادي رقم (13) لسنة 2022
 في شأن تنظيم القطاع الصحي
@@ -124,7 +124,7 @@ class TestReversedOcrVariantsInjectCorrectly:
 
     def test_reversed_document_is_detected_as_mirror_reversed(self):
         reversed_doc = _mirror_reverse(self._FORWARD_DOC)
-        assert _detect_arabic_reversal(reversed_doc) is True
+        assert decide_rtl(reversed_doc).reversed is True
 
     def test_reversed_qarar_and_marsoom_lines_promoted_to_h1(self):
         reversed_doc = _mirror_reverse(self._FORWARD_DOC)
@@ -141,7 +141,7 @@ class TestReversedOcrVariantsInjectCorrectly:
         """Negative test: the forward (non-reversed) fixture must not
         trigger the reversal-repair path and its headings are promoted
         directly from the forward-oriented text."""
-        assert _detect_arabic_reversal(self._FORWARD_DOC) is False
+        assert decide_rtl(self._FORWARD_DOC).reversed is False
 
         result = _inject_arabic_structural_headings(self._FORWARD_DOC)
         result_lines = result.split("\n")
@@ -252,7 +252,7 @@ class TestRegressionFixtures:
         path, so scanned documents also recover structure."""
         forward = "قرار مجلس الوزراء رقم (106) لسنة 2022\nفي شأن الإجراءات الإدارية.\n\nمادة 1\nأحكام عامة.\n"
         reversed_doc = _mirror_reverse(forward)
-        assert _detect_arabic_reversal(reversed_doc) is True
+        assert decide_rtl(reversed_doc).reversed is True
 
         result = _inject_arabic_structural_headings(reversed_doc)
         result_lines = result.split("\n")
