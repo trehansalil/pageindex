@@ -3065,7 +3065,7 @@ _RFC036_SINGLETON_ROW_RATIO_THRESHOLD: float = float(
 def _flat_text_is_garbled(
     md: str,
     expected_script: str | None = None,
-    original_reason: str | None = None,
+    original_defect: TreeDefect | None = None,
 ) -> bool:
     """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
     text = md or ""
@@ -3075,7 +3075,7 @@ def _flat_text_is_garbled(
     if (
         _GARBLE_SHORT_TEXT_DEFAULT
         and len(text) < 200
-        and original_reason in ("garbling", "node_garbling")
+        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
     ):
         return True
     # Additive OR (RFC-015 D8): sparse mixed-script mojibake, same as the tree gate.

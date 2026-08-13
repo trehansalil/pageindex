@@ -15,7 +15,7 @@ import pytest
 
 import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
-from pageindex_mcp.helpers import _RFC029_MIN_CHARS_PER_NODE, LowQualityTreeError, validate_tree
+from pageindex_mcp.helpers import _RFC029_MIN_CHARS_PER_NODE, LowQualityTreeError, TreeDefect, TreeGateResult, validate_tree
 from tests.conftest import filler_text
 
 
@@ -129,7 +129,7 @@ def _pass_shaped_structure() -> list[dict]:
     return [{"title": "Root", "text": "", "nodes": [branch]}]
 
 
-def _wire_index(monkeypatch, *, validate_return, flat_doc_routing: bool = True):
+def _wire_index(monkeypatch, *, validate_return: TreeGateResult | tuple, flat_doc_routing: bool = True):
     """Patch every collaborator client.index() touches; return the mocks dict."""
     monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing))
     monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
@@ -163,21 +163,21 @@ async def _tree_coro(structure):
     return {"structure": structure, "doc_description": ""}
 
 
-_UNHANDLED_REASONS = [
-    "low_content_density(chars_per_node=54.3,threshold=150.0)",
-    "suspect_density(chars_per_page=1200.0)",
-    "empty_node_contamination(fraction=0.62,empty_leaf=5,empty_non_leaf=3,total_non_root=13)",
-    "arabic_low_content_ratio",
+_UNHANDLED_GATE_RESULTS = [
+    TreeGateResult(ok=False, defect=TreeDefect.LOW_CONTENT_DENSITY, detail="chars_per_node=54.3,threshold=150.0"),
+    TreeGateResult(ok=False, defect=TreeDefect.SUSPECT_DENSITY, detail="chars_per_page=1200.0"),
+    TreeGateResult(ok=False, defect=TreeDefect.EMPTY_NODE_CONTAMINATION, detail="fraction=0.62,empty_leaf=5,empty_non_leaf=3,total_non_root=13"),
+    TreeGateResult(ok=False, defect=TreeDefect.ARABIC_LOW_CONTENT_RATIO),
 ]
 
 
-@pytest.mark.parametrize("reason", _UNHANDLED_REASONS)
+@pytest.mark.parametrize("reason", _UNHANDLED_GATE_RESULTS, ids=lambda gr: str(gr))
 class TestPersistWithFailRouting:
     async def test_persists_via_save_doc_no_raise(self, monkeypatch, md_file, reason):
         """The four unhandled reasons must persist via save_doc, not raise
         LowQualityTreeError."""
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(False, reason))
+        mocks = _wire_index(monkeypatch, validate_return=reason)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -190,7 +190,7 @@ class TestPersistWithFailRouting:
         """classify_verdict must assign a FAIL verdict for the persisted tree,
         not PASS/MARGINAL — even though the structure alone would score PASS."""
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(False, reason))
+        mocks = _wire_index(monkeypatch, validate_return=reason)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -206,7 +206,7 @@ class TestPersistWithFailRouting:
         """No flat extraction and no flat persistence path for these reasons —
         the tree keeps its own artifact path (save_doc), not save_flat_doc."""
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(False, reason))
+        mocks = _wire_index(monkeypatch, validate_return=reason)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -220,7 +220,7 @@ class TestPersistWithFailRouting:
         """The structure passed to save_doc must be identical to the structure
         returned by the tree build — no flattening, no modification."""
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(False, reason))
+        mocks = _wire_index(monkeypatch, validate_return=reason)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -233,7 +233,7 @@ class TestPersistWithFailRouting:
         """The terminal-reject LOW_QUALITY_TREES counter belongs to the raise
         path only; unhandled reasons that persist must not increment it."""
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(False, reason))
+        mocks = _wire_index(monkeypatch, validate_return=reason)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -249,7 +249,7 @@ class TestPassPathTreesUnaffected:
 
     async def test_pass_tree_persists_via_save_doc(self, monkeypatch, md_file):
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(True, None))
+        mocks = _wire_index(monkeypatch, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -262,7 +262,7 @@ class TestPassPathTreesUnaffected:
 
     async def test_pass_tree_classify_verdict_still_pass(self, monkeypatch, md_file):
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=(True, None))
+        mocks = _wire_index(monkeypatch, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -271,18 +271,21 @@ class TestPassPathTreesUnaffected:
         wv_args = mocks["write_verdict"].call_args.args
         assert wv_args[1] == "PASS"
 
-    @pytest.mark.parametrize("reason", ["garbling", "node_count<3", "depth<2"])
-    async def test_handled_reasons_still_raise(self, monkeypatch, md_file, reason):
-        """Sanity check: the D2 branch must not swallow the pre-existing
-        handled reasons (garbling / flat-routing candidates) that still
-        raise or route flat — only the four newly-added reasons fall
-        through to persist-with-FAIL."""
-        mocks = _wire_index(monkeypatch, validate_return=(False, reason), flat_doc_routing=False)
+    @pytest.mark.parametrize("gate_result", [
+        TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
+        TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW),
+    ], ids=lambda gr: str(gr))
+    async def test_handled_reasons_still_raise(self, monkeypatch, md_file, gate_result):
+        """Sanity check: node_count/depth defects with flat_doc_routing=False
+        still raise LowQualityTreeError (they route to REJECT and hit the
+        terminal raise). Garbling no longer raises — zone-5 routes it through
+        persist-with-FAIL via _flat_garble_unrecovered."""
+        mocks = _wire_index(monkeypatch, validate_return=gate_result, flat_doc_routing=False)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro([]))
 
         with pytest.raises(LowQualityTreeError) as exc:
             await c.index(md_file)
 
-        assert exc.value.reason == reason
+        assert exc.value.reason == gate_result.defect.value
         mocks["save_doc"].assert_not_called()

@@ -24,7 +24,7 @@ import pytest
 
 import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
-from pageindex_mcp.helpers import LowQualityTreeError
+from pageindex_mcp.helpers import LowQualityTreeError, TreeDefect, TreeGateResult
 
 
 def _fake_settings(**overrides):
@@ -117,7 +117,7 @@ class TestRtlReversalFlatFallback:
     ):
         # Arrange -- validate_tree always rejects as rtl_reversal (repair
         # never converges); the flat markdown is clean, well-formed Arabic.
-        validate = MagicMock(return_value=(False, "rtl_reversal"))
+        validate = MagicMock(return_value=TreeGateResult(ok=False, defect=TreeDefect.RTL_REVERSAL))
         mocks = _wire_index(monkeypatch, validate_tree=validate, flat_md=_CLEAN_ARABIC_FLAT_MD)
         c = CustomPageIndexClient(api_key="test-key")
         monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_rtl_tree()))
@@ -143,7 +143,7 @@ class TestRtlReversalFlatGarbleGate:
     async def test_garbled_flat_text_overrides_reason_and_raises(self, monkeypatch, pdf_file):
         # Arrange -- validate_tree always rejects as rtl_reversal; the flat
         # markdown routed to is also numeric junk (fails _flat_text_is_garbled).
-        validate = MagicMock(return_value=(False, "rtl_reversal"))
+        validate = MagicMock(return_value=TreeGateResult(ok=False, defect=TreeDefect.RTL_REVERSAL))
         mocks = _wire_index(monkeypatch, validate_tree=validate, flat_md=_NUMERIC_JUNK_FLAT_MD)
         c = CustomPageIndexClient(api_key="test-key")
         monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_rtl_tree()))
@@ -169,7 +169,7 @@ class TestWard597StillErrorsWithImprovedDiagnostics:
     async def test_ward_597_numeric_junk_still_raises_low_quality_tree_error(
         self, monkeypatch, pdf_file, caplog
     ):
-        validate = MagicMock(return_value=(False, "rtl_reversal"))
+        validate = MagicMock(return_value=TreeGateResult(ok=False, defect=TreeDefect.RTL_REVERSAL))
         mocks = _wire_index(monkeypatch, validate_tree=validate, flat_md=_NUMERIC_JUNK_FLAT_MD)
         c = CustomPageIndexClient(api_key="test-key")
         monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_rtl_tree()))

@@ -21,7 +21,7 @@ import pytest
 
 import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
-from pageindex_mcp.helpers import LowQualityTreeError
+from pageindex_mcp.helpers import LowQualityTreeError, TreeDefect, TreeGateResult
 
 
 def _fake_settings(flat_doc_routing: bool):
@@ -91,12 +91,15 @@ def _make_client():
 # ---------------------------------------------------------------------------
 # FLAT-03-C1: non-garbling rejection -> flat success path
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("reason", ["node_count<3", "depth<2"])
+@pytest.mark.parametrize("reason", [
+    TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
+    TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW),
+], ids=lambda gr: str(gr))
 async def test_FLAT_03_C1_routes_to_flat_path(monkeypatch, md_file, reason):
     """FLAT-03-C1: reason in {node_count<3, depth<2} with flat_doc_routing=True
     persists via save_flat_doc, does NOT call save_doc, does NOT raise, and
     increments FLAT_DOCS_TOTAL{content_class}."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(False, reason))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=reason)
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _async_result())
 
@@ -120,7 +123,7 @@ async def test_FLAT_03_C1_routes_to_flat_path(monkeypatch, md_file, reason):
 async def test_save_doc_failure_no_raw_orphan(monkeypatch, md_file):
     """Property 3: if save_doc raises, save_raw is never called — the raw
     upload is never committed for a tree that failed to persist."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
     mocks["save_doc"].side_effect = RuntimeError("minio down")
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -135,7 +138,7 @@ async def test_save_doc_failure_no_raw_orphan(monkeypatch, md_file):
 async def test_doc_id_full_uuid(monkeypatch, md_file):
     """Property 5 (D5): doc_id is a full 128-bit UUID (36 chars w/ hyphens),
     not the old 8-char truncation (32 bits, ~1% collision by 6,500 docs)."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 
@@ -150,7 +153,7 @@ async def test_client_tree_meta_carries_sha256_and_description(monkeypatch, md_f
     """C-3 / Finding 9: the tree ingest path passes sha256 AND doc_description
     into save_doc_meta so the reconcile cron never GETs the full processed JSON
     to enrich a freshly ingested tree doc's registry row."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(True, None))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 
@@ -163,49 +166,47 @@ async def test_client_tree_meta_carries_sha256_and_description(monkeypatch, md_f
 
 
 # ---------------------------------------------------------------------------
-# FLAT-03-C2: garbling always raises, never persists, regardless of kill-switch
+# FLAT-03-C2: garbling persists with FAIL verdict (zone-5: no longer raises)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("flat_doc_routing", [True, False])
-async def test_FLAT_03_C2_garbling_always_raises(monkeypatch, md_file, flat_doc_routing):
-    """FLAT-03-C2: reason 'garbling' raises LowQualityTreeError('garbling')
-    regardless of flat_doc_routing; neither save_doc nor save_flat_doc runs;
+async def test_FLAT_03_C2_garbling_persists_fail(monkeypatch, md_file, flat_doc_routing):
+    """FLAT-03-C2 (zone-5 update): garbling routes to REJECT, which persists
+    the tree with a FAIL verdict via the terminal reject gate. The metric
     LOW_QUALITY_TREES{reason=garbling} is incremented."""
     mocks = _wire_common(
-        monkeypatch, flat_doc_routing=flat_doc_routing, validate_return=(False, "garbling")
+        monkeypatch, flat_doc_routing=flat_doc_routing, validate_return=TreeGateResult(ok=False, defect=TreeDefect.GARBLING)
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _async_result())
 
-    with pytest.raises(LowQualityTreeError) as exc:
-        await c.index(md_file)
+    doc_id = await c.index(md_file)
 
-    assert exc.value.reason == "garbling"
-    mocks["save_flat_doc"].assert_not_called()
-    mocks["save_doc"].assert_not_called()
-    mocks["route_and_extract_flat"].assert_not_called()
-    mocks["LOW_QUALITY_TREES"].labels.assert_called_once_with(reason="garbling")
-    mocks["LOW_QUALITY_TREES"].labels.return_value.inc.assert_called_once()
+    assert isinstance(doc_id, str) and len(doc_id) == 36
+    mocks["save_doc"].assert_called_once()
 
 
 # ---------------------------------------------------------------------------
 # FLAT-03-C3: kill-switch reverts to legacy reject-on-any-failure
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("reason", ["node_count<3", "depth<2"])
+@pytest.mark.parametrize("reason", [
+    TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
+    TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW),
+], ids=lambda gr: str(gr))
 async def test_FLAT_03_C3_killswitch_rejects(monkeypatch, md_file, reason):
     """FLAT-03-C3: flat_doc_routing=False raises LowQualityTreeError(reason) for
     every failure reason (incl. node_count<3 / depth<2); no flat doc persisted."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=False, validate_return=(False, reason))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=False, validate_return=reason)
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _async_result())
 
     with pytest.raises(LowQualityTreeError) as exc:
         await c.index(md_file)
 
-    assert exc.value.reason == reason
+    assert exc.value.reason == reason.defect.value
     mocks["save_flat_doc"].assert_not_called()
     mocks["route_and_extract_flat"].assert_not_called()
     mocks["FLAT_DOCS_TOTAL"].labels.assert_not_called()
-    mocks["LOW_QUALITY_TREES"].labels.assert_called_once_with(reason=reason)
+    mocks["LOW_QUALITY_TREES"].labels.assert_called_once_with(reason=reason.defect.value)
 
 
 # ---------------------------------------------------------------------------
@@ -224,14 +225,17 @@ def pdf_file():
         os.unlink(path)
 
 
-@pytest.mark.parametrize("reason", ["node_count<3", "depth<2"])
+@pytest.mark.parametrize("reason", [
+    TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
+    TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW),
+], ids=lambda gr: str(gr))
 async def test_FLAT_03_binary_no_markdown_falls_through_to_reject(monkeypatch, pdf_file, reason):
     """Guard: a .pdf whose converters ALL fail goes through _run_page_index with
     md_content=None and tmp_md_path=None. Even with flat_doc_routing=True and a
     non-garbling reason, it must NOT read the raw PDF bytes as text / call
     route_and_extract_flat — it rejects via LowQualityTreeError so binary garbling
     can never fabricate a flat doc."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(False, reason))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=reason)
     # All markdown converters fail -> empty chain -> legacy page_index route.
     monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [])
     monkeypatch.setattr(client_mod, "PDF_EXTRACT_FALLBACKS", MagicMock())
@@ -241,13 +245,13 @@ async def test_FLAT_03_binary_no_markdown_falls_through_to_reject(monkeypatch, p
     with pytest.raises(LowQualityTreeError) as exc:
         await c.index(pdf_file)
 
-    assert exc.value.reason == reason
+    assert exc.value.reason == reason.defect.value
     # The guard short-circuits BEFORE the flat persist: no raw-bytes classification.
     mocks["route_and_extract_flat"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
     mocks["save_doc"].assert_not_called()
     mocks["FLAT_DOCS_TOTAL"].labels.assert_not_called()
-    mocks["LOW_QUALITY_TREES"].labels.assert_called_once_with(reason=reason)
+    mocks["LOW_QUALITY_TREES"].labels.assert_called_once_with(reason=reason.defect.value)
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +325,7 @@ async def test_OCR_01_C1_garbling_retries_once_and_recovers(monkeypatch, pdf_fil
     persisted as a tree (save_doc) and OCR_ESCALATION_TOTAL{result=recovered}
     is incremented — never a second retry."""
     mocks, _ = _wire_ocr_escalation(
-        monkeypatch, validate_side_effect=[(False, "garbling"), (True, None)]
+        monkeypatch, validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.GARBLING), TreeGateResult(ok=True, defect=TreeDefect.OK)]
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -341,7 +345,7 @@ async def test_OCR_01_C2_escalation_prefers_filename_lang_signal(
     FIRST, then the (garbled) md_content — the garbled text layer is never the
     sole signal."""
     mocks, detect_calls = _wire_ocr_escalation(
-        monkeypatch, validate_side_effect=[(False, "garbling"), (True, None)]
+        monkeypatch, validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.GARBLING), TreeGateResult(ok=True, defect=TreeDefect.OK)]
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -354,42 +358,38 @@ async def test_OCR_01_C2_escalation_prefers_filename_lang_signal(
 
 
 async def test_OCR_01_C3_still_garbled_after_retry_is_terminal(monkeypatch, pdf_file_with_content):
-    """OCR-01-C3: if the retry's tree is still garbled, index() terminally
-    rejects (LowQualityTreeError) — the retry never bypasses HR5 — and
-    OCR_ESCALATION_TOTAL{result=still_garbled} is incremented."""
+    """OCR-01-C3 (zone-5 update): if the retry's tree is still garbled,
+    index() persists with FAIL verdict (HR5: no silent persistence — explicit
+    FAIL is not silent) and OCR_ESCALATION_TOTAL{result=still_garbled} is
+    incremented."""
     mocks, _ = _wire_ocr_escalation(
-        monkeypatch, validate_side_effect=[(False, "garbling"), (False, "garbling")]
+        monkeypatch, validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.GARBLING), TreeGateResult(ok=False, defect=TreeDefect.GARBLING)]
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 
-    with pytest.raises(LowQualityTreeError) as exc:
-        await c.index(pdf_file_with_content)
+    doc_id = await c.index(pdf_file_with_content)
 
-    assert exc.value.reason == "garbling"
-    mocks["save_doc"].assert_not_called()
-    mocks["save_flat_doc"].assert_not_called()
+    assert isinstance(doc_id, str) and len(doc_id) == 36
     mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="still_garbled")
 
 
 async def test_OCR_01_C3_retry_exception_is_terminal_not_swallowed_as_success(
     monkeypatch, pdf_file_with_content
 ):
-    """OCR-01-C3: an exception raised during the retry itself (e.g. OCR engine
-    failure) increments OCR_ESCALATION_TOTAL{result=error} and the ORIGINAL
-    garbling rejection still applies — it is never silently treated as ok."""
+    """OCR-01-C3 (zone-5 update): an exception during OCR retry increments
+    OCR_ESCALATION_TOTAL{result=error}; the original garbling persists with
+    FAIL verdict — never silently treated as ok."""
     mocks, _ = _wire_ocr_escalation(
-        monkeypatch, validate_side_effect=[(False, "garbling")], retry_raises=True
+        monkeypatch, validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.GARBLING)], retry_raises=True
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 
-    with pytest.raises(LowQualityTreeError) as exc:
-        await c.index(pdf_file_with_content)
+    doc_id = await c.index(pdf_file_with_content)
 
-    assert exc.value.reason == "garbling"
+    assert isinstance(doc_id, str) and len(doc_id) == 36
     mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="error")
-    mocks["save_doc"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +464,7 @@ async def test_image_dominant_triggers_ocr_escalation(monkeypatch, pdf_file_with
     mocks, pdf_calls = _wire_image_ratio_escalation(
         monkeypatch,
         initial_md=_IMAGE_HEAVY_MD,
-        validate_side_effect=[(False, "depth<2"), (True, None)],
+        validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW), TreeGateResult(ok=True, defect=TreeDefect.OK)],
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -485,7 +485,7 @@ async def test_below_image_threshold_no_escalation(monkeypatch, pdf_file_with_co
     mocks, pdf_calls = _wire_image_ratio_escalation(
         monkeypatch,
         initial_md=_IMAGE_LIGHT_MD,
-        validate_side_effect=[(False, "depth<2")],
+        validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW)],
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -504,7 +504,7 @@ async def test_ocr_escalation_disabled_no_escalation(monkeypatch, pdf_file_with_
     mocks, pdf_calls = _wire_image_ratio_escalation(
         monkeypatch,
         initial_md=_IMAGE_HEAVY_MD,
-        validate_side_effect=[(False, "depth<2")],
+        validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW)],
         ocr_escalation_enabled=False,
     )
     c = _make_client()
@@ -525,7 +525,7 @@ async def test_ocr_escalation_metric_increments(monkeypatch, pdf_file_with_conte
     recovered_mocks, _ = _wire_image_ratio_escalation(
         monkeypatch,
         initial_md=_IMAGE_HEAVY_MD,
-        validate_side_effect=[(False, "depth<2"), (True, None)],
+        validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW), TreeGateResult(ok=True, defect=TreeDefect.OK)],
     )
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -536,7 +536,7 @@ async def test_ocr_escalation_metric_increments(monkeypatch, pdf_file_with_conte
     still_image_mocks, _ = _wire_image_ratio_escalation(
         monkeypatch,
         initial_md=_IMAGE_HEAVY_MD,
-        validate_side_effect=[(False, "depth<2"), (False, "depth<2")],
+        validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW), TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW)],
     )
     c2 = _make_client()
     monkeypatch.setattr(c2, "_run_md_to_tree", lambda *a, **k: _tree_result())
@@ -556,7 +556,7 @@ async def test_image_ratio_retry_exception_is_terminal_not_swallowed_as_success(
     mocks, pdf_calls = _wire_image_ratio_escalation(
         monkeypatch,
         initial_md=_IMAGE_HEAVY_MD,
-        validate_side_effect=[(False, "depth<2")],
+        validate_side_effect=[TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW)],
         retry_raises=True,
     )
     c = _make_client()
@@ -595,7 +595,7 @@ async def test_CONV_01_C4_xlsx_dispatches_to_xlsx_to_markdown(monkeypatch, xlsx_
     """CONV-01-C4: a .xlsx input is converted via xlsx_to_markdown (openpyxl),
     not any PDF/DOCX path, and the resulting markdown is run through
     _run_md_to_tree."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(False, "depth<2"))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW))
     xlsx_mock = MagicMock(return_value="| a | b |\n|---|---|\n| 1 | 2 |")
     monkeypatch.setattr(client_mod, "xlsx_to_markdown", xlsx_mock)
     c = _make_client()
@@ -610,7 +610,7 @@ async def test_CONV_01_C4_xlsx_dispatches_to_xlsx_to_markdown(monkeypatch, xlsx_
 async def test_CONV_01_C5_image_dispatches_to_ocr_only_no_llm_vision(monkeypatch, image_file):
     """CONV-01-C5: an image input is OCR'd locally via image_to_markdown with a
     superset language set — no VLM/LLM vision call occurs on this path (HR3)."""
-    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=(False, "depth<2"))
+    mocks = _wire_common(monkeypatch, flat_doc_routing=True, validate_return=TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW))
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
     image_mock = MagicMock(return_value="ocr'd text")
     monkeypatch.setattr(client_mod, "image_to_markdown", image_mock)
@@ -631,7 +631,7 @@ async def test_CONV_01_C5_image_dispatches_to_ocr_only_no_llm_vision(monkeypatch
 # instead of wasting a non-OCR conversion attempt and relying on the
 # after-the-fact OCR-01 retry.
 # ---------------------------------------------------------------------------
-def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None)):
+def _wire_garble_probe(monkeypatch, *, page_text, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK)):
     """Wire index() up to the .pdf branch with a mocked fitz probe and a
     single mocked docling converter, so the D3a pre-conversion garble probe
     can be exercised without any real PDF/Docling/Tesseract dependency."""

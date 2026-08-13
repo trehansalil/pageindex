@@ -1258,7 +1258,6 @@ class CustomPageIndexClient(PageIndexClient):
             # Recovery branches may override this to Route.FLAT when they
             # produce usable markdown (replacing reason = "node_count<3" hijack).
             route = decide_route(first_defect, settings.flat_doc_routing)
-            original_reason = reason
             original_gate_result: TreeGateResult | None = gate_result
 
             # RFC-027 D2: a PDF rejected as node_count<3 with fewer than
@@ -1357,7 +1356,6 @@ class CustomPageIndexClient(PageIndexClient):
                     )
                     gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
                     ok, reason = _vt_raw
-                    original_reason = reason
                     original_gate_result = gate_result
                     # D4 (RFC-028): keep-best, not unconditional overwrite. Compare
                     # post-retry char count against the pre-retry snapshot; on a
@@ -1504,7 +1502,6 @@ class CustomPageIndexClient(PageIndexClient):
                     )
                     gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
                     ok, reason = _vt_raw
-                    original_reason = reason
                     original_gate_result = gate_result
                     logger.warning(
                         "RTL reversal on %s; reconstruct_bidi_order repair %s",
@@ -1595,7 +1592,6 @@ class CustomPageIndexClient(PageIndexClient):
                     )
                     gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
                     ok, reason = _vt_raw
-                    original_reason = reason
                     original_gate_result = gate_result
                     VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
 
@@ -1720,7 +1716,6 @@ class CustomPageIndexClient(PageIndexClient):
                         )
                         gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
                         ok, reason = _vt_raw
-                        original_reason = reason
                         original_gate_result = gate_result
                         OCR_ESCALATION_TOTAL.labels(
                             result="recovered" if ok else "still_image_only"
@@ -1805,6 +1800,7 @@ class CustomPageIndexClient(PageIndexClient):
                 # RFC-036 D3: 'rtl_reversal' joins the flat route -- when the RTL repair
                 # (reconstruct_bidi_order) above fails to converge, the flat-path garble
                 # gate below is the safety net, not a terminal raise.
+                _flat_garble_unrecovered = False
                 if route == Route.FLAT:
                     flat_md = md_content
                     if flat_md is None and tmp_md_path is not None:
@@ -1828,6 +1824,7 @@ class CustomPageIndexClient(PageIndexClient):
                     # fabricate a bogus flat doc. Fall through to the HR5 low_quality_tree
                     # reject below instead — a binary doc with no extractable text layer is
                     # genuinely low-quality, not flat.
+                    _flat_garble_unrecovered = False
                     if flat_md is not None:
                         # Findings 4/6/7: figure references exist ONLY in flat
                         # markdown; splice_figure_markers count-guards the
@@ -1850,7 +1847,7 @@ class CustomPageIndexClient(PageIndexClient):
                         if _flat_text_is_garbled(
                             flat_md,
                             expected_script=expected_script,
-                            original_reason=first_defect,
+                            original_defect=first_defect,
                         ):
                             _flat_garble_unrecovered = True
                             reason = "garbling"
@@ -2090,8 +2087,8 @@ class CustomPageIndexClient(PageIndexClient):
                 # the flat fallback was unavailable (flat_md was None for a
                 # binary input with no markdown) or the flat-path garble gate
                 # overrode reason to 'garbling'.  Both must raise.
-                if route in (Route.REJECT, Route.FLAT) or reason == "garbling":
-                    _reject_reason = reason if reason == "garbling" else first_defect.value
+                if route in (Route.REJECT, Route.FLAT) or _flat_garble_unrecovered:
+                    _reject_reason = "garbling" if _flat_garble_unrecovered else first_defect.value
                     LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
                     logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, _reject_reason)
                     raise LowQualityTreeError(_reject_reason)
@@ -2127,7 +2124,7 @@ class CustomPageIndexClient(PageIndexClient):
             verdict, verdict_reason = classify_verdict(
                 structure,
                 "",
-                original_gate_result or original_reason or None,
+                original_gate_result,
                 prior_verdict=prior_verdict,
                 inspector_class=pdf_classification.get("pdf_type") if pdf_classification else None,
                 expected_script=expected_script,
