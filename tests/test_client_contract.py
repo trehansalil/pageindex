@@ -275,7 +275,7 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# initial md")]
     )
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     detect_calls = []
 
     def _fake_detect(sample):
@@ -415,7 +415,7 @@ def _wire_image_ratio_escalation(
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: initial_md)]
     )
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION", ocr_escalation_enabled)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", ocr_escalation_enabled)
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda sample: ["eng"])
@@ -631,7 +631,7 @@ def _wire_garble_probe(monkeypatch, *, page_text, validate_return=TreeGateResult
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
 
     mock_page = MagicMock()
     mock_page.get_text.return_value = page_text

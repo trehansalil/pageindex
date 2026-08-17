@@ -364,7 +364,7 @@ def _wire_flat_route(monkeypatch, *, content_class, blocks):
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: _OCR_MD)]
     )
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_enrich_image_blocks", AsyncMock(return_value=None))
     monkeypatch.setattr(client_mod, "_generate_flat_doc_description", lambda *a, **k: "desc")
 

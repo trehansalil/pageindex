@@ -66,7 +66,6 @@ from .helpers import (
     _flat_block_primary_text,
     _flatten_tree_text,
     _script_from_filename,
-    _segment_table_nodes,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
@@ -75,8 +74,8 @@ from .helpers import (
     classify_verdict,
     compute_image_enrichment_ratio,
     decide_route,
+    prepare_tree,
     route_and_extract_flat,
-    split_oversized_leaf_nodes,
     validate_tree,
 )
 from .metrics import (
@@ -933,10 +932,7 @@ class CustomPageIndexClient(PageIndexClient):
             md_tmp.write(md_content)
             state.tmp_md_path = md_tmp.name
         state.result = await self._run_md_to_tree(state.tmp_md_path)
-        state.result["structure"] = split_oversized_leaf_nodes(
-            state.result.get("structure", [])
-        )
-        state.result["structure"] = _segment_table_nodes(
+        state.result["structure"] = prepare_tree(
             state.result.get("structure", [])
         )
         _vt_raw = validate_tree(
@@ -1224,10 +1220,7 @@ class CustomPageIndexClient(PageIndexClient):
             state.result = await self._run_md_to_tree(state.tmp_md_path)
 
         # Post-conversion: split, segment, validate
-        state.result["structure"] = split_oversized_leaf_nodes(
-            state.result.get("structure", [])
-        )
-        state.result["structure"] = _segment_table_nodes(
+        state.result["structure"] = prepare_tree(
             state.result.get("structure", [])
         )
         _vt_raw = validate_tree(

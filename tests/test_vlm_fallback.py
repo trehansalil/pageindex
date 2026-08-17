@@ -75,7 +75,7 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
     )
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda s: ["eng"])
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
     monkeypatch.setattr(

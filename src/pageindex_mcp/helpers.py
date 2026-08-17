@@ -2759,6 +2759,19 @@ def _blank_line_fallback_enabled(tree_ratio: float) -> bool:
     return tree_ratio > leaf_split_ratio
 
 
+def prepare_tree(structure: list) -> list:
+    """Single entry point for pre-validation tree transforms.
+
+    Runs split_oversized_leaf_nodes then _segment_table_nodes on *structure*
+    (both mutate in-place and return).  Every call-site that previously invoked
+    the two transforms as a duplicated pair should call this instead, so that
+    future transforms are added in one place.
+    """
+    structure = split_oversized_leaf_nodes(structure)
+    structure = _segment_table_nodes(structure)
+    return structure
+
+
 def split_oversized_leaf_nodes(
     structure: list,
     max_chars: int = 50000,

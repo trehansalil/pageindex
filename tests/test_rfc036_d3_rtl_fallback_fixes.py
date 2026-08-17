@@ -55,8 +55,7 @@ def _wire_index(monkeypatch, *, validate_tree, flat_md: str):
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", validate_tree)
     monkeypatch.setattr(client_mod, "reconstruct_bidi_order", lambda s: s)
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
-    monkeypatch.setattr(client_mod, "_segment_table_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(
         client_mod,
         "pdf_markdown_converters",

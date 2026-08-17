@@ -51,7 +51,7 @@ def _wire_index(monkeypatch, *, preclassify, validate_tree=None):
     if validate_tree is None:
         validate_tree = lambda structure, **kw: (True, None)  # noqa: E731
     monkeypatch.setattr(client_mod, "validate_tree", validate_tree)
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
 
     conv_fn = MagicMock(return_value="# Heading\n\nBody text\n")
     monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_fn)])

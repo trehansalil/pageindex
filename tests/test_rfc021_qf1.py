@@ -83,7 +83,7 @@ def _wire_garble_probe(
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
-    monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
 
     mock_page = MagicMock()
     mock_page.get_text.return_value = page_text
