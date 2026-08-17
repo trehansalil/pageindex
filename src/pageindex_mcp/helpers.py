@@ -221,7 +221,7 @@ REASON_POLICY: dict[TreeDefect, _ReasonPolicy] = {
     TreeDefect.EMPTY_NODE_CONTAMINATION: _ReasonPolicy.PERSIST_FAIL,
     TreeDefect.LOW_CONTENT_DENSITY: _ReasonPolicy.PERSIST_FAIL,
     TreeDefect.SUSPECT_DENSITY: _ReasonPolicy.PERSIST_FAIL,
-    TreeDefect.ARABIC_LOW_CONTENT_RATIO: _ReasonPolicy.PERSIST_FAIL,
+    TreeDefect.ARABIC_LOW_CONTENT_RATIO: _ReasonPolicy.CAP_MARGINAL,
 }
 
 assert set(REASON_POLICY) == set(TreeDefect), (
@@ -238,7 +238,6 @@ HARD_FAIL_DEFECTS: frozenset[TreeDefect] = frozenset({
     TreeDefect.EMPTY_NODE_CONTAMINATION,
     TreeDefect.LOW_CONTENT_DENSITY,
     TreeDefect.SUSPECT_DENSITY,
-    TreeDefect.ARABIC_LOW_CONTENT_RATIO,
 })
 
 

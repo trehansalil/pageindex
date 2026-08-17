@@ -132,9 +132,8 @@ class TestArabicLowContentRatioEnumPreserved:
         from pageindex_mcp.helpers import REASON_POLICY
         assert TreeDefect.ARABIC_LOW_CONTENT_RATIO in REASON_POLICY
 
-    def test_enum_member_in_hard_fail_defects(self):
-        """ARABIC_LOW_CONTENT_RATIO stays in HARD_FAIL_DEFECTS so that any
-        persisted verdict_reason='arabic_low_content_ratio' is still
-        recognized as a hard fail."""
+    def test_enum_member_not_in_hard_fail_defects(self):
+        """ARABIC_LOW_CONTENT_RATIO removed from HARD_FAIL_DEFECTS — dead
+        gate cannot cause permanent FAILs from stored verdict_reason strings."""
         from pageindex_mcp.helpers import HARD_FAIL_DEFECTS
-        assert TreeDefect.ARABIC_LOW_CONTENT_RATIO in HARD_FAIL_DEFECTS
+        assert TreeDefect.ARABIC_LOW_CONTENT_RATIO not in HARD_FAIL_DEFECTS

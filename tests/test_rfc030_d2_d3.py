@@ -166,7 +166,6 @@ _UNHANDLED_GATE_RESULTS = [
     TreeGateResult(ok=False, defect=TreeDefect.LOW_CONTENT_DENSITY, detail="chars_per_node=54.3,threshold=150.0"),
     TreeGateResult(ok=False, defect=TreeDefect.SUSPECT_DENSITY, detail="chars_per_page=1200.0"),
     TreeGateResult(ok=False, defect=TreeDefect.EMPTY_NODE_CONTAMINATION, detail="fraction=0.62,empty_leaf=5,empty_non_leaf=3,total_non_root=13"),
-    TreeGateResult(ok=False, defect=TreeDefect.ARABIC_LOW_CONTENT_RATIO),
 ]
 
 
