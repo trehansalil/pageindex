@@ -23,6 +23,8 @@ def test_effective_config_snapshot_returns_all_keys():
         "allow_agpl_fallback",
         "remote_md_renormalize",
         "ocr_escalation",
+        "ocr_escalation_garble",
+        "ocr_escalation_per_picture",
         "pre_garble_force_ocr_enabled",
         "d7_garble_recovery_enabled",
         "image_standalone_pipeline_enabled",
@@ -49,7 +51,7 @@ def test_effective_config_snapshot_returns_all_keys():
         f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
         f"  Extra:   {set(snap.keys()) - expected_keys}"
     )
-    assert len(snap) == 25
+    assert len(snap) == 27
 
     # Type checks
     assert isinstance(snap["pipeline_version"], int)

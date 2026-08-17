@@ -424,6 +424,7 @@ def _wire_image_ratio_escalation(
     )
     monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION", ocr_escalation_enabled)
+    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", ocr_escalation_enabled)
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda sample: ["eng"])
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
 

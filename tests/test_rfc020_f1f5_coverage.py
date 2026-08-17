@@ -190,7 +190,7 @@ class TestF1CoverageExemption:
 # ---------------------------------------------------------------------------
 class TestF5SkipReason:
     def _setup(self, monkeypatch, *, recovered, skip_reasons, n_regions=1):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
             converters,
             "_collect_picture_regions",

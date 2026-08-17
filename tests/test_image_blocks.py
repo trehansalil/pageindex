@@ -162,7 +162,7 @@ class TestVlmDescribeGating:
     def test_recover_picture_results_never_calls_vlm(self, monkeypatch):
         """The converter-side recovery is OCR/crop only — no VLM, whatever the flag."""
         pr = PictureResult(ocr_text="chart text", png_bytes=b"fake", page=1, bbox={})
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
             converters, "_collect_picture_regions", lambda d: [{"page": 1, "bbox": None}]
         )

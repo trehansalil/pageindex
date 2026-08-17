@@ -34,7 +34,7 @@ class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
         assert "ara" in detect_ocr_langs(_ARABIC_FILENAME)
 
     def test_recover_picture_results_unions_filename_and_md_langs(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
             converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
         )
@@ -58,7 +58,7 @@ class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
     def test_recover_picture_results_no_filename_fallback_still_uses_md(self, monkeypatch):
         # Non-regression: filename is empty/None -- the union degrades
         # gracefully to md-derived langs, not a crash.
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
             converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
         )

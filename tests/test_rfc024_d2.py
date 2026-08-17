@@ -138,7 +138,7 @@ class TestOuterExceptLastResortGuard:
         opened at all), the outer except in ``_recover_picture_results`` still
         returns an empty list rather than propagating."""
         md = "some heading\n\n<!-- image -->\n\nmore text"
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
             converters, "_collect_picture_regions", lambda document: [_region(0, 0, 30, 30)]
         )

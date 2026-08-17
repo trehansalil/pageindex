@@ -335,6 +335,13 @@ class TreeSignals:
     effectively_garbled: bool
     is_reordered: bool
     expected_min_depth: int
+    # Zone-5: primary_text excludes role=image blocks' ocr_text/description
+    # enrichment metadata. classify_verdict's image-enrichment branch uses this
+    # instead of flat_text so char-count checks are structurally correct
+    # regardless of caller. For tree-sourced signals both fields are identical
+    # (trees have no enrichment metadata); for flat-doc synthetic structures
+    # built from blocks, the caller can supply a separate value.
+    primary_text: str = ""
 
     @classmethod
     def from_tree(
@@ -366,6 +373,9 @@ class TreeSignals:
             effectively_garbled=effectively_garbled,
             is_reordered=is_reordered,
             expected_min_depth=expected_min_depth,
+            # For tree-sourced signals, primary_text == flat_text (no enrichment
+            # metadata in tree nodes).
+            primary_text=flat_text,
         )
 
 
@@ -2161,7 +2171,10 @@ def classify_verdict(  # noqa: C901
         and image_enrichment_ratio is not None
         and image_enrichment_ratio >= 0.8
     ):
-        _promoted_text = _dedupe_chart_text_lines(sig.flat_text)
+        # Zone-5: use primary_text (excludes enrichment metadata from image
+        # blocks) so char-count and garble checks reflect real document content,
+        # not inflated ocr_text/description injected by _enrich_image_blocks.
+        _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
         total_chars = len(_promoted_text)
         if total_chars < th.min_image_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
@@ -3493,6 +3506,11 @@ def _flat_block_primary_text(block: dict) -> str:
 
 def _flat_block_text(block: dict) -> str:
     """B3 (RFC-022): a single flat block's scoreable text, table-aware.
+
+    **Search-index only** — this function includes ``ocr_text``/``description``
+    from ``role="image"`` blocks, which inflates char counts.  Verdict-path
+    callers MUST use ``_flat_block_primary_text`` instead to exclude enrichment
+    metadata (Zone-5).
 
     `role="table"` blocks carry no `"text"` key by design (FLAT-05-C1) —
     parsed cell content lives in `row_records` instead. Callers that measure

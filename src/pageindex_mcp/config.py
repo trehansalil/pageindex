@@ -42,6 +42,26 @@ OCR_ESCALATION: bool = os.environ.get(
     "OCR_ESCALATION", "1"
 ).strip().lower() in ("1", "true", "yes")
 
+# Zone-5: split the monolithic OCR_ESCALATION into two independent controls.
+# OCR_ESCALATION_GARBLE gates page-level garble retry (Fix 3 / D1 image-dominant).
+# OCR_ESCALATION_PER_PICTURE gates per-picture crop+OCR enrichment in converters.
+# Backward-compat shim: if legacy OCR_ESCALATION is explicitly set but the new
+# flags are not, both inherit its value. OCR_ESCALATION=0 still disables both.
+_legacy_explicitly_set = "OCR_ESCALATION" in os.environ
+_garble_explicitly_set = "OCR_ESCALATION_GARBLE" in os.environ
+_per_picture_explicitly_set = "OCR_ESCALATION_PER_PICTURE" in os.environ
+
+OCR_ESCALATION_GARBLE: bool = (
+    os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower() in ("1", "true", "yes")
+    if _garble_explicitly_set
+    else OCR_ESCALATION  # inherit from legacy when not independently set
+)
+OCR_ESCALATION_PER_PICTURE: bool = (
+    os.environ.get("OCR_ESCALATION_PER_PICTURE", "1").strip().lower() in ("1", "true", "yes")
+    if _per_picture_explicitly_set
+    else OCR_ESCALATION  # inherit from legacy when not independently set
+)
+
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
 # ---------------------------------------------------------------------------
@@ -269,6 +289,8 @@ def effective_config_snapshot() -> dict:
         "allow_agpl_fallback": ALLOW_AGPL_FALLBACK,
         "remote_md_renormalize": REMOTE_MD_RENORMALIZE,
         "ocr_escalation": OCR_ESCALATION,
+        "ocr_escalation_garble": OCR_ESCALATION_GARBLE,
+        "ocr_escalation_per_picture": OCR_ESCALATION_PER_PICTURE,
         "pre_garble_force_ocr_enabled": os.environ.get(
             "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
         ).lower() == "true",

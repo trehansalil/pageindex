@@ -1482,7 +1482,8 @@ _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
 
 # RFC-015 D6 gate. Consolidated in config.py (canonical source); imported here
 # to eliminate the prior client.py / converters.py double-definition.
-from .config import OCR_ESCALATION as _OCR_ESCALATION
+# Zone-5: per-picture enrichment uses the dedicated OCR_ESCALATION_PER_PICTURE flag.
+from .config import OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE
 
 _IMAGE_MARKER = "<!-- image -->"
 _PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
@@ -2517,8 +2518,9 @@ def _recover_picture_results(
     (matching the escalation sites in client.py) so filename script hints survive
     even when the export carries no usable signal."""
     # Zone-6: centralised OCR-mode dispatch replaces ad-hoc boolean gate.
+    # Zone-5: per-picture enrichment gate (not page-level garble retry).
     _ocr_mode = decide_ocr_mode(
-        ocr_escalation_enabled=_OCR_ESCALATION,
+        ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
         has_image_markers=_IMAGE_MARKER in md,
     )
     if _ocr_mode == OcrMode.NONE:

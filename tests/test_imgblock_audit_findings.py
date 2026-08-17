@@ -203,7 +203,7 @@ class TestFinding1TupleReturnNoThreadLocal:
 # ---------------------------------------------------------------------------
 class TestFinding4And7DenseKeyingAndCountGuard:
     def test_finding4_sparse_regions_keep_index_alignment(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
             converters, "_collect_picture_regions", lambda d: [_region(), _region(), _region()]
         )
@@ -461,6 +461,7 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (False, "depth<2"))
     monkeypatch.setattr(client_mod, "split_oversized_leaf_nodes", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION", False)
+    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: (chain_md, pics))]
     )

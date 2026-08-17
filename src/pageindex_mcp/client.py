@@ -20,6 +20,8 @@ from .cache import get_doc
 from .config import (
     CURRENT_PIPELINE_VERSION,
     OCR_ESCALATION as _OCR_ESCALATION,
+    OCR_ESCALATION_GARBLE as _OCR_ESCALATION_GARBLE,
+    OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE,
     PDF_INSPECTOR_PRECLASSIFY,
     REMOTE_MD_RENORMALIZE,
     settings,
@@ -454,6 +456,85 @@ async def _attempt_tesseract_raster_recovery(
             exc_info=True,
         )
     return None
+
+
+async def _apply_picture_enrichment(
+    flat_md: str,
+    pic_results: list,
+    ext: str,
+    filename: str,
+    *,
+    splice_markers: bool = True,
+) -> tuple[str, str, list[dict], float | None]:
+    """Zone-5: shared picture-enrichment pipeline for flat-doc paths.
+
+    Applies VLM descriptions (when enabled), extracts flat blocks via
+    ``route_and_extract_flat``, enforces the zero-block guard, detects
+    ``image_standalone``, overrides ``content_class`` for bare image files,
+    enriches image blocks with figure metadata, and computes the image
+    enrichment ratio.
+
+    Called from both the PDF flat-success branch and the standalone-image path
+    to ensure identical enrichment behavior.  The PDF path passes
+    ``splice_markers=False`` because ``splice_figure_markers`` already ran
+    before the flat garble gate; the standalone-image path passes ``True``
+    (the default) so the splice is applied here.
+
+    Returns ``(doc_id, content_class, blocks, image_enrichment_ratio)``.
+    Raises ``LowQualityTreeError`` on zero-block extraction.
+    """
+    if splice_markers:
+        _log_pic_splice_trace(filename, "enrichment_helper", pic_results)
+        flat_md = splice_figure_markers(flat_md, pic_results)
+
+    doc_id = str(uuid.uuid4())
+
+    # RFC-004 user-locked: VLM describe stays OFF by default;
+    # when enabled it runs with the real doc_id, HR3-gated
+    # and off the event loop (findings 2/3/10).
+    if pic_results and settings.vlm_describe_images:
+        await asyncio.to_thread(_add_vlm_descriptions, pic_results, doc_id)
+
+    content_class, blocks = await asyncio.to_thread(
+        route_and_extract_flat, flat_md
+    )
+
+    # RFC-030 D0 (Task 3.3): zero-block guard -- non-empty markdown must
+    # never yield an empty block list.  Escalate via LowQualityTreeError
+    # (HR5) instead of persisting a 0-block flat.json.
+    if not blocks and flat_md.strip():
+        LOW_QUALITY_TREES.labels(reason="flat_zero_block").inc()
+        logger.warning(
+            "Rejecting zero-block flat extraction for %s: "
+            "non-empty markdown (%d chars) produced no blocks",
+            filename,
+            len(flat_md),
+        )
+        raise LowQualityTreeError("flat_zero_block")
+
+    # Task 6.1: detect image-standalone PDFs — all blocks have role="image".
+    if (
+        _IMAGE_STANDALONE_PIPELINE_ENABLED
+        and content_class in ("flat_prose", "flat_mixed")
+        and blocks
+        and all(b.get("role") == "image" for b in blocks)
+    ):
+        content_class = "image_standalone"
+
+    # RFC-033 D7: force image_standalone for bare image files.
+    content_class = apply_image_ext_content_class_override(
+        ext, content_class
+    )
+
+    await _enrich_image_blocks(blocks, pic_results, doc_id)
+
+    image_blocks = [b for b in blocks if b.get("role") == "image"]
+    # RFC-036 D4: decorative/skipped blocks are excluded from
+    # the unenriched-count denominator inside
+    # compute_image_enrichment_ratio.
+    image_enrichment_ratio = compute_image_enrichment_ratio(image_blocks)
+
+    return doc_id, content_class, blocks, image_enrichment_ratio
 
 
 def _is_azure_url(url: str | None) -> bool:
@@ -999,8 +1080,9 @@ class CustomPageIndexClient(PageIndexClient):
 
                 # Zone-6: centralised OCR-mode decision replaces the ad-hoc
                 # inspector_force_ocr / pre_garbled boolean checks below.
+                # Zone-5: per-picture enrichment gate (not page-level garble retry).
                 ocr_mode = decide_ocr_mode(
-                    ocr_escalation_enabled=_OCR_ESCALATION,
+                    ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
                     has_image_markers=False,  # not yet known pre-conversion
                     force_full_page=(
                         inspector_force_ocr
@@ -1290,7 +1372,7 @@ class CustomPageIndexClient(PageIndexClient):
                     or low_content_ocr_eligible
                 )
                 and ext == ".pdf"
-                and _OCR_ESCALATION
+                and _OCR_ESCALATION_GARBLE
             ):
                 # D4 (RFC-028) + Zone-5: snapshot the pre-retry extraction state
                 # so a retry that produces LESS content doesn't unconditionally
@@ -1662,7 +1744,7 @@ class CustomPageIndexClient(PageIndexClient):
                 not ok
                 and first_defect in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW)
                 and ext == ".pdf"
-                and _OCR_ESCALATION
+                and _OCR_ESCALATION_GARBLE
                 and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
                 and settings.flat_doc_routing
                 and md_content
@@ -1904,56 +1986,14 @@ class CustomPageIndexClient(PageIndexClient):
                                         exc_info=True,
                                     )
                         if not _flat_garble_unrecovered:
-                            doc_id = str(uuid.uuid4())
-
-                            # RFC-004 user-locked: VLM describe stays OFF by default;
-                            # when enabled it runs HERE (flat branch, the only
-                            # consumer — finding 8) with the real doc_id, HR3-gated
-                            # and off the event loop (findings 2/3/10).
-                            if pic_results and settings.vlm_describe_images:
-                                await asyncio.to_thread(_add_vlm_descriptions, pic_results, doc_id)
-
-                            content_class, blocks = await asyncio.to_thread(
-                                route_and_extract_flat, flat_md
-                            )
-
-                            # RFC-030 D0 (Task 3.3): zero-block guard -- non-empty
-                            # markdown must never yield an empty block list (e.g. a
-                            # stray/unclosed fence marker swallowing all content).
-                            # Escalate via the same LowQualityTreeError path used for
-                            # tree-routed docs (HR5) instead of persisting a 0-block
-                            # flat.json.
-                            if not blocks and flat_md.strip():
-                                LOW_QUALITY_TREES.labels(reason="flat_zero_block").inc()
-                                logger.warning(
-                                    "Rejecting zero-block flat extraction for %s: "
-                                    "non-empty markdown (%d chars) produced no blocks",
-                                    filename,
-                                    len(flat_md),
+                            # Zone-5: shared enrichment helper — identical
+                            # pipeline runs for PDF flat-success and standalone-
+                            # image paths (splice already ran before garble gate).
+                            doc_id, content_class, blocks, image_enrichment_ratio = (
+                                await _apply_picture_enrichment(
+                                    flat_md, pic_results, ext, filename,
+                                    splice_markers=False,
                                 )
-                                raise LowQualityTreeError("flat_zero_block")
-
-                            # Task 6.1: detect image-standalone PDFs — all blocks
-                            # have role="image".  Bare image files (.jpg/.png) are
-                            # already handled by the _IMAGE_EXTS route above; this
-                            # catches PDFs whose extracted content is entirely images.
-                            if (
-                                _IMAGE_STANDALONE_PIPELINE_ENABLED
-                                and content_class in ("flat_prose", "flat_mixed")
-                                and blocks
-                                and all(b.get("role") == "image" for b in blocks)
-                            ):
-                                content_class = "image_standalone"
-
-                            # RFC-033 D7 (Task 3.3): bare image files (.jpg/.png/…)
-                            # are always image_standalone regardless of what
-                            # route_and_extract_flat classified the OCR markdown
-                            # as (e.g. a spliced [Chart text] block can pull
-                            # content_class off the all-role="image" heuristic
-                            # above) so classify_verdict scores them via
-                            # _classify_image_verdict.
-                            content_class = apply_image_ext_content_class_override(
-                                ext, content_class
                             )
 
                             logger.info(
@@ -1962,14 +2002,6 @@ class CustomPageIndexClient(PageIndexClient):
                                 reason,
                                 content_class,
                             )
-
-                            await _enrich_image_blocks(blocks, pic_results, doc_id)
-
-                            image_blocks = [b for b in blocks if b.get("role") == "image"]
-                            # RFC-036 D4: decorative/skipped blocks are excluded from
-                            # the unenriched-count denominator inside
-                            # compute_image_enrichment_ratio.
-                            image_enrichment_ratio = compute_image_enrichment_ratio(image_blocks)
 
                             protocol = "https" if settings.minio_secure else "http"
                             source_url = (

@@ -618,7 +618,7 @@ class TestRecoverPictureResults:
     the figure splice happens only in client.index()'s flat branch."""
 
     def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", False)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", False)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
@@ -635,7 +635,7 @@ class TestRecoverPictureResults:
         assert pics == []
 
     def test_escalation_enabled_invokes_recovery(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
@@ -661,7 +661,7 @@ class TestRecoverPictureResults:
         assert pics == [pr]
 
     def test_no_marker_skips_recovery(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION", True)
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
         with mock.patch.object(converters, "_collect_picture_regions") as mock_collect:
             pics = converters._recover_picture_results("no images here", object(), "d.pdf")
         mock_collect.assert_not_called()

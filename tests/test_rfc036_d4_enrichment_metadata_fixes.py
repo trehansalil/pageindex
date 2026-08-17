@@ -94,7 +94,7 @@ class TestRecoverPictureTextSkipPathsTagSkippedReason:
 
         regions = [self._fake_region(), self._fake_region(page=2), self._fake_region(page=3)]
         with (
-            patch("pageindex_mcp.converters._OCR_ESCALATION", True),
+            patch("pageindex_mcp.converters._OCR_ESCALATION_PER_PICTURE", True),
             patch("pageindex_mcp.converters._collect_picture_regions", return_value=regions),
             patch("pageindex_mcp.converters.ensure_tessdata", return_value=["eng"]),
             patch(
