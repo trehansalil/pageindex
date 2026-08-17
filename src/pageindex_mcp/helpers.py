@@ -381,7 +381,11 @@ class TreeSignals:
         depth = _tree_depth(structure)
         _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
         flat_text = _flatten_tree_text(structure)
-        garbled = _tree_is_garbled(structure, expected_script=expected_script)
+        garbled = bool(structure) and check_garble(
+            flat_text,
+            expected_script=expected_script,
+            context=GarbleContext.TREE_BULK,
+        )
         if garbled:
             gr = _garble_ratio(flat_text, expected_script=expected_script)
             effectively_garbled = gr >= garble_threshold
