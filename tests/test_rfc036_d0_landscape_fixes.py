@@ -111,12 +111,12 @@ class TestMaxLandscapePagesCap:
 
 # Module-level (picklable-by-reference) worker stand-ins for the
 # multiprocessing 'spawn' context Property 2 exercises.
-def _slow_chunk_worker(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override):
+def _slow_chunk_worker(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None):
     time.sleep(5)
     result_queue.put(("ok", ("late content", [])))
 
 
-def _fast_chunk_worker(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override):
+def _fast_chunk_worker(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None):
     result_queue.put(("ok", ("chunk markdown", [])))
 
 

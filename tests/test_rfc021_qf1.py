@@ -219,7 +219,7 @@ async def test_qf1_fix3_retry_still_fires(monkeypatch, pdf_file_with_content):
 
     escalation_calls = []
 
-    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs):
+    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
         escalation_calls.append(
             {"path": path, "force_full_page_ocr": force_full_page_ocr, "langs": langs}
         )

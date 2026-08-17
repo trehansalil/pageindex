@@ -293,7 +293,7 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
     monkeypatch.setattr(client_mod, "detect_ocr_langs", _fake_detect)
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
 
-    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs):
+    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
         if retry_raises:
             raise RuntimeError("boom")
         return "# ocr-recovered md"
@@ -430,7 +430,7 @@ def _wire_image_ratio_escalation(
 
     pdf_to_markdown_calls = []
 
-    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs):
+    def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
         pdf_to_markdown_calls.append(
             {"path": path, "force_full_page_ocr": force_full_page_ocr, "langs": langs}
         )

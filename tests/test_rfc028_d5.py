@@ -42,7 +42,7 @@ class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
 
         captured: dict = {}
 
-        def fake_recover_picture_text(pdf_path, regions, langs, md=None):
+        def fake_recover_picture_text(pdf_path, regions, langs, md=None, expected_script=None):
             captured["langs"] = langs
             return {}, {}
 
@@ -66,7 +66,7 @@ class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
 
         captured: dict = {}
 
-        def fake_recover_picture_text(pdf_path, regions, langs, md=None):
+        def fake_recover_picture_text(pdf_path, regions, langs, md=None, expected_script=None):
             captured["langs"] = langs
             return {}, {}
 

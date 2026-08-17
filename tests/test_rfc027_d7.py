@@ -147,7 +147,7 @@ class TestChunkedSplitMath:
         # the subprocess seam (a spawned child would re-import the real module
         # and never see a parent-side pdf_to_markdown_docling monkeypatch).
         def _fake_chunk_runner(
-            path, *, force_full_page_ocr, ocr_lang_override, timeout_s
+            path, *, force_full_page_ocr, ocr_lang_override, timeout_s, expected_script=None
         ):
             calls.append(path)
             return "chunk-md", [], []
@@ -180,7 +180,7 @@ class TestChunkedSplitMath:
         monkeypatch.setattr(
             converters,
             "_run_docling_chunk_with_timeout",
-            lambda path, *, force_full_page_ocr, ocr_lang_override, timeout_s: (
+            lambda path, *, force_full_page_ocr, ocr_lang_override, timeout_s, expected_script=None: (
                 calls.append(path),
                 ("chunk-md", [], []),
             )[1],
@@ -227,7 +227,7 @@ class TestChunkTimeoutFallback:
         fake_fitz = _patch_fitz(monkeypatch, 2, text="FALLBACK_TEXT")
         monkeypatch.setattr(converters, "_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S", 0.05)
 
-        def _slow_docling(path, force_full_page_ocr=False, ocr_lang_override=None):
+        def _slow_docling(path, force_full_page_ocr=False, ocr_lang_override=None, **kwargs):
             import time
 
             time.sleep(0.5)

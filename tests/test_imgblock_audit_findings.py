@@ -186,7 +186,7 @@ class TestFinding1TupleReturnNoThreadLocal:
         monkeypatch.setattr(converters, "_repromote_numbered_headings", lambda d: 0)
         pr = PictureResult(ocr_text="Revenue 2024 up 42 percent", png_bytes=b"p", page=1, bbox={})
         monkeypatch.setattr(
-            converters, "_recover_picture_results", lambda md_, doc, path, filename=None, body_for_containment=None: [pr]
+            converters, "_recover_picture_results", lambda md_, doc, path, filename=None, body_for_containment=None, expected_script=None: [pr]
         )
 
         out_md, pics, _stages = converters.pdf_to_markdown_docling("dummy.pdf")

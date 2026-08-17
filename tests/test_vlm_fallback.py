@@ -79,7 +79,7 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda s: ["eng"])
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
     monkeypatch.setattr(
-        client_mod, "pdf_to_markdown_docling", lambda path, force, langs: "# still garbled"
+        client_mod, "pdf_to_markdown_docling", lambda path, force, langs, **kw: "# still garbled"
     )
 
     vlm_mock = AsyncMock()

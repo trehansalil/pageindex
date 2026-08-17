@@ -1313,7 +1313,7 @@ class CustomPageIndexClient(PageIndexClient):
                 )
             else:
                 state.md_content, state.pic_results, stages_out = _split_converter_output(
-                    await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
+                    await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs, expected_script=expected_script)
                 )
                 if stages_out:
                     state.extraction_stages_captured = stages_out
@@ -1618,7 +1618,8 @@ class CustomPageIndexClient(PageIndexClient):
             else:
                 state.md_content, state.pic_results, stages_out = _split_converter_output(
                     await asyncio.to_thread(
-                        pdf_to_markdown_docling, file_path, True, langs
+                        pdf_to_markdown_docling, file_path, True, langs,
+                        expected_script=expected_script,
                     )
                 )
                 if stages_out:

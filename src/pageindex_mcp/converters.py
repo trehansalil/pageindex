@@ -1633,7 +1633,7 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
         return ""
 
 
-def _text_layer_has_content(page) -> bool:
+def _text_layer_has_content(page, expected_script: str | None = None) -> bool:
     """Return True when the page's native text layer has meaningful content.
 
     Used by F1 (RFC-020) to exempt scanned pages from the coverage skip —
@@ -1649,7 +1649,7 @@ def _text_layer_has_content(page) -> bool:
         from .helpers import GarbleContext, check_garble
         from .script import infer_script
 
-        if check_garble(text, expected_script=infer_script(text), context=GarbleContext.PAGE_TEXT_LAYER):
+        if check_garble(text, expected_script=expected_script or infer_script(text), context=GarbleContext.PAGE_TEXT_LAYER):
             return False
     return True
 
@@ -1696,7 +1696,7 @@ def _clip_text_contained(clip_text: str, md_norm: str) -> bool:
     return matched / total >= _CLIP_TEXT_CONTAINMENT_THRESHOLD
 
 
-def _document_level_text_fallback(md: str, pdf_path: str) -> str:
+def _document_level_text_fallback(md: str, pdf_path: str, expected_script: str | None = None) -> str:
     """Full-page text-layer fallback for image-dominant documents (RFC-024 D1).
 
     When Docling's exported markdown carries fewer than
@@ -1748,7 +1748,7 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
     from .helpers import GarbleContext, check_garble
     from .script import infer_script
 
-    if check_garble(full_text, expected_script=infer_script(full_text), context=GarbleContext.DOCUMENT_FALLBACK):
+    if check_garble(full_text, expected_script=expected_script or infer_script(full_text), context=GarbleContext.DOCUMENT_FALLBACK):
         logger.warning(
             "document-level text-layer fallback skipped for %s: text layer is garbled",
             pdf_path,
@@ -2064,6 +2064,7 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     regions: list[dict],
     langs: list[str],
     md: str = "",
+    expected_script: str | None = None,
 ) -> tuple[dict[int, PictureResult], dict[int, str]]:
     """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
 
@@ -2150,12 +2151,12 @@ def _recover_picture_text(  # noqa: PLR0915, C901
 
                                 if check_garble(
                                     region_text,
-                                    expected_script=infer_script(region_text),
+                                    expected_script=expected_script or infer_script(region_text),
                                     context=GarbleContext.REGION,
                                 ):
                                     has_own_text = False
                     else:
-                        has_own_text = _text_layer_has_content(page)
+                        has_own_text = _text_layer_has_content(page, expected_script=expected_script)
                     # Reordered: coverage exemption BEFORE MAX_FULLPAGE cap.
                     # A page with no text layer is always exempt (the picture
                     # IS the content) regardless of whether the cap has been
@@ -2492,6 +2493,7 @@ def _recover_picture_results(
     pdf_path: str,
     filename: str | None = None,
     body_for_containment: str | None = None,
+    expected_script: str | None = None,
 ) -> list[PictureResult]:
     """Recover chart/infographic text Docling bucketed into Picture bboxes (RFC-015 D6).
 
@@ -2536,7 +2538,7 @@ def _recover_picture_results(
                 if lg not in lang_sources:
                     lang_sources.append(lg)
         langs = ensure_tessdata(lang_sources)
-        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=containment_md)
+        recovered, skip_reasons = _recover_picture_text(pdf_path, regions, langs, md=containment_md, expected_script=expected_script)
         if not recovered and not skip_reasons:
             return []
         logger.info(
@@ -2855,6 +2857,7 @@ def _docling_chunk_worker(
     pdf_path: str,
     force_full_page_ocr: bool,
     ocr_lang_override: list[str] | None,
+    expected_script: str | None = None,
 ) -> None:
     """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
 
@@ -2868,6 +2871,7 @@ def _docling_chunk_worker(
             pdf_path,
             force_full_page_ocr=force_full_page_ocr,
             ocr_lang_override=ocr_lang_override,
+            expected_script=expected_script,
         )))
     except Exception as exc:  # noqa: BLE001 -- re-raised in parent
         try:
@@ -2884,6 +2888,7 @@ def _run_docling_chunk_with_timeout(
     force_full_page_ocr: bool,
     ocr_lang_override: list[str] | None,
     timeout_s: float,
+    expected_script: str | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
 
@@ -2897,7 +2902,7 @@ def _run_docling_chunk_with_timeout(
     result_queue: multiprocessing.Queue = ctx.Queue()
     proc = ctx.Process(
         target=_docling_chunk_worker,
-        args=(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override),
+        args=(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script),
         daemon=True,
     )
     proc.start()
@@ -2953,6 +2958,7 @@ def _pdf_to_markdown_docling_chunked(
     max_pages: int,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
+    expected_script: str | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
@@ -3011,6 +3017,7 @@ def _pdf_to_markdown_docling_chunked(
                         force_full_page_ocr=force_full_page_ocr,
                         ocr_lang_override=ocr_lang_override,
                         timeout_s=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
+                        expected_script=expected_script,
                     )
                 except FuturesTimeoutError:
                     # RFC-027 D7: an individually heavy chunk still times out on the
@@ -3143,6 +3150,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     max_pages: int | None = None,
+    expected_script: str | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -3209,6 +3217,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             max_pages=effective_max_pages,
             force_full_page_ocr=force_full_page_ocr,
             ocr_lang_override=ocr_lang_override,
+            expected_script=expected_script,
         )
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
@@ -3429,7 +3438,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     body_for_containment = md
 
     post_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
-        ("document_level_text_fallback", functools.partial(_document_level_text_fallback, pdf_path=pdf_path)),
+        ("document_level_text_fallback", functools.partial(_document_level_text_fallback, pdf_path=pdf_path, expected_script=expected_script)),
         ("splice_landscape_fallback", functools.partial(
             _splice_landscape_fallback,
             landscape_fallback_pages=landscape_fallback_pages,
@@ -3447,6 +3456,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     pic_results = _recover_picture_results(
         md, result.document, pdf_path, os.path.basename(pdf_path),
         body_for_containment=body_for_containment,
+        expected_script=expected_script,
     )
     # RFC-035 D2 Fix (Routing interaction / task-5-4): the rasterize-rotate-
     # reextract fallback re-runs Docling on a standalone rasterized page image,
