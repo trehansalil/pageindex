@@ -561,6 +561,14 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # ran in the isolated converter child, which has no registry pool. The
         # registry upsert must therefore happen here in the long-lived parent,
         # where startup() opened the pool. Best-effort — never fail the job.
+        #
+        # Zone-3: _upsert_registry_row now accepts an optional verdict_fields
+        # kwarg to close the MinIO re-read race window. The converter child's
+        # result dict does not yet carry verdict fields (only doc_id,
+        # content_class, peak_rss_kib, duration_ms); threading them requires
+        # expanding the converters_cli stdout contract — a future change.
+        # Until then, the existing read_registry_fields MinIO-read fallback
+        # remains the field source.
         await _upsert_registry_row(doc_id, content_class)
         cleanup_staging = True  # terminal success
         return doc_id
@@ -671,7 +679,11 @@ async def reap_stale_jobs(ctx: dict) -> None:
         logger.warning("reap_stale_jobs flipped %d stale processing job(s) to error", reaped)
 
 
-async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
+async def _upsert_registry_row(
+    doc_id: str,
+    content_class: str | None,
+    verdict_fields: dict[str, Any] | None = None,
+) -> None:
     """Parent-side RFC-006 dual-write.
 
     Reads the registry-relevant fields from the just-persisted processed doc and
@@ -679,6 +691,16 @@ async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
     parent (where startup() opened the pool), awaited so it cannot be lost the
     way a fire-and-forget task would be. Best-effort: any failure logs a warning
     but never fails the job — the MinIO artifacts remain the source of truth.
+
+    Zone-3: when *verdict_fields* is supplied (a dict carrying any subset of
+    verdict / verdict_reason / pipeline_version / max_leaf_ratio /
+    verdict_computed_at / node_count), those values are merged into the
+    registry row **after** the MinIO read, so they take precedence over
+    whatever the artifact carries — closing the race window where the
+    MinIO artifact might not yet reflect the just-completed job's verdict.
+    Callers that lack job-context verdict data (e.g. preprocess_client.py
+    batch CLI) simply omit the kwarg and fall back to the existing MinIO
+    read path.
     """
     if not (settings.registry_enabled and settings.postgres_dsn):
         return
@@ -689,6 +711,11 @@ async def _upsert_registry_row(doc_id: str, content_class: str | None) -> None:
         return
     try:
         fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+        if fields and verdict_fields:
+            # Zone-3: overlay job-context verdict fields onto the MinIO-read
+            # base, so the caller's authoritative values win over any stale
+            # or not-yet-visible artifact data.
+            fields.update(verdict_fields)
         if fields:
             await upsert_doc(fields)
             REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()

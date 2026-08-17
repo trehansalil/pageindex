@@ -17,11 +17,9 @@ from datetime import UTC, datetime
 
 from pageindex_mcp.config import CURRENT_PIPELINE_VERSION, settings
 from pageindex_mcp.helpers import (
-    TreeDefect,
-    TreeGateResult,
-    _defect_from_reason_str,
     _tree_max_leaf_ratio,
     classify_verdict,
+    validate_tree,
 )
 from pageindex_mcp.registry import (
     close_registry,
@@ -72,32 +70,30 @@ async def run_sweep() -> dict:
                     response.close()
                     response.release_conn()
 
-                structure = data.get("structure") or []
                 content_class = data.get("content_class", "")
 
-                existing_key = f"processed/{doc_id}.meta.json"
-                stored_reason = None
-                try:
-                    resp = mc.get_object(settings.minio_bucket, existing_key)
-                    try:
-                        existing_meta = json.loads(resp.read())
-                    finally:
-                        resp.close()
-                        resp.release_conn()
-                    stored_reason = existing_meta.get("verdict_reason") or None
-                except Exception:
-                    pass
+                # Zone-3 fix: flat docs (RFC-004 Amendment 1) have no
+                # "structure" key — running validate_tree / classify_verdict
+                # on their "blocks" list invents nonsense tree metrics
+                # (Finding 5, audit 2026-07-21).  Skip them here; flat-doc
+                # verdict recomputation lives in preprocess_client.py
+                # --recompute-verdicts where ingest-time inputs are available.
+                is_flat = "structure" not in data and "blocks" in data
+                if is_flat:
+                    skipped += 1
+                    logger.info("Sweep: skipping flat doc %s", doc_id)
+                    continue
 
-                # Zone-8 Target 7: parse stored verdict_reason via
-                # TreeDefect enum to prevent sticky permanent FAILs from
-                # prefix-matching on raw strings.
-                validate_result = None
-                if stored_reason:
-                    defect = _defect_from_reason_str(stored_reason)
-                    if defect != TreeDefect.OK:
-                        validate_result = TreeGateResult(ok=False, defect=defect)
+                structure = data.get("structure") or []
+
+                # Zone-3: replace lossy _defect_from_reason_str
+                # reconstruction with a direct validate_tree call on the
+                # stored structure — identical to recompute_verdicts
+                # (preprocess_client.py).  Both offline paths now use the
+                # same current gate logic as the single source of truth.
+                vt_result = validate_tree(structure)
                 verdict, verdict_reason = classify_verdict(
-                    structure, content_class, validate_result
+                    structure, content_class, vt_result
                 )
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
