@@ -73,7 +73,7 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: "# garbled md")]
     )
     monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda s: ["eng"])

@@ -172,7 +172,7 @@ def _wire_image_standalone_flat(monkeypatch):
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=[(False, "depth<2")]))
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: _IMAGE_LIGHT_MD)]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _IMAGE_LIGHT_MD)]
     )
     monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     # D1 image-ratio escalation stays gated off via the ratio itself

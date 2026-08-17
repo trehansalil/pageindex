@@ -1032,6 +1032,15 @@ class CustomPageIndexClient(PageIndexClient):
                 try:
                     logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
                     if state.use_remote and "docling" in conv_name:
+                        # NOTE (Zone-1 known gap): _remote_pdf_to_markdown does
+                        # NOT forward expected_script to the external Docling
+                        # microservice — the /convert/pdf payload has no script
+                        # field, so server-side garble checks (if any) fall back
+                        # to infer_script(text).  Closing this gap requires a
+                        # contract change in the sibling hetzner-deployment-service
+                        # repo and is out of scope for client-side threading.
+                        # Post-conversion garble detection in the retry/escalation
+                        # paths already receives expected_script from this method.
                         logger.info(
                             "Routing %s to external Docling service at %s",
                             filename,
@@ -1060,6 +1069,7 @@ class CustomPageIndexClient(PageIndexClient):
                                 file_path,
                                 True,
                                 ocr_lang_override=detect_ocr_langs(filename),
+                                expected_script=expected_script,
                             )
                         )
                         if stages_out:
@@ -1072,7 +1082,11 @@ class CustomPageIndexClient(PageIndexClient):
                                 filename,
                             )
                         md_content, state.pic_results, stages_out = _split_converter_output(
-                            await asyncio.to_thread(conv_fn, file_path)
+                            await asyncio.to_thread(
+                                conv_fn,
+                                file_path,
+                                expected_script=expected_script,
+                            )
                         )
                         if stages_out:
                             state.extraction_stages_captured = stages_out

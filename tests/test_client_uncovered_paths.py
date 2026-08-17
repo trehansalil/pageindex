@@ -496,7 +496,7 @@ def _wire_index(monkeypatch, *, validate_tree):
     monkeypatch.setattr(
         client_mod,
         "pdf_markdown_converters",
-        lambda: [("stub", lambda path: "# Heading\n\nBody text\n")],
+        lambda: [("stub", lambda path, **kw: "# Heading\n\nBody text\n")],
     )
     mocks = {
         "save_doc": MagicMock(),

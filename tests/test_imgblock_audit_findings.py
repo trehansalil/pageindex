@@ -463,7 +463,7 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION", False)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: (chain_md, pics))]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: (chain_md, pics))]
     )
     monkeypatch.setattr(
         client_mod, "_generate_flat_doc_description", MagicMock(return_value="a flat doc")

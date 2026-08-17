@@ -362,7 +362,7 @@ def _wire_flat_route(monkeypatch, *, content_class, blocks):
     monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: _OCR_MD)
     monkeypatch.setattr(client_mod, "_tesseract_ocr_image", lambda path, langs: _OCR_MD)
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: _OCR_MD)]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _OCR_MD)]
     )
     monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_enrich_image_blocks", AsyncMock(return_value=None))

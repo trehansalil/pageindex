@@ -168,13 +168,13 @@ async def test_pdf_primary_and_secondary_converter_fail_then_third_succeeds(monk
     'extracted by FALLBACK converter' error log."""
     mocks = _wire_common(monkeypatch, validate_return=(True, None))
 
-    def _fail_primary(path):
+    def _fail_primary(path, **kwargs):
         raise RuntimeError("primary boom")
 
-    def _fail_secondary(path):
+    def _fail_secondary(path, **kwargs):
         raise ValueError("secondary boom")
 
-    def _succeed_tertiary(path):
+    def _succeed_tertiary(path, **kwargs):
         return "# recovered markdown"
 
     monkeypatch.setattr(
@@ -315,7 +315,7 @@ async def test_flat_path_garble_gate_vlm_exception(monkeypatch, pdf_file):
     garbling (never silently persisted)."""
     mocks = _wire_common(monkeypatch, validate_return=(False, "node_count<3"), vlm_fallback=True)
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: "# garbled md")]
     )
     monkeypatch.setattr(client_mod, "check_garble", lambda text, **kw: True)
     c = _make_client()

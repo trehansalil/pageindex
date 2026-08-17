@@ -3493,14 +3493,28 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     return md, pic_results, extraction_stages
 
 
-def _pdf_to_markdown_no_pics(pdf_path: str) -> tuple[str, list[PictureResult], dict[str, dict]]:
+def _pdf_to_markdown_no_pics(
+    pdf_path: str, **kwargs: object
+) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """Adapter: the pymupdf4llm route recovers no picture regions and no
-    per-stage provenance to match the ``(md, pics, stages)`` chain contract."""
+    per-stage provenance to match the ``(md, pics, stages)`` chain contract.
+
+    ``**kwargs`` absorbs chain-level keyword arguments (e.g. ``expected_script``)
+    that the pymupdf4llm backend has no use for — its extraction path has no
+    script-aware garble checks.
+    """
     return pdf_to_markdown(pdf_path), [], {}
 
 
-def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list[PictureResult], dict[str, dict]]]]]:
+def pdf_markdown_converters() -> list[tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]]]]:
     """Ordered ``(name, fn)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
+
+    Every chain callable accepts ``(pdf_path: str, **kwargs)`` at minimum —
+    ``expected_script: str | None`` may be passed as a keyword argument by the
+    caller to enable script-aware garble detection inside converters that
+    support it (e.g. ``pdf_to_markdown_docling``).  Converters that lack
+    internal garble checks (e.g. ``_pdf_to_markdown_no_pics``) absorb the
+    keyword via ``**kwargs`` and ignore it.
 
     Every chain callable returns ``(markdown, pic_results, extraction_stages)``.
 
@@ -3532,7 +3546,7 @@ def pdf_markdown_converters() -> list[tuple[str, Callable[[str], tuple[str, list
             "ALLOW_AGPL_FALLBACK=true"
         )
 
-    chain: list[tuple[str, Callable[[str], tuple[str, list[PictureResult], dict[str, dict]]]]] = []
+    chain: list[tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]]]] = []
     if ALLOW_AGPL_FALLBACK:
         chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics))
     if have_docling:

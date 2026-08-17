@@ -273,7 +273,7 @@ def _wire_ocr_escalation(monkeypatch, *, validate_side_effect, retry_raises=Fals
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# initial md")]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: "# initial md")]
     )
     monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     detect_calls = []
@@ -413,7 +413,7 @@ def _wire_image_ratio_escalation(
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: initial_md)]
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: initial_md)]
     )
     monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION", ocr_escalation_enabled)
@@ -679,7 +679,7 @@ async def test_garble_probe_numeric_junk(monkeypatch, pdf_file_with_content):
 
     await c.index(pdf_file_with_content)
 
-    conv_mock.assert_called_once_with(pdf_file_with_content)
+    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script=None)
     mocks["save_doc"].assert_called_once()
 
 
@@ -699,6 +699,7 @@ async def test_garble_probe_numeric_junk_rollback_env(monkeypatch, pdf_file_with
         pdf_file_with_content,
         True,
         ocr_lang_override=["eng"],
+        expected_script=None,
     )
     mocks["save_doc"].assert_called_once()
 
@@ -718,7 +719,7 @@ async def test_garble_probe_clean_text(monkeypatch, pdf_file_with_content):
 
     await c.index(pdf_file_with_content)
 
-    conv_mock.assert_called_once_with(pdf_file_with_content)
+    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script=None)
     mocks["save_doc"].assert_called_once()
 
 
