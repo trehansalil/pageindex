@@ -1,12 +1,34 @@
 """Unit tests for RFC-010 corpus gap remediation: helpers.py deliverables D3A, D3B, D4."""
 
 from pageindex_mcp.helpers import (
-    _flat_text_is_garbled,
+    GarbleContext,
+    _flatten_tree_text,
     _looks_like_toc_page,
-    _tree_is_garbled,
+    check_garble,
 )
 
-# ── D3A: _tree_is_garbled ───────────────────────────────────────────────────
+# ── D3A: tree-bulk garble detection (was _tree_is_garbled) ─────────────────
+
+
+def _tree_garble(nodes, expected_script=None):
+    """Test helper: replaces deleted _tree_is_garbled wrapper."""
+    if not nodes:
+        return False
+    return check_garble(
+        _flatten_tree_text(nodes),
+        expected_script=expected_script,
+        context=GarbleContext.TREE_BULK,
+    )
+
+
+def _flat_garble(md, expected_script=None, original_defect=None):
+    """Test helper: replaces deleted _flat_text_is_garbled wrapper."""
+    return check_garble(
+        md,
+        expected_script=expected_script,
+        context=GarbleContext.FLAT_MARKDOWN,
+        original_defect=original_defect,
+    )
 
 
 def test_pua_heavy_string_garbled():
@@ -20,7 +42,7 @@ def test_pua_heavy_string_garbled():
             ],
         }
     ]
-    assert _tree_is_garbled(nodes) is True
+    assert _tree_garble(nodes) is True
 
 
 def test_digit_junk_garbled():
@@ -35,7 +57,7 @@ def test_digit_junk_garbled():
             ],
         }
     ]
-    assert _tree_is_garbled(nodes) is True
+    assert _tree_garble(nodes) is True
 
 
 def test_single_word_repetition_garbled():
@@ -50,7 +72,7 @@ def test_single_word_repetition_garbled():
             ],
         }
     ]
-    assert _tree_is_garbled(nodes) is True
+    assert _tree_garble(nodes) is True
 
 
 def test_normal_german_text_not_garbled():
@@ -70,7 +92,7 @@ def test_normal_german_text_not_garbled():
             ],
         }
     ]
-    assert _tree_is_garbled(nodes) is False
+    assert _tree_garble(nodes) is False
 
 
 def test_latin_substitution_not_garbled():
@@ -90,28 +112,28 @@ def test_latin_substitution_not_garbled():
             ],
         }
     ]
-    assert _tree_is_garbled(nodes) is False
+    assert _tree_garble(nodes) is False
 
 
-# ── D3B: _flat_text_is_garbled ──────────────────────────────────────────────
+# ── D3B: flat-markdown garble detection (was _flat_text_is_garbled) ─────────
 
 
 def test_flat_text_pua_garbled():
     """Flat-path mirror of the PUA-ratio heuristic on a raw markdown string."""
     md = "" * 5 + "a" * 90 + "" * 5 + "b" * 90  # 10/200 = 5% PUA
-    assert _flat_text_is_garbled(md) is True
+    assert _flat_garble(md) is True
 
 
 def test_flat_text_digit_junk_garbled():
     """Flat-path mirror of the digit-ratio heuristic on a raw markdown string."""
     md = "1651001429 " * 80  # ~880 chars, >60% digits
-    assert _flat_text_is_garbled(md) is True
+    assert _flat_garble(md) is True
 
 
 def test_flat_text_normal_not_garbled():
     """Normal prose passed straight through the flat-path gate stays clean."""
     md = "Der Versicherungsschutz erstreckt sich auf alle versicherten Personen.\n" * 10
-    assert _flat_text_is_garbled(md) is False
+    assert _flat_garble(md) is False
 
 
 def test_tree_glyph_marker_garbled():
@@ -120,13 +142,13 @@ def test_tree_glyph_marker_garbled():
         {"title": "Section", "text": "شأش GLYPH<35> أش normal text here", "nodes": []},
         {"title": "Section 2", "text": "more content with GLYPH<42> markers", "nodes": []},
     ]
-    assert _tree_is_garbled(nodes) is True
+    assert _tree_garble(nodes) is True
 
 
 def test_flat_text_glyph_marker_garbled():
     """GLYPH<> markers in flat-path markdown trigger garble gate."""
     md = "المادة (1) يعمل بأحكام القانون المرفق GLYPH<35> شأن تنظيم علاقات العمل\n" * 5
-    assert _flat_text_is_garbled(md) is True
+    assert _flat_garble(md) is True
 
 
 def test_tree_no_glyph_marker_clean():
@@ -143,7 +165,7 @@ def test_tree_no_glyph_marker_clean():
             "nodes": [],
         },
     ]
-    assert _tree_is_garbled(nodes) is False
+    assert _tree_garble(nodes) is False
 
 
 # ── D4: _looks_like_toc_page ────────────────────────────────────────────────

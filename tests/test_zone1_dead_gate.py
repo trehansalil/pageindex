@@ -54,7 +54,7 @@ class TestGate11Removed:
 
 
 class TestGarbledBlobSubsumption:
-    """Gate 11 was dead code because _tree_is_garbled (gate 1) already
+    """Gate 11 was dead code because check_garble/TREE_BULK (gate 1) already
     calls _is_garbled_blob on the flattened text.  Verify validate_tree
     never returns ARABIC_LOW_CONTENT_RATIO for any input."""
 
@@ -83,7 +83,7 @@ class TestGarbledBlobSubsumption:
     def test_garbled_tree_hits_garbling_not_arabic_low_content(self):
         """A tree whose flattened text is garbled should get GARBLING from
         gate 1, proving gate 11 was unreachable."""
-        from pageindex_mcp.helpers import _tree_is_garbled
+        from pageindex_mcp.helpers import _flatten_tree_text, check_garble, GarbleContext
         # Build a tree with PUA characters (U+E000) -- enough volume
         pua = "" * 500
         tree = [
@@ -97,7 +97,7 @@ class TestGarbledBlobSubsumption:
                 ],
             }
         ]
-        if not _tree_is_garbled(tree):
+        if not (tree and check_garble(_flatten_tree_text(tree), expected_script=None, context=GarbleContext.TREE_BULK)):
             pytest.skip("tree not detected as garbled at tree level")
         result = validate_tree(tree)
         assert result.defect == TreeDefect.GARBLING

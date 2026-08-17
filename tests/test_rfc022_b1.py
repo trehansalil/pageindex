@@ -4,14 +4,30 @@ Validates Design Properties 1-2 (design-rfc022-run5-verdict-bugfixes.md):
   Property 1 - synthetic structure for flat docs: for any flat document with
   structure=[] and non-empty text blocks, classify_verdict receives a
   synthetic structure with node_count > 0 and non-empty flat_text.
-  Property 2 - _tree_is_garbled empty guard: _tree_is_garbled([]) -> False.
+  Property 2 - tree garble empty guard: check_garble on empty tree -> False.
 
 `_synthesize_flat_structure` below mirrors the inline synthesis in
 client.py's `index()` (client.py:1057-1062) verbatim, since that logic is
 not factored into a standalone function.
 """
 
-from pageindex_mcp.helpers import _tree_is_garbled, classify_verdict
+from pageindex_mcp.helpers import (
+    GarbleContext,
+    _flatten_tree_text,
+    check_garble,
+    classify_verdict,
+)
+
+
+def _tree_garble(nodes, expected_script=None):
+    """Test helper: replaces deleted _tree_is_garbled wrapper."""
+    if not nodes:
+        return False
+    return check_garble(
+        _flatten_tree_text(nodes),
+        expected_script=expected_script,
+        context=GarbleContext.TREE_BULK,
+    )
 
 
 def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
@@ -59,15 +75,15 @@ def test_non_empty_garbled_structure_still_detected():
     blocks = [{"text": "\x00" * 200}]
     structure = _synthesize_flat_structure([], blocks)
     assert structure
-    assert _tree_is_garbled(structure) is True
+    assert _tree_garble(structure) is True
     verdict, reason = classify_verdict(structure, "flat_prose", None)
     assert verdict == "FAIL" or (verdict == "MARGINAL" and "garbl" in reason)
 
 
-def test_tree_is_garbled_empty_list_returns_false():
-    assert _tree_is_garbled([]) is False
+def test_tree_garble_empty_list_returns_false():
+    assert _tree_garble([]) is False
 
 
-def test_tree_is_garbled_non_empty_unchanged():
-    assert _tree_is_garbled([{"text": "real content"}]) is False
-    assert _tree_is_garbled([{"text": "\x00" * 200}]) is True
+def test_tree_garble_non_empty_unchanged():
+    assert _tree_garble([{"text": "real content"}]) is False
+    assert _tree_garble([{"text": "\x00" * 200}]) is True

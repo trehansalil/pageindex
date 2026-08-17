@@ -1,8 +1,7 @@
 """RFC-020 Task 3.3 tests.
 
 F2: expected_script threading through the garble-gate call chain
-    (_script_from_filename -> _tree_is_garbled / _flat_text_is_garbled /
-    validate_tree / _garble_check_nodes).
+    (_script_from_filename -> check_garble / validate_tree / _garble_check_nodes).
 F3: OCR lang override -- detect_ocr_langs() driving the docling
     ocr_lang_override re-run in client.py's pre-garble probe.
 """
@@ -11,11 +10,12 @@ import logging
 
 from pageindex_mcp.converters import detect_ocr_langs
 from pageindex_mcp.helpers import (
-    _flat_text_is_garbled,
+    GarbleContext,
+    _flatten_tree_text,
     _garble_check_nodes,
     _infer_script,
     _script_from_filename,
-    _tree_is_garbled,
+    check_garble,
     validate_tree,
 )
 
@@ -34,23 +34,21 @@ class TestExpectedScriptThreading:
     def test_script_from_filename_german(self):
         assert _script_from_filename("Haftpflicht_2024.pdf") is None
 
-    def test_tree_is_garbled_with_arab_script_latin_gibberish(self):
+    def test_tree_bulk_garble_with_arab_script_latin_gibberish(self):
         nodes = [{"text": _LATIN_GIBBERISH}]
-        assert _tree_is_garbled(nodes, expected_script="Arab") is True
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is True
 
-    def test_tree_is_garbled_with_none_script_latin_gibberish(self):
+    def test_tree_bulk_garble_with_none_script_latin_gibberish(self):
         nodes = [{"text": _LATIN_GIBBERISH}]
-        # No expected_script -> the Latin-gibberish-in-non-Latin-context check
-        # never engages; whatever the bulk heuristics decide, it must not crash.
-        result = _tree_is_garbled(nodes, expected_script=None)
+        result = check_garble(_flatten_tree_text(nodes), expected_script=None, context=GarbleContext.TREE_BULK)
         assert isinstance(result, bool)
 
-    def test_tree_is_garbled_real_arabic_text(self):
+    def test_tree_bulk_garble_real_arabic_text(self):
         nodes = [{"text": _REAL_ARABIC}]
-        assert _tree_is_garbled(nodes, expected_script="Arab") is False
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is False
 
-    def test_flat_text_is_garbled_with_arab_script(self):
-        assert _flat_text_is_garbled(_LATIN_GIBBERISH, expected_script="Arab") is True
+    def test_flat_markdown_garble_with_arab_script(self):
+        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", context=GarbleContext.FLAT_MARKDOWN) is True
 
     def test_garble_check_nodes_expected_script_preference(self, caplog):
         # Node text is Latin-script-inferred, but the caller passes an Arabic

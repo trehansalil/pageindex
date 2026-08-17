@@ -6,7 +6,7 @@ Property 8: a document where validate_tree returns reason='rtl_reversal' and
             the bidi repair does not converge SHALL route through flat
             extraction (via the flat-routing whitelist) instead of raising.
 Property 9: if the flat text routed under Property 8 is also garbled per
-            _flat_text_is_garbled, the reason SHALL be overridden to
+            check_garble(FLAT_MARKDOWN), the reason SHALL be overridden to
             'garbling' and LowQualityTreeError SHALL be raised (Hard Rule 5,
             no bypass).
 Integration: وارد رقم 597 (numeric-junk digit blob) still ends ERROR --
@@ -142,7 +142,7 @@ class TestRtlReversalFlatGarbleGate:
 
     async def test_garbled_flat_text_overrides_reason_and_raises(self, monkeypatch, pdf_file):
         # Arrange -- validate_tree always rejects as rtl_reversal; the flat
-        # markdown routed to is also numeric junk (fails _flat_text_is_garbled).
+        # markdown routed to is also numeric junk (fails check_garble/FLAT_MARKDOWN).
         validate = MagicMock(return_value=TreeGateResult(ok=False, defect=TreeDefect.RTL_REVERSAL))
         mocks = _wire_index(monkeypatch, validate_tree=validate, flat_md=_NUMERIC_JUNK_FLAT_MD)
         c = CustomPageIndexClient(api_key="test-key")

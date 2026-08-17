@@ -1369,6 +1369,10 @@ class GarbleContext(StrEnum):
     IMAGE_ENRICHMENT = "image_enrichment"
 
 
+_GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"
+_GARBLE_FLAT_MARKDOWN_NORMALIZE = os.getenv("GARBLE_FLAT_MARKDOWN_NORMALIZE", "true").lower() == "true"
+
+
 def check_garble(
     text: str,
     *,
@@ -1378,9 +1382,7 @@ def check_garble(
 ) -> bool:
     """Consolidated garble evaluation entry point (Zone-1).
 
-    Replaces five parallel functions (_tree_is_garbled, _flat_text_is_garbled,
-    and three inline _is_garbled_blob call-sites in converters.py) with a
-    single API that always runs BOTH _is_garbled_blob and _has_sparse_mojibake.
+    Single API that always runs BOTH _is_garbled_blob and _has_sparse_mojibake.
 
     ``expected_script`` is required keyword-only so callers can never silently
     omit it (the latin_gibberish prong depends on it).
@@ -1388,9 +1390,9 @@ def check_garble(
     Behavioral rules:
     * FLAT_MARKDOWN context with short text and an original garbling defect
       returns True immediately (garble-by-default, RFC-025 D2).
-    * PAGE_TEXT_LAYER / DOCUMENT_FALLBACK / REGION contexts use
-      blob_kind=BlobKind.TREE_TEXT.
-    * All other contexts use the default blob_kind (TREE_TEXT).
+    * FLAT_MARKDOWN context uses RAW_MARKDOWN blob_kind (strips markdown formatting)
+      when GARBLE_FLAT_MARKDOWN_NORMALIZE is enabled (default: true).
+    * All other contexts use blob_kind=BlobKind.TREE_TEXT.
     """
     blob = text or ""
 
@@ -1404,12 +1406,8 @@ def check_garble(
         return True
 
     # Determine blob_kind for the underlying heuristics
-    if context in (
-        GarbleContext.PAGE_TEXT_LAYER,
-        GarbleContext.DOCUMENT_FALLBACK,
-        GarbleContext.REGION,
-    ):
-        blob_kind = BlobKind.TREE_TEXT
+    if context == GarbleContext.FLAT_MARKDOWN and _GARBLE_FLAT_MARKDOWN_NORMALIZE:
+        blob_kind = BlobKind.RAW_MARKDOWN
     else:
         blob_kind = BlobKind.TREE_TEXT
 
@@ -1577,13 +1575,6 @@ def _garble_check_nodes(
         )
     return garbled
 
-
-def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
-    """Zone-1 Wave 2: delegates to check_garble (TREE_BULK context)."""
-    if not nodes:
-        return False
-    blob = _flatten_tree_text(nodes)
-    return check_garble(blob, expected_script=expected_script, context=GarbleContext.TREE_BULK)
 
 
 
@@ -1827,7 +1818,7 @@ def validate_tree(
     ``all_defects`` is the frozenset of every firing gate's defect.
 
     Gate 11 (arabic_low_content_ratio) was removed: it is a strict subset
-    of gate 1 (_tree_is_garbled already tests _is_garbled_blob on the
+    of gate 1 (check_garble already tests _is_garbled_blob on the
     flattened text) and was unreachable.
     """
     # Compute TreeSignals ONCE and attach to every returned TreeGateResult
@@ -1967,8 +1958,8 @@ def hash_pipe_ratio(text: str) -> float:
 def _garble_ratio(text, expected_script=None):
     """Windowed garble ratio: fraction of fixed-size windows that individually
     trigger garble detection. RFC-033 D1: no longer re-checks the full text
-    (that duplicates what _tree_is_garbled already gates in classify_verdict).
-    Zone-1 Wave 2: delegates to check_garble (TREE_BULK context)."""
+    (check_garble already gates in classify_verdict).
+    Uses check_garble with TREE_BULK context."""
     window = 2000
     if len(text) <= window:
         return (
@@ -3311,8 +3302,6 @@ def _strip_toc_heading_nodes_guarded(nodes: list[dict], doc_name: str = "") -> l
     return candidate
 
 
-_GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"
-
 # RFC-029 D7 (Task 5.3) — table-aware node segmentation constants.
 # Node char threshold above which table-segmentation is attempted.
 _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD: int = int(
@@ -3330,21 +3319,6 @@ _RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(os.environ.get("RFC029_TABLE_SEGMENT_M
 _RFC036_SINGLETON_ROW_RATIO_THRESHOLD: float = float(
     os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
 )
-
-
-def _flat_text_is_garbled(
-    md: str,
-    expected_script: str | None = None,
-    original_defect: TreeDefect | None = None,
-) -> bool:
-    """Garble gate for flat-path markdown.
-    Zone-1 Wave 2: delegates to check_garble (FLAT_MARKDOWN context)."""
-    return check_garble(
-        md,
-        expected_script=expected_script,
-        context=GarbleContext.FLAT_MARKDOWN,
-        original_defect=original_defect,
-    )
 
 
 def _looks_like_toc_page(block_text: str) -> bool:

@@ -20,8 +20,6 @@ from pageindex_mcp.helpers import (
     TreeDefect,
     _has_sparse_mojibake,
     _is_garbled_blob,
-    _tree_is_garbled,
-    _flat_text_is_garbled,
     check_garble,
 )
 from pageindex_mcp.script import BlobKind
@@ -126,11 +124,11 @@ _SAMPLE_TEXTS = [
 
 
 class TestExhaustivenessTREE_BULK:
-    """TREE_BULK: check_garble == _tree_is_garbled on flattened text."""
+    """TREE_BULK: check_garble == _is_garbled_blob OR _has_sparse_mojibake."""
 
     @pytest.mark.parametrize("label,text,script", _SAMPLE_TEXTS, ids=[s[0] for s in _SAMPLE_TEXTS])
     def test_matches_tree_is_garbled(self, label, text, script):
-        # _tree_is_garbled operates on a node list; it flattens and calls
+        # check_garble(TREE_BULK) should match raw _is_garbled_blob OR _has_sparse_mojibake on flattened text;
         # check_garble(TREE_BULK) internally. We verify the direct call
         # produces the same result as _is_garbled_blob OR _has_sparse_mojibake.
         expected = (
@@ -155,11 +153,11 @@ class TestExhaustivenessNODE:
 
 
 class TestExhaustivenessFLAT_MARKDOWN:
-    """FLAT_MARKDOWN: check_garble == _flat_text_is_garbled (delegates)."""
+    """FLAT_MARKDOWN: check_garble == _is_garbled_blob OR _has_sparse_mojibake."""
 
     @pytest.mark.parametrize("label,text,script", _SAMPLE_TEXTS, ids=[s[0] for s in _SAMPLE_TEXTS])
-    def test_matches_flat_text_is_garbled(self, label, text, script):
-        expected = _flat_text_is_garbled(text, expected_script=script)
+    def test_matches_raw_heuristics(self, label, text, script):
+        expected = _is_garbled_blob(text, expected_script=script) or _has_sparse_mojibake(text)
         actual = check_garble(
             text,
             expected_script=script,

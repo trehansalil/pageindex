@@ -6,7 +6,7 @@ Validates Design Property 2: (a) a digit-noise blob clearing the
 ``image_enrichment_promoted`` char floor is still caught by
 ``_is_garbled_blob`` and does NOT return ``PASS``; (b) a legitimate blob
 above the floor still reaches ``PASS`` (no false-positive regression);
-(c) the flat-path D3B garble check (``_flat_text_is_garbled``) only catches
+(c) the flat-path D3B garble check (``check_garble`` with FLAT_MARKDOWN) only catches
 image-OCR-derived junk when it runs AFTER ``splice_figure_markers`` splices
 that junk into the markdown -- the same text checked pre-splice misses it;
 (d) duplicate ``> [Chart text]:`` lines are deduped before the char-floor
@@ -15,8 +15,9 @@ floor.
 """
 
 from pageindex_mcp.helpers import (
+    GarbleContext,
     _dedupe_chart_text_lines,
-    _flat_text_is_garbled,
+    check_garble,
     classify_verdict,
 )
 from pageindex_mcp.converters import splice_figure_markers
@@ -69,7 +70,7 @@ class TestPostSpliceGarbleRecheck:
             "<!-- image -->\n\n"
             "More prose after the image marker.\n"
         )
-        assert _flat_text_is_garbled(clean_md) is False
+        assert check_garble(clean_md, expected_script=None, context=GarbleContext.FLAT_MARKDOWN) is False
 
     def test_postsplice_text_catches_ocr_junk(self):
         """(c): after splice_figure_markers injects garbled OCR text into
@@ -84,7 +85,7 @@ class TestPostSpliceGarbleRecheck:
         pics = [{"ocr_text": junk_ocr, "page": 1, "bbox": {"l": 0, "t": 0, "r": 0, "b": 0}}]
         spliced = splice_figure_markers(clean_md, pics)
         assert junk_ocr in spliced
-        assert _flat_text_is_garbled(spliced) is True
+        assert check_garble(spliced, expected_script=None, context=GarbleContext.FLAT_MARKDOWN) is True
 
 
 class TestDedupeChartTextLines:

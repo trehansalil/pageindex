@@ -12,13 +12,14 @@ Covers:
 import logging
 
 from pageindex_mcp.helpers import (
-    _flat_text_is_garbled,
+    GarbleContext,
+    _flatten_tree_text,
     _garble_check_nodes,
     _has_sparse_mojibake,
     _infer_script,
     _is_garbled_blob,
     _is_morphologically_nonsense,
-    _tree_is_garbled,
+    check_garble,
     validate_tree,
 )
 
@@ -75,12 +76,12 @@ class TestBilingualArabicEnglishNotGarbled:
     def test_is_garbled_blob_bilingual_not_flagged(self):
         assert _is_garbled_blob(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab") is False
 
-    def test_flat_text_is_garbled_bilingual_not_flagged(self):
-        assert _flat_text_is_garbled(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab") is False
+    def test_flat_markdown_garble_bilingual_not_flagged(self):
+        assert check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", context=GarbleContext.FLAT_MARKDOWN) is False
 
-    def test_tree_is_garbled_bilingual_not_flagged(self):
+    def test_tree_bulk_garble_bilingual_not_flagged(self):
         nodes = [{"text": _BILINGUAL_ARABIC_ENGLISH}]
-        assert _tree_is_garbled(nodes, expected_script="Arab") is False
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is False
 
     def test_validate_tree_bilingual_passes(self):
         structure = [
@@ -271,19 +272,19 @@ class TestMorphologicalNonsense:
 class TestQF3RegressionExistingGarbleCases:
     """Existing test scenarios from test_rfc020_f2f3_garble.py must still pass."""
 
-    def test_tree_is_garbled_latin_gibberish_with_arab_script(self):
-        """Replicates TestExpectedScriptThreading.test_tree_is_garbled_with_arab_script_latin_gibberish."""
+    def test_tree_bulk_garble_latin_gibberish_with_arab_script(self):
+        """Replicates TestExpectedScriptThreading via check_garble(TREE_BULK)."""
         nodes = [{"text": _LATIN_GIBBERISH}]
-        assert _tree_is_garbled(nodes, expected_script="Arab") is True
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is True
 
-    def test_tree_is_garbled_real_arabic(self):
-        """Replicates TestExpectedScriptThreading.test_tree_is_garbled_real_arabic_text."""
+    def test_tree_bulk_garble_real_arabic(self):
+        """Replicates TestExpectedScriptThreading via check_garble(TREE_BULK)."""
         nodes = [{"text": _PURE_ARABIC}]
-        assert _tree_is_garbled(nodes, expected_script="Arab") is False
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is False
 
-    def test_flat_text_is_garbled_latin_gibberish(self):
-        """Replicates TestExpectedScriptThreading.test_flat_text_is_garbled_with_arab_script."""
-        assert _flat_text_is_garbled(_LATIN_GIBBERISH, expected_script="Arab") is True
+    def test_flat_markdown_garble_latin_gibberish(self):
+        """Replicates TestExpectedScriptThreading via check_garble(FLAT_MARKDOWN)."""
+        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", context=GarbleContext.FLAT_MARKDOWN) is True
 
     def test_validate_tree_garble_fails(self):
         """Replicates TestExpectedScriptThreading.test_validate_tree_forwards_expected_script."""

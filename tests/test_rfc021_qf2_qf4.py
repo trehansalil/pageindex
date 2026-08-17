@@ -21,9 +21,11 @@ from unittest.mock import patch
 import pytest
 
 from pageindex_mcp.helpers import (
+    GarbleContext,
+    _flatten_tree_text,
     _garble_ratio,
     _is_garbled_blob,
-    _tree_is_garbled,
+    check_garble,
     classify_verdict,
 )
 from tests.conftest import filler_text
@@ -37,7 +39,7 @@ def _shared_root_tree(leaf_sizes: list[int], corrupt_first: bool = False) -> lis
     max_leaf_ratio = max(leaf_sizes) / sum(leaf_sizes) exactly, since titles
     are left empty and only `text` lengths contribute chars. Pass
     `corrupt_first=True` to splice a trailing null byte into the first leaf
-    (same length) to force `_tree_is_garbled` True via the null-byte prong.
+    (same length) to force garble detection True via the null-byte prong.
     """
     leaves = []
     for i, size in enumerate(leaf_sizes):
@@ -213,7 +215,7 @@ def test_qf2c_too_long_text():
 
 def test_qf2c_garbled_no_exemption():
     # Same node_count/ratio/length as test_qf2c_small_doc_promoted, but the
-    # first leaf has a spliced null byte -> _tree_is_garbled fires, garble
+    # first leaf has a spliced null byte -> garble detection fires, garble
     # ratio saturates to 1.0 (>= default 0.05 threshold) -> effectively
     # garbled -> QF2c's `not effectively_garbled` guard denies exemption.
     tree = _shared_root_tree([216, 164, 164, 164, 164, 164, 164], corrupt_first=True)
@@ -327,7 +329,7 @@ def test_classify_verdict_garble_ratio_threshold():
     leaves[0]["text"] = "x" * 99 + "\x00"
     tree = [{"title": "", "text": "", "nodes": leaves}]
 
-    assert _tree_is_garbled(tree) is True
+    assert check_garble(_flatten_tree_text(tree), expected_script=None, context=GarbleContext.TREE_BULK) is True
 
     verdict, reason = classify_verdict(tree, "default", None)
     assert verdict == "MARGINAL"

@@ -14,14 +14,15 @@ silent PASS.
 """
 
 from pageindex_mcp.helpers import (
+    GarbleContext,
     _OVERSIZED_ORDINAL_RE,
     _flat_parse_table,
-    _flat_text_is_garbled,
+    _flatten_tree_text,
     _forward_fill_leading_column,
     _has_heading_markers,
     _has_sparse_mojibake,
     _ordinal_value,
-    _tree_is_garbled,
+    check_garble,
     split_oversized_leaf_nodes,
     validate_tree,
 )
@@ -122,15 +123,15 @@ def test_d8_short_text_not_flagged():
 
 
 def test_d8_wired_into_garble_gates_additively():
-    """The mojibake signal reaches both _tree_is_garbled and _flat_text_is_garbled,
+    """The mojibake signal reaches both tree-bulk and flat-markdown garble paths,
     while clean text stays not-garbled (existing bulk checks unweakened)."""
     moji = "كtابcجديدxمادةyنص عربي سليم شروط التأمين " * 5
-    assert _tree_is_garbled([{"node_id": "1", "title": "", "text": moji}]) is True
-    assert _flat_text_is_garbled(moji) is True
+    assert check_garble(_flatten_tree_text([{"node_id": "1", "title": "", "text": moji}]), expected_script=None, context=GarbleContext.TREE_BULK) is True
+    assert check_garble(moji, expected_script=None, context=GarbleContext.FLAT_MARKDOWN) is True
     # regression guard: plain English still not garbled
     clean = "This is a perfectly normal paragraph about insurance terms."
-    assert _tree_is_garbled([{"node_id": "1", "title": "S", "text": clean}]) is False
-    assert _flat_text_is_garbled(clean) is False
+    assert check_garble(_flatten_tree_text([{"node_id": "1", "title": "S", "text": clean}]), expected_script=None, context=GarbleContext.TREE_BULK) is False
+    assert check_garble(clean, expected_script=None, context=GarbleContext.FLAT_MARKDOWN) is False
 
 
 def test_d8_reordered_tree_still_fails_validate():

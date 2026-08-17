@@ -253,7 +253,7 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
             TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),  # initial — routes to flat path
         ],
     )
-    # _flat_text_is_garbled returns True for the original garbled markdown,
+    # check_garble(FLAT_MARKDOWN) returns True for the original garbled markdown,
     # False for the VLM-recovered markdown.
     garble_calls = []
 
@@ -280,7 +280,7 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_VLM_C7_flat_path_garble_still_garbled(monkeypatch, pdf_file):
-    """When VLM output also fails _flat_text_is_garbled, terminal rejection."""
+    """When VLM output also fails check_garble(FLAT_MARKDOWN), terminal rejection."""
     mocks, vlm_mock = _wire_vlm(
         monkeypatch,
         validate_side_effect=[

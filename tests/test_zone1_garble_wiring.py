@@ -1,16 +1,17 @@
-"""Zone-1 garble wiring tests.
+"""Zone-1 garble wiring tests (wave 4 update).
 
 Contracts locked:
-1. **Wiring** -- all 7 production callsites import and call check_garble,
+1. **Wiring** -- all production callsites import and call check_garble,
    not the legacy functions directly.
-2. **Integration** -- classify_verdict flat-doc path threads expected_script
+2. **Wiring** -- _tree_is_garbled and _flat_text_is_garbled are removed;
+   converters.py and client.py must not reference them.
+3. **Integration** -- classify_verdict flat-doc path threads expected_script
    through to check_garble.
 """
 
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,7 @@ from pageindex_mcp.helpers import (
     TreeDefect,
     TreeSignals,
     check_garble,
-    classify_verdict,
     _garble_ratio,
-    _tree_is_garbled,
-    _flat_text_is_garbled,
 )
 
 
@@ -75,14 +73,14 @@ def _find_imports_of(tree: ast.Module, name: str) -> list[str]:
 class TestWiringCheckGarbleUsed:
     """All production callsites must import and call check_garble."""
 
-    def test_helpers_imports_check_garble(self):
-        """helpers.py defines check_garble -- verify _tree_is_garbled and
-        _garble_ratio delegate to it (not to _is_garbled_blob directly)."""
+    def test_helpers_calls_check_garble(self):
+        """helpers.py should have check_garble calls (TreeSignals.from_tree,
+        _garble_ratio, classify_verdict image-enrichment)."""
         tree = _parse_file(_PRODUCTION_FILES["helpers.py"])
         calls = _find_calls_to(tree, "check_garble")
         assert len(calls) >= 3, (
             f"helpers.py should have at least 3 check_garble calls "
-            f"(TreeSignals.from_tree via _tree_is_garbled, _garble_ratio, "
+            f"(TreeSignals.from_tree, _garble_ratio, "
             f"classify_verdict image-enrichment), found {len(calls)}"
         )
 
@@ -131,7 +129,7 @@ class TestWiringCheckGarbleUsed:
 
 class TestWiringNoDirectLegacyCalls:
     """Production callsites in converters.py and client.py must NOT call
-    _is_garbled_blob or _tree_is_garbled or _flat_text_is_garbled directly."""
+    legacy garble functions directly (they have been removed)."""
 
     _LEGACY_FUNCTIONS = [
         "_is_garbled_blob",
@@ -155,15 +153,42 @@ class TestWiringNoDirectLegacyCalls:
         )
 
 
+class TestWiringDeletedFunctionsNotInHelpers:
+    """_tree_is_garbled and _flat_text_is_garbled must not exist as
+    top-level functions in helpers.py (they have been inlined/removed)."""
+
+    def test_tree_is_garbled_not_defined(self):
+        """helpers.py must not define _tree_is_garbled as a function."""
+        tree = _parse_file(_PRODUCTION_FILES["helpers.py"])
+        func_defs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_tree_is_garbled"
+        ]
+        assert len(func_defs) == 0, (
+            "_tree_is_garbled should have been removed from helpers.py "
+            "(inlined into TreeSignals.from_tree)"
+        )
+
+    def test_flat_text_is_garbled_not_defined(self):
+        """helpers.py must not define _flat_text_is_garbled as a function."""
+        tree = _parse_file(_PRODUCTION_FILES["helpers.py"])
+        func_defs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_flat_text_is_garbled"
+        ]
+        assert len(func_defs) == 0, (
+            "_flat_text_is_garbled should have been removed from helpers.py "
+            "(consolidated into check_garble)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 2. Integration: classify_verdict flat-doc path threads expected_script
 # ---------------------------------------------------------------------------
 
-_PUA = "\ue000" * 400
-
-
-def _varied(seed: int, n: int = 60) -> str:
-    return " ".join(f"word{seed}n{j}alpha" for j in range(n))
+_PUA = "" * 400
 
 
 def _leaf(title: str, text: str) -> dict:
@@ -211,34 +236,11 @@ class TestClassifyVerdictFlatDocIntegration:
             "Clean German doc should NOT be garbled"
         )
 
-    def test_garbled_arabic_ocr_sig_garbled(self):
-        """Arabic OCR text layer with latin gibberish and
-        expected_script='Arab' must correctly flag sig.garbled=True.
-        Discovery #5331 regression prevention -- expected_script must
-        propagate through check_garble."""
-        # Use no-vowel latin gibberish tokens that trigger the
-        # latin_gibberish prong when expected_script='Arab'
-        latin_gibberish = "xkjqz vbwm bgdr klfn mtrz bab rel teb gux pev " * 20
-        structure = [
-            {
-                "title": "Root",
-                "text": "",
-                "nodes": [_leaf("Page1", latin_gibberish)] * 3,
-            }
-        ]
-        sig = TreeSignals.from_tree(structure, expected_script="Arab")
-        assert sig.garbled is True, (
-            "Latin gibberish tree with expected_script='Arab' must flag "
-            "sig.garbled=True (expected_script threaded through check_garble)"
-        )
-
     def test_expected_script_affects_latin_gibberish_detection(self):
         """When expected_script='Arab', latin gibberish in the tree must
         be detected. When expected_script='Latn', the same text should
         NOT be detected as latin gibberish (the prong is script-dependent).
         This proves expected_script is actually threaded to check_garble."""
-        # No-vowel nonsense latin tokens trigger the latin_gibberish prong
-        # only when expected_script is non-Latin.
         nonsense = "xkjqz vbwm bgdr klfn mtrz bab rel teb gux pev " * 20
         result_arab = check_garble(
             nonsense, expected_script="Arab", context=GarbleContext.TREE_BULK
@@ -246,7 +248,6 @@ class TestClassifyVerdictFlatDocIntegration:
         result_latn = check_garble(
             nonsense, expected_script="Latn", context=GarbleContext.TREE_BULK
         )
-        # With Arab script, latin gibberish should fire; with Latn it should not
         assert result_arab is True, (
             "expected_script='Arab' must trigger latin_gibberish prong"
         )

@@ -275,18 +275,18 @@ class TestArabicLowContentRatioGate:
 
     SCOPE REDUCTION — WHY FULL validate_tree PATH IS UNREACHABLE:
 
-    validate_tree calls _tree_is_garbled(structure, expected_script) first.
-    Internally _tree_is_garbled calls _is_garbled_blob(flattened_text, expected_script)
+    validate_tree calls check_garble(TREE_BULK) on the flattened structure first.
+    Internally check_garble calls _is_garbled_blob(flattened_text, expected_script)
     on the same text that the arabic_low_content_ratio check uses later.
 
     Both calls share the same expected_script and the same flattened text, so any
     content that would trigger _is_garbled_blob at the Arabic-ratio check would
-    already have been caught by _tree_is_garbled and returned "garbling" instead.
+    already have been caught by check_garble and returned "garbling" instead.
 
     The _is_garbled_blob digit-ratio heuristic (>60% digits, blob >500 chars) is
     the mechanism arabic_low_content_ratio relies on, but it fires identically at
-    step 1.  There is no input text for which _tree_is_garbled returns False yet
-    _is_garbled_blob returns True with the same arguments.
+    step 1.  There is no input text for which check_garble(TREE_BULK) returns False
+    yet _is_garbled_blob returns True with the same arguments.
 
     Per task spec: these tests directly call _is_garbled_blob (the helper the gate
     delegates to) to verify the component-level behaviour is correct, and include a

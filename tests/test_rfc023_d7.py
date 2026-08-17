@@ -33,7 +33,7 @@ import base64
 import pageindex_mcp.client as client_mod
 from pageindex_mcp import converters
 from pageindex_mcp.client import _VLM_TESSERACT_FALLBACK_ENABLED
-from pageindex_mcp.helpers import _flat_text_is_garbled
+from pageindex_mcp.helpers import GarbleContext, check_garble
 
 _FITZ_PNG = f"data:image/png;base64,{base64.b64encode(b'FITZ_PNG_FAKE').decode()}"
 
@@ -43,7 +43,7 @@ _CLEAN_TEXT = "This is a perfectly ordinary page of legible English prose. " * 3
 
 def _vlm_tesseract_fallback(ocr_text: str, *, reason: str = "garbling") -> str:
     """Reproduces client.py:916-930's recovery/reason-override logic exactly."""
-    if ocr_text and not _flat_text_is_garbled(ocr_text):
+    if ocr_text and not check_garble(ocr_text, expected_script=None, context=GarbleContext.FLAT_MARKDOWN):
         reason = "node_count<3"
     return reason
 
@@ -129,4 +129,4 @@ class TestFitzRasterizationPathCoverage:
         result = await converters.tesseract_ocr_pdf_pages("/fake.pdf", ["eng"])
 
         assert result == _CLEAN_TEXT
-        assert not _flat_text_is_garbled(result)
+        assert not check_garble(result, expected_script=None, context=GarbleContext.FLAT_MARKDOWN)
