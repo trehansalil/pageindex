@@ -114,22 +114,26 @@ async def test_finding5_recompute_verdicts_flat_shape_reuses_persisted_verdict()
     mock_mc = MagicMock()
     mock_mc.get_object.side_effect = [_mock_get_object(flat_doc)]
 
-    saved_meta = {}
+    wv_calls = {}
 
-    def _capture_save_doc_meta(did, meta):
-        saved_meta["did"] = did
-        saved_meta["meta"] = meta
+    def _capture_write_verdict(did, verdict, verdict_reason, pv, vca, mlr, **kw):
+        wv_calls["did"] = did
+        wv_calls["verdict"] = verdict
+        wv_calls["verdict_reason"] = verdict_reason
+        wv_calls["max_leaf_ratio"] = mlr
+        wv_calls["content_class"] = kw.get("content_class")
 
     with (
         patch("pageindex_mcp.storage.get_minio", return_value=mock_mc),
-        patch("pageindex_mcp.storage.save_doc_meta", side_effect=_capture_save_doc_meta),
+        patch("pageindex_mcp.storage.write_verdict", side_effect=_capture_write_verdict),
+        patch("pageindex_mcp.storage.save_doc_meta"),
     ):
         await recompute_verdicts(doc_id="flat-doc-1")
 
-    assert saved_meta["meta"]["verdict"] == "PASS"
-    assert saved_meta["meta"]["verdict_reason"] == "cat_b_promoted"
-    assert saved_meta["meta"]["max_leaf_ratio"] == 0.2345
-    assert saved_meta["meta"]["content_class"] == "flat_table"
+    assert wv_calls["verdict"] == "PASS"
+    assert wv_calls["verdict_reason"] == "cat_b_promoted"
+    assert wv_calls["max_leaf_ratio"] == 0.2345
+    assert wv_calls["content_class"] == "flat_table"
 
 
 @pytest.mark.asyncio
@@ -164,19 +168,21 @@ async def test_finding5_recompute_verdicts_flat_shape_does_not_walk_blocks_as_tr
     mock_mc = MagicMock()
     mock_mc.get_object.side_effect = [_mock_get_object(flat_doc)]
 
-    saved_meta = {}
+    wv_calls = {}
 
-    def _capture_save_doc_meta(did, meta):
-        saved_meta["meta"] = meta
+    def _capture_write_verdict(did, verdict, verdict_reason, pv, vca, mlr, **kw):
+        wv_calls["max_leaf_ratio"] = mlr
+        wv_calls["verdict"] = verdict
 
     with (
         patch("pageindex_mcp.storage.get_minio", return_value=mock_mc),
-        patch("pageindex_mcp.storage.save_doc_meta", side_effect=_capture_save_doc_meta),
+        patch("pageindex_mcp.storage.write_verdict", side_effect=_capture_write_verdict),
+        patch("pageindex_mcp.storage.save_doc_meta"),
     ):
         await recompute_verdicts(doc_id="flat-doc-2")
 
-    assert saved_meta["meta"]["max_leaf_ratio"] == 0.6
-    assert saved_meta["meta"]["verdict"] == "MARGINAL"
+    assert wv_calls["max_leaf_ratio"] == 0.6
+    assert wv_calls["verdict"] == "MARGINAL"
 
 
 @pytest.mark.asyncio
@@ -212,20 +218,22 @@ async def test_finding5_recompute_verdicts_tree_shape_unaffected():
     mock_mc = MagicMock()
     mock_mc.get_object.side_effect = [_mock_get_object(tree_doc)]
 
-    saved_meta = {}
+    wv_calls = {}
 
-    def _capture_save_doc_meta(did, meta):
-        saved_meta["meta"] = meta
+    def _capture_write_verdict(did, verdict, verdict_reason, pv, vca, mlr, **kw):
+        wv_calls["verdict"] = verdict
+        wv_calls["verdict_reason"] = verdict_reason
+        wv_calls["max_leaf_ratio"] = mlr
+        wv_calls["content_class"] = kw.get("content_class")
 
     with (
         patch("pageindex_mcp.storage.get_minio", return_value=mock_mc),
-        patch("pageindex_mcp.storage.save_doc_meta", side_effect=_capture_save_doc_meta),
+        patch("pageindex_mcp.storage.write_verdict", side_effect=_capture_write_verdict),
+        patch("pageindex_mcp.storage.save_doc_meta"),
     ):
         await recompute_verdicts(doc_id="tree-doc-1")
 
-    # Tree docs keep going through classify_verdict / _tree_max_leaf_ratio
-    # over the real structure — only the flat-shape branch changes.
-    assert saved_meta["meta"]["verdict"] == expected_verdict
-    assert saved_meta["meta"]["verdict_reason"] == expected_reason
-    assert saved_meta["meta"]["max_leaf_ratio"] == round(expected_mlr, 4)
-    assert "content_class" not in saved_meta["meta"]
+    assert wv_calls["verdict"] == expected_verdict
+    assert wv_calls["verdict_reason"] == expected_reason
+    assert wv_calls["max_leaf_ratio"] == expected_mlr
+    assert wv_calls["content_class"] is None

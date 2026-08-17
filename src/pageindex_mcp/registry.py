@@ -319,12 +319,12 @@ async def list_all_doc_ids() -> set[str] | None:
 _LIST_SQL = """
 SELECT doc_id, doc_name, source_url, processed_at, content_class, node_count
 FROM   doc_registry
-WHERE  verdict != 'FAIL'
+WHERE  verdict NOT IN ('FAIL', '')
 ORDER  BY processed_at DESC
 LIMIT  $1 OFFSET $2;
 """
 
-_COUNT_SQL = "SELECT COUNT(*) FROM doc_registry WHERE verdict != 'FAIL';"
+_COUNT_SQL = "SELECT COUNT(*) FROM doc_registry WHERE verdict NOT IN ('FAIL', '');"
 
 # Unfiltered row count — deliberately does NOT apply the verdict != 'FAIL'
 # predicate. registry_backfill.py's empty-corpus guard (D3 / Property 7) needs
@@ -366,7 +366,7 @@ async def list_docs(limit: int = 100, offset: int = 0) -> list[dict] | None:
 
 
 async def count_docs() -> int | None:
-    """Queryable row count (excludes verdict='FAIL' rows).  Returns None on error."""
+    """Queryable row count (excludes verdict='FAIL' and verdict='' rows).  Returns None on error."""
     pool = get_pool()
     if pool is None:
         return None
@@ -402,7 +402,7 @@ async def count_docs_all() -> int | None:
 _STAGE_B_SQL = """
 SELECT doc_id, doc_name, source_url, processed_at, content_class
 FROM   doc_registry
-WHERE  verdict != 'FAIL'
+WHERE  verdict NOT IN ('FAIL', '')
   AND  search_text @@ plainto_tsquery('simple', $1)
 ORDER  BY ts_rank(search_text, plainto_tsquery('simple', $1)) DESC
 LIMIT  $2;
@@ -414,7 +414,7 @@ LIMIT  $2;
 _STAGE_B_FALLBACK_SQL = """
 SELECT doc_id, doc_name, source_url, processed_at, content_class
 FROM   doc_registry
-WHERE  verdict != 'FAIL'
+WHERE  verdict NOT IN ('FAIL', '')
 ORDER  BY processed_at DESC
 LIMIT  $1;
 """
@@ -534,7 +534,7 @@ async def stage_a_filter(
     if not resolved:
         return None  # no facet signal found → fall through to Stage B
 
-    clauses = ["verdict != 'FAIL'"] + [f"{col} = ${i + 1}" for i, col in enumerate(resolved)]
+    clauses = ["verdict NOT IN ('FAIL', '')"] + [f"{col} = ${i + 1}" for i, col in enumerate(resolved)]
     sql = _STAGE_A_SQL_TEMPLATE.format(where_clause=" AND ".join(clauses))
     params = list(resolved.values())
 

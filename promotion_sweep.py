@@ -29,7 +29,7 @@ from pageindex_mcp.registry import (
     sweep_candidates,
     upsert_doc,
 )
-from pageindex_mcp.storage import get_minio, save_doc_meta
+from pageindex_mcp.storage import get_minio, save_doc_meta, write_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,37 @@ async def run_sweep() -> dict:
                 )
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
-                meta = {
+                verdict_computed_at = datetime.now(UTC).isoformat()
+
+                # Zone-verdict-persistence: route verdict fields through
+                # write_verdict (the sole verdict-mutation entry point) so
+                # artifact and sidecar stay in sync.
+                write_verdict(
+                    doc_id,
+                    verdict,
+                    verdict_reason,
+                    CURRENT_PIPELINE_VERSION,
+                    verdict_computed_at,
+                    mlr,
+                    content_class=content_class or None,
+                )
+
+                # Non-verdict provenance through save_doc_meta (read-merge-write
+                # preserves existing non-verdict fields without overwriting the
+                # verdict fields just written by write_verdict).
+                provenance_meta = {
+                    "doc_id": doc_id,
+                    "doc_name": data.get("doc_name", ""),
+                    "source_url": data.get("source_url", ""),
+                    "processed_at": data.get("processed_at", ""),
+                }
+                if content_class:
+                    provenance_meta["content_class"] = content_class
+                save_doc_meta(doc_id, provenance_meta)
+
+                # Update registry with full metadata (including verdict fields
+                # for the temporal CAS guard in the UPSERT SQL).
+                registry_meta = {
                     "doc_id": doc_id,
                     "doc_name": data.get("doc_name", ""),
                     "source_url": data.get("source_url", ""),
@@ -110,15 +140,11 @@ async def run_sweep() -> dict:
                     "verdict_reason": verdict_reason,
                     "max_leaf_ratio": round(mlr, 4),
                     "pipeline_version": CURRENT_PIPELINE_VERSION,
-                    "verdict_computed_at": datetime.now(UTC).isoformat(),
+                    "verdict_computed_at": verdict_computed_at,
                 }
                 if content_class:
-                    meta["content_class"] = content_class
-
-                # Write sidecar
-                save_doc_meta(doc_id, meta)
-                # Update registry
-                await upsert_doc(meta)
+                    registry_meta["content_class"] = content_class
+                await upsert_doc(registry_meta)
 
                 updated += 1
                 logger.info("Sweep: %s -> %s (%s)", doc_id, verdict, verdict_reason or "clean")

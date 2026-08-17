@@ -393,3 +393,253 @@ class TestReadRegistryFieldsSidecarFallback:
         assert fields["verdict"] == "MARGINAL"
         # get_object called only once (artifact), no sidecar fallback
         assert mc.get_object.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. promotion_sweep routes verdict through write_verdict, not save_doc_meta
+# ---------------------------------------------------------------------------
+
+
+class TestPromotionSweepVerdictRouting:
+    """promotion_sweep.run_sweep must call write_verdict for verdict fields
+    and save_doc_meta must NOT receive verdict/verdict_reason fields."""
+
+    @pytest.mark.asyncio
+    async def test_sweep_calls_write_verdict_not_save_doc_meta_for_verdict(self):
+        """write_verdict must be called with the correct positional args;
+        save_doc_meta must NOT carry verdict or verdict_reason keys."""
+        import asyncio
+
+        sweep_meta = {
+            "doc_id": "sweep01",
+            "doc_name": "sweep.pdf",
+            "source_url": "",
+            "processed_at": "2026-01-01",
+            "structure": [{"title": "Ch1", "text": "hello", "nodes": []}],
+        }
+        sweep_json = json.dumps(sweep_meta).encode()
+
+        sidecar_data = {
+            "doc_id": "sweep01",
+            "verdict": "MARGINAL",
+            "verdict_reason": "leaf_concentration",
+        }
+        sidecar_json = json.dumps(sidecar_data).encode()
+
+        with (
+            patch("promotion_sweep.sweep_candidates", return_value=["sweep01"]),
+            patch("promotion_sweep.init_registry"),
+            patch("promotion_sweep.close_registry"),
+            patch("promotion_sweep.upsert_doc"),
+            patch("promotion_sweep.settings") as mock_settings,
+            patch("promotion_sweep.get_minio") as mock_get_minio,
+            patch("promotion_sweep.write_verdict") as mock_wv,
+            patch("promotion_sweep.save_doc_meta") as mock_sdm,
+            patch("promotion_sweep.classify_verdict", return_value=("PASS", "base_pass")),
+            patch("promotion_sweep._tree_max_leaf_ratio", return_value=(0, 0, 0.05)),
+        ):
+            mock_settings.postgres_dsn = "postgresql://test"
+            mock_settings.minio_bucket = "test-bucket"
+
+            mc = MagicMock()
+
+            def _get_object(bucket, key):
+                resp = MagicMock()
+                if key.endswith(".meta.json"):
+                    resp.read.return_value = sidecar_json
+                else:
+                    resp.read.return_value = sweep_json
+                return resp
+
+            mc.get_object.side_effect = _get_object
+            mock_get_minio.return_value = mc
+
+            from promotion_sweep import run_sweep
+
+            await run_sweep()
+
+            # write_verdict must be called with the 5 verdict fields
+            mock_wv.assert_called_once()
+            call_args = mock_wv.call_args
+            assert call_args[0][0] == "sweep01"      # doc_id
+            assert call_args[0][1] == "PASS"          # verdict
+            assert call_args[0][2] == "base_pass"     # verdict_reason
+            # pipeline_version is arg[3], verdict_computed_at is arg[4], mlr is arg[5]
+            assert isinstance(call_args[0][4], str)   # verdict_computed_at
+            assert call_args[0][5] == 0.05            # max_leaf_ratio
+
+            # save_doc_meta must NOT carry verdict or verdict_reason
+            mock_sdm.assert_called_once()
+            sdm_meta = mock_sdm.call_args[0][1]
+            assert "verdict" not in sdm_meta
+            assert "verdict_reason" not in sdm_meta
+
+
+# ---------------------------------------------------------------------------
+# 8. preprocess_client.recompute_verdicts calls write_verdict correctly
+# ---------------------------------------------------------------------------
+
+
+class TestRecomputeVerdictsWriteVerdict:
+    """preprocess_client.recompute_verdicts must call write_verdict with the
+    correct (verdict, verdict_reason, pipeline_version, verdict_computed_at,
+    max_leaf_ratio) arguments."""
+
+    @pytest.mark.asyncio
+    async def test_recompute_verdicts_calls_write_verdict(self):
+        tree_data = {
+            "doc_id": "rv01",
+            "doc_name": "recompute.pdf",
+            "source_url": "",
+            "processed_at": "2026-01-01",
+            "structure": [{"title": "Ch1", "text": "hello", "nodes": []}],
+        }
+        tree_json = json.dumps(tree_data).encode()
+
+        with (
+            patch("pageindex_mcp.storage.get_minio") as mock_get_minio,
+            patch("pageindex_mcp.storage.write_verdict") as mock_wv,
+            patch("pageindex_mcp.storage.save_doc_meta") as mock_sdm,
+            patch("pageindex_mcp.config._load_settings") as mock_ls,
+            patch("pageindex_mcp.helpers.classify_verdict", return_value=("PASS", "base_pass")),
+            patch("pageindex_mcp.helpers._tree_max_leaf_ratio", return_value=(0, 0, 0.04)),
+            patch("pageindex_mcp.helpers.validate_tree") as mock_vt,
+        ):
+            mock_ls.return_value = MagicMock(
+                minio_bucket="test-bucket",
+                registry_enabled=False,
+                postgres_dsn=None,
+            )
+            mock_vt.return_value = MagicMock(ok=True)
+
+            mc = MagicMock()
+            resp = MagicMock()
+            resp.read.return_value = tree_json
+            mc.get_object.return_value = resp
+            # list_objects returns one doc
+            obj = MagicMock()
+            obj.object_name = "processed/rv01.json"
+            mc.list_objects.return_value = [obj]
+            mock_get_minio.return_value = mc
+
+            from preprocess_client import recompute_verdicts
+
+            await recompute_verdicts()
+
+            mock_wv.assert_called_once()
+            call_args = mock_wv.call_args
+            assert call_args[0][0] == "rv01"          # doc_id
+            assert call_args[0][1] == "PASS"          # verdict
+            assert call_args[0][2] == "base_pass"     # verdict_reason
+            # pipeline_version is arg[3]
+            assert isinstance(call_args[0][3], int)
+            # verdict_computed_at is arg[4]
+            assert isinstance(call_args[0][4], str)
+            # max_leaf_ratio is arg[5]
+            assert call_args[0][5] == 0.04
+
+
+# ---------------------------------------------------------------------------
+# 9. registry_backfill._enrich_one and _heal_one never call classify_verdict
+#    or write_verdict — propagation only
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryBackfillPropagationOnly:
+    """_enrich_one and _heal_one must never call classify_verdict or
+    write_verdict — they are propagators, not computers."""
+
+    @pytest.mark.asyncio
+    async def test_enrich_one_never_calls_classify_verdict_or_write_verdict(self):
+        import asyncio
+
+        with (
+            patch("pageindex_mcp.registry_backfill.read_registry_fields") as mock_rrf,
+            patch("pageindex_mcp.registry_backfill.save_doc_meta"),
+            patch("pageindex_mcp.helpers.classify_verdict") as mock_cv,
+            patch("pageindex_mcp.storage.write_verdict") as mock_wv,
+        ):
+            mock_rrf.return_value = {
+                "doc_id": "enrich01",
+                "doc_name": "test.pdf",
+                "sha256": "abc",
+                "doc_description": "desc",
+                "verdict": "PASS",
+            }
+
+            from pageindex_mcp.registry_backfill import _enrich_one
+
+            sem = asyncio.Semaphore(1)
+            thin_meta = {"doc_id": "enrich01"}  # not fat — triggers enrichment
+            await _enrich_one("processed/enrich01.meta.json", thin_meta, sem)
+
+            mock_cv.assert_not_called()
+            mock_wv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_heal_one_never_calls_classify_verdict_or_write_verdict(self):
+        """_heal_one (inside _heal_orphans) must not call classify_verdict
+        or write_verdict."""
+
+        with (
+            patch("pageindex_mcp.registry_backfill.read_registry_fields") as mock_rrf,
+            patch("pageindex_mcp.registry_backfill.save_doc_meta"),
+            patch("pageindex_mcp.registry_backfill.upsert_doc"),
+            patch("pageindex_mcp.registry_backfill.get_minio") as mock_gm,
+            patch("pageindex_mcp.helpers.classify_verdict") as mock_cv,
+            patch("pageindex_mcp.storage.write_verdict") as mock_wv,
+        ):
+            mock_rrf.return_value = {
+                "doc_id": "heal01",
+                "doc_name": "test.pdf",
+                "sha256": "abc",
+                "doc_description": "desc",
+                "verdict": "PASS",
+                "verdict_reason": "base_pass",
+            }
+
+            from pageindex_mcp.registry_backfill import _heal_orphans
+
+            await _heal_orphans({"heal01": None})
+
+            mock_cv.assert_not_called()
+            mock_wv.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 10. SQL verdict filter excludes FAIL and empty string
+# ---------------------------------------------------------------------------
+
+
+class TestSqlVerdictFilter:
+    """list_docs, count_docs, and stage_a_filter SQL all exclude both
+    'FAIL' and '' (empty string) verdicts."""
+
+    def test_list_sql_excludes_fail_and_empty(self):
+        from pageindex_mcp.registry import _LIST_SQL
+
+        assert "verdict NOT IN ('FAIL', '')" in _LIST_SQL
+
+    def test_count_sql_excludes_fail_and_empty(self):
+        from pageindex_mcp.registry import _COUNT_SQL
+
+        assert "verdict NOT IN ('FAIL', '')" in _COUNT_SQL
+
+    def test_stage_b_sql_excludes_fail_and_empty(self):
+        from pageindex_mcp.registry import _STAGE_B_SQL
+
+        assert "verdict NOT IN ('FAIL', '')" in _STAGE_B_SQL
+
+    def test_stage_b_fallback_sql_excludes_fail_and_empty(self):
+        from pageindex_mcp.registry import _STAGE_B_FALLBACK_SQL
+
+        assert "verdict NOT IN ('FAIL', '')" in _STAGE_B_FALLBACK_SQL
+
+    def test_stage_a_filter_builds_fail_exclusion(self):
+        """stage_a_filter dynamically builds SQL with verdict NOT IN guard."""
+        import ast
+        import inspect
+        from pageindex_mcp.registry import stage_a_filter
+
+        source = inspect.getsource(stage_a_filter)
+        assert "verdict NOT IN ('FAIL', '')" in source

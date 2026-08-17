@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from .cache import job_status_get, job_status_set
 from .client import _SUPPORTED
 from .config import settings
+from .job_status import JobStatus, _set_job_status
 from .storage import upload_staging
 
 logger = logging.getLogger(__name__)
@@ -171,9 +172,13 @@ def create_upload_app() -> FastAPI:
             )
 
             now = datetime.now(UTC).isoformat()
+            # Zone-verdict-persistence: use validated state machine for the
+            # initial PENDING write. job_status_set still writes to the
+            # high-level cache; _set_job_status writes the Redis hash that
+            # the worker's state machine tracks.
             await job_status_set(
                 job_id,
-                {"status": "pending", "filename": filename, "submitted_at": now},
+                {"status": JobStatus.PENDING.value, "filename": filename, "submitted_at": now},
             )
 
             results.append({"job_id": job_id, "filename": filename})

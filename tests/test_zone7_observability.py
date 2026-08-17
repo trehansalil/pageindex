@@ -270,10 +270,15 @@ async def test_process_document_job_stamps_job_start_fields_on_success(monkeypat
     from pageindex_mcp import worker
 
     hset_calls = []
+    _store = {}
 
     class FakeRedis:
         async def hset(self, key, mapping):
             hset_calls.append(mapping)
+            _store.setdefault(key, {}).update(mapping)
+
+        async def hget(self, key, field):
+            return _store.get(key, {}).get(field)
 
         async def expire(self, key, ttl):
             pass
@@ -330,10 +335,15 @@ async def test_process_document_job_stamps_job_start_fields_on_converter_timeout
     from pageindex_mcp import worker
 
     hset_calls = []
+    _store2 = {}
 
     class FakeRedis:
         async def hset(self, key, mapping):
             hset_calls.append(mapping)
+            _store2.setdefault(key, {}).update(mapping)
+
+        async def hget(self, key, field):
+            return _store2.get(key, {}).get(field)
 
         async def expire(self, key, ttl):
             pass

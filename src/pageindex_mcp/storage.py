@@ -548,6 +548,15 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
     subset-payload callers (promotion_sweep, registry_backfill) from
     accidentally dropping fields they don't carry.
 
+    IMPORTANT (Zone-verdict-persistence): callers must NOT mutate verdict
+    fields (verdict, verdict_reason, pipeline_version, verdict_computed_at,
+    max_leaf_ratio) via this function directly. All verdict mutation must go
+    through ``write_verdict()`` below, which is the sole entry point for
+    verdict persistence -- it updates both the artifact and the sidecar
+    atomically. This function's CAS guard (``_verdict_cas_guard``) provides
+    a safety net, but callers should treat ``write_verdict`` as the
+    authoritative path.
+
     NOTE (RFC-006): the Postgres registry dual-write is NOT done here. This
     function is invoked from the ``pageindex`` fork inside the isolated
     ``converters_cli`` child subprocess, which never opens a registry pool — so
@@ -650,13 +659,17 @@ def write_verdict(
     max_leaf_ratio: float,
     content_class: str | None = None,
 ) -> None:
-    """Zone-8: atomic dual-write of verdict fields to artifact + sidecar.
+    """Sole entry point for verdict mutation (Zone-verdict-persistence).
 
-    Single entry point for verdict persistence.  Reads the existing processed
-    artifact (``processed/<id>.json`` or ``processed/<id>.flat.json``),
-    injects verdict fields, re-writes via ``_confirm_write_visible``, then
-    calls ``save_doc_meta`` with the full metadata so the sidecar carries the
-    same verdict.
+    Atomic dual-write of verdict fields to artifact + sidecar. All callers
+    that compute or reconcile verdicts (worker/client ingest, promotion_sweep,
+    preprocess_client recompute_verdicts) MUST use this function -- never
+    mutate verdict fields via ``save_doc_meta`` directly.
+
+    Reads the existing processed artifact (``processed/<id>.json`` or
+    ``processed/<id>.flat.json``), injects verdict fields, re-writes via
+    ``_confirm_write_visible``, then calls ``save_doc_meta`` with the full
+    metadata so the sidecar carries the same verdict.
 
     Must not change the ``processed/<id>.json`` shape beyond adding verdict
     fields.  ``save_doc_meta`` read-merge-write semantics are preserved for

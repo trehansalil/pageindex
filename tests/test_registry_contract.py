@@ -392,11 +392,11 @@ async def test_init_registry_is_idempotent(reg):
 
 @pytest.mark.integration
 async def test_upsert_insert_then_update_roundtrip(reg):
-    await registry.upsert_doc({"doc_id": "d1", "doc_name": "first.pdf"})
+    await registry.upsert_doc({"doc_id": "d1", "doc_name": "first.pdf", "verdict": "PASS"})
     assert await registry.count_docs() == 1
 
     # Same doc_id → ON CONFLICT update, not a second row.
-    await registry.upsert_doc({"doc_id": "d1", "doc_name": "renamed.pdf"})
+    await registry.upsert_doc({"doc_id": "d1", "doc_name": "renamed.pdf", "verdict": "PASS"})
     assert await registry.count_docs() == 1
     rows = await registry.list_docs()
     assert rows[0]["doc_name"] == "renamed.pdf"
@@ -405,10 +405,10 @@ async def test_upsert_insert_then_update_roundtrip(reg):
 @pytest.mark.integration
 async def test_list_docs_newest_first_and_paginates(reg):
     await registry.upsert_doc(
-        {"doc_id": "old", "doc_name": "old.pdf", "processed_at": "2026-01-01T00:00:00"}
+        {"doc_id": "old", "doc_name": "old.pdf", "processed_at": "2026-01-01T00:00:00", "verdict": "PASS"}
     )
     await registry.upsert_doc(
-        {"doc_id": "new", "doc_name": "new.pdf", "processed_at": "2026-07-10T00:00:00"}
+        {"doc_id": "new", "doc_name": "new.pdf", "processed_at": "2026-07-10T00:00:00", "verdict": "PASS"}
     )
 
     rows = await registry.list_docs(limit=10)
@@ -425,6 +425,7 @@ async def test_stage_b_ranks_relevant_and_excludes_irrelevant(reg):
             "doc_id": "liab",
             "doc_name": "AVB-PHV.pdf",
             "doc_description": "private liability insurance Haftpflicht terms",
+            "verdict": "PASS",
         }
     )
     await registry.upsert_doc(
@@ -432,6 +433,7 @@ async def test_stage_b_ranks_relevant_and_excludes_irrelevant(reg):
             "doc_id": "motor",
             "doc_name": "AKB.pdf",
             "doc_description": "motor vehicle Kfz insurance conditions",
+            "verdict": "PASS",
         }
     )
 
@@ -449,6 +451,7 @@ async def test_stage_b_recency_fallback_when_no_lexical_match(reg):
             "doc_name": "a.pdf",
             "processed_at": "2026-01-01T00:00:00",
             "doc_description": "alpha",
+            "verdict": "PASS",
         }
     )
     await registry.upsert_doc(
@@ -457,6 +460,7 @@ async def test_stage_b_recency_fallback_when_no_lexical_match(reg):
             "doc_name": "b.pdf",
             "processed_at": "2026-07-10T00:00:00",
             "doc_description": "beta",
+            "verdict": "PASS",
         }
     )
 
@@ -467,7 +471,7 @@ async def test_stage_b_recency_fallback_when_no_lexical_match(reg):
 
 @pytest.mark.integration
 async def test_delete_doc_is_idempotent(reg):
-    await registry.upsert_doc({"doc_id": "gone", "doc_name": "gone.pdf"})
+    await registry.upsert_doc({"doc_id": "gone", "doc_name": "gone.pdf", "verdict": "PASS"})
     assert await registry.count_docs() == 1
 
     await registry.delete_doc("gone")

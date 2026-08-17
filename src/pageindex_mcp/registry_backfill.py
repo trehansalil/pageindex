@@ -192,12 +192,24 @@ async def _enrich_one(key: str, meta: dict, sem: asyncio.Semaphore) -> tuple[str
     the full processed JSON once, then **self-heals** by rewriting a fat v2
     sidecar via ``save_doc_meta`` so the next reconcile tick is O(Δ).
     """
+    # Zone-verdict-persistence: _enrich_one is a PROPAGATOR of verdict fields,
+    # never a COMPUTER. Verdict fields pass through unmutated from whichever
+    # source (artifact or sidecar fallback) read_registry_fields resolved.
+    # The CAS guard in save_doc_meta protects against clobbering a newer verdict.
     async with sem:
         if _is_fat(meta):
+            logger.debug(
+                "_enrich_one: fat sidecar for %s — verdict passthrough (no recompute)",
+                meta.get("doc_id", "?"),
+            )
             return key, meta, False  # fast path — no full-JSON GET
         doc_id = meta.get("doc_id", "")
         rich = await asyncio.to_thread(read_registry_fields, doc_id, meta.get("content_class"))
         if rich:
+            logger.debug(
+                "_enrich_one: thin sidecar for %s — verdict passthrough from artifact/sidecar",
+                doc_id,
+            )
             meta.update(rich)  # now carries sha256, doc_description, node_count, facets
             await asyncio.to_thread(save_doc_meta, doc_id, meta)  # SELF-HEAL → v2 fat sidecar
             return key, meta, True
@@ -330,6 +342,11 @@ async def _heal_orphans(orphans: dict[str, str | None]) -> tuple[int, int]:
 
     sem = asyncio.Semaphore(10)
 
+    # Zone-verdict-persistence: _heal_one is a PROPAGATOR of verdict fields,
+    # never a COMPUTER. It must never call classify_verdict — it copies verdict
+    # fields unmutated from the authoritative source (artifact or sidecar
+    # fallback via read_registry_fields). The CAS guard in save_doc_meta
+    # protects against clobbering a newer verdict with an older one.
     async def _heal_one(doc_id: str, content_class: str | None) -> tuple[str | None, bool]:
         async with sem:
             rich = await asyncio.to_thread(read_registry_fields, doc_id, content_class)

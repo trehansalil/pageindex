@@ -41,6 +41,7 @@ from .metrics import (
     UPLOADS,
     bridge_redis_key,
 )
+from .job_status import JobStatus, _job_key, _set_job_status
 from .storage import delete_staging, download_staging, read_registry_fields
 
 logger = logging.getLogger(__name__)
@@ -157,8 +158,7 @@ REAP_GRACE = 120
 KILL_GRACE_SECONDS = 10.0
 
 
-def _job_key(job_id: str) -> str:
-    return f"pageindex:job:{job_id}"
+# _job_key imported from .job_status
 
 
 async def _dlq_push_on_final_attempt(
@@ -443,15 +443,14 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # Stamp a wall-clock start time (epoch seconds, NOT time.monotonic which is
         # process-relative and meaningless across the worker restart a crash causes)
         # so reap_stale_jobs can later detect a job orphaned mid-processing.
-        await redis.hset(
-            _job_key(job_id),
-            mapping={
-                "status": "processing",
-                "processing_started_at": str(int(time.time())),
-                **job_start_fields,
-            },
+        await _set_job_status(
+            redis,
+            job_id,
+            JobStatus.PROCESSING,
+            ttl=JOB_TTL,
+            processing_started_at=str(int(time.time())),
+            **job_start_fields,
         )
-        await redis.expire(_job_key(job_id), JOB_TTL)
         # Download staged file from MinIO to local temp
         await asyncio.to_thread(download_staging, staging_key, local_path)
         logger.info("Downloaded staged file to %s", local_path)
@@ -465,16 +464,15 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                 local_path, staging_key=staging_key, job_start_config=job_start_config
             )
         except ConverterOOMError as exc:
-            await redis.hset(
-                _job_key(job_id),
-                mapping={
-                    "status": "error",
-                    "reason": "converter_oom",
-                    "error": exc.stderr_tail,
-                    **job_start_fields,
-                },
+            await _set_job_status(
+                redis,
+                job_id,
+                JobStatus.ERROR,
+                ttl=JOB_TTL,
+                reason="converter_oom",
+                error=exc.stderr_tail,
+                **job_start_fields,
             )
-            await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             await _mirror_bridged_incr("uploads_total:error")
             logger.error("Converter child OOM: job=%s", job_id)
@@ -486,15 +484,14 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         except TimeoutError:
             CONVERTER_CHILD_TIMEOUT_TOTAL.inc()
             await _mirror_bridged_incr("converter_child_timeout_total")
-            await redis.hset(
-                _job_key(job_id),
-                mapping={
-                    "status": "error",
-                    "reason": "converter_timeout",
-                    **job_start_fields,
-                },
+            await _set_job_status(
+                redis,
+                job_id,
+                JobStatus.ERROR,
+                ttl=JOB_TTL,
+                reason="converter_timeout",
+                **job_start_fields,
             )
-            await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             await _mirror_bridged_incr("uploads_total:error")
             logger.error("Converter child timed out: job=%s", job_id)
@@ -504,16 +501,15 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                 reason = _classify_llm_failure(exc.stderr_tail)
             else:
                 reason = _CHILD_ERROR_REASON.get(exc.error_class or "", "converter_child_failed")
-            await redis.hset(
-                _job_key(job_id),
-                mapping={
-                    "status": "error",
-                    "reason": reason,
-                    "error": exc.stderr_tail,
-                    **job_start_fields,
-                },
+            await _set_job_status(
+                redis,
+                job_id,
+                JobStatus.ERROR,
+                ttl=JOB_TTL,
+                reason=reason,
+                error=exc.stderr_tail,
+                **job_start_fields,
             )
-            await redis.expire(_job_key(job_id), JOB_TTL)
             UPLOADS.labels(status="error").inc()
             await _mirror_bridged_incr("uploads_total:error")
             logger.error(
@@ -542,16 +538,20 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # class so downstream consumers can read the flat artifact. A normal
         # tree document has no content_class — the mapping is left unchanged so
         # we never write an empty/None content_class for it.
-        done_mapping: dict[str, str] = {
-            "status": "done",
+        content_class = result.get("content_class")
+        done_fields: dict[str, str] = {
             "doc_id": doc_id,
             **job_start_fields,
         }
-        content_class = result.get("content_class")
         if content_class:
-            done_mapping["content_class"] = content_class
-        await redis.hset(_job_key(job_id), mapping=done_mapping)
-        await redis.expire(_job_key(job_id), JOB_TTL)
+            done_fields["content_class"] = content_class
+        await _set_job_status(
+            redis,
+            job_id,
+            JobStatus.DONE,
+            ttl=JOB_TTL,
+            **done_fields,
+        )
         UPLOADS.labels(status="success").inc()
         await _mirror_bridged_incr("uploads_total:success")
         logger.info(
@@ -577,15 +577,14 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             cleanup_staging = True
         raise
     except Exception as exc:
-        await redis.hset(
-            _job_key(job_id),
-            mapping={
-                "status": "error",
-                "error": str(exc),
-                **job_start_fields,
-            },
+        await _set_job_status(
+            redis,
+            job_id,
+            JobStatus.ERROR,
+            ttl=JOB_TTL,
+            error=str(exc),
+            **job_start_fields,
         )
-        await redis.expire(_job_key(job_id), JOB_TTL)
         UPLOADS.labels(status="error").inc()
         await _mirror_bridged_incr("uploads_total:error")
         job_try = ctx.get("job_try", 1)
@@ -637,7 +636,7 @@ async def reap_stale_jobs(ctx: dict) -> None:
     reaped = 0
     async for key in redis.scan_iter(match=f"{_job_key('')}*"):
         data = await redis.hgetall(key)
-        if data.get("status") != "processing":
+        if data.get("status") != JobStatus.PROCESSING.value:
             continue
         try:
             started = int(data["processing_started_at"])
@@ -647,19 +646,25 @@ async def reap_stale_jobs(ctx: dict) -> None:
         age = now - started
         if age <= cutoff:
             continue
-        await redis.hset(
-            key,
-            mapping={
-                "status": "error",
-                "error": "worker_terminated",
-                "reason": (
+        # Extract job_id from key (format: pageindex:job:<job_id>)
+        reap_job_id = key.rsplit(":", 1)[-1] if isinstance(key, str) else key.decode().rsplit(":", 1)[-1]
+        try:
+            await _set_job_status(
+                redis,
+                reap_job_id,
+                JobStatus.ERROR,
+                ttl=JOB_TTL,
+                error="worker_terminated",
+                reason=(
                     "worker terminated before completion "
                     f"(stale processing job reaped after {age}s)"
                 ),
-                "reaped_at": str(now),
-            },
-        )
-        await redis.expire(key, JOB_TTL)
+                reaped_at=str(now),
+            )
+        except ValueError:
+            # Transition validation may fail if the status was already flipped
+            # by another reaper tick -- safe to skip.
+            continue
         reaped += 1
         logger.warning("Reaped stale processing job %s (age %ds)", key, age)
     if reaped:

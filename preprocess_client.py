@@ -222,7 +222,7 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     """Recompute verdict for one or all docs without re-ingestion (RFC-014 D3)."""
     import json
     from datetime import UTC, datetime
-    from pageindex_mcp.config import _load_settings
+    from pageindex_mcp.config import CURRENT_PIPELINE_VERSION, _load_settings
     from pageindex_mcp.helpers import (
         HARD_FAIL_DEFECTS,
         REASON_POLICY,
@@ -234,7 +234,7 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
         classify_verdict,
         validate_tree,
     )
-    from pageindex_mcp.storage import get_minio, save_doc_meta
+    from pageindex_mcp.storage import get_minio, save_doc_meta, write_verdict
 
     settings = _load_settings()
     mc = get_minio()
@@ -339,20 +339,33 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
                 verdict, verdict_reason = classify_verdict(structure, content_class, vt_result)
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
-            meta = {
+            verdict_computed_at = datetime.now(UTC).isoformat()
+
+            # Zone-verdict-persistence: route verdict fields through
+            # write_verdict (the sole verdict-mutation entry point) so
+            # artifact and sidecar stay in sync.
+            write_verdict(
+                did,
+                verdict,
+                verdict_reason,
+                CURRENT_PIPELINE_VERSION,
+                verdict_computed_at,
+                mlr,
+                content_class=content_class or None,
+            )
+
+            # Non-verdict provenance through save_doc_meta (read-merge-write
+            # preserves existing non-verdict fields without overwriting the
+            # verdict fields just written by write_verdict).
+            provenance_meta = {
                 "doc_id": did,
                 "doc_name": data.get("doc_name", ""),
                 "source_url": data.get("source_url", ""),
                 "processed_at": data.get("processed_at", ""),
-                "verdict": verdict,
-                "verdict_reason": verdict_reason,
-                "max_leaf_ratio": round(mlr, 4),
-                "verdict_computed_at": datetime.now(UTC).isoformat(),
             }
             if content_class:
-                meta["content_class"] = content_class
-
-            save_doc_meta(did, meta)
+                provenance_meta["content_class"] = content_class
+            save_doc_meta(did, provenance_meta)
             updated += 1
             print(f"  {did}: {verdict} ({verdict_reason or 'clean'})", flush=True)
         except Exception as e:
