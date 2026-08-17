@@ -221,10 +221,10 @@ The entire original Zone 1 spec (thread `expected_script` through the chain) is 
 | Zone | Status | Commit |
 |------|--------|--------|
 | 1 | DONE | 929dbd4 |
-| 2 | DONE | (this session) |
+| 2 | DONE | 0d9bda1 |
 | 3 | DONE | 16183db |
 | 4 | DONE | 744a534 |
 | 5 | ALREADY LANDED | verified — OCR flag split + primary-text fix both present |
 | 6 | DONE | d5f816f |
-| 7 | Not started | — |
+| 7 | DONE | (this session) |
 | 8 | DONE | prior session |

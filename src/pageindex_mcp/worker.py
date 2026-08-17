@@ -562,14 +562,16 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # registry upsert must therefore happen here in the long-lived parent,
         # where startup() opened the pool. Best-effort — never fail the job.
         #
-        # Zone-3: _upsert_registry_row now accepts an optional verdict_fields
-        # kwarg to close the MinIO re-read race window. The converter child's
-        # result dict does not yet carry verdict fields (only doc_id,
-        # content_class, peak_rss_kib, duration_ms); threading them requires
-        # expanding the converters_cli stdout contract — a future change.
-        # Until then, the existing read_registry_fields MinIO-read fallback
-        # remains the field source.
-        await _upsert_registry_row(doc_id, content_class)
+        # Zone-7: the converter child's stdout JSON now carries verdict_fields
+        # (verdict, verdict_reason, pipeline_version, max_leaf_ratio,
+        # verdict_computed_at) computed during index().  Threading them via the
+        # verdict_fields kwarg closes the MinIO re-read race window: even if
+        # the just-written artifact is not yet read-visible, the registry row
+        # gets the correct verdict data.  Falls back gracefully to the
+        # read_registry_fields MinIO-read path when verdict_fields is absent
+        # (older child binaries, or tree/flat persist paths that don't emit it).
+        verdict_fields = result.get("verdict_fields")
+        await _upsert_registry_row(doc_id, content_class, verdict_fields=verdict_fields)
         cleanup_staging = True  # terminal success
         return doc_id
     except (TimeoutError, ConverterOOMError, ConverterChildError) as exc:

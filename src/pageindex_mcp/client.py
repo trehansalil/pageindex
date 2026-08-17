@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import openai
 from pageindex import PageIndexClient
@@ -910,6 +911,12 @@ class CustomPageIndexClient(PageIndexClient):
         # None for a normal tree doc. converters_cli reads this after index()
         # returns so the worker job hash can carry content_class (FLAT-04-C1).
         self.last_content_class: str | None = None
+        # Zone-7: verdict fields computed during _persist_tree_result or
+        # _persist_flat_result, surfaced to converters_cli via the same
+        # getattr pattern as last_content_class so the worker parent can
+        # thread them into _upsert_registry_row, closing the MinIO re-read
+        # race window for verdict data.
+        self.last_verdict_fields: dict[str, Any] | None = None
         self._staging_key: str | None = None
 
     # ------------------------------------------------------------------
@@ -1915,6 +1922,15 @@ class CustomPageIndexClient(PageIndexClient):
             len(blocks),
         )
         self.last_content_class = content_class
+        # Zone-7: stash verdict fields so converters_cli can surface them
+        # in stdout JSON for the worker parent's _upsert_registry_row call.
+        self.last_verdict_fields = {
+            "verdict": f_verdict,
+            "verdict_reason": f_verdict_reason,
+            "pipeline_version": CURRENT_PIPELINE_VERSION,
+            "max_leaf_ratio": round(f_mlr, 4),
+            "verdict_computed_at": flat_meta["verdict_computed_at"],
+        }
         return doc_id
 
     async def _persist_tree_result(
@@ -2042,6 +2058,15 @@ class CustomPageIndexClient(PageIndexClient):
             doc_id,
             len(state.result.get("structure", [])),
         )
+        # Zone-7: stash verdict fields so converters_cli can surface them
+        # in stdout JSON for the worker parent's _upsert_registry_row call.
+        self.last_verdict_fields = {
+            "verdict": verdict,
+            "verdict_reason": verdict_reason,
+            "pipeline_version": CURRENT_PIPELINE_VERSION,
+            "max_leaf_ratio": round(mlr, 4),
+            "verdict_computed_at": _verdict_computed_at,
+        }
         return doc_id
 
     # ------------------------------------------------------------------
@@ -2061,6 +2086,7 @@ class CustomPageIndexClient(PageIndexClient):
         Supported extensions: .pdf, .md, .markdown, .txt, .docx, .pptx, .html
         """
         self.last_content_class = None
+        self.last_verdict_fields = None
 
         from .config import effective_config_snapshot
 

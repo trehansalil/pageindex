@@ -6,7 +6,9 @@ Usage:
 Stdout: one startup handshake JSON line (RFC-028 D0), then exactly one final
 JSON line at exit.
   handshake: {"handshake": true, "chunk_count": <int>, "is_docling_route": <bool>}
-  success: {"ok": true, "doc_id": "...", "peak_rss_kib": <int>, "duration_ms": <int>}
+  success: {"ok": true, "doc_id": "...", "peak_rss_kib": <int>, "duration_ms": <int>,
+            "content_class": "..." (optional, flat docs only),
+            "verdict_fields": {...} (optional, Zone-7)}
   failure: {"ok": false, "error": "<ExceptionClassName>", "message": "..."}
 
 Exit code: 0 on success, 1 on handled exception, signal-default on crash.
@@ -157,6 +159,13 @@ async def main() -> int:  # noqa: PLR0915
             content_class = getattr(client, "last_content_class", None)
             if content_class:
                 payload["content_class"] = content_class
+            # Zone-7: surface verdict fields computed during index() so the
+            # worker parent can thread them into _upsert_registry_row,
+            # closing the MinIO re-read race window for verdict data.
+            # Omitted when None (backward compat with older workers).
+            verdict_fields = getattr(client, "last_verdict_fields", None)
+            if verdict_fields:
+                payload["verdict_fields"] = verdict_fields
             _emit(payload)
             return 0
 

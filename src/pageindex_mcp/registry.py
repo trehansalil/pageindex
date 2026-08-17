@@ -312,6 +312,32 @@ async def list_all_doc_ids() -> set[str] | None:
         return None
 
 
+_LIST_ALL_DOC_IDS_WITH_TS_SQL = "SELECT doc_id, processed_at FROM doc_registry;"
+
+
+async def list_all_doc_ids_with_timestamps() -> dict[str, str] | None:
+    """Return ``{doc_id: processed_at}`` for every registry row.
+
+    Zone-7: the processed_at timestamp lets _delete_stale_rows apply an
+    age guard so freshly-ingested docs whose MinIO sidecar wasn't in the
+    stale listing snapshot are not incorrectly deleted.
+
+    Includes ALL rows regardless of verdict (matching list_all_doc_ids
+    semantics — deletion-drift reconciliation needs the true row set).
+    Returns ``None`` on any Postgres error so the caller can skip the
+    destructive sync safely.
+    """
+    pool = get_pool()
+    if pool is None:
+        return None
+    try:
+        rows = await pool.fetch(_LIST_ALL_DOC_IDS_WITH_TS_SQL)
+        return {r["doc_id"]: r["processed_at"] for r in rows}
+    except Exception as exc:
+        logger.error("registry: list_all_doc_ids_with_timestamps failed: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Read path — recent_documents (F5)
 # ---------------------------------------------------------------------------

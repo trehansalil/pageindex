@@ -214,6 +214,10 @@ async def test_reconcile_deletion_detection(reconcile_env, monkeypatch):
     monkeypatch.setattr(
         "pageindex_mcp.registry.list_all_doc_ids", AsyncMock(return_value={"d7", "gone1"})
     )
+    monkeypatch.setattr(
+        "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
+        AsyncMock(return_value={"d7": "2020-01-01T00:00:00+00:00", "gone1": "2020-01-01T00:00:00+00:00"}),
+    )
     reg_delete = AsyncMock()
     monkeypatch.setattr("pageindex_mcp.registry.delete_doc", reg_delete)
 

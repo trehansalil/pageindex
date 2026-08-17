@@ -299,7 +299,7 @@ async def test_process_document_job_stamps_job_start_fields_on_success(monkeypat
         assert job_start_config is not None
         return {"doc_id": "doc123"}
 
-    async def fake_upsert_registry_row(doc_id, content_class):
+    async def fake_upsert_registry_row(doc_id, content_class, *, verdict_fields=None):
         pass
 
     async def fake_delete_staging_thread(*args):
