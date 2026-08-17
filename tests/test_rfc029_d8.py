@@ -191,13 +191,13 @@ class TestClassifyVerdictFail:
         empty_node_contamination — no promotion branch overrides it."""
         # Arrange
         tree = _contaminated_tree()
-        _, validate_reason = validate_tree(tree)
+        gate_result = validate_tree(tree)
 
         # Act
         verdict, reason = classify_verdict(
             structure=tree,
             content_class="structured",
-            validate_result=validate_reason,
+            validate_result=gate_result,
         )
 
         # Assert
@@ -208,13 +208,13 @@ class TestClassifyVerdictFail:
         reason string, not a generic label."""
         # Arrange
         tree = _contaminated_tree()
-        _, validate_reason = validate_tree(tree)
+        gate_result = validate_tree(tree)
 
         # Act
         _, reason = classify_verdict(
             structure=tree,
             content_class="structured",
-            validate_result=validate_reason,
+            validate_result=gate_result,
         )
 
         # Assert
@@ -225,13 +225,13 @@ class TestClassifyVerdictFail:
         (the hysteresis band must not apply to hard-FAIL gates)."""
         # Arrange
         tree = _contaminated_tree()
-        _, validate_reason = validate_tree(tree)
+        gate_result = validate_tree(tree)
 
         # Act
         verdict, _ = classify_verdict(
             structure=tree,
             content_class="structured",
-            validate_result=validate_reason,
+            validate_result=gate_result,
             prior_verdict="PASS",
         )
 

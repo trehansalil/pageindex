@@ -24,7 +24,12 @@ import pytest
 
 import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
-from pageindex_mcp.helpers import _classify_image_verdict, classify_verdict
+from pageindex_mcp.helpers import (
+    TreeDefect,
+    TreeGateResult,
+    _classify_image_verdict,
+    classify_verdict,
+)
 
 # ---------------------------------------------------------------------------
 # Tasks 1-4: _classify_image_verdict unit tests
@@ -108,7 +113,7 @@ def test_classify_verdict_garbling_still_wins_over_image_standalone():
     verdict, reason = classify_verdict(
         _NON_EMPTY_STRUCTURE,
         "image_standalone",
-        "garbling",
+        TreeGateResult(ok=False, defect=TreeDefect.GARBLING),
         image_enrichment_ratio=1.0,
     )
     assert (verdict, reason) == ("FAIL", "garbling")

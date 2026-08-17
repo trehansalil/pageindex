@@ -292,22 +292,28 @@ class TestValidateTreeSingleDecideRtl:
         assert "RTL_REVERSAL" in body_source, "validate_tree must reference RTL_REVERSAL"
         assert "BIDI_DEGRADED" in body_source, "validate_tree must reference BIDI_DEGRADED"
 
-    def test_bidi_coherence_enforce_env_var_gates_bidi_degraded(self):
-        """The BIDI_COHERENCE_ENFORCE env var must gate the BIDI_DEGRADED path."""
-        filepath = os.path.join(_PROJECT_ROOT, "src/pageindex_mcp/helpers.py")
-        with open(filepath) as f:
-            source = f.read()
-        # Find the validate_tree function source
-        tree = ast.parse(source, filename=filepath)
-        func_node = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "validate_tree":
-                func_node = node
-                break
-        assert func_node is not None
+    def test_bidi_coherence_enforce_env_var_gates_bidi_degraded(self, monkeypatch):
+        """BIDI_COHERENCE_ENFORCE must gate the BIDI_DEGRADED gate function.
 
-        body_source = ast.get_source_segment(source, func_node)
-        assert "BIDI_COHERENCE_ENFORCE" in body_source, (
-            "validate_tree must reference BIDI_COHERENCE_ENFORCE env var "
-            "to gate the BIDI_DEGRADED path"
-        )
+        Zone-1 moved the gate bodies out of validate_tree into GATE_TABLE, so
+        the env var now lives in ``_gate_bidi_degraded``.  This is checked
+        behaviourally rather than by source inspection: previously the env var
+        appeared only in a comment, which the source-inspection assertion
+        could not distinguish from real gating.
+        """
+        from pageindex_mcp.helpers import GATE_TABLE, TreeDefect, _gate_bidi_degraded
+
+        # The gate is wired into the table under the BIDI_DEGRADED defect.
+        assert (_gate_bidi_degraded, TreeDefect.BIDI_DEGRADED) in GATE_TABLE
+
+        reversed_decision = MagicMock()
+        reversed_decision.reversed = True
+        args = (MagicMock(), [], None, None, reversed_decision)
+
+        monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "true")
+        fires, _ = _gate_bidi_degraded(*args)
+        assert fires is True, "gate must fire when enforcement is enabled"
+
+        monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "false")
+        fires, _ = _gate_bidi_degraded(*args)
+        assert fires is False, "BIDI_COHERENCE_ENFORCE=false must disable the gate"

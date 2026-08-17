@@ -10,6 +10,7 @@ import pytest
 
 from pageindex_mcp.helpers import (
     TreeDefect,
+    TreeGateResult,
     TreeSignals,
     VerdictThresholds,
     classify_verdict,
@@ -118,18 +119,18 @@ class TestHardFails:
         assert (verdict, reason) == ("FAIL", "zero_content")
 
     def test_garbling_hard_fail(self):
-        verdict, reason = classify_verdict(_single_leaf(), "flat_prose", "garbling")
+        verdict, reason = classify_verdict(_single_leaf(), "flat_prose", TreeGateResult(ok=False, defect=TreeDefect.GARBLING))
         assert (verdict, reason) == ("FAIL", "garbling")
 
     def test_empty_node_contamination_hard_fail(self):
         verdict, reason = classify_verdict(
-            _single_leaf(), "flat_prose", "empty_node_contamination(42%)"
+            _single_leaf(), "flat_prose", TreeGateResult(ok=False, defect=TreeDefect.EMPTY_NODE_CONTAMINATION, detail="empty_node_contamination(42%)")
         )
         assert verdict == "FAIL"
         assert reason.startswith("empty_node_contamination")
 
     def test_reordered_hard_fail(self):
-        verdict, reason = classify_verdict(_single_leaf(), "flat_prose", "reordered")
+        verdict, reason = classify_verdict(_single_leaf(), "flat_prose", TreeGateResult(ok=False, defect=TreeDefect.REORDERED))
         assert (verdict, reason) == ("FAIL", "reordered")
 
     def test_image_enrichment_rescue_overrides_max_leaf_ratio(self):
@@ -168,7 +169,7 @@ class TestPromotions:
 class TestCaps:
     def test_bidi_degraded_caps_pass_to_marginal(self):
         verdict, reason = classify_verdict(
-            _well_formed(), "flat_prose", "bidi_degraded"
+            _well_formed(), "flat_prose", TreeGateResult(ok=False, defect=TreeDefect.BIDI_DEGRADED)
         )
         assert (verdict, reason) == ("MARGINAL", "bidi_degraded")
 

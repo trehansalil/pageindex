@@ -14,6 +14,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
+from collections.abc import Callable
 from typing import Iterator
 
 from .cache import get_doc
@@ -85,6 +86,7 @@ class TreeGateResult:
     defect: TreeDefect
     detail: str = ""
     signals: TreeSignals | None = None
+    all_defects: frozenset[TreeDefect] = frozenset()
 
     def __str__(self) -> str:
         if self.detail:
@@ -94,8 +96,9 @@ class TreeGateResult:
     def __iter__(self) -> Iterator[bool | str]:
         """Yield (ok, reason_str) for backward-compat tuple unpacking.
 
-        ``signals`` is intentionally excluded from iteration so that
-        ``ok, reason = validate_tree(...)`` keeps working at all call sites.
+        ``signals`` and ``all_defects`` are intentionally excluded from
+        iteration so that ``ok, reason = validate_tree(...)`` keeps
+        working at all call sites.
         """
         yield self.ok
         yield str(self)
@@ -1482,7 +1485,224 @@ def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
 # as a single decide_rtl call reused for both RTL_REVERSAL and BIDI_DEGRADED gates.
 
 
-def validate_tree(  # noqa: C901
+# ---------------------------------------------------------------------------
+# Zone-1: Declarative gate table — exhaustive evaluation, all co-firing
+# defects collected.  Table order defines primary-defect severity priority
+# (garbling highest, suspect_density lowest).  Gate 11
+# (ARABIC_LOW_CONTENT_RATIO) is deprecated/dead — not included.
+# ---------------------------------------------------------------------------
+
+
+def _gate_garbling(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 1: bulk garbling."""
+    return (sig.garbled, "")
+
+
+def _gate_node_count_low(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 2: node_count < 3."""
+    return (sig.node_count < 3, "")
+
+
+def _gate_depth_low(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 3: depth < 2."""
+    return (sig.depth < 2, "")
+
+
+def _gate_node_garbling(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 4: per-node garble ratio (RFC-018 D3b)."""
+    if sig.node_count <= 0:
+        return (False, "")
+    doc_script = _infer_script(sig.flat_text)
+    ratio = (
+        _garble_check_nodes(structure, page_script=doc_script, expected_script=expected_script)
+        / sig.node_count
+    )
+    fires = ratio > _GARBLE_NODE_RATIO_THRESHOLD
+    return (fires, "")
+
+
+def _gate_reordered(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 5: content-ordering regression (RFC-015 D2)."""
+    return (sig.is_reordered, "")
+
+
+def _gate_rtl_reversal(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 6: reversed Arabic text (RFC-027 D3).
+
+    Consumes the pre-computed rtl_decision from Zone 3's cached
+    decide_rtl call — does NOT re-call decide_rtl.
+    """
+    fires = bool(rtl_decision and rtl_decision.reversed)
+    return (fires, "")
+
+
+def _gate_bidi_degraded(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 7: bidi coherence degradation (RFC-030 D5 / RFC-033 D2 Part B).
+
+    Consumes the pre-computed rtl_decision — does NOT re-call decide_rtl.
+
+    BIDI_COHERENCE_ENFORCE (default ``true``) gates this gate: when set to
+    anything other than ``true`` the gate is disabled outright and
+    BIDI_DEGRADED can never enter ``all_defects``.  Enforcement here is
+    verdict-only and never persistence-gating: REASON_POLICY maps
+    BIDI_DEGRADED to CAP_MARGINAL, and BIDI_DEGRADED is deliberately absent
+    from HARD_FAIL_DEFECTS, so classify_verdict caps a would-be PASS at
+    MARGINAL and never upgrades a worse verdict.
+
+    Zone-3 deleted ``_check_bidi_coherence``; its sole signal was
+    ``decide_rtl(...).reversed``, which is also the RTL_REVERSAL signal.
+    Because the gate table is evaluated exhaustively, both gates now fire
+    together on reversed text: RTL_REVERSAL wins as the primary defect
+    (earlier in table order) while BIDI_DEGRADED is recorded in
+    ``all_defects`` instead of being masked.  Additional bidi-degradation
+    heuristics that detect degradation without full reversal belong here
+    and must respect the same env var.
+    """
+    if os.environ.get("BIDI_COHERENCE_ENFORCE", "true").lower() != "true":
+        return (False, "")
+    fires = bool(rtl_decision and rtl_decision.reversed)
+    return (fires, "")
+
+
+def _gate_empty_node_contamination(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 8: zero-body contamination (RFC-029 D10)."""
+    _total_non_root, _empty_leaf, _empty_non_leaf = _count_empty_body_nodes(structure)
+    if _total_non_root <= 0:
+        return (False, "")
+    _empty_fraction = (_empty_leaf + _empty_non_leaf) / _total_non_root
+    if _empty_fraction > _EMPTY_NODE_FRACTION_THRESHOLD:
+        detail = (
+            f"fraction={_empty_fraction:.2f}"
+            f",empty_leaf={_empty_leaf}"
+            f",empty_non_leaf={_empty_non_leaf}"
+            f",total_non_root={_total_non_root}"
+        )
+        return (True, detail)
+    return (False, "")
+
+
+def _gate_low_content_density(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 9: content-density floor (RFC-029 D1, Task 3.1).
+
+    Only fires when node count >= 200.
+    """
+    if sig.node_count < 200:
+        return (False, "")
+    chars_per_node = len(sig.flat_text) / sig.node_count
+    if chars_per_node < _RFC029_MIN_CHARS_PER_NODE:
+        detail = (
+            f"chars_per_node={chars_per_node:.1f}"
+            f",threshold={_RFC029_MIN_CHARS_PER_NODE:.1f}"
+        )
+        return (True, detail)
+    return (False, "")
+
+
+def _gate_suspect_density(
+    sig: TreeSignals,
+    structure: list,
+    expected_script: str | None,
+    page_count: int | None,
+    rtl_decision: RtlDecision | None,
+) -> tuple[bool, str]:
+    """Gate 10: scanned-density floor (RFC-029 D2, Task 3.3).
+
+    Only fires when page_count is provided and positive.
+    """
+    if page_count is None or page_count <= 0:
+        return (False, "")
+    chars_per_page = len(sig.flat_text) / page_count
+    if chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR:
+        return (True, f"chars_per_page={chars_per_page:.1f}")
+    return (False, "")
+
+
+# Type alias for gate function signature.
+_GateFn = Callable[
+    [TreeSignals, list, str | None, int | None, RtlDecision | None],
+    tuple[bool, str],
+]
+
+# Declarative gate table: (check_fn, TreeDefect) pairs.  Table order
+# defines primary-defect severity (first firing entry = primary defect).
+# ALL gates are always evaluated — no early return.  10 gates total
+# (ARABIC_LOW_CONTENT_RATIO is deprecated/dead and excluded).
+GATE_TABLE: list[tuple[_GateFn, TreeDefect]] = [
+    (_gate_garbling, TreeDefect.GARBLING),
+    (_gate_node_count_low, TreeDefect.NODE_COUNT_LOW),
+    (_gate_depth_low, TreeDefect.DEPTH_LOW),
+    (_gate_node_garbling, TreeDefect.NODE_GARBLING),
+    (_gate_reordered, TreeDefect.REORDERED),
+    (_gate_rtl_reversal, TreeDefect.RTL_REVERSAL),
+    (_gate_bidi_degraded, TreeDefect.BIDI_DEGRADED),
+    (_gate_empty_node_contamination, TreeDefect.EMPTY_NODE_CONTAMINATION),
+    (_gate_low_content_density, TreeDefect.LOW_CONTENT_DENSITY),
+    (_gate_suspect_density, TreeDefect.SUSPECT_DENSITY),
+]
+
+# Severity rank per defect, derived from GATE_TABLE order (lower = more
+# severe).  Used by classify_verdict to pick a deterministic reason when a
+# hard-fail defect co-fires behind a less-severe primary defect.
+_GATE_PRIORITY: dict[TreeDefect, int] = {
+    defect: idx for idx, (_fn, defect) in enumerate(GATE_TABLE)
+}
+
+
+def validate_tree(
     structure: list,
     expected_script: str | None = None,
     page_count: int | None = None,
@@ -1491,12 +1711,14 @@ def validate_tree(  # noqa: C901
 
     Returns a ``TreeGateResult`` (iterable as ``(ok, reason_str)`` for
     backward-compat tuple unpacking).  The result carries a ``signals``
-    field with the :class:`TreeSignals` computed during gating so that
+    field with the :class:`TreeSignals` computed during gating, and an
+    ``all_defects`` field with every co-firing defect, so that
     ``classify_verdict`` can consume them without re-derivation.
 
-    Fails (priority order) on garbling, node_count < 3, depth < 2,
-    node_garbling, reordered, rtl_reversal, bidi_degraded,
-    empty_node_contamination, low_content_density, suspect_density.
+    Evaluates all 10 gates exhaustively via :data:`GATE_TABLE`.  The
+    primary defect (``defect`` field) is the first firing gate in table
+    order (garbling highest severity, suspect_density lowest).
+    ``all_defects`` is the frozenset of every firing gate's defect.
 
     Gate 11 (arabic_low_content_ratio) was removed: it is a strict subset
     of gate 1 (_tree_is_garbled already tests _is_garbled_blob on the
@@ -1511,109 +1733,31 @@ def validate_tree(  # noqa: C901
         garble_threshold=th.garble_threshold,
     )
 
-    if sig.garbled:
-        return TreeGateResult(False, TreeDefect.GARBLING, signals=sig)
-    if sig.node_count < 3:
-        return TreeGateResult(False, TreeDefect.NODE_COUNT_LOW, signals=sig)
-    if sig.depth < 2:
-        return TreeGateResult(False, TreeDefect.DEPTH_LOW, signals=sig)
-    # RFC-018 D3b: per-node garble ratio — catches documents where a minority of
-    # nodes are garbled but the flattened full-text dilutes below the bulk gate.
-    doc_script = _infer_script(sig.flat_text)
-    if (
-        sig.node_count > 0
-        and (
-            _garble_check_nodes(structure, page_script=doc_script, expected_script=expected_script)
-            / sig.node_count
-        )
-        > _GARBLE_NODE_RATIO_THRESHOLD
-    ):
-        return TreeGateResult(False, TreeDefect.NODE_GARBLING, signals=sig)
-    # RFC-015 D2 (HR5 tightening): reject content-ordering regressions. A caller
-    # surfaces this reason as a low_quality_tree error rather than persisting.
-    if sig.is_reordered:
-        return TreeGateResult(False, TreeDefect.REORDERED, signals=sig)
-    # RFC-027 D3: additive prong — correctly-encoded but reversed Arabic text
-    # passes every check above (no garbling, real node/depth counts, in-order
-    # start_indexes) but reads backwards. Checked last so it never shadows the
-    # existing garble/structure gates it is additive to.
     # Zone-3: single decide_rtl call reused for RTL_REVERSAL and BIDI_DEGRADED.
     _rtl_decision = decide_rtl(sig.flat_text) if sig.flat_text else None
-    if _rtl_decision and _rtl_decision.reversed:
-        return TreeGateResult(False, TreeDefect.RTL_REVERSAL, signals=sig)
-    # RFC-030 D5 / RFC-033 D2 Part B: bidi coherence gate — catches
-    # visual-order Arabic (reversed morphology) that the RTL_REVERSAL gate
-    # does not detect. BIDI_COHERENCE_ENFORCE now defaults to true, promoted
-    # on Task 9.1's scoped re-ingest measurement of `bidi_coherence_violations`
-    # (docs with reversed-heading signatures, post the Task 1.11 heading
-    # guard) -- that measurement is a LOWER BOUND on the clean-doc
-    # false-positive rate, not a corpus-wide estimate, since the sample was
-    # drawn from the population already known to be affected. It is not yet
-    # tight enough to justify persistence-gating (RFC-033 D2 requires <2% FP
-    # across a full corpus cycle for that), so enforcement here is
-    # verdict-only: set `bidi_degraded` (surfaced as the "bidi_degraded"
-    # validate_reason) instead of raising LowQualityTreeError.
-    # classify_verdict caps the returned verdict at MARGINAL when it sees
-    # this reason; persistence is never gated on it.
-    # Zone-3: _check_bidi_coherence DELETED — its sole signal was
-    # decide_rtl(...).reversed, already handled by the RTL_REVERSAL gate
-    # above. BIDI_COHERENCE_ENFORCE env var gating preserved: if future
-    # bidi-degradation heuristics (beyond reversed detection) are added,
-    # they should fire here and respect this env var.
-    # NOTE: with a single decide_rtl call, BIDI_DEGRADED is unreachable
-    # from the reversed path (already caught above). The gate placeholder
-    # remains for additional bidi heuristics that detect degradation without
-    # full reversal.
-    # RFC-029 D10: zero-body contamination gate — checked last so it is
-    # additive and never shadows the existing gates above.
-    _total_non_root, _empty_leaf, _empty_non_leaf = _count_empty_body_nodes(structure)
-    if _total_non_root > 0:
-        _empty_fraction = (_empty_leaf + _empty_non_leaf) / _total_non_root
-        if _empty_fraction > _EMPTY_NODE_FRACTION_THRESHOLD:
-            return TreeGateResult(
-                False,
-                TreeDefect.EMPTY_NODE_CONTAMINATION,
-                f"fraction={_empty_fraction:.2f}"
-                f",empty_leaf={_empty_leaf}"
-                f",empty_non_leaf={_empty_non_leaf}"
-                f",total_non_root={_total_non_root}",
-                signals=sig,
-            )
-    # RFC-029 D1 (Task 3.1): content-density gate — only when node count >= 200.
-    # The target failure mode is scanned-garble trees with many hundreds of shell
-    # nodes, each carrying near-zero extracted text (e.g. 2 chars/node over 300
-    # nodes = 600 chars total for a multi-article law — clearly a failed extraction).
-    # Setting the floor at 200 nodes avoids false-positives on real compact documents
-    # and synthetic test fixtures (which never approach that node count).
-    # The node_count<3 / depth<2 gates above already handle truly degenerate trees.
-    if sig.node_count >= 200:
-        chars_per_node = len(sig.flat_text) / sig.node_count
-        if chars_per_node < _RFC029_MIN_CHARS_PER_NODE:
-            return TreeGateResult(
-                False,
-                TreeDefect.LOW_CONTENT_DENSITY,
-                f"chars_per_node={chars_per_node:.1f}"
-                f",threshold={_RFC029_MIN_CHARS_PER_NODE:.1f}",
-                signals=sig,
-            )
-    # RFC-029 D2 (Task 3.3): scanned-density floor — only when page_count is
-    # provided and positive (guard against zero-page edge-cases).
-    if page_count is not None and page_count > 0:
-        chars_per_page = len(sig.flat_text) / page_count
-        if chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR:
-            return TreeGateResult(
-                False,
-                TreeDefect.SUSPECT_DENSITY,
-                f"chars_per_page={chars_per_page:.1f}",
-                signals=sig,
-            )
-    # NOTE: Gate 11 (arabic_low_content_ratio) was here but has been removed.
-    # It tested _is_garbled_blob(full_text) which is a strict subset of gate 1
-    # (_tree_is_garbled already calls _is_garbled_blob on the flattened text).
-    # Gate 1 fires first when the blob is garbled, making gate 11 unreachable.
-    # TreeDefect.ARABIC_LOW_CONTENT_RATIO is kept in the StrEnum and
-    # REASON_POLICY for backward-compat with persisted verdict_reason strings.
-    return TreeGateResult(True, TreeDefect.OK, signals=sig)
+
+    # Evaluate ALL gates exhaustively — collect every firing defect.
+    fired: list[tuple[TreeDefect, str]] = []
+    for gate_fn, defect in GATE_TABLE:
+        fires, detail = gate_fn(sig, structure, expected_script, page_count, _rtl_decision)
+        if fires:
+            fired.append((defect, detail))
+
+    if fired:
+        primary_defect, primary_detail = fired[0]
+        return TreeGateResult(
+            ok=False,
+            defect=primary_defect,
+            detail=primary_detail,
+            signals=sig,
+            all_defects=frozenset(d for d, _ in fired),
+        )
+    return TreeGateResult(
+        ok=True,
+        defect=TreeDefect.OK,
+        signals=sig,
+        all_defects=frozenset(),
+    )
 
 
 # ── RFC-014 D1: verdict computation helpers ─────────────────────────────────────
@@ -1815,7 +1959,7 @@ def _defect_from_reason_str(reason: str | None) -> TreeDefect:
 def classify_verdict(  # noqa: C901
     structure: list,
     content_class: str,
-    validate_result: TreeGateResult | str | None,
+    validate_result: TreeGateResult | None,
     image_enrichment_ratio: float | None = None,
     prior_verdict: str | None = None,
     inspector_class: str | None = None,
@@ -1823,10 +1967,18 @@ def classify_verdict(  # noqa: C901
 ) -> tuple[str, str]:
     """Grouped-rule verdict engine.
 
-    GROUP 1 -- HARD_FAILs: any defect in :data:`HARD_FAIL_DEFECTS` returns
-               FAIL immediately (takes priority over all content-class
-               dispatch, including image_standalone).  Additionally,
-               ``sig.is_reordered`` acts as an independent fallback.
+    GROUP 1 -- HARD_FAILs: any defect in :data:`HARD_FAIL_DEFECTS` — whether
+               it is the primary defect or merely present in ``all_defects``
+               behind a less-severe primary — returns FAIL immediately
+               (takes priority over all content-class dispatch, including
+               image_standalone).  There is no independent
+               ``sig.is_reordered`` hard-fail: exhaustive gate evaluation
+               always puts ``TreeDefect.REORDERED`` in ``all_defects`` when
+               it fires, so the verdict engine can never disagree with
+               validate_tree's defect enum.  Only the ``None`` path (flat
+               docs, where no gate ever ran) lifts ``sig.is_reordered`` into
+               the defect enum, and even then the FAIL is issued by the
+               HARD_FAIL_DEFECTS dispatch.
     DISPATCH - image_standalone: own verdict logic after hard-fails clear.
     GROUP 2 -- PROMOTIONS: image-enrichment rescue, base PASS, category
                promotions (cat_a/b/c), small-doc exemption, MARGINAL fallback.
@@ -1834,11 +1986,10 @@ def classify_verdict(  # noqa: C901
                to every PASS-returning branch in Group 2.
 
     ``validate_result`` accepts a :class:`TreeGateResult` (preferred) which
-    carries both the defect enum and pre-computed :class:`TreeSignals`,
-    eliminating redundant re-derivation.  A plain ``str`` (the legacy
-    ``validate_reason`` format) is still accepted for backward compatibility
-    with callers that have not yet been updated (e.g. promotion_sweep.py,
-    preprocess_client.py).
+    carries both the defect enum, pre-computed :class:`TreeSignals`, and
+    ``all_defects`` (co-firing defects from exhaustive gate evaluation),
+    eliminating redundant re-derivation.  ``None`` is accepted for flat
+    docs (client.py flat-doc path).
 
     The image-enrichment rescue is intentionally positioned before the
     max_leaf_ratio structural hard-fail: flat image-enriched documents render
@@ -1850,35 +2001,67 @@ def classify_verdict(  # noqa: C901
     # ── Pre-compute thresholds (cached per-process) ──────────────────────
     th = _get_verdict_thresholds()
 
-    # Zero-content fast path (before signals, which need non-empty tree)
-    if _tree_node_count(structure) == 0 or len(_flatten_tree_text(structure).strip()) == 0:
-        return "FAIL", "zero_content"
-
     # ── Normalize validate_result into (defect, validate_reason, signals) ──
+    # Zone-1: the bare-string compat path was removed.  A string such as
+    # "garbling" used to be parsed for defect semantics; after the enum
+    # migration it would silently fall through to the OK branch and drop the
+    # defect on the floor (a would-be FAIL graded on structure alone).  Reject
+    # loudly instead of losing the signal.
+    if validate_result is not None and not isinstance(validate_result, TreeGateResult):
+        raise TypeError(
+            "classify_verdict(validate_result=...) expects a TreeGateResult or "
+            f"None, got {type(validate_result).__name__!s}; the bare-string "
+            "compat path was removed (Zone-1)."
+        )
     if isinstance(validate_result, TreeGateResult):
         defect = validate_result.defect
         validate_reason: str | None = str(validate_result) if validate_result.defect != TreeDefect.OK else None
         sig = validate_result.signals
-    elif isinstance(validate_result, str):
-        validate_reason = validate_result
-        defect = _defect_from_reason_str(validate_result)
-        sig = None
+        _all_defects = validate_result.all_defects
     else:
         validate_reason = None
         defect = TreeDefect.OK
         sig = None
+        _all_defects = frozenset()
 
     # Compute signals if not provided by TreeGateResult
     if sig is None:
         sig = TreeSignals.from_tree(structure, expected_script=expected_script, garble_threshold=th.garble_threshold)
+
+    # Zero-content fast path — reads sig.node_count / sig.flat_text, which
+    # come from the TreeGateResult when one was supplied (no re-computation)
+    # and from the single TreeSignals.from_tree above otherwise (flat docs).
+    if sig.node_count == 0 or len(sig.flat_text.strip()) == 0:
+        return "FAIL", "zero_content"
+
+    # No gate result (flat-doc path): no gate ever ran, so the ordering
+    # signal has to be lifted into the defect enum here.  This is a
+    # normalisation, not a second decider — the FAIL itself is still issued
+    # by the HARD_FAIL_DEFECTS dispatch below, so classify_verdict can never
+    # produce a reason that disagrees with the TreeDefect enum.  When a
+    # TreeGateResult *was* supplied, sig.is_reordered is deliberately
+    # ignored: validate_tree's REORDERED gate is the sole authority.
+    if validate_result is None and sig.is_reordered:
+        defect = TreeDefect.REORDERED
+        _all_defects = frozenset({TreeDefect.REORDERED})
 
     # ── GROUP 1: HARD_FAILs (any one is terminal) ────────────────────────
     # Hard-fails take priority over all content-class dispatch, including
     # image_standalone (a garbled image doc still FAILs).
     if defect in HARD_FAIL_DEFECTS:
         return "FAIL", validate_reason or defect.value
-    if sig.is_reordered:
-        return "FAIL", "reordered"
+    # Co-firing hard-fails: the primary defect is only the highest-severity
+    # gate in table order, which is not necessarily a hard-fail (e.g.
+    # rtl_reversal outranks suspect_density).  Exhaustive gate evaluation
+    # means such a masked hard-fail is still recorded in ``all_defects``;
+    # honour it rather than letting the softer primary defect hide it.
+    # ``sig.is_reordered`` is deliberately NOT re-checked here — REORDERED
+    # reaches FAIL through HARD_FAIL_DEFECTS only, so classify_verdict can
+    # never disagree with validate_tree's defect enum.
+    _masked_hard_fails = _all_defects & HARD_FAIL_DEFECTS
+    if _masked_hard_fails:
+        _worst = min(_masked_hard_fails, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
+        return "FAIL", _worst.value
 
     # ── Content-class dispatch: image_standalone ─────────────────────────
     # image_standalone has its own verdict logic; tree-shape metrics are

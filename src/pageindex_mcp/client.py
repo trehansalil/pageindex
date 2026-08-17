@@ -1247,6 +1247,14 @@ class CustomPageIndexClient(PageIndexClient):
             # unpack for legacy string-based branching below.
             gate_result: TreeGateResult | None = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
             ok, reason = _vt_raw
+            # Zone-1: log all co-firing defects from exhaustive gate evaluation.
+            if gate_result and gate_result.all_defects:
+                logger.info(
+                    "validate_tree %s: primary=%s, all_defects=%s",
+                    filename,
+                    gate_result.defect.value,
+                    sorted(d.value for d in gate_result.all_defects),
+                )
             # Zone-5: typed first_defect — write-once per extraction attempt.
             # Captures the ORIGINAL validate_tree defect before any recovery
             # branch overwrites `reason`.  Used for routing decisions and
@@ -2180,6 +2188,10 @@ class CustomPageIndexClient(PageIndexClient):
                 "effective_config": _effective_cfg,
                 "decider_version": "zone3_decide_rtl_v1",
             }
+            # Zone-1: persist all co-firing defects from exhaustive gate
+            # evaluation for verdict provenance / post-hoc analysis.
+            if original_gate_result is not None and original_gate_result.all_defects:
+                meta["all_defects"] = sorted(d.value for d in original_gate_result.all_defects)
             if _effective_config_at_job_start is not None:
                 meta["effective_config_at_job_start"] = _effective_config_at_job_start
             # RFC-034 D5: extraction provenance. `used_converter`/`_use_remote`/

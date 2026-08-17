@@ -8,6 +8,8 @@ Covers:
 """
 
 from pageindex_mcp.helpers import (
+    TreeDefect,
+    TreeGateResult,
     _flatten_tree_text,
     _garble_check_nodes,
     _word_has_reversed_morphology,
@@ -213,8 +215,16 @@ class TestClassifyVerdictCapsBidiDegraded:
         baseline_verdict, _ = classify_verdict(tree, content_class="tree", validate_result=None)
         assert baseline_verdict == "PASS"
 
+        # Zone-1: classify_verdict no longer accepts a legacy reason string —
+        # the bidi_degraded signal arrives as a TreeGateResult.
         capped_verdict, capped_reason = classify_verdict(
-            tree, content_class="tree", validate_result="bidi_degraded"
+            tree,
+            content_class="tree",
+            validate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.BIDI_DEGRADED,
+                all_defects=frozenset({TreeDefect.BIDI_DEGRADED}),
+            ),
         )
         assert capped_verdict == "MARGINAL"
         assert capped_reason == "bidi_degraded"
@@ -235,8 +245,24 @@ class TestClassifyVerdictCapsBidiDegraded:
             }
         ]
 
+        # Zone-1: the gate table is exhaustive, so a tree that is both
+        # reordered and bidi-degraded reports BOTH defects.  REORDERED is
+        # earlier in table order, so it is the primary defect and the
+        # hard-fail wins; bidi_degraded must not soften it to MARGINAL.
+        gate = validate_tree(reordered_tree)
+        assert gate.defect == TreeDefect.REORDERED
+        assert TreeDefect.REORDERED in gate.all_defects
+
         verdict, reason = classify_verdict(
-            reordered_tree, content_class="tree", validate_result="bidi_degraded"
+            reordered_tree,
+            content_class="tree",
+            validate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.REORDERED,
+                all_defects=frozenset(
+                    {TreeDefect.REORDERED, TreeDefect.BIDI_DEGRADED}
+                ),
+            ),
         )
 
         assert verdict == "FAIL"

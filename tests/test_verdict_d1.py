@@ -10,6 +10,8 @@ import inspect
 import pytest
 
 from pageindex_mcp.helpers import (
+    TreeDefect,
+    TreeGateResult,
     _tree_max_leaf_ratio,
     classify_verdict,
     hash_pipe_ratio,
@@ -125,7 +127,7 @@ def _balanced_pass_tree() -> list:
 
 def test_classify_verdict_fail_on_garbling():
     tree = _balanced_pass_tree()
-    verdict, reason = classify_verdict(tree, "default", "garbling")
+    verdict, reason = classify_verdict(tree, "default", TreeGateResult(ok=False, defect=TreeDefect.GARBLING))
     assert (verdict, reason) == ("FAIL", "garbling")
 
 

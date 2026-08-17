@@ -225,7 +225,11 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     from pageindex_mcp.config import _load_settings
     from pageindex_mcp.helpers import (
         HARD_FAIL_DEFECTS,
+        REASON_POLICY,
+        TreeDefect,
+        TreeGateResult,
         _defect_from_reason_str,
+        _ReasonPolicy,
         _tree_max_leaf_ratio,
         classify_verdict,
         validate_tree,
@@ -289,13 +293,42 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
             if is_flat:
                 verdict = data.get("verdict", "")
                 verdict_reason = data.get("verdict_reason", "")
-                # Zone-1: parse stored verdict_reason through TreeDefect enum
-                # (Zone-8 Target 7 pattern from promotion_sweep). Prevents
-                # stale sidecars where a hard-fail defect reason incorrectly
-                # pairs with a PASS verdict.
-                defect = _defect_from_reason_str(verdict_reason)
-                if defect in HARD_FAIL_DEFECTS and verdict == "PASS":
+                # Zone-1: reconcile the stored verdict against the CURRENT
+                # defect policy via a reconstructed TreeGateResult rather
+                # than raw-string branching.
+                #
+                # classify_verdict is deliberately NOT re-run here: a flat
+                # doc has no "structure", and the ingest-time inputs that
+                # produced its verdict (image_enrichment_ratio above all)
+                # are not persisted on the sidecar, so a re-run would
+                # invent tree metrics from the block list and silently
+                # demote legitimate `image_enrichment_promoted` PASSes
+                # (Finding 5, audit 2026-07-21).  Driving REASON_POLICY /
+                # HARD_FAIL_DEFECTS off the typed defect gives the same
+                # defect -> verdict consistency guarantee classify_verdict
+                # enforces, without fabricating the metrics it cannot
+                # reproduce.
+                stored_defect = _defect_from_reason_str(verdict_reason)
+                gate_result = TreeGateResult(
+                    ok=stored_defect == TreeDefect.OK,
+                    defect=stored_defect,
+                    all_defects=(
+                        frozenset()
+                        if stored_defect == TreeDefect.OK
+                        else frozenset({stored_defect})
+                    ),
+                )
+                if gate_result.defect in HARD_FAIL_DEFECTS:
+                    # Hard-fails are terminal in classify_verdict regardless
+                    # of the prior verdict — mirror that here.
                     verdict = "FAIL"
+                elif (
+                    REASON_POLICY.get(gate_result.defect) is _ReasonPolicy.CAP_MARGINAL
+                    and verdict == "PASS"
+                ):
+                    # CAP_MARGINAL defects (bidi_degraded) cap a PASS at
+                    # MARGINAL and never upgrade a worse verdict.
+                    verdict = "MARGINAL"
                 mlr = data.get("max_leaf_ratio", 0.0)
             else:
                 structure = data.get("structure") or []
