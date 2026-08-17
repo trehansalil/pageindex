@@ -81,12 +81,6 @@ class TestEnvVarReflection:
         th2 = _get_verdict_thresholds()
         assert th2.pass_max_leaf_ratio == 0.99
 
-    def test_hysteresis_band_env_reflected(self, monkeypatch):
-        monkeypatch.setenv("PASS_HYSTERESIS_BAND", "0.42")
-        reset_verdict_thresholds()
-        th = _get_verdict_thresholds()
-        assert th.hysteresis_band == 0.42
-
     def test_garble_threshold_env_reflected(self, monkeypatch):
         monkeypatch.setenv("GARBLE_WINDOW_RATIO_THRESHOLD", "0.15")
         reset_verdict_thresholds()

@@ -220,22 +220,17 @@ class TestClassifyVerdictFail:
         # Assert
         assert reason.startswith("empty_node_contamination")
 
-    def test_classify_verdict_fail_not_overridden_by_prior_pass(self):
-        """FAIL from empty_node_contamination must hold even when prior_verdict='PASS'
-        (the hysteresis band must not apply to hard-FAIL gates)."""
-        # Arrange
+    def test_classify_verdict_fail_on_contamination(self):
+        """FAIL from empty_node_contamination is a hard-FAIL gate."""
         tree = _contaminated_tree()
         gate_result = validate_tree(tree)
 
-        # Act
         verdict, _ = classify_verdict(
             structure=tree,
             content_class="structured",
             validate_result=gate_result,
-            prior_verdict="PASS",
         )
 
-        # Assert
         assert verdict == "FAIL"
 
 

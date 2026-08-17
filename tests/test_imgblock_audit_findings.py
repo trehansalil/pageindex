@@ -479,9 +479,6 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
         ),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
-        # find_prior_verdict issues a MinIO call from index()'s flat/tree
-        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

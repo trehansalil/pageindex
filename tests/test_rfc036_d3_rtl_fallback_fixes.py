@@ -74,7 +74,6 @@ def _wire_index(monkeypatch, *, validate_tree, flat_md: str):
         "RAW_UPLOAD_FAILURES": MagicMock(),
         "PDF_PRIMARY_CONVERTER_FAILURES": MagicMock(),
         "PDF_EXTRACT_FALLBACKS": MagicMock(),
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

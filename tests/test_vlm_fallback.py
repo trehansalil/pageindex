@@ -100,9 +100,6 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
         "VLM_FALLBACK_TOTAL": MagicMock(),
-        # find_prior_verdict issues a MinIO call from index()'s flat/tree
-        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

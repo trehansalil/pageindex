@@ -190,9 +190,6 @@ def _wire_image_standalone_flat(monkeypatch):
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
-        # find_prior_verdict issues a MinIO call from index()'s flat/tree
-        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
@@ -314,9 +311,6 @@ async def test_image_standalone_no_conflict_bare_image_file_unaffected(monkeypat
             return_value=("flat_prose", [dict(b) for b in _ALL_IMAGE_BLOCKS])
         ),
         "FLAT_DOCS_TOTAL": MagicMock(),
-        # find_prior_verdict issues a MinIO call from index()'s flat/tree
-        # branches (RFC-025 D0); stub to None so tests stay MinIO-free.
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

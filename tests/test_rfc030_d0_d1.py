@@ -157,7 +157,6 @@ def _wire_common(monkeypatch, *, flat_doc_routing, validate_return, flat_return)
         "save_doc_meta": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

@@ -93,7 +93,6 @@ from .metrics import (
     VLM_FALLBACK_TOTAL,
 )
 from .storage import (
-    find_prior_verdict,
     hash_cache_get,
     hash_cache_set,
     list_processed_docs,
@@ -1818,15 +1817,11 @@ class CustomPageIndexClient(PageIndexClient):
                 if _flat_block_primary_text(b).strip()
             ]
 
-        f_prior_verdict = await asyncio.to_thread(
-            find_prior_verdict, sha256, filename, doc_id
-        )
         f_verdict, f_verdict_reason = classify_verdict(
             flat_structure,
             content_class,
             None,
             image_enrichment_ratio=image_enrichment_ratio,
-            prior_verdict=f_prior_verdict,
             expected_script=expected_script,
         )
         _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
@@ -1907,14 +1902,10 @@ class CustomPageIndexClient(PageIndexClient):
         processed_at = datetime.now(UTC).isoformat()
         structure = state.result.get("structure", [])
 
-        prior_verdict = await asyncio.to_thread(
-            find_prior_verdict, sha256, filename, doc_id
-        )
         verdict, verdict_reason = classify_verdict(
             structure,
             "",
             state.original_gate_result,
-            prior_verdict=prior_verdict,
             inspector_class=(
                 pdf_classification.get("pdf_type") if pdf_classification else None
             ),

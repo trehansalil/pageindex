@@ -97,7 +97,6 @@ class TestVerdictThresholds:
         th = VerdictThresholds.from_env()
         assert th.hard_fail_max_leaf_ratio == 0.75
         assert th.pass_max_leaf_ratio == 0.30
-        assert th.hysteresis_band == 0.10
         assert th.min_image_promoted_chars == 500
         assert th.min_flat_promotion_chars == 500
         assert th.small_doc_enabled is True

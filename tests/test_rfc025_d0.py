@@ -1,14 +1,9 @@
-"""Tests for RFC-025 Task 1.7 (D0): prior-verdict hysteresis anchoring.
+"""Tests for RFC-025 Task 1.7 (D0): find_prior_verdict storage retrieval.
 
-Validates Design Property 1 (design-rfc025-run8-verdict-hysteresis-and-recovery-coverage.md):
-
-1. ``classify_verdict``'s PASS gate widens ``PASS_MAX_LEAF_RATIO`` by
-   ``PASS_HYSTERESIS_BAND`` ONLY when ``prior_verdict == "PASS"``; the hard
-   ``max_leaf_ratio > 0.75`` FAIL gate and non-PASS priors are unaffected.
-2. ``find_prior_verdict`` resolves the best-ever verdict from
-   ``processed/*.meta.json`` sidecars via sha256 match (primary) or
-   ``doc_name`` match (legacy fallback), excludes the current doc_id, and
-   degrades to ``None`` on any MinIO failure.
+``find_prior_verdict`` resolves the best-ever verdict from
+``processed/*.meta.json`` sidecars via sha256 match (primary) or
+``doc_name`` match (legacy fallback), excludes the current doc_id, and
+degrades to ``None`` on any MinIO failure.
 """
 
 import json
@@ -16,93 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pageindex_mcp.helpers import classify_verdict
 from pageindex_mcp.storage import find_prior_verdict
-
-_WORDS = (
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
-    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey "
-    "xray yankee zulu apple banana cherry date fig grape"
-).split()
-
-
-def _text_of_length(n: int) -> str:
-    if n <= 0:
-        return ""
-    words = []
-    total = 0
-    i = 0
-    while total < n:
-        w = _WORDS[i % len(_WORDS)]
-        words.append(w)
-        total += len(w) + 1
-        i += 1
-    return (" ".join(words) + " ")[:n]
-
-
-def _tree_with_ratio(ratio: float, total_chars: int = 10000, n_other: int = 6) -> list:
-    """Root node with one dominant leaf (`ratio` share of leaf chars) and
-    `n_other` smaller leaves, so node_count and depth clear their gates
-    (node_count=1+n_other+1 >= 3, depth=2) and only max_leaf_ratio varies."""
-    max_leaf = round(ratio * total_chars)
-    other_leaf = (total_chars - max_leaf) // n_other
-    leaves = [{"title": "", "text": _text_of_length(max_leaf), "nodes": []}]
-    leaves += [
-        {"title": "", "text": _text_of_length(other_leaf), "nodes": []} for _ in range(n_other)
-    ]
-    return [{"title": "Root", "text": "", "nodes": leaves}]
-
-
-class TestPriorVerdictHysteresisBand:
-    def test_a_prior_pass_within_hysteresis_band_passes(self, monkeypatch):
-        """max_leaf_ratio=0.35 with prior_verdict=PASS and default band 0.10
-        (effective threshold 0.30+0.10=0.40) -> PASS."""
-        monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
-        monkeypatch.delenv("PASS_HYSTERESIS_BAND", raising=False)
-        structure = _tree_with_ratio(0.35)
-        assert classify_verdict(structure, "hierarchical", None, prior_verdict="PASS") == (
-            "PASS",
-            "",
-        )
-
-    def test_b_prior_pass_exceeds_hysteresis_band_stays_marginal(self, monkeypatch):
-        """max_leaf_ratio=0.45 exceeds the widened threshold (0.40) -> MARGINAL."""
-        monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
-        monkeypatch.delenv("PASS_HYSTERESIS_BAND", raising=False)
-        structure = _tree_with_ratio(0.45)
-        verdict, reason = classify_verdict(structure, "hierarchical", None, prior_verdict="PASS")
-        assert verdict == "MARGINAL"
-        assert reason == "leaf_concentration=0.45"
-
-    def test_c_no_prior_verdict_no_hysteresis(self, monkeypatch):
-        """max_leaf_ratio=0.35 with prior_verdict=None -> MARGINAL (no widening)."""
-        monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
-        monkeypatch.delenv("PASS_HYSTERESIS_BAND", raising=False)
-        structure = _tree_with_ratio(0.35)
-        verdict, reason = classify_verdict(structure, "hierarchical", None, prior_verdict=None)
-        assert verdict == "MARGINAL"
-        assert reason == "leaf_concentration=0.35"
-
-    def test_d_prior_marginal_no_hysteresis(self, monkeypatch):
-        """Hysteresis anchors only to a prior PASS, not a prior MARGINAL."""
-        monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
-        monkeypatch.delenv("PASS_HYSTERESIS_BAND", raising=False)
-        structure = _tree_with_ratio(0.35)
-        verdict, reason = classify_verdict(
-            structure, "hierarchical", None, prior_verdict="MARGINAL"
-        )
-        assert verdict == "MARGINAL"
-        assert reason == "leaf_concentration=0.35"
-
-    def test_e_hysteresis_band_zero_disables_widening(self, monkeypatch):
-        """PASS_HYSTERESIS_BAND=0.0 is the rollback path: prior_verdict=PASS
-        no longer widens the gate."""
-        monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
-        monkeypatch.setenv("PASS_HYSTERESIS_BAND", "0.0")
-        structure = _tree_with_ratio(0.35)
-        verdict, reason = classify_verdict(structure, "hierarchical", None, prior_verdict="PASS")
-        assert verdict == "MARGINAL"
-        assert reason == "leaf_concentration=0.35"
 
 
 def _meta_response(data: dict) -> MagicMock:

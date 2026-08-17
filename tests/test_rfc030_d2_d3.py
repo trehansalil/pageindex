@@ -148,7 +148,6 @@ def _wire_index(monkeypatch, *, validate_return: TreeGateResult | tuple, flat_do
         "write_verdict": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)

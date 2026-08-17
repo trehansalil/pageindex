@@ -300,7 +300,6 @@ def decide_route(defect: TreeDefect, flat_routing_enabled: bool = True) -> Route
 class VerdictThresholds:
     hard_fail_max_leaf_ratio: float
     pass_max_leaf_ratio: float
-    hysteresis_band: float
     garble_threshold: float
     cat_bc_promotion_threshold: float
     min_image_promoted_chars: int
@@ -316,7 +315,6 @@ class VerdictThresholds:
         return cls(
             hard_fail_max_leaf_ratio=0.75,
             pass_max_leaf_ratio=float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")),
-            hysteresis_band=float(os.environ.get("PASS_HYSTERESIS_BAND", "0.10")),
             garble_threshold=float(os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")),
             cat_bc_promotion_threshold=CATEGORY_BC_PROMOTION_THRESHOLD,
             min_image_promoted_chars=int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")),
@@ -2056,7 +2054,6 @@ def classify_verdict(  # noqa: C901
     content_class: str,
     validate_result: TreeGateResult | None,
     image_enrichment_ratio: float | None = None,
-    prior_verdict: str | None = None,
     inspector_class: str | None = None,
     expected_script: str | None = None,
 ) -> tuple[str, str]:
@@ -2209,10 +2206,8 @@ def classify_verdict(  # noqa: C901
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
         return "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}"
 
-    # 2c: base PASS (hysteresis widens threshold for previously-PASS docs)
+    # 2c: base PASS
     _effective_max_leaf = th.pass_max_leaf_ratio
-    if prior_verdict == "PASS":
-        _effective_max_leaf = th.pass_max_leaf_ratio + th.hysteresis_band
     if (
         sig.node_count >= 3
         and sig.depth >= 2

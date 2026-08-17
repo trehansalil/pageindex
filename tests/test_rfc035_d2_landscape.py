@@ -220,7 +220,6 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
         "PDF_PRIMARY_CONVERTER_FAILURES": MagicMock(),
         "PDF_EXTRACT_FALLBACKS": MagicMock(),
         "PDF_INSPECTOR_FORCED_OCR": MagicMock(),
-        "find_prior_verdict": MagicMock(return_value=None),
     }
     for name, m in mocks.items():
         monkeypatch.setattr(client_mod, name, m)
