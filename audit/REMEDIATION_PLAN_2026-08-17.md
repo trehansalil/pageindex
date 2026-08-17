@@ -213,3 +213,18 @@ The entire original Zone 1 spec (thread `expected_script` through the chain) is 
 **Wiring checks:** `_run_fallback_pipeline` called from `src/pageindex_mcp/converters.py` (internal).
 
 **Estimated complexity:** medium.
+
+---
+
+## Zone Status
+
+| Zone | Status | Commit |
+|------|--------|--------|
+| 1 | DONE | 929dbd4 |
+| 2 | DONE | (this session) |
+| 3 | DONE | 16183db |
+| 4 | DONE | 744a534 |
+| 5 | ALREADY LANDED | verified — OCR flag split + primary-text fix both present |
+| 6 | DONE | d5f816f |
+| 7 | Not started | — |
+| 8 | DONE | prior session |

@@ -198,6 +198,7 @@ class ExtractionState:
     use_remote: bool = False
     tmp_lo_dir: str | None = None
     flat_garble_unrecovered: bool = False
+    route_overridden: bool = False
 
 
 class _ReasonPolicy(StrEnum):

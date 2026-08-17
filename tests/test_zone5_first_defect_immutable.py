@@ -1,7 +1,8 @@
-"""Zone 5: first_defect write-once regression guard.
+"""Zone 5: first_defect assignment regression guard.
 
 Static analysis of client.py to ensure ``first_defect =`` (assignment)
-appears at most once per validate_tree call site and is NOT inside
+appears only at the expected sites (_convert_to_tree initial +
+_finalize_routing post-recovery recomputation) and is NOT inside
 the ExtractionSnapshot revert block.
 """
 from __future__ import annotations
@@ -16,19 +17,20 @@ def _read_client() -> str:
     return CLIENT_PATH.read_text(encoding="utf-8")
 
 
-class TestFirstDefectWriteOnce:
-    """first_defect must be assigned exactly once (write-once semantics)."""
+class TestFirstDefectAssignmentSites:
+    """first_defect is assigned in _convert_to_tree (1) and _finalize_routing (2)."""
 
     _ASSIGN_RE = re.compile(
         r"^\s*(?:state\.)?first_defect\s*(?::.*)?=\s", re.MULTILINE
     )
 
-    def test_single_assignment(self):
+    def test_known_assignment_count(self):
         source = _read_client()
         matches = self._ASSIGN_RE.findall(source)
-        assert len(matches) == 1, (
-            f"Expected exactly 1 `first_defect =` assignment, found {len(matches)}: "
-            f"{matches}"
+        assert len(matches) == 3, (
+            f"Expected 3 `first_defect =` assignments "
+            f"(1 in _convert_to_tree + 2 in _finalize_routing), "
+            f"found {len(matches)}: {matches}"
         )
 
 

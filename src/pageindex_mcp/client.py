@@ -944,6 +944,33 @@ class CustomPageIndexClient(PageIndexClient):
         state.ok, state.reason = _vt_raw
         state.original_gate_result = state.gate_result
 
+    def _finalize_routing(self, state: ExtractionState) -> None:
+        """Reconcile route/first_defect after the recovery pipeline completes.
+
+        Zone-2 fix: recovery methods may override ``state.route`` directly
+        (bypassing ``decide_route``).  When ``route_overridden`` is True the
+        override is intentional and must not be clobbered.  When the tree
+        passed validation (``state.ok`` is True) no rerouting is needed.
+
+        Otherwise re-derive ``first_defect`` from the current gate result and
+        recompute ``state.route`` via ``decide_route`` so the downstream
+        match/case dispatch sees a consistent (ok, route) pair.
+        """
+        if state.route_overridden or state.ok:
+            return
+
+        # Recompute first_defect from current gate result (may have changed
+        # during recovery reconvert-and-revalidate cycles).
+        if state.gate_result is not None:
+            state.first_defect = state.gate_result.defect
+        else:
+            state.first_defect = _defect_from_reason_str(state.reason)
+
+        state.route = decide_route(state.first_defect, settings.flat_doc_routing)
+        state.total_chars = len(
+            _flatten_tree_text(state.result.get("structure", []))
+        )
+
     async def _convert_to_tree(
         self,
         state: ExtractionState,
@@ -1500,6 +1527,7 @@ class CustomPageIndexClient(PageIndexClient):
                     filename,
                 )
                 state.route = Route.FLAT
+                state.route_overridden = True
         except Exception as _flat_cmp_exc:
             logger.warning(
                 "RFC-033 D8: flat-path reversal comparison failed for %s (%s); "
@@ -1554,6 +1582,7 @@ class CustomPageIndexClient(PageIndexClient):
                     state.md_content = recovered_md
                     state.pic_results = []
                     state.route = Route.FLAT
+                    state.route_overridden = True
         except Exception as vlm_exc:
             VLM_FALLBACK_TOTAL.labels(result="error").inc()
             logger.error(
@@ -1570,6 +1599,7 @@ class CustomPageIndexClient(PageIndexClient):
                     state.md_content = recovered_md
                     state.pic_results = []
                     state.route = Route.FLAT
+                    state.route_overridden = True
 
     async def _recover_image_dominant_ocr(
         self,
@@ -1682,6 +1712,7 @@ class CustomPageIndexClient(PageIndexClient):
                 )
                 state.ok = False
                 state.route = Route.FLAT
+                state.route_overridden = True
         except Exception as _flat_exc:
             logger.warning(
                 "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
@@ -1712,6 +1743,7 @@ class CustomPageIndexClient(PageIndexClient):
             )
             state.ok = False
             state.route = Route.FLAT
+            state.route_overridden = True
 
     async def _persist_flat_result(
         self,
@@ -2107,8 +2139,46 @@ class CustomPageIndexClient(PageIndexClient):
             await self._recover_flat_prefer(state, filename, ext)
             await self._recover_landscape_reroute(state, filename)
 
-            if not state.ok:
-                if state.route == Route.FLAT:
+            # Zone-2: reconcile route/first_defect after recovery pipeline
+            self._finalize_routing(state)
+
+            # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered
+            # is currently only set inside _persist_flat_result, but it is an
+            # independent reject trigger that must not be lost in the route
+            # dispatch below.  Pre-match guard ensures it fires regardless of
+            # the (ok, route) combination.
+            if state.flat_garble_unrecovered:
+                LOW_QUALITY_TREES.labels(reason="garbling").inc()
+                logger.warning(
+                    "Rejecting low-quality tree for %s: reason=garbling",
+                    filename,
+                )
+                raise LowQualityTreeError("garbling")
+
+            # Zone-2: exhaustive route dispatch — every (ok, route) pair has
+            # an explicit case.  Cases that persist the tree fall through to
+            # the _persist_tree_result call after the match block; cases that
+            # reject or persist flat return/raise within the case body.
+            match (state.ok, state.route):
+                case (True, Route.TREE):
+                    pass  # success — persist tree below
+
+                case (True, Route.REJECT) | (True, Route.PERSIST_FAIL):
+                    # Recovery fixed the tree (ok=True) but route is stale
+                    # from pre-recovery state; _finalize_routing skips
+                    # recomputation when ok=True since the tree is valid.
+                    pass  # persist tree below
+
+                case (True, Route.FLAT):
+                    # Reachable when decide_route initially returned FLAT
+                    # (e.g. NODE_COUNT_LOW/DEPTH_LOW with flat routing) and a
+                    # recovery method fixed the tree (ok=True) without
+                    # overriding state.route.  _finalize_routing skips when
+                    # ok=True, leaving the stale FLAT route.  The tree is
+                    # valid — persist it.
+                    pass  # persist tree below
+
+                case (False, Route.FLAT):
                     doc_id = await self._persist_flat_result(
                         state,
                         file_path,
@@ -2123,11 +2193,7 @@ class CustomPageIndexClient(PageIndexClient):
                     )
                     if doc_id is not None:
                         return doc_id
-
-                if (
-                    state.route in (Route.REJECT, Route.FLAT)
-                    or state.flat_garble_unrecovered
-                ):
+                    # Flat persist failed (garble or unavailable) — reject.
                     _reject_reason = (
                         "garbling"
                         if state.flat_garble_unrecovered
@@ -2141,11 +2207,24 @@ class CustomPageIndexClient(PageIndexClient):
                     )
                     raise LowQualityTreeError(_reject_reason)
 
-                logger.warning(
-                    "Persisting low-quality tree with FAIL verdict for %s: reason=%s",
-                    filename,
-                    state.reason,
-                )
+                case (False, Route.REJECT):
+                    _reject_reason = state.first_defect.value
+                    LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
+                    logger.warning(
+                        "Rejecting low-quality tree for %s: reason=%s",
+                        filename,
+                        _reject_reason,
+                    )
+                    raise LowQualityTreeError(_reject_reason)
+
+                case (False, Route.TREE) | (False, Route.PERSIST_FAIL):
+                    logger.warning(
+                        "Persisting low-quality tree with FAIL verdict "
+                        "for %s: reason=%s",
+                        filename,
+                        state.reason,
+                    )
+                    # fall through to _persist_tree_result below
 
             return await self._persist_tree_result(
                 state,
