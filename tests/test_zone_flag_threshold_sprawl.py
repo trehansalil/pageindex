@@ -245,7 +245,7 @@ class TestSupplementaryGarbleCheck:
             if in_region_block:
                 if "_region_has_own_text_layer" in stripped:
                     found_region_check = True
-                if "_is_garbled_blob" in stripped:
+                if "check_garble" in stripped:
                     found_garble_gate = True
                 # Break out at else clause (end of if-block)
                 if stripped.startswith("else:"):
@@ -254,7 +254,7 @@ class TestSupplementaryGarbleCheck:
             "_region_has_own_text_layer not found in region-aware block"
         )
         assert found_garble_gate, (
-            "_is_garbled_blob not found as supplementary garble gate "
+            "check_garble not found as supplementary garble gate "
             "in region-aware block"
         )
 

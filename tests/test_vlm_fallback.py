@@ -261,7 +261,7 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
         garble_calls.append(text)
         return "VLM recovered" not in text
 
-    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", _fake_flat_garble)
+    monkeypatch.setattr(client_mod, "check_garble", _fake_flat_garble)
 
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
@@ -287,7 +287,7 @@ async def test_VLM_C7_flat_path_garble_still_garbled(monkeypatch, pdf_file):
             TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
         ],
     )
-    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda text, **kw: True)
+    monkeypatch.setattr(client_mod, "check_garble", lambda text, **kw: True)
 
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))

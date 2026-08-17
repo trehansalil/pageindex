@@ -1645,10 +1645,10 @@ def _text_layer_has_content(page) -> bool:
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
     if _TEXT_LAYER_GARBLE_CHECK_ENABLED:
-        from .helpers import _is_garbled_blob
+        from .helpers import GarbleContext, check_garble
         from .script import infer_script
 
-        if _is_garbled_blob(text, expected_script=infer_script(text), blob_kind=BlobKind.TREE_TEXT):
+        if check_garble(text, expected_script=infer_script(text), context=GarbleContext.PAGE_TEXT_LAYER):
             return False
     return True
 
@@ -1744,10 +1744,10 @@ def _document_level_text_fallback(md: str, pdf_path: str) -> str:
         return md
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
-    from .helpers import _is_garbled_blob
+    from .helpers import GarbleContext, check_garble
     from .script import infer_script
 
-    if _is_garbled_blob(full_text, expected_script=infer_script(full_text), blob_kind=BlobKind.TREE_TEXT):
+    if check_garble(full_text, expected_script=infer_script(full_text), context=GarbleContext.DOCUMENT_FALLBACK):
         logger.warning(
             "document-level text-layer fallback skipped for %s: text layer is garbled",
             pdf_path,
@@ -2144,13 +2144,13 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         if has_own_text and _TEXT_LAYER_GARBLE_CHECK_ENABLED:
                             region_text = page.get_text("text", clip=rect).strip()
                             if region_text:
-                                from .helpers import _is_garbled_blob
+                                from .helpers import GarbleContext, check_garble
                                 from .script import infer_script
 
-                                if _is_garbled_blob(
+                                if check_garble(
                                     region_text,
                                     expected_script=infer_script(region_text),
-                                    blob_kind=BlobKind.TREE_TEXT,
+                                    context=GarbleContext.REGION,
                                 ):
                                     has_own_text = False
                     else:

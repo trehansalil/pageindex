@@ -53,6 +53,7 @@ from .picture_plane import (
 from .script import decide_rtl
 from .helpers import (
     ExtractionSnapshot,
+    GarbleContext,
     LowQualityTreeError,
     Route,
     TreeDefect,
@@ -60,15 +61,14 @@ from .helpers import (
     _defect_from_reason_str,
     _extract_page_hits,
     _flat_block_primary_text,
-    _flat_text_is_garbled,
     _flatten_tree_text,
-    _is_garbled_blob,
     _script_from_filename,
     _segment_table_nodes,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
+    check_garble,
     classify_verdict,
     compute_image_enrichment_ratio,
     decide_route,
@@ -440,7 +440,7 @@ async def _attempt_tesseract_raster_recovery(
     try:
         tess_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
         ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-        if ocr_text and not _flat_text_is_garbled(ocr_text, expected_script=expected_script):
+        if ocr_text and not check_garble(ocr_text, expected_script=expected_script, context=GarbleContext.FLAT_MARKDOWN):
             logger.warning(
                 "Tesseract-on-raster fallback recovered %s; overriding reason to node_count<3",
                 filename,
@@ -977,8 +977,8 @@ class CustomPageIndexClient(PageIndexClient):
                             )
                             if probe_pdf.page_count > 0:
                                 raw_text = probe_pdf[0].get_text()
-                                if raw_text.strip() and _flat_text_is_garbled(
-                                    raw_text, expected_script=expected_script
+                                if raw_text.strip() and check_garble(
+                                    raw_text, expected_script=expected_script, context=GarbleContext.FLAT_MARKDOWN
                                 ):
                                     pre_garbled = True
                                     logger.info(
@@ -1399,13 +1399,15 @@ class CustomPageIndexClient(PageIndexClient):
                         retry_wins = False
                     elif post_retry_chars == pre_retry.total_chars:
                         retry_wins = ok or (
-                            _is_garbled_blob(
+                            check_garble(
                                 _flatten_tree_text(pre_retry.result.get("structure", [])),
                                 expected_script=expected_script,
+                                context=GarbleContext.RETRY_COMPARISON,
                             )
-                            and not _is_garbled_blob(
+                            and not check_garble(
                                 _flatten_tree_text(result.get("structure", [])),
                                 expected_script=expected_script,
+                                context=GarbleContext.RETRY_COMPARISON,
                             )
                         )
                     else:
@@ -1415,9 +1417,10 @@ class CustomPageIndexClient(PageIndexClient):
                         # Compare repeating-token densities: if the pre-retry was garbled
                         # and the post-retry density is within 20% of the pre-retry density,
                         # the retry has not meaningfully de-garbled — revert to pre-retry.
-                        _pre_garble_flag = _is_garbled_blob(
+                        _pre_garble_flag = check_garble(
                             _flatten_tree_text(pre_retry.result.get("structure", [])),
                             expected_script=expected_script,
+                            context=GarbleContext.RETRY_COMPARISON,
                         )
                         if _pre_garble_flag:
                             _pre_density = _repeating_token_density(
@@ -1852,9 +1855,10 @@ class CustomPageIndexClient(PageIndexClient):
                         # reason != "garbling" string check as the garble-gate
                         # status flag (reason is no longer the routing decider).
                         _flat_garble_unrecovered = False
-                        if _flat_text_is_garbled(
+                        if check_garble(
                             flat_md,
                             expected_script=expected_script,
+                            context=GarbleContext.FLAT_MARKDOWN,
                             original_defect=first_defect,
                         ):
                             _flat_garble_unrecovered = True
@@ -1880,8 +1884,8 @@ class CustomPageIndexClient(PageIndexClient):
                                     vlm_md = await vlm_extract_markdown(
                                         file_path, settings.vlm_model
                                     )
-                                    if not _flat_text_is_garbled(
-                                        vlm_md, expected_script=expected_script
+                                    if not check_garble(
+                                        vlm_md, expected_script=expected_script, context=GarbleContext.FLAT_MARKDOWN
                                     ):
                                         flat_md = vlm_md
                                         # New markdown source — converter picture

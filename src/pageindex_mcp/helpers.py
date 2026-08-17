@@ -1313,6 +1313,72 @@ def _is_garbled_blob(
     return bool(garble_prongs(blob, expected_script=expected_script, blob_kind=blob_kind))
 
 
+class GarbleContext(StrEnum):
+    """Identifies the call-site so check_garble can apply context-specific
+    normalization (e.g. strip markdown for FLAT_MARKDOWN) without exposing
+    heuristic internals to callers.  Zone-1 consolidation."""
+
+    TREE_BULK = "tree_bulk"
+    NODE = "node"
+    FLAT_MARKDOWN = "flat_markdown"
+    PAGE_TEXT_LAYER = "page_text_layer"
+    DOCUMENT_FALLBACK = "document_fallback"
+    REGION = "region"
+    RETRY_COMPARISON = "retry_comparison"
+    IMAGE_ENRICHMENT = "image_enrichment"
+
+
+def check_garble(
+    text: str,
+    *,
+    expected_script: str | None,
+    context: GarbleContext,
+    original_defect: "TreeDefect | None" = None,
+) -> bool:
+    """Consolidated garble evaluation entry point (Zone-1).
+
+    Replaces five parallel functions (_tree_is_garbled, _flat_text_is_garbled,
+    and three inline _is_garbled_blob call-sites in converters.py) with a
+    single API that always runs BOTH _is_garbled_blob and _has_sparse_mojibake.
+
+    ``expected_script`` is required keyword-only so callers can never silently
+    omit it (the latin_gibberish prong depends on it).
+
+    Behavioral rules:
+    * FLAT_MARKDOWN context with short text and an original garbling defect
+      returns True immediately (garble-by-default, RFC-025 D2).
+    * PAGE_TEXT_LAYER / DOCUMENT_FALLBACK / REGION contexts use
+      blob_kind=BlobKind.TREE_TEXT.
+    * All other contexts use the default blob_kind (TREE_TEXT).
+    """
+    blob = text or ""
+
+    # Short-text garble-by-default (FLAT_MARKDOWN only, RFC-025 D2)
+    if (
+        context == GarbleContext.FLAT_MARKDOWN
+        and _GARBLE_SHORT_TEXT_DEFAULT
+        and len(blob) < 200
+        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+    ):
+        return True
+
+    # Determine blob_kind for the underlying heuristics
+    if context in (
+        GarbleContext.PAGE_TEXT_LAYER,
+        GarbleContext.DOCUMENT_FALLBACK,
+        GarbleContext.REGION,
+    ):
+        blob_kind = BlobKind.TREE_TEXT
+    else:
+        blob_kind = BlobKind.TREE_TEXT
+
+    # Additive OR: bulk heuristics + sparse mixed-script mojibake
+    return (
+        _is_garbled_blob(blob, expected_script=expected_script, blob_kind=blob_kind)
+        or _has_sparse_mojibake(blob)
+    )
+
+
 # RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
 # digit%, repetition%) dilute away a handful of corrupted Latin fragments glued
 # to Arabic across a long document, so OCR escalation never fires. This
@@ -1448,7 +1514,7 @@ def _garble_check_nodes(
                     node_script = expected_script
             else:
                 node_script = _infer_script(text) if len(text) >= 50 else page_script
-            if _is_garbled_blob(text, expected_script=node_script):
+            if check_garble(text, expected_script=node_script, context=GarbleContext.NODE):
                 node_garbled = True
         # RFC-030 D4: titles carry user-visible content too (23/24 reversed
         # RTL titles in siyasat-hawkama were invisible to this gate). Titles
@@ -1459,7 +1525,7 @@ def _garble_check_nodes(
         title = node.get("title") or ""
         if title.strip() and (
             any(_word_has_reversed_morphology(w) for w in title.split())
-            or _is_garbled_blob(title, expected_script=expected_script or page_script)
+            or check_garble(title, expected_script=expected_script or page_script, context=GarbleContext.NODE)
         ):
             node_garbled = True
         if node_garbled:
@@ -1472,12 +1538,11 @@ def _garble_check_nodes(
 
 
 def _tree_is_garbled(nodes: list, expected_script: str | None = None) -> bool:
+    """Zone-1 Wave 2: delegates to check_garble (TREE_BULK context)."""
     if not nodes:
         return False
     blob = _flatten_tree_text(nodes)
-    # Additive OR (RFC-015 D8): existing bulk heuristics first, then sparse
-    # mixed-script. Never narrows the existing gate.
-    return _is_garbled_blob(blob, expected_script=expected_script) or _has_sparse_mojibake(blob)
+    return check_garble(blob, expected_script=expected_script, context=GarbleContext.TREE_BULK)
 
 
 
@@ -1861,22 +1926,20 @@ def hash_pipe_ratio(text: str) -> float:
 def _garble_ratio(text, expected_script=None):
     """Windowed garble ratio: fraction of fixed-size windows that individually
     trigger garble detection. RFC-033 D1: no longer re-checks the full text
-    (that duplicates what _tree_is_garbled already gates in classify_verdict)."""
+    (that duplicates what _tree_is_garbled already gates in classify_verdict).
+    Zone-1 Wave 2: delegates to check_garble (TREE_BULK context)."""
     window = 2000
     if len(text) <= window:
         return (
             1.0
-            if (
-                _is_garbled_blob(text, expected_script=expected_script)
-                or _has_sparse_mojibake(text)
-            )
+            if check_garble(text, expected_script=expected_script, context=GarbleContext.TREE_BULK)
             else 0.0
         )
     chunks = [text[i : i + window] for i in range(0, len(text), window)]
     garbled_chunks = sum(
         1
         for c in chunks
-        if _is_garbled_blob(c, expected_script=expected_script) or _has_sparse_mojibake(c)
+        if check_garble(c, expected_script=expected_script, context=GarbleContext.TREE_BULK)
     )
     return garbled_chunks / len(chunks)
 
@@ -2102,7 +2165,7 @@ def classify_verdict(  # noqa: C901
         total_chars = len(_promoted_text)
         if total_chars < th.min_image_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
-        if not _is_garbled_blob(_promoted_text, expected_script=expected_script):
+        if not check_garble(_promoted_text, expected_script=expected_script, context=GarbleContext.IMAGE_ENRICHMENT):
             return _pass("image_enrichment_promoted")
 
     # max_leaf_ratio structural hard FAIL — blocks all non-image promotions
@@ -3230,19 +3293,14 @@ def _flat_text_is_garbled(
     expected_script: str | None = None,
     original_defect: TreeDefect | None = None,
 ) -> bool:
-    """Garble gate for flat-path markdown (mirrors _tree_is_garbled heuristics)."""
-    text = md or ""
-    # RFC-025 D2: garble-by-default for short post-retry text when the
-    # original tree-build failure was itself a garbling reason -- avoids
-    # falling through the minimum-size heuristic gates below the floor.
-    if (
-        _GARBLE_SHORT_TEXT_DEFAULT
-        and len(text) < 200
-        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-    ):
-        return True
-    # Additive OR (RFC-015 D8): sparse mixed-script mojibake, same as the tree gate.
-    return _is_garbled_blob(text, expected_script=expected_script) or _has_sparse_mojibake(text)
+    """Garble gate for flat-path markdown.
+    Zone-1 Wave 2: delegates to check_garble (FLAT_MARKDOWN context)."""
+    return check_garble(
+        md,
+        expected_script=expected_script,
+        context=GarbleContext.FLAT_MARKDOWN,
+        original_defect=original_defect,
+    )
 
 
 def _looks_like_toc_page(block_text: str) -> bool:

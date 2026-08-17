@@ -36,7 +36,7 @@ class TestExtractedHelperBehavior:
 
         monkeypatch.setattr("pageindex_mcp.converters.tesseract_ocr_pdf_pages", _fake_tesseract_ocr)
         monkeypatch.setattr(
-            client_mod, "_flat_text_is_garbled", lambda md, expected_script=None: False
+            client_mod, "check_garble", lambda md, **kw: False
         )
 
         result = await _attempt_tesseract_raster_recovery("/fake.pdf", None, "doc.pdf")
@@ -53,7 +53,7 @@ class TestExtractedHelperBehavior:
 
         monkeypatch.setattr("pageindex_mcp.converters.tesseract_ocr_pdf_pages", _fake_tesseract_ocr)
         monkeypatch.setattr(
-            client_mod, "_flat_text_is_garbled", lambda md, expected_script=None: True
+            client_mod, "check_garble", lambda md, **kw: True
         )
 
         result = await _attempt_tesseract_raster_recovery("/fake.pdf", None, "doc.pdf")

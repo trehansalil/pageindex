@@ -198,7 +198,7 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
     # D3B's flat-path garble gate is orthogonal to the D2 routing decision
     # under test here — stub it out so repeated filler text in md_text
     # doesn't spuriously trip it.
-    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda *a, **kw: False)
+    monkeypatch.setattr(client_mod, "check_garble", lambda *a, **kw: False)
     conv_fn = MagicMock(return_value=(md_text, pic_results))
     monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
     monkeypatch.setattr(

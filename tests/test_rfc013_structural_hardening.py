@@ -153,60 +153,64 @@ def test_tessdata_available_no_raise(monkeypatch, tmp_path):
 
 
 def test_garble_functions_delegate_to_shared_impl():
-    """Both _tree_is_garbled and _flat_text_is_garbled must delegate to
-    _is_garbled_blob — the dedup invariant."""
+    """check_garble is the consolidated garble API — _tree_is_garbled and
+    _flat_text_is_garbled no longer exist."""
     src = (SRC / "helpers.py").read_text()
     tree = ast.parse(src)
 
+    found_check_garble = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_tree_is_garbled":
+        if isinstance(node, ast.FunctionDef) and node.name == "check_garble":
             body_src = ast.get_source_segment(src, node)
-            assert "_is_garbled_blob" in body_src
-            assert "_flatten_tree_text" in body_src
-        if isinstance(node, ast.FunctionDef) and node.name == "_flat_text_is_garbled":
+            assert "_is_garbled_blob" in body_src or "_has_sparse_mojibake" in body_src
+            found_check_garble = True
+    assert found_check_garble, "check_garble not found in helpers.py"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+            "_tree_is_garbled", "_flat_text_is_garbled"
+        ):
             body_src = ast.get_source_segment(src, node)
-            assert "_is_garbled_blob" in body_src
+            assert "check_garble" in body_src, (
+                f"{node.name} still exists but does not delegate to check_garble"
+            )
 
 
 def test_garble_agreement_clean_text():
-    """Both garble detectors must agree on clean text = not garbled."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must agree across contexts on clean text = not garbled."""
+    from pageindex_mcp.helpers import check_garble, GarbleContext
 
     clean = "This is a perfectly normal paragraph about insurance terms."
-    tree = [{"node_id": "1", "title": "Section", "text": clean}]
 
-    assert _tree_is_garbled(tree) is False
-    assert _flat_text_is_garbled(clean) is False
+    assert check_garble(clean, expected_script="Latn", context=GarbleContext.TREE_BULK) is False
+    assert check_garble(clean, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is False
 
 
 def test_garble_agreement_numeric_junk():
-    """Both garble detectors must agree on numeric junk = garbled."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must agree across contexts on numeric junk = garbled."""
+    from pageindex_mcp.helpers import check_garble, GarbleContext
 
     junk = "1651001429 " * 100
-    tree = [{"node_id": "1", "title": "", "text": junk}]
 
-    assert _tree_is_garbled(tree) is True
-    assert _flat_text_is_garbled(junk) is True
+    assert check_garble(junk, expected_script="Latn", context=GarbleContext.TREE_BULK) is True
+    assert check_garble(junk, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is True
 
 
 def test_garble_agreement_null_bytes():
-    """Both garble detectors must flag null-byte content."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must flag null-byte content."""
+    from pageindex_mcp.helpers import check_garble, GarbleContext
 
     bad = "hello\x00world"
-    tree = [{"node_id": "1", "title": "", "text": bad}]
 
-    assert _tree_is_garbled(tree) is True
-    assert _flat_text_is_garbled(bad) is True
+    assert check_garble(bad, expected_script="Latn", context=GarbleContext.TREE_BULK) is True
+    assert check_garble(bad, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is True
 
 
 def test_garble_agreement_replacement_char():
-    """Both garble detectors must flag U+FFFD replacement characters."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must flag U+FFFD replacement characters."""
+    from pageindex_mcp.helpers import check_garble, GarbleContext
 
     bad = "hello�world"
-    tree = [{"node_id": "1", "title": "", "text": bad}]
 
-    assert _tree_is_garbled(tree) is True
-    assert _flat_text_is_garbled(bad) is True
+    assert check_garble(bad, expected_script="Latn", context=GarbleContext.TREE_BULK) is True
+    assert check_garble(bad, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is True

@@ -320,7 +320,7 @@ async def test_flat_path_garble_gate_vlm_exception(monkeypatch, pdf_file):
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p: "# garbled md")]
     )
-    monkeypatch.setattr(client_mod, "_flat_text_is_garbled", lambda text, **kw: True)
+    monkeypatch.setattr(client_mod, "check_garble", lambda text, **kw: True)
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
 
