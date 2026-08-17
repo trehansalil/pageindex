@@ -55,6 +55,7 @@ from .picture_plane import (
 from .script import decide_rtl
 from .helpers import (
     ExtractionSnapshot,
+    ExtractionState,
     GarbleContext,
     LowQualityTreeError,
     Route,
@@ -914,11 +915,1109 @@ class CustomPageIndexClient(PageIndexClient):
         self._staging_key: str | None = None
 
     # ------------------------------------------------------------------
-    # Indexing
+    # Indexing — Zone-2 extracted helpers
     # ------------------------------------------------------------------
 
-    # Complexity grandfathered (core indexing pipeline); see pyproject [tool.ruff].
-    async def index(  # noqa: C901, PLR0915
+    async def _reconvert_and_revalidate(
+        self,
+        state: ExtractionState,
+        md_content: str,
+        *,
+        expected_script: str | None,
+    ) -> None:
+        """Write md → run_md_to_tree → split → segment → validate. Mutates state."""
+        if state.tmp_md_path and os.path.exists(state.tmp_md_path):
+            os.unlink(state.tmp_md_path)
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", delete=False, mode="w", encoding="utf-8"
+        ) as md_tmp:
+            md_tmp.write(md_content)
+            state.tmp_md_path = md_tmp.name
+        state.result = await self._run_md_to_tree(state.tmp_md_path)
+        state.result["structure"] = split_oversized_leaf_nodes(
+            state.result.get("structure", [])
+        )
+        state.result["structure"] = _segment_table_nodes(
+            state.result.get("structure", [])
+        )
+        _vt_raw = validate_tree(
+            state.result.get("structure", []),
+            expected_script=expected_script,
+            page_count=state.pdf_page_count,
+        )
+        state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+        state.ok, state.reason = _vt_raw
+        state.original_gate_result = state.gate_result
+
+    async def _convert_to_tree(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+        pdf_classification: dict | None,
+    ) -> None:
+        """Conversion front-end: dispatch by extension, run initial validate_tree. Mutates state."""
+        if ext == ".pdf":
+            md_content = None
+
+            inspector_force_ocr = False
+            if (
+                PDF_INSPECTOR_PRECLASSIFY
+                and pdf_classification is not None
+                and pdf_classification.get("pdf_type") in ("scanned", "image_based")
+                and pdf_classification.get("confidence", 0) >= 0.90
+            ):
+                inspector_force_ocr = True
+                PDF_INSPECTOR_FORCED_OCR.inc()
+                logger.info(
+                    "RFC-032: pdf-inspector classified %s as %s (confidence=%.2f), "
+                    "forcing full-page OCR upfront",
+                    filename,
+                    pdf_classification.get("pdf_type"),
+                    pdf_classification.get("confidence", 0),
+                )
+
+            state.pre_garbled = False
+            state.pdf_page_count = None
+            from .config import ALLOW_AGPL_FALLBACK
+
+            if not ALLOW_AGPL_FALLBACK:
+                logger.warning(
+                    "D3a pre-conversion probe skipped for %s: ALLOW_AGPL_FALLBACK=false "
+                    "blocks fitz (PyMuPDF, AGPL-3.0)",
+                    filename,
+                )
+            else:
+                try:
+                    import fitz
+
+                    with fitz.open(file_path) as probe_pdf:
+                        state.pdf_page_count = (
+                            probe_pdf.page_count if probe_pdf.page_count > 0 else None
+                        )
+                        if probe_pdf.page_count > 0:
+                            raw_text = probe_pdf[0].get_text()
+                            if raw_text.strip() and check_garble(
+                                raw_text,
+                                expected_script=expected_script,
+                                context=GarbleContext.FLAT_MARKDOWN,
+                            ):
+                                state.pre_garbled = True
+                                logger.info(
+                                    "D3a: raw text layer garbled for %s, forcing full-page "
+                                    "OCR upfront",
+                                    filename,
+                                )
+                except Exception:
+                    pass
+
+            PRE_GARBLE_FORCE_OCR_ENABLED = (
+                os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
+            )
+
+            ocr_mode = decide_ocr_mode(
+                ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
+                has_image_markers=False,
+                force_full_page=(
+                    inspector_force_ocr
+                    or (state.pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED)
+                ),
+            )
+
+            chain = pdf_markdown_converters()
+            primary_name = chain[0][0] if chain else None
+            state.used_converter = None
+            state.extraction_stages_captured = []
+            state.use_remote = bool(
+                getattr(settings, "docling_service_url", None) and self._staging_key
+            )
+            for idx, (conv_name, conv_fn) in enumerate(chain):
+                try:
+                    logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
+                    if state.use_remote and "docling" in conv_name:
+                        logger.info(
+                            "Routing %s to external Docling service at %s",
+                            filename,
+                            settings.docling_service_url,
+                        )
+                        if ocr_mode == OcrMode.FULL_PAGE:
+                            md_content, state.pic_results = await _remote_pdf_to_markdown(
+                                self._staging_key,
+                                force_full_page_ocr=True,
+                                ocr_lang_override=detect_ocr_langs(filename),
+                            )
+                        else:
+                            if state.pre_garbled:
+                                logger.info(
+                                    "D3a pre-garble probe fired for %s but OCR deferral "
+                                    "active; deferring to Fix-3 retry path",
+                                    filename,
+                                )
+                            md_content, state.pic_results = await _remote_pdf_to_markdown(
+                                self._staging_key,
+                            )
+                    elif ocr_mode == OcrMode.FULL_PAGE and "docling" in conv_name:
+                        md_content, state.pic_results, stages_out = _split_converter_output(
+                            await asyncio.to_thread(
+                                conv_fn,
+                                file_path,
+                                True,
+                                ocr_lang_override=detect_ocr_langs(filename),
+                            )
+                        )
+                        if stages_out:
+                            state.extraction_stages_captured = stages_out
+                    else:
+                        if state.pre_garbled and "docling" in conv_name:
+                            logger.info(
+                                "D3a pre-garble probe fired for %s but OCR deferral "
+                                "active; deferring to Fix-3 retry path",
+                                filename,
+                            )
+                        md_content, state.pic_results, stages_out = _split_converter_output(
+                            await asyncio.to_thread(conv_fn, file_path)
+                        )
+                        if stages_out:
+                            state.extraction_stages_captured = stages_out
+                    state.used_converter = conv_name
+                    break
+                except Exception as conv_exc:
+                    md_content = None
+                    state.pic_results = []
+                    if idx == 0:
+                        PDF_PRIMARY_CONVERTER_FAILURES.labels(
+                            converter=conv_name, error=type(conv_exc).__name__
+                        ).inc()
+                        logger.error(
+                            "PRIMARY PDF converter '%s' FAILED for %s (%s: %s); falling "
+                            "back to the next converter — output quality will likely "
+                            "degrade. If this is docling, verify model artifacts are "
+                            "present (DOCLING_ARTIFACTS_PATH or network egress) and the "
+                            "docling-hierarchical-pdf add-on is installed in THIS image.",
+                            conv_name,
+                            filename,
+                            type(conv_exc).__name__,
+                            conv_exc,
+                            exc_info=True,
+                        )
+                    else:
+                        logger.warning(
+                            "%s failed for %s (%s); trying next converter",
+                            conv_name,
+                            filename,
+                            conv_exc,
+                        )
+            if md_content is not None:
+                if primary_name is not None and state.used_converter != primary_name:
+                    logger.error(
+                        "PDF %s extracted by FALLBACK converter '%s' because primary "
+                        "'%s' failed; a flat 'depth<2' tree downstream is a CONVERTER "
+                        "failure, not a low-quality source. Fix the primary converter.",
+                        filename,
+                        state.used_converter,
+                        primary_name,
+                    )
+                if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                    _log_pic_splice_trace(filename, "primary", state.pic_results)
+                    md_content = splice_picture_text_for_tree(md_content, state.pic_results)
+                if state.use_remote and REMOTE_MD_RENORMALIZE:
+                    md_content = _renormalize_bidi_guarded(md_content, filename)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".md", delete=False, mode="w", encoding="utf-8"
+                ) as md_tmp:
+                    md_tmp.write(md_content)
+                    state.tmp_md_path = md_tmp.name
+                state.result = await self._run_md_to_tree(state.tmp_md_path)
+            else:
+                PDF_EXTRACT_FALLBACKS.inc()
+                logger.error(
+                    "ALL markdown converters failed for %s; falling back to legacy "
+                    "page_index. Investigate converter availability in this image.",
+                    filename,
+                )
+                state.result = await self._run_page_index_retrying(file_path)
+            state.md_content = md_content
+
+        elif ext in (".md", ".markdown", ".txt"):
+            logger.info("Running md_to_tree on: %s", filename)
+            state.result = await self._run_md_to_tree(file_path)
+
+        elif ext in (".docx", ".pptx"):
+            try:
+                logger.info("Converting %s to PDF via LibreOffice", filename)
+                pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
+                state.tmp_lo_dir = os.path.dirname(pdf_path)
+                logger.info("Running page_index on converted PDF: %s", pdf_path)
+                state.result = await self._run_page_index_retrying(pdf_path)
+            except Exception as lo_exc:
+                logger.warning(
+                    "LibreOffice/page_index failed for %s (%s), falling back to "
+                    "markdown conversion",
+                    filename,
+                    lo_exc,
+                )
+                if state.tmp_lo_dir:
+                    shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
+                    state.tmp_lo_dir = None
+                converter = docx_to_markdown if ext == ".docx" else pptx_to_markdown
+                md_content = await asyncio.to_thread(converter, file_path)
+                state.md_content = md_content
+                with tempfile.NamedTemporaryFile(
+                    suffix=".md", delete=False, mode="w", encoding="utf-8"
+                ) as md_tmp:
+                    md_tmp.write(md_content)
+                    state.tmp_md_path = md_tmp.name
+                state.result = await self._run_md_to_tree(state.tmp_md_path)
+
+        elif ext == ".xlsx":
+            logger.info("Converting XLSX to markdown tables: %s", filename)
+            md_content = await asyncio.to_thread(xlsx_to_markdown, file_path)
+            state.md_content = md_content
+            with tempfile.NamedTemporaryFile(
+                suffix=".md", delete=False, mode="w", encoding="utf-8"
+            ) as md_tmp:
+                md_tmp.write(md_content)
+                state.tmp_md_path = md_tmp.name
+            state.result = await self._run_md_to_tree(state.tmp_md_path)
+
+        elif ext in _IMAGE_EXTS:
+            logger.info("OCR image to markdown: %s", filename)
+            img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
+            md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
+            img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
+            standalone_ocr_text = ""
+            if len("".join(md_content.split())) <= MIN_STANDALONE_IMAGE_MD_CHARS:
+                standalone_ocr_text = await asyncio.to_thread(
+                    _tesseract_ocr_image, file_path, img_langs
+                )
+            else:
+                standalone_ocr_text = md_content
+            md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", md_content)
+            marker_count = md_content.count("<!-- image -->")
+            state.pic_results = [
+                PictureResult(
+                    ocr_text=standalone_ocr_text,
+                    page=1,
+                    bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                    png_bytes=img_bytes,
+                )
+                for _ in range(max(1, marker_count))
+            ]
+            state.md_content = md_content
+            with tempfile.NamedTemporaryFile(
+                suffix=".md", delete=False, mode="w", encoding="utf-8"
+            ) as md_tmp:
+                md_tmp.write(md_content)
+                state.tmp_md_path = md_tmp.name
+            state.result = await self._run_md_to_tree(state.tmp_md_path)
+
+        else:  # .html
+            logger.info("Converting HTML to markdown: %s", filename)
+            md_content = await html_to_markdown_with_images(file_path, self.model)
+            state.md_content = md_content
+            with tempfile.NamedTemporaryFile(
+                suffix=".md", delete=False, mode="w", encoding="utf-8"
+            ) as md_tmp:
+                md_tmp.write(md_content)
+                state.tmp_md_path = md_tmp.name
+            state.result = await self._run_md_to_tree(state.tmp_md_path)
+
+        # Post-conversion: split, segment, validate
+        state.result["structure"] = split_oversized_leaf_nodes(
+            state.result.get("structure", [])
+        )
+        state.result["structure"] = _segment_table_nodes(
+            state.result.get("structure", [])
+        )
+        _vt_raw = validate_tree(
+            state.result.get("structure", []),
+            expected_script=expected_script,
+            page_count=state.pdf_page_count if ext == ".pdf" else None,
+        )
+        state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+        state.ok, state.reason = _vt_raw
+        if state.gate_result and state.gate_result.all_defects:
+            logger.info(
+                "validate_tree %s: primary=%s, all_defects=%s",
+                filename,
+                state.gate_result.defect.value,
+                sorted(d.value for d in state.gate_result.all_defects),
+            )
+        state.first_defect = (
+            state.gate_result.defect
+            if state.gate_result
+            else _defect_from_reason_str(state.reason)
+        )
+        state.route = decide_route(state.first_defect, settings.flat_doc_routing)
+        state.original_gate_result = state.gate_result
+        state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
+
+    async def _recover_ocr_escalation(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 1: OCR escalation for garbled/low-content PDFs. Mutates state."""
+        low_content_ocr_eligible = (
+            state.first_defect == TreeDefect.NODE_COUNT_LOW
+            and state.total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
+        )
+        if not (
+            not state.ok
+            and (
+                state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+                or low_content_ocr_eligible
+            )
+            and ext == ".pdf"
+            and _OCR_ESCALATION_GARBLE
+        ):
+            return
+
+        pre_retry = ExtractionSnapshot(
+            result=state.result,
+            ok=state.ok,
+            defect=state.first_defect,
+            reason_str=state.reason,
+            gate_result=state.gate_result,
+            total_chars=state.total_chars,
+            md_content=state.md_content,
+            pic_results=state.pic_results,
+            used_converter=state.used_converter,
+        )
+        try:
+            escalation_langs: list[str] = []
+            for src in (
+                detect_ocr_langs(filename),
+                detect_ocr_langs(state.md_content or ""),
+            ):
+                for lg in src:
+                    if lg not in escalation_langs:
+                        escalation_langs.append(lg)
+            langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
+            logger.warning(
+                "%s on %s; escalating to force_full_page_ocr (lang=%s)",
+                "Low content" if low_content_ocr_eligible else "Garbling",
+                filename,
+                langs,
+            )
+            if state.use_remote:
+                state.md_content, state.pic_results = await _remote_pdf_to_markdown(
+                    self._staging_key,
+                    force_full_page_ocr=True,
+                    ocr_lang_override=langs,
+                )
+            else:
+                state.md_content, state.pic_results, stages_out = _split_converter_output(
+                    await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
+                )
+                if stages_out:
+                    state.extraction_stages_captured = stages_out
+            state.used_converter = "docling"
+            if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                _log_pic_splice_trace(filename, "garble_escalation", state.pic_results)
+                state.md_content = splice_picture_text_for_tree(
+                    state.md_content, state.pic_results
+                )
+            if state.use_remote and REMOTE_MD_RENORMALIZE:
+                state.md_content = _renormalize_bidi_guarded(state.md_content, filename)
+
+            await self._reconvert_and_revalidate(
+                state, state.md_content, expected_script=expected_script
+            )
+            state.original_gate_result = state.gate_result
+
+            post_retry_chars = len(
+                _flatten_tree_text(state.result.get("structure", []))
+            )
+
+            def _repeating_token_density(text: str) -> float | None:
+                from collections import Counter
+
+                tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
+                if len(tokens) < 20:
+                    return None
+                return Counter(tokens).most_common(1)[0][1] / len(tokens)
+
+            if post_retry_chars < pre_retry.total_chars:
+                retry_wins = False
+            elif post_retry_chars == pre_retry.total_chars:
+                retry_wins = state.ok or (
+                    check_garble(
+                        _flatten_tree_text(pre_retry.result.get("structure", [])),
+                        expected_script=expected_script,
+                        context=GarbleContext.RETRY_COMPARISON,
+                    )
+                    and not check_garble(
+                        _flatten_tree_text(state.result.get("structure", [])),
+                        expected_script=expected_script,
+                        context=GarbleContext.RETRY_COMPARISON,
+                    )
+                )
+            else:
+                _pre_garble_flag = check_garble(
+                    _flatten_tree_text(pre_retry.result.get("structure", [])),
+                    expected_script=expected_script,
+                    context=GarbleContext.RETRY_COMPARISON,
+                )
+                if _pre_garble_flag:
+                    _pre_density = _repeating_token_density(
+                        _flatten_tree_text(pre_retry.result.get("structure", []))
+                    )
+                    _post_density = _repeating_token_density(
+                        _flatten_tree_text(state.result.get("structure", []))
+                    )
+                    if _pre_density is None:
+                        retry_wins = post_retry_chars >= LOW_CONTENT_OCR_CHAR_FLOOR
+                        if not retry_wins:
+                            logger.warning(
+                                "RFC-030 D1: post-retry chars (%d) below quality"
+                                " floor (%d) for %s -- reverting to pre-retry result",
+                                post_retry_chars,
+                                LOW_CONTENT_OCR_CHAR_FLOOR,
+                                filename,
+                            )
+                    else:
+                        if _post_density is None:
+                            retry_wins = True
+                        else:
+                            _density_improved = _post_density < _pre_density * 0.80
+                            retry_wins = _density_improved
+                            if not retry_wins:
+                                logger.warning(
+                                    "RFC-029 D4: post-retry repeating-token density (%.3f)"
+                                    " not substantially better than pre-retry (%.3f) for %s"
+                                    " — reverting to pre-retry result",
+                                    _post_density,
+                                    _pre_density,
+                                    filename,
+                                )
+                else:
+                    retry_wins = True
+            if not retry_wins:
+                (
+                    state.result, state.ok, state.reason,
+                    state.gate_result, state.original_gate_result,
+                    state.md_content, state.pic_results, state.used_converter,
+                ) = pre_retry.restore()
+                state.total_chars = pre_retry.total_chars
+                if state.tmp_md_path and os.path.exists(state.tmp_md_path):
+                    os.unlink(state.tmp_md_path)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".md", delete=False, mode="w", encoding="utf-8"
+                ) as md_tmp:
+                    md_tmp.write(state.md_content)
+                    state.tmp_md_path = md_tmp.name
+            OCR_ESCALATION_TOTAL.labels(
+                result="recovered" if state.ok else "still_garbled"
+            ).inc()
+        except Exception as ocr_exc:
+            OCR_ESCALATION_TOTAL.labels(result="error").inc()
+            logger.error(
+                "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
+            )
+
+    async def _recover_rtl_repair(
+        self,
+        state: ExtractionState,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 2: RTL bidi repair in-place. Mutates state."""
+        if not (not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf"):
+            return
+        try:
+
+            def _repair_rtl_nodes(nodes: list) -> None:
+                for n in nodes:
+                    for key in ("title", "text"):
+                        val = n.get(key)
+                        if isinstance(val, str) and val:
+                            n[key] = reconstruct_bidi_order(val)
+                    _repair_rtl_nodes(n.get("nodes") or [])
+
+            _repair_rtl_nodes(state.result.get("structure", []))
+            _vt_raw = validate_tree(
+                state.result.get("structure", []),
+                expected_script=expected_script,
+                page_count=state.pdf_page_count if ext == ".pdf" else None,
+            )
+            state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
+            state.ok, state.reason = _vt_raw
+            state.original_gate_result = state.gate_result
+            logger.warning(
+                "RTL reversal on %s; reconstruct_bidi_order repair %s",
+                filename,
+                "converged" if state.ok else "did not converge",
+            )
+        except Exception as bidi_exc:
+            logger.error(
+                "RTL bidi repair failed for %s (%s)", filename, bidi_exc, exc_info=True
+            )
+
+    async def _recover_rtl_flat_compare(
+        self,
+        state: ExtractionState,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 3: RTL flat-vs-tree reversal comparison. Mutates state."""
+        if not (
+            not state.ok
+            and state.first_defect == TreeDefect.RTL_REVERSAL
+            and ext == ".pdf"
+            and settings.flat_doc_routing
+            and state.md_content
+        ):
+            return
+        try:
+            _flat_cmp_cc, _flat_cmp_blocks = await asyncio.to_thread(
+                route_and_extract_flat, state.md_content
+            )
+            _flat_cmp_text = "\n".join(
+                _flat_block_primary_text(b) for b in _flat_cmp_blocks
+            )
+            _tree_cmp_text = _flatten_tree_text(state.result.get("structure", []))
+            if not decide_rtl(
+                _flat_cmp_text
+            ).reversed and decide_rtl(_tree_cmp_text).reversed:
+                logger.warning(
+                    "RFC-033 D8: tree-path text still mirror-reversed after "
+                    "bidi repair for %s; flat-path source not reversed — "
+                    "preferring flat result",
+                    filename,
+                )
+                state.route = Route.FLAT
+        except Exception as _flat_cmp_exc:
+            logger.warning(
+                "RFC-033 D8: flat-path reversal comparison failed for %s (%s); "
+                "keeping tree",
+                filename,
+                _flat_cmp_exc,
+            )
+
+    async def _recover_vlm_fallback(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 4: VLM last-resort fallback for garble-rejected PDFs. Mutates state."""
+        if not (
+            not state.ok
+            and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+            and ext == ".pdf"
+            and settings.vlm_fallback
+        ):
+            return
+        try:
+            from .converters import vlm_extract_markdown
+
+            logger.warning(
+                "Garbling persists after OCR escalation for %s; "
+                "attempting VLM fallback (model=%s)",
+                filename,
+                settings.vlm_model,
+            )
+            state.md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
+            state.pic_results = []
+            await self._reconvert_and_revalidate(
+                state, state.md_content, expected_script=expected_script
+            )
+            VLM_FALLBACK_TOTAL.labels(
+                result="recovered" if state.ok else "still_garbled"
+            ).inc()
+
+            if (
+                not state.ok
+                and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+                and _D7_GARBLE_RECOVERY_ENABLED
+            ):
+                recovered_md = await _attempt_tesseract_raster_recovery(
+                    file_path, expected_script, filename
+                )
+                if recovered_md:
+                    state.md_content = recovered_md
+                    state.pic_results = []
+                    state.route = Route.FLAT
+        except Exception as vlm_exc:
+            VLM_FALLBACK_TOTAL.labels(result="error").inc()
+            logger.error(
+                "VLM fallback failed for %s (%s)",
+                filename,
+                vlm_exc,
+                exc_info=True,
+            )
+            if _VLM_TESSERACT_FALLBACK_ENABLED:
+                recovered_md = await _attempt_tesseract_raster_recovery(
+                    file_path, expected_script, filename
+                )
+                if recovered_md:
+                    state.md_content = recovered_md
+                    state.pic_results = []
+                    state.route = Route.FLAT
+
+    async def _recover_image_dominant_ocr(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 5: Image-dominant OCR retry. Mutates state."""
+        if not (
+            not state.ok
+            and state.first_defect in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW)
+            and ext == ".pdf"
+            and _OCR_ESCALATION_GARBLE
+            and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
+            and settings.flat_doc_routing
+            and state.md_content
+        ):
+            return
+
+        total_lines = state.md_content.splitlines()
+        non_empty_lines = [ln for ln in total_lines if ln.strip()]
+        image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
+        if not non_empty_lines or (image_lines / len(non_empty_lines)) <= 0.50:
+            return
+
+        try:
+            escalation_langs: list[str] = []
+            for src in (
+                detect_ocr_langs(filename),
+                detect_ocr_langs(state.md_content or ""),
+            ):
+                for lg in src:
+                    if lg not in escalation_langs:
+                        escalation_langs.append(lg)
+            langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
+            logger.warning(
+                "Image-dominant (%d/%d non-empty lines) on %s; "
+                "escalating to force_full_page_ocr (lang=%s)",
+                image_lines,
+                len(non_empty_lines),
+                filename,
+                langs,
+            )
+            if state.use_remote:
+                state.md_content, state.pic_results = await _remote_pdf_to_markdown(
+                    self._staging_key,
+                    force_full_page_ocr=True,
+                    ocr_lang_override=langs,
+                )
+            else:
+                state.md_content, state.pic_results, stages_out = _split_converter_output(
+                    await asyncio.to_thread(
+                        pdf_to_markdown_docling, file_path, True, langs
+                    )
+                )
+                if stages_out:
+                    state.extraction_stages_captured = stages_out
+            if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                _log_pic_splice_trace(
+                    filename, "image_dominant_escalation", state.pic_results
+                )
+                state.md_content = splice_picture_text_for_tree(
+                    state.md_content, state.pic_results
+                )
+            await self._reconvert_and_revalidate(
+                state, state.md_content, expected_script=expected_script
+            )
+            OCR_ESCALATION_TOTAL.labels(
+                result="recovered" if state.ok else "still_image_only"
+            ).inc()
+        except Exception as ocr_exc:
+            OCR_ESCALATION_TOTAL.labels(result="error").inc()
+            logger.error(
+                "Image-ratio OCR escalation failed for %s (%s)",
+                filename,
+                ocr_exc,
+                exc_info=True,
+            )
+
+    async def _recover_flat_prefer(
+        self,
+        state: ExtractionState,
+        filename: str,
+        ext: str,
+    ) -> None:
+        """Recovery 6: content-density flat-prefer guard. Mutates state."""
+        if not (state.ok and state.md_content and settings.flat_doc_routing):
+            return
+        _tree_char_count = len(_flatten_tree_text(state.result.get("structure", [])))
+        if _tree_char_count <= 0:
+            return
+        try:
+            _flat_cc, _flat_blocks = await asyncio.to_thread(
+                route_and_extract_flat, state.md_content
+            )
+            _flat_char_count = sum(
+                len(_flat_block_primary_text(b)) for b in _flat_blocks
+            )
+            if _flat_char_count > _RFC029_FLAT_PREFER_MULTIPLIER * _tree_char_count:
+                logger.warning(
+                    "RFC-029 D1: flat char count (%d) > %.1f× tree char count"
+                    " (%d) for %s — preferring flat result",
+                    _flat_char_count,
+                    _RFC029_FLAT_PREFER_MULTIPLIER,
+                    _tree_char_count,
+                    filename,
+                )
+                state.ok = False
+                state.route = Route.FLAT
+        except Exception as _flat_exc:
+            logger.warning(
+                "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
+                filename,
+                _flat_exc,
+            )
+
+    async def _recover_landscape_reroute(
+        self,
+        state: ExtractionState,
+        filename: str,
+    ) -> None:
+        """Recovery 7: landscape fallback re-routing. Mutates state."""
+        if not (state.ok and settings.flat_doc_routing):
+            return
+        if any(
+            isinstance(
+                skip_reason_from_str(pr.get("skipped_reason")),
+                SkipReason,
+            )
+            and skip_reason_from_str(pr.get("skipped_reason")) is SkipReason.LANDSCAPE_FALLBACK
+            for pr in state.pic_results
+        ):
+            logger.warning(
+                "RFC-035 D2: landscape fallback re-extraction triggered picture "
+                "detection for %s — re-routing tree pass to flat-mixed",
+                filename,
+            )
+            state.ok = False
+            state.route = Route.FLAT
+
+    async def _persist_flat_result(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+        sha256: str,
+        file_bytes: bytes,
+        pdf_classification: dict | None,
+        _effective_cfg: dict,
+        _effective_config_at_job_start: dict | None,
+    ) -> str | None:
+        """Persist a flat-routed document. Returns doc_id on success, None if unavailable/garbled."""
+        flat_md = state.md_content
+        if flat_md is None and state.tmp_md_path is not None:
+            flat_md = await asyncio.to_thread(
+                lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
+                state.tmp_md_path,
+            )
+        if flat_md is None and ext in (".md", ".markdown", ".txt"):
+            flat_md = await asyncio.to_thread(
+                lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
+                file_path,
+            )
+
+        state.flat_garble_unrecovered = False
+        if flat_md is None:
+            return None
+
+        _log_pic_splice_trace(filename, "flat_figure_markers", state.pic_results)
+        flat_md = splice_figure_markers(flat_md, state.pic_results)
+
+        state.flat_garble_unrecovered = False
+        if check_garble(
+            flat_md,
+            expected_script=expected_script,
+            context=GarbleContext.FLAT_MARKDOWN,
+            original_defect=state.first_defect,
+        ):
+            state.flat_garble_unrecovered = True
+            state.reason = "garbling"
+            logger.warning(
+                "Flat-path garble gate triggered for %s; "
+                "overriding reason to garbling",
+                filename,
+            )
+            if ext == ".pdf" and settings.vlm_fallback:
+                try:
+                    from .converters import vlm_extract_markdown
+
+                    logger.warning(
+                        "Flat-path garbling on %s; attempting "
+                        "VLM fallback (model=%s)",
+                        filename,
+                        settings.vlm_model,
+                    )
+                    vlm_md = await vlm_extract_markdown(
+                        file_path, settings.vlm_model
+                    )
+                    if not check_garble(
+                        vlm_md,
+                        expected_script=expected_script,
+                        context=GarbleContext.FLAT_MARKDOWN,
+                    ):
+                        flat_md = vlm_md
+                        state.pic_results = []
+                        state.flat_garble_unrecovered = False
+                        VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
+                    else:
+                        VLM_FALLBACK_TOTAL.labels(result="still_garbled").inc()
+                except Exception as vlm_exc:
+                    VLM_FALLBACK_TOTAL.labels(result="error").inc()
+                    logger.error(
+                        "VLM fallback failed for %s (%s)",
+                        filename,
+                        vlm_exc,
+                        exc_info=True,
+                    )
+        if state.flat_garble_unrecovered:
+            return None
+
+        doc_id, content_class, blocks, image_enrichment_ratio = (
+            await _apply_picture_enrichment(
+                flat_md, state.pic_results, ext, filename,
+                splice_markers=False,
+            )
+        )
+
+        logger.info(
+            "Routing %s to flat success path: reason=%s content_class=%s",
+            filename,
+            state.reason,
+            content_class,
+        )
+
+        protocol = "https" if settings.minio_secure else "http"
+        source_url = (
+            f"{protocol}://{settings.minio_endpoint}"
+            f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
+        )
+        processed_at = datetime.now(UTC).isoformat()
+
+        flat_structure = state.result.get("structure", [])
+        if blocks:
+            flat_structure = [
+                {"title": "", "text": _flat_block_primary_text(b)}
+                for b in blocks
+                if _flat_block_primary_text(b).strip()
+            ]
+
+        f_prior_verdict = await asyncio.to_thread(
+            find_prior_verdict, sha256, filename, doc_id
+        )
+        f_verdict, f_verdict_reason = classify_verdict(
+            flat_structure,
+            content_class,
+            None,
+            image_enrichment_ratio=image_enrichment_ratio,
+            prior_verdict=f_prior_verdict,
+            expected_script=expected_script,
+        )
+        _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
+
+        flat_desc = await asyncio.to_thread(
+            _generate_flat_doc_description,
+            flat_md,
+            doc_id=doc_id,
+        )
+
+        flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+
+        flat_meta = {
+            "doc_id": doc_id,
+            "doc_name": filename,
+            "source_url": source_url,
+            "processed_at": processed_at,
+            "sha256": sha256,
+            "content_class": content_class,
+            "blocks": blocks,
+            "doc_description": flat_desc,
+            "verdict": f_verdict,
+            "verdict_reason": f_verdict_reason,
+            "max_leaf_ratio": round(f_mlr, 4),
+            "flat_char_count": flat_char_count,
+            "pipeline_version": CURRENT_PIPELINE_VERSION,
+            "verdict_computed_at": datetime.now(UTC).isoformat(),
+            "build_sha": _CLIENT_BUILD_SHA,
+            "effective_config": _effective_cfg,
+        }
+        if _effective_config_at_job_start is not None:
+            flat_meta["effective_config_at_job_start"] = _effective_config_at_job_start
+        await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
+        FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
+
+        try:
+            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+        except Exception:
+            RAW_UPLOAD_FAILURES.inc()
+            logger.exception(
+                "save_raw failed after save_flat_doc succeeded for doc_id=%s",
+                doc_id,
+            )
+
+        await asyncio.to_thread(hash_cache_set, filename, sha256)
+
+        logger.info(
+            "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
+            filename,
+            doc_id,
+            content_class,
+            len(blocks),
+        )
+        self.last_content_class = content_class
+        return doc_id
+
+    async def _persist_tree_result(
+        self,
+        state: ExtractionState,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+        sha256: str,
+        file_bytes: bytes,
+        pdf_classification: dict | None,
+        _effective_cfg: dict,
+        _effective_config_at_job_start: dict | None,
+    ) -> str:
+        """Persist a tree-routed document. Returns doc_id."""
+        doc_id = str(uuid.uuid4())
+
+        protocol = "https" if settings.minio_secure else "http"
+        source_url = (
+            f"{protocol}://{settings.minio_endpoint}"
+            f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
+        )
+
+        processed_at = datetime.now(UTC).isoformat()
+        structure = state.result.get("structure", [])
+
+        prior_verdict = await asyncio.to_thread(
+            find_prior_verdict, sha256, filename, doc_id
+        )
+        verdict, verdict_reason = classify_verdict(
+            structure,
+            "",
+            state.original_gate_result,
+            prior_verdict=prior_verdict,
+            inspector_class=(
+                pdf_classification.get("pdf_type") if pdf_classification else None
+            ),
+            expected_script=expected_script,
+        )
+        _, _, mlr = _tree_max_leaf_ratio(structure)
+        _verdict_computed_at = datetime.now(UTC).isoformat()
+
+        await asyncio.to_thread(
+            save_doc,
+            doc_id,
+            {
+                "doc_id": doc_id,
+                "doc_name": filename,
+                "source_url": source_url,
+                "processed_at": processed_at,
+                "sha256": sha256,
+                "doc_description": state.result.get("doc_description", ""),
+                "structure": structure,
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "max_leaf_ratio": round(mlr, 4),
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": _verdict_computed_at,
+            },
+        )
+
+        await asyncio.to_thread(
+            write_verdict,
+            doc_id,
+            verdict,
+            verdict_reason,
+            CURRENT_PIPELINE_VERSION,
+            _verdict_computed_at,
+            round(mlr, 4),
+        )
+        meta = {
+            "doc_id": doc_id,
+            "doc_name": filename,
+            "source_url": source_url,
+            "processed_at": processed_at,
+            "sha256": sha256,
+            "doc_description": state.result.get("doc_description", ""),
+            "total_tree_chars": len(_flatten_tree_text(structure)),
+            "build_sha": _CLIENT_BUILD_SHA,
+            "effective_config": _effective_cfg,
+            "decider_version": "zone3_decide_rtl_v1",
+        }
+        if (
+            state.original_gate_result is not None
+            and state.original_gate_result.all_defects
+        ):
+            meta["all_defects"] = sorted(
+                d.value for d in state.original_gate_result.all_defects
+            )
+        if _effective_config_at_job_start is not None:
+            meta["effective_config_at_job_start"] = _effective_config_at_job_start
+        if ext == ".pdf":
+            _route_remote = bool(
+                state.use_remote
+                and state.used_converter
+                and "docling" in state.used_converter
+            )
+            meta["extraction_route"] = "remote" if _route_remote else "local"
+            if state.used_converter:
+                meta["converter_name"] = state.used_converter
+                contract = _converter_contract(state.used_converter)
+                if contract is not None:
+                    meta["converter_contract"] = contract
+            if state.pdf_page_count is not None:
+                meta["page_count"] = state.pdf_page_count
+            if pdf_classification and PDF_INSPECTOR_PRECLASSIFY:
+                meta["inspector_class"] = pdf_classification.get("pdf_type")
+            if state.extraction_stages_captured:
+                meta["extraction_stages"] = state.extraction_stages_captured
+            if _route_remote and _remote_docling_version:
+                meta["remote_build_sha"] = _remote_docling_version.get(
+                    "commit_sha", "unknown"
+                )
+        await asyncio.to_thread(save_doc_meta, doc_id, meta)
+
+        try:
+            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+        except Exception:
+            RAW_UPLOAD_FAILURES.inc()
+            logger.exception(
+                "save_raw failed after save_doc succeeded for doc_id=%s", doc_id
+            )
+
+        await asyncio.to_thread(hash_cache_set, filename, sha256)
+
+        logger.info(
+            "Indexed %s → doc_id=%s (%d sections)",
+            filename,
+            doc_id,
+            len(state.result.get("structure", [])),
+        )
+        return doc_id
+
+    # ------------------------------------------------------------------
+    # Indexing — orchestrator
+    # ------------------------------------------------------------------
+
+    async def index(
         self,
         file_path: str,
         mode: str = "auto",
@@ -929,22 +2028,7 @@ class CustomPageIndexClient(PageIndexClient):
 
         Skips reprocessing if the file content is unchanged (SHA-256 dedup).
         Supported extensions: .pdf, .md, .markdown, .txt, .docx, .pptx, .html
-
-        pdf_classification: optional pre-computed classification dict from
-        converters_cli's probe_conversion_route() (RFC-032 D0). Consumed by the
-        D1 Tier-1 activation below to force full-page OCR upfront when the PDF
-        is confidently scanned/image-based; no behavioral change when None.
-
-        job_start_config: optional effective_config_snapshot() captured by the
-        worker parent when the job was enqueued (Zone-7). Compared against the
-        snapshot taken fresh here at the top of this subprocess call; a mismatch
-        means config drifted between enqueue and execution (e.g. a mid-flight
-        env/deploy change) and is stamped into the sidecar as
-        effective_config_at_job_start so that drift is observable, not silent.
         """
-        # Reset per call so a prior flat doc's content_class can't leak into a
-        # subsequent tree doc when this client instance is reused. The flat
-        # routing path re-sets it below when (and only when) it applies.
         self.last_content_class = None
 
         from .config import effective_config_snapshot
@@ -966,7 +2050,6 @@ class CustomPageIndexClient(PageIndexClient):
         ext = Path(filename).suffix.lower()
         logger.info("Indexing file: %s (ext=%s)", filename, ext)
 
-        # F2 (RFC-020): derive expected script from filename for garble-gate threading
         expected_script = _script_from_filename(filename)
 
         if ext not in _SUPPORTED:
@@ -978,8 +2061,6 @@ class CustomPageIndexClient(PageIndexClient):
         sha256 = hashlib.sha256(file_bytes).hexdigest()
         logger.debug("File %s: size=%d bytes, sha256=%s", filename, len(file_bytes), sha256[:12])
 
-        # Hash-based dedup: skip if content unchanged. D6: HGET is a single
-        # atomic Redis op, so no lock is needed to avoid a cache-miss race.
         cached_sha256 = await asyncio.to_thread(hash_cache_get, filename)
         if cached_sha256 == sha256:
             docs = await asyncio.to_thread(list_processed_docs)
@@ -988,1301 +2069,102 @@ class CustomPageIndexClient(PageIndexClient):
                     logger.info(
                         "Skipping %s (unchanged, existing doc_id=%s)", filename, d["doc_id"]
                     )
-                    # FLAT-04 parity: the SHA-dedup early return must restore
-                    # last_content_class (reset to None at the top of index())
-                    # so an unchanged flat doc still surfaces content_class in
-                    # the converters_cli stdout payload, matching a non-deduped
-                    # flat index (cubic PR #9).
                     self.last_content_class = d.get("content_class") or None
                     return d["doc_id"]
 
-        # Convert / index
-        tmp_lo_dir = None  # LibreOffice temp dir
-        tmp_md_path = None  # HTML → markdown temp file
-        md_content = None  # FLAT-03: converter markdown for the flat-routing branch
-        # Audit finding 1/11: per-picture OCR/crop results travel as a function
-        # local (converter return value), never a thread-local; the frame drops
-        # on return so crop bytes are never pinned process-wide.
-        pic_results: list = []
+        state = ExtractionState(
+            result={},
+            ok=False,
+            reason="",
+            gate_result=None,
+            original_gate_result=None,
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.REJECT,
+            md_content=None,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter=None,
+            total_chars=0,
+            extraction_stages_captured=[],
+        )
 
         try:
-            if ext == ".pdf":
-                # INDEX-01-C1/C2: try the config-ordered markdown converters
-                # (pymupdf4llm / docling, per PDF_CONVERTER), then fall back to
-                # the legacy page_index route only if every converter fails.
-                md_content = None
+            await self._convert_to_tree(
+                state, file_path, filename, ext, expected_script, pdf_classification
+            )
 
-                # RFC-032 D1: pdf-inspector Tier 1 activation. If pre-classification is
-                # enabled and confidently reports a scanned/image-based document, force
-                # full-page OCR on the primary conversion attempt instead of wasting a
-                # non-OCR pass that validate_tree() would just reject.
-                inspector_force_ocr = False
+            # Recovery pipeline
+            await self._recover_ocr_escalation(
+                state, file_path, filename, ext, expected_script
+            )
+            await self._recover_rtl_repair(state, filename, ext, expected_script)
+            await self._recover_rtl_flat_compare(state, filename, ext, expected_script)
+            await self._recover_vlm_fallback(
+                state, file_path, filename, ext, expected_script
+            )
+            await self._recover_image_dominant_ocr(
+                state, file_path, filename, ext, expected_script
+            )
+            await self._recover_flat_prefer(state, filename, ext)
+            await self._recover_landscape_reroute(state, filename)
+
+            if not state.ok:
+                if state.route == Route.FLAT:
+                    doc_id = await self._persist_flat_result(
+                        state,
+                        file_path,
+                        filename,
+                        ext,
+                        expected_script,
+                        sha256,
+                        file_bytes,
+                        pdf_classification,
+                        _effective_cfg,
+                        _effective_config_at_job_start,
+                    )
+                    if doc_id is not None:
+                        return doc_id
+
                 if (
-                    PDF_INSPECTOR_PRECLASSIFY
-                    and pdf_classification is not None
-                    and pdf_classification.get("pdf_type") in ("scanned", "image_based")
-                    and pdf_classification.get("confidence", 0) >= 0.90
+                    state.route in (Route.REJECT, Route.FLAT)
+                    or state.flat_garble_unrecovered
                 ):
-                    inspector_force_ocr = True
-                    PDF_INSPECTOR_FORCED_OCR.inc()
-                    logger.info(
-                        "RFC-032: pdf-inspector classified %s as %s (confidence=%.2f), "
-                        "forcing full-page OCR upfront",
-                        filename,
-                        pdf_classification.get("pdf_type"),
-                        pdf_classification.get("confidence", 0),
+                    _reject_reason = (
+                        "garbling"
+                        if state.flat_garble_unrecovered
+                        else state.first_defect.value
                     )
-
-                # D3a (RFC-018): pre-conversion text-layer probe. If the raw PDF text
-                # layer is garbled, skip straight to force_full_page_ocr=True instead of
-                # wasting a non-OCR conversion attempt.
-                pre_garbled = False
-                pdf_page_count: int | None = None  # RFC-029 D2: threaded into validate_tree
-                from .config import ALLOW_AGPL_FALLBACK
-
-                if not ALLOW_AGPL_FALLBACK:
-                    # RFC-034 D4: fitz (PyMuPDF) is AGPL-3.0. Skip the probe entirely;
-                    # degraded but compliant — the normal chain handles garble escalation.
-                    logger.warning(
-                        "D3a pre-conversion probe skipped for %s: ALLOW_AGPL_FALLBACK=false "
-                        "blocks fitz (PyMuPDF, AGPL-3.0)",
-                        filename,
-                    )
-                else:
-                    try:
-                        import fitz  # PyMuPDF, AGPL-3.0 — gated by ALLOW_AGPL_FALLBACK above
-
-                        with fitz.open(file_path) as probe_pdf:
-                            pdf_page_count = (
-                                probe_pdf.page_count if probe_pdf.page_count > 0 else None
-                            )
-                            if probe_pdf.page_count > 0:
-                                raw_text = probe_pdf[0].get_text()
-                                if raw_text.strip() and check_garble(
-                                    raw_text, expected_script=expected_script, context=GarbleContext.FLAT_MARKDOWN
-                                ):
-                                    pre_garbled = True
-                                    logger.info(
-                                        "D3a: raw text layer garbled for %s, forcing full-page "
-                                        "OCR upfront",
-                                        filename,
-                                    )
-                    except Exception:
-                        pass  # probe failure is non-fatal — fall through to the normal chain
-
-                # QF1 (RFC-021): forcing full-page OCR on the primary conversion
-                # attempt destroys Docling's PictureItem segmentation. Defer to the
-                # existing Fix-3 retry path (which already handles OCR escalation on
-                # validate_tree reason="garbling") unless explicitly re-enabled.
-                PRE_GARBLE_FORCE_OCR_ENABLED = (
-                    os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
-                )
-
-                # Zone-6: centralised OCR-mode decision replaces the ad-hoc
-                # inspector_force_ocr / pre_garbled boolean checks below.
-                # Zone-5: per-picture enrichment gate (not page-level garble retry).
-                ocr_mode = decide_ocr_mode(
-                    ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
-                    has_image_markers=False,  # not yet known pre-conversion
-                    force_full_page=(
-                        inspector_force_ocr
-                        or (pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED)
-                    ),
-                )
-
-                chain = pdf_markdown_converters()
-                primary_name = chain[0][0] if chain else None
-                used_converter = None
-                extraction_stages_captured: list = []
-                _use_remote = bool(
-                    getattr(settings, "docling_service_url", None) and self._staging_key
-                )
-                for idx, (conv_name, conv_fn) in enumerate(chain):
-                    try:
-                        logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                        if _use_remote and "docling" in conv_name:
-                            logger.info(
-                                "Routing %s to external Docling service at %s",
-                                filename,
-                                settings.docling_service_url,
-                            )
-                            if ocr_mode == OcrMode.FULL_PAGE:
-                                md_content, pic_results = await _remote_pdf_to_markdown(
-                                    self._staging_key,  # type: ignore[arg-type]
-                                    force_full_page_ocr=True,
-                                    ocr_lang_override=detect_ocr_langs(filename),
-                                )
-                            else:
-                                if pre_garbled:
-                                    logger.info(
-                                        "D3a pre-garble probe fired for %s but OCR deferral "
-                                        "active; deferring to Fix-3 retry path",
-                                        filename,
-                                    )
-                                md_content, pic_results = await _remote_pdf_to_markdown(
-                                    self._staging_key,  # type: ignore[arg-type]
-                                )
-                        elif ocr_mode == OcrMode.FULL_PAGE and "docling" in conv_name:
-                            md_content, pic_results, stages_out = _split_converter_output(
-                                await asyncio.to_thread(
-                                    conv_fn,
-                                    file_path,
-                                    True,
-                                    ocr_lang_override=detect_ocr_langs(filename),
-                                )
-                            )
-                            if stages_out:
-                                extraction_stages_captured = stages_out
-                        else:
-                            if pre_garbled and "docling" in conv_name:
-                                logger.info(
-                                    "D3a pre-garble probe fired for %s but OCR deferral "
-                                    "active; deferring to Fix-3 retry path",
-                                    filename,
-                                )
-                            md_content, pic_results, stages_out = _split_converter_output(
-                                await asyncio.to_thread(conv_fn, file_path)
-                            )
-                            if stages_out:
-                                extraction_stages_captured = stages_out
-                        used_converter = conv_name
-                        break
-                    except Exception as conv_exc:
-                        md_content = None
-                        pic_results = []
-                        if idx == 0:
-                            # The CONFIGURED PRIMARY converter failed. Never let this be
-                            # masked downstream as a generic "depth<2": log it loudly with
-                            # the full traceback (import / model-weights / convert errors)
-                            # and a dedicated metric so it is alertable and unambiguous.
-                            PDF_PRIMARY_CONVERTER_FAILURES.labels(
-                                converter=conv_name, error=type(conv_exc).__name__
-                            ).inc()
-                            logger.error(
-                                "PRIMARY PDF converter '%s' FAILED for %s (%s: %s); falling "
-                                "back to the next converter — output quality will likely "
-                                "degrade. If this is docling, verify model artifacts are "
-                                "present (DOCLING_ARTIFACTS_PATH or network egress) and the "
-                                "docling-hierarchical-pdf add-on is installed in THIS image.",
-                                conv_name,
-                                filename,
-                                type(conv_exc).__name__,
-                                conv_exc,
-                                exc_info=True,
-                            )
-                        else:
-                            logger.warning(
-                                "%s failed for %s (%s); trying next converter",
-                                conv_name,
-                                filename,
-                                conv_exc,
-                            )
-                if md_content is not None:
-                    if primary_name is not None and used_converter != primary_name:
-                        # We produced markdown, but NOT with the configured primary. Any
-                        # resulting flat/garbled tree is a converter problem, not a generic
-                        # low-quality document — say so explicitly.
-                        logger.error(
-                            "PDF %s extracted by FALLBACK converter '%s' because primary "
-                            "'%s' failed; a flat 'depth<2' tree downstream is a CONVERTER "
-                            "failure, not a low-quality source. Fix the primary converter.",
-                            filename,
-                            used_converter,
-                            primary_name,
-                        )
-                    if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                        _log_pic_splice_trace(filename, "primary", pic_results)
-                        md_content = splice_picture_text_for_tree(md_content, pic_results)
-                    if _use_remote and REMOTE_MD_RENORMALIZE:
-                        md_content = _renormalize_bidi_guarded(md_content, filename)
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".md", delete=False, mode="w", encoding="utf-8"
-                    ) as md_tmp:
-                        md_tmp.write(md_content)
-                        tmp_md_path = md_tmp.name
-                    result = await self._run_md_to_tree(tmp_md_path)
-                else:
-                    PDF_EXTRACT_FALLBACKS.inc()
-                    logger.error(
-                        "ALL markdown converters failed for %s; falling back to legacy "
-                        "page_index. Investigate converter availability in this image.",
-                        filename,
-                    )
-                    result = await self._run_page_index_retrying(file_path)
-
-            elif ext in (".md", ".markdown", ".txt"):
-                logger.info("Running md_to_tree on: %s", filename)
-                result = await self._run_md_to_tree(file_path)
-
-            elif ext in (".docx", ".pptx"):
-                try:
-                    logger.info("Converting %s to PDF via LibreOffice", filename)
-                    pdf_path = await asyncio.to_thread(libreoffice_to_pdf, file_path)
-                    tmp_lo_dir = os.path.dirname(pdf_path)
-                    logger.info("Running page_index on converted PDF: %s", pdf_path)
-                    result = await self._run_page_index_retrying(pdf_path)
-                except Exception as lo_exc:
-                    logger.warning(
-                        "LibreOffice/page_index failed for %s (%s), falling back to "
-                        "markdown conversion",
-                        filename,
-                        lo_exc,
-                    )
-                    if tmp_lo_dir:
-                        shutil.rmtree(tmp_lo_dir, ignore_errors=True)
-                        tmp_lo_dir = None
-                    converter = docx_to_markdown if ext == ".docx" else pptx_to_markdown
-                    md_content = await asyncio.to_thread(converter, file_path)
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".md", delete=False, mode="w", encoding="utf-8"
-                    ) as md_tmp:
-                        md_tmp.write(md_content)
-                        tmp_md_path = md_tmp.name
-                    result = await self._run_md_to_tree(tmp_md_path)
-
-            elif ext == ".xlsx":
-                # Fix 4: spreadsheets carry no heading hierarchy -> openpyxl emits
-                # markdown tables that the flat-table router serializes cell-by-cell.
-                # The depth<2 result naturally routes to the flat success path below.
-                logger.info("Converting XLSX to markdown tables: %s", filename)
-                md_content = await asyncio.to_thread(xlsx_to_markdown, file_path)
-                with tempfile.NamedTemporaryFile(
-                    suffix=".md", delete=False, mode="w", encoding="utf-8"
-                ) as md_tmp:
-                    md_tmp.write(md_content)
-                    tmp_md_path = md_tmp.name
-                result = await self._run_md_to_tree(tmp_md_path)
-
-            elif ext in _IMAGE_EXTS:
-                # Fix 4: an image has no text layer -> local Tesseract OCR (force full
-                # page) with a superset language set (we cannot pre-sample text to detect
-                # script). VLM stays OFF (RFC-004); no LLM egress (HR3).
-                logger.info("OCR image to markdown: %s", filename)
-                img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
-                md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
-                # D0 (RFC-018): standalone image IS the picture — synthetic
-                # PictureResult(s).  Count <!-- image --> markers so
-                # splice_figure_markers + _enrich_image_blocks get one
-                # PictureResult per marker (max(1, …) preserves the pre-D0
-                # single-result behaviour when zero markers are present).
-                img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
-                # D8a (RFC-023): the standalone-image route bypasses
-                # _recover_picture_results, so the synthetic PictureResult never gets
-                # Tesseract-recovered text. Only run it when Docling's md_content
-                # didn't already extract meaningful text, to avoid double-counting.
-                standalone_ocr_text = ""
-                if len("".join(md_content.split())) <= MIN_STANDALONE_IMAGE_MD_CHARS:
-                    standalone_ocr_text = await asyncio.to_thread(
-                        _tesseract_ocr_image, file_path, img_langs
-                    )
-                else:
-                    # D5b (RFC-029): Docling already extracted meaningful text (D8a gate
-                    # fired); pass it through as ocr_text so splice_figure_markers can
-                    # emit a [Chart text] block and the context is not silently dropped.
-                    standalone_ocr_text = md_content
-                # D6 (RFC-027): Docling can emit duplicate consecutive
-                # `<!-- image -->` markers for the same image region. Collapse
-                # only whitespace-gapped runs so distinct adjacent images
-                # (RFC-018 D0 multi-region design) stay intact.
-                md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", md_content)
-                marker_count = md_content.count("<!-- image -->")
-                pic_results = [
-                    PictureResult(
-                        ocr_text=standalone_ocr_text,
-                        page=1,
-                        bbox={"l": 0, "t": 0, "r": 0, "b": 0},
-                        png_bytes=img_bytes,
-                    )
-                    for _ in range(max(1, marker_count))
-                ]
-                with tempfile.NamedTemporaryFile(
-                    suffix=".md", delete=False, mode="w", encoding="utf-8"
-                ) as md_tmp:
-                    md_tmp.write(md_content)
-                    tmp_md_path = md_tmp.name
-                result = await self._run_md_to_tree(tmp_md_path)
-
-            else:  # .html
-                logger.info("Converting HTML to markdown: %s", filename)
-                md_content = await html_to_markdown_with_images(file_path, self.model)
-                with tempfile.NamedTemporaryFile(
-                    suffix=".md", delete=False, mode="w", encoding="utf-8"
-                ) as md_tmp:
-                    md_tmp.write(md_content)
-                    tmp_md_path = md_tmp.name
-                result = await self._run_md_to_tree(tmp_md_path)
-
-            # Fix 1: split a tail-blob leaf (an un-leveled Arabic Article node that
-            # swallowed the document tail) into per-ordinal sibling nodes BEFORE the HR5
-            # gate, so the recovered hierarchy is what gets validated and saved.
-            result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-            result["structure"] = _segment_table_nodes(result.get("structure", []))
-
-            # HR5 / WORKER-01-C2: never silently persist a low-quality tree.
-            _vt_raw = validate_tree(
-                result.get("structure", []),
-                expected_script=expected_script,
-                page_count=pdf_page_count if ext == ".pdf" else None,
-            )
-            # validate_tree returns TreeGateResult (iterable as (ok, reason_str)).
-            # Capture the typed result for classify_verdict signal reuse, then
-            # unpack for legacy string-based branching below.
-            gate_result: TreeGateResult | None = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-            ok, reason = _vt_raw
-            # Zone-1: log all co-firing defects from exhaustive gate evaluation.
-            if gate_result and gate_result.all_defects:
-                logger.info(
-                    "validate_tree %s: primary=%s, all_defects=%s",
-                    filename,
-                    gate_result.defect.value,
-                    sorted(d.value for d in gate_result.all_defects),
-                )
-            # Zone-5: typed first_defect — write-once per extraction attempt.
-            # Captures the ORIGINAL validate_tree defect before any recovery
-            # branch overwrites `reason`.  Used for routing decisions and
-            # garble-by-default keying (replaces string-based original_reason).
-            first_defect: TreeDefect = (
-                gate_result.defect if gate_result else _defect_from_reason_str(reason)
-            )
-            # Zone-5: decide the extraction route from the original defect.
-            # Recovery branches may override this to Route.FLAT when they
-            # produce usable markdown (replacing reason = "node_count<3" hijack).
-            route = decide_route(first_defect, settings.flat_doc_routing)
-            original_gate_result: TreeGateResult | None = gate_result
-
-            # RFC-027 D2: a PDF rejected as node_count<3 with fewer than
-            # LOW_CONTENT_OCR_CHAR_FLOOR chars (zero-content or near-zero/garbled scanned
-            # Arabic, e.g. مرسوم at 38 chars, القرار التنظيمي at 230 garbled chars) earns
-            # the same OCR retry as the garbling branches below, rather than being FAILed
-            # without an attempted recovery.
-            total_chars = len(_flatten_tree_text(result.get("structure", [])))
-            low_content_ocr_eligible = (
-                first_defect == TreeDefect.NODE_COUNT_LOW
-                and total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
-            )
-
-            # Fix 3: a PDF rejected for GARBLING earns ONE force_full_page_ocr retry with
-            # the Fix-5 detected language before any rejection — rescues the corrupt
-            # text-layer class (مرسوم). HR5: the retry re-runs the splitter AND the quality
-            # gate and is still rejected if it stays garbled; it never bypasses validation.
-            if (
-                not ok
-                and (
-                    first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-                    or low_content_ocr_eligible
-                )
-                and ext == ".pdf"
-                and _OCR_ESCALATION_GARBLE
-            ):
-                # D4 (RFC-028) + Zone-5: snapshot the pre-retry extraction state
-                # so a retry that produces LESS content doesn't unconditionally
-                # overwrite an already-better result.  ExtractionSnapshot
-                # consolidates all mutable variables into a single frozen object.
-                pre_retry = ExtractionSnapshot(
-                    result=result,
-                    ok=ok,
-                    defect=first_defect,
-                    reason_str=reason,
-                    gate_result=gate_result,
-                    total_chars=total_chars,
-                    md_content=md_content,
-                    pic_results=pic_results,
-                    used_converter=used_converter,
-                )
-                try:
-                    # The existing text layer garbled, so it is an UNRELIABLE language
-                    # signal for the retry (e.g. مرسوم 13/2022's corrupt CMap decodes to
-                    # Latin mojibake, which would mis-detect as 'eng' and OCR Arabic with
-                    # the English model). Detect from the filename FIRST (Arabic gazette
-                    # names carry real Arabic), then union the md-derived langs so the
-                    # script is never dropped — without forcing 'ara' onto Latin docs.
-                    escalation_langs: list[str] = []
-                    for src in (
-                        detect_ocr_langs(filename),
-                        detect_ocr_langs(md_content or ""),
-                    ):
-                        for lg in src:
-                            if lg not in escalation_langs:
-                                escalation_langs.append(lg)
-                    langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
-                    logger.warning(
-                        "%s on %s; escalating to force_full_page_ocr (lang=%s)",
-                        "Low content" if low_content_ocr_eligible else "Garbling",
-                        filename,
-                        langs,
-                    )
-                    if _use_remote:
-                        md_content, pic_results = await _remote_pdf_to_markdown(
-                            self._staging_key,  # type: ignore[arg-type]
-                            force_full_page_ocr=True,
-                            ocr_lang_override=langs,
-                        )
-                    else:
-                        md_content, pic_results, stages_out = _split_converter_output(
-                            await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs)
-                        )
-                        if stages_out:
-                            extraction_stages_captured = stages_out
-                    used_converter = "docling"  # RFC-034 D5: both branches above are docling
-                    if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                        _log_pic_splice_trace(filename, "garble_escalation", pic_results)
-                        md_content = splice_picture_text_for_tree(md_content, pic_results)
-                    if _use_remote and REMOTE_MD_RENORMALIZE:
-                        md_content = _renormalize_bidi_guarded(md_content, filename)
-                    if tmp_md_path and os.path.exists(tmp_md_path):
-                        os.unlink(tmp_md_path)
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".md", delete=False, mode="w", encoding="utf-8"
-                    ) as md_tmp:
-                        md_tmp.write(md_content)
-                        tmp_md_path = md_tmp.name
-                    result = await self._run_md_to_tree(tmp_md_path)
-                    result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    result["structure"] = _segment_table_nodes(result.get("structure", []))
-                    _vt_raw = validate_tree(
-                        result.get("structure", []),
-                        expected_script=expected_script,
-                        page_count=pdf_page_count if ext == ".pdf" else None,
-                    )
-                    gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-                    ok, reason = _vt_raw
-                    original_gate_result = gate_result
-                    # D4 (RFC-028): keep-best, not unconditional overwrite. Compare
-                    # post-retry char count against the pre-retry snapshot; on a
-                    # near-tie (equal char count), a retry that now VALIDATES ok
-                    # always wins over the pre-retry snapshot (which is by
-                    # construction never ok — this branch only runs `if not ok`)
-                    # — a same-length retry that fixed the underlying defect (e.g.
-                    # validate_tree's script/structure checks, not just text
-                    # content) must not be discarded. Only when the retry is STILL
-                    # not-ok on the tie do we fall back to _is_garbled_blob as a
-                    # secondary signal, so a marginally-longer but still-garbled
-                    # retry doesn't win over an equally-garbled original.
-                    post_retry_chars = len(_flatten_tree_text(result.get("structure", [])))
-
-                    def _repeating_token_density(text: str) -> float | None:
-                        """Return the fraction of alnum tokens that are the most-common token.
-
-                        Mirrors the single-token repetition check inside _is_garbled_blob
-                        (>30% threshold, >20 alnum tokens) but returns the raw ratio so the
-                        D4 guardrail can compare pre/post-retry densities without re-running
-                        the full garble gate. Returns None (not 0.0) when there are too few
-                        alnum tokens to assess, so "too short to assess" is distinguishable
-                        from "assessed and found clean" (RFC-030 D1).
-                        """
-                        from collections import Counter
-
-                        tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
-                        if len(tokens) < 20:
-                            return None
-                        return Counter(tokens).most_common(1)[0][1] / len(tokens)
-
-                    if post_retry_chars < pre_retry.total_chars:
-                        retry_wins = False
-                    elif post_retry_chars == pre_retry.total_chars:
-                        retry_wins = ok or (
-                            check_garble(
-                                _flatten_tree_text(pre_retry.result.get("structure", [])),
-                                expected_script=expected_script,
-                                context=GarbleContext.RETRY_COMPARISON,
-                            )
-                            and not check_garble(
-                                _flatten_tree_text(result.get("structure", [])),
-                                expected_script=expected_script,
-                                context=GarbleContext.RETRY_COMPARISON,
-                            )
-                        )
-                    else:
-                        # RFC-029 D4 (Task 3.3): char-count growth alone must not override
-                        # a garble-detection result when the pre-retry text was already
-                        # garbled AND the post-retry shows similar repeating-token patterns.
-                        # Compare repeating-token densities: if the pre-retry was garbled
-                        # and the post-retry density is within 20% of the pre-retry density,
-                        # the retry has not meaningfully de-garbled — revert to pre-retry.
-                        _pre_garble_flag = check_garble(
-                            _flatten_tree_text(pre_retry.result.get("structure", [])),
-                            expected_script=expected_script,
-                            context=GarbleContext.RETRY_COMPARISON,
-                        )
-                        if _pre_garble_flag:
-                            _pre_density = _repeating_token_density(
-                                _flatten_tree_text(pre_retry.result.get("structure", []))
-                            )
-                            _post_density = _repeating_token_density(
-                                _flatten_tree_text(result.get("structure", []))
-                            )
-                            if _pre_density is None:
-                                # RFC-030 D1: pre-retry text was too short (<20 alnum
-                                # tokens) to assess a density at all -- typically a
-                                # no-text-layer PDF whose original extraction was
-                                # near-empty. There is no baseline to compare against,
-                                # so any real OCR recovery wins, gated only by the
-                                # absolute quality floor below.
-                                retry_wins = post_retry_chars >= LOW_CONTENT_OCR_CHAR_FLOOR
-                                if not retry_wins:
-                                    logger.warning(
-                                        "RFC-030 D1: post-retry chars (%d) below quality"
-                                        " floor (%d) for %s -- reverting to pre-retry result",
-                                        post_retry_chars,
-                                        LOW_CONTENT_OCR_CHAR_FLOOR,
-                                        filename,
-                                    )
-                            else:
-                                # Similar density means the retry just produced more of
-                                # the same garble — char-count growth should not win here.
-                                if _post_density is None:
-                                    # Post-retry text also too short to assess density;
-                                    # char-count growth (outer else) decides -- retry wins.
-                                    retry_wins = True
-                                else:
-                                    _density_improved = _post_density < _pre_density * 0.80
-                                    retry_wins = _density_improved
-                                    if not retry_wins:
-                                        logger.warning(
-                                            "RFC-029 D4: post-retry repeating-token density (%.3f)"
-                                            " not substantially better than pre-retry (%.3f) for %s"
-                                            " — reverting to pre-retry result",
-                                            _post_density,
-                                            _pre_density,
-                                            filename,
-                                        )
-                        else:
-                            retry_wins = True
-                    if not retry_wins:
-                        # RFC-030 D1: atomic revert -- restore all seven mutable
-                        # variables together so the tree (result) and the
-                        # flat-routing markdown (md_content/tmp_md_path/
-                        # pic_results) cannot diverge on which extraction won.
-                        # Zone-5: atomic revert via ExtractionSnapshot
-                        result, ok, reason, gate_result, original_gate_result, \
-                            md_content, pic_results, used_converter = pre_retry.restore()
-                        total_chars = pre_retry.total_chars
-                        if tmp_md_path and os.path.exists(tmp_md_path):
-                            os.unlink(tmp_md_path)
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".md", delete=False, mode="w", encoding="utf-8"
-                        ) as md_tmp:
-                            md_tmp.write(md_content)
-                            tmp_md_path = md_tmp.name
-                    OCR_ESCALATION_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
-                except Exception as ocr_exc:
-                    OCR_ESCALATION_TOTAL.labels(result="error").inc()
-                    logger.error(
-                        "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
-                    )
-
-            # RFC-027 D3: repair-first ordering. `validate_tree` flags 'rtl_reversal'
-            # for correctly-encoded-but-visually-reversed Arabic text -- a known-fixable
-            # defect (`reconstruct_bidi_order` already exists). Attempt the repair and
-            # re-validate BEFORE deciding the verdict; only fall through to
-            # LowQualityTreeError if the reversed reading still scores higher post-repair.
-            if not ok and first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf":
-                try:
-
-                    def _repair_rtl_nodes(nodes: list) -> None:
-                        for n in nodes:
-                            for key in ("title", "text"):
-                                val = n.get(key)
-                                if isinstance(val, str) and val:
-                                    n[key] = reconstruct_bidi_order(val)
-                            _repair_rtl_nodes(n.get("nodes") or [])
-
-                    _repair_rtl_nodes(result.get("structure", []))
-                    _vt_raw = validate_tree(
-                        result.get("structure", []),
-                        expected_script=expected_script,
-                        page_count=pdf_page_count if ext == ".pdf" else None,
-                    )
-                    gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-                    ok, reason = _vt_raw
-                    original_gate_result = gate_result
-                    logger.warning(
-                        "RTL reversal on %s; reconstruct_bidi_order repair %s",
-                        filename,
-                        "converged" if ok else "did not converge",
-                    )
-                except Exception as bidi_exc:
-                    logger.error(
-                        "RTL bidi repair failed for %s (%s)", filename, bidi_exc, exc_info=True
-                    )
-
-            # RFC-033 D8 (Task 7.5): OCR source quality comparison hook. When the
-            # reconstruct_bidi_order repair above did not converge, the tree-path
-            # source is still carrying reversal artifacts the flip repair couldn't
-            # fully correct. route_and_extract_flat re-derives blocks from the same
-            # OCR markdown without depending on the forward-oriented Arabic stem
-            # regexes, so it can still recover correctly-oriented text even when the
-            # tree-path source can't. Prefer flat when it is not reversed and the
-            # tree-path text still is.
-            if (
-                not ok
-                and first_defect == TreeDefect.RTL_REVERSAL
-                and ext == ".pdf"
-                and settings.flat_doc_routing
-                and md_content
-            ):
-                try:
-                    _flat_cmp_cc, _flat_cmp_blocks = await asyncio.to_thread(
-                        route_and_extract_flat, md_content
-                    )
-                    _flat_cmp_text = "\n".join(
-                        _flat_block_primary_text(b) for b in _flat_cmp_blocks
-                    )
-                    _tree_cmp_text = _flatten_tree_text(result.get("structure", []))
-                    if not decide_rtl(
-                        _flat_cmp_text
-                    ).reversed and decide_rtl(_tree_cmp_text).reversed:
-                        logger.warning(
-                            "RFC-033 D8: tree-path text still mirror-reversed after "
-                            "bidi repair for %s; flat-path source is not reversed — "
-                            "preferring flat result",
-                            filename,
-                        )
-                        route = Route.FLAT
-                except Exception as _flat_cmp_exc:
-                    logger.warning(
-                        "RFC-033 D8: flat-path reversal comparison failed for %s (%s); "
-                        "keeping tree",
-                        filename,
-                        _flat_cmp_exc,
-                    )
-
-            # RFC-004 Approach B: VLM last-resort fallback for garble-rejected PDFs
-            # whose OCR escalation was either skipped or failed.
-            if (
-                not ok
-                and first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-                and ext == ".pdf"
-                and settings.vlm_fallback
-            ):
-                try:
-                    from .converters import vlm_extract_markdown
-
-                    logger.warning(
-                        "Garbling persists after OCR escalation for %s; "
-                        "attempting VLM fallback (model=%s)",
-                        filename,
-                        settings.vlm_model,
-                    )
-                    md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
-                    # New markdown source: prior converter's picture ordinals no
-                    # longer correspond to its markers (finding 4/7 alignment).
-                    pic_results = []
-                    if tmp_md_path and os.path.exists(tmp_md_path):
-                        os.unlink(tmp_md_path)
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".md", delete=False, mode="w", encoding="utf-8"
-                    ) as md_tmp:
-                        md_tmp.write(md_content)
-                        tmp_md_path = md_tmp.name
-                    result = await self._run_md_to_tree(tmp_md_path)
-                    result["structure"] = split_oversized_leaf_nodes(result.get("structure", []))
-                    result["structure"] = _segment_table_nodes(result.get("structure", []))
-                    _vt_raw = validate_tree(
-                        result.get("structure", []),
-                        expected_script=expected_script,
-                        page_count=pdf_page_count if ext == ".pdf" else None,
-                    )
-                    gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-                    ok, reason = _vt_raw
-                    original_gate_result = gate_result
-                    VLM_FALLBACK_TOTAL.labels(result="recovered" if ok else "still_garbled").inc()
-
-                    # RFC-024 D5: the VLM *succeeded* but the tree is still garbled
-                    # (no exception raised). D7's Tesseract-on-raster recovery was
-                    # previously only reachable from the except block below, so this
-                    # path fell straight through to LowQualityTreeError. Try the same
-                    # recovery here (supersedes RFC-023 D7 test case (d)).
-                    if (
-                        not ok
-                        and first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-                        and _D7_GARBLE_RECOVERY_ENABLED
-                    ):
-                        recovered_md = await _attempt_tesseract_raster_recovery(
-                            file_path, expected_script, filename
-                        )
-                        if recovered_md:
-                            md_content = recovered_md
-                            # New markdown source — the prior converter's picture
-                            # ordinals no longer apply (finding 4/7), matching the
-                            # VLM-recovery convention above.
-                            pic_results = []
-                            route = Route.FLAT
-                except Exception as vlm_exc:
-                    VLM_FALLBACK_TOTAL.labels(result="error").inc()
-                    logger.error(
-                        "VLM fallback failed for %s (%s)",
-                        filename,
-                        vlm_exc,
-                        exc_info=True,
-                    )
-                    # RFC-023 D7: the VLM crashed outright (rate limit / content-policy /
-                    # token overflow) rather than merely failing to recover the tree. Try
-                    # one last local-only Tesseract pass over the rasterized pages before
-                    # giving up. `reason` stays 'garbling' (never added to the flat-routing
-                    # check) unless the OCR text itself passes the garble gate -- so a
-                    # genuinely garbled, unrecovered document still raises
-                    # LowQualityTreeError (HR5).
-                    if _VLM_TESSERACT_FALLBACK_ENABLED:
-                        recovered_md = await _attempt_tesseract_raster_recovery(
-                            file_path, expected_script, filename
-                        )
-                        if recovered_md:
-                            md_content = recovered_md
-                            # New markdown source — the prior converter's
-                            # picture ordinals no longer apply (finding 4/7),
-                            # matching the VLM-recovery convention above.
-                            pic_results = []
-                            route = Route.FLAT
-
-            # D1/RFC-023 D11: image-dominant PDFs (>50% <!-- image --> lines) get one
-            # OCR retry before falling through to flat routing — rescues scanned PDFs
-            # whose text layer is empty placeholders, and also the D0 case where a
-            # garbled text layer's coverage exemption fires but the resulting
-            # image-only markdown produces too few tree nodes (node_count<3/depth<2).
-            if (
-                not ok
-                and first_defect in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW)
-                and ext == ".pdf"
-                and _OCR_ESCALATION_GARBLE
-                and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
-                and settings.flat_doc_routing
-                and md_content
-            ):
-                total_lines = md_content.splitlines()
-                non_empty_lines = [ln for ln in total_lines if ln.strip()]
-                image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
-                if non_empty_lines and (image_lines / len(non_empty_lines)) > 0.50:
-                    try:
-                        escalation_langs: list[str] = []
-                        for src in (
-                            detect_ocr_langs(filename),
-                            detect_ocr_langs(md_content or ""),
-                        ):
-                            for lg in src:
-                                if lg not in escalation_langs:
-                                    escalation_langs.append(lg)
-                        langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
-                        logger.warning(
-                            "Image-dominant (%d/%d non-empty lines) on %s; "
-                            "escalating to force_full_page_ocr (lang=%s)",
-                            image_lines,
-                            len(non_empty_lines),
-                            filename,
-                            langs,
-                        )
-                        if _use_remote:
-                            md_content, pic_results = await _remote_pdf_to_markdown(
-                                self._staging_key,  # type: ignore[arg-type]
-                                force_full_page_ocr=True,
-                                ocr_lang_override=langs,
-                            )
-                        else:
-                            md_content, pic_results, stages_out = _split_converter_output(
-                                await asyncio.to_thread(
-                                    pdf_to_markdown_docling, file_path, True, langs
-                                )
-                            )
-                            if stages_out:
-                                extraction_stages_captured = stages_out
-                        if pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                            _log_pic_splice_trace(
-                                filename, "image_dominant_escalation", pic_results
-                            )
-                            md_content = splice_picture_text_for_tree(md_content, pic_results)
-                        if tmp_md_path and os.path.exists(tmp_md_path):
-                            os.unlink(tmp_md_path)
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".md", delete=False, mode="w", encoding="utf-8"
-                        ) as md_tmp:
-                            md_tmp.write(md_content)
-                            tmp_md_path = md_tmp.name
-                        result = await self._run_md_to_tree(tmp_md_path)
-                        result["structure"] = split_oversized_leaf_nodes(
-                            result.get("structure", [])
-                        )
-                        result["structure"] = _segment_table_nodes(result.get("structure", []))
-                        _vt_raw = validate_tree(
-                            result.get("structure", []),
-                            expected_script=expected_script,
-                            page_count=pdf_page_count if ext == ".pdf" else None,
-                        )
-                        gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-                        ok, reason = _vt_raw
-                        original_gate_result = gate_result
-                        OCR_ESCALATION_TOTAL.labels(
-                            result="recovered" if ok else "still_image_only"
-                        ).inc()
-                    except Exception as ocr_exc:
-                        OCR_ESCALATION_TOTAL.labels(result="error").inc()
-                        logger.error(
-                            "Image-ratio OCR escalation failed for %s (%s)",
-                            filename,
-                            ocr_exc,
-                            exc_info=True,
-                        )
-
-            # RFC-029 D1 (Task 3.1): content-density flat-prefer guard.  When the tree
-            # passes validate_tree but the flat extraction is richer by a large margin
-            # (_RFC029_FLAT_PREFER_MULTIPLIER), prefer the flat result over the tree.
-            # Only runs when: tree passed validation, markdown is available (PDF path),
-            # and flat_doc_routing is enabled.  Sets ok=False / reason="node_count<3"
-            # so the existing flat-routing branch below handles persistence uniformly.
-            if ok and md_content and settings.flat_doc_routing:
-                _tree_char_count = len(_flatten_tree_text(result.get("structure", [])))
-                if _tree_char_count > 0:
-                    try:
-                        _flat_cc, _flat_blocks = await asyncio.to_thread(
-                            route_and_extract_flat, md_content
-                        )
-                        _flat_char_count = sum(
-                            len(_flat_block_primary_text(b)) for b in _flat_blocks
-                        )
-                        if _flat_char_count > _RFC029_FLAT_PREFER_MULTIPLIER * _tree_char_count:
-                            logger.warning(
-                                "RFC-029 D1: flat char count (%d) > %.1f× tree char count"
-                                " (%d) for %s — preferring flat result",
-                                _flat_char_count,
-                                _RFC029_FLAT_PREFER_MULTIPLIER,
-                                _tree_char_count,
-                                filename,
-                            )
-                            ok = False
-                            route = Route.FLAT
-                    except Exception as _flat_exc:
-                        logger.warning(
-                            "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
-                            filename,
-                            _flat_exc,
-                        )
-
-            # RFC-035 D2 Fix (Routing interaction / task-5-4): the landscape
-            # rasterize-rotate-reextract fallback (converters.py) can recover a
-            # structurally valid tree from a rotated page while Docling's picture
-            # detection ALSO fires on the rotated re-extraction. The portrait
-            # companion of the same content routes to flat-mixed with PictureResults
-            # (Design Property 3) — a tree that quietly passes validate_tree here
-            # would strand that chart content on the tree path instead. Re-evaluate
-            # routing the same way RFC-029 D1 does: force the flat branch below so
-            # route_and_extract_flat can classify the doc flat_mixed. This must NOT
-            # suppress the bidi_degraded/visual_order_garble gates below — those run
-            # unconditionally on flat_md inside the flat branch (D3B garble gate).
-            if ok and settings.flat_doc_routing and any(
-                isinstance(
-                    skip_reason_from_str(pr.get("skipped_reason")),
-                    SkipReason,
-                ) and skip_reason_from_str(pr.get("skipped_reason")) is SkipReason.LANDSCAPE_FALLBACK
-                for pr in pic_results
-            ):
-                logger.warning(
-                    "RFC-035 D2: landscape fallback re-extraction triggered picture "
-                    "detection for %s — re-routing tree pass to flat-mixed",
-                    filename,
-                )
-                ok = False
-                route = Route.FLAT
-
-            if not ok:
-                # FLAT-03-C1: Zone-5 route-based flat routing. When
-                # decide_route (or a recovery branch) determined Route.FLAT,
-                # route the document to the flat success path instead of
-                # raising.  FLAT-03-C2: garbling/reordered/persist_fail
-                # routes still raise or persist-as-FAIL below.  FLAT-03-C3:
-                # the flat_doc_routing kill-switch is embedded in decide_route
-                # (flat_routing_enabled parameter).
-                # RFC-036 D3: 'rtl_reversal' joins the flat route -- when the RTL repair
-                # (reconstruct_bidi_order) above fails to converge, the flat-path garble
-                # gate below is the safety net, not a terminal raise.
-                _flat_garble_unrecovered = False
-                if route == Route.FLAT:
-                    flat_md = md_content
-                    if flat_md is None and tmp_md_path is not None:
-                        flat_md = await asyncio.to_thread(
-                            lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
-                            tmp_md_path,
-                        )
-                    if flat_md is None and ext in (".md", ".markdown", ".txt"):
-                        # The input itself is plain text/markdown (the md_to_tree route
-                        # writes no tmp_md_path) — reading it directly is safe.
-                        flat_md = await asyncio.to_thread(
-                            lambda p: Path(p).read_text(encoding="utf-8", errors="replace"),
-                            file_path,
-                        )
-                    # FLAT-03 follow-up guard (QA-flagged): route to the flat success
-                    # path ONLY with genuine extracted text. When flat_md is still None the
-                    # doc is a BINARY input (PDF/docx) that fell to the legacy page_index
-                    # route with no markdown produced; the only remaining source would be
-                    # the raw input file, and reading its raw bytes as text (errors=
-                    # "replace") would feed binary garbling into route_and_extract_flat and
-                    # fabricate a bogus flat doc. Fall through to the HR5 low_quality_tree
-                    # reject below instead — a binary doc with no extractable text layer is
-                    # genuinely low-quality, not flat.
-                    _flat_garble_unrecovered = False
-                    if flat_md is not None:
-                        # Findings 4/6/7: figure references exist ONLY in flat
-                        # markdown; splice_figure_markers count-guards the
-                        # marker↔region alignment and degrades to neutral
-                        # markers on mismatch.
-                        # D1 (RFC-027): splice BEFORE the garble check runs so
-                        # OCR-derived content injected by splicing is included
-                        # in the evaluation below.
-                        _log_pic_splice_trace(filename, "flat_figure_markers", pic_results)
-                        flat_md = splice_figure_markers(flat_md, pic_results)
-
-                        # D3B: flat-path garble gate — catch garbled text that
-                        # passed the tree gate (e.g. numeric-junk docs routed
-                        # here via node_count<3). Runs post-splice (D1) so
-                        # image-OCR-derived content is included.
-                        # Zone-5: _flat_garble_unrecovered replaces the
-                        # reason != "garbling" string check as the garble-gate
-                        # status flag (reason is no longer the routing decider).
-                        _flat_garble_unrecovered = False
-                        if check_garble(
-                            flat_md,
-                            expected_script=expected_script,
-                            context=GarbleContext.FLAT_MARKDOWN,
-                            original_defect=first_defect,
-                        ):
-                            _flat_garble_unrecovered = True
-                            reason = "garbling"
-                            logger.warning(
-                                "Flat-path garble gate triggered for %s; "
-                                "overriding reason to garbling",
-                                filename,
-                            )
-                            # VLM last-resort: the flat-path garble gate caught
-                            # garbled text that the tree gate missed (e.g. digit-
-                            # ratio watermark routed here via node_count<3).
-                            if ext == ".pdf" and settings.vlm_fallback:
-                                try:
-                                    from .converters import vlm_extract_markdown
-
-                                    logger.warning(
-                                        "Flat-path garbling on %s; attempting "
-                                        "VLM fallback (model=%s)",
-                                        filename,
-                                        settings.vlm_model,
-                                    )
-                                    vlm_md = await vlm_extract_markdown(
-                                        file_path, settings.vlm_model
-                                    )
-                                    if not check_garble(
-                                        vlm_md, expected_script=expected_script, context=GarbleContext.FLAT_MARKDOWN
-                                    ):
-                                        flat_md = vlm_md
-                                        # New markdown source — converter picture
-                                        # ordinals no longer apply (finding 4/7).
-                                        pic_results = []
-                                        _flat_garble_unrecovered = False
-                                        VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
-                                    else:
-                                        VLM_FALLBACK_TOTAL.labels(result="still_garbled").inc()
-                                except Exception as vlm_exc:
-                                    VLM_FALLBACK_TOTAL.labels(result="error").inc()
-                                    logger.error(
-                                        "VLM fallback failed for %s (%s)",
-                                        filename,
-                                        vlm_exc,
-                                        exc_info=True,
-                                    )
-                        if not _flat_garble_unrecovered:
-                            # Zone-5: shared enrichment helper — identical
-                            # pipeline runs for PDF flat-success and standalone-
-                            # image paths (splice already ran before garble gate).
-                            doc_id, content_class, blocks, image_enrichment_ratio = (
-                                await _apply_picture_enrichment(
-                                    flat_md, pic_results, ext, filename,
-                                    splice_markers=False,
-                                )
-                            )
-
-                            logger.info(
-                                "Routing %s to flat success path: reason=%s content_class=%s",
-                                filename,
-                                reason,
-                                content_class,
-                            )
-
-                            protocol = "https" if settings.minio_secure else "http"
-                            source_url = (
-                                f"{protocol}://{settings.minio_endpoint}"
-                                f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
-                            )
-                            processed_at = datetime.now(UTC).isoformat()
-
-                            # RFC-014 D3: compute verdict for flat doc.
-                            flat_structure = result.get("structure", [])
-
-                            # B1 (RFC-022): flat docs may have structure=[] (failed tree or
-                            # no tree attempt). classify_verdict scores on structure — an
-                            # empty list yields node_count=0/depth=0/flat_text="" which
-                            # blocks every promotion gate. Build synthetic structure from
-                            # blocks so the verdict function has real content to assess.
-                            #
-                            # B3 (RFC-022): `role="table"` blocks carry no "text" key by
-                            # design (helpers.py FLAT-05-C1) — parsed cell content lives in
-                            # `row_records` instead. Measuring content via `b.get("text", "")`
-                            # alone sees 0 chars for every table block and starves
-                            # classify_verdict of real content on table-heavy docs (Doc 3
-                            # GHV-TKV-Tarif: 13,022 raw chars → 375 measured chars, all from
-                            # 3 tables with no "text" key). Fall back to verbalized
-                            # row_records, mirroring _flat_search_text's pattern.
-                            #
-                            # D5 (RFC-023): flat_structure may be non-empty but rejected by
-                            # validate_tree (low node_count/depth). A rejected tree should
-                            # never be preferred over real block content for verdict
-                            # computation — always build synthetic structure when blocks exist.
-                            # D0 (RFC-027): use primary text (excludes ocr_text/description
-                            # enrichment) here so verdict classification scores real
-                            # extracted document content, not inflated enrichment metadata.
-                            if blocks:
-                                flat_structure = [
-                                    {"title": "", "text": _flat_block_primary_text(b)}
-                                    for b in blocks
-                                    if _flat_block_primary_text(b).strip()
-                                ]
-
-                            f_prior_verdict = await asyncio.to_thread(
-                                find_prior_verdict, sha256, filename, doc_id
-                            )
-                            f_verdict, f_verdict_reason = classify_verdict(
-                                flat_structure,
-                                content_class,
-                                None,
-                                image_enrichment_ratio=image_enrichment_ratio,
-                                prior_verdict=f_prior_verdict,
-                                expected_script=expected_script,
-                            )
-                            _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
-
-                            flat_desc = await asyncio.to_thread(
-                                _generate_flat_doc_description,
-                                flat_md,
-                                doc_id=doc_id,
-                            )
-
-                            # D6 (RFC-024): persist the same _flat_block_primary_text-derived
-                            # char count used for verdict computation above (B3/RFC-022,
-                            # D0/RFC-027), so future audits read a durable ground-truth
-                            # value instead of re-deriving it via the wrong
-                            # block.get("text", "") accessor or inflated enrichment text.
-                            flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
-
-                            # FLAT-03-C1: persist via save_flat_doc only — never save_doc, so
-                            # no tree artifact processed/<doc_id>.json is written (HR2: no
-                            # un-cascaded derivative).
-                            flat_meta = {
-                                "doc_id": doc_id,
-                                "doc_name": filename,
-                                "source_url": source_url,
-                                "processed_at": processed_at,
-                                "sha256": sha256,
-                                "content_class": content_class,
-                                "blocks": blocks,
-                                "doc_description": flat_desc,
-                                "verdict": f_verdict,
-                                "verdict_reason": f_verdict_reason,
-                                "max_leaf_ratio": round(f_mlr, 4),
-                                "flat_char_count": flat_char_count,
-                                "pipeline_version": CURRENT_PIPELINE_VERSION,
-                                "verdict_computed_at": datetime.now(UTC).isoformat(),
-                                "build_sha": _CLIENT_BUILD_SHA,
-                                "effective_config": _effective_cfg,
-                            }
-                            if _effective_config_at_job_start is not None:
-                                flat_meta["effective_config_at_job_start"] = (
-                                    _effective_config_at_job_start
-                                )
-                            await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
-                            FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
-
-                            # D7: raw upload persisted only after the processed artifact
-                            # succeeds, so a save_raw failure never orphans an unreferenced
-                            # tree. The flat doc is already valid/queryable at this point, so
-                            # log + count rather than raising.
-                            try:
-                                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
-                            except Exception:
-                                RAW_UPLOAD_FAILURES.inc()
-                                logger.exception(
-                                    "save_raw failed after save_flat_doc succeeded for doc_id=%s",
-                                    doc_id,
-                                )
-
-                            # D6: HSET is atomic per-field — no read-modify-write, so no
-                            # lock is needed to avoid clobbering a parallel task's entry.
-                            await asyncio.to_thread(hash_cache_set, filename, sha256)
-
-                            logger.info(
-                                "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
-                                filename,
-                                doc_id,
-                                content_class,
-                                len(blocks),
-                            )
-                            # Step 5 integration: surface content_class to converters_cli
-                            # (subprocess reads this after index() returns → worker hash).
-                            self.last_content_class = content_class
-                            return doc_id
-
-                # Zone-5: route-based terminal reject.  Route.REJECT covers
-                # defects that always raise (garbling, node_garbling, reordered
-                # when flat routing is off).  Route.FLAT reaching here means
-                # the flat fallback was unavailable (flat_md was None for a
-                # binary input with no markdown) or the flat-path garble gate
-                # overrode reason to 'garbling'.  Both must raise.
-                if route in (Route.REJECT, Route.FLAT) or _flat_garble_unrecovered:
-                    _reject_reason = "garbling" if _flat_garble_unrecovered else first_defect.value
                     LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
-                    logger.warning("Rejecting low-quality tree for %s: reason=%s", filename, _reject_reason)
+                    logger.warning(
+                        "Rejecting low-quality tree for %s: reason=%s",
+                        filename,
+                        _reject_reason,
+                    )
                     raise LowQualityTreeError(_reject_reason)
 
-                # RFC-030 D2: unhandled validate_tree reason (low_content_density,
-                # suspect_density, empty_node_contamination, arabic_low_content_ratio)
-                # -- persist with FAIL instead of raising (HR5: no silent persistence,
-                # but an explicit FAIL verdict is not silent). Tree structure is
-                # preserved as-is (no flat extraction, no OCR retry); `ok` stays False
-                # so classify_verdict below maps this reason to a FAIL verdict.
                 logger.warning(
                     "Persisting low-quality tree with FAIL verdict for %s: reason=%s",
                     filename,
-                    reason,
+                    state.reason,
                 )
 
-            # Zone-8: classify verdict BEFORE save_doc so the artifact carries
-            # verdict fields from birth -- eliminates the lost-update window
-            # between save_doc and save_doc_meta.
-            doc_id = str(uuid.uuid4())
-
-            protocol = "https" if settings.minio_secure else "http"
-            source_url = (
-                f"{protocol}://{settings.minio_endpoint}"
-                f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
-            )
-
-            processed_at = datetime.now(UTC).isoformat()
-            structure = result.get("structure", [])
-
-            # Zone-8: prior_verdict lookup moved before save_doc
-            prior_verdict = await asyncio.to_thread(find_prior_verdict, sha256, filename, doc_id)
-            verdict, verdict_reason = classify_verdict(
-                structure,
-                "",
-                original_gate_result,
-                prior_verdict=prior_verdict,
-                inspector_class=pdf_classification.get("pdf_type") if pdf_classification else None,
-                expected_script=expected_script,
-            )
-            _, _, mlr = _tree_max_leaf_ratio(structure)
-            _verdict_computed_at = datetime.now(UTC).isoformat()
-
-            # Persist processed result (D7): the tree must succeed validation
-            # and persist before the raw upload is committed, so a save_doc failure
-            # never leaves an orphaned raw upload with no referencing artifact.
-            # Zone-8: verdict fields included in the artifact payload so the
-            # processed/<id>.json carries verdict from birth.
-            await asyncio.to_thread(
-                save_doc,
-                doc_id,
-                {
-                    "doc_id": doc_id,
-                    "doc_name": filename,
-                    "source_url": source_url,
-                    "processed_at": processed_at,
-                    "sha256": sha256,
-                    "doc_description": result.get("doc_description", ""),
-                    "structure": structure,
-                    "verdict": verdict,
-                    "verdict_reason": verdict_reason,
-                    "max_leaf_ratio": round(mlr, 4),
-                    "pipeline_version": CURRENT_PIPELINE_VERSION,
-                    "verdict_computed_at": _verdict_computed_at,
-                },
-            )
-
-            # Zone-6: write_verdict atomically persists verdict to both
-            # artifact and sidecar, then save_doc_meta writes the remaining
-            # non-verdict provenance fields.
-            await asyncio.to_thread(
-                write_verdict,
-                doc_id,
-                verdict,
-                verdict_reason,
-                CURRENT_PIPELINE_VERSION,
-                _verdict_computed_at,
-                round(mlr, 4),
-            )
-            meta = {
-                "doc_id": doc_id,
-                "doc_name": filename,
-                "source_url": source_url,
-                "processed_at": processed_at,
-                "sha256": sha256,  # C-3: fatten sidecar so reconcile skips full-JSON GET
-                "doc_description": result.get("doc_description", ""),  # C-3
-                "total_tree_chars": len(_flatten_tree_text(structure)),
-                "build_sha": _CLIENT_BUILD_SHA,
-                "effective_config": _effective_cfg,
-                "decider_version": "zone3_decide_rtl_v1",
-            }
-            # Zone-1: persist all co-firing defects from exhaustive gate
-            # evaluation for verdict provenance / post-hoc analysis.
-            if original_gate_result is not None and original_gate_result.all_defects:
-                meta["all_defects"] = sorted(d.value for d in original_gate_result.all_defects)
-            if _effective_config_at_job_start is not None:
-                meta["effective_config_at_job_start"] = _effective_config_at_job_start
-            # RFC-034 D5: extraction provenance. `used_converter`/`_use_remote`/
-            # `pdf_page_count` only exist inside the `ext == ".pdf"` branch above, so
-            # these fields are populated for PDF docs only — omit-when-absent for
-            # non-PDF docs (md/docx/txt/html/pptx/xlsx). None values are omitted
-            # (never persisted as null), per the D5 acceptance criteria.
-            if ext == ".pdf":
-                _route_remote = bool(
-                    _use_remote and used_converter and "docling" in used_converter
-                )
-                meta["extraction_route"] = "remote" if _route_remote else "local"
-                if used_converter:
-                    meta["converter_name"] = used_converter
-                    contract = _converter_contract(used_converter)
-                    if contract is not None:
-                        meta["converter_contract"] = contract
-                if pdf_page_count is not None:
-                    meta["page_count"] = pdf_page_count
-                if pdf_classification and PDF_INSPECTOR_PRECLASSIFY:
-                    meta["inspector_class"] = pdf_classification.get("pdf_type")
-                if extraction_stages_captured:
-                    meta["extraction_stages"] = extraction_stages_captured
-                if _route_remote and _remote_docling_version:
-                    meta["remote_build_sha"] = _remote_docling_version.get(
-                        "commit_sha", "unknown"
-                    )
-            await asyncio.to_thread(save_doc_meta, doc_id, meta)
-
-            # D7: raw upload persisted only after the processed artifact succeeds.
-            # The tree is already valid/queryable, so log + count rather than raising
-            # on a save_raw failure — the raw upload can be re-staged.
-            try:
-                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
-            except Exception:
-                RAW_UPLOAD_FAILURES.inc()
-                logger.exception("save_raw failed after save_doc succeeded for doc_id=%s", doc_id)
-
-            # D6: HSET is atomic per-field — no read-modify-write, so no lock is
-            # needed to avoid clobbering a parallel task's entry.
-            await asyncio.to_thread(hash_cache_set, filename, sha256)
-
-            logger.info(
-                "Indexed %s → doc_id=%s (%d sections)",
+            return await self._persist_tree_result(
+                state,
                 filename,
-                doc_id,
-                len(result.get("structure", [])),
+                ext,
+                expected_script,
+                sha256,
+                file_bytes,
+                pdf_classification,
+                _effective_cfg,
+                _effective_config_at_job_start,
             )
-            return doc_id
 
         finally:
-            if tmp_lo_dir:
-                shutil.rmtree(tmp_lo_dir, ignore_errors=True)
-            if tmp_md_path and os.path.exists(tmp_md_path):
-                os.unlink(tmp_md_path)
+            if state.tmp_lo_dir:
+                shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
+            if state.tmp_md_path and os.path.exists(state.tmp_md_path):
+                os.unlink(state.tmp_md_path)
 
     # ------------------------------------------------------------------
     # Retrieval (lazy-load from MinIO)

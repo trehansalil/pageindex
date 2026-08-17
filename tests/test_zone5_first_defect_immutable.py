@@ -19,7 +19,9 @@ def _read_client() -> str:
 class TestFirstDefectWriteOnce:
     """first_defect must be assigned exactly once (write-once semantics)."""
 
-    _ASSIGN_RE = re.compile(r"^\s*first_defect\s*(?::.*)?=\s", re.MULTILINE)
+    _ASSIGN_RE = re.compile(
+        r"^\s*(?:state\.)?first_defect\s*(?::.*)?=\s", re.MULTILINE
+    )
 
     def test_single_assignment(self):
         source = _read_client()
@@ -54,7 +56,7 @@ class TestFirstDefectNotInRevertBlock:
                 if stripped and current_indent <= revert_indent and not stripped.startswith("#"):
                     in_revert = False
 
-                if re.match(r"\s*first_defect\s*=", line):
+                if re.match(r"\s*(?:state\.)?first_defect\s*=", line):
                     violations.append(f"line {i}: {line.strip()}")
 
         assert not violations, (

@@ -173,6 +173,33 @@ class ExtractionSnapshot:
         )
 
 
+@dataclass
+class ExtractionState:
+    """Zone-2: mutable extraction state threaded through the recovery pipeline.
+
+    Consolidates the ~20 mutable locals from ``index()`` into a single object
+    so each recovery method receives and mutates a coherent state bundle.
+    """
+    result: dict
+    ok: bool
+    reason: str
+    gate_result: "TreeGateResult | None"
+    original_gate_result: "TreeGateResult | None"
+    first_defect: "TreeDefect"
+    route: "Route"
+    md_content: str | None
+    tmp_md_path: str | None
+    pic_results: list
+    used_converter: str | None
+    total_chars: int
+    extraction_stages_captured: list
+    pre_garbled: bool = False
+    pdf_page_count: int | None = None
+    use_remote: bool = False
+    tmp_lo_dir: str | None = None
+    flat_garble_unrecovered: bool = False
+
+
 class _ReasonPolicy(StrEnum):
     RAISE = "raise"
     RETRY_OCR = "retry_ocr"

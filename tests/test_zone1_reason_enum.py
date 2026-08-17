@@ -147,7 +147,11 @@ def test_no_visual_order_garble_in_client():
 # --- page_count propagation verification ---
 
 def test_all_validate_tree_calls_pass_page_count():
-    """All 5 validate_tree call sites in client.py must pass page_count."""
+    """All validate_tree call sites in client.py must pass page_count.
+
+    Zone-2 consolidation reduced 5 inline calls to 3 (2 direct + 1 in
+    _reconvert_and_revalidate shared helper).
+    """
     import pathlib
     client_path = pathlib.Path(__file__).parent.parent / "src" / "pageindex_mcp" / "client.py"
     source = client_path.read_text()
@@ -161,7 +165,7 @@ def test_all_validate_tree_calls_pass_page_count():
         if pattern.search(stripped):
             call_sites.append(i)
 
-    assert len(call_sites) == 5, f"Expected 5 validate_tree calls, found {len(call_sites)}"
+    assert len(call_sites) == 3, f"Expected 3 validate_tree calls, found {len(call_sites)}"
 
     for site_line in call_sites:
         chunk = "\n".join(lines[site_line - 1 : site_line + 4])
