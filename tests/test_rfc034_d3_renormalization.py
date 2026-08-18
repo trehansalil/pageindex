@@ -31,7 +31,7 @@ _ALREADY_CORRECT_MD = (
 def _apply_d3_gate(md_content: str, use_remote: bool = True) -> str:
     """Mirrors the D3 gate in `CustomPageIndexClient.index()` (client.py ~972-980)."""
     if use_remote and client_module.REMOTE_MD_RENORMALIZE:
-        renormalized = reconstruct_bidi_order(md_content)
+        renormalized, _ = reconstruct_bidi_order(md_content)
         if renormalized != md_content:
             REMOTE_MD_RENORMALIZED.inc()
             md_content = renormalized
@@ -63,6 +63,6 @@ class TestD3RenormalizationGate:
         assert _counter_value() == before
 
     def test_double_application_idempotent(self):
-        once = reconstruct_bidi_order(_REVERSED_HEADING_MD)
-        twice = reconstruct_bidi_order(once)
+        once, _ = reconstruct_bidi_order(_REVERSED_HEADING_MD)
+        twice, _ = reconstruct_bidi_order(once)
         assert twice == once

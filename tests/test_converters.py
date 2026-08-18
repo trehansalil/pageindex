@@ -131,7 +131,7 @@ class TestHeadingGuardIdempotence:
         """(a) Logical-order Arabic headings survive reconstruct_bidi_order
         byte-identical -- they must not be reversed into visual order by us."""
         doc = prefix + heading + "\n" + heading + " " + heading
-        result = reconstruct_bidi_order(doc)
+        result, _ = reconstruct_bidi_order(doc)
         assert result.splitlines()[0] == prefix + heading
 
     def test_visual_order_heading_still_corrected(self):
@@ -139,7 +139,7 @@ class TestHeadingGuardIdempotence:
         RFC-023 D9 bilingual case must not regress."""
         body_en = "This is the English body text describing the agreement terms in detail. " * 5
         doc = "## " + _VISUAL_D9_HEADING + "\n" + body_en
-        result = reconstruct_bidi_order(doc)
+        result, _ = reconstruct_bidi_order(doc)
         lines = result.splitlines()
         assert lines[0] == "## " + _LOGICAL_D9_HEADING
         assert body_en in result
@@ -150,7 +150,7 @@ class TestHeadingGuardIdempotence:
         visually-reversed heading is still corrected."""
         body = (_LOGICAL_BODY_LINE + "\n") * 3
         doc = "## " + _VISUAL_D9_HEADING + "\n" + body
-        result = reconstruct_bidi_order(doc)
+        result, _ = reconstruct_bidi_order(doc)
         lines = result.splitlines()
         assert lines[0] == "## " + _LOGICAL_D9_HEADING
         assert lines[1:] == body.splitlines()
@@ -166,8 +166,8 @@ class TestHeadingGuardIdempotence:
         again on a second pass -- reconstruct_bidi_order must be a fixed
         point of itself once applied."""
         doc = "# " + heading
-        once = reconstruct_bidi_order(doc)
-        twice = reconstruct_bidi_order(once)
+        once, _ = reconstruct_bidi_order(doc)
+        twice, _ = reconstruct_bidi_order(once)
         assert twice == once
 
 

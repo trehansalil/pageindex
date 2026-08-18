@@ -18,7 +18,7 @@ class TestNFKCCanonicalization:
         pf_text = "ﭐﭑ"
 
         # Act
-        result = _pre_inference_normalize(pf_text)
+        result, _ = _pre_inference_normalize(pf_text)
 
         # Assert: canonical form is U+0671 (isolated ALEF with WASLA)
         assert "ﭐ" not in result
@@ -32,10 +32,10 @@ class TestNFKCCanonicalization:
         # full pipeline are known to be non-idempotent on mixed content, so we
         # scope this property to the NFKC pass by round-tripping a canonical
         # base-Arabic string that other passes will leave unchanged.
-        once = _pre_inference_normalize("ﭐﭑ")
+        once, _ = _pre_inference_normalize("ﭐﭑ")
 
         # Act
-        twice = _pre_inference_normalize(once)
+        twice, _ = _pre_inference_normalize(once)
 
         # Assert
         assert once == twice
@@ -45,7 +45,7 @@ class TestNFKCCanonicalization:
         plain = "The quick brown fox jumps over the lazy dog 123 !@#"
 
         # Act
-        result = _pre_inference_normalize(plain)
+        result, _ = _pre_inference_normalize(plain)
 
         # Assert
         assert result == plain
@@ -55,7 +55,7 @@ class TestNFKCCanonicalization:
         mixed = "Prefix ﭐﭑ suffix"
 
         # Act
-        result = _pre_inference_normalize(mixed)
+        result, _ = _pre_inference_normalize(mixed)
 
         # Assert: ASCII bits present, PF glyphs gone
         assert "Prefix " in result
@@ -124,7 +124,7 @@ class TestNoiseRegression:
         text = "".join(chr((i * 37) % 128) for i in range(500))
 
         # Act
-        result = _pre_inference_normalize(text)
+        result, _ = _pre_inference_normalize(text)
 
         # Assert: ASCII content preserved verbatim (no PF chars → no NFKC)
         assert result == text

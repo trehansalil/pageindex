@@ -548,7 +548,7 @@ class TestRtlReversalRepairFirst:
         # accepts the repaired tree on the post-repair re-validation.
         validate = MagicMock(side_effect=[(False, "rtl_reversal"), (True, None), (True, None)])
         mocks = _wire_index(monkeypatch, validate_tree=validate)
-        monkeypatch.setattr(client_mod, "reconstruct_bidi_order", lambda s: s[::-1])
+        monkeypatch.setattr(client_mod, "reconstruct_bidi_order", lambda s: (s[::-1], None))
         c = CustomPageIndexClient(api_key="test-key")
         monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_reversed_tree()))
 

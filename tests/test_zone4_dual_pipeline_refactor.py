@@ -74,7 +74,7 @@ class TestCandidateFromDocument:
         inputs that do not trigger depth recovery."""
         md = "# Simple\n\nPlain text."
         result = _candidate_from_document(md, {}, "/fake.pdf")
-        assert result.md == _build_candidate(md)
+        assert result.md == _build_candidate(md)[0]
 
     def test_result_is_frozen(self):
         result = _candidate_from_document("# X", {}, "/fake.pdf")

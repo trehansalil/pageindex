@@ -156,7 +156,7 @@ class TestConsistentHeadingBodyDecision:
         assert ratio < 0.15, f"precondition: ratio {ratio:.3f} must be below 0.15"
 
         # reconstruct_bidi_order should return text unchanged
-        result = reconstruct_bidi_order(text)
+        result, _decision = reconstruct_bidi_order(text)
 
         # The heading should NOT be reversed (ratio too low for decide_rtl
         # to engage at the document level)
@@ -173,7 +173,7 @@ class TestConsistentHeadingBodyDecision:
         body = "تنظيم الحقوق والواجبات للمواطنين في إطار القانون العام"
         text = heading + "\n\n" + body + "\n" + body
 
-        result = reconstruct_bidi_order(text)
+        result, _decision = reconstruct_bidi_order(text)
         # Logical order should not be modified
         assert "المادة الأولى" in result
         assert "تنظيم الحقوق" in result

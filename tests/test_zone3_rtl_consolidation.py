@@ -215,25 +215,27 @@ class TestPreInferenceNormalizeSingleBidiCall:
 
         # Latin text
         latin = "## Heading\n\nSome body text with content."
-        once = _pre_inference_normalize(latin)
-        twice = _pre_inference_normalize(once)
+        once, _ = _pre_inference_normalize(latin)
+        twice, _ = _pre_inference_normalize(once)
         assert twice == once, "Latin text: _pre_inference_normalize is not idempotent"
 
         # Arabic text (logical order)
         arabic = "## المادة الأولى\n\nتنظيم الحقوق والواجبات للمواطنين"
-        once_ar = _pre_inference_normalize(arabic)
-        twice_ar = _pre_inference_normalize(once_ar)
+        once_ar, _ = _pre_inference_normalize(arabic)
+        twice_ar, _ = _pre_inference_normalize(once_ar)
         assert twice_ar == once_ar, "Arabic text: _pre_inference_normalize is not idempotent"
 
         # Mixed text
         mixed = "## Title\n\nالمادة الأولى\n\nSome English text.\n\nتنظيم الحقوق"
-        once_mix = _pre_inference_normalize(mixed)
-        twice_mix = _pre_inference_normalize(once_mix)
+        once_mix, _ = _pre_inference_normalize(mixed)
+        twice_mix, _ = _pre_inference_normalize(once_mix)
         assert twice_mix == once_mix, "Mixed text: _pre_inference_normalize is not idempotent"
 
         # Empty text
-        assert _pre_inference_normalize("") == ""
-        assert _pre_inference_normalize(_pre_inference_normalize("")) == ""
+        empty_result, _ = _pre_inference_normalize("")
+        assert empty_result == ""
+        empty_again, _ = _pre_inference_normalize(empty_result)
+        assert empty_again == ""
 
 
 # ---------------------------------------------------------------------------

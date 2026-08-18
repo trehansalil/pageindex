@@ -111,13 +111,13 @@ def test_bilingual_markdown_skips_renormalization(monkeypatch):
 
     def _spy(text):
         calls.append(text)
-        return "REORDERED"
+        return ("REORDERED", None)
 
     monkeypatch.setattr("pageindex_mcp.client.reconstruct_bidi_order", _spy)
 
     md = "## Memorandum of Understanding MOHRE and Nafis\n\nمذكرة تفاهم\n"
     assert _latin_fraction(md) > _BIDI_RENORM_LATIN_GUARD
-    out = _renormalize_bidi_guarded(md, "mou.pdf")
+    out, _ = _renormalize_bidi_guarded(md, "mou.pdf")
 
     assert calls == [], "reconstruct_bidi_order must be skipped for bilingual docs"
     assert out == md
@@ -129,13 +129,13 @@ def test_arabic_dominant_markdown_still_renormalizes(monkeypatch):
 
     def _spy(text):
         calls.append(text)
-        return "REORDERED"
+        return ("REORDERED", None)
 
     monkeypatch.setattr("pageindex_mcp.client.reconstruct_bidi_order", _spy)
 
     md = "## مذكرة تفاهم بين وزارة الموارد البشرية والتوطين وبرنامج نافس\n"
     assert _latin_fraction(md) <= _BIDI_RENORM_LATIN_GUARD
-    out = _renormalize_bidi_guarded(md, "ar.pdf")
+    out, _ = _renormalize_bidi_guarded(md, "ar.pdf")
 
     assert calls == [md]
     assert out == "REORDERED"

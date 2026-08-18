@@ -53,7 +53,7 @@ from .picture_plane import (
     decide_ocr_mode,
     skip_reason_from_str,
 )
-from .script import decide_rtl
+from .script import RtlDecision, decide_rtl
 from .helpers import (
     ExtractionSnapshot,
     ExtractionState,
@@ -119,13 +119,20 @@ def _latin_fraction(md_content: str) -> float:
     return sum(1 for c in md_content if c.isascii() and c.isalpha()) / max(len(md_content), 1)
 
 
-def _renormalize_bidi_guarded(md_content: str, filename: str) -> str:
+def _renormalize_bidi_guarded(
+    md_content: str, filename: str,
+) -> tuple[str, "RtlDecision | None"]:
     """RFC-034 D3 re-normalization with the D17 bilingual guard.
 
     Applies `reconstruct_bidi_order` unless the document's Latin-character
     fraction exceeds `_BIDI_RENORM_LATIN_GUARD`, in which case the pass is
     skipped (it collapses blocks on mixed-script content) and the skip is
     logged plus counted so it is observable in Prometheus.
+
+    Zone-6: returns ``(text, RtlDecision | None)`` so the remote path can
+    thread the same decision into ``validate_tree`` without recomputing.
+    When the bilingual guard skips, an explicit sentinel decision is
+    returned (``method='bilingual_guard_skip'``) instead of silent None.
     """
     latin_frac = _latin_fraction(md_content)
     if latin_frac > _BIDI_RENORM_LATIN_GUARD:
@@ -135,8 +142,13 @@ def _renormalize_bidi_guarded(md_content: str, filename: str) -> str:
             filename,
             latin_frac,
         )
-        return md_content
-    renorm = reconstruct_bidi_order(md_content)
+        return md_content, RtlDecision(
+            reversed=False,
+            repair_effective=False,
+            sampled=0,
+            method="bilingual_guard_skip",
+        )
+    renorm, rtl_decision = reconstruct_bidi_order(md_content)
     if renorm != md_content:
         REMOTE_MD_RENORMALIZED.inc()
         logger.debug(
@@ -144,7 +156,7 @@ def _renormalize_bidi_guarded(md_content: str, filename: str) -> str:
             len(md_content) - len(renorm),
             filename,
         )
-    return renorm
+    return renorm, rtl_decision
 
 
 TREE_PATH_PICTURE_SPLICE_ENABLED = os.getenv(
@@ -946,6 +958,7 @@ class CustomPageIndexClient(PageIndexClient):
             state.result.get("structure", []),
             expected_script=expected_script,
             page_count=state.pdf_page_count,
+            rtl_decision=state.rtl_decision,
         )
         state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
         state.ok, state.reason = _vt_raw
@@ -1166,7 +1179,9 @@ class CustomPageIndexClient(PageIndexClient):
                     _log_pic_splice_trace(filename, "primary", state.pic_results)
                     md_content = splice_picture_text_for_tree(md_content, state.pic_results)
                 if state.use_remote and REMOTE_MD_RENORMALIZE:
-                    md_content = _renormalize_bidi_guarded(md_content, filename)
+                    md_content, state.rtl_decision = _renormalize_bidi_guarded(
+                        md_content, filename,
+                    )
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
                 ) as md_tmp:
@@ -1275,6 +1290,7 @@ class CustomPageIndexClient(PageIndexClient):
             state.result.get("structure", []),
             expected_script=expected_script,
             page_count=state.pdf_page_count if ext == ".pdf" else None,
+            rtl_decision=state.rtl_decision,
         )
         state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
         state.ok, state.reason = _vt_raw
@@ -1364,7 +1380,9 @@ class CustomPageIndexClient(PageIndexClient):
                     state.md_content, state.pic_results
                 )
             if state.use_remote and REMOTE_MD_RENORMALIZE:
-                state.md_content = _renormalize_bidi_guarded(state.md_content, filename)
+                state.md_content, state.rtl_decision = _renormalize_bidi_guarded(
+                    state.md_content, filename,
+                )
 
             await self._reconvert_and_revalidate(
                 state, state.md_content, expected_script=expected_script
@@ -1481,10 +1499,15 @@ class CustomPageIndexClient(PageIndexClient):
                     for key in ("title", "text"):
                         val = n.get(key)
                         if isinstance(val, str) and val:
-                            n[key] = reconstruct_bidi_order(val)
+                            repaired, _node_decision = reconstruct_bidi_order(val)
+                            n[key] = repaired
                     _repair_rtl_nodes(n.get("nodes") or [])
 
             _repair_rtl_nodes(state.result.get("structure", []))
+            # Zone-6: clear stale rtl_decision — the tree nodes have been
+            # mutated by per-node reconstruct_bidi_order; force validate_tree
+            # to recompute on the repaired tree text.
+            state.rtl_decision = None
             _vt_raw = validate_tree(
                 state.result.get("structure", []),
                 expected_script=expected_script,
@@ -1573,6 +1596,9 @@ class CustomPageIndexClient(PageIndexClient):
             )
             state.md_content = await vlm_extract_markdown(file_path, settings.vlm_model)
             state.pic_results = []
+            # Zone-6: VLM re-extraction produces entirely new text;
+            # clear stale rtl_decision so validate_tree recomputes.
+            state.rtl_decision = None
             await self._reconvert_and_revalidate(
                 state, state.md_content, expected_script=expected_script
             )
@@ -1677,6 +1703,9 @@ class CustomPageIndexClient(PageIndexClient):
                 state.md_content = splice_picture_text_for_tree(
                     state.md_content, state.pic_results
                 )
+            # Zone-6: image-dominant re-extraction produces new text;
+            # clear stale rtl_decision so validate_tree recomputes.
+            state.rtl_decision = None
             await self._reconvert_and_revalidate(
                 state, state.md_content, expected_script=expected_script
             )

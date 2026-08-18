@@ -121,24 +121,26 @@ class TestReconstructBidiOrder:
     """reconstruct_bidi_order — fixes residual RTL reversal in text."""
 
     def test_empty(self):
-        assert reconstruct_bidi_order("") == ""
+        text, _decision = reconstruct_bidi_order("")
+        assert text == ""
 
     def test_english_unchanged(self):
-        assert reconstruct_bidi_order(_ENGLISH) == _ENGLISH
+        text, _decision = reconstruct_bidi_order(_ENGLISH)
+        assert text == _ENGLISH
 
     def test_correct_arabic_unchanged(self):
-        result = reconstruct_bidi_order(_CORRECT_ARABIC)
-        assert result == _CORRECT_ARABIC
+        text, _decision = reconstruct_bidi_order(_CORRECT_ARABIC)
+        assert text == _CORRECT_ARABIC
 
     def test_low_arabic_ratio_passes_through(self):
-        # Line with low Arabic ratio is passed through unchanged.
         low_ar = "abc def ghi في"
-        assert reconstruct_bidi_order(low_ar) == low_ar
+        text, _decision = reconstruct_bidi_order(low_ar)
+        assert text == low_ar
 
     def test_high_arabic_ratio_passes_through(self):
-        # Correct-order Arabic with sufficient ratio passes through unchanged
         line = "في هذا النص العربي الطويل"
-        assert reconstruct_bidi_order(line).strip() == line
+        text, _decision = reconstruct_bidi_order(line)
+        assert text.strip() == line
 
 
 # ---------------------------------------------------------------------------

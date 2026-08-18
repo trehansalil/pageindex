@@ -934,7 +934,7 @@ def _candidate_from_document(
     Pure function — does NOT call ``_collect_heading_pages`` (the caller
     owns that) and does NOT touch ``extraction_stages``.
     """
-    built = _build_candidate(md)
+    built, rtl_decision = _build_candidate(md)
     recovered = _recover_heading_depth(built, heading_pages, pdf_path)
     has_depth = _has_structural_depth(recovered)
 
@@ -959,6 +959,7 @@ def _candidate_from_document(
         heading_pages=heading_pages,
         has_depth=has_depth,
         verdict=verdict,
+        rtl_decision=rtl_decision,
     )
 
 
@@ -1535,8 +1536,10 @@ def _fix_fi_hash_substitution(md: str) -> str:
 
 
 
-def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str:
-    """Zone-3: apply_rtl shim replacing the old bidi reconstructor.
+def reconstruct_bidi_order(
+    text: str, expected_script: str | None = None,
+) -> tuple[str, RtlDecision | None]:
+    """Zone-3/6: apply_rtl shim replacing the old bidi reconstructor.
 
     Two-level strategy (preserves RFC-023 D9 per-heading correction):
     1. Document-level: if decide_rtl says the whole text is reversed,
@@ -1545,18 +1548,27 @@ def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str
        each heading line is checked individually — a visual-order
        heading in an otherwise-logical document still gets corrected.
 
+    Zone-6: returns ``(result_text, RtlDecision | None)`` so the decision
+    can be threaded through the pipeline without re-computation.  The
+    zero-Arabic early-return has been replaced with a guard that skips
+    only the document-level ``decide_rtl`` call; the per-heading loop
+    still runs so bilingual documents get heading-level bidi repair.
+
     ``expected_script`` is accepted for call-site compatibility but is
     unused (``decide_rtl`` infers script from content).
     """
     if not text:
-        return text
+        return text, None
     arabic = len(_AR_SCRIPT_RE.findall(text))
-    if arabic == 0:
-        return text
 
-    decision: RtlDecision = decide_rtl(text)
-    if decision.reversed:
-        return apply_rtl(text, reversed_flag=True)
+    # Zone-6: skip ONLY the document-level decide_rtl when no Arabic is
+    # present, but still fall through to the per-heading loop so bilingual
+    # documents with localised Arabic headings get heading-level repair.
+    decision: RtlDecision | None = None
+    if arabic > 0:
+        decision = decide_rtl(text)
+        if decision.reversed:
+            return apply_rtl(text, reversed_flag=True), decision
 
     out: list[str] = []
     changed = False
@@ -1571,7 +1583,7 @@ def reconstruct_bidi_order(text: str, expected_script: str | None = None) -> str
                 changed = True
                 continue
         out.append(line)
-    return "".join(out) if changed else text
+    return ("".join(out) if changed else text), decision
 
 
 # Split a leading markdown heading marker off a line so reconstruct_bidi_order reorders
@@ -2553,7 +2565,7 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
     return spliced
 
 
-def _pre_inference_normalize(text: str) -> str:
+def _pre_inference_normalize(text: str) -> tuple[str, RtlDecision | None]:
     """Markdown clean-up run BEFORE heading-depth inference (RFC-015 D5c/D4/D7).
 
     Ordering is load-bearing: D5c (split run-together headings) must precede D4 (the
@@ -2561,20 +2573,31 @@ def _pre_inference_normalize(text: str) -> str:
     line pass), which must precede D7 (BiDi reorder) and depth inference (so في is a
     single token by the time the heading regex parses it).
 
-    RFC-029 §1.1: NFKC canonicalization of Arabic Presentation Forms (U+FB50–FDFF,
-    U+FE70–FEFF) runs first so all downstream consumers see canonical codepoints.
-    The pass is gated on detection — non-Arabic text is untouched (idempotent).
-    Design Property 1: NFKC canonicalization idempotence.
+    Zone-6: NFKC canonicalization of Arabic Presentation Forms (U+FB50-FDFF,
+    U+FE70-FEFF) now runs AFTER ``reconstruct_bidi_order`` so that
+    ``_word_has_reversed_morphology`` sees presentation-form codepoints intact
+    when they exist.  The ``had_presentation_forms`` signal is captured before
+    NFKC and attached to the ``RtlDecision`` for downstream garble-gate use.
+    (Supersedes RFC-029 §1.1 Design Property 1 ordering; idempotence is
+    preserved because NFKC is still gated on detection.)
     """
-    # RFC-029 §1.1 — NFKC only when Arabic Presentation Forms are present.
-    # Ranges: Arabic Presentation Forms-A U+FB50–U+FDFF,
-    #         Arabic Presentation Forms-B U+FE70–U+FEFF.
-    if any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in text):
-        text = unicodedata.normalize("NFKC", text)
     text = _split_run_together_headings(text)  # D5c
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
-    text = reconstruct_bidi_order(text)  # D7 (Zone-3: sole bidi normalization step)
-    return text
+    text, rtl_decision = reconstruct_bidi_order(text)  # D7 (Zone-3: sole bidi normalization step)
+
+    # Zone-6: capture presentation-form signal BEFORE NFKC destroys the
+    # codepoints, then canonicalize.  The boolean is threaded through
+    # RtlDecision.had_presentation_forms so the garble gate (helpers.py)
+    # can still detect presentation-form artefacts post-NFKC.
+    # Ranges: Arabic Presentation Forms-A U+FB50-U+FDFF,
+    #         Arabic Presentation Forms-B U+FE70-U+FEFF.
+    had_pres_forms = any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in text)
+    if had_pres_forms:
+        text = unicodedata.normalize("NFKC", text)
+    if had_pres_forms and rtl_decision is not None:
+        rtl_decision = dataclasses.replace(rtl_decision, had_presentation_forms=True)
+
+    return text, rtl_decision
 
 
 def _recover_picture_results(
@@ -3146,7 +3169,7 @@ def _pdf_to_markdown_docling_chunked(
     return "\n\n".join(md_parts), pic_results, {}
 
 
-def _build_candidate(md: str) -> str:
+def _build_candidate(md: str) -> tuple[str, RtlDecision | None]:
     """Normalise a candidate markdown source BEFORE heading-depth inference.
 
     Ordering matters: Arabic structural headings must be injected before
@@ -3155,12 +3178,16 @@ def _build_candidate(md: str) -> str:
     clause and English article headings follow, then the pipeline-level
     normalize pass that splits run-together headings, fixes fi-hash
     substitutions, and reconstructs bidi order.
+
+    Zone-6: returns ``(md, RtlDecision | None)`` so the authoritative RTL
+    decision computed inside ``reconstruct_bidi_order`` can be threaded
+    through the pipeline without re-computation.
     """
     md = _inject_arabic_structural_headings(md)
     md = _inject_german_clause_headings(md)
     md = _inject_english_article_headings(md)
-    md = _pre_inference_normalize(md)
-    return md
+    md, rtl_decision = _pre_inference_normalize(md)
+    return md, rtl_decision
 
 
 @dataclasses.dataclass
@@ -3195,6 +3222,7 @@ class Candidate:
     heading_pages: dict[str, list[int]] = dataclasses.field(default_factory=dict)
     has_depth: bool = False
     verdict: str = ""
+    rtl_decision: RtlDecision | None = None
 
 
 def _run_stages(

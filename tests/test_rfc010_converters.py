@@ -227,55 +227,47 @@ class TestReconstructBidiOrder:
 
     def test_non_arabic_unchanged(self):
         md = "# English Heading\n\nJust some plain English prose here.\n"
-        assert reconstruct_bidi_order(md) == md
+        result, _ = reconstruct_bidi_order(md)
+        assert result == md
 
     def test_german_unchanged(self):
         md = "## Haftpflicht und Geltungsbereich\n\nDer Versicherungsschutz für Tiere.\n"
-        assert reconstruct_bidi_order(md) == md
+        result, _ = reconstruct_bidi_order(md)
+        assert result == md
 
     def test_below_threshold_unchanged(self):
         # A single Arabic char in a long Latin line stays below the 0.15 gate.
         md = "this is a long line of english text with one arabic letter ء here"
-        assert reconstruct_bidi_order(md) == md
+        result, _ = reconstruct_bidi_order(md)
+        assert result == md
 
     def test_arabic_line_is_char_preserving_permutation(self):
         # BiDi reordering permutes characters; it must not add/drop any.
         md = "المادة الأولى في القانون العربي الطويل الكافي جدا"
-        result = reconstruct_bidi_order(md)
+        result, _ = reconstruct_bidi_order(md)
         assert sorted(result) == sorted(md)
 
     def test_arabic_heading_prefix_preserved(self):
         # The '#' marker must survive so depth inference still parses it.
         md = "## المادة الأولى في القانون العربي الطويل الكافي"
-        result = reconstruct_bidi_order(md)
+        result, _ = reconstruct_bidi_order(md)
         assert result.startswith("## ")
 
     def test_empty_string(self):
-        assert reconstruct_bidi_order("") == ""
+        result, _ = reconstruct_bidi_order("")
+        assert result == ""
 
     def test_multiline_preserves_line_count_and_per_line_reorder(self):
-        # RFC-015 D7 gap: existing tests above are all single-line. Reordering is
-        # applied per line via splitlines(keepends=True); this must hold across a
-        # multi-line blob, not just collapse/scramble everything into one BiDi run.
-        # Line 0: heading marker + Arabic title (regression against the D7 heading
-        # guard, now proven across multiple lines in one call).
-        # Line 1: plain Arabic prose line.
-        # Line 2: another plain Arabic prose line.
         md = (
             "## المادة الأولى في القانون العربي الطويل الكافي\n"
             "نص عربي طويل كاف لتجاوز حد الخمسة عشر بالمئة المطلوب هنا\n"
             "سطر عربي آخر طويل بما يكفي لتجاوز عتبة الكشف المطلوبة أيضا\n"
         )
-        result = reconstruct_bidi_order(md)
+        result, _ = reconstruct_bidi_order(md)
         result_lines = result.splitlines()
         md_lines = md.splitlines()
-        # Newlines preserved: same number of lines in, same number out.
         assert len(result_lines) == len(md_lines)
-        # Heading marker line still starts with '##' (per-line guard, not just line 0
-        # of a single monolithic BiDi run over the whole blob).
         assert result_lines[0].startswith("## ")
-        # Each Arabic prose line was itself permuted (char-preserving), not left
-        # untouched and not merged with neighboring lines.
         assert sorted(result_lines[1]) == sorted(md_lines[1])
         assert sorted(result_lines[2]) == sorted(md_lines[2])
 
@@ -301,13 +293,13 @@ class TestLogicalOrderDetection:
         # RFC-033 D2 (Part A) narrows RFC-023 D9's scope: an already-logical
         # heading is now left untouched, same as the body line.
         logical = "# قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل\nبشأن تنظيم علاقات العمل وتعديلاته"
-        result = reconstruct_bidi_order(logical)
+        result, _ = reconstruct_bidi_order(logical)
         assert result == logical
         assert result.splitlines()[1] == logical.splitlines()[1]
 
     def test_visual_order_still_reversed(self):
         visual = "# 2022 ةنسل مقر ءارزولا سلجم رارق\nلمعلا تاقالع ميظنت نأشب"
-        result = reconstruct_bidi_order(visual)
+        result, _ = reconstruct_bidi_order(visual)
         assert result != visual
 
 
@@ -359,23 +351,23 @@ class TestFixResidualRtlReversal:
     def test_reversed_arabic_word_order_fixed(self):
         # Test the no-flip case: correctly ordered Arabic text stays unchanged.
         text = "في المكتبة هذا"
-        result = reconstruct_bidi_order(text)
+        result, _ = reconstruct_bidi_order(text)
         assert result == text
 
     def test_non_arabic_text_unchanged(self):
         text = "This is English text"
-        result = reconstruct_bidi_order(text)
+        result, _ = reconstruct_bidi_order(text)
         assert result == text
 
     def test_correct_arabic_unchanged(self):
         text = "وزارة الموارد"
-        assert reconstruct_bidi_order(text) == text
+        result, _ = reconstruct_bidi_order(text)
+        assert result == text
 
     def test_mixed_arabic_latin_preserved(self):
-        # Arabic makes up well under 50% of the stripped line, so the line is
-        # skipped rather than treated as a reversal candidate.
         text = "Hello World مرحبا"
-        assert reconstruct_bidi_order(text) == text
+        result, _ = reconstruct_bidi_order(text)
+        assert result == text
 
 
 class TestIsNumericExtension:

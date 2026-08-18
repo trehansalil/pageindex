@@ -27,26 +27,29 @@ _CORPUS_MD_FILES = sorted(_DOC_STORE.rglob("*.md")) if _DOC_STORE.is_dir() else 
 @pytest.mark.parametrize("md_path", _CORPUS_MD_FILES, ids=lambda p: p.name)
 def test_corpus_file_idempotent(md_path):
     text = md_path.read_text(encoding="utf-8", errors="ignore")
-    once = reconstruct_bidi_order(text)
-    twice = reconstruct_bidi_order(once)
+    once, _ = reconstruct_bidi_order(text)
+    twice, _ = reconstruct_bidi_order(once)
     assert twice == once
 
 
 class TestEdgeCaseIdempotence:
     def test_empty_string(self):
-        once = reconstruct_bidi_order("")
-        assert reconstruct_bidi_order(once) == once
+        once, _ = reconstruct_bidi_order("")
+        twice, _ = reconstruct_bidi_order(once)
+        assert twice == once
 
     def test_pure_latin(self):
         text = "This is plain English prose with no Arabic content at all."
-        once = reconstruct_bidi_order(text)
-        assert reconstruct_bidi_order(once) == once
+        once, _ = reconstruct_bidi_order(text)
+        twice, _ = reconstruct_bidi_order(once)
+        assert twice == once
         assert once == text
 
     def test_pure_arabic(self):
         text = "هذا نص عربي يجب ان يبقى قابلا للقراءة بعد اعادة الترتيب مرتين متتاليتين"
-        once = reconstruct_bidi_order(text)
-        assert reconstruct_bidi_order(once) == once
+        once, _ = reconstruct_bidi_order(text)
+        twice, _ = reconstruct_bidi_order(once)
+        assert twice == once
 
     def test_mixed_arabic_latin(self):
         text = (
@@ -55,8 +58,9 @@ class TestEdgeCaseIdempotence:
             "هذا نص عربي مضمن داخل نص انجليزي طويل بما يكفي لتفعيل اعادة الترتيب "
             "and continues in English afterwards."
         )
-        once = reconstruct_bidi_order(text)
-        assert reconstruct_bidi_order(once) == once
+        once, _ = reconstruct_bidi_order(text)
+        twice, _ = reconstruct_bidi_order(once)
+        assert twice == once
 
     def test_bidi_control_characters(self):
         rlm = "‏"
@@ -68,10 +72,12 @@ class TestEdgeCaseIdempotence:
             f"{rlm}نص عربي يحتوي على محارف تحكم اتجاهية{lrm} mixed with Latin text "
             "that is long enough to matter for the reorder gate."
         )
-        once = reconstruct_bidi_order(text)
-        assert reconstruct_bidi_order(once) == once
+        once, _ = reconstruct_bidi_order(text)
+        twice, _ = reconstruct_bidi_order(once)
+        assert twice == once
 
     def test_heading_only_arabic(self):
         text = "## الفصل الأول: تعريفات"
-        once = reconstruct_bidi_order(text)
-        assert reconstruct_bidi_order(once) == once
+        once, _ = reconstruct_bidi_order(text)
+        twice, _ = reconstruct_bidi_order(once)
+        assert twice == once

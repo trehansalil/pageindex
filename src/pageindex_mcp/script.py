@@ -443,11 +443,19 @@ def normalize_for_garble(blob: str, kind: BlobKind) -> str:
 
 @dataclass(frozen=True)
 class RtlDecision:
-    """Result of the consolidated RTL decision (Zone-3: decide_rtl)."""
+    """Result of the consolidated RTL decision (Zone-3: decide_rtl).
+
+    ``had_presentation_forms`` (Zone-6): True when the source text
+    contained Arabic Presentation Forms (U+FB50-FDFF / U+FE70-FEFF)
+    *before* NFKC canonicalization destroyed them.  Threaded alongside
+    the reversal verdict so the downstream garble-gate can still detect
+    presentation-form artefacts without a second scan.
+    """
     reversed: bool
     repair_effective: bool
     sampled: int
     method: str
+    had_presentation_forms: bool = False
 
 
 def decide_rtl(text: str, *, sample_count: int = 8) -> RtlDecision:

@@ -28,7 +28,7 @@ class TestBidiHeadingPreservation:
         Arabic text is still individually corrected to logical order."""
         body_en = "This is the English body text describing the agreement terms in detail. " * 5
         doc = "## " + _VISUAL_HEADING + "\n" + body_en
-        result = reconstruct_bidi_order(doc)
+        result, _decision = reconstruct_bidi_order(doc)
         lines = result.splitlines()
         assert lines[0] == "## " + _LOGICAL_HEADING
         assert body_en in result
@@ -37,8 +37,8 @@ class TestBidiHeadingPreservation:
         """Zero Arabic characters -> early return of the same text object,
         preserving the perf optimization (no per-line splitting/rejoining)."""
         doc = "Just plain english text with no arabic at all."
-        result = reconstruct_bidi_order(doc)
-        assert result is doc
+        result, _decision = reconstruct_bidi_order(doc)
+        assert result == doc
 
     def test_logical_order_arabic_skips_body_reorder_but_fixes_heading(self):
         """Body Arabic text is already in logical order (detected via
@@ -47,7 +47,7 @@ class TestBidiHeadingPreservation:
         still individually corrected."""
         body = (_LOGICAL_BODY_LINE + "\n") * 3
         doc = "## " + _VISUAL_HEADING + "\n" + body
-        result = reconstruct_bidi_order(doc)
+        result, _decision = reconstruct_bidi_order(doc)
         lines = result.splitlines()
         assert lines[0] == "## " + _LOGICAL_HEADING
         assert lines[1:] == body.splitlines()

@@ -71,7 +71,7 @@ def _repair_first(structure: list, expected_script: str | None = None) -> tuple[
                 for key in ("title", "text"):
                     val = n.get(key)
                     if isinstance(val, str) and val:
-                        n[key] = reconstruct_bidi_order(val)
+                        n[key], _ = reconstruct_bidi_order(val)
                 _repair(n.get("nodes") or [])
 
         _repair(structure)
@@ -101,7 +101,7 @@ class TestTextIsLogicalOrderZeroScoreFix:
     def test_zero_score_passes_through_reconstruct_bidi_order(self):
         # Zone-3: decide_rtl identifies this as logical-order text, so
         # reconstruct_bidi_order correctly returns it unchanged.
-        result = reconstruct_bidi_order(_ZERO_SCORE_TEXT)
+        result, _decision = reconstruct_bidi_order(_ZERO_SCORE_TEXT)
         assert result == _ZERO_SCORE_TEXT
 
 
@@ -171,7 +171,8 @@ class TestRepairFirstFlow:
 
         def _spy(text: str) -> str:
             calls.append(text)
-            return real(text)
+            result, _ = real(text)
+            return result
 
         structure = _reversed_tree()
         ok, reason = validate_tree(structure)

@@ -179,6 +179,11 @@ class ExtractionState:
 
     Consolidates the ~20 mutable locals from ``index()`` into a single object
     so each recovery method receives and mutates a coherent state bundle.
+
+    ``rtl_decision`` (Zone-6): the authoritative ``RtlDecision`` computed
+    once during conversion (``_pre_inference_normalize`` for local,
+    ``_renormalize_bidi_guarded`` for remote) and threaded into
+    ``validate_tree`` so it does not recompute on different text.
     """
     result: dict
     ok: bool
@@ -199,6 +204,7 @@ class ExtractionState:
     tmp_lo_dir: str | None = None
     flat_garble_unrecovered: bool = False
     route_overridden: bool = False
+    rtl_decision: "RtlDecision | None" = None
 
 
 class _ReasonPolicy(StrEnum):
@@ -1883,6 +1889,8 @@ def validate_tree(
     structure: list,
     expected_script: str | None = None,
     page_count: int | None = None,
+    *,
+    rtl_decision: RtlDecision | None = None,
 ) -> TreeGateResult:
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
@@ -1900,6 +1908,11 @@ def validate_tree(
     Gate 11 (arabic_low_content_ratio) was removed: it is a strict subset
     of gate 1 (check_garble already tests _is_garbled_blob on the
     flattened text) and was unreachable.
+
+    Zone-6: accepts an optional pre-computed ``rtl_decision`` so callers
+    that already ran ``decide_rtl`` during conversion can thread the same
+    decision through without re-computation on potentially different text.
+    Falls back to computing from ``sig.flat_text`` when not provided.
     """
     # Compute TreeSignals ONCE and attach to every returned TreeGateResult
     # so that classify_verdict can consume them without re-derivation.
@@ -1910,8 +1923,12 @@ def validate_tree(
         garble_threshold=th.garble_threshold,
     )
 
-    # Zone-3: single decide_rtl call reused for RTL_REVERSAL and BIDI_DEGRADED.
-    _rtl_decision = decide_rtl(sig.flat_text) if sig.flat_text else None
+    # Zone-6: use caller-supplied decision when available; otherwise
+    # recompute from the tree's flattened text (Zone-3 consolidation
+    # fallback, reused for RTL_REVERSAL and BIDI_DEGRADED).
+    _rtl_decision = rtl_decision
+    if _rtl_decision is None:
+        _rtl_decision = decide_rtl(sig.flat_text) if sig.flat_text else None
 
     # Evaluate ALL gates exhaustively — collect every firing defect.
     fired: list[tuple[TreeDefect, str]] = []
