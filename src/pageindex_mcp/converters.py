@@ -24,7 +24,16 @@ if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
 from .helpers import classify_verdict
-from .picture_plane import OcrMode, PictureRegion, SkipReason, decide_ocr_mode
+from .picture_plane import (
+    OcrMode,
+    PictureGateConfig,
+    PictureRegion,
+    RegionClassification,
+    RegionDisposition,
+    SkipReason,
+    _classify_region,
+    decide_ocr_mode,
+)
 from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
 from .script import AR_CHAR_RE as _AR_LETTER_RE
 from .script import AR_CHAR_RE as _AR_SCRIPT_RE
@@ -1634,6 +1643,19 @@ _REGION_AWARE_TEXT_CHECK_ENABLED = os.getenv(
 # are skipped (page_coverage) with a warning.
 _MAX_FULLPAGE_PICTURE_OCR_REGIONS = int(os.getenv("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50"))
 
+# Consolidated picture-gate config: reads the 7 env-var-gated constants
+# above into a frozen PictureGateConfig (picture_plane.py) so
+# _classify_region can be called with a single config object.
+_GATE_CONFIG = PictureGateConfig(
+    picture_ocr_min_chars=_PICTURE_OCR_MIN_CHARS,
+    page_coverage_threshold=_PICTURE_PAGE_COVERAGE_THRESHOLD,
+    decorative_icon_min_dim_pt=_DECORATIVE_ICON_MIN_DIM_PT,
+    coverage_exempt_no_text_layer=_COVERAGE_EXEMPT_NO_TEXT_LAYER,
+    clip_text_capture_enabled=_CLIP_TEXT_CAPTURE_ENABLED,
+    clip_text_containment_threshold=_CLIP_TEXT_CONTAINMENT_THRESHOLD,
+    max_fullpage_picture_ocr_regions=_MAX_FULLPAGE_PICTURE_OCR_REGIONS,
+)
+
 
 class PictureResult(TypedDict, total=False):
     """Structured result from per-picture OCR/crop recovery."""
@@ -1758,6 +1780,32 @@ def _region_has_own_text_layer(page, region_rect) -> bool:
     text clipped to `region_rect`, regardless of what text exists outside it."""
     region_clip_len = len(page.get_text("text", clip=region_rect).strip())
     return region_clip_len >= _PICTURE_OCR_MIN_CHARS
+
+
+def _crop_page_region(page, rect, *, region_index: int = -1) -> bytes | None:
+    """Crop a picture region from a PDF page at 300 DPI with rotation reset.
+
+    Encapsulates the rotation-save / set_rotation(0) / get_pixmap / restore
+    pattern previously duplicated across _recover_picture_text's skip-retention
+    and normal crop paths (D5a RFC-029, D6 RFC-015).
+
+    Returns PNG bytes on success, None on failure (logged, never fatal).
+    """
+    try:
+        orig_rotation = page.rotation
+        page.set_rotation(0)
+        try:
+            pix = page.get_pixmap(clip=rect, dpi=300)
+        finally:
+            page.set_rotation(orig_rotation)
+        return pix.tobytes("png")
+    except Exception as exc:
+        logger.debug(
+            "_crop_page_region: crop failed for region %d: %s",
+            region_index,
+            exc,
+        )
+        return None
 
 
 def _normalize_for_containment(text: str) -> str:
@@ -2209,7 +2257,8 @@ def _recover_picture_text(  # noqa: PLR0915, C901
 
     import fitz  # PyMuPDF, AGPL-3.0
 
-    md_norm = _normalize_for_containment(md) if _CLIP_TEXT_CAPTURE_ENABLED else ""
+    md_norm = _normalize_for_containment(md) if _GATE_CONFIG.clip_text_capture_enabled else ""
+    gate_config = _GATE_CONFIG
 
     # Phase 1 (serial, single fitz.Document): crop every valid region.
     crops: dict[int, dict] = {}
@@ -2230,10 +2279,14 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 rect = _bbox_to_fitz_rect(region["bbox"], page.rect.height, fitz)
                 if rect is None:
                     continue
-                # D0: skip regions covering >60% of page — full scanned pages, not charts.
+
+                # -- Metadata extraction (I/O, fitz-dependent) ----------------
                 page_area = page.rect.width * page.rect.height
                 coverage = (rect.width * rect.height) / page_area if page_area > 0 else 0.0
-                if coverage > _PICTURE_PAGE_COVERAGE_THRESHOLD:
+
+                # has_own_text: only meaningful when coverage > threshold.
+                has_own_text = True
+                if coverage > gate_config.page_coverage_threshold:
                     if _REGION_AWARE_TEXT_CHECK_ENABLED:
                         has_own_text = _region_has_own_text_layer(page, rect)
                         if has_own_text and _TEXT_LAYER_GARBLE_CHECK_ENABLED:
@@ -2249,137 +2302,82 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                                     has_own_text = False
                     else:
                         has_own_text = _text_layer_has_content(page, expected_script=expected_script)
-                    # Reordered: coverage exemption BEFORE MAX_FULLPAGE cap.
-                    # A page with no text layer is always exempt (the picture
-                    # IS the content) regardless of whether the cap has been
-                    # reached — the cap only limits how many exempt pages
-                    # actually get the expensive OCR pass.
-                    if _COVERAGE_EXEMPT_NO_TEXT_LAYER and not has_own_text:
-                        if fullpage_ocr_region_count >= _MAX_FULLPAGE_PICTURE_OCR_REGIONS:
-                            logger.warning(
-                                "MAX_FULLPAGE_PICTURE_OCR_REGIONS (%d) exceeded for %s; "
-                                "skipping further full-page picture exemptions",
-                                _MAX_FULLPAGE_PICTURE_OCR_REGIONS,
-                                pdf_path,
-                            )
-                            skip_reasons[i] = "page_coverage"
-                            # D5a: retain crop bytes even though OCR is skipped.
-                            try:
-                                orig_rotation = page.rotation
-                                page.set_rotation(0)
-                                try:
-                                    pix = page.get_pixmap(clip=rect, dpi=300)
-                                finally:
-                                    page.set_rotation(orig_rotation)
-                                retained_skips[i] = {
-                                    "png_bytes": pix.tobytes("png"),
-                                    "region": region,
-                                    "skipped_reason": "page_coverage",
-                                }
-                            except Exception as _crop_exc:
-                                logger.debug(
-                                    "D5a: png_bytes crop failed for page_coverage region %d: %s",
-                                    i,
-                                    _crop_exc,
-                                )
-                            continue
-                        fullpage_ocr_region_count += 1
-                        logger.warning(
-                            "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
-                            "exempting from skip (picture IS the page content)",
-                            coverage * 100,
-                            page_index + 1,
-                        )
-                    else:
-                        skip_reasons[i] = "page_coverage"
-                        # D5a: retain crop bytes even though OCR is skipped.
-                        try:
-                            orig_rotation = page.rotation
-                            page.set_rotation(0)
-                            try:
-                                pix = page.get_pixmap(clip=rect, dpi=300)
-                            finally:
-                                page.set_rotation(orig_rotation)
-                            retained_skips[i] = {
-                                "png_bytes": pix.tobytes("png"),
-                                "region": region,
-                                "skipped_reason": "page_coverage",
-                            }
-                        except Exception as _crop_exc:
-                            logger.debug(
-                                "D5a: png_bytes crop failed for page_coverage region %d: %s",
-                                i,
-                                _crop_exc,
-                            )
-                        continue
-                # D1 (RFC-018/RFC-024): a region with meaningful clip_text is either
-                # already exported by Docling (skip) or was misclassified as a
-                # Picture and never surfaced (capture), decided by the containment
-                # guard against the normalized markdown body.
+
                 clip_text = page.get_text("text", clip=rect).strip()
-                if len(clip_text) > _PICTURE_OCR_MIN_CHARS:
-                    if _CLIP_TEXT_CAPTURE_ENABLED and not _clip_text_contained(clip_text, md_norm):
-                        clip_captures[i] = {
-                            "ocr_text": " ".join(clip_text.split()),
-                            "region": region,
-                        }
-                        logger.info(
-                            "clip_text_captured for picture region %d in %s (not found in "
-                            "Docling markdown export)",
-                            i,
+                clip_text_contained = (
+                    _clip_text_contained(clip_text, md_norm) if clip_text else True
+                )
+
+                # -- Pure classification (no I/O) -----------------------------
+                cls: RegionClassification = _classify_region(
+                    coverage=coverage,
+                    has_own_text=has_own_text,
+                    clip_text_len=len(clip_text),
+                    clip_text_contained=clip_text_contained,
+                    rect_width=rect.width,
+                    rect_height=rect.height,
+                    fullpage_count=fullpage_ocr_region_count,
+                    config=gate_config,
+                )
+                disp = cls.disposition
+
+                # -- Disposition switch ----------------------------------------
+                if disp.is_skip:
+                    reason = disp.skip_reason_str or ("clip_text" if disp == RegionDisposition.SKIP_CLIP_TEXT else "unknown")
+                    skip_reasons[i] = reason
+                    if disp == RegionDisposition.SKIP_COVERAGE_CAP:
+                        logger.warning(
+                            "MAX_FULLPAGE_PICTURE_OCR_REGIONS (%d) exceeded for %s; "
+                            "skipping further full-page picture exemptions",
+                            gate_config.max_fullpage_picture_ocr_regions,
                             pdf_path,
                         )
-                    else:
-                        skip_reason = (
-                            "clip_text_already_exported"
-                            if _CLIP_TEXT_CAPTURE_ENABLED
-                            else "clip_text"
-                        )
-                        skip_reasons[i] = skip_reason
-                        # D5a: for clip_text_already_exported, retain png_bytes AND
-                        # propagate clip_text so splice_figure_markers can emit [Chart text].
-                        if _CLIP_TEXT_CAPTURE_ENABLED:
-                            try:
-                                orig_rotation = page.rotation
-                                page.set_rotation(0)
-                                try:
-                                    pix = page.get_pixmap(clip=rect, dpi=300)
-                                finally:
-                                    page.set_rotation(orig_rotation)
-                                retained_skips[i] = {
-                                    "png_bytes": pix.tobytes("png"),
-                                    "ocr_text": " ".join(clip_text.split()),
-                                    "region": region,
-                                    "skipped_reason": skip_reason,
-                                }
-                            except Exception as _crop_exc:
-                                logger.debug(
-                                    "D5a: png_bytes crop failed for %s region %d: %s",
-                                    skip_reason,
-                                    i,
-                                    _crop_exc,
-                                )
+                    # D5a (RFC-029): retain crop bytes for downstream context.
+                    if disp.retains_crop:
+                        png = _crop_page_region(page, rect, region_index=i)
+                        if png is not None:
+                            retained = {
+                                "png_bytes": png,
+                                "region": region,
+                                "skipped_reason": reason,
+                            }
+                            if disp == RegionDisposition.SKIP_CLIP_EXPORTED:
+                                retained["ocr_text"] = " ".join(clip_text.split())
+                            retained_skips[i] = retained
                     continue
-                # D2 (RFC-023): sub-icon regions (both dims below threshold) are
-                # decorative UI glyphs — skip crop+OCR entirely.
-                if (
-                    rect.width < _DECORATIVE_ICON_MIN_DIM_PT
-                    and rect.height < _DECORATIVE_ICON_MIN_DIM_PT
-                ):
-                    skip_reasons[i] = "decorative_icon"
+
+                # Coverage-exempt bookkeeping (F1 RFC-020 / D1 RFC-025).
+                if cls.coverage_exempt:
+                    fullpage_ocr_region_count += 1
+                    logger.warning(
+                        "F1: coverage %.1f%% exceeds threshold but page %d has no text layer; "
+                        "exempting from skip (picture IS the page content)",
+                        coverage * 100,
+                        page_index + 1,
+                    )
+
+                if disp == RegionDisposition.CAPTURE_CLIP_TEXT:
+                    clip_captures[i] = {
+                        "ocr_text": " ".join(clip_text.split()),
+                        "region": region,
+                    }
+                    logger.info(
+                        "clip_text_captured for picture region %d in %s (not found in "
+                        "Docling markdown export)",
+                        i,
+                        pdf_path,
+                    )
                     continue
-                # D6: zero page rotation before rendering so Tesseract receives a
-                # correctly-oriented crop regardless of PDF page-rotation metadata.
-                orig_rotation = page.rotation
-                page.set_rotation(0)
-                try:
-                    pix = page.get_pixmap(clip=rect, dpi=300)
-                finally:
-                    page.set_rotation(orig_rotation)
+
+                # CROP_AND_OCR: D6 — zero page rotation before rendering.
+                png = _crop_page_region(page, rect, region_index=i)
+                if png is None:
+                    skip_reasons[i] = "crop_error"
+                    continue
                 crops[i] = {
-                    "png_bytes": pix.tobytes("png"),
+                    "png_bytes": png,
                     "region": region,
-                    "rotation": orig_rotation,
+                    "rotation": page.rotation,
                 }
             except Exception as exc:  # D2 (RFC-024): isolate per-region crop failures
                 logger.warning(
@@ -2504,12 +2502,12 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
 
     Sets ``spliced_into_markdown`` flag on spliced pics instead of the prior
     destructive ``pop('ocr_text')``."""
-    from .picture_plane import SkipReason
-
     if not pics:
         return md
-    _LANDSCAPE_REASONS = {SkipReason.LANDSCAPE_FALLBACK.value, "landscape_fallback_picture"}
-    real_pics = [p for p in pics if p.get("skipped_reason") not in _LANDSCAPE_REASONS]
+    # Filter out landscape-fallback fabricated entries for ordinal alignment.
+    # SkipReason is a StrEnum so the ``!=`` comparison covers both the enum
+    # member and its string value (e.g. "landscape_fallback_picture").
+    real_pics = [p for p in pics if p.get("skipped_reason") != SkipReason.LANDSCAPE_FALLBACK]
     marker_count = md.count(_IMAGE_MARKER)
     if marker_count != len(real_pics):
         logger.warning(
@@ -3248,58 +3246,6 @@ def _run_stages(
     return md, records
 
 
-def _run_fallback_pipeline(
-    md: str,
-    *,
-    pdf_path: str,
-    expected_script: str | None,
-    landscape_fallback_pages: list,
-    heading_pages: dict[str, list[int]],
-) -> tuple[str, str, dict[str, dict]]:
-    """Run the pre/post fallback stage split and capture ``body_for_containment``.
-
-    Stage ordering is load-bearing (RFC-024 D1 suppression fix):
-
-        normalize_indented_headings
-        -> **snapshot** (``body_for_containment``)
-        -> document_level_text_fallback
-        -> splice_landscape_fallback
-
-    Returns ``(final_md, body_for_containment, combined_records)`` so the
-    caller can pass ``body_for_containment`` to ``_recover_picture_results``
-    without relying on fragile insertion order between two separate stage
-    lists.
-    """
-    pre_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
-        ("normalize_indented_headings", _normalize_indented_headings),
-    ]
-    md, pre_records = _run_stages(md, pre_fallback_stages)
-
-    # RFC-024 D1 fix: snapshot md BEFORE _document_level_text_fallback appends
-    # the raw pdfium text layer, so the containment check in picture recovery
-    # measures against genuine Docling-exported content only.
-    body_for_containment = md
-
-    post_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
-        ("document_level_text_fallback", functools.partial(
-            _document_level_text_fallback,
-            pdf_path=pdf_path,
-            expected_script=expected_script,
-        )),
-        ("splice_landscape_fallback", functools.partial(
-            _splice_landscape_fallback,
-            landscape_fallback_pages=landscape_fallback_pages,
-            heading_pages=heading_pages,
-        )),
-    ]
-    md, post_records = _run_stages(md, post_fallback_stages)
-
-    combined_records: dict[str, dict] = {}
-    combined_records.update(pre_records)
-    combined_records.update(post_records)
-    return md, body_for_containment, combined_records
-
-
 def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     pdf_path: str,
     force_full_page_ocr: bool = False,
@@ -3601,16 +3547,38 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     md = selected.md
     heading_pages_for_md = selected.heading_pages
 
-    # String-mutating stages with body_for_containment snapshot captured
-    # between pre- and post-fallback runs (RFC-024 D1 suppression fix).
-    md, body_for_containment, fallback_records = _run_fallback_pipeline(
-        md,
-        pdf_path=pdf_path,
-        expected_script=expected_script,
-        landscape_fallback_pages=landscape_fallback_pages,
-        heading_pages=heading_pages_for_md,
-    )
-    extraction_stages.update(fallback_records)
+    # Fallback stage split (inlined from _run_fallback_pipeline).
+    # Stage ordering is load-bearing (RFC-024 D1 suppression fix):
+    #   normalize_indented_headings
+    #   -> **snapshot** (body_for_containment)
+    #   -> document_level_text_fallback
+    #   -> splice_landscape_fallback
+    _pre_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
+        ("normalize_indented_headings", _normalize_indented_headings),
+    ]
+    md, _pre_records = _run_stages(md, _pre_fallback_stages)
+
+    # RFC-024 D1 fix: snapshot md BEFORE _document_level_text_fallback appends
+    # the raw pdfium text layer, so the containment check in picture recovery
+    # measures against genuine Docling-exported content only.
+    body_for_containment = md
+
+    _post_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
+        ("document_level_text_fallback", functools.partial(
+            _document_level_text_fallback,
+            pdf_path=pdf_path,
+            expected_script=expected_script,
+        )),
+        ("splice_landscape_fallback", functools.partial(
+            _splice_landscape_fallback,
+            landscape_fallback_pages=landscape_fallback_pages,
+            heading_pages=heading_pages_for_md,
+        )),
+    ]
+    md, _post_records = _run_stages(md, _post_fallback_stages)
+
+    extraction_stages.update(_pre_records)
+    extraction_stages.update(_post_records)
 
     # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
     # the return value (a thread-local set on the to_thread pool thread was

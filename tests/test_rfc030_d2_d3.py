@@ -145,7 +145,6 @@ def _wire_index(monkeypatch, *, validate_return: TreeGateResult | tuple, flat_do
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
-        "write_verdict": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
     }
@@ -194,10 +193,11 @@ class TestPersistWithFailRouting:
 
         await c.index(md_file)
 
-        wv_args = mocks["write_verdict"].call_args.args
-        assert wv_args[1] == "FAIL", (
+        meta_args = mocks["save_doc_meta"].call_args.args
+        meta_dict = meta_args[1]
+        assert meta_dict["verdict"] == "FAIL", (
             f"Expected FAIL verdict for unhandled reason {reason!r}, "
-            f"got verdict={wv_args[1]!r} reason={wv_args[2]!r}"
+            f"got verdict={meta_dict['verdict']!r} reason={meta_dict.get('verdict_reason')!r}"
         )
 
     async def test_no_flat_routing_no_ocr_retry(self, monkeypatch, md_file, reason):
@@ -266,8 +266,9 @@ class TestPassPathTreesUnaffected:
 
         await c.index(md_file)
 
-        wv_args = mocks["write_verdict"].call_args.args
-        assert wv_args[1] == "PASS"
+        meta_args = mocks["save_doc_meta"].call_args.args
+        meta_dict = meta_args[1]
+        assert meta_dict["verdict"] == "PASS"
 
     @pytest.mark.parametrize("gate_result", [
         TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),

@@ -23,6 +23,7 @@ from pageindex_mcp.converters import (
     _region_has_own_text_layer,
     _recover_picture_text,
 )
+from pageindex_mcp.picture_plane import PictureGateConfig
 
 
 def _install_fake_fitz(monkeypatch, *, page_text="", clip_text=None, width=612.0, height=792.0):
@@ -231,6 +232,10 @@ class TestRegionCapBoundary:
         monkeypatch.setattr(converters, "_REGION_AWARE_TEXT_CHECK_ENABLED", True)
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         monkeypatch.setattr(converters, "_MAX_FULLPAGE_PICTURE_OCR_REGIONS", 2)
+        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
+            coverage_exempt_no_text_layer=True,
+            max_fullpage_picture_ocr_regions=2,
+        ))
         _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 

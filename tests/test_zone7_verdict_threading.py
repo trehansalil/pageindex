@@ -83,7 +83,6 @@ async def test_persist_tree_result_sets_last_verdict_fields():
 
     with (
         patch("pageindex_mcp.client.save_doc", MagicMock()),
-        patch("pageindex_mcp.client.write_verdict", MagicMock()),
         patch("pageindex_mcp.client.save_doc_meta", MagicMock()),
         patch("pageindex_mcp.client.save_raw", MagicMock()),
         patch("pageindex_mcp.client.hash_cache_set", MagicMock()),
@@ -406,7 +405,6 @@ async def test_verdict_fields_are_json_serializable():
 
     with (
         patch("pageindex_mcp.client.save_doc", MagicMock()),
-        patch("pageindex_mcp.client.write_verdict", MagicMock()),
         patch("pageindex_mcp.client.save_doc_meta", MagicMock()),
         patch("pageindex_mcp.client.save_raw", MagicMock()),
         patch("pageindex_mcp.client.hash_cache_set", MagicMock()),

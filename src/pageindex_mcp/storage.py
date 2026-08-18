@@ -548,18 +548,23 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
     subset-payload callers (promotion_sweep, registry_backfill) from
     accidentally dropping fields they don't carry.
 
-    IMPORTANT (Zone-verdict-persistence): callers must NOT mutate verdict
-    fields (verdict, verdict_reason, pipeline_version, verdict_computed_at,
-    max_leaf_ratio) via this function directly. All verdict mutation must go
-    through ``write_verdict()`` below, which is the sole entry point for
-    verdict persistence -- it updates both the artifact and the sidecar
-    atomically. This function's CAS guard (``_verdict_cas_guard``) provides
-    a safety net, but callers should treat ``write_verdict`` as the
-    authoritative path.
+    Zone-5 (verdict-persistence): this function is the **sole authoritative
+    entry point** for verdict persistence.  Both the tree path
+    (``_persist_tree_result``) and the flat path (``_persist_flat_result``)
+    write verdict fields (verdict, verdict_reason, pipeline_version,
+    verdict_computed_at, max_leaf_ratio) exclusively through this function.
+    The ``_verdict_cas_guard`` protects against out-of-order / lost-update
+    verdict writes.  New processed artifacts intentionally omit verdict
+    fields from their body; ``read_registry_fields`` falls back to the
+    sidecar to source them.
+
+    Legacy callers (``promotion_sweep``, ``preprocess_client``) may still
+    route through the deprecated ``write_verdict()`` wrapper, which
+    delegates here.
 
     NOTE (RFC-006): the Postgres registry dual-write is NOT done here. This
     function is invoked from the ``pageindex`` fork inside the isolated
-    ``converters_cli`` child subprocess, which never opens a registry pool — so
+    ``converters_cli`` child subprocess, which never opens a registry pool -- so
     a dual-write here would always no-op. The registry upsert is instead done in
     the long-lived worker parent (``worker._upsert_registry_row``) after the
     child returns, where ``startup()`` has opened the pool. See
@@ -659,83 +664,26 @@ def write_verdict(
     max_leaf_ratio: float,
     content_class: str | None = None,
 ) -> None:
-    """Sole entry point for verdict mutation (Zone-verdict-persistence).
+    """**Deprecated (Zone-5):** thin wrapper that delegates to ``save_doc_meta``.
 
-    Atomic dual-write of verdict fields to artifact + sidecar. All callers
-    that compute or reconcile verdicts (worker/client ingest, promotion_sweep,
-    preprocess_client recompute_verdicts) MUST use this function -- never
-    mutate verdict fields via ``save_doc_meta`` directly.
+    Retained only for legacy callers (``promotion_sweep.run_sweep``,
+    ``preprocess_client.recompute_verdicts``) that import and call this
+    function directly.  New code should call ``save_doc_meta`` with the
+    verdict fields in the *meta* dict instead.
 
-    Reads the existing processed artifact (``processed/<id>.json`` or
-    ``processed/<id>.flat.json``), injects verdict fields, re-writes via
-    ``_confirm_write_visible``, then calls ``save_doc_meta`` with the full
-    metadata so the sidecar carries the same verdict.
-
-    Must not change the ``processed/<id>.json`` shape beyond adding verdict
-    fields.  ``save_doc_meta`` read-merge-write semantics are preserved for
-    non-verdict fields.
+    Previously this function performed an atomic dual-write of verdict
+    fields to both the processed artifact and the sidecar.  Zone-5
+    eliminated the artifact re-write; the sidecar (.meta.json) written by
+    ``save_doc_meta`` is now the sole authoritative verdict store.
     """
-    mc = get_minio()
-
-    verdict_fields = {
+    meta: dict = {
+        "doc_id": doc_id,
         "verdict": verdict,
         "verdict_reason": verdict_reason,
         "pipeline_version": pipeline_version,
         "verdict_computed_at": verdict_computed_at,
         "max_leaf_ratio": round(max_leaf_ratio, 4),
     }
-
-    # Determine artifact key
-    key = (
-        f"processed/{doc_id}.flat.json"
-        if content_class
-        else f"processed/{doc_id}.json"
-    )
-
-    # Read existing artifact, inject verdict fields, re-write
-    MINIO_OPS.labels(operation="put").inc()
-    start = time.monotonic()
-    try:
-        response = None
-        try:
-            response = mc.get_object(settings.minio_bucket, key)
-            data = json.loads(response.read())
-        except S3Error as e:
-            if e.code == "NoSuchKey":
-                logger.debug(
-                    "write_verdict: artifact %s not found, writing sidecar only",
-                    key,
-                )
-                data = None
-            else:
-                raise
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                    response.release_conn()
-                except Exception:
-                    pass
-
-        # Inject verdict fields into artifact and re-write
-        if data is not None:
-            data.update(verdict_fields)
-            content_bytes = json.dumps(data, indent=2).encode()
-            mc.put_object(
-                settings.minio_bucket,
-                key,
-                BytesIO(content_bytes),
-                len(content_bytes),
-                content_type="application/json",
-            )
-            _confirm_write_visible(mc, settings.minio_bucket, key)
-            logger.debug("write_verdict: updated artifact %s", key)
-    finally:
-        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
-
-    # Write sidecar via save_doc_meta (read-merge-write preserves non-verdict fields)
-    meta = dict(verdict_fields)
-    meta["doc_id"] = doc_id
     if content_class:
         meta["content_class"] = content_class
     save_doc_meta(doc_id, meta)
@@ -789,8 +737,11 @@ def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict 
 
         fields["node_count"] = _tree_node_count(data.get("structure") or [])
         # RFC-014 D2 / Zone-8: carry verdict fields to registry.
-        # With artifact-carries-verdict (Zone-8 Target 3), new artifacts
-        # include verdict fields; pull them all here.
+        # Zone-5 NOTE: new artifacts (tree and flat) no longer embed verdict
+        # fields in the artifact body -- the sidecar (.meta.json) is the
+        # sole authoritative verdict store.  The artifact-body scan below
+        # still fires for pre-Zone-5 legacy artifacts, but new docs will
+        # always fall through to the sidecar-fallback path.
         _verdict_keys = (
             "verdict", "verdict_reason", "pipeline_version",
             "permanent_marginal", "verdict_computed_at", "max_leaf_ratio",
@@ -798,9 +749,9 @@ def read_registry_fields(doc_id: str, content_class: str | None = None) -> dict 
         for vf in _verdict_keys:
             if vf in data and data[vf] not in (None, ""):
                 fields[vf] = data[vf]
-        # Zone-8 Target 4: sidecar fallback for legacy docs whose artifact
-        # was written before artifact-carries-verdict landed.  Defensive
-        # fallback only -- no extra MinIO GET on the happy path.
+        # Zone-8 Target 4 / Zone-5: sidecar fallback.  For pre-Zone-5
+        # legacy docs this was a defensive fallback; for Zone-5+ docs this
+        # is now the primary verdict source (artifact body lacks verdict).
         if not fields.get("verdict"):
             sidecar = _read_existing_sidecar(mc, doc_id)
             if sidecar.get("verdict"):

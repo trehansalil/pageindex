@@ -4,8 +4,9 @@ Pure-logic module -- no imports from client.py or converters.py (avoids
 circularity). May import config.py and helpers.py only.
 
 Centralises the OCR-mode decision, skip-reason taxonomy, per-marker
-splice alignment, and picture-region metadata that were previously
-scattered across client.py and converters.py as ad-hoc string literals.
+splice alignment, region-gate classification, and picture-region metadata
+that were previously scattered across client.py and converters.py as
+ad-hoc string literals.
 """
 
 from __future__ import annotations
@@ -126,6 +127,198 @@ class PictureRegion:
 
 
 # ---------------------------------------------------------------------------
+# RegionDisposition: action classification for a picture region
+# ---------------------------------------------------------------------------
+
+
+class RegionDisposition(StrEnum):
+    """Action disposition for a picture region after gate classification.
+
+    Superset of SkipReason -- covers both active (crop/capture) dispositions
+    and skip dispositions.  Each skip variant maps to exactly one SkipReason
+    via the ``skip_reason`` property for backward-compatible PictureResult
+    output, collapsing the raw-string skip_reasons dict that previously
+    leaked un-typed values through _recover_picture_text.
+    """
+
+    # Active dispositions (region proceeds to crop+OCR or clip-text capture)
+    CROP_AND_OCR = "crop_and_ocr"
+    CAPTURE_CLIP_TEXT = "capture_clip_text"
+
+    # Skip dispositions
+    SKIP_PAGE_COVERAGE = "skip_page_coverage"        # High-coverage + has text layer
+    SKIP_COVERAGE_CAP = "skip_coverage_cap"           # Coverage-exempt but cap exceeded
+    SKIP_CLIP_EXPORTED = "skip_clip_exported"          # Clip text already in Docling export
+    SKIP_CLIP_TEXT = "skip_clip_text"                  # Clip text capture disabled
+    SKIP_DECORATIVE = "skip_decorative"                # Sub-icon dimensions
+
+    @property
+    def is_skip(self) -> bool:
+        """True when this disposition skips OCR/capture."""
+        return self.name.startswith("SKIP_")
+
+    @property
+    def retains_crop(self) -> bool:
+        """Whether the disposition should retain png_bytes for downstream (D5a RFC-029)."""
+        return self in _RETAINS_CROP
+
+    @property
+    def skip_reason(self) -> SkipReason | None:
+        """Backward-compatible SkipReason for PictureResult.skipped_reason."""
+        return _DISPOSITION_TO_SKIP_REASON.get(self)
+
+    @property
+    def skip_reason_str(self) -> str | None:
+        """Raw string for PictureResult.skipped_reason (backward compat)."""
+        sr = self.skip_reason
+        return sr.value if sr is not None else None
+
+
+# Frozen sets defined after the class body so all members exist.
+_RETAINS_CROP = frozenset({
+    RegionDisposition.CROP_AND_OCR,
+    RegionDisposition.CAPTURE_CLIP_TEXT,
+    RegionDisposition.SKIP_PAGE_COVERAGE,
+    RegionDisposition.SKIP_COVERAGE_CAP,
+    RegionDisposition.SKIP_CLIP_EXPORTED,
+})
+
+_DISPOSITION_TO_SKIP_REASON: dict[RegionDisposition, SkipReason] = {
+    RegionDisposition.SKIP_PAGE_COVERAGE: SkipReason.PAGE_COVERAGE,
+    RegionDisposition.SKIP_COVERAGE_CAP: SkipReason.PAGE_COVERAGE,
+    RegionDisposition.SKIP_CLIP_EXPORTED: SkipReason.CLIP_TEXT_ALREADY_EXPORTED,
+    RegionDisposition.SKIP_DECORATIVE: SkipReason.DECORATIVE_ICON,
+}
+
+
+# ---------------------------------------------------------------------------
+# PictureGateConfig: consolidated picture-region gate thresholds
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PictureGateConfig:
+    """Configuration for picture-region gate decisions.
+
+    Frozen dataclass with sensible defaults matching the env-var-overridable
+    module-level constants previously scattered in converters.py (lines
+    1584-1635).  Consolidates seven picture-gate constants while preserving
+    their RFC attributions as field-level comments.
+
+    Construction with env-var overrides happens in converters.py so this
+    module remains pure (no os.getenv calls).
+    """
+
+    # RFC-015 D6: below this, OCR output is decorative-image noise
+    picture_ocr_min_chars: int = 20
+    # D0: skip regions covering > this fraction of page area
+    page_coverage_threshold: float = 0.6
+    # D2 (RFC-023): sub-icon PictureItems (both dims below this) skip crop+OCR
+    decorative_icon_min_dim_pt: float = 20.0
+    # F1 (RFC-020): pages with no text layer exempt from coverage skip
+    coverage_exempt_no_text_layer: bool = True
+    # D1 (RFC-024): capture clip_text into PictureResult when not contained
+    clip_text_capture_enabled: bool = True
+    # D1 (RFC-024): containment threshold for _clip_text_contained
+    clip_text_containment_threshold: float = 0.6
+    # D1 (RFC-025): cap on full-page exemptions per document
+    max_fullpage_picture_ocr_regions: int = 50
+
+
+# ---------------------------------------------------------------------------
+# RegionClassification: result of _classify_region
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RegionClassification:
+    """Result of ``_classify_region``: what to do with a picture region.
+
+    ``disposition`` drives the caller's action switch.
+    ``coverage_exempt`` is True when the region had high coverage but was
+    exempted (no text layer under the cap) -- used for logging / counter.
+    """
+
+    disposition: RegionDisposition
+    coverage_exempt: bool = False
+
+
+# ---------------------------------------------------------------------------
+# _classify_region: pure gate-logic classifier
+# ---------------------------------------------------------------------------
+
+
+def _classify_region(
+    *,
+    coverage: float,
+    has_own_text: bool,
+    clip_text_len: int,
+    clip_text_contained: bool,
+    rect_width: float,
+    rect_height: float,
+    fullpage_count: int,
+    config: PictureGateConfig,
+) -> RegionClassification:
+    """Pure gate-logic classifier for a picture region.
+
+    Takes pre-computed metadata (no fitz objects, no I/O) and returns a
+    ``RegionClassification`` telling the caller what action to take.  This
+    decouples the decision tree from PDF I/O so the logic can be unit-tested
+    independently.
+
+    Decision order mirrors the historical _recover_picture_text cascade:
+
+    1. Coverage gate (RFC-018 D0 / RFC-020 F1 / RFC-025 D1 cap)
+    2. Clip-text gate (RFC-018 D1 / RFC-024 D1 containment)
+    3. Decorative-icon gate (RFC-023 D2)
+    4. Normal crop+OCR
+    """
+    # 1. Coverage gate
+    if coverage > config.page_coverage_threshold:
+        if config.coverage_exempt_no_text_layer and not has_own_text:
+            # Exempt -- but respect the per-document cap.
+            if fullpage_count >= config.max_fullpage_picture_ocr_regions:
+                return RegionClassification(
+                    disposition=RegionDisposition.SKIP_COVERAGE_CAP,
+                )
+            return RegionClassification(
+                disposition=RegionDisposition.CROP_AND_OCR,
+                coverage_exempt=True,
+            )
+        return RegionClassification(
+            disposition=RegionDisposition.SKIP_PAGE_COVERAGE,
+        )
+
+    # 2. Clip-text gate
+    if clip_text_len > config.picture_ocr_min_chars:
+        if config.clip_text_capture_enabled and not clip_text_contained:
+            return RegionClassification(
+                disposition=RegionDisposition.CAPTURE_CLIP_TEXT,
+            )
+        if config.clip_text_capture_enabled:
+            return RegionClassification(
+                disposition=RegionDisposition.SKIP_CLIP_EXPORTED,
+            )
+        return RegionClassification(
+            disposition=RegionDisposition.SKIP_CLIP_TEXT,
+        )
+
+    # 3. Decorative-icon gate
+    if (
+        rect_width < config.decorative_icon_min_dim_pt
+        and rect_height < config.decorative_icon_min_dim_pt
+    ):
+        return RegionClassification(
+            disposition=RegionDisposition.SKIP_DECORATIVE,
+        )
+
+    # 4. Normal crop+OCR
+    return RegionClassification(
+        disposition=RegionDisposition.CROP_AND_OCR,
+    )
+
+
+# ---------------------------------------------------------------------------
 # decide_ocr_mode: centralised OCR-mode decision
 # ---------------------------------------------------------------------------
 
@@ -187,11 +380,12 @@ def bind_markers(
     if marker_count == 0:
         return md
 
-    # Filter out landscape-fallback fabricated entries for alignment
+    # Filter out landscape-fallback fabricated entries for alignment.
+    # SkipReason is a StrEnum so the ``!=`` comparison covers both the enum
+    # member and its string value (e.g. "landscape_fallback_picture").
     real_pics = [
         p for p in pics
-        if p.get("skipped_reason") != SkipReason.LANDSCAPE_FALLBACK.value
-        and p.get("skipped_reason") != "landscape_fallback_picture"
+        if p.get("skipped_reason") != SkipReason.LANDSCAPE_FALLBACK
     ]
 
     if marker_count != len(real_pics):

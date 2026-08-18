@@ -102,7 +102,6 @@ from .storage import (
     save_figure,
     save_flat_doc,
     save_raw,
-    write_verdict,
 )
 
 logger = logging.getLogger(__name__)
@@ -1883,7 +1882,13 @@ class CustomPageIndexClient(PageIndexClient):
         )
 
         flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+        _flat_verdict_computed_at = datetime.now(UTC).isoformat()
 
+        # Zone-5: verdict fields stripped from flat artifact body; sidecar
+        # (.meta.json via save_doc_meta) is the sole authoritative verdict
+        # store.  save_flat_doc internally calls save_doc_meta with this dict
+        # (non-verdict fields), then a separate save_doc_meta call below
+        # merges verdict fields into the sidecar.
         flat_meta = {
             "doc_id": doc_id,
             "doc_name": filename,
@@ -1893,12 +1898,7 @@ class CustomPageIndexClient(PageIndexClient):
             "content_class": content_class,
             "blocks": blocks,
             "doc_description": flat_desc,
-            "verdict": f_verdict,
-            "verdict_reason": f_verdict_reason,
-            "max_leaf_ratio": round(f_mlr, 4),
             "flat_char_count": flat_char_count,
-            "pipeline_version": CURRENT_PIPELINE_VERSION,
-            "verdict_computed_at": datetime.now(UTC).isoformat(),
             "build_sha": _CLIENT_BUILD_SHA,
             "effective_config": _effective_cfg,
         }
@@ -1906,6 +1906,19 @@ class CustomPageIndexClient(PageIndexClient):
             flat_meta["effective_config_at_job_start"] = _effective_config_at_job_start
         await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
         FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
+
+        # Zone-5: verdict written exclusively via sidecar (authoritative path).
+        await asyncio.to_thread(
+            save_doc_meta,
+            doc_id,
+            {
+                "verdict": f_verdict,
+                "verdict_reason": f_verdict_reason,
+                "max_leaf_ratio": round(f_mlr, 4),
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": _flat_verdict_computed_at,
+            },
+        )
 
         try:
             await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
@@ -1933,7 +1946,7 @@ class CustomPageIndexClient(PageIndexClient):
             "verdict_reason": f_verdict_reason,
             "pipeline_version": CURRENT_PIPELINE_VERSION,
             "max_leaf_ratio": round(f_mlr, 4),
-            "verdict_computed_at": flat_meta["verdict_computed_at"],
+            "verdict_computed_at": _flat_verdict_computed_at,
         }
         return doc_id
 
@@ -1973,6 +1986,10 @@ class CustomPageIndexClient(PageIndexClient):
         _, _, mlr = _tree_max_leaf_ratio(structure)
         _verdict_computed_at = datetime.now(UTC).isoformat()
 
+        # Zone-5: verdict fields stripped from artifact body; sidecar
+        # (.meta.json via save_doc_meta) is the sole authoritative verdict
+        # store.  read_registry_fields falls back to sidecar for new
+        # artifacts that lack verdict in the JSON body.
         await asyncio.to_thread(
             save_doc,
             doc_id,
@@ -1984,23 +2001,11 @@ class CustomPageIndexClient(PageIndexClient):
                 "sha256": sha256,
                 "doc_description": state.result.get("doc_description", ""),
                 "structure": structure,
-                "verdict": verdict,
-                "verdict_reason": verdict_reason,
-                "max_leaf_ratio": round(mlr, 4),
-                "pipeline_version": CURRENT_PIPELINE_VERSION,
-                "verdict_computed_at": _verdict_computed_at,
             },
         )
 
-        await asyncio.to_thread(
-            write_verdict,
-            doc_id,
-            verdict,
-            verdict_reason,
-            CURRENT_PIPELINE_VERSION,
-            _verdict_computed_at,
-            round(mlr, 4),
-        )
+        # Zone-5: single save_doc_meta call carries both verdict and
+        # non-verdict metadata -- no separate write_verdict path.
         meta = {
             "doc_id": doc_id,
             "doc_name": filename,
@@ -2012,6 +2017,12 @@ class CustomPageIndexClient(PageIndexClient):
             "build_sha": _CLIENT_BUILD_SHA,
             "effective_config": _effective_cfg,
             "decider_version": "zone3_decide_rtl_v1",
+            # Verdict fields -- authoritative via sidecar (Zone-5)
+            "verdict": verdict,
+            "verdict_reason": verdict_reason,
+            "max_leaf_ratio": round(mlr, 4),
+            "pipeline_version": CURRENT_PIPELINE_VERSION,
+            "verdict_computed_at": _verdict_computed_at,
         }
         if (
             state.original_gate_result is not None

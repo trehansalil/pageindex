@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from pageindex_mcp import converters
 from pageindex_mcp.converters import _recover_picture_text
+from pageindex_mcp.picture_plane import PictureGateConfig
 
 
 def _region(l, t, r, b, page=1):
@@ -95,6 +96,9 @@ class TestDecorativeIconSizeFilter:
         """DECORATIVE_ICON_MIN_DIM_PT=0 disables the pre-filter (rollback path)."""
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0)
         monkeypatch.setattr(converters, "_DECORATIVE_ICON_MIN_DIM_PT", 0.0)
+        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
+            decorative_icon_min_dim_pt=0.0,
+        ))
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "")
         region = _region(0, 0, 15, 12)
 

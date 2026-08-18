@@ -27,6 +27,7 @@ from pageindex_mcp.converters import (
     _recover_picture_results,
     _recover_picture_text,
 )
+from pageindex_mcp.picture_plane import PictureGateConfig
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +145,9 @@ class TestF1CoverageExemption:
         """With the exemption disabled, a full-page region + no text layer is
         STILL skipped as page_coverage (pre-F1 / legacy behavior)."""
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
+        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
+            coverage_exempt_no_text_layer=False,
+        ))
         _install_fake_fitz(monkeypatch, page_text="", clip_text="")
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
 

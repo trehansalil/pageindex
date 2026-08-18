@@ -2,17 +2,14 @@
 candidate selection consolidation.
 
 Covers:
-  - _run_fallback_pipeline returns (md, body_for_containment, stages) with
-    body_for_containment captured BEFORE document_level_text_fallback runs
   - Candidate.has_depth matches _has_structural_depth(candidate.md) for both
     flat-prose and multi-heading inputs
   - Regression: _heading_count is a thin wrapper consolidating
     len(_HEADING_RE.findall(md)) calls
+  - _run_stages dict provenance unaffected by Zone 6 refactor
 """
 
 import dataclasses
-import functools
-from unittest.mock import patch
 
 import pytest
 
@@ -21,172 +18,8 @@ from pageindex_mcp.converters import (
     _candidate_from_document,
     _has_structural_depth,
     _heading_count,
-    _run_fallback_pipeline,
     _run_stages,
 )
-
-
-# ---------------------------------------------------------------------------
-# Contract: _run_fallback_pipeline snapshot semantics
-# ---------------------------------------------------------------------------
-
-
-class TestRunFallbackPipelineContract:
-    """_run_fallback_pipeline returns (final_md, body_for_containment, stages)
-    where body_for_containment is the md AFTER normalize_indented_headings but
-    BEFORE _document_level_text_fallback runs (RFC-024 D1)."""
-
-    def _make_text_fallback_appender(self, suffix: str):
-        """Return a fake _document_level_text_fallback that just appends text."""
-        def _fake(md: str, *, pdf_path: str, expected_script: str | None = None) -> str:
-            return md + suffix
-        return _fake
-
-    @patch("pageindex_mcp.converters._document_level_text_fallback")
-    @patch("pageindex_mcp.converters._normalize_indented_headings", side_effect=lambda md: md)
-    @patch("pageindex_mcp.converters._splice_landscape_fallback", side_effect=lambda md, **kw: md)
-    def test_body_for_containment_equals_pre_fallback_md(
-        self, mock_splice, mock_normalize, mock_text_fallback
-    ):
-        """body_for_containment must equal md BEFORE text fallback appends."""
-        original_md = "# Title\n\nSome body text."
-        appended_suffix = "\n\n--- RAW PDFIUM TEXT LAYER ---"
-        mock_text_fallback.side_effect = lambda md, **kw: md + appended_suffix
-
-        final_md, body_for_containment, stages = _run_fallback_pipeline(
-            original_md,
-            pdf_path="/fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-        )
-
-        # body_for_containment is the pre-text-fallback snapshot
-        assert body_for_containment == original_md
-        # final_md includes the appended text from document_level_text_fallback
-        assert final_md == original_md + appended_suffix
-        # They must differ when fallback fires
-        assert body_for_containment != final_md
-
-    @patch("pageindex_mcp.converters._document_level_text_fallback")
-    @patch("pageindex_mcp.converters._normalize_indented_headings", side_effect=lambda md: md)
-    @patch("pageindex_mcp.converters._splice_landscape_fallback", side_effect=lambda md, **kw: md)
-    def test_body_for_containment_equals_final_when_no_fallback_change(
-        self, mock_splice, mock_normalize, mock_text_fallback
-    ):
-        """When text fallback is a no-op, body_for_containment == final_md."""
-        original_md = "# Title\n\nEnough content to skip fallback."
-        mock_text_fallback.side_effect = lambda md, **kw: md  # no-op
-
-        final_md, body_for_containment, stages = _run_fallback_pipeline(
-            original_md,
-            pdf_path="/fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-        )
-
-        assert body_for_containment == original_md
-        assert final_md == original_md
-        assert body_for_containment == final_md
-
-    @patch("pageindex_mcp.converters._document_level_text_fallback")
-    @patch("pageindex_mcp.converters._normalize_indented_headings")
-    @patch("pageindex_mcp.converters._splice_landscape_fallback", side_effect=lambda md, **kw: md)
-    def test_body_for_containment_includes_normalize_but_not_text_fallback(
-        self, mock_splice, mock_normalize, mock_text_fallback
-    ):
-        """body_for_containment reflects normalize_indented_headings output
-        but NOT document_level_text_fallback output."""
-        original_md = "  # Indented Title\n\nBody."
-        normalized_md = "# Indented Title\n\nBody."
-        fallback_suffix = "\n\nFallback text from pdfium."
-
-        mock_normalize.side_effect = lambda md: normalized_md
-        mock_text_fallback.side_effect = lambda md, **kw: md + fallback_suffix
-
-        final_md, body_for_containment, stages = _run_fallback_pipeline(
-            original_md,
-            pdf_path="/fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-        )
-
-        # body_for_containment has normalization applied
-        assert body_for_containment == normalized_md
-        # but NOT the text fallback
-        assert fallback_suffix not in body_for_containment
-        # final_md has both
-        assert final_md == normalized_md + fallback_suffix
-
-    @patch("pageindex_mcp.converters._document_level_text_fallback")
-    @patch("pageindex_mcp.converters._normalize_indented_headings", side_effect=lambda md: md)
-    @patch("pageindex_mcp.converters._splice_landscape_fallback", side_effect=lambda md, **kw: md)
-    def test_combined_records_contain_all_stage_keys(
-        self, mock_splice, mock_normalize, mock_text_fallback
-    ):
-        """Combined records should include all three stage names."""
-        mock_text_fallback.side_effect = lambda md, **kw: md
-
-        _, _, stages = _run_fallback_pipeline(
-            "# Test",
-            pdf_path="/fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-        )
-
-        assert "normalize_indented_headings" in stages
-        assert "document_level_text_fallback" in stages
-        assert "splice_landscape_fallback" in stages
-
-    @patch("pageindex_mcp.converters._document_level_text_fallback")
-    @patch("pageindex_mcp.converters._normalize_indented_headings", side_effect=lambda md: md)
-    @patch("pageindex_mcp.converters._splice_landscape_fallback", side_effect=lambda md, **kw: md)
-    def test_stage_ordering_preserved_in_records(
-        self, mock_splice, mock_normalize, mock_text_fallback
-    ):
-        """Stage records must be ordered: pre-fallback stages then post-fallback."""
-        mock_text_fallback.side_effect = lambda md, **kw: md
-
-        _, _, stages = _run_fallback_pipeline(
-            "# Test",
-            pdf_path="/fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-        )
-
-        keys = list(stages.keys())
-        assert keys.index("normalize_indented_headings") < keys.index(
-            "document_level_text_fallback"
-        )
-        assert keys.index("document_level_text_fallback") < keys.index(
-            "splice_landscape_fallback"
-        )
-
-    @patch("pageindex_mcp.converters._document_level_text_fallback")
-    @patch("pageindex_mcp.converters._normalize_indented_headings", side_effect=lambda md: md)
-    @patch("pageindex_mcp.converters._splice_landscape_fallback", side_effect=lambda md, **kw: md)
-    def test_return_type(self, mock_splice, mock_normalize, mock_text_fallback):
-        """Return type is a 3-tuple of (str, str, dict)."""
-        mock_text_fallback.side_effect = lambda md, **kw: md
-
-        result = _run_fallback_pipeline(
-            "hello",
-            pdf_path="/fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-        )
-
-        assert isinstance(result, tuple)
-        assert len(result) == 3
-        final_md, body_for_containment, stages = result
-        assert isinstance(final_md, str)
-        assert isinstance(body_for_containment, str)
-        assert isinstance(stages, dict)
 
 
 # ---------------------------------------------------------------------------

@@ -128,8 +128,9 @@ class TestRtlReversalFlatFallback:
         assert isinstance(doc_id, str)
         mocks["save_flat_doc"].assert_called_once()
         mocks["save_doc"].assert_not_called()
-        saved_call = mocks["save_flat_doc"].call_args
-        verdict = saved_call.args[1]["verdict"]
+        # Zone-5: verdict stripped from artifact body; check sidecar instead
+        meta_call = mocks["save_doc_meta"].call_args
+        verdict = meta_call.args[1]["verdict"]
         assert verdict in ("PASS", "MARGINAL")
 
 

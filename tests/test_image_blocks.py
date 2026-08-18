@@ -28,6 +28,7 @@ from pageindex_mcp.converters import (
     _recover_picture_text,
     splice_figure_markers,
 )
+from pageindex_mcp.picture_plane import PictureGateConfig
 from pageindex_mcp.helpers import _flat_search_text, route_and_extract_flat
 
 
@@ -348,6 +349,9 @@ class TestPageCoverageFilter:
         # disable exemption so the coverage filter fires on the empty-text-layer
         # fake page, preserving the pre-F1 test intent.
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
+        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
+            coverage_exempt_no_text_layer=False,
+        ))
 
         region = self._make_region(0, 0, 560, 700)
 
@@ -769,6 +773,9 @@ class TestTextLayerProbe:
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
         monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
         monkeypatch.setattr(converters, "_PICTURE_OCR_MIN_CHARS", 50)
+        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
+            picture_ocr_min_chars=50,
+        ))
 
         region = self._make_region(0, 0, 100, 100)
         long_ocr = "Recovered OCR text that is long enough to pass the gate"

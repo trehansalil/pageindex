@@ -211,20 +211,9 @@ class TestReadExistingSidecar:
 
 
 class TestWriteVerdict:
-    def test_writes_to_both_artifact_and_sidecar(self, mock_minio):
-        """write_verdict updates the artifact JSON then calls save_doc_meta
-        for the sidecar. On success, put_object is called at least twice
-        (artifact + sidecar)."""
-        artifact_data = {
-            "doc_id": "wv01",
-            "doc_name": "test.pdf",
-            "structure": [],
-        }
-        resp = MagicMock()
-        resp.read.return_value = json.dumps(artifact_data).encode()
-        mock_minio.get_object.side_effect = None
-        mock_minio.get_object.return_value = resp
-
+    def test_writes_sidecar_only(self, mock_minio):
+        """Zone-5: write_verdict delegates to save_doc_meta (sidecar only),
+        no longer dual-writes to the artifact."""
         write_verdict(
             doc_id="wv01",
             verdict="PASS",
@@ -234,22 +223,18 @@ class TestWriteVerdict:
             max_leaf_ratio=0.05,
         )
 
-        # At least two put_object calls: artifact + sidecar
-        assert mock_minio.put_object.call_count >= 2
-
-        # First put_object = artifact write (processed/wv01.json)
-        first_call = mock_minio.put_object.call_args_list[0]
-        artifact_key = first_call[0][1]
-        assert artifact_key == "processed/wv01.json"
-        artifact_written = json.loads(first_call[0][2].read())
-        assert artifact_written["verdict"] == "PASS"
-        assert artifact_written["verdict_reason"] == "base_pass"
-        # Original fields preserved
-        assert artifact_written["doc_name"] == "test.pdf"
+        # Exactly one put_object call (sidecar via save_doc_meta)
+        assert mock_minio.put_object.call_count >= 1
+        last_call = mock_minio.put_object.call_args_list[-1]
+        sidecar_key = last_call[0][1]
+        assert sidecar_key == "processed/wv01.meta.json"
+        sidecar = json.loads(last_call[0][2].read())
+        assert sidecar["verdict"] == "PASS"
+        assert sidecar["verdict_reason"] == "base_pass"
 
     def test_sidecar_only_when_artifact_missing(self, mock_minio):
-        """When the processed artifact does not exist (NoSuchKey), write_verdict
-        still writes the sidecar via save_doc_meta -- no error raised."""
+        """write_verdict writes the sidecar via save_doc_meta regardless of
+        whether the artifact exists."""
         # mock_minio already raises NoSuchKey on get_object
         write_verdict(
             doc_id="wv02",
@@ -260,24 +245,16 @@ class TestWriteVerdict:
             max_leaf_ratio=0.35,
         )
 
-        # put_object called at least once (sidecar via save_doc_meta)
         assert mock_minio.put_object.call_count >= 1
-        # The sidecar should carry verdict fields
         last_call = mock_minio.put_object.call_args_list[-1]
         sidecar_key = last_call[0][1]
         assert sidecar_key == "processed/wv02.meta.json"
         sidecar = json.loads(last_call[0][2].read())
         assert sidecar["verdict"] == "MARGINAL"
 
-    def test_flat_doc_uses_flat_key(self, mock_minio):
-        """When content_class is set, write_verdict targets the .flat.json
-        artifact rather than the .json artifact."""
-        flat_data = {"doc_id": "wv03", "content_class": "flat"}
-        resp = MagicMock()
-        resp.read.return_value = json.dumps(flat_data).encode()
-        mock_minio.get_object.side_effect = None
-        mock_minio.get_object.return_value = resp
-
+    def test_flat_doc_uses_meta_key(self, mock_minio):
+        """Zone-5: write_verdict always writes to the .meta.json sidecar,
+        regardless of content_class."""
         write_verdict(
             doc_id="wv03",
             verdict="PASS",
@@ -289,16 +266,10 @@ class TestWriteVerdict:
         )
 
         first_call = mock_minio.put_object.call_args_list[0]
-        assert first_call[0][1] == "processed/wv03.flat.json"
+        assert first_call[0][1] == "processed/wv03.meta.json"
 
     def test_max_leaf_ratio_rounded_to_4_decimals(self, mock_minio):
         """write_verdict rounds max_leaf_ratio to 4 decimal places."""
-        artifact = {"doc_id": "wv04"}
-        resp = MagicMock()
-        resp.read.return_value = json.dumps(artifact).encode()
-        mock_minio.get_object.side_effect = None
-        mock_minio.get_object.return_value = resp
-
         write_verdict(
             doc_id="wv04",
             verdict="PASS",
