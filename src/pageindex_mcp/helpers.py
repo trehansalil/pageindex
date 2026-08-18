@@ -20,11 +20,13 @@ from typing import Iterator
 from .cache import get_doc
 from .config import settings
 from .metrics import (
+    FENCE_PARITY_WARNING,
     LLM_CALLS,
     LLM_DURATION,
     RAG_DURATION,
     RAG_PARSE_FAILURES,
     RAG_SEARCHES,
+    TOC_STRIP_HIGH_CHAR_LOSS,
     TOC_STRIP_SKIPPED,
 )
 
@@ -229,6 +231,22 @@ class ExtractionState:
     tmp_lo_dir: str | None = None
     flat_garble_unrecovered: bool = False
     rtl_decision: "RtlDecision | None" = None
+    # Zone-6 Step C: per-page landscape orientation data from
+    # _tag_landscape_pages_for_fallback.  Threaded into prepare_tree so
+    # table segmentation can use orientation-aware thresholds.
+    landscape_pages: list | None = None
+
+
+class OcrRetryReason(StrEnum):
+    """Zone-2: typed reason for unified OCR retry dispatch.
+
+    Discriminates the three independent OCR-escalation triggers so that
+    ``_recover_ocr_retry`` can branch on reason instead of relying on
+    implicit mutable-state ordering or flag conflation.
+    """
+    GARBLE = "garble"
+    LOW_CONTENT = "low_content"
+    IMAGE_DOMINANT = "image_dominant"
 
 
 class _ReasonPolicy(StrEnum):
@@ -1538,6 +1556,14 @@ _RFC029_FLAT_PREFER_MULTIPLIER = float(os.environ.get("RFC029_FLAT_PREFER_MULTIP
 # RFC-029 D1 (Task 3.1): minimum chars-per-node floor; trees below this floor
 # (with enough nodes to make the metric meaningful) fail with low_content_density.
 _RFC029_MIN_CHARS_PER_NODE = float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150"))
+# Zone-6 Step B: script/depth-aware chars-per-node floor.  Deep trees
+# (depth >= 4) and Arabic-script documents use a lower floor to avoid
+# false-rejecting well-structured legal hierarchies (RFC-030 D3 regression).
+_RFC029_MIN_CHARS_PER_NODE_DEEP = float(
+    os.environ.get("RFC029_MIN_CHARS_PER_NODE_DEEP", "50")
+)
+# Depth threshold above which the deep-tree floor applies.
+_RFC029_DEEP_TREE_DEPTH_THRESHOLD = 4
 # RFC-029 D2 (Task 3.3): minimum chars-per-page floor for scanned density check;
 # trees below this floor (when page_count is known) fail with suspect_density.
 _RFC029_MIN_SCANNED_DENSITY_FLOOR = float(
@@ -1811,14 +1837,31 @@ def _gate_low_content_density(
     """Gate 9: content-density floor (RFC-029 D1, Task 3.1).
 
     Only fires when node count >= 200.
+
+    Zone-6 Step B: script/depth-aware thresholds.  Deep trees (depth >= 4)
+    and Arabic-script documents use a lower floor
+    (``RFC029_MIN_CHARS_PER_NODE_DEEP``, default 50) to avoid false-rejecting
+    well-structured legal hierarchies — the flat 150 chars/node threshold was
+    already lowered once by RFC-030 D3 for exactly this class of regression.
+    Shallow non-Arabic documents keep the existing 150 floor unchanged.
     """
     if sig.node_count < 200:
         return (False, "")
+
+    # Select threshold: deep trees or Arabic script get the lower floor.
+    is_deep = sig.depth >= _RFC029_DEEP_TREE_DEPTH_THRESHOLD
+    is_arabic = expected_script == "Arab"
+    if is_deep or is_arabic:
+        threshold = _RFC029_MIN_CHARS_PER_NODE_DEEP
+    else:
+        threshold = _RFC029_MIN_CHARS_PER_NODE
+
     chars_per_node = len(sig.flat_text) / sig.node_count
-    if chars_per_node < _RFC029_MIN_CHARS_PER_NODE:
+    if chars_per_node < threshold:
         detail = (
             f"chars_per_node={chars_per_node:.1f}"
-            f",threshold={_RFC029_MIN_CHARS_PER_NODE:.1f}"
+            f",threshold={threshold:.1f}"
+            f",deep={is_deep},arabic={is_arabic}"
         )
         return (True, detail)
     return (False, "")
@@ -1867,8 +1910,8 @@ _GateFn = Callable[
 # design, not a bug to collapse.
 GATES: list[GateSpec] = [
     GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling, recovery_tag="ocr_escalation"),
-    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low),
-    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low),
+    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low, recovery_tag="ocr_escalation"),
+    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low, recovery_tag="ocr_escalation"),
     GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling, recovery_tag="ocr_escalation"),
     GateSpec(TreeDefect.REORDERED, _ReasonPolicy.RAISE, hard_fail=True, gate_fn=_gate_reordered),
     GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal, recovery_tag="rtl_repair"),
@@ -3074,16 +3117,25 @@ def _blank_line_fallback_enabled(tree_ratio: float) -> bool:
     return tree_ratio > leaf_split_ratio
 
 
-def prepare_tree(structure: list) -> list:
+def prepare_tree(
+    structure: list,
+    orientation: str | None = None,
+) -> list:
     """Single entry point for pre-validation tree transforms.
 
     Runs split_oversized_leaf_nodes then _segment_table_nodes on *structure*
     (both mutate in-place and return).  Every call-site that previously invoked
     the two transforms as a duplicated pair should call this instead, so that
     future transforms are added in one place.
+
+    Zone-6 Step C: *orientation* (``"landscape"`` | ``"portrait"`` | ``None``)
+    threads page-level orientation metadata into ``_segment_table_nodes`` so
+    that landscape pages use more conservative segmentation thresholds.
+    ``None`` preserves the pre-existing behaviour for callers that do not
+    have orientation information (non-PDF paths, recovery re-tree paths).
     """
     structure = split_oversized_leaf_nodes(structure)
-    structure = _segment_table_nodes(structure)
+    structure = _segment_table_nodes(structure, orientation=orientation)
     return structure
 
 
@@ -3226,7 +3278,7 @@ def split_oversized_leaf_nodes(
     return structure
 
 
-def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
+def _segment_table_nodes(structure: list, *, orientation: str | None = None) -> list:  # noqa: C901, PLR0915
     """RFC-029 D7 (Task 5.3, Property 9) — table-aware node segmentation.
 
     Walks an already-built ``structure`` (post heading-node construction, pre
@@ -3306,6 +3358,16 @@ def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
                 return " | ".join(cells[:3]) if cells else ""
         return ""
 
+    # Zone-6 Step C: select orientation-aware thresholds.
+    # Landscape pages use more conservative (higher min_rows, lower
+    # singleton_ratio) thresholds to avoid over-segmenting wide tables.
+    if orientation == "landscape":
+        _eff_min_rows = _RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE
+        _eff_singleton_ratio = _RFC036_SINGLETON_RATIO_LANDSCAPE
+    else:
+        _eff_min_rows = _RFC029_TABLE_SEGMENT_MIN_ROWS
+        _eff_singleton_ratio = _RFC036_SINGLETON_ROW_RATIO_THRESHOLD
+
     def _split_node(node: dict) -> None:  # noqa: C901, PLR0915
         """Split a single node in-place, creating child nodes."""
         text = node.get("text") or ""
@@ -3334,9 +3396,9 @@ def _segment_table_nodes(structure: list) -> list:  # noqa: C901, PLR0915
                 table_block_stripped = [ln.rstrip("\n") for ln in table_block]
                 data_rows = _count_table_data_rows(table_block_stripped)
                 if (
-                    data_rows >= _RFC029_TABLE_SEGMENT_MIN_ROWS
+                    data_rows >= _eff_min_rows
                     and _singleton_row_ratio(table_block_stripped)
-                    <= _RFC036_SINGLETON_ROW_RATIO_THRESHOLD
+                    <= _eff_singleton_ratio
                 ):
                     table_spans.append((start, end))
             else:
@@ -3614,22 +3676,75 @@ def _strip_toc_heading_nodes(nodes: list[dict]) -> list[dict]:
     return result
 
 
+_TOC_STRIP_MAX_CHAR_LOSS_RATIO: float = float(
+    os.environ.get("TOC_STRIP_MAX_CHAR_LOSS_RATIO", "0.15")
+)
+# Observability threshold: log + increment counter when char_loss_ratio
+# exceeds this value (below the abort threshold).
+_TOC_STRIP_CHAR_LOSS_WARN_THRESHOLD: float = 0.10
+
+
 def _strip_toc_heading_nodes_guarded(nodes: list[dict], doc_name: str = "") -> list[dict]:
     """RFC-034 D16: guard D11's `_strip_toc_heading_nodes` against
-    over-stripping long legal statutes. All-or-nothing per document: if the
-    strip would reduce max depth by more than 1, or remove more than 20% of
-    nodes, discard the stripped result and keep the original tree."""
+    over-stripping long legal statutes.  All-or-nothing per document.
+
+    Abort conditions (any triggers skip):
+    * **Node-count**: removal > 20% of nodes.
+    * **Depth**: depth_delta > 1 AND resulting_depth < 2 (refined from
+      bare depth_delta > 1 — a depth drop that still leaves a meaningful
+      hierarchy is acceptable).
+    * **Char-loss** (Zone-6 Step A): char_loss_ratio > TOC_STRIP_MAX_CHAR_LOSS_RATIO
+      (env, default 0.15).  Prevents silent content destruction even when
+      node counts look healthy.
+
+    ``char_loss_ratio`` is always logged at INFO level for observability.
+    """
     depth_before = _tree_depth(nodes)
     count_before = _tree_node_count(nodes)
+    text_before = _flatten_tree_text(nodes)
+    chars_before = len(text_before)
+
     candidate = _strip_toc_heading_nodes(copy.deepcopy(nodes))
+
     depth_after = _tree_depth(candidate)
     count_after = _tree_node_count(candidate)
-    if (depth_before - depth_after > 1) or (
-        count_before > 0 and (count_before - count_after) / count_before > 0.20
-    ):
+    text_after = _flatten_tree_text(candidate)
+    chars_after = len(text_after)
+
+    char_loss_ratio = 1.0 - (chars_after / chars_before) if chars_before > 0 else 0.0
+
+    # Always log char_loss_ratio at INFO for observability.
+    logger.info(
+        "toc_strip: %s depth %d->%d, nodes %d->%d, chars %d->%d, "
+        "char_loss_ratio=%.4f",
+        doc_name, depth_before, depth_after, count_before, count_after,
+        chars_before, chars_after, char_loss_ratio,
+    )
+
+    # Observability counter: fires when char_loss is notable but below abort.
+    if char_loss_ratio > _TOC_STRIP_CHAR_LOSS_WARN_THRESHOLD:
+        TOC_STRIP_HIGH_CHAR_LOSS.inc()
+
+    # --- Abort conditions (any one triggers) ---
+    depth_delta = depth_before - depth_after
+    depth_guard = depth_delta > 1 and depth_after < 2
+    node_guard = count_before > 0 and (count_before - count_after) / count_before > 0.20
+    char_guard = char_loss_ratio > _TOC_STRIP_MAX_CHAR_LOSS_RATIO
+
+    if depth_guard or node_guard or char_guard:
+        reasons = []
+        if depth_guard:
+            reasons.append(f"depth {depth_before}->{depth_after}")
+        if node_guard:
+            reasons.append(
+                f"nodes {count_before}->{count_after} "
+                f"({(count_before - count_after) / count_before:.1%} removed)"
+            )
+        if char_guard:
+            reasons.append(f"char_loss_ratio={char_loss_ratio:.4f}")
         logger.warning(
-            "toc_strip_skipped: %s depth %d->%d, nodes %d->%d — over-strip guard fired",
-            doc_name, depth_before, depth_after, count_before, count_after,
+            "toc_strip_skipped: %s — over-strip guard fired: %s",
+            doc_name, "; ".join(reasons),
         )
         TOC_STRIP_SKIPPED.inc()
         return nodes
@@ -3652,6 +3767,16 @@ _RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(os.environ.get("RFC029_TABLE_SEGMENT_M
 # and keep the block intact instead.
 _RFC036_SINGLETON_ROW_RATIO_THRESHOLD: float = float(
     os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
+)
+
+# Zone-6 Step C: orientation-aware table segmentation constants.
+# Landscape pages use more conservative thresholds to avoid over-segmenting
+# wide tables that are chart content or multi-span layouts.
+_RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE: int = int(
+    os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE", "10")
+)
+_RFC036_SINGLETON_RATIO_LANDSCAPE: float = float(
+    os.environ.get("RFC036_SINGLETON_RATIO_LANDSCAPE", "0.4")
 )
 
 
@@ -3694,6 +3819,12 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
                 signals.add("prose")
             prose_buf.clear()
 
+    # Zone-6 Step D (observability): bounded fence_depth counter to detect
+    # parity issues (orphan-close, unclosed-at-EOF) without changing RFC-030
+    # D0 stripping behaviour.  The fence lines are still dropped identically;
+    # this only adds warnings + Prometheus counters.
+    _fence_depth = 0
+
     i = 0
     n = len(lines)
     while i < n:
@@ -3707,6 +3838,21 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
         # being between fence markers -- a stray/unclosed fence can no longer
         # cause silent content loss.
         if stripped.startswith("```"):
+            # Observability: track fence open/close parity.
+            # Heuristic: ``` with a language tag (e.g. ```json) is an open;
+            # bare ``` is a close.  Depth < 0 means orphan close(s).
+            if stripped == "```":
+                _fence_depth -= 1
+                if _fence_depth < 0:
+                    logger.warning(
+                        "fence_parity: orphan close at line %d "
+                        "(content preserved per RFC-030 D0, observability only)",
+                        i + 1,
+                    )
+                    FENCE_PARITY_WARNING.labels(kind="orphan_close").inc()
+                    _fence_depth = 0  # reset to avoid cascading warnings
+            else:
+                _fence_depth += 1
             i += 1
             continue
 
@@ -3805,6 +3951,15 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
         i += 1
 
     flush_prose()
+
+    # Zone-6 fence-parity observability: warn on unclosed fences at EOF.
+    if _fence_depth > 0:
+        logger.warning(
+            "fence_parity: %d unclosed fence delimiter(s) at EOF "
+            "(content preserved per RFC-030 D0, observability only)",
+            _fence_depth,
+        )
+        FENCE_PARITY_WARNING.labels(kind="unclosed_at_eof").inc()
 
     # Fix 2a/2c post-pass: stitch wide paginated tables back into one and annotate
     # empty-cell quality. Pure / in-process; the "table" signal stays in `signals`

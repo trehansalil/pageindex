@@ -293,6 +293,18 @@ TOC_STRIP_SKIPPED = Counter(
     "ToC-heading strip skipped by the RFC-034 D16 over-strip guard "
     "(depth reduced >1 or >20% of nodes removed).",
 )
+TOC_STRIP_HIGH_CHAR_LOSS = Counter(
+    "pageindex_toc_strip_high_char_loss_total",
+    "ToC-heading strip observed char_loss_ratio above the observability "
+    "threshold (0.10) but below the abort threshold. Fires alongside "
+    "TOC_STRIP_SKIPPED when the abort threshold is breached.",
+)
+FENCE_PARITY_WARNING = Counter(
+    "pageindex_fence_parity_warning_total",
+    "Fence-delimiter parity issues detected during flat extraction: "
+    "orphan-close or unclosed-at-EOF conditions.",
+    ["kind"],
+)
 
 
 # ---------------------------------------------------------------------------

@@ -2590,6 +2590,7 @@ def _recover_picture_results(
     filename: str | None = None,
     body_for_containment: str | None = None,
     expected_script: str | None = None,
+    force_full_page_ocr_applied: bool = False,
 ) -> list[PictureResult]:
     """Recover chart/infographic text Docling bucketed into Picture bboxes (RFC-015 D6).
 
@@ -2610,11 +2611,20 @@ def _recover_picture_results(
     before containment runs, making every picture's clipped OCR text look "already
     contained" and wrongly skipping legitimate recovery.
 
+    ``force_full_page_ocr_applied``: Zone-2 re-entry guard.  When ``True``, a
+    full-page OCR retry (garble/image-dominant recovery) has already re-extracted
+    all page content including picture regions.  Per-picture OCR would duplicate
+    that work, so we short-circuit to ``[]``.
+
     Language detection (RFC-028 D5): ``md`` is the Docling markdown export, which
     is near-empty or all-digits for scanned Arabic PDFs, so ``detect_ocr_langs(md)``
     alone falls through to ``['eng']``. Union with ``detect_ocr_langs(filename)``
     (matching the escalation sites in client.py) so filename script hints survive
     even when the export carries no usable signal."""
+    # Zone-2: re-entry guard — skip per-picture OCR when a full-page OCR
+    # retry has already re-extracted all content (prevents duplicate OCR).
+    if force_full_page_ocr_applied:
+        return []
     # Zone-6: centralised OCR-mode dispatch replaces ad-hoc boolean gate.
     # Zone-5: per-picture enrichment gate (not page-level garble retry).
     _ocr_mode = decide_ocr_mode(

@@ -20,6 +20,7 @@ from pageindex import PageIndexClient
 from .cache import get_doc
 from .config import (
     CURRENT_PIPELINE_VERSION,
+    IMAGE_DOMINANT_OCR_ESCALATION_ENABLED as _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
     OCR_ESCALATION_GARBLE as _OCR_ESCALATION_GARBLE,
     OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE,
     PDF_INSPECTOR_PRECLASSIFY,
@@ -55,6 +56,7 @@ from .picture_plane import (
 from .script import RtlDecision, decide_rtl
 from .helpers import (
     GATES,
+    OcrRetryReason,
     RecoveryOutcome,
     ExtractionState,
     BULK_PROFILE,
@@ -409,11 +411,8 @@ def apply_image_ext_content_class_override(ext: str, content_class: str) -> str:
 # RFC-023 D8a: skip the standalone-image Tesseract recovery below when Docling's
 # md_content already carries this many non-whitespace chars (avoids double-counting).
 MIN_STANDALONE_IMAGE_MD_CHARS = int(os.getenv("MIN_STANDALONE_IMAGE_MD_CHARS", "100"))
-# RFC-023 D11 kill-switch (default on): widen the image-dominant OCR escalation to
-# structural validate_tree failures (node_count<3 / depth<2), not just garbling.
-_IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = os.getenv(
-    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
+# RFC-023 D11: _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED now imported from config.py
+# (Zone-2 flag decoupling — eliminates local env-var read duplication).
 # RFC-023 D7 kill-switch (default on): Tesseract-on-raster last resort when the
 # VLM fallback itself crashes (rate limit / content-policy / token overflow).
 _VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
@@ -716,6 +715,19 @@ def validate_llm_config() -> None:
         )
 
 
+def _dominant_orientation(landscape_pages: list | None) -> str | None:
+    """Derive the dominant page orientation from per-page landscape data.
+
+    Zone-6 Step C: returns ``"landscape"`` when more than half the pages are
+    landscape, ``"portrait"`` when they are not, or ``None`` when no data is
+    available (non-PDF paths, AGPL-fallback disabled).
+    """
+    if not landscape_pages:
+        return None
+    ls_count = sum(1 for p in landscape_pages if p.get("is_landscape"))
+    return "landscape" if ls_count > len(landscape_pages) / 2 else "portrait"
+
+
 def _split_converter_output(out) -> tuple[str, list, list]:
     """Normalize a PDF-converter result to ``(markdown, pic_results, extraction_stages)``.
 
@@ -960,7 +972,8 @@ class CustomPageIndexClient(PageIndexClient):
             state.tmp_md_path = md_tmp.name
         state.result = await self._run_md_to_tree(state.tmp_md_path)
         state.result["structure"] = prepare_tree(
-            state.result.get("structure", [])
+            state.result.get("structure", []),
+            orientation=_dominant_orientation(state.landscape_pages),
         )
         _vt_raw = validate_tree(
             state.result.get("structure", []),
@@ -1019,6 +1032,26 @@ class CustomPageIndexClient(PageIndexClient):
                         state.pdf_page_count = (
                             probe_pdf.page_count if probe_pdf.page_count > 0 else None
                         )
+                        # Zone-6 Step C: capture per-page landscape orientation
+                        # alongside the existing D3a probe so table segmentation
+                        # can use orientation-aware thresholds.  Reuses the same
+                        # landscape heuristic as converters.py's
+                        # _tag_landscape_pages_for_fallback (rotation % 180 != 0
+                        # OR width > height) without importing the private fn.
+                        _landscape_pages = []
+                        for _pg_idx, _pg in enumerate(probe_pdf):
+                            try:
+                                _rot = _pg.rotation
+                                _w = _pg.rect.width
+                                _h = _pg.rect.height
+                                _is_ls = (_rot % 180 != 0) or (_w > _h)
+                            except Exception:
+                                _is_ls = False
+                            _landscape_pages.append(
+                                {"page_no": _pg_idx, "is_landscape": _is_ls}
+                            )
+                        state.landscape_pages = _landscape_pages
+
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
                             if raw_text.strip() and check_garble(
@@ -1266,7 +1299,8 @@ class CustomPageIndexClient(PageIndexClient):
 
         # Post-conversion: split, segment, validate
         state.result["structure"] = prepare_tree(
-            state.result.get("structure", [])
+            state.result.get("structure", []),
+            orientation=_dominant_orientation(state.landscape_pages),
         )
         _vt_raw = validate_tree(
             state.result.get("structure", []),
@@ -1291,41 +1325,90 @@ class CustomPageIndexClient(PageIndexClient):
         state.route = decide_route(state.first_defect, settings.flat_doc_routing)
         state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
-    async def _recover_ocr_escalation(
+    async def _recover_ocr_retry(
         self,
+        reason: OcrRetryReason,
         state: ExtractionState,
         file_path: str,
         filename: str,
         ext: str,
         expected_script: str | None,
     ) -> None:
-        """Recovery 1: OCR escalation for garbled/low-content PDFs. Mutates state."""
-        low_content_ocr_eligible = (
-            state.first_defect == TreeDefect.NODE_COUNT_LOW
-            and state.total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
-        )
-        if not (
-            not state.ok
-            and (
-                state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-                or low_content_ocr_eligible
-            )
-            and ext == ".pdf"
-            and _OCR_ESCALATION_GARBLE
-        ):
+        """Unified OCR retry recovery (Zone-2: eliminates flag conflation + mutable-state ordering).
+
+        Replaces former Recovery 1 (_recover_ocr_escalation) and Recovery 5
+        (_recover_image_dominant_ocr) with a single method dispatching on
+        ``OcrRetryReason``.  Each reason has its own independent flag gate,
+        eligibility check, and metric label.
+
+        ``reason`` discriminates:
+        - GARBLE: page-level garble retry (first_defect in GARBLING/NODE_GARBLING).
+        - LOW_CONTENT: low-char-count OCR retry (first_defect NODE_COUNT_LOW, chars < floor).
+        - IMAGE_DOMINANT: image-dominant structural retry (first_defect NODE_COUNT_LOW/DEPTH_LOW,
+          image-line ratio > 50%).
+
+        Pre-retry snapshot + keep-best heuristic apply only for GARBLE/LOW_CONTENT.
+        IMAGE_DOMINANT accepts unconditionally (no revert).
+        """
+        if state.ok or ext != ".pdf":
             return
 
-        pre_retry = RecoveryOutcome(
-            result=state.result,
-            ok=state.ok,
-            reason=state.reason,
-            gate_result=state.gate_result,
-            total_chars=state.total_chars,
-            md_content=state.md_content,
-            pic_results=state.pic_results,
-            used_converter=state.used_converter,
-        )
+        # ---- Per-reason independent flag gate + eligibility check ----
+        if reason == OcrRetryReason.GARBLE:
+            if not _OCR_ESCALATION_GARBLE:
+                return
+            if state.first_defect not in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING):
+                return
+        elif reason == OcrRetryReason.LOW_CONTENT:
+            if not _OCR_ESCALATION_GARBLE:
+                return
+            if not (
+                state.first_defect == TreeDefect.NODE_COUNT_LOW
+                and state.total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
+            ):
+                return
+        elif reason == OcrRetryReason.IMAGE_DOMINANT:
+            if not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
+                return
+            if state.first_defect not in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW):
+                return
+            if not (settings.flat_doc_routing and state.md_content):
+                return
+            # Image-line ratio gate (>50% non-empty lines must be image markers).
+            total_lines = state.md_content.splitlines()
+            non_empty_lines = [ln for ln in total_lines if ln.strip()]
+            image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
+            if not non_empty_lines or (image_lines / len(non_empty_lines)) <= 0.50:
+                return
+
+        # ---- Pre-retry snapshot (GARBLE/LOW_CONTENT only) ----
+        _use_keep_best = reason in (OcrRetryReason.GARBLE, OcrRetryReason.LOW_CONTENT)
+        pre_retry: RecoveryOutcome | None = None
+        if _use_keep_best:
+            pre_retry = RecoveryOutcome(
+                result=state.result,
+                ok=state.ok,
+                reason=state.reason,
+                gate_result=state.gate_result,
+                total_chars=state.total_chars,
+                md_content=state.md_content,
+                pic_results=state.pic_results,
+                used_converter=state.used_converter,
+            )
+
+        _reason_label = {
+            OcrRetryReason.GARBLE: "Garbling",
+            OcrRetryReason.LOW_CONTENT: "Low content",
+            OcrRetryReason.IMAGE_DOMINANT: "Image-dominant",
+        }[reason]
+        _splice_label = {
+            OcrRetryReason.GARBLE: "garble_escalation",
+            OcrRetryReason.LOW_CONTENT: "garble_escalation",
+            OcrRetryReason.IMAGE_DOMINANT: "image_dominant_escalation",
+        }[reason]
+
         try:
+            # ---- Unified language derivation ----
             escalation_langs: list[str] = []
             for src in (
                 detect_ocr_langs(filename),
@@ -1335,12 +1418,28 @@ class CustomPageIndexClient(PageIndexClient):
                     if lg not in escalation_langs:
                         escalation_langs.append(lg)
             langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
-            logger.warning(
-                "%s on %s; escalating to force_full_page_ocr (lang=%s)",
-                "Low content" if low_content_ocr_eligible else "Garbling",
-                filename,
-                langs,
-            )
+
+            if reason == OcrRetryReason.IMAGE_DOMINANT:
+                total_lines_log = state.md_content.splitlines()
+                non_empty_log = [ln for ln in total_lines_log if ln.strip()]
+                image_lines_log = sum(1 for ln in non_empty_log if "<!-- image -->" in ln)
+                logger.warning(
+                    "Image-dominant (%d/%d non-empty lines) on %s; "
+                    "escalating to force_full_page_ocr (lang=%s)",
+                    image_lines_log,
+                    len(non_empty_log),
+                    filename,
+                    langs,
+                )
+            else:
+                logger.warning(
+                    "%s on %s; escalating to force_full_page_ocr (lang=%s)",
+                    _reason_label,
+                    filename,
+                    langs,
+                )
+
+            # ---- Unified OCR dispatch ----
             if state.use_remote:
                 state.md_content, state.pic_results = await _remote_pdf_to_markdown(
                     self._staging_key,
@@ -1349,111 +1448,125 @@ class CustomPageIndexClient(PageIndexClient):
                 )
             else:
                 state.md_content, state.pic_results, stages_out = _split_converter_output(
-                    await asyncio.to_thread(pdf_to_markdown_docling, file_path, True, langs, expected_script=expected_script)
+                    await asyncio.to_thread(
+                        pdf_to_markdown_docling, file_path, True, langs,
+                        expected_script=expected_script,
+                    )
                 )
                 if stages_out:
                     state.extraction_stages_captured = stages_out
             state.used_converter = "docling"
+
+            # ---- Unified picture splice ----
             if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                _log_pic_splice_trace(filename, "garble_escalation", state.pic_results)
+                _log_pic_splice_trace(filename, _splice_label, state.pic_results)
                 state.md_content = splice_picture_text_for_tree(
                     state.md_content, state.pic_results
                 )
+
+            # Zone-6: ALWAYS clear stale rtl_decision before revalidation so
+            # validate_tree recomputes on new text.  Unifies the inconsistent
+            # semantics where Recovery 1 cleared only on remote+renormalize
+            # and Recovery 5 cleared unconditionally.
             if state.use_remote and REMOTE_MD_RENORMALIZE:
                 state.md_content, state.rtl_decision = _renormalize_bidi_guarded(
                     state.md_content, filename,
                 )
+            else:
+                state.rtl_decision = None
 
             await self._reconvert_and_revalidate(
                 state, state.md_content, expected_script=expected_script
             )
 
-            post_retry_chars = len(
-                _flatten_tree_text(state.result.get("structure", []))
-            )
+            # ---- Keep-best heuristic (GARBLE/LOW_CONTENT only) ----
+            if _use_keep_best and pre_retry is not None:
+                post_retry_chars = len(
+                    _flatten_tree_text(state.result.get("structure", []))
+                )
 
-            def _repeating_token_density(text: str) -> float | None:
-                from collections import Counter
+                def _repeating_token_density(text: str) -> float:
+                    """Repeating-token density (0.0=none, 1.0=maximally degenerate).
 
-                tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
-                if len(tokens) < 20:
-                    return None
-                return Counter(tokens).most_common(1)[0][1] / len(tokens)
+                    Zone-2 fix: returns 1.0 for <20 tokens so the RFC-029 D4
+                    density comparison always runs for no-text-layer PDFs.
+                    """
+                    from collections import Counter
 
-            if post_retry_chars < pre_retry.total_chars:
-                retry_wins = False
-            elif post_retry_chars == pre_retry.total_chars:
-                _pre_text = _flatten_tree_text(pre_retry.result.get("structure", []))
-                _post_text = _flatten_tree_text(state.result.get("structure", []))
-                retry_wins = state.ok or (
-                    check_garble(
-                        _pre_text,
+                    tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
+                    if len(tokens) < 20:
+                        return 1.0
+                    return Counter(tokens).most_common(1)[0][1] / len(tokens)
+
+                if post_retry_chars < pre_retry.total_chars:
+                    retry_wins = False
+                elif post_retry_chars == pre_retry.total_chars:
+                    _pre_text = _flatten_tree_text(pre_retry.result.get("structure", []))
+                    _post_text = _flatten_tree_text(state.result.get("structure", []))
+                    retry_wins = state.ok or (
+                        check_garble(
+                            _pre_text,
+                            expected_script=expected_script,
+                            profile=BULK_PROFILE,
+                        )
+                        and not check_garble(
+                            _post_text,
+                            expected_script=expected_script,
+                            profile=BULK_PROFILE,
+                        )
+                    )
+                else:
+                    _pre_text_cmp = _flatten_tree_text(pre_retry.result.get("structure", []))
+                    _pre_garble_flag = check_garble(
+                        _pre_text_cmp,
                         expected_script=expected_script,
                         profile=BULK_PROFILE,
                     )
-                    and not check_garble(
-                        _post_text,
-                        expected_script=expected_script,
-                        profile=BULK_PROFILE,
-                    )
-                )
-            else:
-                _pre_text_cmp = _flatten_tree_text(pre_retry.result.get("structure", []))
-                _pre_garble_flag = check_garble(
-                    _pre_text_cmp,
-                    expected_script=expected_script,
-                    profile=BULK_PROFILE,
-                )
-                if _pre_garble_flag:
-                    _pre_density = _repeating_token_density(
-                        _flatten_tree_text(pre_retry.result.get("structure", []))
-                    )
-                    _post_density = _repeating_token_density(
-                        _flatten_tree_text(state.result.get("structure", []))
-                    )
-                    if _pre_density is None:
-                        retry_wins = post_retry_chars >= LOW_CONTENT_OCR_CHAR_FLOOR
+                    if _pre_garble_flag:
+                        _pre_density = _repeating_token_density(
+                            _flatten_tree_text(pre_retry.result.get("structure", []))
+                        )
+                        _post_density = _repeating_token_density(
+                            _flatten_tree_text(state.result.get("structure", []))
+                        )
+                        # Zone-2 fix: _repeating_token_density always returns a float
+                        # (1.0 for <20 tokens), so RFC-029 D4 density comparison
+                        # always runs — no None shortcut branches.
+                        _density_improved = _post_density < _pre_density * 0.80
+                        retry_wins = _density_improved
                         if not retry_wins:
                             logger.warning(
-                                "RFC-030 D1: post-retry chars (%d) below quality"
-                                " floor (%d) for %s -- reverting to pre-retry result",
-                                post_retry_chars,
-                                LOW_CONTENT_OCR_CHAR_FLOOR,
+                                "RFC-029 D4: post-retry repeating-token density (%.3f)"
+                                " not substantially better than pre-retry (%.3f) for %s"
+                                " — reverting to pre-retry result",
+                                _post_density,
+                                _pre_density,
                                 filename,
                             )
                     else:
-                        if _post_density is None:
-                            retry_wins = True
-                        else:
-                            _density_improved = _post_density < _pre_density * 0.80
-                            retry_wins = _density_improved
-                            if not retry_wins:
-                                logger.warning(
-                                    "RFC-029 D4: post-retry repeating-token density (%.3f)"
-                                    " not substantially better than pre-retry (%.3f) for %s"
-                                    " — reverting to pre-retry result",
-                                    _post_density,
-                                    _pre_density,
-                                    filename,
-                                )
-                else:
-                    retry_wins = True
-            if not retry_wins:
-                pre_retry.apply(state)
-                if state.tmp_md_path and os.path.exists(state.tmp_md_path):
-                    os.unlink(state.tmp_md_path)
-                with tempfile.NamedTemporaryFile(
-                    suffix=".md", delete=False, mode="w", encoding="utf-8"
-                ) as md_tmp:
-                    md_tmp.write(state.md_content)
-                    state.tmp_md_path = md_tmp.name
-            OCR_ESCALATION_TOTAL.labels(
-                result="recovered" if state.ok else "still_garbled"
-            ).inc()
+                        retry_wins = True
+                if not retry_wins:
+                    pre_retry.apply(state)
+                    if state.tmp_md_path and os.path.exists(state.tmp_md_path):
+                        os.unlink(state.tmp_md_path)
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".md", delete=False, mode="w", encoding="utf-8"
+                    ) as md_tmp:
+                        md_tmp.write(state.md_content)
+                        state.tmp_md_path = md_tmp.name
+
+            # ---- Metric ----
+            _metric_result = {
+                OcrRetryReason.GARBLE: "recovered" if state.ok else "still_garbled",
+                OcrRetryReason.LOW_CONTENT: "recovered" if state.ok else "still_garbled",
+                OcrRetryReason.IMAGE_DOMINANT: "recovered" if state.ok else "still_image_only",
+            }[reason]
+            OCR_ESCALATION_TOTAL.labels(result=_metric_result).inc()
         except Exception as ocr_exc:
             OCR_ESCALATION_TOTAL.labels(result="error").inc()
             logger.error(
-                "OCR escalation failed for %s (%s)", filename, ocr_exc, exc_info=True
+                "%s OCR escalation failed for %s (%s)",
+                _reason_label, filename, ocr_exc, exc_info=True,
             )
 
     async def _recover_rtl_repair(
@@ -1606,90 +1719,6 @@ class CustomPageIndexClient(PageIndexClient):
                     state.md_content = recovered_md
                     state.pic_results = []
                     state.route = Route.FLAT
-
-    async def _recover_image_dominant_ocr(
-        self,
-        state: ExtractionState,
-        file_path: str,
-        filename: str,
-        ext: str,
-        expected_script: str | None,
-    ) -> None:
-        """Recovery 5: Image-dominant OCR retry. Mutates state."""
-        if not (
-            not state.ok
-            and state.first_defect in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW)
-            and ext == ".pdf"
-            and _OCR_ESCALATION_GARBLE
-            and _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
-            and settings.flat_doc_routing
-            and state.md_content
-        ):
-            return
-
-        total_lines = state.md_content.splitlines()
-        non_empty_lines = [ln for ln in total_lines if ln.strip()]
-        image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
-        if not non_empty_lines or (image_lines / len(non_empty_lines)) <= 0.50:
-            return
-
-        try:
-            escalation_langs: list[str] = []
-            for src in (
-                detect_ocr_langs(filename),
-                detect_ocr_langs(state.md_content or ""),
-            ):
-                for lg in src:
-                    if lg not in escalation_langs:
-                        escalation_langs.append(lg)
-            langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
-            logger.warning(
-                "Image-dominant (%d/%d non-empty lines) on %s; "
-                "escalating to force_full_page_ocr (lang=%s)",
-                image_lines,
-                len(non_empty_lines),
-                filename,
-                langs,
-            )
-            if state.use_remote:
-                state.md_content, state.pic_results = await _remote_pdf_to_markdown(
-                    self._staging_key,
-                    force_full_page_ocr=True,
-                    ocr_lang_override=langs,
-                )
-            else:
-                state.md_content, state.pic_results, stages_out = _split_converter_output(
-                    await asyncio.to_thread(
-                        pdf_to_markdown_docling, file_path, True, langs,
-                        expected_script=expected_script,
-                    )
-                )
-                if stages_out:
-                    state.extraction_stages_captured = stages_out
-            if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                _log_pic_splice_trace(
-                    filename, "image_dominant_escalation", state.pic_results
-                )
-                state.md_content = splice_picture_text_for_tree(
-                    state.md_content, state.pic_results
-                )
-            # Zone-6: image-dominant re-extraction produces new text;
-            # clear stale rtl_decision so validate_tree recomputes.
-            state.rtl_decision = None
-            await self._reconvert_and_revalidate(
-                state, state.md_content, expected_script=expected_script
-            )
-            OCR_ESCALATION_TOTAL.labels(
-                result="recovered" if state.ok else "still_image_only"
-            ).inc()
-        except Exception as ocr_exc:
-            OCR_ESCALATION_TOTAL.labels(result="error").inc()
-            logger.error(
-                "Image-ratio OCR escalation failed for %s (%s)",
-                filename,
-                ocr_exc,
-                exc_info=True,
-            )
 
     async def _recover_flat_prefer(
         self,
@@ -2170,8 +2199,22 @@ class CustomPageIndexClient(PageIndexClient):
             # at most once (deduplication via seen_tags).
             _recovery_dispatch: dict[str, list] = {
                 "ocr_escalation": [
-                    lambda: self._recover_ocr_escalation(
-                        state, file_path, filename, ext, expected_script
+                    # Zone-2: unified _recover_ocr_retry dispatches on
+                    # OcrRetryReason; ordering preserves Recovery 1 (garble)
+                    # before Recovery 5 (image-dominant) semantics, with
+                    # LOW_CONTENT between them.  Each reason has its own
+                    # independent flag gate; only one will fire per doc.
+                    lambda: self._recover_ocr_retry(
+                        OcrRetryReason.GARBLE,
+                        state, file_path, filename, ext, expected_script,
+                    ),
+                    lambda: self._recover_ocr_retry(
+                        OcrRetryReason.LOW_CONTENT,
+                        state, file_path, filename, ext, expected_script,
+                    ),
+                    lambda: self._recover_ocr_retry(
+                        OcrRetryReason.IMAGE_DOMINANT,
+                        state, file_path, filename, ext, expected_script,
                     ),
                     lambda: self._recover_vlm_fallback(
                         state, file_path, filename, ext, expected_script
@@ -2216,23 +2259,6 @@ class CustomPageIndexClient(PageIndexClient):
                 state.total_chars = len(
                     _flatten_tree_text(state.result.get("structure", []))
                 )
-
-            # Post-loop recoveries: not gate-driven (ad hoc guards).
-            await self._recover_image_dominant_ocr(
-                state, file_path, filename, ext, expected_script
-            )
-            # Re-derive after image-dominant OCR (may reconvert tree).
-            if not state.ok:
-                if state.gate_result is not None:
-                    state.first_defect = state.gate_result.defect
-                else:
-                    state.first_defect = _defect_from_reason_str(state.reason)
-                state.route = decide_route(
-                    state.first_defect, settings.flat_doc_routing
-                )
-            state.total_chars = len(
-                _flatten_tree_text(state.result.get("structure", []))
-            )
 
             # Quality checks (may override route intentionally — no
             # re-derivation afterwards).
@@ -2474,6 +2500,9 @@ class CustomPageIndexClient(PageIndexClient):
         # RFC-034 D11: strip ToC-heading nodes before oversized-leaf splitting.
         # RFC-034 D16: guarded against over-stripping long legal statutes --
         # see _strip_toc_heading_nodes_guarded.
+        # Zone-6 Step A: char_loss_ratio observability + abort wired inside
+        # the guarded function — logs INFO always, fires TOC_STRIP_HIGH_CHAR_LOSS
+        # counter when ratio > 0.10, aborts (returns original) when > 0.15.
         result["structure"] = _strip_toc_heading_nodes_guarded(
             result.get("structure", []), doc_name=str(md_path)
         )

@@ -60,7 +60,7 @@ def _wire_common(monkeypatch, *, validate_return, **settings_overrides):
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
     mocks = {
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),

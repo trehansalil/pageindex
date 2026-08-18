@@ -145,7 +145,7 @@ class TestFalsePositiveRegressionGuard:
         {GARBLING, NODE_GARBLING}.  Zone-5 replaced string checks with
         TreeDefect enum comparisons."""
         source = inspect.getsource(client_mod)
-        assert source.count('first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)') >= 3
+        assert source.count('first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)') >= 2
         assert 'reason == "garbling" and ext' not in source
 
     def test_source_gates_use_tuple_membership_not_substring_match(self):

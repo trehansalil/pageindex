@@ -37,10 +37,9 @@ class TestFirstDefectAssignmentSites:
     def test_known_assignment_count(self):
         source = _read_client()
         matches = self._ASSIGN_RE.findall(source)
-        assert len(matches) == 5, (
-            f"Expected 5 `first_defect =` assignments "
-            f"(1 in _convert_to_tree + 2 in-loop + 2 post-loop "
-            f"re-derivation sites inlined from deleted _finalize_routing), "
+        assert len(matches) == 3, (
+            f"Expected 3 `first_defect =` assignments "
+            f"(1 in _convert_to_tree + 2 in-loop re-derivation), "
             f"found {len(matches)}: {matches}"
         )
 

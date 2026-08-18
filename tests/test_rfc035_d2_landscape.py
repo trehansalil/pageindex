@@ -189,7 +189,7 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (True, None))
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
 
     # Large body so the RFC-029 D1 flat-prefer check (which also compares
     # flat vs. tree char counts) does not itself trigger and confound the

@@ -46,6 +46,12 @@ OCR_ESCALATION_GARBLE: bool = os.environ.get(
 OCR_ESCALATION_PER_PICTURE: bool = os.environ.get(
     "OCR_ESCALATION_PER_PICTURE", "1"
 ).strip().lower() in ("1", "true", "yes")
+# Zone-2: independent image-dominant OCR escalation flag (RFC-023 D11).
+# Gates Recovery 5 (image-dominant structural retry for NODE_COUNT_LOW /
+# DEPTH_LOW defects) independently from OCR_ESCALATION_GARBLE.
+IMAGE_DOMINANT_OCR_ESCALATION_ENABLED: bool = os.environ.get(
+    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
@@ -303,9 +309,7 @@ def effective_config_snapshot() -> dict:
         "image_standalone_pipeline_enabled": _envbool(
             "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
         ),
-        "image_dominant_ocr_escalation_enabled": _envbool(
-            "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "true"
-        ),
+        "image_dominant_ocr_escalation_enabled": IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
         "vlm_tesseract_fallback_enabled": _envbool(
             "VLM_TESSERACT_FALLBACK_ENABLED", "true"
         ),

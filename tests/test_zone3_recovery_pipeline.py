@@ -223,16 +223,23 @@ class TestGateSpecRecoveryTag:
                 )
 
     def test_non_retry_gates_have_no_recovery_tag(self):
-        """RAISE/OK/CAP_MARGINAL/PERSIST_FAIL gates must NOT have recovery_tag."""
-        non_retry = {
-            _ReasonPolicy.RAISE, _ReasonPolicy.OK,
-            _ReasonPolicy.CAP_MARGINAL, _ReasonPolicy.PERSIST_FAIL,
+        """OK/CAP_MARGINAL/PERSIST_FAIL gates must NOT have recovery_tag.
+        RAISE-policy gates MAY have recovery_tag when wired for OCR escalation
+        (NODE_COUNT_LOW, DEPTH_LOW)."""
+        no_tag_policies = {
+            _ReasonPolicy.OK, _ReasonPolicy.CAP_MARGINAL, _ReasonPolicy.PERSIST_FAIL,
         }
+        raise_ocr_escalation = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}
         for g in GATES:
-            if g.policy in non_retry:
+            if g.policy in no_tag_policies:
                 assert g.recovery_tag is None, (
                     f"Non-retry gate {g.defect.name} ({g.policy}) should not "
                     f"have recovery_tag={g.recovery_tag!r}"
+                )
+            elif g.policy == _ReasonPolicy.RAISE and g.defect not in raise_ocr_escalation:
+                assert g.recovery_tag is None, (
+                    f"RAISE gate {g.defect.name} should not have "
+                    f"recovery_tag={g.recovery_tag!r} (not in OCR-escalation set)"
                 )
 
     def test_garbling_and_node_garbling_share_ocr_tag(self):

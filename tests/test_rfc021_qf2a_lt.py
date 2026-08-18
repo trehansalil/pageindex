@@ -174,7 +174,7 @@ def _wire_image_standalone_flat(monkeypatch):
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _IMAGE_LIGHT_MD)]
     )
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
     # D1 image-ratio escalation stays gated off via the ratio itself
     # (_IMAGE_LIGHT_MD is under the 50% threshold), so detect_ocr_langs /
     # ensure_tessdata / pdf_to_markdown_docling are never invoked.

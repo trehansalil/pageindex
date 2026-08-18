@@ -459,7 +459,7 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
     monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
     monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
     monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (False, "depth<2"))
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION_PER_PICTURE", False)
     monkeypatch.setattr(
