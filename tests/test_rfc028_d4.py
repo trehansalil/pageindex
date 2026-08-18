@@ -7,7 +7,7 @@ equal.
 Validates Design Property 5 (OCR retry keeps the result with more content).
 """
 
-from pageindex_mcp.helpers import _is_garbled_blob, _flatten_tree_text
+from pageindex_mcp.helpers import check_garble, BULK_PROFILE, _flatten_tree_text
 
 # Mirrors al-qarar al-tanzimi: pre-retry text-layer extraction at 230 chars,
 # retry's force_full_page_ocr on the same underlying (PUA-encoded) defect
@@ -40,12 +40,12 @@ def _keep_best(
         retry_wins = False
     elif post_retry_chars == pre_retry_chars:
         retry_wins = post_retry_ok or (
-            _is_garbled_blob(
+            check_garble(
                 _flatten_tree_text(pre_retry_structure), expected_script=expected_script
-            )
-            and not _is_garbled_blob(
+            , profile=BULK_PROFILE)
+            and not check_garble(
                 _flatten_tree_text(post_retry_structure), expected_script=expected_script
-            )
+            , profile=BULK_PROFILE)
         )
     else:
         retry_wins = True

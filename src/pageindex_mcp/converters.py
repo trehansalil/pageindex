@@ -1616,12 +1616,9 @@ _IMAGE_ENRICH_CONCURRENCY = max(1, int(os.getenv("IMAGE_ENRICH_CONCURRENCY", "4"
 _COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
     "COVERAGE_EXEMPT_NO_TEXT_LAYER", "true"
 ).strip().lower() in ("1", "true", "yes")
-# D0 (RFC-023): when True, a text layer that passes the char-count check but is
-# garbled (mojibake/scanned-PDF noise) is still treated as "no content", so the
-# coverage exemption above fires and per-picture OCR proceeds.
-_TEXT_LAYER_GARBLE_CHECK_ENABLED = os.getenv(
-    "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
+# Zone-4: _TEXT_LAYER_GARBLE_CHECK_ENABLED rollback toggle removed; garble check
+# is now always-on (was default True). The check is integrated into the unified
+# _text_layer_has_content function.
 # D1 (RFC-024): capture clip_text into PictureResult.ocr_text when it is NOT
 # already contained in the Docling markdown export (containment-guarded — see
 # _clip_text_contained). Set to False to restore the pre-RFC-024 skip-only
@@ -1642,12 +1639,8 @@ _DOC_TEXT_FALLBACK_MIN_CHARS = 100
 # body prose beneath it (structure survived, content did not). Fire the same
 # pdfium whole-document fallback when chars-per-heading drops below this floor.
 _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING = 50
-# D1 (RFC-025): when True, the full-page-coverage exemption uses the
-# region-scoped text check (_region_has_own_text_layer); when False, restore
-# the pre-RFC-025 page-level check (_text_layer_has_content) for rollback.
-_REGION_AWARE_TEXT_CHECK_ENABLED = os.getenv(
-    "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
+# Zone-4: _REGION_AWARE_TEXT_CHECK_ENABLED rollback toggle removed; region-aware
+# text check is now always-on (was default True). Unified into _text_layer_has_content.
 # D1 (RFC-025): the region-aware exemption converts previously-skipped
 # full-page picture regions into active 300-DPI crop+Tesseract OCR work,
 # which is expensive on multi-hundred-page scanned documents. Cap the number
@@ -1678,7 +1671,6 @@ class PictureResult(TypedDict, total=False):
     bbox: dict
     description: str
     skipped_reason: str  # RFC-019 D3: deliberate-skip tag (e.g. "page_coverage")
-    decorative: bool  # RFC-023 D2: sub-icon pre-filter or empty-OCR belt-and-suspenders
 
 
 def zdr_egress_gate(purpose: str, doc_id: str = "") -> tuple[bool, str | None]:
@@ -1762,36 +1754,33 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
         return ""
 
 
-def _text_layer_has_content(page, expected_script: str | None = None) -> bool:
-    """Return True when the page's native text layer has meaningful content.
+def _text_layer_has_content(
+    page, region_rect=None, expected_script: str | None = None,
+) -> bool:
+    """Return True when the text layer has meaningful, non-garbled content.
 
-    Used by F1 (RFC-020) to exempt scanned pages from the coverage skip —
-    when a page has NO text layer the full-page picture IS the content.
+    Zone-4 unified function (replaces old _text_layer_has_content +
+    _region_has_own_text_layer).
 
-    D0 (RFC-023): a text layer can pass the char-count check but still be
-    garbled (thin mojibake left by the PDF creator on a scanned page). Treat
-    a garbled text layer as no content so the coverage exemption fires."""
-    text = page.get_text("text").strip()
+    When ``region_rect`` is provided, clips the text extraction to that bbox
+    (D1 RFC-025 region-aware path). Otherwise reads the full page text
+    (F1 RFC-020 page-level path).
+
+    The garble check is always on (D0 RFC-023): a text layer that passes the
+    char-count check but is garbled (mojibake/scanned-PDF noise) is treated
+    as no content so the coverage exemption fires."""
+    text = (
+        page.get_text("text", clip=region_rect).strip()
+        if region_rect is not None
+        else page.get_text("text").strip()
+    )
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
-    if _TEXT_LAYER_GARBLE_CHECK_ENABLED:
-        from .helpers import GarbleContext, check_garble, infer_script  # Zone-7: single module
+    from .helpers import BULK_PROFILE, check_garble, infer_script  # Zone-1: profile-based
 
-        if check_garble(text, expected_script=expected_script or infer_script(text), context=GarbleContext.PAGE_TEXT_LAYER):
-            return False
+    if check_garble(text, expected_script=expected_script or infer_script(text), profile=BULK_PROFILE):
+        return False
     return True
-
-
-def _region_has_own_text_layer(page, region_rect) -> bool:
-    """Return True when the picture region's OWN bbox has a meaningful native text layer.
-
-    D1 (RFC-025): `_text_layer_has_content(page)` is a page-level check, so
-    incidental text outside the region (headers, footers, page numbers) keeps
-    it True and disables the coverage exemption even when the region's own
-    body text was baked into a skipped full-page image. This checks only the
-    text clipped to `region_rect`, regardless of what text exists outside it."""
-    region_clip_len = len(page.get_text("text", clip=region_rect).strip())
-    return region_clip_len >= _PICTURE_OCR_MIN_CHARS
 
 
 def _crop_page_region(page, rect, *, region_index: int = -1) -> bytes | None:
@@ -1899,9 +1888,9 @@ def _document_level_text_fallback(md: str, pdf_path: str, expected_script: str |
         return md
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
-    from .helpers import GarbleContext, check_garble, infer_script  # Zone-7: single module
+    from .helpers import BULK_PROFILE, check_garble, infer_script  # Zone-1: profile-based
 
-    if check_garble(full_text, expected_script=expected_script or infer_script(full_text), context=GarbleContext.DOCUMENT_FALLBACK):
+    if check_garble(full_text, expected_script=expected_script or infer_script(full_text), profile=BULK_PROFILE):
         logger.warning(
             "document-level text-layer fallback skipped for %s: text layer is garbled",
             pdf_path,
@@ -2299,21 +2288,10 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 # has_own_text: only meaningful when coverage > threshold.
                 has_own_text = True
                 if coverage > gate_config.page_coverage_threshold:
-                    if _REGION_AWARE_TEXT_CHECK_ENABLED:
-                        has_own_text = _region_has_own_text_layer(page, rect)
-                        if has_own_text and _TEXT_LAYER_GARBLE_CHECK_ENABLED:
-                            region_text = page.get_text("text", clip=rect).strip()
-                            if region_text:
-                                from .helpers import GarbleContext, check_garble, infer_script  # Zone-7: single module
-
-                                if check_garble(
-                                    region_text,
-                                    expected_script=expected_script or infer_script(region_text),
-                                    context=GarbleContext.REGION,
-                                ):
-                                    has_own_text = False
-                    else:
-                        has_own_text = _text_layer_has_content(page, expected_script=expected_script)
+                    # Zone-4: unified text-layer check (region-aware + always-on garble).
+                    has_own_text = _text_layer_has_content(
+                        page, region_rect=rect, expected_script=expected_script,
+                    )
 
                 clip_text = page.get_text("text", clip=rect).strip()
                 clip_text_contained = (
@@ -2465,10 +2443,11 @@ def _recover_picture_text(  # noqa: PLR0915, C901
         # no PNG is persisted, unless the VLM route may still describe it.
         if ocr_text or keep_silent_png:
             result["png_bytes"] = crops[i]["png_bytes"]
-        # D2 (RFC-023) belt-and-suspenders: a region that passed the size filter
-        # but still yielded no OCR text is likely decorative.
+        # Zone-4: empty-OCR results signal via skipped_reason (unified skip path).
+        # SkipReason.OCR_MIN_CHARS is in _INTENTIONAL_SKIPS so
+        # counts_in_denominator returns False -- same exclusion as old decorative.
         if not ocr_text:
-            result["decorative"] = True
+            result["skipped_reason"] = SkipReason.OCR_MIN_CHARS.value
         recovered[i] = result
     return recovered, skip_reasons
 
@@ -2507,9 +2486,9 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
     lookup (finding 4). Markers count differs from ``len(pics)`` no longer bails
     out — excess markers past ``len(pics)`` (no matching ``PictureResult``) are
     stripped when ``STRIP_SKIPPED_IMAGE_MARKERS=true`` (default), else left as
-    neutral markers, matching the existing skipped/decorative behavior below.
+    neutral markers, matching the existing skipped behavior below.
 
-    Decorative results (no png/ocr/description — finding 12) keep their neutral
+    Skipped results (no png/ocr/description — finding 12) keep their neutral
     marker so no unresolvable ``[Figure: fig-k]`` reference is ever emitted.
 
     Sets ``spliced_into_markdown`` flag on spliced pics instead of the prior
@@ -2544,7 +2523,7 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         ocr = result.get("ocr_text", "")
         desc = result.get("description", "")
         if not (ocr or desc or result.get("png_bytes")):
-            if result.get("skipped_reason") or result.get("decorative"):
+            if result.get("skipped_reason"):
                 strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
                 if strip_env != "false":
                     return ""
@@ -2612,7 +2591,7 @@ def _recover_picture_results(
 
     OCR + crop ONLY — no markdown mutation, no VLM (both moved to the flat branch
     of ``client.index()``, the sole consumer — audit findings 6/8). Gated on
-    ``_OCR_ESCALATION`` (mirrors client.py:66) + the presence of a ``<!-- image -->``
+    ``_OCR_ESCALATION_PER_PICTURE`` (config.py) + the presence of a ``<!-- image -->``
     marker, and never fatal.
 
     Returns a DENSE list: element ``i`` corresponds to the i-th PictureItem in
@@ -3575,21 +3554,53 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     md = selected.md
     heading_pages_for_md = selected.heading_pages
 
-    # Fallback stage split (inlined from _run_fallback_pipeline).
-    # Stage ordering is load-bearing (RFC-024 D1 suppression fix):
-    #   normalize_indented_headings
-    #   -> **snapshot** (body_for_containment)
-    #   -> document_level_text_fallback
-    #   -> splice_landscape_fallback
+    # Pre-fallback stage: normalize indented headings.
     _pre_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
         ("normalize_indented_headings", _normalize_indented_headings),
     ]
     md, _pre_records = _run_stages(md, _pre_fallback_stages)
+    extraction_stages.update(_pre_records)
 
-    # RFC-024 D1 fix: snapshot md BEFORE _document_level_text_fallback appends
-    # the raw pdfium text layer, so the containment check in picture recovery
-    # measures against genuine Docling-exported content only.
-    body_for_containment = md
+    # Zone-4: structural ordering enforcement — snapshot + fallback + recovery
+    # are encapsulated in _fallback_and_recover_pictures so the containment
+    # snapshot cannot accidentally drift after fallback text is appended.
+    md, pic_results, fallback_records = _fallback_and_recover_pictures(
+        pre_fallback_md=md,
+        document=result.document,
+        pdf_path=pdf_path,
+        filename=os.path.basename(pdf_path),
+        expected_script=expected_script,
+        landscape_fallback_pages=landscape_fallback_pages,
+        heading_pages=heading_pages_for_md,
+    )
+    extraction_stages.update(fallback_records)
+
+    return md, pic_results, extraction_stages
+
+
+def _fallback_and_recover_pictures(
+    pre_fallback_md: str,
+    document: object,
+    pdf_path: str,
+    filename: str,
+    *,
+    expected_script: str | None,
+    landscape_fallback_pages: list[dict],
+    heading_pages: dict[str, list[int]],
+) -> tuple[str, list["PictureResult"], dict[str, dict]]:
+    """Run post-fallback stages and picture recovery with structural ordering.
+
+    Zone-4: extracted from pdf_to_markdown_docling to structurally enforce
+    RFC-024 D1 ordering — the containment snapshot (``body_for_containment``)
+    is captured from ``pre_fallback_md`` BEFORE ``_document_level_text_fallback``
+    appends the raw pdfium text layer. This function boundary makes it
+    impossible for callers to accidentally pass post-fallback text to the
+    containment check in ``_recover_picture_results``.
+
+    Returns ``(post_fallback_md, pic_results, stage_records)``.
+    """
+    # Snapshot for containment check — BEFORE any fallback appends.
+    body_for_containment = pre_fallback_md
 
     _post_fallback_stages: list[tuple[str, Callable[[str], str]]] = [
         ("document_level_text_fallback", functools.partial(
@@ -3600,35 +3611,20 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         ("splice_landscape_fallback", functools.partial(
             _splice_landscape_fallback,
             landscape_fallback_pages=landscape_fallback_pages,
-            heading_pages=heading_pages_for_md,
+            heading_pages=heading_pages,
         )),
     ]
-    md, _post_records = _run_stages(md, _post_fallback_stages)
+    md, stage_records = _run_stages(pre_fallback_md, _post_fallback_stages)
 
-    extraction_stages.update(_pre_records)
-    extraction_stages.update(_post_records)
-
-    # Audit findings 1/6/11: picture results travel UP THE CALL STACK as part of
-    # the return value (a thread-local set on the to_thread pool thread was
-    # invisible to the event loop and pinned crop bytes for the process life).
-    # The markdown keeps neutral `<!-- image -->` markers — the [Figure: fig-N]
-    # splice and the VLM describe step run only in client.index()'s flat branch.
+    # Picture recovery against the pre-fallback snapshot.
     pic_results = _recover_picture_results(
-        md, result.document, pdf_path, os.path.basename(pdf_path),
+        md, document, pdf_path, filename,
         body_for_containment=body_for_containment,
         expected_script=expected_script,
     )
-    # RFC-035 D2 Fix (Routing interaction / task-5-4): the rasterize-rotate-
-    # reextract fallback re-runs Docling on a standalone rasterized page image,
-    # so any Picture regions it detects live in that re-extraction's own
-    # result.document, not the primary result.document _recover_picture_results
-    # just scanned. Surface a routing-only marker per fallback page that fired
-    # Docling picture detection so client.index() can re-evaluate classification/
-    # routing the same way the portrait companion does (Design Property 3) —
-    # this is a signal for the flat-mixed routing decision, not a content-
-    # bearing crop, so it deliberately carries no ocr_text/png_bytes and is
-    # inert to splice_figure_markers' marker-count alignment (degrades to
-    # neutral on mismatch per that function's docstring).
+
+    # RFC-035 D2 Fix: surface landscape-fallback pages with pictures as
+    # routing-only markers (no ocr_text/png_bytes, inert to splice alignment).
     for p in landscape_fallback_pages:
         if p.get("has_pictures"):
             pic_results.append(
@@ -3637,7 +3633,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
 
     # Provenance: picture recovery (non-string-mutation, manual entry).
     recovered_count = sum(1 for pr in pic_results if pr.get("ocr_text"))
-    extraction_stages["picture_recovery"] = {
+    stage_records["picture_recovery"] = {
         "name": "picture_recovery",
         "chars_before": len(md),
         "chars_after": len(md),
@@ -3650,7 +3646,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         "recovered": recovered_count,
     }
 
-    return md, pic_results, extraction_stages
+    return md, pic_results, stage_records
 
 
 def _pdf_to_markdown_no_pics(

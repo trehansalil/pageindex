@@ -222,11 +222,11 @@ class TestOcrEscalationWiring:
         )
 
     def test_config_is_canonical_source(self):
-        """config.py must define OCR_ESCALATION as a module-level bool."""
+        """config.py must define OCR_ESCALATION_GARBLE as a module-level bool."""
         from pageindex_mcp import config
 
-        assert hasattr(config, "OCR_ESCALATION")
-        assert isinstance(config.OCR_ESCALATION, bool)
+        assert hasattr(config, "OCR_ESCALATION_GARBLE")
+        assert isinstance(config.OCR_ESCALATION_GARBLE, bool)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +268,7 @@ class TestComputeImageEnrichmentRatioSkipPolicy:
 
         blocks = [
             {"role": "image", "ocr_text": "enriched"},
-            {"role": "image", "decorative": True},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
         ]
         ratio = compute_image_enrichment_ratio(blocks)
         assert ratio == 1.0
@@ -289,7 +289,7 @@ class TestComputeImageEnrichmentRatioSkipPolicy:
 
         blocks = [
             {"role": "image", "skipped_reason": "page_coverage"},
-            {"role": "image", "decorative": True},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
         ]
         ratio = compute_image_enrichment_ratio(blocks)
         assert ratio is None

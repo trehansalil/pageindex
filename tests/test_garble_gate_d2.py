@@ -4,9 +4,10 @@ import os
 from unittest.mock import patch
 
 from pageindex_mcp.helpers import (
+    BULK_PROFILE,
     _garble_check_nodes,
     _infer_script,
-    _is_garbled_blob,
+    check_garble,
     validate_tree,
 )
 
@@ -40,29 +41,29 @@ class TestInferScript:
 
 
 class TestLatinGibberishDetection:
-    """_is_garbled_blob Latin-gibberish prong (D2)."""
+    """check_garble Latin-gibberish prong (D2)."""
 
     def test_arabic_tesseract_garble_detected(self):
         """Simulated Tesseract ara mis-recognition: Latin nonsense in Arabic context."""
         garbled = "de Bab rel igh foal pred khar teb ghal mun sar dek phal wur"
-        assert _is_garbled_blob(garbled, expected_script="Arab") is True
+        assert check_garble(garbled, expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_clean_arabic_not_flagged(self):
         """Clean Arabic text must not be flagged."""
         arabic = "هذا نص عربي نظيف يجب أن يمر بنجاح"
-        assert _is_garbled_blob(arabic, expected_script="Arab") is False
+        assert check_garble(arabic, expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_legitimate_bilingual_not_flagged(self):
         """Arabic text with legitimate English words (company names, technical terms)."""
         bilingual = (
             "شركة Google و Microsoft تعملان في مجال التكنولوجيا وتقدمان خدمات the cloud computing"
         )
-        assert _is_garbled_blob(bilingual, expected_script="Arab") is False
+        assert check_garble(bilingual, expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_latin_context_ignores_prong(self):
         """Latin script context -> Latin-gibberish prong should NOT fire."""
         nonsense = "xkq plm zfg wrt bvn yhs tjk mld qrx"
-        assert _is_garbled_blob(nonsense, expected_script="Latn") is False
+        assert check_garble(nonsense, expected_script="Latn", profile=BULK_PROFILE) is False
 
     def test_no_expected_script_ignores_prong(self):
         """No expected_script -> the Latin-gibberish prong specifically must not fire.
@@ -73,25 +74,25 @@ class TestLatinGibberishDetection:
         expected_script being set.
         """
         garbled = "de Bab rel igh foal pred khar teb ghal mun sar dek phal wur"
-        assert _is_garbled_blob(garbled, expected_script=None) is False
+        assert check_garble(garbled, expected_script=None, profile=BULK_PROFILE) is False
 
     def test_few_latin_tokens_below_threshold(self):
         """Fewer than 5 Latin tokens -> prong doesn't fire even in Arabic context."""
         short = "abc def ghi"
-        assert _is_garbled_blob(short, expected_script="Arab") is False
+        assert check_garble(short, expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_env_disable(self):
         """GARBLE_LATIN_GIBBERISH_ENABLED=false disables the prong."""
         garbled = "de Bab rel igh foal pred khar teb ghal mun sar dek phal wur"
         with patch.dict(os.environ, {"GARBLE_LATIN_GIBBERISH_ENABLED": "false"}):
-            assert _is_garbled_blob(garbled, expected_script="Arab") is False
+            assert check_garble(garbled, expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_env_ratio_override(self):
         """GARBLE_LATIN_RATIO override changes threshold."""
         # Text with ~75% Latin tokens (6/8) -- above default 0.4 but below custom 0.8.
         mixed = "de Bab rel igh foal pred هذا نص عربي"
         with patch.dict(os.environ, {"GARBLE_LATIN_RATIO": "0.8"}):
-            assert _is_garbled_blob(mixed, expected_script="Arab") is False
+            assert check_garble(mixed, expected_script="Arab", profile=BULK_PROFILE) is False
 
 
 class TestGarbleCheckNodesWithScript:

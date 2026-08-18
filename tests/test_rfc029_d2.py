@@ -18,8 +18,9 @@ Covers:
 import pytest
 
 from pageindex_mcp.helpers import (
+    BULK_PROFILE,
     _RFC029_MIN_SCANNED_DENSITY_FLOOR,
-    _is_garbled_blob,
+    check_garble,
     validate_tree,
 )
 
@@ -322,7 +323,7 @@ class TestArabicLowContentRatioGate:
         blob = "".join(parts)[:total]
 
         # Act
-        result = _is_garbled_blob(blob, expected_script=None)
+        result = check_garble(blob, expected_script=None, profile=BULK_PROFILE)
 
         # Assert
         assert result is True, (
@@ -340,7 +341,7 @@ class TestArabicLowContentRatioGate:
         blob = _varied_arabic_text(2000)
 
         # Act
-        result = _is_garbled_blob(blob, expected_script=None)
+        result = check_garble(blob, expected_script=None, profile=BULK_PROFILE)
 
         # Assert
         assert result is False, (

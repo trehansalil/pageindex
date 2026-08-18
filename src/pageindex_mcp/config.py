@@ -36,31 +36,16 @@ ALLOW_AGPL_FALLBACK: bool = os.environ.get(
     "ALLOW_AGPL_FALLBACK", "1"
 ).strip().lower() in ("1", "true", "yes")
 
-# Canonical OCR escalation toggle — consumed by client.py and converters.py.
-# Default ON: a garbled PDF gets one force_full_page_ocr retry.
-OCR_ESCALATION: bool = os.environ.get(
-    "OCR_ESCALATION", "1"
-).strip().lower() in ("1", "true", "yes")
-
-# Zone-5: split the monolithic OCR_ESCALATION into two independent controls.
+# Zone-4: independent OCR escalation controls (legacy OCR_ESCALATION shim removed).
 # OCR_ESCALATION_GARBLE gates page-level garble retry (Fix 3 / D1 image-dominant).
 # OCR_ESCALATION_PER_PICTURE gates per-picture crop+OCR enrichment in converters.
-# Backward-compat shim: if legacy OCR_ESCALATION is explicitly set but the new
-# flags are not, both inherit its value. OCR_ESCALATION=0 still disables both.
-_legacy_explicitly_set = "OCR_ESCALATION" in os.environ
-_garble_explicitly_set = "OCR_ESCALATION_GARBLE" in os.environ
-_per_picture_explicitly_set = "OCR_ESCALATION_PER_PICTURE" in os.environ
-
-OCR_ESCALATION_GARBLE: bool = (
-    os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower() in ("1", "true", "yes")
-    if _garble_explicitly_set
-    else OCR_ESCALATION  # inherit from legacy when not independently set
-)
-OCR_ESCALATION_PER_PICTURE: bool = (
-    os.environ.get("OCR_ESCALATION_PER_PICTURE", "1").strip().lower() in ("1", "true", "yes")
-    if _per_picture_explicitly_set
-    else OCR_ESCALATION  # inherit from legacy when not independently set
-)
+# Each flag is a flat, independent env-var read defaulting to True.
+OCR_ESCALATION_GARBLE: bool = os.environ.get(
+    "OCR_ESCALATION_GARBLE", "1"
+).strip().lower() in ("1", "true", "yes")
+OCR_ESCALATION_PER_PICTURE: bool = os.environ.get(
+    "OCR_ESCALATION_PER_PICTURE", "1"
+).strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
@@ -282,13 +267,12 @@ def _envbool(key: str, default: str) -> bool:
 
 
 def effective_config_snapshot() -> dict:
-    """Snapshot the 20 behavior-altering flags at call time for sidecar persistence."""
+    """Snapshot the 19 behavior-altering flags at call time for sidecar persistence."""
     return {
         "pipeline_version": CURRENT_PIPELINE_VERSION,
         "pdf_inspector_preclassify": PDF_INSPECTOR_PRECLASSIFY,
         "allow_agpl_fallback": ALLOW_AGPL_FALLBACK,
         "remote_md_renormalize": REMOTE_MD_RENORMALIZE,
-        "ocr_escalation": OCR_ESCALATION,
         "ocr_escalation_garble": OCR_ESCALATION_GARBLE,
         "ocr_escalation_per_picture": OCR_ESCALATION_PER_PICTURE,
         "pre_garble_force_ocr_enabled": os.environ.get(

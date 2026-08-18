@@ -12,7 +12,7 @@ not factored into a standalone function.
 """
 
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    BULK_PROFILE,
     _flatten_tree_text,
     check_garble,
     classify_verdict,
@@ -26,7 +26,7 @@ def _tree_garble(nodes, expected_script=None):
     return check_garble(
         _flatten_tree_text(nodes),
         expected_script=expected_script,
-        context=GarbleContext.TREE_BULK,
+        profile=BULK_PROFILE,
     )
 
 

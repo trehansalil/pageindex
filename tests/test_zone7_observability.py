@@ -22,7 +22,6 @@ def test_effective_config_snapshot_returns_all_keys():
         "pdf_inspector_preclassify",
         "allow_agpl_fallback",
         "remote_md_renormalize",
-        "ocr_escalation",
         "ocr_escalation_garble",
         "ocr_escalation_per_picture",
         "pre_garble_force_ocr_enabled",
@@ -51,7 +50,7 @@ def test_effective_config_snapshot_returns_all_keys():
         f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
         f"  Extra:   {set(snap.keys()) - expected_keys}"
     )
-    assert len(snap) == 27
+    assert len(snap) == 26
 
     # Type checks
     assert isinstance(snap["pipeline_version"], int)
@@ -86,17 +85,17 @@ def test_effective_config_snapshot_respects_env_overrides(monkeypatch):
     monkeypatch.setenv("GARBLE_LATIN_RATIO", "0.5")
     monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
 
-    # OCR_ESCALATION is a module-level constant (consolidated in config.py).
+    # OCR_ESCALATION_GARBLE is a module-level constant (consolidated in config.py).
     # To test it, patch the constant directly rather than setting the env var
     # after import.
     import pageindex_mcp.config as cfg_mod
-    monkeypatch.setattr(cfg_mod, "OCR_ESCALATION", False)
+    monkeypatch.setattr(cfg_mod, "OCR_ESCALATION_GARBLE", False)
 
     from pageindex_mcp.config import effective_config_snapshot
 
     snap = effective_config_snapshot()
 
-    assert snap["ocr_escalation"] is False
+    assert snap["ocr_escalation_garble"] is False
     assert snap["garble_latin_ratio"] == 0.5
     assert snap["pdf_converter"] == "pymupdf4llm"
 

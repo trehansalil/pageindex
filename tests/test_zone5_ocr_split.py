@@ -88,41 +88,31 @@ class TestLegacyOcrEscalationCompat:
     both new flags must inherit the disabled state."""
 
     def test_legacy_zero_disables_both(self, monkeypatch):
-        """OCR_ESCALATION=0 with no explicit split flags -> both False."""
-        # We must reimport config to pick up the monkeypatched env
+        """OCR_ESCALATION_GARBLE=0 and OCR_ESCALATION_PER_PICTURE=0 -> both False."""
         import importlib
-
-        monkeypatch.setenv("OCR_ESCALATION", "0")
-        monkeypatch.delenv("OCR_ESCALATION_GARBLE", raising=False)
-        monkeypatch.delenv("OCR_ESCALATION_PER_PICTURE", raising=False)
+        monkeypatch.setenv("OCR_ESCALATION_GARBLE", "0")
+        monkeypatch.setenv("OCR_ESCALATION_PER_PICTURE", "0")
         import pageindex_mcp.config as cfg_mod
-
         importlib.reload(cfg_mod)
         try:
-            assert cfg_mod.OCR_ESCALATION is False
             assert cfg_mod.OCR_ESCALATION_GARBLE is False
             assert cfg_mod.OCR_ESCALATION_PER_PICTURE is False
         finally:
-            # Restore module to avoid poisoning other tests
-            monkeypatch.delenv("OCR_ESCALATION", raising=False)
+            monkeypatch.delenv("OCR_ESCALATION_GARBLE", raising=False)
+            monkeypatch.delenv("OCR_ESCALATION_PER_PICTURE", raising=False)
             importlib.reload(cfg_mod)
 
     def test_split_flags_override_legacy(self, monkeypatch):
-        """Explicit split flags override legacy OCR_ESCALATION=0."""
+        """Explicit split flags set independently."""
         import importlib
-
-        monkeypatch.setenv("OCR_ESCALATION", "0")
         monkeypatch.setenv("OCR_ESCALATION_GARBLE", "1")
         monkeypatch.setenv("OCR_ESCALATION_PER_PICTURE", "0")
         import pageindex_mcp.config as cfg_mod
-
         importlib.reload(cfg_mod)
         try:
-            assert cfg_mod.OCR_ESCALATION is False
             assert cfg_mod.OCR_ESCALATION_GARBLE is True
             assert cfg_mod.OCR_ESCALATION_PER_PICTURE is False
         finally:
-            monkeypatch.delenv("OCR_ESCALATION", raising=False)
             monkeypatch.delenv("OCR_ESCALATION_GARBLE", raising=False)
             monkeypatch.delenv("OCR_ESCALATION_PER_PICTURE", raising=False)
             importlib.reload(cfg_mod)
@@ -140,7 +130,7 @@ class TestEffectiveConfigSnapshotWiring:
         from pageindex_mcp.config import effective_config_snapshot
 
         snap = effective_config_snapshot()
-        for key in ("ocr_escalation", "ocr_escalation_garble", "ocr_escalation_per_picture"):
+        for key in ("ocr_escalation_garble", "ocr_escalation_per_picture"):
             assert key in snap, f"effective_config_snapshot missing key: {key}"
             assert isinstance(snap[key], bool), (
                 f"snap[{key!r}] = {snap[key]!r} is not bool"
@@ -149,14 +139,12 @@ class TestEffectiveConfigSnapshotWiring:
     def test_snapshot_keys_reflect_module_values(self):
         """Snapshot values must match the module-level flags."""
         from pageindex_mcp.config import (
-            OCR_ESCALATION,
             OCR_ESCALATION_GARBLE,
             OCR_ESCALATION_PER_PICTURE,
             effective_config_snapshot,
         )
 
         snap = effective_config_snapshot()
-        assert snap["ocr_escalation"] == OCR_ESCALATION
         assert snap["ocr_escalation_garble"] == OCR_ESCALATION_GARBLE
         assert snap["ocr_escalation_per_picture"] == OCR_ESCALATION_PER_PICTURE
 

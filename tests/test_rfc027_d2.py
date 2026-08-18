@@ -24,7 +24,7 @@ def _escalation_fires(ok: bool, reason: str, total_chars: int, ext: str = ".pdf"
         not ok
         and (reason in ("garbling", "node_garbling") or low_content_ocr_eligible)
         and ext == ".pdf"
-        and client_mod._OCR_ESCALATION
+        and client_mod._OCR_ESCALATION_GARBLE
     )
 
 
@@ -74,7 +74,7 @@ class TestLowContentOcrEscalationBoundaries:
         assert _escalation_fires(ok=False, reason="depth<2", total_chars=10) is False
 
     def test_kill_switch_disabled_does_not_fire(self, monkeypatch):
-        monkeypatch.setattr(client_mod, "_OCR_ESCALATION", False)
+        monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
         assert _escalation_fires(ok=False, reason="node_count<3", total_chars=0) is False
 
     def test_env_override_of_char_floor(self, monkeypatch):

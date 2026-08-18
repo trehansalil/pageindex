@@ -162,7 +162,7 @@ def test_garble_functions_delegate_to_shared_impl():
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "check_garble":
             body_src = ast.get_source_segment(src, node)
-            assert "_is_garbled_blob" in body_src or "_has_sparse_mojibake" in body_src
+            assert "garble_prongs" in body_src or "_has_sparse_mojibake" in body_src
             found_check_garble = True
     assert found_check_garble, "check_garble not found in helpers.py"
 
@@ -178,39 +178,39 @@ def test_garble_functions_delegate_to_shared_impl():
 
 def test_garble_agreement_clean_text():
     """check_garble must agree across contexts on clean text = not garbled."""
-    from pageindex_mcp.helpers import check_garble, GarbleContext
+    from pageindex_mcp.helpers import check_garble, BULK_PROFILE, FLAT_MARKDOWN_PROFILE
 
     clean = "This is a perfectly normal paragraph about insurance terms."
 
-    assert check_garble(clean, expected_script="Latn", context=GarbleContext.TREE_BULK) is False
-    assert check_garble(clean, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is False
+    assert check_garble(clean, expected_script="Latn", profile=BULK_PROFILE) is False
+    assert check_garble(clean, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is False
 
 
 def test_garble_agreement_numeric_junk():
     """check_garble must agree across contexts on numeric junk = garbled."""
-    from pageindex_mcp.helpers import check_garble, GarbleContext
+    from pageindex_mcp.helpers import check_garble, BULK_PROFILE, FLAT_MARKDOWN_PROFILE
 
     junk = "1651001429 " * 100
 
-    assert check_garble(junk, expected_script="Latn", context=GarbleContext.TREE_BULK) is True
-    assert check_garble(junk, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is True
+    assert check_garble(junk, expected_script="Latn", profile=BULK_PROFILE) is True
+    assert check_garble(junk, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
 
 
 def test_garble_agreement_null_bytes():
     """check_garble must flag null-byte content."""
-    from pageindex_mcp.helpers import check_garble, GarbleContext
+    from pageindex_mcp.helpers import check_garble, BULK_PROFILE, FLAT_MARKDOWN_PROFILE
 
     bad = "hello\x00world"
 
-    assert check_garble(bad, expected_script="Latn", context=GarbleContext.TREE_BULK) is True
-    assert check_garble(bad, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is True
+    assert check_garble(bad, expected_script="Latn", profile=BULK_PROFILE) is True
+    assert check_garble(bad, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
 
 
 def test_garble_agreement_replacement_char():
     """check_garble must flag U+FFFD replacement characters."""
-    from pageindex_mcp.helpers import check_garble, GarbleContext
+    from pageindex_mcp.helpers import check_garble, BULK_PROFILE, FLAT_MARKDOWN_PROFILE
 
     bad = "hello�world"
 
-    assert check_garble(bad, expected_script="Latn", context=GarbleContext.TREE_BULK) is True
-    assert check_garble(bad, expected_script="Latn", context=GarbleContext.FLAT_MARKDOWN) is True
+    assert check_garble(bad, expected_script="Latn", profile=BULK_PROFILE) is True
+    assert check_garble(bad, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True

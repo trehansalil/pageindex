@@ -20,7 +20,6 @@ from pageindex import PageIndexClient
 from .cache import get_doc
 from .config import (
     CURRENT_PIPELINE_VERSION,
-    OCR_ESCALATION as _OCR_ESCALATION,
     OCR_ESCALATION_GARBLE as _OCR_ESCALATION_GARBLE,
     OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE,
     PDF_INSPECTOR_PRECLASSIFY,
@@ -57,7 +56,9 @@ from .script import RtlDecision, decide_rtl
 from .helpers import (
     ExtractionSnapshot,
     ExtractionState,
-    GarbleContext,
+    BULK_PROFILE,
+    FLAT_MARKDOWN_PROFILE,
+    GarbleProfile,
     LowQualityTreeError,
     Route,
     TreeDefect,
@@ -169,7 +170,7 @@ def _log_pic_splice_trace(filename: str, stage: str, pic_results: list) -> None:
 
     Buckets each pic by outcome so a doc regressing to unenriched
     `<!-- image -->` markers (e.g. GHV-TKV-Tarif.pdf) can be diagnosed from
-    logs alone — which of enriched / decorative(<min-chars) / skipped
+    logs alone — which of enriched / skipped(ocr_min_chars) / skipped
     (page_coverage, clip_text, ...) each region landed in, without a
     manual repro script."""
     if not pic_results:
@@ -369,7 +370,8 @@ def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_i
 # Image inputs route through OCR (Fix 4); .xlsx routes through openpyxl -> flat tables.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
-# _OCR_ESCALATION is now imported from config.py (canonical source).
+# Zone-4: legacy _OCR_ESCALATION removed; split flags _OCR_ESCALATION_GARBLE /
+# _OCR_ESCALATION_PER_PICTURE imported from config.py (canonical source).
 # RFC-027 D2: PDFs rejected as node_count<3 with fewer than this many chars (zero or
 # near-zero/garbled scanned content) also earn the force_full_page_ocr retry, not just
 # the garbling reasons above -- calibrated to the Run-10 corpus (highest affected doc
@@ -437,6 +439,8 @@ async def _attempt_tesseract_raster_recovery(
     file_path: str,
     expected_script: str | None,
     filename: str,
+    *,
+    profile: GarbleProfile = FLAT_MARKDOWN_PROFILE,
 ) -> str | None:
     """RFC-023 D7 / RFC-024 D5: last-resort local Tesseract-on-raster OCR pass.
 
@@ -448,13 +452,17 @@ async def _attempt_tesseract_raster_recovery(
     fetch failure is logged and returns None (falling through to
     LowQualityTreeError, HR5) instead of propagating -- matching the original
     inline D7 behavior where ensure_tessdata sat inside the try/except.
+
+    Zone-1: ``profile`` parameter (default ``FLAT_MARKDOWN_PROFILE``) threads
+    the caller's :class:`GarbleProfile` into the garble gate so the
+    normalization and short-circuit behavior match the calling context.
     """
     from .converters import tesseract_ocr_pdf_pages
 
     try:
         tess_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
         ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-        if ocr_text and not check_garble(ocr_text, expected_script=expected_script or infer_script(ocr_text), context=GarbleContext.FLAT_MARKDOWN):
+        if ocr_text and not check_garble(ocr_text, expected_script=expected_script or infer_script(ocr_text), profile=profile):
             logger.warning(
                 "Tesseract-on-raster fallback recovered %s; overriding reason to node_count<3",
                 filename,
@@ -541,8 +549,8 @@ async def _apply_picture_enrichment(
     await _enrich_image_blocks(blocks, pic_results, doc_id)
 
     image_blocks = [b for b in blocks if b.get("role") == "image"]
-    # RFC-036 D4: decorative/skipped blocks are excluded from
-    # the unenriched-count denominator inside
+    # RFC-036 D4: intentionally-skipped blocks (via SkipReason) are excluded
+    # from the unenriched-count denominator inside
     # compute_image_enrichment_ratio.
     image_enrichment_ratio = compute_image_enrichment_ratio(image_blocks)
 
@@ -894,8 +902,6 @@ async def _enrich_image_blocks(
             block["description"] = desc
         if pr.get("skipped_reason"):
             block["skipped_reason"] = pr["skipped_reason"]
-        if pr.get("decorative"):
-            block["decorative"] = True
 
 
 class CustomPageIndexClient(PageIndexClient):
@@ -1044,7 +1050,7 @@ class CustomPageIndexClient(PageIndexClient):
                             if raw_text.strip() and check_garble(
                                 raw_text,
                                 expected_script=expected_script or infer_script(raw_text),
-                                context=GarbleContext.FLAT_MARKDOWN,
+                                profile=FLAT_MARKDOWN_PROFILE,
                             ):
                                 state.pre_garbled = True
                                 logger.info(
@@ -1410,12 +1416,12 @@ class CustomPageIndexClient(PageIndexClient):
                     check_garble(
                         _pre_text,
                         expected_script=expected_script or infer_script(_pre_text),
-                        context=GarbleContext.RETRY_COMPARISON,
+                        profile=BULK_PROFILE,
                     )
                     and not check_garble(
                         _post_text,
                         expected_script=expected_script or infer_script(_post_text),
-                        context=GarbleContext.RETRY_COMPARISON,
+                        profile=BULK_PROFILE,
                     )
                 )
             else:
@@ -1423,7 +1429,7 @@ class CustomPageIndexClient(PageIndexClient):
                 _pre_garble_flag = check_garble(
                     _pre_text_cmp,
                     expected_script=expected_script or infer_script(_pre_text_cmp),
-                    context=GarbleContext.RETRY_COMPARISON,
+                    profile=BULK_PROFILE,
                 )
                 if _pre_garble_flag:
                     _pre_density = _repeating_token_density(
@@ -1821,7 +1827,7 @@ class CustomPageIndexClient(PageIndexClient):
         if check_garble(
             flat_md,
             expected_script=expected_script or infer_script(flat_md),
-            context=GarbleContext.FLAT_MARKDOWN,
+            profile=FLAT_MARKDOWN_PROFILE,
             original_defect=state.first_defect,
         ):
             state.flat_garble_unrecovered = True
@@ -1847,7 +1853,7 @@ class CustomPageIndexClient(PageIndexClient):
                     if not check_garble(
                         vlm_md,
                         expected_script=expected_script or infer_script(vlm_md),
-                        context=GarbleContext.FLAT_MARKDOWN,
+                        profile=FLAT_MARKDOWN_PROFILE,
                     ):
                         flat_md = vlm_md
                         state.pic_results = []

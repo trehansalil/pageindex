@@ -226,7 +226,7 @@ class TestDocumentLevelTextLayerFallback:
         md = "<!-- image -->"
         garbled = "þÿ\x02\x01 ¤¤¤ \x03\x04 ÿþ" * 20
         fake_pdfium = self._fake_pdfium_module([garbled])
-        monkeypatch.setattr(helpers, "_is_garbled_blob", lambda text, **kw: True)
+        monkeypatch.setattr(helpers, "check_garble", lambda text, **kw: True)
 
         with patch.dict(sys.modules, {"pypdfium2": fake_pdfium}):
             result = _document_level_text_fallback(md, "/fake.pdf")

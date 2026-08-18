@@ -10,7 +10,8 @@ import logging
 
 from pageindex_mcp.converters import detect_ocr_langs
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    BULK_PROFILE,
+    FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
     _garble_check_nodes,
     _infer_script,
@@ -21,7 +22,7 @@ from pageindex_mcp.helpers import (
 
 # A blob of Latin-alphabet consonant clusters -- no real words in any language,
 # long enough to clear the >20-token repetition-check floor and the Latin-
-# gibberish ratio threshold used by _is_garbled_blob(expected_script="Arab").
+# gibberish ratio threshold used by check_garble(expected_script="Arab").
 _LATIN_GIBBERISH = " ".join(["xkjqz vbwm nfrl qpzx wblk"] * 60)
 
 _REAL_ARABIC = "بسم الله الرحمن الرحيم " * 20
@@ -36,19 +37,19 @@ class TestExpectedScriptThreading:
 
     def test_tree_bulk_garble_with_arab_script_latin_gibberish(self):
         nodes = [{"text": _LATIN_GIBBERISH}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is True
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_tree_bulk_garble_with_none_script_latin_gibberish(self):
         nodes = [{"text": _LATIN_GIBBERISH}]
-        result = check_garble(_flatten_tree_text(nodes), expected_script=None, context=GarbleContext.TREE_BULK)
+        result = check_garble(_flatten_tree_text(nodes), expected_script=None, profile=BULK_PROFILE)
         assert isinstance(result, bool)
 
     def test_tree_bulk_garble_real_arabic_text(self):
         nodes = [{"text": _REAL_ARABIC}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is False
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_flat_markdown_garble_with_arab_script(self):
-        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", context=GarbleContext.FLAT_MARKDOWN) is True
+        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", profile=FLAT_MARKDOWN_PROFILE) is True
 
     def test_garble_check_nodes_expected_script_preference(self, caplog):
         # Node text is Latin-script-inferred, but the caller passes an Arabic

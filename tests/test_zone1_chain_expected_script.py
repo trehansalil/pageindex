@@ -158,18 +158,17 @@ class TestExpectedScriptReachesDownstreamChecks:
 
         original_check_garble = None
 
-        def spy_check_garble(text, *, expected_script=None, context=None):
+        def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
             captured_kwargs.append({
                 "expected_script": expected_script,
-                "context": context,
+                "profile": profile,
             })
             return False  # not garbled
 
         mock_page = MagicMock()
         mock_page.get_text.return_value = "x" * 200  # above _PICTURE_OCR_MIN_CHARS
 
-        with patch("pageindex_mcp.converters._TEXT_LAYER_GARBLE_CHECK_ENABLED", True), \
-             patch("pageindex_mcp.helpers.check_garble", spy_check_garble):
+        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble):
             from pageindex_mcp.converters import _text_layer_has_content
             _text_layer_has_content(mock_page, expected_script="Arab")
 
@@ -186,10 +185,10 @@ class TestExpectedScriptReachesDownstreamChecks:
         should forward it to check_garble as-is."""
         captured_kwargs: list[dict] = []
 
-        def spy_check_garble(text, *, expected_script=None, context=None):
+        def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
             captured_kwargs.append({
                 "expected_script": expected_script,
-                "context": context,
+                "profile": profile,
             })
             return False  # not garbled -> will append text
 
@@ -221,18 +220,17 @@ class TestExpectedScriptReachesDownstreamChecks:
         should kick in -- expected_script seen by check_garble should NOT be None."""
         captured_kwargs: list[dict] = []
 
-        def spy_check_garble(text, *, expected_script=None, context=None):
+        def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
             captured_kwargs.append({
                 "expected_script": expected_script,
-                "context": context,
+                "profile": profile,
             })
             return False
 
         mock_page = MagicMock()
         mock_page.get_text.return_value = "x" * 200
 
-        with patch("pageindex_mcp.converters._TEXT_LAYER_GARBLE_CHECK_ENABLED", True), \
-             patch("pageindex_mcp.helpers.check_garble", spy_check_garble), \
+        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble), \
              patch("pageindex_mcp.script.infer_script", return_value="Latn") as mock_infer:
             from pageindex_mcp.converters import _text_layer_has_content
             _text_layer_has_content(mock_page, expected_script=None)

@@ -3,7 +3,7 @@ picture-coverage exemption in ``pageindex_mcp.converters``.
 
 Validates Design Property 2: for any full-page picture region whose
 bbox-clipped text length is below ``_PICTURE_OCR_MIN_CHARS``,
-``_region_has_own_text_layer`` SHALL return ``False`` (exemption fires)
+``_text_layer_has_content`` SHALL return ``False`` (exemption fires)
 REGARDLESS of text present elsewhere on the page (headers, footers, page
 numbers); for any region whose own bbox-clipped text meets the threshold,
 the exemption SHALL NOT fire; once ``MAX_FULLPAGE_PICTURE_OCR_REGIONS``
@@ -20,8 +20,8 @@ import types
 from pageindex_mcp import converters
 from pageindex_mcp.converters import (
     _document_level_text_fallback,
-    _region_has_own_text_layer,
     _recover_picture_text,
+    _text_layer_has_content,
 )
 from pageindex_mcp.picture_plane import PictureGateConfig
 
@@ -30,7 +30,7 @@ def _install_fake_fitz(monkeypatch, *, page_text="", clip_text=None, width=612.0
     """``page_text`` is what ``page.get_text("text")`` (no clip) returns --
     drives the page-level ``_text_layer_has_content`` check. ``clip_text`` is
     what ``page.get_text("text", clip=rect)`` returns -- drives the
-    region-scoped ``_region_has_own_text_layer`` check."""
+    region-scoped ``_text_layer_has_content`` check."""
     resolved_clip_text = page_text if clip_text is None else clip_text
 
     class _Pix:
@@ -83,29 +83,32 @@ def _long_text(n=60):
 
 
 class TestRegionHasOwnTextLayer:
-    """Direct unit tests on ``_region_has_own_text_layer`` itself."""
+    """Direct unit tests on ``_text_layer_has_content`` itself."""
 
     def test_header_only_outside_bbox_returns_false(self):
         """Header text lives outside the region's own bbox -- clipped read
         returns empty -- the region has NO text of its own."""
         page = types.SimpleNamespace(get_text=lambda mode, clip=None: "")
         rect = types.SimpleNamespace()
-        assert _region_has_own_text_layer(page, rect) is False
+        assert _text_layer_has_content(page, region_rect=rect) is False
 
     def test_substantial_text_inside_bbox_returns_true(self):
         page = types.SimpleNamespace(get_text=lambda mode, clip=None: _long_text(60))
         rect = types.SimpleNamespace()
-        assert _region_has_own_text_layer(page, rect) is True
+        assert _text_layer_has_content(page, region_rect=rect) is True
 
     def test_below_min_chars_threshold_returns_false(self):
         page = types.SimpleNamespace(get_text=lambda mode, clip=None: "x" * 19)
         rect = types.SimpleNamespace()
-        assert _region_has_own_text_layer(page, rect) is False
+        assert _text_layer_has_content(page, region_rect=rect) is False
 
     def test_at_min_chars_threshold_returns_true(self):
-        page = types.SimpleNamespace(get_text=lambda mode, clip=None: "x" * 20)
+        # _PICTURE_OCR_MIN_CHARS is 20 and the length check is strict
+        # (`len(text) <= _PICTURE_OCR_MIN_CHARS` fails at exactly 20), so
+        # the smallest length that clears the threshold is 21 chars.
+        page = types.SimpleNamespace(get_text=lambda mode, clip=None: "The quick brown foxes")
         rect = types.SimpleNamespace()
-        assert _region_has_own_text_layer(page, rect) is True
+        assert _text_layer_has_content(page, region_rect=rect) is True
 
 
 class TestRegionAwareExemptionIntegration:
@@ -115,7 +118,6 @@ class TestRegionAwareExemptionIntegration:
         """Page has header/footer text (page-level check would see content
         and skip), but the picture's OWN bbox has none -- region-aware
         exemption fires, OCR proceeds."""
-        monkeypatch.setattr(converters, "_REGION_AWARE_TEXT_CHECK_ENABLED", True)
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
@@ -130,7 +132,6 @@ class TestRegionAwareExemptionIntegration:
         """Region's own bbox carries real text -- exemption must NOT fire,
         the region-scoped check must not become permissive in the other
         direction (edge case from the design doc)."""
-        monkeypatch.setattr(converters, "_REGION_AWARE_TEXT_CHECK_ENABLED", True)
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(60))
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
@@ -200,28 +201,6 @@ class TestHeadingOnlyFallbackTrigger:
         assert result == md
 
 
-class TestEnvVarGating:
-    """(d): ``REGION_AWARE_TEXT_CHECK_ENABLED=false`` restores the
-    pre-RFC-025 page-level ``_text_layer_has_content`` check."""
-
-    def test_region_aware_disabled_falls_back_to_page_level_check(self, monkeypatch):
-        """With the region-aware check disabled, the SAME header-only-
-        outside-bbox scenario that fires the exemption when enabled must NOT
-        fire -- the page-level check sees the header text and skips."""
-        monkeypatch.setattr(converters, "_REGION_AWARE_TEXT_CHECK_ENABLED", False)
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
-        _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
-
-        recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
-
-        assert skip_reasons.get(0) == "page_coverage"
-        # RFC-029 D5a: retention contract -- entry present with ``png_bytes``
-        # and ``skipped_reason``, but no ``ocr_text`` (OCR did not fire).
-        assert "ocr_text" not in recovered.get(0, {})
-        assert recovered.get(0, {}).get("skipped_reason") == "page_coverage"
-
-
 class TestRegionCapBoundary:
     """(e): ``MAX_FULLPAGE_PICTURE_OCR_REGIONS`` per-document boundary."""
 
@@ -229,7 +208,6 @@ class TestRegionCapBoundary:
         """With the cap set to 2 and 3 qualifying full-page regions, the
         first 2 get the exemption and OCR fires; the 3rd is skipped with
         "page_coverage" and a logged warning, not silently exempted."""
-        monkeypatch.setattr(converters, "_REGION_AWARE_TEXT_CHECK_ENABLED", True)
         monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         monkeypatch.setattr(converters, "_MAX_FULLPAGE_PICTURE_OCR_REGIONS", 2)
         monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(

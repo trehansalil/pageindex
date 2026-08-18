@@ -124,5 +124,5 @@ class TestD2D6InteractionGuard:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        # Empty OCR -> D2's decorative flag fires (RFC-025 D2: unconditionally).
-        assert result[0]["decorative"] is True
+        # Empty OCR -> Zone-4 unified skip path: skipped_reason=ocr_min_chars.
+        assert result[0]["skipped_reason"] == "ocr_min_chars"

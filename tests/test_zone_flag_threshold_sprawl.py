@@ -218,44 +218,23 @@ class TestSupplementaryGarbleCheck:
             "_recover_picture_text must reference _text_layer_has_content "
             "for the supplementary garble check"
         )
-        # Verify the pattern: has_own_text set False when garble detected
-        assert "has_own_text = False" in source, (
-            "_recover_picture_text must set has_own_text = False when the "
-            "page-level garble check fails"
+        # Verify the pattern: _text_layer_has_content result assigned to
+        # has_own_text (supplementary garble gate)
+        assert "has_own_text = _text_layer_has_content" in source, (
+            "_recover_picture_text must assign _text_layer_has_content result "
+            "to has_own_text (supplementary garble gate)"
         )
 
     def test_region_aware_path_calls_both_checks(self):
-        """Under _REGION_AWARE_TEXT_CHECK_ENABLED, both
-        _region_has_own_text_layer and _text_layer_has_content must
-        appear in the code path."""
+        """Under region-aware text check, _text_layer_has_content must
+        appear in the code path (unified check replaces separate
+        _region_has_own_text_layer + check_garble calls)."""
         from pageindex_mcp.converters import _recover_picture_text
 
         source = inspect.getsource(_recover_picture_text)
-        # Find the region-aware block
-        lines = source.splitlines()
-        in_region_block = False
-        found_region_check = False
-        found_garble_gate = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if "_REGION_AWARE_TEXT_CHECK_ENABLED" in stripped:
-                in_region_block = True
-            if in_region_block:
-                if "_region_has_own_text_layer" in stripped:
-                    found_region_check = True
-                if "check_garble" in stripped:
-                    found_garble_gate = True
-                # Break out at else clause (end of if-block)
-                if stripped.startswith("else:"):
-                    break
-        assert found_region_check, (
-            "_region_has_own_text_layer not found in region-aware block"
-        )
-        assert found_garble_gate, (
-            "check_garble not found as supplementary garble gate "
-            "in region-aware block"
+        assert "_text_layer_has_content" in source, (
+            "_text_layer_has_content not found in _recover_picture_text — "
+            "Zone-4 unified text-layer + garble check must be wired"
         )
 
 

@@ -31,16 +31,16 @@ class TestEnrichImageBlocksPropagatesSkipMetadata:
         assert blocks[0]["skipped_reason"] == "decorative_icon"
 
     @pytest.mark.asyncio
-    async def test_decorative_flag_propagated(self):
+    async def test_skipped_reason_ocr_min_chars_propagated(self):
         from pageindex_mcp.client import _enrich_image_blocks
 
         blocks = [{"role": "image", "index": 0}]
-        pic_results = [{"decorative": True}]
+        pic_results = [{"skipped_reason": "ocr_min_chars"}]
 
         with patch("pageindex_mcp.client.save_figure"):
             await _enrich_image_blocks(blocks, pic_results, "doc1")
 
-        assert blocks[0]["decorative"] is True
+        assert blocks[0]["skipped_reason"] == "ocr_min_chars"
 
     @pytest.mark.asyncio
     async def test_landscape_fallback_skip_reason_propagated(self):
@@ -112,16 +112,16 @@ class TestRecoverPictureTextSkipPathsTagSkippedReason:
         # index 2 has neither recovery nor a recorded skip reason
         assert results[2]["skipped_reason"] == "unknown"
 
-    def test_ocr_min_chars_yield_sets_decorative_true(self):
+    def test_ocr_min_chars_yield_sets_skipped_reason(self):
         """A region that survives crop+OCR but yields no OCR text is tagged
-        decorative=True (belt-and-suspenders skip path) without a crash."""
+        skipped_reason='ocr_min_chars' (unified skip path) without a crash."""
         from pageindex_mcp.converters import PictureResult
 
         result = PictureResult(ocr_text="")
         if not result.get("ocr_text"):
-            result["decorative"] = True
+            result["skipped_reason"] = "ocr_min_chars"
 
-        assert result["decorative"] is True
+        assert result["skipped_reason"] == "ocr_min_chars"
 
     def test_page_coverage_and_clip_text_already_exported_carry_skipped_reason(self):
         """Both D5a retained-skip branches set skipped_reason on the
@@ -144,9 +144,9 @@ class TestComputeImageEnrichmentRatioExcludesSkippedBlocks:
         from pageindex_mcp.helpers import compute_image_enrichment_ratio
 
         blocks = [
-            {"role": "image", "decorative": True},
-            {"role": "image", "decorative": True},
-            {"role": "image", "decorative": True},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
             {"role": "image", "ocr_text": "42%"},
         ]
 
@@ -172,7 +172,7 @@ class TestComputeImageEnrichmentRatioExcludesSkippedBlocks:
         from pageindex_mcp.helpers import compute_image_enrichment_ratio
 
         blocks = [
-            {"role": "image", "decorative": True},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
             {"role": "image", "skipped_reason": "page_coverage"},
         ]
 
@@ -210,7 +210,7 @@ class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
         from pageindex_mcp.helpers import classify_verdict, compute_image_enrichment_ratio
 
         blocks = [
-            {"role": "image", "decorative": True},
+            {"role": "image", "skipped_reason": "ocr_min_chars"},
             {"role": "image", "skipped_reason": "landscape_fallback_picture"},
         ]
         image_enrichment_ratio = compute_image_enrichment_ratio(blocks)

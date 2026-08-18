@@ -28,7 +28,7 @@ def _ocr_escalation_gate(ok: bool, reason: str, *, ext: str = ".pdf") -> bool:
         not ok
         and reason in ("garbling", "node_garbling")
         and ext == ".pdf"
-        and client_mod._OCR_ESCALATION
+        and client_mod._OCR_ESCALATION_GARBLE
     )
 
 
@@ -69,7 +69,7 @@ class TestOcrEscalationTriggerParity:
         assert _ocr_escalation_gate(ok=False, reason="node_garbling", ext=".docx") is False
 
     def test_kill_switch_disabled_does_not_fire(self, monkeypatch):
-        monkeypatch.setattr(client_mod, "_OCR_ESCALATION", False)
+        monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
         assert _ocr_escalation_gate(ok=False, reason="node_garbling") is False
 
 

@@ -416,8 +416,8 @@ def _wire_image_ratio_escalation(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: initial_md)]
     )
     monkeypatch.setattr(client_mod, "prepare_tree", lambda structure: structure)
-    monkeypatch.setattr(client_mod, "_OCR_ESCALATION", ocr_escalation_enabled)
     monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", ocr_escalation_enabled)
+    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_PER_PICTURE", ocr_escalation_enabled)
     monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda sample: ["eng"])
     monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
 

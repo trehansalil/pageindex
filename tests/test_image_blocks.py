@@ -413,9 +413,10 @@ class TestPageCoverageFilter:
         assert "<!-- image -->" not in result
 
     def test_splice_strips_decorative_marker(self):
-        """splice_figure_markers: decorative=True → marker stripped."""
+        """splice_figure_markers: skipped_reason='ocr_min_chars' → marker stripped
+        (decorative was replaced by skipped_reason in Zone 4)."""
         md = "Before\n<!-- image -->\nAfter"
-        pics = [PictureResult(decorative=True)]
+        pics = [PictureResult(skipped_reason="ocr_min_chars")]
         result = splice_figure_markers(md, pics)
         assert "<!-- image -->" not in result
 

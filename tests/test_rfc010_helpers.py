@@ -1,7 +1,8 @@
 """Unit tests for RFC-010 corpus gap remediation: helpers.py deliverables D3A, D3B, D4."""
 
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    BULK_PROFILE,
+    FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
     _looks_like_toc_page,
     check_garble,
@@ -17,7 +18,7 @@ def _tree_garble(nodes, expected_script=None):
     return check_garble(
         _flatten_tree_text(nodes),
         expected_script=expected_script,
-        context=GarbleContext.TREE_BULK,
+        profile=BULK_PROFILE,
     )
 
 
@@ -26,7 +27,7 @@ def _flat_garble(md, expected_script=None, original_defect=None):
     return check_garble(
         md,
         expected_script=expected_script,
-        context=GarbleContext.FLAT_MARKDOWN,
+        profile=FLAT_MARKDOWN_PROFILE,
         original_defect=original_defect,
     )
 

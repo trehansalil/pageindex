@@ -9,7 +9,7 @@ D1  fix garble-ratio full-text tautology and flatten-text separator
            chunks), not a constant 1.0, when only some windows are garbled.
 
 D2  Arabic single-letter fragment detection (Design Property 2)
-    D2-P1  _is_garbled_blob returns True when >40% of Arabic-bearing
+    D2-P1  check_garble returns True when >40% of Arabic-bearing
            whitespace-delimited tokens are single characters (words
            decomposed letter-by-letter, e.g. "م ا د ة" instead of "مادة").
     D2-P2  The conjunction particle "wa" ("و") is excluded from the
@@ -19,7 +19,7 @@ D2  Arabic single-letter fragment detection (Design Property 2)
            phrasing) does not false-trigger the fragment detector.
 """
 
-from pageindex_mcp.helpers import _flatten_tree_text, _garble_ratio, _is_garbled_blob
+from pageindex_mcp.helpers import BULK_PROFILE, _flatten_tree_text, _garble_ratio, check_garble
 
 _ARABIC_TITLE = "الفصل الأول عن أحكام العقد"
 _LATIN_TEXT = "Section One on Contract Terms and Conditions"
@@ -65,7 +65,7 @@ def _clean_window(seed: int) -> str:
 
 
 def _garbled_window() -> str:
-    """A window that trips the null-byte check in _is_garbled_blob."""
+    """A window that trips the null-byte check in check_garble."""
     return "\x00" * 2000
 
 
@@ -97,22 +97,22 @@ def test_garble_ratio_varies_with_number_of_garbled_windows():
     assert ratio == 2 / 3
 
 
-def test_is_garbled_blob_detects_single_letter_arabic_fragments():
+def test_check_garble_detects_single_letter_arabic_fragments():
     """D2-P1: "مادة" decomposed into single-letter tokens is flagged garbled."""
     fragmented = "م ا د ة"
 
-    assert _is_garbled_blob(fragmented, expected_script=None) is True
+    assert check_garble(fragmented, expected_script=None, profile=BULK_PROFILE) is True
 
 
-def test_is_garbled_blob_detects_fragmented_heading_among_whole_words():
+def test_check_garble_detects_fragmented_heading_among_whole_words():
     """D2-P1: fragmentation fires even when mixed with a few intact tokens,
     as long as single-letter tokens exceed 40% of Arabic-bearing tokens."""
     heading = "م ا د ة رقم 1: أحكام عامة"
 
-    assert _is_garbled_blob(heading, expected_script=None) is True
+    assert check_garble(heading, expected_script=None, profile=BULK_PROFILE) is True
 
 
-def test_is_garbled_blob_wa_particle_exclusion_prevents_false_positive():
+def test_check_garble_wa_particle_exclusion_prevents_false_positive():
     """D2-P2: standalone "و" (wa) conjunctions must not be counted as
     fragments -- without the exclusion, 4 of 9 tokens are single-character
     (44%, over the 40% threshold) and this text would be misflagged."""
@@ -120,14 +120,14 @@ def test_is_garbled_blob_wa_particle_exclusion_prevents_false_positive():
 
     ratio_would_exceed_threshold_without_exclusion = 4 / 9
     assert ratio_would_exceed_threshold_without_exclusion > 0.40
-    assert _is_garbled_blob(text, expected_script=None) is False
+    assert check_garble(text, expected_script=None, profile=BULK_PROFILE) is False
 
 
-def test_is_garbled_blob_clean_decree_text_not_flagged():
+def test_check_garble_clean_decree_text_not_flagged():
     """D2-P3: negative test -- clean Arabic legal-decree phrasing modeled on
     مرسوم 13 / مرسوم 33 must not false-trigger the fragment detector."""
     marsoom_13 = "مرسوم اتحادي رقم 13 لسنة 2021 في شأن تنظيم علاقات العمل الحكومي"
     marsoom_33 = "مرسوم بقانون اتحادي رقم 33 لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته"
 
-    assert _is_garbled_blob(marsoom_13, expected_script=None) is False
-    assert _is_garbled_blob(marsoom_33, expected_script=None) is False
+    assert check_garble(marsoom_13, expected_script=None, profile=BULK_PROFILE) is False
+    assert check_garble(marsoom_33, expected_script=None, profile=BULK_PROFILE) is False

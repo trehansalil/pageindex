@@ -8,9 +8,10 @@ import inspect
 import pytest
 
 from pageindex_mcp.helpers import (
+    BULK_PROFILE,
     TreeDefect,
     TreeGateResult,
-    _is_garbled_blob,
+    check_garble,
     validate_tree,
 )
 
@@ -83,7 +84,7 @@ class TestGarbledBlobSubsumption:
     def test_garbled_tree_hits_garbling_not_arabic_low_content(self):
         """A tree whose flattened text is garbled should get GARBLING from
         gate 1, proving gate 11 was unreachable."""
-        from pageindex_mcp.helpers import _flatten_tree_text, check_garble, GarbleContext
+        from pageindex_mcp.helpers import _flatten_tree_text, check_garble, BULK_PROFILE
         # Build a tree with PUA characters (U+E000) -- enough volume
         pua = "" * 500
         tree = [
@@ -97,7 +98,7 @@ class TestGarbledBlobSubsumption:
                 ],
             }
         ]
-        if not (tree and check_garble(_flatten_tree_text(tree), expected_script=None, context=GarbleContext.TREE_BULK)):
+        if not (tree and check_garble(_flatten_tree_text(tree), expected_script=None, profile=BULK_PROFILE)):
             pytest.skip("tree not detected as garbled at tree level")
         result = validate_tree(tree)
         assert result.defect == TreeDefect.GARBLING

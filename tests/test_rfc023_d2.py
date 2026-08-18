@@ -117,9 +117,9 @@ class TestBeltAndSuspendersDecorativeFlag:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        assert result[0].get("decorative") is True
+        assert result[0].get("skipped_reason") == "ocr_min_chars"
 
-    def test_nonempty_ocr_does_not_set_decorative(self, monkeypatch):
+    def test_nonempty_ocr_does_not_set_skipped_reason(self, monkeypatch):
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=0)
         monkeypatch.setattr(
             converters, "_tesseract_ocr_image", lambda path, langs: "Recovered chart text here"
@@ -129,15 +129,14 @@ class TestBeltAndSuspendersDecorativeFlag:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        assert "decorative" not in result[0]
+        assert "skipped_reason" not in result[0]
 
 
 class TestD2D6InteractionGuard:
-    def test_empty_ocr_on_rotated_page_sets_decorative(self, monkeypatch):
+    def test_empty_ocr_on_rotated_page_sets_skipped_reason(self, monkeypatch):
         """RFC-025 D2: the rotation gate on the decorative flag was removed
-        as dead code (the "gets first crack" rotation-correction retry it
-        referenced was never implemented). Empty OCR now sets
-        ``decorative=True`` regardless of ``page.rotation``."""
+        as dead code. Empty OCR now sets skipped_reason=ocr_min_chars
+        regardless of ``page.rotation``."""
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=180)
         monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "")
         region = _region(0, 0, 30, 30)
@@ -145,7 +144,7 @@ class TestD2D6InteractionGuard:
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
-        assert result[0]["decorative"] is True
+        assert result[0]["skipped_reason"] == "ocr_min_chars"
 
     def test_nonempty_ocr_on_rotated_page_still_not_decorative(self, monkeypatch):
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=90)

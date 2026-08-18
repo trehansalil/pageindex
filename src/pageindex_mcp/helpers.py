@@ -379,13 +379,16 @@ class TreeSignals:
         depth = _tree_depth(structure)
         _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
         flat_text = _flatten_tree_text(structure)
+        # Zone-1: explicit script inference replaces garble_prongs'
+        # internal self-inference (purified).
+        eff_script = expected_script or _infer_script(flat_text)
         garbled = bool(structure) and check_garble(
             flat_text,
-            expected_script=expected_script,
-            context=GarbleContext.TREE_BULK,
+            expected_script=eff_script,
+            profile=BULK_PROFILE,
         )
         if garbled:
-            gr = _garble_ratio(flat_text, expected_script=expected_script)
+            gr = _garble_ratio(flat_text, expected_script=eff_script)
             effectively_garbled = gr >= garble_threshold
         else:
             gr = 0.0
@@ -1249,34 +1252,30 @@ def _is_morphologically_nonsense(token: str) -> bool:
 
 
 def garble_prongs(
-    blob: str,
+    norm_blob: str,
     *,
     expected_script: str | None = None,
-    blob_kind: BlobKind = BlobKind.TREE_TEXT,
 ) -> frozenset[str]:
-    """Return the set of garble-detection prongs that fired on *blob*.
+    """Return the set of garble-detection prongs that fired on *norm_blob*.
 
     Each prong name corresponds to a specific heuristic check. An empty
-    frozenset means no garbling detected. See ``_is_garbled_blob`` for the
-    boolean wrapper used by all existing call sites.
+    frozenset means no garbling detected.
 
-    Zone-3: ``expected_script`` is keyword-only. ``blob_kind`` selects
-    the normalization strategy via ``normalize_for_garble`` before
-    ratio-based prongs evaluate.
+    Zone-1 purification: ``norm_blob`` is expected to be PRE-NORMALIZED
+    (callers run ``normalize_for_garble`` before invoking this function).
+    ``expected_script`` is keyword-only; callers that need inference must
+    call ``_infer_script`` explicitly before passing the value here.
     """
     prongs: set[str] = set()
 
-    if not blob.strip():
+    if not norm_blob.strip():
         return frozenset({"empty"})
 
-    # Zone-3: normalize before ratio computation
-    norm = normalize_for_garble(blob, blob_kind)
-    if not norm.strip():
-        norm = blob  # fallback: normalization collapsed everything
+    norm = norm_blob
 
-    if "\x00" in blob or "\ufffd" in blob:
+    if "\x00" in norm or "\ufffd" in norm:
         prongs.add("null_replacement_bytes")
-    if "GLYPH<" in blob:
+    if "GLYPH<" in norm:
         prongs.add("glyph_marker")
 
     bad = sum(1 for c in norm if ord(c) < 32 and c not in "\n\r\t")
@@ -1321,11 +1320,9 @@ def garble_prongs(
             prongs.add("token_repetition")
 
     # Latin-gibberish in non-Latin script context (D2 / RFC-019)
-    # Zone-7: when expected_script is None (caller omission or upstream
-    # inference failure), self-infer from the blob so the prong is never
-    # silently disabled by omission.  Legitimately ambiguous text (where
-    # _infer_script also returns None) still correctly skips the prong.
-    _effective_script = expected_script if expected_script is not None else _infer_script(norm)
+    # Zone-1 purification: callers must now pass explicitly-inferred script;
+    # garble_prongs no longer self-infers when expected_script is None.
+    _effective_script = expected_script
     if (
         _effective_script is not None
         and _effective_script != "Latn"
@@ -1342,118 +1339,74 @@ def garble_prongs(
     return frozenset(prongs)
 
 
-def _is_garbled_blob(
-    blob: str,
-    *,
-    expected_script: str | None,
-    blob_kind: BlobKind = BlobKind.TREE_TEXT,
-) -> bool:
-    """Boolean wrapper around ``garble_prongs`` -- True when any prong fires.
+@dataclass(frozen=True)
+class GarbleProfile:
+    """Zone-1 consolidation: replaces the 8-member GarbleContext StrEnum and
+    its 3 dispatch layers with a frozen dataclass carrying the two semantic
+    boolean fields that actually differ across call sites.
 
-    Zone-3: ``expected_script`` is a REQUIRED keyword parameter — every caller
-    must pass it explicitly so the latin_gibberish prong is never silently
-    disabled by omission.
+    * ``normalize_markdown``: when True (and the GARBLE_FLAT_MARKDOWN_NORMALIZE
+      env var is enabled), uses RAW_MARKDOWN normalization instead of TREE_TEXT.
+    * ``short_circuit_prior_garble``: when True (and the GARBLE_SHORT_TEXT_DEFAULT
+      env var is enabled), short-circuits to True for short text (< 200 chars)
+      with a pre-existing garbling defect (RFC-025 D2).
     """
-    return bool(garble_prongs(blob, expected_script=expected_script, blob_kind=blob_kind))
+    normalize_markdown: bool = False
+    short_circuit_prior_garble: bool = False
 
 
-class GarbleContext(StrEnum):
-    """Identifies the call-site so check_garble can apply context-specific
-    normalization (e.g. strip markdown for FLAT_MARKDOWN) without exposing
-    heuristic internals to callers.  Zone-1 consolidation."""
+BULK_PROFILE = GarbleProfile()
+FLAT_MARKDOWN_PROFILE = GarbleProfile(normalize_markdown=True, short_circuit_prior_garble=True)
 
-    TREE_BULK = "tree_bulk"
-    NODE = "node"
-    FLAT_MARKDOWN = "flat_markdown"
-    PAGE_TEXT_LAYER = "page_text_layer"
-    DOCUMENT_FALLBACK = "document_fallback"
-    REGION = "region"
-    RETRY_COMPARISON = "retry_comparison"
-    IMAGE_ENRICHMENT = "image_enrichment"
-
-
+# Env-var gates — kept as module-level names so tests can monkeypatch them
+# (test_rfc025_d2.py, test_zone1_garble_consolidation.py).  Read at CALL TIME
+# inside check_garble, not frozen into the profile at import time.
 _GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"
 _GARBLE_FLAT_MARKDOWN_NORMALIZE = os.getenv("GARBLE_FLAT_MARKDOWN_NORMALIZE", "true").lower() == "true"
-
-
-# ---------------------------------------------------------------------------
-# Zone-7: context-specific garble rules, decoupled from the shared dispatcher.
-# Each function encapsulates one policy dimension that was previously inlined
-# inside check_garble, making the dispatcher's body context-agnostic.
-# ---------------------------------------------------------------------------
-
-
-def _garble_context_short_circuit(
-    blob: str,
-    *,
-    context: GarbleContext,
-    original_defect: "TreeDefect | None",
-) -> bool | None:
-    """Context-specific short-circuit rules (Zone-7 decoupling).
-
-    Returns ``True``/``False`` for an immediate decision, or ``None`` to fall
-    through to the prong-based heuristics.
-
-    Current rules:
-    * FLAT_MARKDOWN + short text (< 200 chars) + pre-existing garbling defect
-      returns True immediately (garble-by-default, RFC-025 D2).
-    """
-    if (
-        context == GarbleContext.FLAT_MARKDOWN
-        and _GARBLE_SHORT_TEXT_DEFAULT
-        and len(blob) < 200
-        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-    ):
-        return True
-    return None
-
-
-def _garble_context_blob_kind(context: GarbleContext) -> BlobKind:
-    """Select blob normalization strategy based on garble context (Zone-7).
-
-    * FLAT_MARKDOWN uses RAW_MARKDOWN (strips markdown formatting) when
-      GARBLE_FLAT_MARKDOWN_NORMALIZE is enabled (default: true).
-    * All other contexts use TREE_TEXT.
-    """
-    if context == GarbleContext.FLAT_MARKDOWN and _GARBLE_FLAT_MARKDOWN_NORMALIZE:
-        return BlobKind.RAW_MARKDOWN
-    return BlobKind.TREE_TEXT
 
 
 def check_garble(
     text: str,
     *,
     expected_script: str | None,
-    context: GarbleContext,
+    profile: GarbleProfile,
     original_defect: "TreeDefect | None" = None,
 ) -> bool:
     """Consolidated garble evaluation entry point (Zone-1).
 
-    Single API that always runs BOTH _is_garbled_blob and _has_sparse_mojibake.
+    Single API that always runs BOTH garble_prongs and _has_sparse_mojibake.
 
     ``expected_script`` is required keyword-only so callers can never silently
     omit it (the latin_gibberish prong depends on it).
 
-    Zone-7: context-specific short-circuits and blob-kind selection are
-    decoupled into ``_garble_context_short_circuit`` and
-    ``_garble_context_blob_kind`` — the dispatcher body is now
-    context-agnostic.
+    ``profile`` selects context-specific behavior via two boolean fields:
+    * short-circuit for FLAT_MARKDOWN short-text garble-by-default (RFC-025 D2)
+    * RAW_MARKDOWN normalization for flat-routed documents
     """
     blob = text or ""
 
-    # Context-specific short-circuit (decoupled, Zone-7)
-    short_circuit = _garble_context_short_circuit(
-        blob, context=context, original_defect=original_defect,
-    )
-    if short_circuit is not None:
-        return short_circuit
+    # Short-circuit: FLAT_MARKDOWN + short text + pre-existing garble defect
+    if (
+        profile.short_circuit_prior_garble
+        and _GARBLE_SHORT_TEXT_DEFAULT
+        and len(blob) < 200
+        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+    ):
+        return True
 
-    # Context-specific normalization (decoupled, Zone-7)
-    blob_kind = _garble_context_blob_kind(context)
+    # Normalization strategy from profile
+    blob_kind = (
+        BlobKind.RAW_MARKDOWN
+        if profile.normalize_markdown and _GARBLE_FLAT_MARKDOWN_NORMALIZE
+        else BlobKind.TREE_TEXT
+    )
+    norm = normalize_for_garble(blob, blob_kind)
+    if not norm.strip():
+        norm = blob  # fallback: normalization collapsed everything
 
     # Additive OR: bulk heuristics + sparse mixed-script mojibake
     return (
-        _is_garbled_blob(blob, expected_script=expected_script, blob_kind=blob_kind)
+        bool(garble_prongs(norm, expected_script=expected_script))
         or _has_sparse_mojibake(blob)
     )
 
@@ -1604,7 +1557,7 @@ def _garble_check_nodes(
                     node_script = expected_script
             else:
                 node_script = _infer_script(text) if len(text) >= 50 else page_script
-            if check_garble(text, expected_script=node_script, context=GarbleContext.NODE):
+            if check_garble(text, expected_script=node_script, profile=BULK_PROFILE):
                 node_garbled = True
         # RFC-030 D4: titles carry user-visible content too (23/24 reversed
         # RTL titles in siyasat-hawkama were invisible to this gate). Titles
@@ -1615,7 +1568,7 @@ def _garble_check_nodes(
         title = node.get("title") or ""
         if title.strip() and (
             any(_word_has_reversed_morphology(w) for w in title.split())
-            or check_garble(title, expected_script=expected_script or page_script, context=GarbleContext.NODE)
+            or check_garble(title, expected_script=expected_script or page_script, profile=BULK_PROFILE)
         ):
             node_garbled = True
         if node_garbled:
@@ -2056,19 +2009,19 @@ def _garble_ratio(text, expected_script=None):
     """Windowed garble ratio: fraction of fixed-size windows that individually
     trigger garble detection. RFC-033 D1: no longer re-checks the full text
     (check_garble already gates in classify_verdict).
-    Uses check_garble with TREE_BULK context."""
+    Uses check_garble with BULK_PROFILE."""
     window = 2000
     if len(text) <= window:
         return (
             1.0
-            if check_garble(text, expected_script=expected_script, context=GarbleContext.TREE_BULK)
+            if check_garble(text, expected_script=expected_script, profile=BULK_PROFILE)
             else 0.0
         )
     chunks = [text[i : i + window] for i in range(0, len(text), window)]
     garbled_chunks = sum(
         1
         for c in chunks
-        if check_garble(c, expected_script=expected_script, context=GarbleContext.TREE_BULK)
+        if check_garble(c, expected_script=expected_script, profile=BULK_PROFILE)
     )
     return garbled_chunks / len(chunks)
 
@@ -2087,8 +2040,6 @@ def compute_image_enrichment_ratio(image_blocks: list[dict]) -> float | None:
 
     scored_blocks: list[dict] = []
     for b in image_blocks:
-        if b.get("decorative"):
-            continue
         raw_reason = b.get("skipped_reason")
         if raw_reason:
             typed = skip_reason_from_str(raw_reason)
@@ -2315,7 +2266,7 @@ def classify_verdict(  # noqa: C901
         total_chars = len(_promoted_text)
         if total_chars < th.min_image_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
-        if not check_garble(_promoted_text, expected_script=expected_script, context=GarbleContext.IMAGE_ENRICHMENT):
+        if not check_garble(_promoted_text, expected_script=expected_script or _infer_script(_promoted_text), profile=BULK_PROFILE):
             return _clamp_pass("image_enrichment_promoted", defect=defect, sig=sig)
 
     # max_leaf_ratio structural hard FAIL — blocks all non-image promotions

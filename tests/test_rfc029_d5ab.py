@@ -234,10 +234,11 @@ class TestTrulyEmptyResultStripsMarker:
         assert "[Figure:" not in out, "no figure reference must be emitted for empty result"
 
     def test_empty_result_with_decorative_flag_strips_marker(self):
-        """A PictureResult with decorative=True and no content strips the marker."""
+        """A PictureResult with skipped_reason set and no content strips the marker
+        (decorative was replaced by skipped_reason in Zone 4)."""
         # Arrange
         md = f"Text.\n\n{_MARKER}\n\nEnd."
-        pic: PictureResult = {"decorative": True}
+        pic: PictureResult = {"skipped_reason": "ocr_min_chars"}
 
         # Act
         out = splice_figure_markers(md, [pic])

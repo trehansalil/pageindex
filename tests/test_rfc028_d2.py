@@ -9,7 +9,7 @@ Validates Design Property 3 (Presentation-Forms ratio triggers garble
 detection).
 """
 
-from pageindex_mcp.helpers import _infer_script, _is_garbled_blob
+from pageindex_mcp.helpers import _infer_script, check_garble, BULK_PROFILE
 
 # Logical-order Arabic letters (U+0600-06FF) vs. Arabic Presentation-Forms
 # glyphs (U+FB50-FDFF / U+FE70-FEFF) -- both count as "Arabic-range" for the
@@ -42,29 +42,29 @@ def _blob(n_presentation: int, n_logical: int) -> str:
 class TestPresentationFormsGarbleDetection:
     def test_93_percent_presentation_forms_is_garbled(self):
         # Mirrors huquq-al-insan's 93.6% presentation-forms ratio.
-        assert _is_garbled_blob(_blob(93, 7), expected_script=None) is True
+        assert check_garble(_blob(93, 7), expected_script=None, profile=BULK_PROFILE) is True
 
     def test_10_percent_presentation_forms_is_not_garbled_by_this_check(self):
-        assert _is_garbled_blob(_blob(10, 90), expected_script=None) is False
+        assert check_garble(_blob(10, 90), expected_script=None, profile=BULK_PROFILE) is False
 
     def test_exactly_at_threshold_does_not_trigger(self):
         # RFC-028: ratio must EXCEED 0.50, not merely reach it.
-        assert _is_garbled_blob(_blob(50, 50), expected_script=None) is False
+        assert check_garble(_blob(50, 50), expected_script=None, profile=BULK_PROFILE) is False
 
     def test_just_over_threshold_triggers(self):
-        assert _is_garbled_blob(_blob(51, 49), expected_script=None) is True
+        assert check_garble(_blob(51, 49), expected_script=None, profile=BULK_PROFILE) is True
 
     def test_logical_order_arabic_only_no_false_positive(self):
-        assert _is_garbled_blob(_blob(0, 100), expected_script=None) is False
+        assert check_garble(_blob(0, 100), expected_script=None, profile=BULK_PROFILE) is False
 
     def test_no_arabic_range_chars_no_division_by_zero(self):
         # Plain English text has zero Arabic-range chars -- the ratio check
         # must not raise ZeroDivisionError and must not false-positive.
         blob = "the quick brown fox jumps over the lazy dog repeatedly here"
-        assert _is_garbled_blob(blob, expected_script=None) is False
+        assert check_garble(blob, expected_script=None, profile=BULK_PROFILE) is False
 
     def test_empty_blob_short_circuits_before_presentation_check(self):
-        assert _is_garbled_blob("", expected_script=None) is True
+        assert check_garble("", expected_script=None, profile=BULK_PROFILE) is True
 
 
 class TestInferScriptUnchangedByD2:

@@ -21,12 +21,13 @@ from unittest.mock import patch
 import pytest
 
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    BULK_PROFILE,
     _flatten_tree_text,
     _garble_ratio,
-    _is_garbled_blob,
     check_garble,
     classify_verdict,
+    garble_prongs,
+    _has_sparse_mojibake,
 )
 from tests.conftest import filler_text
 
@@ -263,7 +264,7 @@ def test_garble_ratio_partially_garbled():
     clean_chunk = _diverse_words(2000)
     text = garbled_chunk + clean_chunk
 
-    assert _is_garbled_blob(text, expected_script=None) is False  # full-text check alone misses it
+    assert check_garble(text, expected_script=None, profile=BULK_PROFILE) is False  # full-text check alone misses it
     ratio = _garble_ratio(text)
     assert 0.0 < ratio < 0.5
 
@@ -290,7 +291,7 @@ def test_garble_ratio_additive_only():
     clean_chunk = _diverse_words(2000)
     text = garbled_chunk + clean_chunk
 
-    full_only = 1.0 if _is_garbled_blob(text, expected_script=None) else 0.0
+    full_only = 1.0 if check_garble(text, expected_script=None, profile=BULK_PROFILE) else 0.0
     assert full_only == 0.0
     assert _garble_ratio(text) > full_only
 
@@ -312,7 +313,9 @@ def test_garble_ratio_sparse_mojibake_preserved():
             tokens.append(words[i % 8])
     text = " ".join(tokens)
 
-    assert _is_garbled_blob(text, expected_script=None) is False  # bulk heuristics alone miss it
+    # Zone-1 consolidation: check_garble with BULK_PROFILE now includes
+    # _has_sparse_mojibake, so it catches this text too.
+    assert check_garble(text, expected_script=None, profile=BULK_PROFILE) is True
     assert _garble_ratio(text) == 1.0
 
 
@@ -329,7 +332,7 @@ def test_classify_verdict_garble_ratio_threshold():
     leaves[0]["text"] = "x" * 99 + "\x00"
     tree = [{"title": "", "text": "", "nodes": leaves}]
 
-    assert check_garble(_flatten_tree_text(tree), expected_script=None, context=GarbleContext.TREE_BULK) is True
+    assert check_garble(_flatten_tree_text(tree), expected_script=None, profile=BULK_PROFILE) is True
 
     verdict, reason = classify_verdict(tree, "default", None)
     assert verdict == "MARGINAL"

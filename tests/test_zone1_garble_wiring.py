@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    BULK_PROFILE,
+    FLAT_MARKDOWN_PROFILE,
+    GarbleProfile,
     TreeDefect,
     TreeSignals,
     check_garble,
@@ -92,9 +94,9 @@ class TestWiringCheckGarbleUsed:
             "converters.py must import check_garble from helpers"
         )
         calls = _find_calls_to(tree, "check_garble")
-        assert len(calls) >= 3, (
-            f"converters.py should have at least 3 check_garble calls "
-            f"(PAGE_TEXT_LAYER, DOCUMENT_FALLBACK, REGION), found {len(calls)}"
+        assert len(calls) >= 2, (
+            f"converters.py should have at least 2 check_garble calls "
+            f"(_text_layer_has_content, _document_level_text_fallback), found {len(calls)}"
         )
 
     def test_client_imports_check_garble(self):
@@ -110,20 +112,20 @@ class TestWiringCheckGarbleUsed:
             f"(retry-comparison pre/post), found {len(calls)}"
         )
 
-    def test_converters_imports_garble_context(self):
-        """converters.py must import GarbleContext."""
+    def test_converters_imports_bulk_profile(self):
+        """converters.py must import BULK_PROFILE."""
         tree = _parse_file(_PRODUCTION_FILES["converters.py"])
-        imports = _find_imports_of(tree, "GarbleContext")
+        imports = _find_imports_of(tree, "BULK_PROFILE")
         assert len(imports) >= 1, (
-            "converters.py must import GarbleContext from helpers"
+            "converters.py must import BULK_PROFILE from helpers"
         )
 
-    def test_client_imports_garble_context(self):
-        """client.py must import GarbleContext."""
+    def test_client_imports_bulk_profile(self):
+        """client.py must import BULK_PROFILE."""
         tree = _parse_file(_PRODUCTION_FILES["client.py"])
-        imports = _find_imports_of(tree, "GarbleContext")
+        imports = _find_imports_of(tree, "BULK_PROFILE")
         assert len(imports) >= 1, (
-            "client.py must import GarbleContext from helpers"
+            "client.py must import BULK_PROFILE from helpers"
         )
 
 
@@ -243,10 +245,10 @@ class TestClassifyVerdictFlatDocIntegration:
         This proves expected_script is actually threaded to check_garble."""
         nonsense = "xkjqz vbwm bgdr klfn mtrz bab rel teb gux pev " * 20
         result_arab = check_garble(
-            nonsense, expected_script="Arab", context=GarbleContext.TREE_BULK
+            nonsense, expected_script="Arab", profile=BULK_PROFILE
         )
         result_latn = check_garble(
-            nonsense, expected_script="Latn", context=GarbleContext.TREE_BULK
+            nonsense, expected_script="Latn", profile=BULK_PROFILE
         )
         assert result_arab is True, (
             "expected_script='Arab' must trigger latin_gibberish prong"

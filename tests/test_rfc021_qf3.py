@@ -12,12 +12,12 @@ Covers:
 import logging
 
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    BULK_PROFILE,
+    FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
     _garble_check_nodes,
     _has_sparse_mojibake,
     _infer_script,
-    _is_garbled_blob,
     _is_morphologically_nonsense,
     check_garble,
     validate_tree,
@@ -74,14 +74,14 @@ class TestBilingualArabicEnglishNotGarbled:
     """QF3 primary fix: bilingual domain English must not trip garble gate."""
 
     def test_is_garbled_blob_bilingual_not_flagged(self):
-        assert _is_garbled_blob(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab") is False
+        assert check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_flat_markdown_garble_bilingual_not_flagged(self):
-        assert check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", context=GarbleContext.FLAT_MARKDOWN) is False
+        assert check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", profile=FLAT_MARKDOWN_PROFILE) is False
 
     def test_tree_bulk_garble_bilingual_not_flagged(self):
         nodes = [{"text": _BILINGUAL_ARABIC_ENGLISH}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is False
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_validate_tree_bilingual_passes(self):
         structure = [
@@ -115,15 +115,15 @@ class TestBilingualArabicEnglishNotGarbled:
 
     def test_pure_arabic_unchanged(self):
         """Pure Arabic text must still pass (no regression)."""
-        assert _is_garbled_blob(_PURE_ARABIC, expected_script="Arab") is False
+        assert check_garble(_PURE_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_pure_english_no_expected_script(self):
         """English text without expected_script must still pass."""
-        assert _is_garbled_blob(_PURE_ENGLISH, expected_script=None) is False
+        assert check_garble(_PURE_ENGLISH, expected_script=None, profile=BULK_PROFILE) is False
 
     def test_pure_english_with_latn_script(self):
         """English text with expected_script=Latn must pass."""
-        assert _is_garbled_blob(_PURE_ENGLISH, expected_script="Latn") is False
+        assert check_garble(_PURE_ENGLISH, expected_script="Latn", profile=BULK_PROFILE) is False
 
 
 # ── 2. Actually garbled text MUST still be detected ──────────────────────────
@@ -133,29 +133,29 @@ class TestActualGarbledStillDetected:
     """Safety: garble detection must NOT be weakened by QF3."""
 
     def test_null_bytes_detected(self):
-        assert _is_garbled_blob("some text\x00 with nulls", expected_script=None) is True
+        assert check_garble("some text\x00 with nulls", expected_script=None, profile=BULK_PROFILE) is True
 
     def test_replacement_char_detected(self):
-        assert _is_garbled_blob("some text � with replacement", expected_script=None) is True
+        assert check_garble("some text � with replacement", expected_script=None, profile=BULK_PROFILE) is True
 
     def test_glyph_marker_detected(self):
-        assert _is_garbled_blob("text GLYPH<0042> more text", expected_script=None) is True
+        assert check_garble("text GLYPH<0042> more text", expected_script=None, profile=BULK_PROFILE) is True
 
     def test_pua_chars_detected(self):
         pua_text = "normal " + "" * 20 + " text"
-        assert _is_garbled_blob(pua_text, expected_script=None) is True
+        assert check_garble(pua_text, expected_script=None, profile=BULK_PROFILE) is True
 
     def test_consonant_cluster_gibberish_still_garbled(self):
         """Latin gibberish (no vowels) in Arabic context must still be caught."""
-        assert _is_garbled_blob(_LATIN_GIBBERISH, expected_script="Arab") is True
+        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_digit_letter_mixed_garble_detected(self):
         """Digit-letter mixed tokens in Arabic context must be caught."""
-        assert _is_garbled_blob(_GARBLED_LATIN_IN_ARABIC, expected_script="Arab") is True
+        assert check_garble(_GARBLED_LATIN_IN_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_empty_blob_detected(self):
-        assert _is_garbled_blob("", expected_script=None) is True
-        assert _is_garbled_blob("   ", expected_script=None) is True
+        assert check_garble("", expected_script=None, profile=BULK_PROFILE) is True
+        assert check_garble("   ", expected_script=None, profile=BULK_PROFILE) is True
 
 
 # ── 3. Sparse mojibake still flagged ─────────────────────────────────────────
@@ -275,16 +275,16 @@ class TestQF3RegressionExistingGarbleCases:
     def test_tree_bulk_garble_latin_gibberish_with_arab_script(self):
         """Replicates TestExpectedScriptThreading via check_garble(TREE_BULK)."""
         nodes = [{"text": _LATIN_GIBBERISH}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is True
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_tree_bulk_garble_real_arabic(self):
         """Replicates TestExpectedScriptThreading via check_garble(TREE_BULK)."""
         nodes = [{"text": _PURE_ARABIC}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", context=GarbleContext.TREE_BULK) is False
+        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is False
 
     def test_flat_markdown_garble_latin_gibberish(self):
         """Replicates TestExpectedScriptThreading via check_garble(FLAT_MARKDOWN)."""
-        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", context=GarbleContext.FLAT_MARKDOWN) is True
+        assert check_garble(_LATIN_GIBBERISH, expected_script="Arab", profile=FLAT_MARKDOWN_PROFILE) is True
 
     def test_validate_tree_garble_fails(self):
         """Replicates TestExpectedScriptThreading.test_validate_tree_forwards_expected_script."""

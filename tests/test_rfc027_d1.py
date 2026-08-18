@@ -15,7 +15,7 @@ floor.
 """
 
 from pageindex_mcp.helpers import (
-    GarbleContext,
+    FLAT_MARKDOWN_PROFILE,
     _dedupe_chart_text_lines,
     check_garble,
     classify_verdict,
@@ -70,7 +70,7 @@ class TestPostSpliceGarbleRecheck:
             "<!-- image -->\n\n"
             "More prose after the image marker.\n"
         )
-        assert check_garble(clean_md, expected_script=None, context=GarbleContext.FLAT_MARKDOWN) is False
+        assert check_garble(clean_md, expected_script=None, profile=FLAT_MARKDOWN_PROFILE) is False
 
     def test_postsplice_text_catches_ocr_junk(self):
         """(c): after splice_figure_markers injects garbled OCR text into
@@ -85,7 +85,7 @@ class TestPostSpliceGarbleRecheck:
         pics = [{"ocr_text": junk_ocr, "page": 1, "bbox": {"l": 0, "t": 0, "r": 0, "b": 0}}]
         spliced = splice_figure_markers(clean_md, pics)
         assert junk_ocr in spliced
-        assert check_garble(spliced, expected_script=None, context=GarbleContext.FLAT_MARKDOWN) is True
+        assert check_garble(spliced, expected_script=None, profile=FLAT_MARKDOWN_PROFILE) is True
 
 
 class TestDedupeChartTextLines:

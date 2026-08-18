@@ -41,10 +41,7 @@ class TestTextLayerHasContent:
     def test_empty_text_returns_false(self):
         assert _text_layer_has_content(_page("")) is False
 
-    def test_garble_check_disabled_env_var(self, monkeypatch):
-        """TEXT_LAYER_GARBLE_CHECK_ENABLED=false restores pre-D0 behavior:
-        a garbled-but-long text layer is treated as content."""
-        from pageindex_mcp import converters
-
-        monkeypatch.setattr(converters, "_TEXT_LAYER_GARBLE_CHECK_ENABLED", False)
-        assert _text_layer_has_content(_page(_GARBLED_TEXT)) is True
+    def test_garble_check_always_on(self):
+        """Zone-4 removed _TEXT_LAYER_GARBLE_CHECK_ENABLED toggle; garble
+        check is now always-on — garbled text always returns False."""
+        assert _text_layer_has_content(_page(_GARBLED_TEXT)) is False

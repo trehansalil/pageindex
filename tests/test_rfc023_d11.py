@@ -20,8 +20,8 @@ pattern used elsewhere in this suite (tests/test_rfc020_f0_splice.py).
 
 from pageindex_mcp.client import (
     _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
-    _OCR_ESCALATION,
 )
+from pageindex_mcp.config import OCR_ESCALATION_GARBLE
 
 _MARKER = "<!-- image -->"
 
@@ -40,7 +40,7 @@ def _would_escalate(reason: str, md_content: str, *, ext: str = ".pdf") -> bool:
     failures + image-dominant), gated on the module flags."""
     if reason not in ("node_count<3", "depth<2"):
         return False
-    if ext != ".pdf" or not _OCR_ESCALATION or not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
+    if ext != ".pdf" or not OCR_ESCALATION_GARBLE or not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
         return False
     dominant, _, _ = _image_dominant(md_content)
     return dominant
@@ -102,6 +102,7 @@ class TestStructuralFailureOcrEscalation:
 
     def test_escalation_flag_disabled(self, monkeypatch):
         import pageindex_mcp.client as client_mod
+        import pageindex_mcp.config as config_mod
 
         monkeypatch.setattr(client_mod, "_IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", False)
         md = f"{_MARKER}\n{_MARKER}"
@@ -110,7 +111,7 @@ class TestStructuralFailureOcrEscalation:
             if reason not in ("node_count<3", "depth<2"):
                 return False
             if (
-                not client_mod._OCR_ESCALATION
+                not config_mod.OCR_ESCALATION_GARBLE
                 or not client_mod._IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
             ):
                 return False

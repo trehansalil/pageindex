@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from pageindex_mcp.helpers import garble_prongs, _is_garbled_blob
+from pageindex_mcp.helpers import garble_prongs, check_garble, BULK_PROFILE
 from pageindex_mcp.script import BlobKind, normalize_for_garble
 
 
@@ -53,7 +53,7 @@ class TestWard597LatinGibberishInArab:
 
     def test_is_garbled_blob_returns_true(self):
         blob = _make_latin_gibberish_blob(gibberish_ratio=0.70, total_words=80)
-        assert _is_garbled_blob(blob, expected_script="Arab") is True
+        assert check_garble(blob, expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_without_expected_script_misses_gibberish(self):
         """Without expected_script, the latin_gibberish prong should NOT fire
@@ -166,8 +166,8 @@ class TestBlobKindNormalizeForGarble:
 
         # Now verify the prong difference (if both are long enough)
         if len(tree_norm) > GARBLE_DIGIT_FLOOR and len(raw_norm) > GARBLE_DIGIT_FLOOR:
-            tree_prongs = garble_prongs(blob, expected_script=None, blob_kind=BlobKind.TREE_TEXT)
-            raw_prongs = garble_prongs(blob, expected_script=None, blob_kind=BlobKind.RAW_MARKDOWN)
+            tree_prongs = garble_prongs(normalize_for_garble(blob, BlobKind.TREE_TEXT), expected_script=None)
+            raw_prongs = garble_prongs(normalize_for_garble(blob, BlobKind.RAW_MARKDOWN), expected_script=None)
             # At minimum, the prong sets should differ in content
             # (one may have digit_ratio, the other may not, depending on exact ratios)
             tree_digit_ratio = tree_digits / max(len(tree_norm), 1)
@@ -185,8 +185,8 @@ class TestBlobKindNormalizeForGarble:
         must use differently-normalized denominators."""
         # A text that has heading markers and pipes taking up space
         blob = "# " + "x" * 20 + "\n" + "| " * 10 + "\n" + "normal text body"
-        prongs_tree = garble_prongs(blob, expected_script=None, blob_kind=BlobKind.TREE_TEXT)
-        prongs_raw = garble_prongs(blob, expected_script=None, blob_kind=BlobKind.RAW_MARKDOWN)
+        prongs_tree = garble_prongs(normalize_for_garble(blob, BlobKind.TREE_TEXT), expected_script=None)
+        prongs_raw = garble_prongs(normalize_for_garble(blob, BlobKind.RAW_MARKDOWN), expected_script=None)
         # Both should be frozensets (basic sanity)
         assert isinstance(prongs_tree, frozenset)
         assert isinstance(prongs_raw, frozenset)

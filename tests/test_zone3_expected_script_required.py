@@ -1,4 +1,4 @@
-"""Zone-3 regression: garble_prongs and _is_garbled_blob require expected_script kwarg.
+"""Zone-3 regression: garble_prongs and check_garble require expected_script kwarg.
 All production call sites must pass it explicitly."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from pageindex_mcp.helpers import garble_prongs, _is_garbled_blob
+from pageindex_mcp.helpers import garble_prongs, check_garble, BULK_PROFILE
 
 
 # ---------------------------------------------------------------------------
@@ -38,29 +38,35 @@ class TestExpectedScriptRequired:
 
 
 # ---------------------------------------------------------------------------
-# _is_garbled_blob signature enforcement: expected_script is keyword-only
+# check_garble signature enforcement: expected_script and profile are keyword-only
 # ---------------------------------------------------------------------------
 
-class TestIsGarbledBlobSignatureEnforcement:
+class TestCheckGarbleSignatureEnforcement:
     def test_expected_script_is_keyword_only(self):
-        """_is_garbled_blob must require expected_script as keyword-only."""
-        sig = inspect.signature(_is_garbled_blob)
+        """check_garble must require expected_script as keyword-only."""
+        sig = inspect.signature(check_garble)
         params = sig.parameters
         assert "expected_script" in params
         assert params["expected_script"].kind == inspect.Parameter.KEYWORD_ONLY
 
+    def test_profile_is_keyword_only(self):
+        """check_garble must require profile as keyword-only."""
+        sig = inspect.signature(check_garble)
+        params = sig.parameters
+        assert "profile" in params
+        assert params["profile"].kind == inspect.Parameter.KEYWORD_ONLY
+
     def test_positional_expected_script_raises_type_error(self):
-        """Calling _is_garbled_blob('text', 'Latn') positionally must raise TypeError."""
+        """Calling check_garble('text', 'Latn', profile=BULK_PROFILE) positionally must raise TypeError."""
         with pytest.raises(TypeError):
-            _is_garbled_blob("hello world", "Latn")
+            check_garble("hello world", "Latn", profile=BULK_PROFILE)  # type: ignore[misc]
 
     def test_keyword_expected_script_works(self):
-        """Calling _is_garbled_blob('text', expected_script='Latn') must succeed."""
-        result = _is_garbled_blob("hello world", expected_script="Latn")
+        result = check_garble("hello world", expected_script="Latn", profile=BULK_PROFILE)
         assert isinstance(result, bool)
 
     def test_keyword_expected_script_none_works(self):
-        result = _is_garbled_blob("hello world", expected_script=None)
+        result = check_garble("hello world", expected_script=None, profile=BULK_PROFILE)
         assert isinstance(result, bool)
 
 
@@ -132,24 +138,24 @@ class TestProductionCallSitesPassExpectedScript:
 
 
 # ---------------------------------------------------------------------------
-# AST scan: all _is_garbled_blob calls in helpers/converters/client pass
+# AST scan: all check_garble calls in helpers/converters/client pass
 # expected_script explicitly
 # ---------------------------------------------------------------------------
 
-class TestIsGarbledBlobCallSitesPassExpectedScript:
+class TestCheckGarbleCallSitesPassExpectedScript:
     @pytest.mark.parametrize("filepath", _PRODUCTION_FILES)
     def test_all_calls_pass_expected_script(self, filepath):
-        """Every _is_garbled_blob() call must pass expected_script= explicitly."""
+        """Every check_garble() call must pass expected_script= explicitly."""
         import os
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         full_path = os.path.join(project_root, filepath)
         if not os.path.exists(full_path):
             pytest.skip(f"{filepath} not found")
 
-        calls = _find_calls(full_path, "_is_garbled_blob")
-        # Exclude the function definition line itself (def _is_garbled_blob)
+        calls = _find_calls(full_path, "check_garble")
+        # Exclude the function definition line itself (def check_garble)
         missing = [(line, has) for line, has in calls if not has]
         assert not missing, (
-            f"_is_garbled_blob calls WITHOUT expected_script= in {filepath}: "
+            f"check_garble calls WITHOUT expected_script= in {filepath}: "
             f"lines {[l for l, _ in missing]}"
         )

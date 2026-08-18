@@ -273,7 +273,7 @@ class TestGarbleProngs:
         assert result == frozenset()
 
     def test_is_garbled_blob_equivalence(self):
-        from pageindex_mcp.helpers import _is_garbled_blob, garble_prongs
+        from pageindex_mcp.helpers import check_garble, BULK_PROFILE, garble_prongs
 
         fixtures = [
             "",
@@ -283,7 +283,7 @@ class TestGarbleProngs:
             "normal clean text " * 10,
         ]
         for blob in fixtures:
-            assert _is_garbled_blob(blob, expected_script=None) == bool(garble_prongs(blob)), (
+            assert check_garble(blob, expected_script=None, profile=BULK_PROFILE) == bool(garble_prongs(blob)), (
                 f"Mismatch on: {blob!r}"
             )
 
