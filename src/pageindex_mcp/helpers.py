@@ -105,6 +105,34 @@ class TreeGateResult:
 
 
 @dataclass(frozen=True)
+class VerdictResult:
+    """Zone-2: consolidated verdict returned by :func:`compute_verdict`.
+
+    Fields mirror :class:`TreeGateResult`'s shape for consistency.
+    ``__iter__`` yields ``(verdict, reason)`` so existing call sites that
+    do ``verdict, reason = compute_verdict(...)`` keep working without
+    changes.
+    """
+
+    verdict: str
+    reason: str
+    defect: TreeDefect = TreeDefect.OK
+    signals: "TreeSignals | None" = None
+    all_defects: frozenset[TreeDefect] = frozenset()
+
+    def __iter__(self) -> Iterator[str]:
+        """Yield ``(verdict, reason)`` for backward-compat tuple unpacking.
+
+        ``defect``, ``signals``, and ``all_defects`` are intentionally
+        excluded from iteration so that
+        ``verdict, reason = compute_verdict(...)`` keeps working at all
+        existing call sites.
+        """
+        yield self.verdict
+        yield self.reason
+
+
+@dataclass(frozen=True)
 class ExtractionSnapshot:
     """Zone-5: frozen snapshot of pre-retry extraction state.
 
@@ -1837,6 +1865,24 @@ _GATE_PRIORITY: dict[TreeDefect, int] = {
     defect: idx for idx, (_fn, defect) in enumerate(GATE_TABLE)
 }
 
+# Zone-2: defects applicable to flat-path documents (no heading hierarchy).
+# NODE_COUNT_LOW / DEPTH_LOW are excluded — flat docs by definition have no
+# node-count / depth structure worth gating on.
+_FLAT_APPLICABLE_DEFECTS: frozenset[TreeDefect] = frozenset({
+    TreeDefect.GARBLING,
+    TreeDefect.NODE_GARBLING,
+    TreeDefect.REORDERED,
+})
+
+# FLAT_GATE_SUBSET: active gates for flat-path documents, derived from GATES
+# so new gates auto-sync.  Only gates whose defect is in
+# _FLAT_APPLICABLE_DEFECTS are included.
+FLAT_GATE_SUBSET: list[tuple[_GateFn, TreeDefect]] = [
+    (g.gate_fn, g.defect)  # type: ignore[misc]
+    for g in GATES
+    if g.gate_fn is not None and g.defect in _FLAT_APPLICABLE_DEFECTS
+]
+
 
 def validate_tree(
     structure: list,
@@ -2100,29 +2146,8 @@ def _defect_from_reason_str(reason: str | None) -> TreeDefect:
 
 
 # ---------------------------------------------------------------------------
-# Zone-3: Verdict-band helpers (extracted from classify_verdict)
+# Zone-2: Verdict helpers
 # ---------------------------------------------------------------------------
-
-
-def _compute_verdict_band(
-    primary_defect: TreeDefect,
-    all_defects: frozenset[TreeDefect],
-    validate_reason: str | None,
-) -> tuple[str, str] | None:
-    """Hard-fail dispatch: return ``("FAIL", reason)`` when any fired defect
-    has ``hard_fail=True`` in :data:`GATES`, else ``None`` (caller proceeds
-    to content-class dispatch and promotions).
-
-    Subsumes the GROUP-1 block previously inlined in ``classify_verdict``:
-    primary-defect check **and** co-firing (masked) hard-fail check.
-    """
-    if primary_defect in HARD_FAIL_DEFECTS:
-        return "FAIL", validate_reason or primary_defect.value
-    masked = all_defects & HARD_FAIL_DEFECTS
-    if masked:
-        worst = min(masked, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
-        return "FAIL", worst.value
-    return None
 
 
 def _clamp_pass(
@@ -2147,53 +2172,58 @@ def _clamp_pass(
     return "PASS", reason
 
 
-def classify_verdict(  # noqa: C901
+def compute_verdict(  # noqa: C901
     structure: list,
     content_class: str,
-    validate_result: TreeGateResult | None,
+    validate_result: TreeGateResult | None = None,
     image_enrichment_ratio: float | None = None,
     inspector_class: str | None = None,
     expected_script: str | None = None,
-) -> tuple[str, str]:
-    """Grouped-rule verdict engine.
+    *,
+    flat: bool = False,
+    source_selection: bool = False,
+) -> VerdictResult:
+    """Zone-2 consolidated verdict engine (replaces classify_verdict).
 
-    GROUP 1 -- HARD_FAILs: delegated to :func:`_compute_verdict_band`.
-               Any defect with ``hard_fail=True`` in :data:`GATES` --
-               whether it is the primary defect or merely present in
-               ``all_defects`` behind a less-severe primary -- returns FAIL
-               immediately (takes priority over all content-class dispatch,
-               including image_standalone).
-    DISPATCH - image_standalone: own verdict logic after hard-fails clear.
-    GROUP 2 -- PROMOTIONS: image-enrichment rescue, base PASS, category
-               promotions (cat_a/b/c), small-doc exemption, MARGINAL fallback.
-    CAPS    -- bidi_degraded and depth-adequacy applied uniformly via
-               :func:`_clamp_pass` to every PASS-returning branch in Group 2.
+    Returns a :class:`VerdictResult` (iterable as ``(verdict, reason)``
+    for backward-compat tuple unpacking).
 
-    ``validate_result`` accepts a :class:`TreeGateResult` (preferred) which
-    carries both the defect enum, pre-computed :class:`TreeSignals`, and
-    ``all_defects`` (co-firing defects from exhaustive gate evaluation),
-    eliminating redundant re-derivation.  ``None`` is accepted for flat
-    docs (client.py flat-doc path).
+    Phase 1 -- GATE EVALUATION + HARD_FAILs:
+        When ``validate_result`` carries a :class:`TreeGateResult`, its
+        pre-computed defect/signals/all_defects are consumed directly.
+        When ``validate_result`` is ``None`` and ``flat=True``,
+        :data:`FLAT_GATE_SUBSET` is evaluated against the structure
+        (closing the silent-skip gap for flat-path documents).
+        When ``validate_result`` is ``None`` and ``flat=False``,
+        signals are derived from the structure but no gates run
+        (backward-compat with legacy classify_verdict callers).
+        Hard-fail logic (previously ``_compute_verdict_band``) is
+        inlined: any defect with ``hard_fail=True`` in :data:`GATES`
+        returns FAIL immediately, with ``_GATE_PRIORITY`` tiebreak for
+        masked co-firing defects.
+
+    Phase 2 -- PROMOTIONS + CAPS:
+        Unchanged grouped-rule logic (image-enrichment rescue, base PASS,
+        category promotions, small-doc exemption, MARGINAL fallback).
+        ``source_selection=True`` skips :func:`_clamp_pass` caps
+        (bidi_degraded / depth-adequacy are meaningful only for the
+        final persisted verdict, not for early candidate screening).
 
     The image-enrichment rescue is intentionally positioned before the
-    max_leaf_ratio structural hard-fail: flat image-enriched documents render
-    as a single leaf (max_leaf_ratio=1.0), so the structural metric is not
-    meaningful for them.  This ordering is locked by RFC-022 B2.  Genuine
-    image-only documents should be routed upstream to content_class=
-    'image_standalone' (GROUP 0), which is already exempt.
+    max_leaf_ratio structural hard-fail: flat image-enriched documents
+    render as a single leaf (max_leaf_ratio=1.0), so the structural
+    metric is not meaningful for them.  This ordering is locked by
+    RFC-022 B2.
     """
     # ── Pre-compute thresholds (cached per-process) ──────────────────────
     th = _get_verdict_thresholds()
 
     # ── Normalize validate_result into (defect, validate_reason, signals) ──
-    # Zone-1: the bare-string compat path was removed.  A string such as
-    # "garbling" used to be parsed for defect semantics; after the enum
-    # migration it would silently fall through to the OK branch and drop the
-    # defect on the floor (a would-be FAIL graded on structure alone).  Reject
-    # loudly instead of losing the signal.
+    # Zone-1: the bare-string compat path was removed.  Reject non-
+    # TreeGateResult / non-None loudly instead of losing the signal.
     if validate_result is not None and not isinstance(validate_result, TreeGateResult):
         raise TypeError(
-            "classify_verdict(validate_result=...) expects a TreeGateResult or "
+            "compute_verdict(validate_result=...) expects a TreeGateResult or "
             f"None, got {type(validate_result).__name__!s}; the bare-string "
             "compat path was removed (Zone-1)."
         )
@@ -2206,42 +2236,69 @@ def classify_verdict(  # noqa: C901
         validate_reason = None
         defect = TreeDefect.OK
         sig = None
-        _all_defects = frozenset()
+        _all_defects = frozenset[TreeDefect]()
 
     # Compute signals if not provided by TreeGateResult
     if sig is None:
         sig = TreeSignals.from_tree(structure, expected_script=expected_script, garble_threshold=th.garble_threshold)
 
-    # Zero-content fast path — reads sig.node_count / sig.flat_text, which
-    # come from the TreeGateResult when one was supplied (no re-computation)
-    # and from the single TreeSignals.from_tree above otherwise (flat docs).
+    # Zero-content fast path
     if sig.node_count == 0 or len(sig.flat_text.strip()) == 0:
-        return "FAIL", "zero_content"
+        return VerdictResult("FAIL", "zero_content", defect=defect, signals=sig, all_defects=_all_defects)
 
-    # No gate result (flat-doc path): no gate ever ran, so the ordering
-    # signal has to be lifted into the defect enum here.  This is a
-    # normalisation, not a second decider — the FAIL itself is still issued
-    # by _compute_verdict_band below, so classify_verdict can never
-    # produce a reason that disagrees with the TreeDefect enum.  When a
-    # TreeGateResult *was* supplied, sig.is_reordered is deliberately
-    # ignored: validate_tree's REORDERED gate is the sole authority.
-    if validate_result is None and sig.is_reordered:
+    # ── Phase 1: FLAT_GATE_SUBSET evaluation (flat=True, no gate result) ──
+    # When flat=True and no TreeGateResult was supplied, run the flat-
+    # applicable gates so garbled/reordered flat docs are detected rather
+    # than silently skipped.
+    if validate_result is None and flat:
+        _flat_fired: list[tuple[TreeDefect, str]] = []
+        _rtl_decision_flat = decide_rtl(sig.flat_text) if sig.flat_text else None
+        for gate_fn, gate_defect in FLAT_GATE_SUBSET:
+            fires, detail = gate_fn(sig, structure, expected_script, None, _rtl_decision_flat)
+            if fires:
+                _flat_fired.append((gate_defect, detail))
+        if _flat_fired:
+            defect = _flat_fired[0][0]
+            _all_defects = frozenset(d for d, _ in _flat_fired)
+
+    # No gate result and not flat (legacy classify_verdict callers):
+    # lift the reordered signal into the defect enum.  This is a
+    # normalisation, not a second decider.  When a TreeGateResult *was*
+    # supplied, sig.is_reordered is deliberately ignored: the REORDERED
+    # gate is the sole authority.
+    if validate_result is None and not flat and sig.is_reordered:
         defect = TreeDefect.REORDERED
         _all_defects = frozenset({TreeDefect.REORDERED})
 
-    # ── GROUP 1: HARD_FAILs (delegated to _compute_verdict_band) ────────
-    _band = _compute_verdict_band(defect, _all_defects, validate_reason)
-    if _band is not None:
-        return _band
+    # ── GROUP 1: HARD_FAILs (inlined from _compute_verdict_band) ────────
+    # Primary defect check
+    if defect in HARD_FAIL_DEFECTS:
+        return VerdictResult(
+            "FAIL", validate_reason or defect.value,
+            defect=defect, signals=sig, all_defects=_all_defects,
+        )
+    # Co-firing (masked) hard-fail check with _GATE_PRIORITY tiebreak
+    _masked = _all_defects & HARD_FAIL_DEFECTS
+    if _masked:
+        _worst = min(_masked, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
+        return VerdictResult(
+            "FAIL", _worst.value,
+            defect=defect, signals=sig, all_defects=_all_defects,
+        )
 
     # ── Content-class dispatch: image_standalone ─────────────────────────
-    # image_standalone has its own verdict logic; tree-shape metrics are
-    # structurally meaningless for single-image documents.  Placed after
-    # GROUP 1 so garbling/reordered still hard-fail image docs.
     if content_class == "image_standalone":
-        return _classify_image_verdict(image_enrichment_ratio)
+        _iv, _ir = _classify_image_verdict(image_enrichment_ratio)
+        return VerdictResult(_iv, _ir, defect=defect, signals=sig, all_defects=_all_defects)
 
-    # ── GROUP 2: PROMOTIONS (tried only when no HARD_FAIL fired) ─────────
+    # ── Phase 2: PROMOTIONS (tried only when no HARD_FAIL fired) ─────────
+
+    # Helper: wrap _clamp_pass or skip it when source_selection=True.
+    def _apply_clamp(reason: str) -> VerdictResult:
+        if source_selection:
+            return VerdictResult("PASS", reason, defect=defect, signals=sig, all_defects=_all_defects)
+        _v, _r = _clamp_pass(reason, defect=defect, sig=sig)
+        return VerdictResult(_v, _r, defect=defect, signals=sig, all_defects=_all_defects)
 
     # Gate 2/3 structural check: for tree-path docs, derive from
     # all_defects (gates already evaluated node_count<3 / depth<2);
@@ -2252,44 +2309,43 @@ def classify_verdict(  # noqa: C901
         else (sig.node_count >= 3 and sig.depth >= 2)
     )
 
-    # 2b: image-enrichment rescue (RFC-022 B2) — intentionally before
+    # 2b: image-enrichment rescue (RFC-022 B2) -- intentionally before
     # max_leaf_ratio hard-fail; see docstring for rationale.
     if (
         content_class in ("flat_prose", "flat_mixed")
         and image_enrichment_ratio is not None
         and image_enrichment_ratio >= 0.8
     ):
-        # Zone-5: use primary_text (excludes enrichment metadata from image
-        # blocks) so char-count and garble checks reflect real document content,
-        # not inflated ocr_text/description injected by _enrich_image_blocks.
         _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
         total_chars = len(_promoted_text)
         if total_chars < th.min_image_promoted_chars:
-            return "MARGINAL", "image_enrichment_promoted_below_char_floor"
+            return VerdictResult(
+                "MARGINAL", "image_enrichment_promoted_below_char_floor",
+                defect=defect, signals=sig, all_defects=_all_defects,
+            )
         if not check_garble(_promoted_text, expected_script=expected_script or _infer_script(_promoted_text), profile=BULK_PROFILE):
-            return _clamp_pass("image_enrichment_promoted", defect=defect, sig=sig)
+            return _apply_clamp("image_enrichment_promoted")
 
-    # max_leaf_ratio structural hard FAIL — blocks all non-image promotions
-    # below.  Image-enrichment rescue above may bypass this for flat docs
-    # with high enrichment ratios (RFC-022 B2 explicit exception).
+    # max_leaf_ratio structural hard FAIL
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
-        return "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}"
+        return VerdictResult(
+            "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}",
+            defect=defect, signals=sig, all_defects=_all_defects,
+        )
 
-    # 2c: base PASS — _structural_ok replaces the duplicate gate 2/3
-    # checks (sig.node_count >= 3 and sig.depth >= 2) that were already
-    # evaluated by GATE_TABLE for tree-path docs.
+    # 2c: base PASS
     _effective_max_leaf = th.pass_max_leaf_ratio
     if (
         _structural_ok
         and sig.max_leaf_ratio < _effective_max_leaf
         and not sig.effectively_garbled
     ):
-        return _clamp_pass("", defect=defect, sig=sig)
+        return _apply_clamp("")
 
     # 2d-2f: category-specific promotions
     if content_class.startswith("ocr_"):
         if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
-            return _clamp_pass("cat_a_promoted", defect=defect, sig=sig)
+            return _apply_clamp("cat_a_promoted")
     elif content_class.startswith("flat_"):
         _stripped_flat_text = sig.flat_text.strip()
         _text_blocks = [b for b in _stripped_flat_text.splitlines() if b.strip()]
@@ -2305,7 +2361,7 @@ def classify_verdict(  # noqa: C901
             and len(_stripped_flat_text) >= th.min_flat_promotion_chars
             and _placeholder_ratio <= 0.5
         ):
-            return _clamp_pass("cat_b_promoted", defect=defect, sig=sig)
+            return _apply_clamp("cat_b_promoted")
     else:
         _cat_c_threshold = th.cat_bc_promotion_threshold
         if not content_class and inspector_class == "text_based":
@@ -2315,7 +2371,7 @@ def classify_verdict(  # noqa: C901
             and hash_pipe_ratio(sig.flat_text) < 0.01
             and sig.max_leaf_ratio < _cat_c_threshold
         ):
-            return _clamp_pass("cat_c_promoted", defect=defect, sig=sig)
+            return _apply_clamp("cat_c_promoted")
 
     # 2g: small-doc exemption (flat_ only)
     _small_doc_leaf_ratio_bound = (
@@ -2330,7 +2386,7 @@ def classify_verdict(  # noqa: C901
         and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
         and 100 <= len(sig.flat_text.strip()) < 15000
     ):
-        return _clamp_pass("small_doc_promoted", defect=defect, sig=sig)
+        return _apply_clamp("small_doc_promoted")
 
     # ── MARGINAL fallback ────────────────────────────────────────────────
     if sig.effectively_garbled:
@@ -2341,7 +2397,31 @@ def classify_verdict(  # noqa: C901
         reason = f"depth={sig.depth}"
     else:
         reason = f"leaf_concentration={sig.max_leaf_ratio:.2f}"
-    return "MARGINAL", reason
+    return VerdictResult("MARGINAL", reason, defect=defect, signals=sig, all_defects=_all_defects)
+
+
+def classify_verdict(
+    structure: list,
+    content_class: str,
+    validate_result: TreeGateResult | None,
+    image_enrichment_ratio: float | None = None,
+    inspector_class: str | None = None,
+    expected_script: str | None = None,
+) -> tuple[str, str]:
+    """Thin backward-compat wrapper around :func:`compute_verdict`.
+
+    Returns a plain ``(verdict, reason)`` tuple so that existing call
+    sites (tests, external scripts) continue working without changes.
+    """
+    _vr = compute_verdict(
+        structure,
+        content_class,
+        validate_result,
+        image_enrichment_ratio=image_enrichment_ratio,
+        inspector_class=inspector_class,
+        expected_script=expected_script,
+    )
+    return _vr.verdict, _vr.reason
 
 
 def detect_regression(

@@ -74,6 +74,7 @@ from .helpers import (
     _tree_max_leaf_ratio,
     check_garble,
     classify_verdict,
+    compute_verdict,
     infer_script,
     compute_image_enrichment_ratio,
     decide_route,
@@ -82,6 +83,7 @@ from .helpers import (
     validate_tree,
 )
 from .metrics import (
+    AGPL_FALLBACK_TOTAL,
     BIDI_RENORM_SKIPPED,
     DOCLING_VERSION_SKEW,
     FLAT_DOCS_TOTAL,
@@ -1181,6 +1183,8 @@ class CustomPageIndexClient(PageIndexClient):
                         state.used_converter,
                         primary_name,
                     )
+                    if state.used_converter == "pymupdf4llm":
+                        AGPL_FALLBACK_TOTAL.labels(reason="fired").inc()
                 if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                     _log_pic_splice_trace(filename, "primary", state.pic_results)
                     md_content = splice_picture_text_for_tree(md_content, state.pic_results)
@@ -1901,13 +1905,14 @@ class CustomPageIndexClient(PageIndexClient):
                 if _flat_block_primary_text(b).strip()
             ]
 
-        f_verdict, f_verdict_reason = classify_verdict(
+        _vr = compute_verdict(
             flat_structure,
             content_class,
-            None,
             image_enrichment_ratio=image_enrichment_ratio,
             expected_script=expected_script,
+            flat=True,
         )
+        f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
         _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
         flat_desc = await asyncio.to_thread(
@@ -2009,7 +2014,7 @@ class CustomPageIndexClient(PageIndexClient):
         processed_at = datetime.now(UTC).isoformat()
         structure = state.result.get("structure", [])
 
-        verdict, verdict_reason = classify_verdict(
+        _vr = compute_verdict(
             structure,
             "",
             state.original_gate_result,
@@ -2018,6 +2023,7 @@ class CustomPageIndexClient(PageIndexClient):
             ),
             expected_script=expected_script,
         )
+        verdict, verdict_reason = _vr.verdict, _vr.reason
         _, _, mlr = _tree_max_leaf_ratio(structure)
         _verdict_computed_at = datetime.now(UTC).isoformat()
 

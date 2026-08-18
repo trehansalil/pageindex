@@ -199,6 +199,11 @@ AGPL_FALLBACK_TOTAL = Counter(
     "PDF conversions that used the AGPL pymupdf4llm path",
     ["reason"],
 )
+TESSDATA_LATIN_FALLBACK_TOTAL = Counter(
+    "pageindex_tessdata_latin_fallback_total",
+    "ensure_tessdata fell back to ['deu','eng'] because all requested "
+    "Latin-script languages were unavailable (Zone-7 observability).",
+)
 DOCLING_VERSION_SKEW = Counter(
     "pageindex_docling_version_skew_total",
     "Remote Docling version skew detections",

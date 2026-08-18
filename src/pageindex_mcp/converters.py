@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
-from .helpers import classify_verdict
+from .helpers import classify_verdict, compute_verdict
 from .picture_plane import (
     OcrMode,
     PictureGateConfig,
@@ -938,17 +938,19 @@ def _candidate_from_document(
     recovered = _recover_heading_depth(built, heading_pages, pdf_path)
     has_depth = _has_structural_depth(recovered)
 
-    # Zone-3: compute classify_verdict on a lightweight markdown-derived
-    # structure so source selection uses the single verdict authority
-    # instead of the structural-depth proxy alone.
+    # Zone-3: compute_verdict on a lightweight markdown-derived structure
+    # so source selection uses the single verdict authority instead of the
+    # structural-depth proxy alone.  source_selection=True skips _clamp_pass
+    # caps that are meaningful only for the final persisted verdict.
     verdict = ""
     if has_depth:
         try:
             structure = _md_to_structure(recovered)
-            verdict, _ = classify_verdict(structure, "", None)
+            _vr = compute_verdict(structure, "", source_selection=True)
+            verdict = _vr.verdict
         except Exception as exc:
             logger.debug(
-                "classify_verdict in _candidate_from_document failed for %s (%s); "
+                "compute_verdict in _candidate_from_document failed for %s (%s); "
                 "falling back to structural-depth proxy",
                 pdf_path,
                 exc,
@@ -1173,6 +1175,8 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
             )
     if not available:
         logger.warning("no requested OCR languages available; falling back to deu,eng")
+        from .metrics import TESSDATA_LATIN_FALLBACK_TOTAL  # lazy to avoid circular import
+        TESSDATA_LATIN_FALLBACK_TOTAL.inc()
         return ["deu", "eng"]
     return available
 

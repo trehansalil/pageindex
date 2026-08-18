@@ -727,7 +727,7 @@ async def _upsert_registry_row(
             )
     except Exception as exc:
         REGISTRY_WRITE_FAILURES_TOTAL.inc()
-        logger.warning("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc)
+        logger.error("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc, exc_info=True)
         await _mirror_registry_write_failure_to_redis()
 
 

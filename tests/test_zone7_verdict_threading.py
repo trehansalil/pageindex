@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pageindex_mcp.helpers import VerdictResult
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -86,7 +88,7 @@ async def test_persist_tree_result_sets_last_verdict_fields():
         patch("pageindex_mcp.client.save_doc_meta", MagicMock()),
         patch("pageindex_mcp.client.save_raw", MagicMock()),
         patch("pageindex_mcp.client.hash_cache_set", MagicMock()),
-        patch("pageindex_mcp.client.classify_verdict", return_value=("PASS", "")) as mock_cv,
+        patch("pageindex_mcp.client.compute_verdict", return_value=VerdictResult(verdict="PASS", reason="")),
         patch("pageindex_mcp.client._tree_max_leaf_ratio", return_value=(0, 0, 0.25)),
         patch("pageindex_mcp.client._flatten_tree_text", return_value="x" * 100),
         patch("pageindex_mcp.client.settings") as mock_settings,
@@ -161,7 +163,8 @@ async def test_persist_flat_result_sets_last_verdict_fields():
         patch("pageindex_mcp.client.save_flat_doc", MagicMock()),
         patch("pageindex_mcp.client.save_raw", MagicMock()),
         patch("pageindex_mcp.client.hash_cache_set", MagicMock()),
-        patch("pageindex_mcp.client.classify_verdict", return_value=("MARGINAL", "low_content")),
+        patch("pageindex_mcp.client.compute_verdict", return_value=VerdictResult(verdict="MARGINAL", reason="low_content")),
+        patch("pageindex_mcp.client.save_doc_meta", MagicMock()),
         patch("pageindex_mcp.client._tree_max_leaf_ratio", return_value=(0, 0, 0.5)),
         patch("pageindex_mcp.client._generate_flat_doc_description", return_value="desc"),
         patch("pageindex_mcp.client._flat_block_primary_text", side_effect=lambda b: b.get("text", "")),
