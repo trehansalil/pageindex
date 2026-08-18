@@ -210,36 +210,30 @@ class _ReasonPolicy(StrEnum):
     OK = "ok"
 
 
-REASON_POLICY: dict[TreeDefect, _ReasonPolicy] = {
-    TreeDefect.OK: _ReasonPolicy.OK,
-    TreeDefect.GARBLING: _ReasonPolicy.RETRY_OCR,
-    TreeDefect.NODE_GARBLING: _ReasonPolicy.RETRY_OCR,
-    TreeDefect.NODE_COUNT_LOW: _ReasonPolicy.RAISE,
-    TreeDefect.DEPTH_LOW: _ReasonPolicy.RAISE,
-    TreeDefect.REORDERED: _ReasonPolicy.RAISE,
-    TreeDefect.RTL_REVERSAL: _ReasonPolicy.RETRY_RTL,
-    TreeDefect.BIDI_DEGRADED: _ReasonPolicy.CAP_MARGINAL,
-    TreeDefect.EMPTY_NODE_CONTAMINATION: _ReasonPolicy.PERSIST_FAIL,
-    TreeDefect.LOW_CONTENT_DENSITY: _ReasonPolicy.PERSIST_FAIL,
-    TreeDefect.SUSPECT_DENSITY: _ReasonPolicy.PERSIST_FAIL,
-    TreeDefect.ARABIC_LOW_CONTENT_RATIO: _ReasonPolicy.CAP_MARGINAL,
-}
+@dataclass(frozen=True)
+class GateSpec:
+    """Unified per-defect gate metadata (single source of truth).
 
-assert set(REASON_POLICY) == set(TreeDefect), (
-    f"REASON_POLICY missing: {set(TreeDefect) - set(REASON_POLICY)}"
-)
+    Consolidates GATE_TABLE, REASON_POLICY, and HARD_FAIL_DEFECTS into one
+    declarative list (:data:`GATES`).  Legacy dicts are derived from GATES
+    at import time for backward-compat consumers.
 
-# Hard-fail defects: any of these returned by validate_tree causes
-# classify_verdict to return FAIL immediately, before content-class dispatch.
-# Derived from the GROUP-1 dispatches in classify_verdict; kept in sync with
-# REASON_POLICY (PERSIST_FAIL entries + GARBLING + REORDERED).
-HARD_FAIL_DEFECTS: frozenset[TreeDefect] = frozenset({
-    TreeDefect.GARBLING,
-    TreeDefect.REORDERED,
-    TreeDefect.EMPTY_NODE_CONTAMINATION,
-    TreeDefect.LOW_CONTENT_DENSITY,
-    TreeDefect.SUSPECT_DENSITY,
-})
+    ``gate_fn`` is ``None`` for deprecated / dead gates (e.g.
+    ARABIC_LOW_CONTENT_RATIO) and for TreeDefect.OK (which is not a gate).
+    """
+    defect: TreeDefect
+    policy: _ReasonPolicy
+    hard_fail: bool = False
+    gate_fn: _GateFn | None = None
+
+
+# REASON_POLICY, HARD_FAIL_DEFECTS, GATE_TABLE and _GATE_PRIORITY are
+# derived from GATES (defined after all gate functions, ~line 1790).
+# These module-level names are populated at import time before any
+# function is called; forward-reference is safe.
+# Declarations for static analysis — overwritten by GATES derivation below.
+REASON_POLICY: dict[TreeDefect, _ReasonPolicy]
+HARD_FAIL_DEFECTS: frozenset[TreeDefect]
 
 
 # ---------------------------------------------------------------------------
@@ -1321,9 +1315,14 @@ def garble_prongs(
             prongs.add("token_repetition")
 
     # Latin-gibberish in non-Latin script context (D2 / RFC-019)
+    # Zone-7: when expected_script is None (caller omission or upstream
+    # inference failure), self-infer from the blob so the prong is never
+    # silently disabled by omission.  Legitimately ambiguous text (where
+    # _infer_script also returns None) still correctly skips the prong.
+    _effective_script = expected_script if expected_script is not None else _infer_script(norm)
     if (
-        expected_script
-        and expected_script != "Latn"
+        _effective_script is not None
+        and _effective_script != "Latn"
         and os.environ.get("GARBLE_LATIN_GIBBERISH_ENABLED", "true").lower() != "false"
     ):
         latin_ratio_threshold = float(os.environ.get("GARBLE_LATIN_RATIO", "0.4"))
@@ -1371,6 +1370,50 @@ _GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lowe
 _GARBLE_FLAT_MARKDOWN_NORMALIZE = os.getenv("GARBLE_FLAT_MARKDOWN_NORMALIZE", "true").lower() == "true"
 
 
+# ---------------------------------------------------------------------------
+# Zone-7: context-specific garble rules, decoupled from the shared dispatcher.
+# Each function encapsulates one policy dimension that was previously inlined
+# inside check_garble, making the dispatcher's body context-agnostic.
+# ---------------------------------------------------------------------------
+
+
+def _garble_context_short_circuit(
+    blob: str,
+    *,
+    context: GarbleContext,
+    original_defect: "TreeDefect | None",
+) -> bool | None:
+    """Context-specific short-circuit rules (Zone-7 decoupling).
+
+    Returns ``True``/``False`` for an immediate decision, or ``None`` to fall
+    through to the prong-based heuristics.
+
+    Current rules:
+    * FLAT_MARKDOWN + short text (< 200 chars) + pre-existing garbling defect
+      returns True immediately (garble-by-default, RFC-025 D2).
+    """
+    if (
+        context == GarbleContext.FLAT_MARKDOWN
+        and _GARBLE_SHORT_TEXT_DEFAULT
+        and len(blob) < 200
+        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+    ):
+        return True
+    return None
+
+
+def _garble_context_blob_kind(context: GarbleContext) -> BlobKind:
+    """Select blob normalization strategy based on garble context (Zone-7).
+
+    * FLAT_MARKDOWN uses RAW_MARKDOWN (strips markdown formatting) when
+      GARBLE_FLAT_MARKDOWN_NORMALIZE is enabled (default: true).
+    * All other contexts use TREE_TEXT.
+    """
+    if context == GarbleContext.FLAT_MARKDOWN and _GARBLE_FLAT_MARKDOWN_NORMALIZE:
+        return BlobKind.RAW_MARKDOWN
+    return BlobKind.TREE_TEXT
+
+
 def check_garble(
     text: str,
     *,
@@ -1385,29 +1428,22 @@ def check_garble(
     ``expected_script`` is required keyword-only so callers can never silently
     omit it (the latin_gibberish prong depends on it).
 
-    Behavioral rules:
-    * FLAT_MARKDOWN context with short text and an original garbling defect
-      returns True immediately (garble-by-default, RFC-025 D2).
-    * FLAT_MARKDOWN context uses RAW_MARKDOWN blob_kind (strips markdown formatting)
-      when GARBLE_FLAT_MARKDOWN_NORMALIZE is enabled (default: true).
-    * All other contexts use blob_kind=BlobKind.TREE_TEXT.
+    Zone-7: context-specific short-circuits and blob-kind selection are
+    decoupled into ``_garble_context_short_circuit`` and
+    ``_garble_context_blob_kind`` — the dispatcher body is now
+    context-agnostic.
     """
     blob = text or ""
 
-    # Short-text garble-by-default (FLAT_MARKDOWN only, RFC-025 D2)
-    if (
-        context == GarbleContext.FLAT_MARKDOWN
-        and _GARBLE_SHORT_TEXT_DEFAULT
-        and len(blob) < 200
-        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-    ):
-        return True
+    # Context-specific short-circuit (decoupled, Zone-7)
+    short_circuit = _garble_context_short_circuit(
+        blob, context=context, original_defect=original_defect,
+    )
+    if short_circuit is not None:
+        return short_circuit
 
-    # Determine blob_kind for the underlying heuristics
-    if context == GarbleContext.FLAT_MARKDOWN and _GARBLE_FLAT_MARKDOWN_NORMALIZE:
-        blob_kind = BlobKind.RAW_MARKDOWN
-    else:
-        blob_kind = BlobKind.TREE_TEXT
+    # Context-specific normalization (decoupled, Zone-7)
+    blob_kind = _garble_context_blob_kind(context)
 
     # Additive OR: bulk heuristics + sparse mixed-script mojibake
     return (
@@ -1483,12 +1519,17 @@ _RFC029_MIN_SCANNED_DENSITY_FLOOR = float(
 
 
 def _infer_script(text: str) -> str | None:
-    """Infer the dominant Unicode script of text by character-block majority.
+    """Canonical script inference — returns 'Arab', 'Latn', or None.
 
-    Returns 'Arab', 'Latn', or None if ambiguous/empty.
-    Thin wrapper over script.infer_script preserving the original guards:
-    short-text (< 10 chars) and low-signal (< 5 script chars) return None,
-    and extended Latin (U+00C0-U+024F) is counted as Latin.
+    Zone-7: this is the SINGLE canonical implementation.  ``script.infer_script``
+    delegates here; callers that need both ``check_garble`` and script inference
+    from a single module can import ``infer_script`` (the public re-export below).
+
+    Guards (all intentional — do NOT remove without corpus validation):
+    * Short-text floor: < 10 stripped chars -> None.
+    * Low-signal floor: < 5 total script chars -> None.
+    * Extended Latin: U+00C0-U+024F counted as Latin (catches accented chars).
+    * Strict majority: > 50% required (ties -> None, not 'Arab').
     """
     if len(text.strip()) < 10:
         return None
@@ -1508,6 +1549,12 @@ def _infer_script(text: str) -> str | None:
     if latn_count / total > 0.5:
         return "Latn"
     return None
+
+
+# Public re-export: callers that need both check_garble and script inference
+# from a single module (converters.py) import this instead of reaching into
+# script.py separately.  Zone-7 unification.
+infer_script = _infer_script
 
 
 def _script_from_filename(filename: str) -> str | None:
@@ -1772,22 +1819,57 @@ _GateFn = Callable[
     tuple[bool, str],
 ]
 
-# Declarative gate table: (check_fn, TreeDefect) pairs.  Table order
-# defines primary-defect severity (first firing entry = primary defect).
-# ALL gates are always evaluated — no early return.  10 gates total
-# (ARABIC_LOW_CONTENT_RATIO is deprecated/dead and excluded).
-GATE_TABLE: list[tuple[_GateFn, TreeDefect]] = [
-    (_gate_garbling, TreeDefect.GARBLING),
-    (_gate_node_count_low, TreeDefect.NODE_COUNT_LOW),
-    (_gate_depth_low, TreeDefect.DEPTH_LOW),
-    (_gate_node_garbling, TreeDefect.NODE_GARBLING),
-    (_gate_reordered, TreeDefect.REORDERED),
-    (_gate_rtl_reversal, TreeDefect.RTL_REVERSAL),
-    (_gate_bidi_degraded, TreeDefect.BIDI_DEGRADED),
-    (_gate_empty_node_contamination, TreeDefect.EMPTY_NODE_CONTAMINATION),
-    (_gate_low_content_density, TreeDefect.LOW_CONTENT_DENSITY),
-    (_gate_suspect_density, TreeDefect.SUSPECT_DENSITY),
+# ---------------------------------------------------------------------------
+# Zone-3: Unified gate registry — single source of truth
+# ---------------------------------------------------------------------------
+
+# Declarative gate list: one GateSpec per TreeDefect.  Table order (among
+# active gates) defines primary-defect severity — first firing entry =
+# primary defect.  ALL active gates are always evaluated — no early return.
+#
+# ARABIC_LOW_CONTENT_RATIO (dead gate, gate_fn=None) and OK (not a gate,
+# gate_fn=None) are included solely for REASON_POLICY completeness so
+# that ``set(REASON_POLICY) == set(TreeDefect)`` holds.
+#
+# ``hard_fail`` is orthogonal to ``policy``: GARBLING has RETRY_OCR
+# (recovery policy) AND hard_fail=True (verdict-floor); SUSPECT_DENSITY
+# has PERSIST_FAIL AND hard_fail=True.  This is intentional dual-axis
+# design, not a bug to collapse.
+GATES: list[GateSpec] = [
+    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling),
+    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low),
+    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low),
+    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling),
+    GateSpec(TreeDefect.REORDERED, _ReasonPolicy.RAISE, hard_fail=True, gate_fn=_gate_reordered),
+    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal),
+    GateSpec(TreeDefect.BIDI_DEGRADED, _ReasonPolicy.CAP_MARGINAL, gate_fn=_gate_bidi_degraded),
+    GateSpec(TreeDefect.EMPTY_NODE_CONTAMINATION, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_empty_node_contamination),
+    GateSpec(TreeDefect.LOW_CONTENT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_low_content_density),
+    GateSpec(TreeDefect.SUSPECT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_suspect_density),
+    # Dead gate: strict subset of GARBLING; kept for persisted verdict_reason
+    # compat and REASON_POLICY completeness.
+    GateSpec(TreeDefect.ARABIC_LOW_CONTENT_RATIO, _ReasonPolicy.CAP_MARGINAL),
+    # OK is not a gate — present for REASON_POLICY completeness only.
+    GateSpec(TreeDefect.OK, _ReasonPolicy.OK),
 ]
+
+# --- Derived backward-compat structures (from GATES) -----------------------
+
+# GATE_TABLE: list of (gate_fn, defect) pairs for active gates only.
+# Iteration order = severity order (first firing entry = primary defect).
+GATE_TABLE: list[tuple[_GateFn, TreeDefect]] = [
+    (g.gate_fn, g.defect) for g in GATES if g.gate_fn is not None  # type: ignore[misc]
+]
+
+# REASON_POLICY: maps every TreeDefect -> _ReasonPolicy.
+REASON_POLICY = {g.defect: g.policy for g in GATES}
+
+assert set(REASON_POLICY) == set(TreeDefect), (
+    f"REASON_POLICY missing: {set(TreeDefect) - set(REASON_POLICY)}"
+)
+
+# HARD_FAIL_DEFECTS: any of these in all_defects -> classify_verdict returns FAIL.
+HARD_FAIL_DEFECTS = frozenset(g.defect for g in GATES if g.hard_fail)
 
 # Severity rank per defect, derived from GATE_TABLE order (lower = more
 # severe).  Used by classify_verdict to pick a deterministic reason when a
@@ -2049,6 +2131,54 @@ def _defect_from_reason_str(reason: str | None) -> TreeDefect:
     return TreeDefect.OK
 
 
+# ---------------------------------------------------------------------------
+# Zone-3: Verdict-band helpers (extracted from classify_verdict)
+# ---------------------------------------------------------------------------
+
+
+def _compute_verdict_band(
+    primary_defect: TreeDefect,
+    all_defects: frozenset[TreeDefect],
+    validate_reason: str | None,
+) -> tuple[str, str] | None:
+    """Hard-fail dispatch: return ``("FAIL", reason)`` when any fired defect
+    has ``hard_fail=True`` in :data:`GATES`, else ``None`` (caller proceeds
+    to content-class dispatch and promotions).
+
+    Subsumes the GROUP-1 block previously inlined in ``classify_verdict``:
+    primary-defect check **and** co-firing (masked) hard-fail check.
+    """
+    if primary_defect in HARD_FAIL_DEFECTS:
+        return "FAIL", validate_reason or primary_defect.value
+    masked = all_defects & HARD_FAIL_DEFECTS
+    if masked:
+        worst = min(masked, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
+        return "FAIL", worst.value
+    return None
+
+
+def _clamp_pass(
+    reason: str,
+    *,
+    defect: TreeDefect,
+    sig: TreeSignals,
+) -> tuple[str, str]:
+    """Apply uniform caps to a PASS verdict (replaces ``_pass()`` closure).
+
+    1. bidi_degraded -> MARGINAL (RFC-018 D2)
+    2. depth-inadequacy -> MARGINAL when the tree is shallower than its
+       node count warrants (RFC-036 D6).
+    """
+    if defect == TreeDefect.BIDI_DEGRADED:
+        return "MARGINAL", "bidi_degraded"
+    if sig.depth < sig.expected_min_depth and not sig.effectively_garbled:
+        return (
+            "MARGINAL",
+            f"depth_inadequate:expected_min_depth={sig.expected_min_depth},actual_depth={sig.depth}",
+        )
+    return "PASS", reason
+
+
 def classify_verdict(  # noqa: C901
     structure: list,
     content_class: str,
@@ -2059,23 +2189,17 @@ def classify_verdict(  # noqa: C901
 ) -> tuple[str, str]:
     """Grouped-rule verdict engine.
 
-    GROUP 1 -- HARD_FAILs: any defect in :data:`HARD_FAIL_DEFECTS` — whether
-               it is the primary defect or merely present in ``all_defects``
-               behind a less-severe primary — returns FAIL immediately
-               (takes priority over all content-class dispatch, including
-               image_standalone).  There is no independent
-               ``sig.is_reordered`` hard-fail: exhaustive gate evaluation
-               always puts ``TreeDefect.REORDERED`` in ``all_defects`` when
-               it fires, so the verdict engine can never disagree with
-               validate_tree's defect enum.  Only the ``None`` path (flat
-               docs, where no gate ever ran) lifts ``sig.is_reordered`` into
-               the defect enum, and even then the FAIL is issued by the
-               HARD_FAIL_DEFECTS dispatch.
+    GROUP 1 -- HARD_FAILs: delegated to :func:`_compute_verdict_band`.
+               Any defect with ``hard_fail=True`` in :data:`GATES` --
+               whether it is the primary defect or merely present in
+               ``all_defects`` behind a less-severe primary -- returns FAIL
+               immediately (takes priority over all content-class dispatch,
+               including image_standalone).
     DISPATCH - image_standalone: own verdict logic after hard-fails clear.
     GROUP 2 -- PROMOTIONS: image-enrichment rescue, base PASS, category
                promotions (cat_a/b/c), small-doc exemption, MARGINAL fallback.
-    CAPS    -- bidi_degraded and depth-adequacy applied uniformly via _pass()
-               to every PASS-returning branch in Group 2.
+    CAPS    -- bidi_degraded and depth-adequacy applied uniformly via
+               :func:`_clamp_pass` to every PASS-returning branch in Group 2.
 
     ``validate_result`` accepts a :class:`TreeGateResult` (preferred) which
     carries both the defect enum, pre-computed :class:`TreeSignals`, and
@@ -2129,7 +2253,7 @@ def classify_verdict(  # noqa: C901
     # No gate result (flat-doc path): no gate ever ran, so the ordering
     # signal has to be lifted into the defect enum here.  This is a
     # normalisation, not a second decider — the FAIL itself is still issued
-    # by the HARD_FAIL_DEFECTS dispatch below, so classify_verdict can never
+    # by _compute_verdict_band below, so classify_verdict can never
     # produce a reason that disagrees with the TreeDefect enum.  When a
     # TreeGateResult *was* supplied, sig.is_reordered is deliberately
     # ignored: validate_tree's REORDERED gate is the sole authority.
@@ -2137,23 +2261,10 @@ def classify_verdict(  # noqa: C901
         defect = TreeDefect.REORDERED
         _all_defects = frozenset({TreeDefect.REORDERED})
 
-    # ── GROUP 1: HARD_FAILs (any one is terminal) ────────────────────────
-    # Hard-fails take priority over all content-class dispatch, including
-    # image_standalone (a garbled image doc still FAILs).
-    if defect in HARD_FAIL_DEFECTS:
-        return "FAIL", validate_reason or defect.value
-    # Co-firing hard-fails: the primary defect is only the highest-severity
-    # gate in table order, which is not necessarily a hard-fail (e.g.
-    # rtl_reversal outranks suspect_density).  Exhaustive gate evaluation
-    # means such a masked hard-fail is still recorded in ``all_defects``;
-    # honour it rather than letting the softer primary defect hide it.
-    # ``sig.is_reordered`` is deliberately NOT re-checked here — REORDERED
-    # reaches FAIL through HARD_FAIL_DEFECTS only, so classify_verdict can
-    # never disagree with validate_tree's defect enum.
-    _masked_hard_fails = _all_defects & HARD_FAIL_DEFECTS
-    if _masked_hard_fails:
-        _worst = min(_masked_hard_fails, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
-        return "FAIL", _worst.value
+    # ── GROUP 1: HARD_FAILs (delegated to _compute_verdict_band) ────────
+    _band = _compute_verdict_band(defect, _all_defects, validate_reason)
+    if _band is not None:
+        return _band
 
     # ── Content-class dispatch: image_standalone ─────────────────────────
     # image_standalone has its own verdict logic; tree-shape metrics are
@@ -2162,26 +2273,16 @@ def classify_verdict(  # noqa: C901
     if content_class == "image_standalone":
         return _classify_image_verdict(image_enrichment_ratio)
 
-    # ── CAPS: shared _pass() wrapper ─────────────────────────────────────
-    # Every Group-2 branch returning PASS funnels through _pass(), which
-    # applies two uniform caps:
-    #   1. bidi_degraded -> MARGINAL (RFC-018 D2)
-    #   2. depth-adequacy -> MARGINAL when the tree is shallower than its
-    #      node count warrants (RFC-036 D6).  Previously only applied in
-    #      the base-PASS branch; now uniform across all promotions.
-    _bidi_degraded = defect == TreeDefect.BIDI_DEGRADED
-
-    def _pass(reason: str) -> tuple[str, str]:
-        if _bidi_degraded:
-            return "MARGINAL", "bidi_degraded"
-        if sig.depth < sig.expected_min_depth and not sig.effectively_garbled:
-            return (
-                "MARGINAL",
-                f"depth_inadequate:expected_min_depth={sig.expected_min_depth},actual_depth={sig.depth}",
-            )
-        return "PASS", reason
-
     # ── GROUP 2: PROMOTIONS (tried only when no HARD_FAIL fired) ─────────
+
+    # Gate 2/3 structural check: for tree-path docs, derive from
+    # all_defects (gates already evaluated node_count<3 / depth<2);
+    # for flat-path docs (no gates ran), compute directly as safety net.
+    _structural_ok = (
+        {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(_all_defects)
+        if validate_result is not None
+        else (sig.node_count >= 3 and sig.depth >= 2)
+    )
 
     # 2b: image-enrichment rescue (RFC-022 B2) — intentionally before
     # max_leaf_ratio hard-fail; see docstring for rationale.
@@ -2198,7 +2299,7 @@ def classify_verdict(  # noqa: C901
         if total_chars < th.min_image_promoted_chars:
             return "MARGINAL", "image_enrichment_promoted_below_char_floor"
         if not check_garble(_promoted_text, expected_script=expected_script, context=GarbleContext.IMAGE_ENRICHMENT):
-            return _pass("image_enrichment_promoted")
+            return _clamp_pass("image_enrichment_promoted", defect=defect, sig=sig)
 
     # max_leaf_ratio structural hard FAIL — blocks all non-image promotions
     # below.  Image-enrichment rescue above may bypass this for flat docs
@@ -2206,20 +2307,21 @@ def classify_verdict(  # noqa: C901
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
         return "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}"
 
-    # 2c: base PASS
+    # 2c: base PASS — _structural_ok replaces the duplicate gate 2/3
+    # checks (sig.node_count >= 3 and sig.depth >= 2) that were already
+    # evaluated by GATE_TABLE for tree-path docs.
     _effective_max_leaf = th.pass_max_leaf_ratio
     if (
-        sig.node_count >= 3
-        and sig.depth >= 2
+        _structural_ok
         and sig.max_leaf_ratio < _effective_max_leaf
         and not sig.effectively_garbled
     ):
-        return _pass("")
+        return _clamp_pass("", defect=defect, sig=sig)
 
     # 2d-2f: category-specific promotions
     if content_class.startswith("ocr_"):
         if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
-            return _pass("cat_a_promoted")
+            return _clamp_pass("cat_a_promoted", defect=defect, sig=sig)
     elif content_class.startswith("flat_"):
         _stripped_flat_text = sig.flat_text.strip()
         _text_blocks = [b for b in _stripped_flat_text.splitlines() if b.strip()]
@@ -2235,7 +2337,7 @@ def classify_verdict(  # noqa: C901
             and len(_stripped_flat_text) >= th.min_flat_promotion_chars
             and _placeholder_ratio <= 0.5
         ):
-            return _pass("cat_b_promoted")
+            return _clamp_pass("cat_b_promoted", defect=defect, sig=sig)
     else:
         _cat_c_threshold = th.cat_bc_promotion_threshold
         if not content_class and inspector_class == "text_based":
@@ -2245,7 +2347,7 @@ def classify_verdict(  # noqa: C901
             and hash_pipe_ratio(sig.flat_text) < 0.01
             and sig.max_leaf_ratio < _cat_c_threshold
         ):
-            return _pass("cat_c_promoted")
+            return _clamp_pass("cat_c_promoted", defect=defect, sig=sig)
 
     # 2g: small-doc exemption (flat_ only)
     _small_doc_leaf_ratio_bound = (
@@ -2260,7 +2362,7 @@ def classify_verdict(  # noqa: C901
         and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
         and 100 <= len(sig.flat_text.strip()) < 15000
     ):
-        return _pass("small_doc_promoted")
+        return _clamp_pass("small_doc_promoted", defect=defect, sig=sig)
 
     # ── MARGINAL fallback ────────────────────────────────────────────────
     if sig.effectively_garbled:

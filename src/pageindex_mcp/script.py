@@ -146,17 +146,16 @@ def arabic_letter_ratio(text: str) -> float:
 
 
 def infer_script(text: str) -> str | None:
-    """Return 'Arab', 'Latn', or None based on majority script."""
-    ar = 0
-    la = 0
-    for c in text:
-        if is_arabic_char(c):
-            ar += 1
-        elif c.isascii() and c.isalpha():
-            la += 1
-    if ar == 0 and la == 0:
-        return None
-    return "Arab" if ar >= la else "Latn"
+    """Return 'Arab', 'Latn', or None based on majority script.
+
+    Delegates to the canonical implementation in ``helpers._infer_script``
+    which provides min-length (< 10 chars), min-signal (< 5 script chars),
+    extended-Latin (U+00C0-U+024F), and strict-majority (> 50%) guards.
+
+    Zone-7: unified to eliminate dual script-inference paths.
+    """
+    from .helpers import _infer_script  # late: avoids circular at module-load time
+    return _infer_script(text)
 
 
 # ---------------------------------------------------------------------------

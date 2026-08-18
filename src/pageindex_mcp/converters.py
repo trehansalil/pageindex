@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
+from .helpers import classify_verdict
 from .picture_plane import OcrMode, PictureRegion, SkipReason, decide_ocr_mode
 from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
 from .script import AR_CHAR_RE as _AR_LETTER_RE
@@ -824,6 +825,69 @@ def _has_structural_depth(md: str) -> bool:
     return _max_heading_level(md) >= 2 and _heading_count(md) >= 3
 
 
+def _md_to_structure(md: str) -> list:
+    """Build a minimal tree structure from markdown headings for ``classify_verdict``.
+
+    Each heading becomes a node with ``title``/``text``/``nodes`` keys matching
+    the tree format that :func:`helpers.classify_verdict`,
+    :func:`helpers._tree_node_count`, :func:`helpers._tree_depth`, and
+    :func:`helpers._tree_max_leaf_ratio` expect.  Body text between headings
+    becomes the ``text`` of the preceding heading node.
+
+    This is a lightweight synchronous alternative to the full ``md_to_tree``
+    pipeline (which is async and requires the external ``pageindex`` tool),
+    producing just enough structure for ``classify_verdict``'s structural
+    metrics.  Text before the first heading is attached to a synthetic root
+    node only when at least one heading follows — otherwise the whole document
+    is a single flat node (no headings).
+    """
+    structure: list[dict] = []
+    stack: list[tuple[int, dict]] = []  # (level, node)
+    text_buf: list[str] = []
+
+    def _flush_text() -> None:
+        body = "\n".join(text_buf).strip()
+        text_buf.clear()
+        if not body:
+            return
+        if stack:
+            # Append to the most recent heading's text
+            prev = stack[-1][1].get("text", "")
+            stack[-1][1]["text"] = (prev + "\n" + body).strip() if prev else body
+        else:
+            # Text before any heading — will be attached to a synthetic root
+            # only if headings follow (handled after the loop).
+            structure.append({"title": "", "text": body, "nodes": []})
+
+    for line in md.split("\n"):
+        m = _HEADING_RE.match(line)
+        if m:
+            _flush_text()
+            level = len(m.group(1))
+            title = line[m.end() :].strip()
+            node: dict = {"title": title, "text": "", "nodes": []}
+
+            # Pop stack until we find a strictly shallower (parent) level.
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+
+            if stack:
+                stack[-1][1]["nodes"].append(node)
+            else:
+                structure.append(node)
+
+            stack.append((level, node))
+        else:
+            text_buf.append(line)
+
+    _flush_text()
+    return structure
+
+
+# Zone-3: verdict ranking for source selection.  Lower rank = better verdict.
+_VERDICT_RANK: dict[str, int] = {"PASS": 0, "MARGINAL": 1, "FAIL": 2}
+
+
 def _recover_heading_depth(md: str, heading_pages: dict[str, list[int]], pdf_path: str) -> str:
     """Run the full heading-depth recovery chain on ONE markdown source.
 
@@ -855,16 +919,37 @@ def _candidate_from_document(
     Runs ``_build_candidate`` (injection + normalisation) then
     ``_recover_heading_depth`` (containment -> numbering -> outline) and
     returns an immutable ``Candidate`` bundling the result with its heading-
-    page map and pre-computed structural-depth flag.  Pure function — does
-    NOT call ``_collect_heading_pages`` (the caller owns that) and does NOT
-    touch ``extraction_stages``.
+    page map, pre-computed structural-depth flag, and ``classify_verdict``
+    result (Zone-3: single verdict authority).
+
+    Pure function — does NOT call ``_collect_heading_pages`` (the caller
+    owns that) and does NOT touch ``extraction_stages``.
     """
     built = _build_candidate(md)
     recovered = _recover_heading_depth(built, heading_pages, pdf_path)
+    has_depth = _has_structural_depth(recovered)
+
+    # Zone-3: compute classify_verdict on a lightweight markdown-derived
+    # structure so source selection uses the single verdict authority
+    # instead of the structural-depth proxy alone.
+    verdict = ""
+    if has_depth:
+        try:
+            structure = _md_to_structure(recovered)
+            verdict, _ = classify_verdict(structure, "", None)
+        except Exception as exc:
+            logger.debug(
+                "classify_verdict in _candidate_from_document failed for %s (%s); "
+                "falling back to structural-depth proxy",
+                pdf_path,
+                exc,
+            )
+
     return Candidate(
         md=recovered,
         heading_pages=heading_pages,
-        has_depth=_has_structural_depth(recovered),
+        has_depth=has_depth,
+        verdict=verdict,
     )
 
 
@@ -1656,8 +1741,7 @@ def _text_layer_has_content(page, expected_script: str | None = None) -> bool:
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
     if _TEXT_LAYER_GARBLE_CHECK_ENABLED:
-        from .helpers import GarbleContext, check_garble
-        from .script import infer_script
+        from .helpers import GarbleContext, check_garble, infer_script  # Zone-7: single module
 
         if check_garble(text, expected_script=expected_script or infer_script(text), context=GarbleContext.PAGE_TEXT_LAYER):
             return False
@@ -1755,8 +1839,7 @@ def _document_level_text_fallback(md: str, pdf_path: str, expected_script: str |
         return md
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
-    from .helpers import GarbleContext, check_garble
-    from .script import infer_script
+    from .helpers import GarbleContext, check_garble, infer_script  # Zone-7: single module
 
     if check_garble(full_text, expected_script=expected_script or infer_script(full_text), context=GarbleContext.DOCUMENT_FALLBACK):
         logger.warning(
@@ -2156,8 +2239,7 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         if has_own_text and _TEXT_LAYER_GARBLE_CHECK_ENABLED:
                             region_text = page.get_text("text", clip=rect).strip()
                             if region_text:
-                                from .helpers import GarbleContext, check_garble
-                                from .script import infer_script
+                                from .helpers import GarbleContext, check_garble, infer_script  # Zone-7: single module
 
                                 if check_garble(
                                     region_text,
@@ -3099,15 +3181,22 @@ class StageRecord:
 
 @dataclasses.dataclass(frozen=True)
 class Candidate:
-    """Immutable (md, heading_pages, has_depth) triple — keeps the values that
-    describe a single pipeline candidate in lock-step so they can never drift
-    apart.  ``has_depth`` caches ``_has_structural_depth(md)`` at construction
-    time so the gate-aware selection block reads it declaratively instead of
-    re-invoking the predicate."""
+    """Immutable candidate bundle — keeps the values that describe a single
+    pipeline candidate in lock-step so they can never drift apart.
+
+    ``has_depth`` caches ``_has_structural_depth(md)`` at construction time so
+    the gate-aware selection block reads it declaratively instead of re-invoking
+    the predicate.
+
+    ``verdict`` carries the ``classify_verdict`` result (Zone-3: single verdict
+    authority) so source selection can compare candidates by their actual
+    verdict rather than the structural-depth proxy alone.  Set to ``""`` when
+    ``classify_verdict`` was not run (e.g. non-Docling paths)."""
 
     md: str
     heading_pages: dict[str, list[int]] = dataclasses.field(default_factory=dict)
     has_depth: bool = False
+    verdict: str = ""
 
 
 def _run_stages(
@@ -3479,6 +3568,27 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
                 raw_headings,
             )
             selected = raw_candidate
+    # Zone-3: when both candidates have structural depth, prefer the one with
+    # the better classify_verdict result.  This catches cases the proxy misses:
+    # the post-add-on markdown may have depth but be garbled, reordered, or have
+    # a degenerate max_leaf_ratio, while the raw candidate is structurally sound.
+    elif (
+        post_candidate.has_depth
+        and raw_candidate.has_depth
+        and post_candidate.verdict
+        and raw_candidate.verdict
+        and _VERDICT_RANK.get(raw_candidate.verdict, 2)
+        < _VERDICT_RANK.get(post_candidate.verdict, 2)
+    ):
+        logger.info(
+            "post-add-on verdict %s worse than raw verdict %s for %s; "
+            "using raw docling markdown (%d headings)",
+            post_candidate.verdict,
+            raw_candidate.verdict,
+            pdf_path,
+            raw_headings,
+        )
+        selected = raw_candidate
 
     # Runtime contract: the selected source must be a Candidate so the
     # downstream pipeline can rely on .md / .heading_pages being present

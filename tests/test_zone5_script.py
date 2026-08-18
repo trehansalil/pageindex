@@ -97,11 +97,11 @@ class TestInferScript:
         assert infer_script(text) == "Latn"
 
     def test_infer_script_too_short(self):
-        # "abc" has 3 Latin chars, 0 Arabic -- returns "Latn" not None
-        # infer_script has no min-length guard itself (that's in helpers._infer_script)
-        # so a short all-Latin string returns "Latn"
+        # "abc" has 3 chars (< 10 stripped-char floor in _infer_script).
+        # script.infer_script delegates to helpers._infer_script which
+        # enforces the min-length guard, so short text returns None.
         result = infer_script("abc")
-        assert result == "Latn"
+        assert result is None
 
     def test_infer_script_no_letters(self):
         assert infer_script("12345 !@#$%") is None
