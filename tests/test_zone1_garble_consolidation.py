@@ -25,7 +25,7 @@ from pageindex_mcp.helpers import (
     FLAT_MARKDOWN_PROFILE,
     GarbleProfile,
     TreeDefect,
-    _has_sparse_mojibake,
+    garble_prongs,
     check_garble,
 )
 
@@ -142,7 +142,7 @@ class TestGarbleFlatMarkdownNormalizeEnvVar:
         )
         # With normalize disabled, FLAT should produce same as BULK
         # (both use TREE_TEXT-equivalent path)
-        expected = bulk_result or _has_sparse_mojibake(text)
+        expected = bulk_result or ("sparse_mojibake" in garble_prongs(text, original_text=text))
         assert flat_result == expected, (
             "With normalize disabled, FLAT_MARKDOWN should produce same result "
             "as BULK_PROFILE"

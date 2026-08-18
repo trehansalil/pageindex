@@ -1780,9 +1780,9 @@ def _text_layer_has_content(
     )
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
-    from .helpers import BULK_PROFILE, check_garble, infer_script  # Zone-1: profile-based
+    from .helpers import BULK_PROFILE, check_garble  # Zone-1: profile-based
 
-    if check_garble(text, expected_script=expected_script or infer_script(text), profile=BULK_PROFILE):
+    if check_garble(text, expected_script=expected_script, profile=BULK_PROFILE):
         return False
     return True
 
@@ -1892,9 +1892,9 @@ def _document_level_text_fallback(md: str, pdf_path: str, expected_script: str |
         return md
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
-    from .helpers import BULK_PROFILE, check_garble, infer_script  # Zone-1: profile-based
+    from .helpers import BULK_PROFILE, check_garble  # Zone-1: profile-based
 
-    if check_garble(full_text, expected_script=expected_script or infer_script(full_text), profile=BULK_PROFILE):
+    if check_garble(full_text, expected_script=expected_script, profile=BULK_PROFILE):
         logger.warning(
             "document-level text-layer fallback skipped for %s: text layer is garbled",
             pdf_path,

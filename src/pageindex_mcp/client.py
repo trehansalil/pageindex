@@ -76,7 +76,6 @@ from .helpers import (
     check_garble,
     classify_verdict,
     compute_verdict,
-    infer_script,
     compute_image_enrichment_ratio,
     decide_route,
     prepare_tree,
@@ -465,7 +464,7 @@ async def _attempt_tesseract_raster_recovery(
     try:
         tess_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
         ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-        if ocr_text and not check_garble(ocr_text, expected_script=expected_script or infer_script(ocr_text), profile=profile):
+        if ocr_text and not check_garble(ocr_text, expected_script=expected_script, profile=profile):
             logger.warning(
                 "Tesseract-on-raster fallback recovered %s; overriding reason to node_count<3",
                 filename,
@@ -1024,7 +1023,7 @@ class CustomPageIndexClient(PageIndexClient):
                             raw_text = probe_pdf[0].get_text()
                             if raw_text.strip() and check_garble(
                                 raw_text,
-                                expected_script=expected_script or infer_script(raw_text),
+                                expected_script=expected_script,
                                 profile=FLAT_MARKDOWN_PROFILE,
                             ):
                                 state.pre_garbled = True
@@ -1389,12 +1388,12 @@ class CustomPageIndexClient(PageIndexClient):
                 retry_wins = state.ok or (
                     check_garble(
                         _pre_text,
-                        expected_script=expected_script or infer_script(_pre_text),
+                        expected_script=expected_script,
                         profile=BULK_PROFILE,
                     )
                     and not check_garble(
                         _post_text,
-                        expected_script=expected_script or infer_script(_post_text),
+                        expected_script=expected_script,
                         profile=BULK_PROFILE,
                     )
                 )
@@ -1402,7 +1401,7 @@ class CustomPageIndexClient(PageIndexClient):
                 _pre_text_cmp = _flatten_tree_text(pre_retry.result.get("structure", []))
                 _pre_garble_flag = check_garble(
                     _pre_text_cmp,
-                    expected_script=expected_script or infer_script(_pre_text_cmp),
+                    expected_script=expected_script,
                     profile=BULK_PROFILE,
                 )
                 if _pre_garble_flag:
@@ -1789,7 +1788,7 @@ class CustomPageIndexClient(PageIndexClient):
         state.flat_garble_unrecovered = False
         if check_garble(
             flat_md,
-            expected_script=expected_script or infer_script(flat_md),
+            expected_script=expected_script,
             profile=FLAT_MARKDOWN_PROFILE,
             original_defect=state.first_defect,
         ):
@@ -1815,7 +1814,7 @@ class CustomPageIndexClient(PageIndexClient):
                     )
                     if not check_garble(
                         vlm_md,
-                        expected_script=expected_script or infer_script(vlm_md),
+                        expected_script=expected_script,
                         profile=FLAT_MARKDOWN_PROFILE,
                     ):
                         flat_md = vlm_md

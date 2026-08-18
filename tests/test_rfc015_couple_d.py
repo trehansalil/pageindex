@@ -21,7 +21,7 @@ from pageindex_mcp.helpers import (
     _flatten_tree_text,
     _forward_fill_leading_column,
     _has_heading_markers,
-    _has_sparse_mojibake,
+    garble_prongs,
     _ordinal_value,
     check_garble,
     split_oversized_leaf_nodes,
@@ -101,7 +101,7 @@ def test_d8_glued_mojibake_flagged():
     """Latin fragments glued into Arabic (no spaces) → garbled."""
     moji = "كtابcجديدxمادةyنص عربي سليم شروط التأمين " * 5
     assert len(moji) > 100
-    assert _has_sparse_mojibake(moji) is True
+    assert "sparse_mojibake" in garble_prongs(moji, original_text=moji)
 
 
 def test_d8_clean_arabic_not_flagged():
@@ -109,18 +109,18 @@ def test_d8_clean_arabic_not_flagged():
     This is the calibration anchor that would break under a literal \\x20 class."""
     clean_ar = "هذا نص عربي سليم تماما عن شروط التأمين والتغطية القانونية اليوم " * 2
     assert len(clean_ar) > 100
-    assert _has_sparse_mojibake(clean_ar) is False
+    assert "sparse_mojibake" not in garble_prongs(clean_ar, original_text=clean_ar)
 
 
 def test_d8_transliterated_names_not_flagged():
     """Space-separated Latin names among Arabic (b1a72fb2 class) → not flagged."""
     translit = "المدير Ahmed Hassan وقع العقد مع Mohamed Ali في مدينة القاهرة اليوم " * 2
-    assert _has_sparse_mojibake(translit) is False
+    assert "sparse_mojibake" not in garble_prongs(translit, original_text=translit)
 
 
 def test_d8_short_text_not_flagged():
     """<100 chars is length-gated out regardless of content."""
-    assert _has_sparse_mojibake("كtابcمادة") is False
+    assert "sparse_mojibake" not in garble_prongs("كtابcمادة", original_text="كtابcمادة")
 
 
 def test_d8_wired_into_garble_gates_additively():

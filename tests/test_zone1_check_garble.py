@@ -10,7 +10,9 @@ Contracts locked:
    FLAT_MARKDOWN_PROFILE + original garbling defect.
 4. **Regression** -- FLAT_MARKDOWN_PROFILE strips markdown before ratio
    computation.
-5. **Regression** -- BULK_PROFILE includes _has_sparse_mojibake in the check.
+5. **Regression** -- BULK_PROFILE includes sparse_mojibake prong in the check.
+6. **Contract** -- check_garble accepts had_presentation_forms kwarg.
+7. **Contract** -- check_garble signature includes original_defect and had_presentation_forms.
 """
 
 from __future__ import annotations
@@ -22,8 +24,8 @@ from pageindex_mcp.helpers import (
     FLAT_MARKDOWN_PROFILE,
     GarbleProfile,
     TreeDefect,
-    _has_sparse_mojibake,
     check_garble,
+    garble_prongs,
 )
 
 
@@ -237,21 +239,24 @@ class TestFlatMarkdownStripsFormatting:
 
 
 # ---------------------------------------------------------------------------
-# 5. Regression: BULK_PROFILE includes _has_sparse_mojibake
+# 5. Regression: BULK_PROFILE includes sparse_mojibake prong
 # ---------------------------------------------------------------------------
 
 class TestBulkProfileIncludesSparseMojibake:
-    """BULK_PROFILE check_garble includes _has_sparse_mojibake (Cross-cutting
-    Issue 3: MOU / warid-597 type text)."""
+    """BULK_PROFILE check_garble includes sparse_mojibake prong (Cross-cutting
+    Issue 3: MOU / warid-597 type text). The _has_sparse_mojibake standalone
+    function was inlined into garble_prongs as the 'sparse_mojibake' prong."""
 
     def test_sparse_mojibake_caught(self):
-        blob_result = check_garble(
-            _SPARSE_MOJIBAKE, expected_script="Arab", profile=BULK_PROFILE,
+        """sparse_mojibake prong must fire for Arabic-Latin-Arabic glued fragments."""
+        prongs = garble_prongs(
+            _SPARSE_MOJIBAKE,
+            expected_script="Arab",
+            original_text=_SPARSE_MOJIBAKE,
         )
-        mojibake_result = _has_sparse_mojibake(_SPARSE_MOJIBAKE)
-        assert mojibake_result is True, (
-            "Test fixture _SPARSE_MOJIBAKE must trigger _has_sparse_mojibake "
-            "(adjust fixture if Arabic-Latin-Arabic pattern changed)"
+        assert "sparse_mojibake" in prongs, (
+            "Test fixture _SPARSE_MOJIBAKE must trigger sparse_mojibake prong "
+            f"(adjust fixture if pattern changed); got prongs: {prongs}"
         )
         result = check_garble(
             _SPARSE_MOJIBAKE,
@@ -260,7 +265,7 @@ class TestBulkProfileIncludesSparseMojibake:
         )
         assert result is True, (
             "Sparse mojibake text not caught by BULK_PROFILE -- "
-            "_has_sparse_mojibake integration missing"
+            "sparse_mojibake prong integration missing"
         )
 
     def test_clean_arabic_not_flagged(self):
@@ -270,3 +275,42 @@ class TestBulkProfileIncludesSparseMojibake:
             profile=BULK_PROFILE,
         )
         assert result is False, "Clean Arabic flagged as garbled by BULK_PROFILE"
+
+
+# ---------------------------------------------------------------------------
+# 6. Contract: check_garble signature includes had_presentation_forms
+# ---------------------------------------------------------------------------
+
+class TestCheckGarbleSignature:
+    """check_garble must accept had_presentation_forms as a keyword argument."""
+
+    def test_had_presentation_forms_kwarg_accepted(self):
+        """check_garble must accept had_presentation_forms without error."""
+        result = check_garble(
+            _CLEAN_GERMAN,
+            expected_script="Latn",
+            profile=BULK_PROFILE,
+            had_presentation_forms=False,
+        )
+        assert result is False
+
+    def test_had_presentation_forms_true_accepted(self):
+        result = check_garble(
+            _CLEAN_GERMAN,
+            expected_script="Latn",
+            profile=BULK_PROFILE,
+            had_presentation_forms=True,
+        )
+        assert result is True, (
+            "had_presentation_forms=True must cause garble detection"
+        )
+
+    def test_original_defect_kwarg_accepted(self):
+        """check_garble must accept original_defect without error."""
+        result = check_garble(
+            _CLEAN_GERMAN,
+            expected_script="Latn",
+            profile=BULK_PROFILE,
+            original_defect=None,
+        )
+        assert result is False

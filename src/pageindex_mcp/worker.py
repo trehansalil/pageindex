@@ -681,6 +681,38 @@ async def reap_stale_jobs(ctx: dict) -> None:
         logger.warning("reap_stale_jobs flipped %d stale processing job(s) to error", reaped)
 
 
+# Zone-4: Redis verdict retry queue — enqueued when Postgres is unavailable
+# during a Postgres-authority write so reconcile_registry_drift can drain
+# and heal later.  Key pattern: pageindex:verdict_retry:<doc_id>.
+_VERDICT_RETRY_KEY_PREFIX = "pageindex:verdict_retry:"
+_VERDICT_RETRY_TTL_S = 86400  # 24 hours — enough for a Postgres outage
+
+
+async def _enqueue_verdict_retry(doc_id: str, verdict_fields: dict[str, Any]) -> None:
+    """Best-effort enqueue of a failed verdict write for later drain.
+
+    Never raises — a Redis failure here is logged and swallowed since losing
+    one retry entry is strictly better than crashing the calling job.
+    """
+    try:
+        import json as _json
+
+        redis_client = await get_async_redis()
+        key = f"{_VERDICT_RETRY_KEY_PREFIX}{doc_id}"
+        await redis_client.set(
+            key, _json.dumps(verdict_fields), ex=_VERDICT_RETRY_TTL_S
+        )
+        logger.info(
+            "registry: enqueued verdict retry for doc_id=%s (TTL=%ds)",
+            doc_id, _VERDICT_RETRY_TTL_S,
+        )
+    except Exception as exc:
+        logger.warning(
+            "registry: failed to enqueue verdict retry for %s (non-fatal): %s",
+            doc_id, exc,
+        )
+
+
 async def _upsert_registry_row(
     doc_id: str,
     content_class: str | None,
@@ -706,25 +738,76 @@ async def _upsert_registry_row(
     """
     if not (settings.registry_enabled and settings.postgres_dsn):
         return
-    from .registry import get_pool, upsert_doc
+    from .registry import get_pool, upsert_doc, upsert_verdict
 
     if get_pool() is None:
         logger.debug("registry: pool not ready, skipping dual-write for %s", doc_id)
+        # Zone-4: when Postgres-first is active and the pool is unavailable,
+        # queue the verdict for retry so reconcile_registry_drift can pick it
+        # up later.
+        if settings.registry_verdict_authority == "postgres" and verdict_fields:
+            await _enqueue_verdict_retry(doc_id, verdict_fields)
         return
     try:
-        fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
-        if fields and verdict_fields:
-            # Zone-3: overlay job-context verdict fields onto the MinIO-read
-            # base, so the caller's authoritative values win over any stale
-            # or not-yet-visible artifact data.
-            fields.update(verdict_fields)
-        if fields:
-            await upsert_doc(fields)
-            REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()
-            logger.info("registry: dual-write upserted doc_id=%s", doc_id)
-            await _mirror_registry_metric_to_redis(
-                _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY, str(int(time.time()))
+        if settings.registry_verdict_authority == "postgres":
+            # Zone-4 Phase 2: Postgres-first path.
+            # 1. Write verdict columns via CAS-guarded upsert_verdict() first.
+            winning = None
+            if verdict_fields:
+                try:
+                    winning = await upsert_verdict(doc_id, verdict_fields)
+                except Exception as vexc:
+                    logger.warning(
+                        "registry: upsert_verdict failed for %s (non-fatal, "
+                        "falling back to full upsert): %s",
+                        doc_id, vexc,
+                    )
+                    # Queue for retry and continue with full upsert below.
+                    await _enqueue_verdict_retry(doc_id, verdict_fields)
+
+            # 2. Backfill MinIO sidecar with the winning verdict so both
+            #    stores converge.  Uses asyncio.to_thread because
+            #    save_doc_meta is synchronous MinIO I/O.
+            if winning:
+                from .storage import save_doc_meta
+
+                try:
+                    await asyncio.to_thread(save_doc_meta, doc_id, winning)
+                except Exception as smc_exc:
+                    # Sidecar backfill is best-effort — the Postgres row
+                    # already landed; the reconcile cron will heal this.
+                    logger.warning(
+                        "registry: sidecar backfill failed for %s (non-fatal): %s",
+                        doc_id, smc_exc,
+                    )
+
+            # 3. Full upsert for non-verdict columns (doc_name, sha256, etc.).
+            fields = await asyncio.to_thread(
+                read_registry_fields, doc_id, content_class
             )
+            if fields:
+                # Overlay verdict_fields so the verdict columns in the full
+                # upsert match what just won in Postgres, avoiding a
+                # stale-MinIO-read regression.
+                if verdict_fields:
+                    fields.update(verdict_fields)
+                await upsert_doc(fields)
+        else:
+            # Zone-4 default (minio): existing RFC-006 flow unchanged.
+            fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+            if fields and verdict_fields:
+                # Zone-3: overlay job-context verdict fields onto the MinIO-read
+                # base, so the caller's authoritative values win over any stale
+                # or not-yet-visible artifact data.
+                fields.update(verdict_fields)
+            if fields:
+                await upsert_doc(fields)
+
+        REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()
+        logger.info("registry: dual-write upserted doc_id=%s", doc_id)
+        await _mirror_registry_metric_to_redis(
+            _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY, str(int(time.time()))
+        )
     except Exception as exc:
         REGISTRY_WRITE_FAILURES_TOTAL.inc()
         logger.error("registry: dual-write failed for %s (non-fatal): %s", doc_id, exc, exc_info=True)

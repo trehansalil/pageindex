@@ -16,7 +16,7 @@ from pageindex_mcp.helpers import (
     FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
     _garble_check_nodes,
-    _has_sparse_mojibake,
+    garble_prongs,
     _infer_script,
     _is_morphologically_nonsense,
     check_garble,
@@ -171,17 +171,17 @@ class TestSparseMojibakeRealCorruption:
         fragment = "كلمةXYZكلمة "
         # 30 fragments out of ~70 tokens -> ~43% ratio, well above 2%
         text = clean + fragment * 30
-        assert _has_sparse_mojibake(text) is True
+        assert "sparse_mojibake" in garble_prongs(text, original_text=text)
 
     def test_clean_arabic_not_flagged(self):
         """Clean Arabic text must NOT trigger sparse mojibake."""
-        assert _has_sparse_mojibake(_PURE_ARABIC) is False
+        assert "sparse_mojibake" not in garble_prongs(_PURE_ARABIC, original_text=_PURE_ARABIC)
 
     def test_short_text_exempt(self):
         """Text under 100 chars is exempt from sparse mojibake check."""
         short = "كلمةXYZكلمة " * 3
         assert len(short) < 100
-        assert _has_sparse_mojibake(short) is False
+        assert "sparse_mojibake" not in garble_prongs(short, original_text=short)
 
 
 # ── 4. Morphological nonsense helper tests ───────────────────────────────────

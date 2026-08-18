@@ -140,7 +140,8 @@ class TestInspectorForceOcrDecisionMatrix:
             pdf_classification={"pdf_type": "scanned", "confidence": 0.85},
         )
 
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script=None)
+        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
     async def test_confidence_exactly_at_threshold_forces_ocr(self, monkeypatch, pdf_file):
@@ -164,7 +165,8 @@ class TestInspectorForceOcrDecisionMatrix:
             pdf_classification={"pdf_type": "scanned"},
         )
 
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script=None)
+        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
     async def test_text_based_never_forces_ocr(self, monkeypatch, pdf_file):
@@ -175,7 +177,8 @@ class TestInspectorForceOcrDecisionMatrix:
             pdf_classification={"pdf_type": "text_based", "confidence": 1.0},
         )
 
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script=None)
+        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
     async def test_preclassify_flag_off_ignores_classification(self, monkeypatch, pdf_file):
@@ -186,13 +189,15 @@ class TestInspectorForceOcrDecisionMatrix:
             pdf_classification={"pdf_type": "scanned", "confidence": 1.0},
         )
 
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script=None)
+        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
     async def test_classification_none_preserves_normal_behavior(self, monkeypatch, pdf_file):
         mocks = await _run_index(monkeypatch, pdf_file, preclassify=True, pdf_classification=None)
 
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script=None)
+        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
 

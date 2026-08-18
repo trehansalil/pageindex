@@ -649,7 +649,12 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
             len(content),
             content_type="application/json",
         )
-        _confirm_write_visible(mc, settings.minio_bucket, key)
+        # Zone-4: under Postgres-authority mode the sidecar is a best-effort
+        # backfill, not the primary read path, so the RFC-034 D18 barrier is
+        # unnecessary and its latency cost is avoided.  Under MinIO-authority
+        # (default) the barrier remains to preserve the existing contract.
+        if settings.registry_verdict_authority != "postgres":
+            _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)

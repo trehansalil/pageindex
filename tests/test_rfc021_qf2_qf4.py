@@ -27,7 +27,6 @@ from pageindex_mcp.helpers import (
     check_garble,
     classify_verdict,
     garble_prongs,
-    _has_sparse_mojibake,
 )
 from tests.conftest import filler_text
 

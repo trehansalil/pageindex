@@ -1284,6 +1284,8 @@ def garble_prongs(
     norm_blob: str,
     *,
     expected_script: str | None = None,
+    original_text: str | None = None,
+    had_presentation_forms: bool = False,
 ) -> frozenset[str]:
     """Return the set of garble-detection prongs that fired on *norm_blob*.
 
@@ -1294,6 +1296,14 @@ def garble_prongs(
     (callers run ``normalize_for_garble`` before invoking this function).
     ``expected_script`` is keyword-only; callers that need inference must
     call ``_infer_script`` explicitly before passing the value here.
+
+    ``original_text``: the UN-normalized blob, used for the sparse_mojibake
+    prong (RFC-015 D8 calibration requires raw text, not norm_blob).
+
+    ``had_presentation_forms``: pre-computed boolean indicating that
+    Arabic Presentation-Forms ratio > 50% of Arabic-range chars was
+    detected (typically from RtlDecision or computed by check_garble
+    before NFKC normalization destroys the codepoints).
     """
     prongs: set[str] = set()
 
@@ -1315,14 +1325,12 @@ def garble_prongs(
     if (pua / max(len(norm), 1)) > 0.03:
         prongs.add("pua_chars")
 
-    # Arabic Presentation-Forms ratio > 50% (RFC-028 D2)
-    presentation_forms = sum(
-        1 for c in norm if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
-    )
-    arabic_range_chars = sum(
-        1 for c in norm if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
-    )
-    if arabic_range_chars > 0 and (presentation_forms / arabic_range_chars) > 0.50:
+    # Arabic Presentation-Forms (RFC-028 D2) \u2014 pre-computed boolean replaces
+    # the dead O(n) codepoint scan (post-NFKC, presentation-form codepoints
+    # are already decomposed to logical Arabic; the ratio was always 0).
+    # The boolean is computed by check_garble on the ORIGINAL text before
+    # normalization destroys the codepoints, or from RtlDecision when available.
+    if had_presentation_forms:
         prongs.add("presentation_forms")
 
     # Single-letter Arabic fragment ratio > 40% (D2 / RFC-033)
@@ -1365,6 +1373,17 @@ def garble_prongs(
             if nonsense / len(latin_tokens) > nonsense_threshold:
                 prongs.add("latin_gibberish")
 
+    # RFC-015 D8: sparse mixed-script mojibake \u2014 inlined from _has_sparse_mojibake.
+    # Uses ORIGINAL un-normalized text (not norm_blob) because the calibration
+    # (92eebefa must-trigger vs b1a72fb2 must-not-trigger at threshold 0.02)
+    # was done against raw text patterns where glued Latin/Arabic fragments
+    # are whitespace-free.
+    _sparse_text = original_text if original_text is not None else norm
+    if len(_sparse_text) >= 100:
+        _sparse_matches = _MIXED_SCRIPT_RE.findall(_sparse_text)
+        if (len(_sparse_matches) / max(len(_sparse_text.split()), 1)) > 0.02:
+            prongs.add("sparse_mojibake")
+
     return frozenset(prongs)
 
 
@@ -1400,17 +1419,26 @@ def check_garble(
     expected_script: str | None,
     profile: GarbleProfile,
     original_defect: "TreeDefect | None" = None,
+    had_presentation_forms: bool = False,
 ) -> bool:
     """Consolidated garble evaluation entry point (Zone-1).
 
-    Single API that always runs BOTH garble_prongs and _has_sparse_mojibake.
+    Single-surface API: all garble heuristics (bulk prongs + sparse mojibake
+    + presentation-forms) run inside ``garble_prongs``.
 
     ``expected_script`` is required keyword-only so callers can never silently
-    omit it (the latin_gibberish prong depends on it).
+    omit it (the latin_gibberish prong depends on it).  When the caller cannot
+    determine the script from metadata, ``check_garble`` applies a centralized
+    ``_infer_script`` fallback — the ONLY surviving self-inference site in the
+    garble pipeline.
 
     ``profile`` selects context-specific behavior via two boolean fields:
     * short-circuit for FLAT_MARKDOWN short-text garble-by-default (RFC-025 D2)
     * RAW_MARKDOWN normalization for flat-routed documents
+
+    ``had_presentation_forms``: pre-computed boolean from RtlDecision or
+    caller; when False (default), check_garble computes the presentation-forms
+    ratio from the ORIGINAL blob before normalization destroys the codepoints.
     """
     blob = text or ""
 
@@ -1423,6 +1451,25 @@ def check_garble(
     ):
         return True
 
+    # Centralized script-inference fallback — the ONLY place self-inference
+    # survives.  Downstream call sites pass bare expected_script (metadata-
+    # derived); when that is None (e.g. hash-named uploads), we infer here
+    # so the latin_gibberish prong is not silently disabled.
+    _effective_script = expected_script if expected_script is not None else _infer_script(blob)
+
+    # Compute had_presentation_forms from the ORIGINAL blob (pre-normalization)
+    # when the caller did not supply it.  NFKC decomposes presentation-form
+    # codepoints into logical Arabic, making the scan worthless post-normalize.
+    if not had_presentation_forms:
+        _pf = sum(
+            1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
+        )
+        _arc = sum(
+            1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
+        )
+        if _arc > 0 and (_pf / _arc) > 0.50:
+            had_presentation_forms = True
+
     # Normalization strategy from profile
     blob_kind = (
         BlobKind.RAW_MARKDOWN
@@ -1433,11 +1480,13 @@ def check_garble(
     if not norm.strip():
         norm = blob  # fallback: normalization collapsed everything
 
-    # Additive OR: bulk heuristics + sparse mixed-script mojibake
-    return (
-        bool(garble_prongs(norm, expected_script=expected_script))
-        or _has_sparse_mojibake(blob)
-    )
+    # Single surface: garble_prongs now includes sparse_mojibake prong
+    return bool(garble_prongs(
+        norm,
+        expected_script=_effective_script,
+        original_text=blob,
+        had_presentation_forms=had_presentation_forms,
+    ))
 
 
 # RFC-015 D8: sparse mixed-script mojibake. Bulk-ratio garble checks (PUA%,
@@ -1458,19 +1507,9 @@ _MIXED_SCRIPT_RE = re.compile(
 )
 
 
-def _has_sparse_mojibake(text: str, threshold: float = 0.02) -> bool:
-    """RFC-015 D8: detect localized Latin/digit fragments glued to Arabic script.
-
-    Requires >100 chars and >``threshold`` (2%) of whitespace-tokens matching the
-    Arabic-Latin-Arabic / Latin-Arabic-Latin pattern. Calibrated against 92eebefa
-    (21.4% mixed-script — must trigger) while sparing b1a72fb2 (legitimate
-    transliterated names — below 2%). Additive-only: OR'd into the existing garble
-    gates, so it can flag MORE text as garbled but never un-flag text the bulk
-    heuristics already caught (HR5-tightening)."""
-    if len(text) < 100:
-        return False
-    matches = _MIXED_SCRIPT_RE.findall(text)
-    return (len(matches) / max(len(text.split()), 1)) > threshold
+# _has_sparse_mojibake removed (Zone-1 consolidation): logic inlined into
+# garble_prongs as the 'sparse_mojibake' prong.  _MIXED_SCRIPT_RE above is
+# still used by garble_prongs directly.
 
 
 # _JOINING_TYPE, _arabic_word_joins, _word_has_reversed_morphology moved to script.py
@@ -1548,13 +1587,16 @@ infer_script = _infer_script
 def _script_from_filename(filename: str) -> str | None:
     """Derive expected Unicode script from filename via OCR-language detection.
 
-    Returns ``"Arab"`` when the filename signals Arabic content, else ``None``.
+    Returns ``"Arab"`` when the filename signals Arabic content,
+    ``"Latn"`` for German/English, else ``None``.
     """
     from .converters import detect_ocr_langs  # late import avoids adding a top-level dep
 
     langs = detect_ocr_langs(filename)
     if "ara" in langs:
         return "Arab"
+    if any(lg in langs for lg in ("deu", "eng")):
+        return "Latn"
     return None
 
 
@@ -2334,7 +2376,7 @@ def compute_verdict(  # noqa: C901
                 "MARGINAL", "image_enrichment_promoted_below_char_floor",
                 defect=defect, signals=sig, all_defects=_all_defects,
             )
-        if not check_garble(_promoted_text, expected_script=expected_script or _infer_script(_promoted_text), profile=BULK_PROFILE):
+        if not check_garble(_promoted_text, expected_script=expected_script, profile=BULK_PROFILE):
             return _apply_clamp("image_enrichment_promoted")
 
     # max_leaf_ratio structural hard FAIL
@@ -2612,6 +2654,17 @@ _ARABIC_INDIC = {ord(d): ord(a) for d, a in zip("٠١٢٣٤٥٦٧٨٩", "0123456
 # inter-segment gap and an all-segments-must-shrink acceptance check instead.
 _PARAGRAPH_FALLBACK_RE = re.compile(r"(?:ال)?فقرة\b")
 
+# Generic numbered-line marker for the structure-agnostic fallback tier.
+# Catches "1.", "1.1", "7.10.a)" — any leading numbered sequence on its own
+# line, without requiring a format-specific keyword (Article/Section/مادة/…).
+# The named group ``gnum`` is parsed into a comparable tuple by
+# _split_on_generic_numbered_lines for use with _longest_increasing_run.
+# Line-anchored (re.MULTILINE) to avoid mid-line number matches.
+_GENERIC_NUMBERED_RE = re.compile(
+    r"^\s*(?P<gnum>\d+(?:\.\d+)*(?:\.[a-z])?)\s*[.\):]\s",
+    re.MULTILINE,
+)
+
 # Dotted-leader ToC entries ("Title ......... 12"), used by
 # _looks_like_frontmatter_toc to recognise cover/bibliography/table-of-contents
 # blocks that should be accepted as-is rather than force-split.
@@ -2834,6 +2887,106 @@ def _split_on_blank_line_paragraphs(
     return True
 
 
+def _split_on_atx_headings(
+    node: dict,
+    text: str,
+    max_chars: int,
+    min_segments: int,
+) -> bool:
+    """Structure-agnostic fallback: splits on ATX-style markdown headings
+    (``# Heading`` through ``###### Heading``) found within a leaf's text.
+    Handles run-together headings on consecutive lines (Zone 6 bug 3: multiple
+    ATX headings collapsed onto one leaf because the primary ordinal path has
+    no keyword match for ``#``). No NFKC folding needed — ``#`` is
+    script-agnostic. Same every-segment-under-``max_chars`` acceptance guard
+    as the other fallback tiers: the leaf is left untouched rather than
+    half-split."""
+    matches = list(re.finditer(r"^\s{0,3}#{1,6}\s+", text, re.MULTILINE))
+    if not matches:
+        return False
+
+    # Filter out headings at position 0 — they are the start of the text,
+    # not a structural split boundary.
+    starts: list[int] = [m.start() for m in matches if m.start() > 0]
+    if len(starts) < 2:
+        return False
+
+    # Accept only if every resulting segment falls under max_chars.
+    for idx, seg_start in enumerate(starts):
+        seg_end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+        if seg_end - seg_start >= max_chars:
+            return False
+
+    _apply_split(node, text, starts)
+    return True
+
+
+def _split_on_generic_numbered_lines(
+    node: dict,
+    text: str,
+    max_chars: int,
+    min_segments: int,
+    min_seg_chars: int = 5000,
+) -> bool:
+    """Structure-agnostic fallback: splits on generic numbered lines
+    (``1.``, ``1.1``, ``7.10.a)``) without requiring a format-specific keyword.
+    Protected by the same ``_longest_increasing_run`` guard as the primary
+    ordinal tier — prose false positives (``2023. The year...``) that don't
+    form a monotonic sequence are rejected. Handles letter-suffixed sub-clauses
+    (Zone 6 bug 4: ``7.10.a``/``7.10.b`` fail the digit-only capture groups in
+    ``_OVERSIZED_ORDINAL_RE``). Same ``min_seg_chars`` floor and
+    every-segment-under-``max_chars`` acceptance guard as the فقرة fallback.
+
+    Ordinal parsing is handled inline (not via ``_ordinal_value``) because
+    letter-suffixed components (``a``/``b``/``c``) need ``ord``-based
+    comparison, whereas ``_ordinal_value`` calls ``int()`` per component
+    and would crash on a letter suffix."""
+    matches = list(_GENERIC_NUMBERED_RE.finditer(text))
+    if len(matches) < min_segments:
+        return False
+
+    # Parse each gnum capture into a comparable tuple of ints.
+    # Letter suffixes (7.10.a) get ord-based values so a < b < c.
+    values: list[tuple[int, ...]] = []
+    for m in matches:
+        raw = m.group("gnum").translate(_ARABIC_INDIC).replace("٫", ".")
+        parts = raw.split(".")
+        parsed: list[int] = []
+        for p in parts:
+            if not p:
+                continue
+            if p.isdigit():
+                parsed.append(int(p))
+            elif len(p) == 1 and p.isalpha():
+                parsed.append(ord(p.lower()) - ord("a") + 1)
+            else:
+                break
+        values.append(tuple(parsed) if parsed else (0,))
+
+    keep_idx = _longest_increasing_run(values)
+    if len(keep_idx) < min_segments:
+        return False
+
+    # Build starts from the LIS-selected matches, enforcing min_seg_chars floor.
+    starts: list[int] = []
+    for k in keep_idx:
+        pos = matches[k].start()
+        if starts and pos - starts[-1] < min_seg_chars:
+            continue
+        starts.append(pos)
+    if len(starts) < 2:
+        return False
+
+    # Accept only if every resulting segment falls under max_chars.
+    for idx, seg_start in enumerate(starts):
+        seg_end = starts[idx + 1] if idx + 1 < len(starts) else len(text)
+        if seg_end - seg_start >= max_chars:
+            return False
+
+    _apply_split(node, text, starts)
+    return True
+
+
 _PREAMBLE_MIN_CHARS = 50
 
 
@@ -3025,9 +3178,14 @@ def split_oversized_leaf_nodes(
             continue
 
         if len(all_matches) < min_segments:
-            if _split_on_paragraph_markers(node, text, max_chars, min_segments) or (
-                _blank_line_fallback_enabled(_tree_ratio)
-                and _split_on_blank_line_paragraphs(node, text, max_chars, min_segments)
+            if (
+                _split_on_atx_headings(node, text, max_chars, min_segments)
+                or _split_on_generic_numbered_lines(node, text, max_chars, min_segments)
+                or _split_on_paragraph_markers(node, text, max_chars, min_segments)
+                or (
+                    _blank_line_fallback_enabled(_tree_ratio)
+                    and _split_on_blank_line_paragraphs(node, text, max_chars, min_segments)
+                )
             ):
                 split_oversized_leaf_nodes(
                     node["nodes"], max_chars, min_segments, _tree_ratio, _tree_total
@@ -3039,10 +3197,17 @@ def split_oversized_leaf_nodes(
         keep_idx = _longest_increasing_run(values)
         if len(keep_idx) < min_segments:
             # مادة/Article markers exist but don't form a long enough increasing
-            # run (e.g. RTL reading-order scramble) — fall back to فقرة.
-            if _split_on_paragraph_markers(node, text, max_chars, min_segments) or (
-                _blank_line_fallback_enabled(_tree_ratio)
-                and _split_on_blank_line_paragraphs(node, text, max_chars, min_segments)
+            # run (e.g. RTL reading-order scramble) — fall back through the
+            # structure-agnostic cascade: ATX headings, generic numbered lines,
+            # فقرة markers, then blank-line paragraphs.
+            if (
+                _split_on_atx_headings(node, text, max_chars, min_segments)
+                or _split_on_generic_numbered_lines(node, text, max_chars, min_segments)
+                or _split_on_paragraph_markers(node, text, max_chars, min_segments)
+                or (
+                    _blank_line_fallback_enabled(_tree_ratio)
+                    and _split_on_blank_line_paragraphs(node, text, max_chars, min_segments)
+                )
             ):
                 split_oversized_leaf_nodes(
                     node["nodes"], max_chars, min_segments, _tree_ratio, _tree_total

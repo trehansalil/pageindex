@@ -216,8 +216,9 @@ class TestExpectedScriptReachesDownstreamChecks:
         )
 
     def test_none_expected_script_falls_back_to_infer(self):
-        """When expected_script=None, the fallback ``or infer_script(text)``
-        should kick in -- expected_script seen by check_garble should NOT be None."""
+        """Zone-1 consolidation: when expected_script=None, the caller passes
+        None through to check_garble, which centralizes _infer_script fallback
+        internally.  The caller must NOT do ``or infer_script(text)`` itself."""
         captured_kwargs: list[dict] = []
 
         def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
@@ -230,15 +231,14 @@ class TestExpectedScriptReachesDownstreamChecks:
         mock_page = MagicMock()
         mock_page.get_text.return_value = "x" * 200
 
-        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble), \
-             patch("pageindex_mcp.script.infer_script", return_value="Latn") as mock_infer:
+        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble):
             from pageindex_mcp.converters import _text_layer_has_content
             _text_layer_has_content(mock_page, expected_script=None)
 
         assert len(captured_kwargs) == 1
-        # With None expected_script, the ``or infer_script(text)`` fires
-        assert captured_kwargs[0]["expected_script"] == "Latn", (
-            "When expected_script=None, infer_script fallback should provide the value"
+        # Zone-1: caller passes None; check_garble centralizes _infer_script
+        assert captured_kwargs[0]["expected_script"] is None, (
+            "Caller should pass expected_script=None; inference is centralized in check_garble"
         )
 
 

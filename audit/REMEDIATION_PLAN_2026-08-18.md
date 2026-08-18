@@ -1,353 +1,299 @@
 # Remediation Plan — 2026-08-18
 
-**Audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-18_POST-FIX-6.md
-**Zones:** 5 of 8 (top by priority)
+**Audit:** `audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-18_POST-FIX-7.md`
+**Zones:** 5 of 6 (top by priority)
 **Waves:** 3
-**Validation status:** APPROVED — all 4 blockers resolved (2026-08-18 patch). Wave 1: Zone 1 then Zone 4 (serialized); Wave 2: Zone 2 ∥ Zone 7 (shared files declared); Wave 3: Zone 3 (extended recovery_tag coverage).
+**Validation status:** `needs_work` (approved = false) — 20 issues found, see [Validation Results](#validation-results) before executing any wave.
 
 ---
 
 ## Priority Scores
 
-| Zone | Score | Severity | Bug Count | Proposal Status | In This Plan? |
+| Zone | Score | Severity | Bug Count | Proposal Status | Excluded |
 |---|---|---|---|---|---|
-| Zone 1: Garble Detection Surface Sprawl | 50.6 | critical | 11 | not_implemented (+15% regression-history boost) | Yes — Wave 1 |
-| Zone 2: Dual Verdict Authority (validate_tree vs classify_verdict) | 46.0 | critical | 10 | not_implemented (+15% boost) | Yes — Wave 2 |
-| Zone 3: Recovery Pipeline Implicit Ordering and State Mutation | 41.4 | critical | 9 | not_implemented (+15% boost) | Yes — Wave 3 |
-| Zone 4: Picture/OCR Recovery Dual-Path Conflation | 24.0 | high | 8 | not_implemented | Yes — Wave 1 |
-| Zone 7: Silent Fallback Chains Masking Compliance and Quality Failures | 20.7 | high | 5 | no_proposal (+15% boost, x1.2 no-proposal multiplier) | Yes — Wave 2 |
-| Zone 6: Splitter Pattern Fragility and Giant Tail-Blob Recurrence | 18.0 | high | 5 | no_proposal | **No** — audit recommends a design spike before any code-fix cycle; not actionable as a mechanical fix |
-| Zone 5: Cross-Process Verdict/Registry Write Races | 15.0 | high | 5 | not_implemented | **No** — excluded to keep this plan to the top-5 by score; good standalone candidate for a future wave (low collision risk with this cluster) |
-| Zone 8: Duplicated Threshold/Logic Definitions Across Files | 9.6 | medium | 4 | no_proposal | **No** — lowest priority, mechanical follow-up, independently fixable any time |
+| Dual-Store Verdict Consistency and Persistence Timing | 40.5 | high | 9 | partially_implemented | no |
+| Content-Destructive Heuristics Without Safety Bounds | 33.6 | critical | 7 | no_proposal | no |
+| Garble Detection Surface Fragmentation | 14.4 | critical | 12 | implemented_and_wired | no |
+| OCR Recovery Pipeline Flag Conflation and Mutable State Ordering | 13.2 | critical | 11 | implemented_and_wired | no |
+| Three-Layer Verdict Pipeline Implicit GATE_TABLE Coupling | 12.0 | critical | 10 | implemented_and_wired | no |
+| Dead Code and Incomplete Wiring Enforcement Gap | 6.3 | high | 7 | implemented_and_wired | no |
 
-Scoring formula: `severity_weight(critical=4, high=3, medium=2) x bug_count x proposal_multiplier(not_implemented=1.0, no_proposal=1.2)`, with a further +15% applied where the audit documents a stalled fix/regress history.
+Scoring formula: `severity_weight × bug_count × proposal_status_multiplier` (critical=4, high=3; no_proposal=1.2, partially_implemented=1.5, implemented_and_wired=0.3). Only the top 5 zones (all but "Dead Code and Incomplete Wiring Enforcement Gap") are carried into this remediation plan's waves.
+
+Notable pattern: the three highest raw-severity zones (Garble, OCR Recovery, GATE_TABLE) score *lowest* because their consolidation interfaces are already wired — the multiplier rewards finishing small residual work over restarting from scratch. The **Content-Destructive Heuristics** zone is the outlier: `no_proposal` status with critical severity and an escalating history (high→critical this cycle) makes it the most urgent zone that currently has no dedicated remediation design — this plan drafts one for it (see its Fix Spec below) rather than deferring it further.
 
 ---
 
 ## Wave Sequence
 
-### Wave 1a — Zone 1 (solo, lands first)
-**Rationale:** Zone 1 deletes the `GarbleContext` enum and replaces it with `GarbleProfile` (frozen dataclass + two constant profiles). All downstream zones that reference `GarbleContext` must target the post-fix API. Zone 1 runs first and alone.
+### Wave 1
+**Zones:** Garble Detection Surface Fragmentation, Dual-Store Verdict Consistency and Persistence Timing
 
-### Wave 1b — Zone 4 (solo, after Zone 1 lands)
-**Rationale:** Zone 4 targets `converters.py:2299-2316` which overlaps Zone 1's target on the same `GarbleContext.REGION` block. Zone 4's spec has been **rewritten** to target Zone 1's post-fix API (`profile=BULK_PROFILE` instead of `GarbleContext.REGION`). Runs after Zone 1 lands to avoid merge conflicts and dangling-API bugs.
+**Rationale:** Zone 1 (`helpers.py`: `check_garble`, `garble_prongs`) and Zone 4 (`storage.py`, `registry.py`, `worker.py`) share zero primary files and have no call-chain dependency. Zone 1 must land first because `compute_verdict` (Zone 3) calls `check_garble` at hop 1 — stabilizing garble detection before the verdict pipeline is restructured. Zone 4 is the most isolated zone (storage/registry layer, no `helpers.py` or `client.py` overlap) and can safely run in parallel.
 
-**RESOLVED (2026-08-18):** Original blocker — Zone 1 and Zone 4 both edited `converters.py:2299-2316` and Zone 4 referenced `GarbleContext.REGION` which Zone 1 deletes. Fixed by serializing Wave 1 into 1a→1b and rewriting Zone 4's targets against post-fix API.
+**Shared files:** none.
 
-### Wave 2 — Zone 2 + Zone 7
-**Rationale (as proposed):** Zone 2 (`helpers.py`, `client.py`) depends on Zone 1 landing first (both rewrite `helpers.py` verdict/garble code) and must land before Zone 3 (Zone 3's recovery pipeline feeds `_persist_flat_result`/`_persist_tree_result`). Zone 7 (`converters.py`, `config.py`, `worker.py`) depends on Zone 4 landing first (shared `converters.py`). Zone 2 and Zone 7 were claimed to touch disjoint files so can parallelize.
+### Wave 2
+**Zones:** Content-Destructive Heuristics Without Safety Bounds, OCR Recovery Pipeline Flag Conflation and Mutable State Ordering
 
-**Shared files as declared:** none.
+**Rationale:** Zone 6 (`helpers.py`: `_gate_low_content_density`, `_strip_toc_heading_nodes`) and Zone 2 (`client.py`: `_recover_ocr_escalation`, `_recover_image_dominant_ocr`) have no direct dependency. Zone 6 must land before Zone 3 because `_gate_low_content_density` is itself a `GATE_TABLE` entry that Zone 3's promotion-rule extraction will touch. Zone 2 consolidates the recovery dispatch in `client.py` — doing this before Zone 3 gives Zone 3 a cleaner recovery interface to wire into. `helpers.py` is free from Zone 1 edits (completed in Wave 1).
 
-**Shared files as verified (MAJOR — see Validation Results):** the "disjoint files" claim is false. Zone 7 touches `client.py` (lines 83-95, 1169-1177) and Zone 2 touches `client.py` (lines 74, 1897-1904, 2006-2014); Zone 2 also touches `converters.py:947-948` while Zone 7 touches `converters.py:1174-1176` and `metrics.py` (not inventoried anywhere in the wave). Line ranges themselves don't overlap, so this is a coordination hazard rather than a guaranteed conflict — but the `shared_files: []` declaration is factually wrong and must be corrected before parallel dispatch. Recommended: declare `client.py` and `converters.py` as shared with non-overlapping line ownership, or simply serialize the small, observability-only Zone 7 after Zone 2.
+**Shared files:** `src/pageindex_mcp/helpers.py` (Zone 6 lines 1762-1782/3035-3045/3187-3389/3575-3594/3626-3670; Zone 2 lines 203-231/1828-1829).
 
-**RESOLVED (2026-08-18):** `_RECOVERY_REGISTRY` dropped from Zone 2 entirely. Recovery-coverage assertion lives solely in Zone 3's `GateSpec.recovery_tag` mechanism. RAISE-policy gates (NODE_COUNT_LOW, DEPTH_LOW, REORDERED) are explicitly excluded from requiring `recovery_tag` — they use the existing `RAISE` policy to surface errors, not trigger recovery. This matches the current production behavior where RAISE gates halt processing rather than attempting recovery.
+> **Conflict called out in validation (issue #4):** the wave rationale claims the two zones "share zero primary files," but `shared_files` lists `helpers.py` and both zones edit it in the same wave. Line ranges don't overlap today, but a parallel land will drift every downstream line anchor. **Resolution before executing this wave:** serialize the two zones' `helpers.py` edits (Zone 2's edits land first, since they are smaller/lower in the file; Zone 6 re-anchors by symbol name afterward), or require symbol-anchored (not line-anchored) patches for both zones' `helpers.py` targets.
 
-### Wave 3 — Zone 3 (alone)
-**Rationale:** Zone 3 (`client.py`, `helpers.py`) is the cross-zone integration point — `_recover_ocr_escalation` transitively reaches Zone 1's garble internals, Zone 2's `validate_tree`/`prepare_tree`, and uses `ExtractionSnapshot` (`helpers.py`). It shares `helpers.py` with Zone 1 (Wave 1) and both `helpers.py` and `client.py` with Zone 2 (Wave 2), so it must run last: it consumes the garble API stabilized by Zone 1 and the verdict contract stabilized by Zone 2, and `_finalize_routing`'s call into `decide_route` must align with the Wave-2 verdict authority. Running it alone avoids file collisions with prior waves.
+### Wave 3
+**Zones:** Three-Layer Verdict Pipeline Implicit GATE_TABLE Coupling
 
-**RESOLVED (2026-08-18):** Extended `recovery_tag` coverage to wire all gate-driven recoveries:
-- `GARBLING`/`NODE_GARBLING` → `recovery_tag='ocr_escalation'` (unchanged)
-- `RTL_REVERSAL` → `recovery_tag='rtl_repair,rtl_flat_compare'` (multi-tag: both fire sequentially)
-- `IMAGE_DOMINANT` → `recovery_tag='image_dominant_ocr'` (new)
-- `VLM_HINT` → `recovery_tag='vlm_fallback'` (new — fires when VLM hint gate flags VLM-amenable content)
-- `flat_prefer` + `landscape_reroute` remain post-loop quality checks (not gate-driven, always run)
-- RAISE-policy gates (`NODE_COUNT_LOW`, `DEPTH_LOW`, `REORDERED`) explicitly excluded — they halt processing, not trigger recovery
-- Test requirement updated: "NODE_COUNT_LOW triggers RAISE (no recovery)" replaces contradictory "NODE_COUNT_LOW triggers image_dominant_ocr"
+**Rationale:** Zone 3 (`helpers.py`: `compute_verdict`, `GATE_TABLE`, `GateSpec`, `GATES`) must be last. It depends on Zone 1 (`check_garble` stabilized in Wave 1), Zone 6 (`_gate_low_content_density` stabilized in Wave 2), and benefits from Zone 2's consolidated recovery dispatch (Wave 2) as the new interface it wires gates into. All three prerequisite zones editing `helpers.py` are complete, so Zone 3 can restructure `GATE_TABLE` without merge conflicts or cascading rework.
+
+**Shared files:** `src/pageindex_mcp/helpers.py`, `src/pageindex_mcp/client.py` — all line anchors in this zone's spec were verified against the pre-wave-1 tree and **will have drifted** by wave 3 execution time (validation issue #13). Locate every Zone 3 target by symbol name, not line number.
 
 ---
 
 ## Fix Specs
 
-### Zone: Zone 1: Garble Detection Surface Sprawl (wave 1, priority 1)
+### Zone: Garble Detection Surface Fragmentation (wave 1, priority 3)
 
-**Mechanism to eliminate:** One shared garble engine (`garble_prongs`, `helpers.py:1251`) with context-dependent behavior dispatched through three layers of indirection: an 8-member `GarbleContext` StrEnum (`helpers.py:1360-1372`) selecting call-site identity, `_garble_context_short_circuit` (`helpers.py:1386-1408`) returning early True/False for `FLAT_MARKDOWN` only, and `_garble_context_blob_kind` (`helpers.py:1411-1420`) selecting normalization strategy per context. Only 2 distinct behaviors exist across 8 context values, but the 8-way dispatch creates a false sense of independent configuration. `expected_script` self-inference at `garble_prongs:1328` also silently enables the `latin_gibberish` prong when callers pass `None`, making it impossible to explicitly skip the prong. Each new prong or context-specific rule closes one blind spot while creating false positives in another context through the shared engine.
+**Mechanism to eliminate:** Garble detection is fragmented across two OR'd surfaces (`garble_prongs` + `_has_sparse_mojibake` at `helpers.py:1439-1440`), combined with text-self-inferred `expected_script` via the `expected_script or infer_script(text)` pattern at 10 production call sites, a dead `presentation_forms` codepoint scan at `helpers.py:1318-1326` that always returns 0 post-NFKC, and `_script_from_filename` returning `None` for German docs at `helpers.py:1548-1558`, which silently disables the `latin_gibberish` prong. Each RFC fix (023→028→029→033→034) narrowed one prong's false-positive rate while the adjacent uncovered prong or the self-inference fallback re-surfaced corruption through a different detection gap.
 
-**Strategy:** Deletion-first consolidation. Delete the 3-layer indirection (`GarbleContext` enum + `_garble_context_short_circuit` + `_garble_context_blob_kind` + `_is_garbled_blob` wrapper). Replace with a frozen `GarbleProfile` dataclass (`normalize_markdown`, `short_circuit_prior_garble` booleans) and exactly two module-level constants, `BULK_PROFILE` and `FLAT_MARKDOWN_PROFILE`. Remove `expected_script` self-inference from `garble_prongs` so callers must explicitly call `infer_script` when inference is desired. `check_garble` takes `profile=` instead of `context=`. Net deletion ~29 lines. All 16 production call sites migrate mechanically (7 of 8 `GarbleContext` values map to `BULK_PROFILE`; only `FLAT_MARKDOWN` maps to `FLAT_MARKDOWN_PROFILE`).
+**Strategy:** Four incremental, independently revertible steps (kill-switches: `GARBLE_LATIN_GIBBERISH_ENABLED`, `GARBLE_SHORT_TEXT_DEFAULT`):
+1. Fix `_script_from_filename` to return `'Latn'` for `deu`/`eng` filenames (currently `None`, disabling `latin_gibberish` for all German docs).
+2. Fold `_has_sparse_mojibake` into `garble_prongs` as a named `sparse_mojibake` prong; simplify `check_garble` to `return bool(garble_prongs(...))` — eliminates the dual-surface split.
+3. Add `had_presentation_forms: bool` parameter to `garble_prongs`, replacing the dead codepoint scan with the pre-NFKC boolean already captured on `RtlDecision.had_presentation_forms`.
+4. Remove `or infer_script(text)` at all 10 call sites, making `expected_script` fully metadata-derived. Net delta: approx. −30 to −40 lines.
 
-**Estimated complexity:** large
-
-#### Code targets
+**Code targets:**
 
 | File | Lines | What | How | Constraint |
 |---|---|---|---|---|
-| `helpers.py` | 1343-1377 | Add `GarbleProfile` dataclass + `BULK_PROFILE`/`FLAT_MARKDOWN_PROFILE`; delete `GarbleContext` enum + 2 module vars | `@dataclass(frozen=True) GarbleProfile(normalize_markdown: bool=False, short_circuit_prior_garble: bool=False)`; `BULK_PROFILE=GarbleProfile()`; `FLAT_MARKDOWN_PROFILE=GarbleProfile(True, True)`. Move `_GARBLE_SHORT_TEXT_DEFAULT`/`_GARBLE_FLAT_MARKDOWN_NORMALIZE` env reads to module level but reference only inside `check_garble` | Must preserve monkeypatchability of both env vars from `test_rfc025_d2.py:29` and `test_zone1_garble_consolidation.py:235`; read at call time, not frozen into the profile |
-| `helpers.py` | 1345-1357 | Delete `_is_garbled_blob` wrapper | Remove function; inline `garble_prongs` + `normalize_for_garble` into `check_garble` | Update `check_garble`; tests importing `_is_garbled_blob` (3 files) must update |
-| `helpers.py` | 1386-1420 | Delete `_garble_context_short_circuit` and `_garble_context_blob_kind` | Inline logic into `check_garble` via `profile.short_circuit_prior_garble` / `profile.normalize_markdown` | No observable behavior change for any (profile, text_length, original_defect, env_vars) combination |
-| `helpers.py` | 1423-1458 | Rewrite `check_garble` signature to `profile: GarbleProfile` | New sig: `check_garble(text, *, expected_script, profile, original_defect=None)`; inline short-circuit + blob_kind + `garble_prongs` call directly (no wrapper) | `context=` removed with no back-compat shim; `expected_script` stays keyword-only |
-| `helpers.py` | 1251-1342 | Purify `garble_prongs`: remove `blob_kind` param and internal normalization; remove self-inference at line 1328 | Rename `blob`→`norm_blob` (pre-normalized input expected); `_effective_script = expected_script` (no `_infer_script` fallback) | Stays a pure function returning `frozenset[str]`; all 12 prongs unchanged; empty-blob guard stays |
-| `helpers.py` | 370-408 | `TreeSignals.from_tree`: `GarbleContext`→`BULK_PROFILE`, explicit script inference | `eff_script = expected_script or _infer_script(flat_text)` once, pass to both `check_garble` and `_garble_ratio` | No behavior change when `expected_script` non-None |
-| `helpers.py` | 1579-1627 | `_garble_check_nodes`: `context=GarbleContext.NODE`→`profile=BULK_PROFILE` (2 sites) | Mechanical replacement | Identical behavior (NODE had same normalization/no-short-circuit as BULK) |
-| `helpers.py` | 2055-2073 | `_garble_ratio`: `context=GarbleContext.TREE_BULK`→`profile=BULK_PROFILE` (2 sites) | Mechanical replacement | Identical behavior |
-| `helpers.py` | 2316-2319 | `classify_verdict`: `context=GarbleContext.IMAGE_ENRICHMENT`→`profile=BULK_PROFILE`, add explicit inference | `expected_script=expected_script or _infer_script(_promoted_text)` | Must add inference to prevent silent `latin_gibberish` regression |
-| `client.py` | 57-74 | Import block: `GarbleContext`→`GarbleProfile`, `BULK_PROFILE`, `FLAT_MARKDOWN_PROFILE` | Remove `GarbleContext` from import list; add the 3 new symbols | No unused imports; check `infer_script` isn't double-imported |
-| `client.py` | 456,1046,1412,1417,1425,1823,1849 | 7 `check_garble` call sites: `context=`→`profile=` | `FLAT_MARKDOWN`→`FLAT_MARKDOWN_PROFILE` (456,1046,1823,1849); `RETRY_COMPARISON`→`BULK_PROFILE` (1412,1417,1425) | Preserve `original_defect=` at line 1823 |
-| `converters.py` | 1777-1780,1901-1903,2306-2311 | 3 lazy imports + 3 call sites: `GarbleContext`→`BULK_PROFILE` | `PAGE_TEXT_LAYER`, `DOCUMENT_FALLBACK`, `REGION` all map to `BULK_PROFILE` | Lazy imports stay lazy (circular-import avoidance); `infer_script` import preserved |
+| `helpers.py` | 1548-1558 | Fix `_script_from_filename` German/English case | After Arabic check, add `if any(lg in langs for lg in ("deu","eng")): return "Latn"`; keep final `return None` | Must not change Arabic-filename behavior |
+| `helpers.py` | 1283-1368 | Add `sparse_mojibake` prong to `garble_prongs` | Port `_MIXED_SCRIPT_RE` ratio-check logic (>0.02 threshold) from `_has_sparse_mojibake` (1461-1473) into `garble_prongs`; add `original_text: str \| None = None` param since this prong needs the un-normalized blob | Must use the ORIGINAL un-normalized text, not the garble-normalized text; regex + threshold preserved exactly |
+| `helpers.py` | 1318-1326 | Replace dead presentation-forms scan | Add `had_presentation_forms: bool = False` param; replace the always-0 codepoint sum with `if had_presentation_forms: prongs.add("presentation_forms")` | Default-False behavior must be identical to current (always dead) |
+| `helpers.py` | 1397-1440 | Simplify `check_garble` | Add `had_presentation_forms` param; forward `original_text=blob`; replace dual-surface OR with single `garble_prongs(...)` call | Normalize/short-circuit/BlobKind/env-gate logic preserved |
+| `helpers.py` | 1461-1473 | Delete `_has_sparse_mojibake` | Remove function; keep `_MIXED_SCRIPT_RE` (still used by inlined prong) | Verify no other production caller; update `test_zone1_check_garble.py` import |
+| `helpers.py` | 2337 | Remove self-inference fallback in `compute_verdict` | `expected_script=expected_script or _infer_script(_promoted_text)` → `expected_script=expected_script` | Callers must already pass metadata-derived value |
+| `client.py` | 1025-1027 | Remove fallback in `_convert_to_tree` pre-garble probe | Drop `or infer_script(raw_text)` | pre_garbled flag / OCR-force gate unaffected |
+| `client.py` | 468 | Remove fallback in `_attempt_tesseract_raster_recovery` | Drop `or infer_script(ocr_text)` | Tesseract-on-raster path unaffected |
+| `client.py` | 1390, 1397, 1405 | Remove 3 fallbacks in `_recover_ocr_escalation` | Drop `or infer_script(...)` at each site | retry_wins heuristic / revert path preserved |
+| `client.py` | 1792, 1818 | Remove 2 fallbacks in `_persist_flat_result` | Drop `or infer_script(flat_md)` / `or infer_script(vlm_md)` | VLM fallback path / `flat_garble_unrecovered` flag preserved |
+| `converters.py` | 1785 | Remove fallback in `_text_layer_has_content` | Drop `or infer_script(text)` | **Highest risk**: 21 inbound callers must all thread `expected_script` from metadata first |
+| `converters.py` | 1897 | Remove fallback in `_document_level_text_fallback` | Drop `or infer_script(full_text)` | RFC-024 D1 mojibake-skip logic preserved |
 
-> ⚠️ Line-drift note from validation: actual `check_garble` call sites in `client.py` verified at 457/1044/1410/1415/1423/1821/1847 (1-2 lines off from spec). GATES entries: GARBLING is at 1845, NODE_GARBLING at 1848, RTL_REVERSAL at 1850 — the spec's 1847/1849 anchors are wrong (1847 is actually `DEPTH_LOW`, 1849 is `REORDERED`). **Key edits by `TreeDefect` name, not by line number, to avoid mislabeling.**
+**Open spec gap (validation issue, must resolve before Step 4 executes):** after removing every `infer_script` fallback, hash-named uploads (e.g. `92eebefa`, `b1a72fb2` — both in this zone's own corpus_validation list) carry no filename language signal, so `_script_from_filename` still returns `None` and every script-conditional prong silently disables with no fallback at all. **Required fix before landing:** either (a) keep one centralized `infer_script` fallback inside `check_garble` itself when `expected_script is None` (single choke point, not 10 scattered call sites), or (b) resolve script from document content once at ingest (`client.py index()`) and thread that everywhere, guaranteeing no call site ever passes `None` for a hash-named upload.
 
-#### Wiring checks
+**Wiring checks:**
+- `_script_from_filename` called by `client.py`
+- `check_garble` called by `client.py`, `converters.py`, `helpers.py`
+- `garble_prongs` called by `helpers.py`
+- `_has_sparse_mojibake` — must have **zero** remaining importers/callers anywhere
+- `GarbleProfile` imported by `client.py`, `helpers.py`
+- `BULK_PROFILE` imported by `converters.py`
+- **Gap flagged in validation:** no wiring check enumerates the 10 individual `infer_script`-fallback call sites — a partial fix (e.g. 8/10 sites cleaned) would pass every check listed above while leaving self-inference live at the missed sites, which is the exact ward-597 failure mode this zone exists to eliminate. **Add before sign-off:** either one wiring check per call site (with line anchors) asserting absence of `expected_script or infer_script(`, or promote the `test_zone1_no_self_inference.py` AST-walk (already in test_requirements below) to a scored wiring check.
 
-| Symbol | Must be imported by | Check type |
-|---|---|---|
-| `GarbleProfile` | `client.py` | import |
-| `BULK_PROFILE` | `client.py`, `converters.py` | import |
-| `FLAT_MARKDOWN_PROFILE` | `client.py` | import |
-| `check_garble` | `client.py`, `converters.py` | call |
+**Test requirements:**
+- `tests/test_zone1_script_from_filename.py` — Arabic→`Arab`, German/English→`Latn`, unrecognizable→`None`; regression for Haftpflicht-style filenames (regression)
+- `tests/test_zone1_sparse_mojibake_prong.py` — `sparse_mojibake` fires for `92eebefa`-pattern (21.4%), not for `b1a72fb2` legitimate transliteration (<2%); `_has_sparse_mojibake` not importable (exhaustiveness)
+- `tests/test_zone1_presentation_forms_boolean.py` — fires only when `had_presentation_forms=True`; dead codepoint-scan path removed (regression)
+- `tests/test_zone1_no_self_inference.py` — AST-walk of `client.py`/`converters.py`/`helpers.py` finds zero occurrences of `expected_script or infer_script(` (wiring)
+- `tests/test_zone1_check_garble.py` — updated signature/import assertions (contract)
+- `tests/test_zone1_garble_wiring.py` — updated AST-walk wiring assertions (wiring)
+- `tests/test_zone1_latin_gibberish_german.py` — Haftpflicht-scenario Run9 FAIL→PASS flip regression (regression)
 
-> Removed from the original spec: the `GarbleProfile.evaluate` wiring check (call type, empty `must_be_imported_by`) is **dropped** — no such method is defined anywhere in the spec; it was a phantom/vacuous check.
+**Corpus validation:** Haftpflicht (German, latin_gibberish re-enable), ward-597 (Arabic, self-inference elimination), siyasat-hawkama (Arabic, dual-surface merge), Human-Rights (Arabic, presentation-forms boolean), 92eebefa (must still trigger sparse_mojibake), b1a72fb2 (must NOT trigger). Expected direction: **improve**. Spot-check: 6 docs.
 
-#### Test requirements
-
-- `tests/test_zone1_garble_profile.py` — `GarbleProfile` contract exhaustiveness: frozen dataclass, exactly 2 boolean fields, exactly 2 module-level profile constants with correct values, `FrozenInstanceError` on mutation, `GarbleContext` no longer importable.
-- Same file — `check_garble` contract: `profile=` and `expected_script=` both keyword-only-required, `TypeError` otherwise.
-- Same file — behavioral equivalence regression across 8 text samples (clean Latin/Arabic, PUA garble, null-byte garble, digit-ratio garble, token-repetition garble, Latin-gibberish-in-Arabic, sparse mojibake): `BULK_PROFILE` matches old TREE_BULK/NODE/PAGE_TEXT_LAYER/DOCUMENT_FALLBACK/REGION/RETRY_COMPARISON/IMAGE_ENRICHMENT; `FLAT_MARKDOWN_PROFILE` matches old FLAT_MARKDOWN.
-- Same file — self-inference removal regression: `garble_prongs(expected_script=None)` on Arabic text does not fire `latin_gibberish`; `TreeSignals.from_tree` with `expected_script=None` still detects it via explicit `_infer_script`; `check_garble(BULK_PROFILE, expected_script=None)` on Latin gibberish does not fire.
-- Same file — `FLAT_MARKDOWN_PROFILE` short-circuit behavior (4 cases incl. env-var monkeypatch disabling it).
-- Same file — wiring verification per table above.
-- Same file — `garble_prongs` purification contract (no `blob_kind` param, pre-normalized input, no self-inference, still returns `frozenset[str]` of 12 prongs).
-- Same file — integration: `validate_tree` → `TreeSignals.from_tree` → `check_garble` → `garble_prongs` chain on a known-garbled tree (PUA chars) and a clean German tree; `_gate_garbling`/`_gate_node_garbling` both work through the profile-based path.
-
-#### Corpus validation
-
-- Affected documents: `marsoom-13`, `siyasat-hawkama`, `human-rights-ar`, `reitlehrer`, `penal-code`, `cabinet-resolution`, `ward-597`
-- Expected verdict direction: stable
-- Spot-check count: 5
+**Estimated complexity:** medium.
 
 ---
 
-### Zone: Zone 2: Dual Verdict Authority (validate_tree vs classify_verdict) (wave 2, priority 2)
+### Zone: Dual-Store Verdict Consistency and Persistence Timing (wave 1, priority 1)
 
-**Depends on:** Zone 1 (garble profile API must be stable first — `classify_verdict` calls `check_garble`).
+**Mechanism to eliminate:** Dual-store divergence under concurrent writes with asymmetric CAS protection. `_verdict_cas_guard` (`storage.py:515-542`) uses Python lexicographic ISO-8601 comparison on the MinIO sidecar, while `_UPSERT_SQL` (`registry.py:166-211`) uses SQL `CASE WHEN EXCLUDED.verdict_computed_at >= COALESCE(...)`. These can diverge silently. Non-verdict columns (`doc_name`, `source_url`, `node_count`, `content_class`, `sha256`, `processed_at`) are ALL unconditional last-writer-wins, so a stale reconcile-from-MinIO landing after a live dual-write silently regresses these fields. Write ordering is MinIO-first (child subprocess) then Postgres-second (parent process), creating a read-after-write race with no coordination. `_confirm_write_visible` (`storage.py:44-66`) oscillates between under- and over-provisioned delays (Run-16 `cabinet_resolution` MARGINAL→ERROR from 4.4s overcorrection).
 
-**Mechanism to eliminate:** Two independent verdict engines — `validate_tree` (`helpers.py:1888`, `TreeGateResult` via 10-gate `GATE_TABLE`) and `classify_verdict` (`helpers.py:2199`, a 195-line grouped-rule engine with 7+ independent promotion branches) — that can disagree on document quality. `classify_verdict` applies independent checks (max-leaf-ratio hard-fail, content-class promotions, image-enrichment rescue, depth-adequacy clamp) that can override or mask `validate_tree`'s decision. For flat-path documents, `validate_tree` is bypassed entirely (`_persist_flat_result` passes `validate_result=None`), silently skipping all 10 quality gates. `classify_verdict` is called twice with potentially different inputs — once in `_candidate_from_document` (source selection, lightweight structure, `validate_result=None`) and once in `client.py` on the final post-`prepare_tree` structure — which can produce diverging verdicts. `_compute_verdict_band` (`helpers.py:2156`) is a third layer of indirection on the hard-fail decision. New `validate_tree` gates shipped without recovery wiring cause cascading PASS-to-ERROR regressions (RFC-029 D1: 4 new failure reasons, no recovery path).
+**Strategy:** Make Postgres the single authoritative verdict store; demote MinIO sidecar to a write-behind cache. Three phases, each behind `REGISTRY_VERDICT_AUTHORITY` feature flag (default `minio`):
+- **Phase 1 (additive, zero behavioral change):** add `upsert_verdict()` with `RETURNING` as the sole verdict write point; add `processed_at` CAS guard on non-verdict columns; add Redis retry-queue drain in reconcile.
+- **Phase 2:** invert `worker.py` write order under `REGISTRY_VERDICT_AUTHORITY=postgres` — Postgres first via `upsert_verdict()`, then backfill MinIO sidecar from the committed row.
+- **Phase 3:** after 2+ validated corpus runs, remove `_verdict_cas_guard`, remove the sidecar-only `_confirm_write_visible` call, flip the flag default, then delete the flag.
 
-**Strategy:** Consolidate `validate_tree` and `classify_verdict` into a single `compute_verdict` function: phase 1 runs `GATE_TABLE` evaluation, phase 2 applies content-class promotions/caps, returning a `VerdictResult` dataclass. Eliminate the `validate_result=None` silent-skip path via an explicit `FLAT_GATE_SUBSET`. Add `source_selection` mode for the early `converters.py` call to skip persistence-only caps (`_clamp_pass`). Fold `_compute_verdict_band` inline. Add a module-level exhaustive-coverage assertion for RETRY_OCR/RETRY_RTL/RAISE-policy gates. `validate_tree` and `classify_verdict` survive as thin backward-compat wrappers around `compute_verdict`. Migration is 5-step and corpus-diffable at each step.
+**Code targets:**
 
-> **RESOLVED (2026-08-18):** `_RECOVERY_REGISTRY` dropped from Zone 2. Recovery-coverage assertion lives solely in Zone 3's `GateSpec.recovery_tag`. RAISE-policy gates excluded from requiring recovery wiring (they halt, not recover). The `helpers.py:1862-1865` code_target for `_RECOVERY_REGISTRY` assertion is deleted (see table row above marked ~~strikethrough~~).
-
-#### Code targets
-
-| File | Lines | What | How | Constraint |
+| File | Lines (corrected*) | What | How | Constraint |
 |---|---|---|---|---|
-| `helpers.py` | 106-107 | Add `VerdictResult` frozen dataclass after `TreeGateResult` | Fields: `verdict, reason, defect, signals, all_defects`; `__iter__` yields `(verdict, reason)` for back-compat tuple-unpacking | Must not break 40+ existing `verdict, reason = classify_verdict(...)` call sites |
-| `helpers.py` | 1860-1868 | Add `FLAT_GATE_SUBSET` constant | Derive from `GATES`: `[(g.gate_fn, g.defect) for g in GATES if g.gate_fn and g.defect in _FLAT_APPLICABLE_DEFECTS]` where `_FLAT_APPLICABLE_DEFECTS = {GARBLING, NODE_GARBLING, REORDERED}` | Must derive from `GATES` (auto-syncs with new gates); must NOT include `NODE_COUNT_LOW`/`DEPTH_LOW` |
-| `helpers.py` | 1862-1865 | ~~Add `_RECOVERY_REGISTRY` exhaustive-coverage assertion~~ **REMOVED — see blocker note above; superseded by Zone 3's `GateSpec.recovery_tag`** | — | — |
-| `helpers.py` | 2156-2174 | Delete `_compute_verdict_band`, fold into `compute_verdict` phase 1 | Move 19-line hard-fail body inline into GROUP 1 block | Hard-fail semantics and `_GATE_PRIORITY` tiebreak order preserved exactly |
-| `helpers.py` | 2199-2393 | Rename `classify_verdict`→`compute_verdict`; return `VerdictResult`; add `source_selection`/`flat` params; keep `classify_verdict` as thin wrapper | Phase 1: when `validate_result is None and flat=True`, run `FLAT_GATE_SUBSET` instead of skipping gates. Phase 2: unchanged grouped-rule logic; `source_selection=True` skips `_clamp_pass` | Tree-path output must be byte-identical to current `classify_verdict` for every input combination; `flat`/`source_selection` are orthogonal flags |
-| `client.py` | 1897-1904 | `_persist_flat_result`: call `compute_verdict(..., flat=True)` instead of `classify_verdict(..., validate_result=None)` | `_vr = compute_verdict(...); f_verdict, f_verdict_reason = _vr.verdict, _vr.reason` | Sidecar string format unchanged; verify no unexpected verdict flips on corpus before enabling |
-| `client.py` | 2006-2014 | `_persist_tree_result`: `classify_verdict`→`compute_verdict` | Same unpack pattern | Must be identical to current tree-path output |
-| `converters.py` | 947-948 | `_candidate_from_document`: `classify_verdict(..., None)`→`compute_verdict(..., source_selection=True)` | `_vr = compute_verdict(...); verdict = _vr.verdict` (plain string on `Candidate.verdict`) | Preserve try/except + structural-depth-proxy fallback |
+| `registry.py` | after 252 | Add `upsert_verdict()` with `RETURNING` | New `_UPSERT_VERDICT_SQL` using the existing CAS pattern, returns winning row | Must not break `upsert_doc`; purely additive in Phase 1 |
+| `registry.py` | 166-211 | `processed_at` CAS guard on non-verdict cols | Wrap `processed_at`/`sha256`/`node_count` in `CASE WHEN EXCLUDED.processed_at >= COALESCE(...)`; leave human-curated facet columns as last-writer-wins | Must not touch verdict-column CAS logic (191-210) or the 16-param binding (229-251) |
+| `worker.py` | 684-731 | Invert write order behind flag | Under `postgres`: `upsert_verdict()` → `save_doc_meta()` backfill → `upsert_doc()`. Under `minio`: unchanged | Must keep best-effort contract (no job failure on Postgres error) — **see gap below** |
+| `storage.py` | 652 | Skip `_confirm_write_visible` on sidecar path under `postgres` mode | Guard with same flag; leave `save_doc`/`save_flat_doc` barriers (220, 279) untouched | Must not remove barriers guarding artifact-body visibility |
+| `storage.py` | 515-542, ~624-626* | Phase 3: remove `_verdict_cas_guard` + `_VERDICT_CAS_FIELDS` | Delete after Phase 2 validated over 2+ runs | Must not execute before Phase 2 validated; update `test_zone6_verdict_persistence.py` |
+| `registry_backfill.py` | ~557/567* | Drain Redis `pageindex:verdict_retry:*` before MinIO scan | For each key: `upsert_verdict()` then `save_doc_meta()` | Best-effort; must not change existing O(delta) reconcile behavior |
+| `config.py` | 39-48 area | Add `REGISTRY_VERDICT_AUTHORITY` setting | Default `minio`; valid values `minio`/`postgres`, validated at startup | Must default to `minio` for zero-risk Phase 1 deploy |
 
-#### Wiring checks
+\* Line-number corrections from validation: `worker.py` verdict_fields stdout read is at **line 573**, not 605; `storage.py` `_skip_verdict` CAS branch is at **624-626** (with `_MERGE_FIELDS` at 600), not 631-636; `registry_backfill.py` `_list_meta_entries` call is at **567**, Redis setup at **557**, not 574/563.
 
-| Symbol | Must be imported by / consumed where | Check type |
-|---|---|---|
-| `VerdictResult` | `client.py` | import |
-| `compute_verdict` | `client.py`, `converters.py` | import + call |
-| `FLAT_GATE_SUBSET` | consumed **inside `compute_verdict`'s `flat=True` branch body** (not merely defined in `helpers.py`) | dispatch |
+**Blocking gap (validation issue, must fix before Phase 1 ships):** the Redis retry-queue **consumer** (drain in `registry_backfill.py`) is specified with **no producer anywhere in the plan** — grep confirms zero occurrences of `verdict_retry` in `src/pageindex_mcp/` today. Nothing ever enqueues `pageindex:verdict_retry:<doc_id>`, so the drain is dead code and the "replaces silent-loss behavior" claim is unimplementable as written. **Required addition:** a `worker.py` code target, in the Postgres-failure `except` path of the Phase-2 write-order inversion, that writes the `verdict_retry` key with the `verdict_fields` payload and a TTL.
 
-> Corrections from validation: (1) `VerdictResult` is **not** required in `converters.py` — `_candidate_from_document` only needs `compute_verdict`'s `.verdict` attribute, no type annotation forces the import; dropped from that file's wiring check to avoid a forced-unused-import. (2) The `FLAT_GATE_SUBSET` check must verify the symbol is referenced *inside* `compute_verdict`'s flat branch, not merely that `helpers.py` contains its definition — a same-file-only check would trivially pass even if the constant were built and never consulted.
+**Related gap:** Phase 2's "Postgres-first" ordering combined with "must not fail job on Postgres failure" leaves an undefined state — if the Postgres write fails under `postgres` mode, there is no committed row to backfill the sidecar from, so the verdict lands in **neither** store (worse than today's MinIO-first path, which at least persists the sidecar). **Required fix:** on Postgres failure under `postgres` mode, fall back to writing `verdict_fields` directly to the sidecar (legacy path) AND enqueue the `verdict_retry` key.
 
-#### Test requirements
+**Wiring checks:**
+- `upsert_verdict` called by `worker.py`, `registry_backfill.py`
+- `_UPSERT_VERDICT_SQL` — defined and consumed within `registry.py`'s `upsert_verdict()` body (validation flagged the original "imported by registry.py" phrasing as vacuous/self-referential; treat as an intra-module usage check, not an import check)
+- `registry_verdict_authority` imported by `worker.py`, `storage.py`
+- **Add before sign-off:** a wiring check for the new `verdict_retry` producer path in `worker.py`, since the consumer-only check above is meaningless without it.
 
-- `tests/test_zone2_compute_verdict.py` — `VerdictResult` correctness across all 3 modes (tree-path/flat/source_selection) + `__iter__` back-compat.
-- `tests/test_zone2_flat_gate_subset.py` — flat docs with garbling/reordering now caught (previously silently skipped); `FLAT_GATE_SUBSET` excludes `NODE_COUNT_LOW`/`DEPTH_LOW`; clean flat doc unchanged.
-- `tests/test_zone2_gate_recovery_exhaustiveness.py` — **retarget to Zone 3's `GateSpec.recovery_tag` mechanism** once the blocker above is resolved; do not duplicate a second registry.
-- `tests/test_zone2_verdict_result_wiring.py` — per wiring table above.
-- `tests/test_zone2_verdict_regression.py` — all 5 hard-fail defects, all promotion paths, all caps, MARGINAL fallback reasons, parametrized over well-formed/single-leaf/shallow trees and `image_standalone` content-class.
-- **Added per validation (previously missing coverage):** a regression test importing `classify_verdict` exactly as `preprocess_client.py`/`promotion_sweep.py` do (external, outside `src/pageindex_mcp/`) confirming tuple-unpacking still works end to end post-refactor — these two scripts are named as explicit backward-compat beneficiaries but had zero test coverage in the original spec.
+**Test requirements:**
+- `tests/test_zone4_verdict_authority.py` — `upsert_verdict()` RETURNING semantics (contract); non-verdict CAS guard behavior (contract); write-order under `postgres` flag (wiring); write-order under `minio` flag preserves current behavior (regression); `_confirm_write_visible` skip under `postgres` (contract); Redis retry-queue drain ordering (wiring); `_UPSERT_SQL` exhaustiveness vs `_CREATE_TABLE_SQL` (exhaustiveness); CAS symmetry between SQL and new verdict CAS (contract); flag validation rejects invalid values (contract)
 
-#### Corpus validation
+**Corpus validation:** cabinet_resolution_no_96, human_rights_declaration, regulatory_decision, service_level_agreement. Expected direction: **stable**. Spot-check: 6 docs.
 
-- Affected documents: flat-path docs (`flat_prose`/`flat_mixed`) with previously-undetected garbling/reordering; docs processed through `_candidate_from_document` where `_clamp_pass` was incorrectly applied at screening time; any doc where the two `classify_verdict` call sites diverged
-- Expected verdict direction: stable
-- Spot-check count: 8
+**Estimated complexity:** large.
 
 ---
 
-### Zone: Zone 3: Recovery Pipeline Implicit Ordering and State Mutation (wave 3, priority 3)
+### Zone: Content-Destructive Heuristics Without Safety Bounds (wave 2, priority 2)
 
-**Depends on:** Zone 1, Zone 2 (garble API and verdict authority must be stable — `_recover_ocr_escalation` reaches into both).
+**Mechanism to eliminate:** Unbounded content-destructive heuristics calibrated by-incident against specific corpus documents, applied globally without pre/post safety bounds. Three independent sub-mechanisms: (1) ToC-stripping guard (`helpers.py:3575-3594`) uses coarse all-or-nothing depth/node-count thresholds — too aggressive for fine-grained legal statutes (Federal Decree-Law 47 flattened to 88% body-less fragments) and insufficiently protective for deep trees (Penal Code depth 3→2, 17% node loss, under the 20% threshold); (2) content-density gate (`helpers.py:1762-1782`) uses a single global `chars_per_node` threshold (150) with no script awareness, false-rejecting well-structured Arabic legal hierarchies; (3) table segmentation (`helpers.py:3187-3389`) uses orientation-unaware thresholds shared between landscape and portrait pages, so tuning one regresses the other (RFC-035 regressed landscape MARGINAL→FAIL and portrait PASS→MARGINAL simultaneously).
 
-**Mechanism to eliminate:** Implicit ordering of 7 recovery methods via sequential call sequence (`client.py:2197-2210`) with hidden dependencies on shared mutable `ExtractionState` (~20 fields, `helpers.py:176-207`). Each recovery reads `state.first_defect` to decide whether to fire, but prior recoveries may change it as a side effect of `_reconvert_and_revalidate`. `ExtractionSnapshot.restore()` (`helpers.py:164-172`) uses 8-element positional tuple destructuring with `gate_result` duplicated at positions 3 and 4. `route_overridden` and `original_gate_result` are workaround fields patching over the implicit-ordering problem. New gates shipped without recovery wiring cause PASS-to-ERROR regressions (RFC-029 D1).
+**Status note:** this zone currently has **no dedicated remediation proposal** in the audit (`no_proposal`, the reason its priority multiplier is punitive at 1.2 despite critical severity). The strategy below is drafted fresh as part of this plan, not carried over from a prior design.
 
-**Strategy:** Deletion-first (validated pattern, zero regressions across 4 prior zone-fix cycles). Add `recovery_tag` to `GateSpec`; introduce `RecoveryOutcome` frozen dataclass (all-Optional, `apply(state)` method) replacing the positional-tuple snapshot; replace the 7 sequential calls with a declarative gate-driven loop dispatching via `RECOVERY_DISPATCH`; delete `ExtractionSnapshot` (-66 lines); remove `route_overridden`/`original_gate_result` from `ExtractionState`; delete `_finalize_routing` (inlined into the loop).
+**Strategy:** `TransformSafetyEnvelope` wrapper pattern — every content-destructive heuristic computes a pre/post content delta and aborts when the delta exceeds a configurable, document-characteristic-aware bound (script, content_class, orientation). Step A: char-preserving depth-aware ToC guard. Step B: script-aware content-density thresholds. Step C: orientation-aware table segmentation. Step D: extract the safety envelope as a reusable, registry-enforced wrapper. Each step independently deployable behind env-var kill-switches; no new heuristics introduced, only safety bounds on existing ones.
 
-> **RESOLVED (2026-08-18):** `recovery_tag` coverage extended to all gate-driven recoveries:
-> - `GARBLING`/`NODE_GARBLING` → `'ocr_escalation'` (unchanged)
-> - `RTL_REVERSAL` → `'rtl_repair,rtl_flat_compare'` (multi-tag: both fire sequentially)
-> - `IMAGE_DOMINANT` → `'image_dominant_ocr'` (new)
-> - `VLM_HINT` → `'vlm_fallback'` (new)
-> - `flat_prefer` + `landscape_reroute` remain post-loop quality checks (always run, not gate-driven)
-> - RAISE-policy gates (`NODE_COUNT_LOW`, `DEPTH_LOW`, `REORDERED`) excluded — they halt, not recover
-> - Test requirement corrected: "NODE_COUNT_LOW triggers RAISE" (not recovery)
-
-#### Code targets
+**Code targets:**
 
 | File | Lines | What | How | Constraint |
 |---|---|---|---|---|
-| `helpers.py` | 107-173 | Delete `ExtractionSnapshot`; add `RecoveryOutcome` frozen dataclass | All-Optional fields (`result, ok, reason, gate_result, md_content, pic_results, used_converter, total_chars, route`, plus `rtl_decision` with sentinel default) + `apply(state)` | `_recover_ocr_escalation` restore path must produce identical post-state; sentinel distinguishes "clear" (`None`) from "no change" (`SENTINEL`) for `rtl_decision` |
-| `helpers.py` | 176-207 | Remove `original_gate_result` and `route_overridden` from `ExtractionState` | Delete both fields | `_persist_tree_result` must switch to reading `state.gate_result` (semantically identical — always set equal after each revalidation); 5 test files constructing `ExtractionState` must drop these fields |
-| `helpers.py` | 220-233 | Add `recovery_tag: str \| None = None` to `GateSpec` | — | Backward-compatible default for all 12 existing `GATES` entries |
-| `helpers.py` | 1843-1858 | Populate `recovery_tag` on RETRY_OCR/RETRY_RTL gates **(expand per blocker above)**; add import-time coverage assertion | Set tags by `TreeDefect` name, not line number (line-drift risk noted in Zone 1) | Assertion must not fire for OK/CAP_MARGINAL/PERSIST_FAIL policy gates; RAISE-policy behavior must match Zone 2's resolved decision |
-| `client.py` | 967-992 | Delete `_finalize_routing` entirely | Inline re-derivation (first_defect, route, `total_chars` recompute) into the recovery loop post-outcome step | `total_chars` recompute must be preserved — tree may have been replaced by a recovery |
-| `client.py` | 1313-1483 | Refactor `_recover_ocr_escalation`: `ExtractionSnapshot`→`RecoveryOutcome` | Replace positional-tuple restore with `RecoveryOutcome` construction + `.apply()` | Retry-wins/retry-loses branching, `OCR_ESCALATION_TOTAL` metric, and the pre-retry `total_chars` comparison must be identical |
-| `client.py` | 1485-1785 | Remove `route_overridden`/`original_gate_result` assignments from 5 recovery methods | 7 line deletions across `_recover_rtl_repair`, `_recover_rtl_flat_compare`, `_recover_vlm_fallback` (x2), `_recover_flat_prefer`, `_recover_landscape_reroute` | Guard conditions and route overrides (`state.route = Route.FLAT`) remain; metrics keep firing |
-| `client.py` | 2197-2213 | Replace 7 sequential calls with declarative gate-driven loop **(extended per blocker above)** | Build `RECOVERY_DISPATCH` mapping tags→bound methods; loop over `GATES` entries with `recovery_tag`; re-derive `first_defect`/route after each outcome; run `flat_prefer`+`landscape_reroute` post-loop; assert every `recovery_tag` in `GATES` has a `RECOVERY_DISPATCH` entry | Execution order must match `GATES` table order; the loop must call each mapped recovery once per matching gate (e.g. `ocr_escalation` maps to both GARBLING and NODE_GARBLING) |
-| `client.py` | 2006-2009,2057-2061 | `original_gate_result`→`state.gate_result` in `_persist_tree_result` (3 sites) | — | Semantically identical (both always held the same value after last revalidation) |
+| `helpers.py` | 3575-3594 | Char-preserving ToC guard | Add `char_loss_ratio` check (abort >15%, env `TOC_STRIP_MAX_CHAR_LOSS_RATIO`); refine depth guard to `depth_delta>1 AND resulting_depth<2`; log char_loss_ratio | Must not break RFC-034 D16 over-strip guard tests |
+| `helpers.py` | 1762-1782 | Script/depth-aware density gate | Accept `document_depth` param; tiered threshold: deep trees (depth≥4) or `expected_script=='Arab'` → floor 50 (env `RFC029_MIN_CHARS_PER_NODE_DEEP`); shallow → keep 150 | Must not weaken gate for genuinely sparse German PDFs; `node_count>=200` floor unchanged |
+| `helpers.py` | 3187-3389 | Orientation-aware table segmentation | Accept `orientation` param; landscape: `min_rows` 5→10, singleton ratio 0.6→0.4 (envs `RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE`, `RFC036_SINGLETON_RATIO_LANDSCAPE`) | Must not change behavior for `orientation!='landscape'`; content-preservation invariant maintained |
+| `helpers.py` | 3035-3045 | Thread `orientation` through `prepare_tree` | Add optional param, pass through | Existing callers without the param must be unaffected |
+| `client.py` | 963, 1269 | Pass orientation at both call sites | Derive from `_tag_landscape_pages_for_fallback` (`converters.py:2006`) metadata | **Both** sites must be wired — see wiring-check note below |
+| `client.py` | ~2475-2480 | Char-loss observability at ToC call site | Log + Prometheus counter `TOC_STRIP_HIGH_CHAR_LOSS` when ratio >0.10 (below abort threshold) | Observability only, no behavioral change |
+| `helpers.py` | 3626-3670 | Fence-delimiter parity hardening | Add bounded `fence_depth` counter; warn on orphan-close or unclosed-at-EOF | Must not change RFC-030 D0 stripping behavior — observability only |
 
-#### Wiring checks
+**Corrections from validation:** the orientation-source reference to `converters.py _page_orientation_info` is fictional — that symbol does not exist. Use only `_tag_landscape_pages_for_fallback` (`converters.py:2006`).
 
-| Symbol | Must be imported by / consumed where | Check type |
-|---|---|---|
-| `RecoveryOutcome` | `client.py` | import + call (`.apply`) |
-| `GateSpec.recovery_tag` | `client.py` | dispatch |
-| `RECOVERY_DISPATCH` | constructed **and referenced** (`dispatch[spec.recovery_tag](...)`) inside the recovery-loop body specifically | call |
+**Blocking gap (validation issue, must resolve before Step D ships):** `test_zone6_exhaustiveness.py` requires a `DESTRUCTIVE_HEURISTICS` registry list with a safety-bound check per entry, and the strategy names this as "Step D," but **no code target defines this registry or the wrapper it implies**. **Required addition:** a `helpers.py` code target defining `DESTRUCTIVE_HEURISTICS` (the three heuristics above, each paired with its safety-bound predicate) plus a wiring check requiring all three register into it — or explicitly drop Step D and the exhaustiveness test from this zone's scope if the wrapper is deferred to a follow-up.
 
-> Per validation: `RECOVERY_DISPATCH` is specified as a local dict inside `CustomPageIndexClient.index()`, so an import-based check isn't possible — the check must confirm it is both built *and* referenced inside the loop body, not merely present anywhere in `client.py`. Consider promoting it to module level to make it independently testable, consistent with how `GateSpec.recovery_tag` is checked.
+**Wiring checks:**
+- `TOC_STRIP_MAX_CHAR_LOSS_RATIO`, `RFC029_MIN_CHARS_PER_NODE_DEEP` imported by `helpers.py`
+- `TOC_STRIP_HIGH_CHAR_LOSS` imported by `client.py`
+- `prepare_tree` called by `client.py` **at line 963** — separate check
+- `prepare_tree` called by `client.py` **at line 1269** — separate check (validation flagged a single generic per-file check as satisfiable by wiring only one of the two mandated sites, silently leaving the other on `orientation=None`)
+- `_strip_toc_heading_nodes_guarded` called by `client.py`
+- `_gate_low_content_density`, `_segment_table_nodes` called by `helpers.py`
+- **Add before sign-off:** `RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE` and `RFC036_SINGLETON_RATIO_LANDSCAPE` imported by `helpers.py` (currently missing despite being introduced by a code target)
+- **Add before sign-off:** `DESTRUCTIVE_HEURISTICS` populated by all three heuristics, if Step D proceeds
 
-#### Test requirements
+**Test requirements:**
+- `tests/test_zone6_toc_guard.py` — char-loss abort thresholds, refined depth guard, env-var override (contract)
+- `tests/test_zone6_density_gate.py` — script-aware thresholds (standard=150 for depth<4, deep/Arabic=50 for depth≥4 — note: fix the swapped labeling in the original test description before writing this test), `node_count<200` bypass preserved (contract)
+- `tests/test_zone6_table_segment_orientation.py` — landscape vs portrait threshold divergence, `orientation=None` preserves existing behavior exactly (contract)
+- `tests/test_zone6_prepare_tree_orientation.py` — orientation threading correctness (wiring)
+- `tests/test_zone6_fence_observability.py` — fence-parity warnings, zero content loss in all cases (regression)
+- `tests/test_zone6_toc_char_loss_logging.py` — `TOC_STRIP_HIGH_CHAR_LOSS` fires >0.10, silent below (regression)
+- `tests/test_zone6_exhaustiveness.py` — only in scope if `DESTRUCTIVE_HEURISTICS` registry is built (exhaustiveness)
 
-- `tests/test_zone3_recovery_tag_exhaustiveness.py` — every RETRY_OCR/RETRY_RTL gate with `gate_fn` has non-None `recovery_tag`; adding one without a tag raises `AssertionError` at import time.
-- `tests/test_zone3_recovery_outcome_contract.py` — `RecoveryOutcome.apply` semantics (no-op on all-None, atomic multi-field apply, `rtl_decision` sentinel vs `None` distinction, frozen immutability).
-- `tests/test_zone3_recovery_dispatch_coverage.py` — every `recovery_tag` in `GATES` has a `RECOVERY_DISPATCH` entry; each mapped function is callable once per matching `GATES` entry.
-- `tests/test_zone3_recovery_loop_ordering.py` — identical state transitions vs the old 7-call pipeline for: GARBLING→ocr_escalation, RTL_REVERSAL→rtl_repair→rtl_flat_compare, NODE_COUNT_LOW→image_dominant_ocr **(only valid once the blocker's extended tag coverage lands)**, `ok=True`→flat_prefer+landscape_reroute, a recovery that resolves the defect prevents downstream recoveries firing on it, first_defect/route re-derived after each outcome.
-- `tests/test_zone3_no_original_gate_result.py` — `ExtractionState` has neither `original_gate_result` nor `route_overridden`; `_persist_tree_result` uses `state.gate_result`.
+**Corpus validation:** uae_penal_code, federal_decree_law_no_33, federal_decree_law_no_47, marsoom_13, qerar_106, sla_agreement, mou_document, world_stats_pocketbook, cabinet_resolution_no_96, haftpflicht, reitlehrer. Expected direction: **improve**. Spot-check: 11 docs.
 
-#### Corpus validation
-
-- Affected documents: `al-qarar-al-tanzimi.pdf`, `marsoom-13.pdf`, `human-rights.pdf`, `ward-597.pdf`, `cabinet_resolution.pdf`, `reitlehrer.pdf`, `cc4533aa.pdf`, `penal-code.pdf`
-- Expected verdict direction: stable
-- Spot-check count: 5
+**Estimated complexity:** medium. **Depends on:** Garble Detection Surface Fragmentation (wave 1).
 
 ---
 
-### Zone: Zone 4: Picture/OCR Recovery Dual-Path Conflation (wave 1, priority 4)
+### Zone: OCR Recovery Pipeline Flag Conflation and Mutable State Ordering (wave 2, priority 4)
 
-**Mechanism to eliminate:** Three-tier config inheritance (`OCR_ESCALATION`→`OCR_ESCALATION_GARBLE`+`OCR_ESCALATION_PER_PICTURE`) silently couples two independent features; dual skip-signaling (`decorative` bool + `skipped_reason` str) on `PictureResult` leaves downstream consumers unable to distinguish skip reasons; dual text-layer check path (`_text_layer_has_content` vs `_region_has_own_text_layer` gated by `_REGION_AWARE_TEXT_CHECK_ENABLED`) with a separate garble check gated by `_TEXT_LAYER_GARBLE_CHECK_ENABLED`; fragile `body_for_containment` parameter ordering in `pdf_to_markdown_docling` enforced only by comment, not structure.
+**Mechanism to eliminate:** Three-fold bug generator: (1) **Flag conflation** — `OCR_ESCALATION_GARBLE` gates both Recovery 1 (`client.py:1315`, page-level garble retry) and Recovery 5 (`client.py:1624`, image-dominant structural retry), so toggling one silently disables the other. (2) **Implicit mutable state ordering** — `ExtractionState` (`helpers.py:203-231`) is mutated in-place with no return value; Recovery 1 flipping `state.ok=True` short-circuits Recovery 5's `!state.ok` gate; Recovery 1 clears `state.rtl_decision` only on the remote path (line 1364) while Recovery 5 clears it unconditionally (line 1679). (3) **Dual dispatch** — the gate-driven loop (`client.py:2197-2204`) handles `ocr_escalation`/`rtl_repair` by tag, but image-dominant recovery lives post-loop as ad-hoc code because `NODE_COUNT_LOW`/`DEPTH_LOW` gates have no `recovery_tag`. Additionally, `_repeating_token_density` returns `None` for <20 tokens, making the density comparison unreachable for no-text-layer PDFs (RFC-029 D4 bug — OCR retry always reverts). Language-derivation and OCR-dispatch code is duplicated verbatim between the two recovery methods.
 
-> **RESOLVED (2026-08-18):** Wave 1 serialized into 1a→1b. Zone 4 now runs after Zone 1 lands. All `GarbleContext` references below rewritten to `profile=BULK_PROFILE` per Zone 1's post-fix API. Verify with codebase whether `OCR_ESCALATION_GARBLE`/`OCR_ESCALATION_PER_PICTURE` split in `config.py` is already partially landed before re-implementing Step 1.
+**Strategy:** Consolidate both recovery methods into a single `_recover_ocr_retry` accepting a typed `OcrRetryReason` enum (`GARBLE`, `LOW_CONTENT`, `IMAGE_DOMINANT`). Decouple the flag gate into independent per-reason checks. Fix `_repeating_token_density` to return `1.0` instead of `None`. Unify language derivation, OCR dispatch, picture-splice, and `rtl_decision` clearing into the one method. Add `recovery_tag="ocr_escalation"` to `NODE_COUNT_LOW`/`DEPTH_LOW` GateSpecs so image-dominant recovery enters the gate-driven loop. Three sub-waves: (1) zero-behavioral-change flag split + density fix, (2) method consolidation, (3) re-entry guard on per-picture OCR.
 
-**Strategy:** Deletion-first consolidation (validated pattern from Zones 1/3/5/6, zero regressions): delete the legacy `OCR_ESCALATION` flag and inheritance shim, leaving two flat independent env vars; delete `decorative` from `PictureResult`, unify all skip signaling through `skipped_reason`/`SkipReason`; collapse `_text_layer_has_content`/`_region_has_own_text_layer` into one function with optional `region_rect`, always-on garble check, deleting both rollback toggles; extract `body_for_containment` snapshot + fallback + recovery into a single function that structurally enforces ordering.
-
-**Estimated complexity:** medium
-
-#### Code targets
+**Code targets:**
 
 | File | Lines | What | How | Constraint |
 |---|---|---|---|---|
-| `config.py` | 39-63 | Delete legacy `OCR_ESCALATION` flag + inheritance shim | Flat independent reads: `OCR_ESCALATION_GARBLE`/`OCR_ESCALATION_PER_PICTURE` each default `True`, no ternary/inheritance | Setting one must not affect the other; both default `True` matching current `OCR_ESCALATION=1` behavior |
-| `config.py` | 284-293 | Remove `ocr_escalation` key from `effective_config_snapshot` | Keep `ocr_escalation_garble`/`ocr_escalation_per_picture` keys | Key count decreases by 1 |
-| `client.py` | 21-25 | Remove legacy `OCR_ESCALATION` import | Keep split-flag imports | Update stale comment at line 372 |
-| `converters.py` | 1672-1681 | Delete `decorative` field from `PictureResult` TypedDict | `skipped_reason` is the unified mechanism | All other fields preserved exactly |
-| `converters.py` | 2464-2471 | Replace `decorative=True` with `skipped_reason=SkipReason.OCR_MIN_CHARS.value` | Import `SkipReason` from `.picture_plane` | `OCR_MIN_CHARS` already in `_INTENTIONAL_SKIPS` — identical denominator/marker-strip semantics |
-| `converters.py` | 2546-2547 | Remove `decorative` check from `splice_figure_markers` | `if result.get('skipped_reason'):` only | Identical marker-stripping behavior |
-| `client.py` | 895-898 | Delete `decorative` propagation in `_enrich_image_blocks` | Delete the `if pr.get('decorative')` block | `skipped_reason` propagation must remain |
-| `helpers.py` | 2089-2091 | Delete `decorative` check from `compute_image_enrichment_ratio` | `SkipReason`-based exclusion already covers it | `OCR_MIN_CHARS` must stay in `_INTENTIONAL_SKIPS` |
-| `converters.py` | 1622-1624,1648-1650 | Delete `_TEXT_LAYER_GARBLE_CHECK_ENABLED`/`_REGION_AWARE_TEXT_CHECK_ENABLED` toggles | Both default `True`; garble+region checks become unconditional | Verify no deployment manifest sets either to `false` before merging |
-| `converters.py` | 1765-1794 | Unify `_text_layer_has_content`/`_region_has_own_text_layer` | Single function, optional `region_rect`, always-on garble check **(rewrite as `profile=BULK_PROFILE` per Zone 1 dependency, not `GarbleContext.REGION`)** | `expected_script` passed through to `infer_script` |
-| `converters.py` | 2299-2316 | Collapse dual text-layer check path to a single call | `has_own_text = _text_layer_has_content(page, region_rect=rect, expected_script=expected_script)` | Semantics identical to current default (`REGION_AWARE`+`GARBLE_CHECK` both True) |
-| `converters.py` | 3575-3620 | Extract `_fallback_and_recover_pictures` to structurally enforce `body_for_containment` ordering | Snapshot pre-fallback md as local, run fallback stages, call `_recover_picture_results` with the pre-fallback snapshot, return `(post_fallback_md, pic_results, stage_records)` | Provenance records for all 3 stages preserved; snapshot must not be reachable by code that runs after the fallback stages |
+| `helpers.py` | 203-231 | Add `OcrRetryReason` enum | `StrEnum` with GARBLE/LOW_CONTENT/IMAGE_DOMINANT | `ExtractionState` fields unchanged; no circular imports |
+| `config.py` | 39-48 | Add independent `IMAGE_DOMINANT_OCR_ESCALATION` flag | New config-level flag, default `True` | `OCR_ESCALATION_GARBLE` default stays `True`; `OCR_ESCALATION_PER_PICTURE` unrelated/unchanged. **See env-var naming note below.** |
+| `client.py` | 1295-1458 | Replace Recovery 1 with unified `_recover_ocr_retry` | Per-reason independent flags; single language-derivation block; single OCR-dispatch block; **always** clear `state.rtl_decision` before revalidate; keep-best heuristic only for GARBLE/LOW_CONTENT | `RecoveryOutcome` pre-retry snapshot preserved for GARBLE/LOW_CONTENT; `_reconvert_and_revalidate` interface unchanged |
+| `client.py` | 1611-1693 | Delete Recovery 5 | Logic absorbed into `_recover_ocr_retry(reason=IMAGE_DOMINANT)` | Metric label `still_image_only` must survive |
+| `client.py` | 1376-1382 | Fix `_repeating_token_density` | Return `1.0` instead of `None` for <20 tokens | 0.80 multiplier threshold unchanged |
+| `client.py` | 2172-2224 | Update dispatch table; delete post-loop ad-hoc call | Add IMAGE_DOMINANT to `ocr_escalation` dispatch list; remove lines 2221-2236 | Tag-dedup (`_seen_tags`) and post-loop quality checks (`_recover_flat_prefer`, `_recover_landscape_reroute`) must NOT move |
+| `helpers.py` | 1828-1829 | Add `recovery_tag='ocr_escalation'` to NODE_COUNT_LOW/DEPTH_LOW | GateSpec update | Import-time assertion at 1859-1865 needs updating for RAISE-policy gates with recovery_tag |
+| `client.py` | 415-417 | Delete local env-var read | Import canonical flag from `config.py` | See naming note below |
+| `converters.py` | ~2620-2625 | Re-entry guard on per-picture OCR | Add `force_full_page_ocr_applied: bool = False` param to `_recover_picture_results`; return `[]` when `True` | Per-picture path must still fire on initial conversion |
 
-#### Wiring checks
+**Naming contradiction (validation issue, must resolve before landing):** the `config.py` target says the new flag reads env var `IMAGE_DOMINANT_OCR_ESCALATION`, while the `client.py:415-417` target's constraint says the existing/must-remain-supported name is `IMAGE_DOMINANT_OCR_ESCALATION_ENABLED`. **Resolution:** `config.py` reads `IMAGE_DOMINANT_OCR_ESCALATION_ENABLED` (the existing name) as primary; update the `config.py` target's implementation text to match.
 
-| Symbol | Must be imported by | Check type |
-|---|---|---|
-| `OCR_ESCALATION_GARBLE` | `client.py` | import |
-| `OCR_ESCALATION_PER_PICTURE` | `client.py`, `converters.py` | import |
-| `_text_layer_has_content` | `converters.py` | call |
-| `_fallback_and_recover_pictures` | `converters.py` | call |
-| `SkipReason` | `converters.py`, `helpers.py` | import |
+**Minor gap flagged in validation:** the LOW_CONTENT reason is specified to check `OCR_ESCALATION_GARBLE` (the same flag as GARBLE), which partially re-creates the flag-conflation mechanism this zone exists to eliminate. Decide explicitly: either document that GARBLE and LOW_CONTENT intentionally share the flag as one escalation family, or give LOW_CONTENT its own independent flag for full decoupling.
 
-#### Test requirements
+**Wiring checks:**
+- `OcrRetryReason` imported by `client.py`; `OcrRetryReason.GARBLE`/`LOW_CONTENT`/`IMAGE_DOMINANT` dispatched in `client.py`
+- `IMAGE_DOMINANT_OCR_ESCALATION` imported by `client.py`
+- `_recover_ocr_retry` called by `client.py`
+- `effective_config_snapshot` called by `worker.py`
+- **Add before sign-off:** `_recover_ocr_escalation` and `_recover_image_dominant_ocr` — both must have **zero** remaining callers/references after deletion (mirroring the `_has_sparse_mojibake` pattern in Zone 1)
+- **Add before sign-off:** `_recover_picture_results` (or its new `force_full_page_ocr_applied` param) called by `converters.py` with the flag threaded from the `force_full_page_ocr` context — currently only covered by a test requirement, not a wiring check
 
-- `tests/test_zone4_config_decouple.py` — `OCR_ESCALATION_GARBLE`/`OCR_ESCALATION_PER_PICTURE` fully independent; `config.py` has no `OCR_ESCALATION` attribute; `effective_config_snapshot` drops `ocr_escalation`; document/clarify the legacy-env-var backward-compat behavior explicitly.
-- `tests/test_zone4_picture_result_normalization.py` — `PictureResult` has no `decorative` key (TypeError on construction with it); `splice_figure_markers`/`compute_image_enrichment_ratio` behave identically via `skipped_reason=OCR_MIN_CHARS`.
-- `tests/test_zone4_text_layer_unified.py` — unified function correctness (region_rect on/off, always-on garble, min-chars floor); no rollback toggles exist; coverage-gate dispatch matches prior `REGION_AWARE=True` behavior.
-- `tests/test_zone4_body_containment.py` — `_fallback_and_recover_pictures` snapshots pre-fallback text before running the fallback stages; containment check measures against pre-fallback text.
-- `tests/test_zone4_wiring.py` — per wiring table above, plus confirms `_region_has_own_text_layer` no longer exists.
+**Test requirements:**
+- `tests/test_zone2_ocr_recovery.py` — enum exhaustiveness (exhaustiveness); independent per-reason flag gating (contract); unconditional `rtl_decision` clear regardless of path (regression, closes Recovery-1 bug); `_repeating_token_density` returns 1.0 not None (regression, RFC-029 D4); IMAGE_DOMINANT skips keep-best (contract); image-line-ratio entry guard (contract); pre-retry snapshot only for GARBLE/LOW_CONTENT (contract); single language-derivation block via AST inspection (contract); per-picture re-entry guard (contract); config.py canonical flag source (wiring)
+- `tests/test_zone3_recovery_pipeline.py` — NODE_COUNT_LOW/DEPTH_LOW recovery_tag wiring (wiring); Recovery 5 deletion confirmed, no post-loop ad-hoc call (wiring)
 
-#### Corpus validation
+**Corpus validation:** وارد-597, القرار-التنظيمي, سياسة-حوكمة, Haftpflicht, world-stats-pocketbook. Expected direction: **improve**. Spot-check: 5 docs.
 
-- Affected documents: `cc4533aa` (picture-heavy), `marsoom-13` (Arabic scanned, text-layer garble path), `al-qarar-al-tanzimi` (scanned Arabic, coverage exemption path), `cabinet_resolution` (mixed content/image regions), `reitlehrer` (enrichment ratio affected by `decorative` removal)
-- Expected verdict direction: stable
-- Spot-check count: 5
+**Estimated complexity:** large. **Depends on:** Garble Detection Surface Fragmentation (wave 1).
 
 ---
 
-### Zone: Zone 7: Silent Fallback Chains Masking Compliance and Quality Failures (wave 2, priority 5)
+### Zone: Three-Layer Verdict Pipeline Implicit GATE_TABLE Coupling (wave 3, priority 5)
 
-**Depends on:** Zone 4 (shares `converters.py`).
+**Mechanism to eliminate:** `GATE_TABLE` list position implicitly encodes severity rank via `_GATE_PRIORITY = {defect: idx for idx, ... in enumerate(GATE_TABLE)}` — reordering the list silently changes tiebreaks, primary-defect selection, and recovery-tag dispatch order. Adding a new `GateSpec` requires simultaneously updating 5 coupled sites: list position, `REASON_POLICY` completeness, `HARD_FAIL_DEFECTS` membership, `client.py`'s recovery_tag dispatch dict, and `compute_verdict`'s promotion/exemption ordering (image-enrichment rescue must fire BEFORE `max_leaf_ratio` hard-fail, locked by RFC-022 B2). `_FLAT_APPLICABLE_DEFECTS` is a standalone hardcoded frozenset that must be manually kept in sync with `GATES`. `compute_verdict`'s Phase 2 promotion branches (complexity 28, 226 lines) are inline first-match-wins branches, untestable/unauditable in isolation.
 
-**Mechanism to eliminate:** Silent fallback chains where compliance-relevant (AGPL `pymupdf4llm`) and quality-relevant (tessdata Latin-only OCR) fallbacks fire at runtime with no Prometheus metric or extraction-metadata signal, masking both AGPL legal exposure (**CLAUDE.md Hard Rule 4**) and quality degradation (false-clean Latin mojibake on Arabic documents) behind reported job success. Five bugs: (1) AGPL `pymupdf4llm` actually processes a document as runtime fallback with no `AGPL_FALLBACK_TOTAL` counter tracking actual execution (only chain-composition counters exist); (2) `ensure_tessdata()` falls back to `["deu","eng"]` when requested languages are unavailable with only a `logger.warning`, no metric; (3) registry dual-write `_upsert_registry_row` swallows all exceptions at `logger.warning`, making staleness operationally invisible; (4) remote Docling stale-copy drift — **already addressed** by `_check_remote_docling_version` + `DOCLING_VERSION_SKEW` counter + `REMOTE_MD_RENORMALIZE` safety net, no new work; (5) `ALLOW_AGPL_FALLBACK` default `true` with no per-document alerting (addressed by fixing bug 1).
+**Strategy:** Four independently deployable, zero-corpus-verdict-change steps: (A) explicit `severity: int` field on `GateSpec`, derive `_GATE_PRIORITY` from it instead of `enumerate()`. (B) explicit `flat_applicable: bool` field, derive `_FLAT_APPLICABLE_DEFECTS`/`FLAT_GATE_SUBSET` from it. (C) promote the per-call `recovery_tag` assertion to module-level import-time. (D) extract `compute_verdict` Phase 2 into a `PromotionRule` registry of 7 named, independently testable pure functions — reduces `compute_verdict` from ~226 lines/complexity 28 to ~80 lines/complexity ~8.
 
-**Strategy:** Instrument-and-gate — observability-only, no behavioral or verdict changes. Add targeted Prometheus counters and log-level escalation at the 3 remaining silent-fallback sites so AGPL execution, tessdata quality degradation, and registry write failures are each independently alertable.
+> **Note (validation):** the strategy text says "6 promotion branches" while both the code target and the test requirement enumerate **7** functions ending in `_promote_small_doc`. Use 7 as authoritative.
 
-**Estimated complexity:** small
+**Code targets:**
 
-#### Code targets
-
-| File | Lines | What | How | Constraint |
+| File | Lines (pre-wave-1 anchor — locate by symbol, not line number, per wave-3 caveat) | What | How | Constraint |
 |---|---|---|---|---|
-| `metrics.py` | 197-201 | Add `TESSDATA_LATIN_FALLBACK_TOTAL` counter | `prometheus_client.Counter`, label-free, placed after `AGPL_FALLBACK_TOTAL` | No name collisions |
-| `client.py` | 83-95 | Add `AGPL_FALLBACK_TOTAL` to metrics import block | Insert as the **first** entry alphabetically (spec's "insert after BIDI_RENORM_SKIPPED" was backwards — `AGPL` sorts before `BIDI`) | Don't reorder existing imports |
-| `client.py` | 1169-1177 | Increment `AGPL_FALLBACK_TOTAL.labels(reason='fired')` when `pymupdf4llm` actually handles a doc as runtime fallback | Inside the `state.used_converter != primary_name` branch, after the existing `logger.error` block, check `state.used_converter == 'pymupdf4llm'` and increment | Must NOT fire when `pymupdf4llm` is the *configured* primary (already covered by `operator_configured` label elsewhere) |
-| `converters.py` | 1174-1176 | Increment `TESSDATA_LATIN_FALLBACK_TOTAL` when `ensure_tessdata` falls back to `['deu','eng']` | Lazy import inside the `if not available` block, before the return | No change to return value or the `TessdataUnavailableError` raise path for non-Latin languages |
-| `worker.py` | 728-731 | Escalate registry dual-write failure log from WARNING to ERROR with `exc_info=True` | Change log level only | Must NOT re-raise — function contract is best-effort dual-write; existing `REGISTRY_WRITE_FAILURES_TOTAL` gauge and Redis mirror call unchanged |
+| `helpers.py` | ~242-262 | Add `severity`/`flat_applicable` fields to `GateSpec` | Both with defaults so existing constructor calls remain valid | `GateSpec` stays `frozen=True`; existing field order unchanged |
+| `helpers.py` | ~1826-1842 | Set severity/flat_applicable per gate | severity 0-9 matching current list positions (GARBLING=0 ... SUSPECT_DENSITY=9; dead/OK=99); flat_applicable=True only for GARBLING/NODE_GARBLING/REORDERED | `GATES` list order itself must not change |
+| `helpers.py` | ~1874-1877 | Derive `_GATE_PRIORITY` from severity field | `{g.defect: g.severity for g in GATES if g.gate_fn is not None}` + import-time uniqueness assertion | Must produce identical key-values to current enumerate-based derivation |
+| `helpers.py` | ~1882-1895 | Derive `_FLAT_APPLICABLE_DEFECTS` from flat_applicable field | `frozenset(g.defect for g in GATES if g.flat_applicable)` | Result must equal current hardcoded `{GARBLING, NODE_GARBLING, REORDERED}` |
+| `client.py` | ~2190-2195 | Promote recovery_tag assertion to import time | Module-level `_EXPECTED_RECOVERY_TAGS` frozenset + assertion; keep the per-call assertion as defense-in-depth; guard with `PAGEINDEX_SKIP_GATE_ASSERTIONS` bypass | Must crash at import if a new recovery_tag lacks a dispatch entry |
+| `helpers.py` | ~2186-2411 | Extract `PromotionRule` registry | 7 named pure functions (`_promote_image_enrichment`, `_reject_max_leaf_ratio`, `_promote_base_pass`, `_promote_cat_a`, `_promote_cat_b_flat`, `_promote_cat_c`, `_promote_small_doc`) + `PROMOTION_RULES` ordered list; import-time assertion that image_enrichment's index < max_leaf_ratio's index (RFC-022 B2 lock) | Must preserve first-match-wins short-circuit semantics; must produce identical verdicts on all 25 corpus docs; extract one rule at a time across sub-PRs |
+| `preprocess_client.py` | ~220-374 (real: 221/227-228/321-326) | Verify `recompute_verdicts` compatibility | No code change — spot-check assertion only | Must produce identical verdicts before/after refactor |
 
-#### Wiring checks
+**Unresolved detail (validation issue):** the `PromotionRule` loop prose references `_apply_clamp(result)` as part of the new Phase 2 loop, but `_apply_clamp` has no code target and is not clear as pre-existing vs. new. **Clarify before implementation:** if `_apply_clamp` already exists, cite its current location; if new, add a proper code target and wiring check for it.
 
-| Symbol | Must be imported by | Check type |
-|---|---|---|
-| `AGPL_FALLBACK_TOTAL` | `client.py` | import |
-| `TESSDATA_LATIN_FALLBACK_TOTAL` | `converters.py` | call |
+**Wiring checks:**
+- `GateSpec.severity`, `GateSpec.flat_applicable` — field-access checks in `helpers.py` comprehensions (validation notes `dispatch` is the wrong check_type for a non-branching data field; use a field-usage/attribute check)
+- `_EXPECTED_RECOVERY_TAGS` imported by `client.py`
+- `PromotionRule`, `PROMOTION_RULES`, and all 7 `_promote_*` functions — defined and consumed within `helpers.py`; treat as intra-module usage checks, not "imported by helpers.py" (self-import is vacuous, per the same pattern flagged in Zone 4)
+- **Add before sign-off:** resolve the `_apply_clamp` ambiguity above with either a code target or a note that it's pre-existing
 
-#### Test requirements
+**Test requirements:**
+- `tests/test_zone3_gatespec_severity.py` — severity uniqueness/positional match to current enumerate order; `_GATE_PRIORITY` invariance under list reordering; duplicate-severity import-time failure (exhaustiveness); `flat_applicable`-derived frozenset correctness; auto-sync on new gate addition (exhaustiveness); module-level recovery_tag assertion + bypass env var (contract)
+- `tests/test_zone3_promotion_rules.py` — 7-entry registry in correct order; RFC-022 B2 ordering lock; independent callability; unique labels (contract); per-rule isolation (return-None conditions) (regression); `compute_verdict` complexity-reduction regression vs existing parametrized cases, hard-fail tiebreak, masked-defect resolution (regression)
+- `tests/test_zone3_recovery_pipeline.py` — existing 526-line suite passes unchanged for Steps A-C (regression)
+- `tests/test_zone1_gate_table.py` — existing gate-table completeness tests pass unchanged (regression)
 
-- `tests/test_zone7_silent_fallback.py` — `AGPL_FALLBACK_TOTAL.labels(reason='fired')` increments exactly once when `pymupdf4llm` fires as runtime fallback (docling primary raises); does NOT increment when `pymupdf4llm` is configured primary.
-- Same file — `TESSDATA_LATIN_FALLBACK_TOTAL` increments on the `['deu','eng']` fallback path; does not increment on the happy path.
-- Same file — registry dual-write failure logs at ERROR with `exc_info=True`; function does not raise; `REGISTRY_WRITE_FAILURES_TOTAL` still increments.
-- Same file — regression: converter chain iteration still succeeds with fallback (metric instrumentation doesn't break the loop).
-- Same file — regression: `ensure_tessdata` still raises `TessdataUnavailableError` for non-Latin languages when traineddata is missing (metric addition doesn't suppress the error).
+**Corpus validation:** all 25 corpus documents (full regression required for a verdict-affecting refactor), with named focus on Penal Code, Human Rights, federal_decree_law_no_33, marsoom-33, world-stats-pocketbook, cabinet_resolution_no_96, ward-597, SLA doc. Expected direction: **stable**. Spot-check: 25 docs.
 
-#### Corpus validation
-
-- Affected documents: `marsoom-13`, `cc4533aa`
-- Expected verdict direction: stable
-- Spot-check count: 2
+**Estimated complexity:** large. **Depends on:** Garble Detection Surface Fragmentation, Content-Destructive Heuristics Without Safety Bounds, OCR Recovery Pipeline Flag Conflation and Mutable State Ordering (all prior waves).
 
 ---
 
 ## Validation Results
 
-**Overall quality: `needs_work` — plan is NOT approved for dispatch as written.**
+**Overall quality:** `needs_work`. **Approved:** false. 20 issues found (4 major, 1 blocker, remainder minor) across the 5 zones in scope. None of the issues invalidate a zone's core mechanism/strategy — all are spec-completeness gaps (missing producers for specified consumers, missing wiring checks, line-number drift, naming contradictions, or fictional symbol references) that must be closed before a wave starts executing, not before this plan is written. They have been folded inline into each zone's Fix Spec above as "blocking gap" / "gap flagged in validation" / "correction from validation" call-outs rather than left as a separate unread appendix.
 
-### Blockers (must fix before any fixer is dispatched)
+**Blocker (must fix before Content-Destructive Heuristics wave 2 executes):** `test_zone6_exhaustiveness.py` asserts behavior of a `DESTRUCTIVE_HEURISTICS` registry that no code target creates — either build the registry (Step D) or drop the test and Step D from scope.
 
-1. **Zone 1 / Zone 4 (Wave 1) — file/API collision.** Both zones edit the same `converters.py:2299-2316` `GarbleContext.REGION` block; Zone 4's instructions tell the implementer to write against `GarbleContext.REGION`, a symbol Zone 1 deletes in the same wave. Both also touch `client.py`. Parallel dispatch as specified guarantees a merge conflict and a dangling-API bug. **Fix:** serialize Zone 1 → Zone 4, or rewrite Zone 4's targets in terms of Zone 1's post-fix `profile=BULK_PROFILE` API and declare `converters.py`+`client.py` as explicit shared files with a merge order. (Applied above in the Zone 4 section and Wave 1 rationale.)
+**Majors (must fix before their respective wave executes):**
+1. Dual-Store zone: Redis `verdict_retry` consumer specified with no producer anywhere in the codebase or the plan — dead code as written.
+2. OCR Recovery zone: `IMAGE_DOMINANT_OCR_ESCALATION` vs `IMAGE_DOMINANT_OCR_ESCALATION_ENABLED` env-var naming contradiction between two code targets.
+3. Content-Destructive zone: Wave 2's "zero shared files" rationale contradicts its own `shared_files: [helpers.py]` field; requires serialized edits or symbol-anchored patches within the wave.
+4. Garble Detection zone: Step 4 removes the only script-inference fallback with no defined behavior for hash-named documents that have no filename language signal — including two documents in this zone's own corpus_validation list.
+5. Content-Destructive zone: the two `prepare_tree` call sites (client.py:963 and :1269) are covered by one generic wiring check that a partial fix could satisfy while leaving one site un-wired.
+6. Garble Detection zone: 10 `infer_script`-fallback removal sites are covered only by generic per-file wiring checks, not per-site — same partial-fix risk as above.
+7. OCR Recovery zone: the `_recover_picture_results` re-entry-guard threading has a test requirement but no wiring check.
 
-2. **Zone 2 / Zone 3 — contradictory recovery-coverage contracts.** Zone 2 installs `_RECOVERY_REGISTRY` requiring RETRY_OCR/RETRY_RTL/RAISE gates to have recovery wiring; Zone 3 installs `GateSpec.recovery_tag` with a constraint that RAISE-policy gates must NOT require it — two overlapping mechanisms enforcing opposite invariants on the same gates, with Zone 3 never deleting or reconciling Zone 2's registry. This recreates the exact dual-authority sprawl these fixes exist to eliminate. **Fix:** drop `_RECOVERY_REGISTRY` from Zone 2 entirely; move the sole assertion into Zone 3's `GateSpec.recovery_tag`; make one explicit decision on whether RAISE gates need wiring and apply it identically in both specs. (Applied above — Zone 2 section marks `_RECOVERY_REGISTRY` removed.)
+**Minors:** several line-number inaccuracies (corrected inline above), vacuous "imported by own defining module" wiring-check phrasing (Dual-Store, GATE_TABLE zones), a fictional `converters.py` symbol reference (`_page_orientation_info`), a swapped-labels test description (density-gate thresholds), an off-by-one in prose ("6" vs "7" promotion branches), and a `check_type: dispatch` misclassification for plain dataclass fields.
 
-3. **Zone 3 — 3 of 7 recovery methods left unwired.** `recovery_tag` as specified covers only `ocr_escalation` and `rtl_repair`, plus 2 post-loop checks (`flat_prefer`, `landscape_reroute`). `_recover_rtl_flat_compare`, `_recover_vlm_fallback`, and `_recover_image_dominant_ocr` have no tag, no dispatch entry, and no post-loop slot — they would silently stop executing under this plan. The spec's own test requirement ("NODE_COUNT_LOW triggers image_dominant_ocr") contradicts its own code_targets (NODE_COUNT_LOW is RAISE-policy, gets no tag under the stated rule). **Fix:** extend `recovery_tag` coverage to all 7 methods (multi-tag support for RTL_REVERSAL, a tag for NODE_COUNT_LOW→image_dominant_ocr) or explicitly enumerate the 3 missing recoveries as ordered post-loop steps with guard conditions. (Flagged above in the Zone 3 section; **not yet resolved** — needs an explicit design decision before implementation.)
-
-### Major issues
-
-4. **Zone 2 / Zone 7 (Wave 2) — false "disjoint files" claim.** Both touch `client.py` (non-overlapping line ranges) and `converters.py`; Zone 7 also touches `metrics.py`, uninventoried anywhere in the wave. Not a guaranteed conflict but a coordination hazard and a factually wrong `shared_files: []` declaration. **Fix:** declare `client.py`+`converters.py` as shared with non-overlapping ownership, or serialize Zone 7 (small, observability-only) after Zone 2. (Applied above in Wave 2 rationale.)
-
-### Minor issues (applied inline above)
-
-5. Zone 2's `FLAT_GATE_SUBSET`/`_RECOVERY_REGISTRY` wiring checks pointed at their own definition file (`helpers.py`) rather than their consumer — same-file checks are vacuous. Corrected to require the symbol be referenced inside `compute_verdict`'s consuming branch, not merely defined.
-6. Zone 3's `RECOVERY_DISPATCH` wiring check treated a local (function-scope) dict as an importable symbol. Corrected to require it be both built *and* referenced inside the recovery-loop body specifically.
-7. Zone 2's `converters.py` wiring check forced an unused `VerdictResult` import. Dropped from that file's check — `_candidate_from_document` only needs `.verdict`.
-8. Zone 1's phantom `GarbleProfile.evaluate` wiring check (no such method defined anywhere) removed entirely.
-9. Small 1-2 line drift across multiple zones (client.py `check_garble` sites, `GATES` per-entry line anchors, `ExtractionSnapshot` span, AGPL fallback block). Recommendation applied: key `GATES` edits by `TreeDefect` name, not line number.
-10. Zone 7's `client.py` import-ordering instruction was self-contradictory (told to insert `AGPL_FALLBACK_TOTAL` "after BIDI_RENORM_SKIPPED" while claiming alphabetical order, when `AGPL` sorts first). Corrected above.
-11. Zone 2's `classify_verdict` backward-compat wrapper is explicitly kept alive for `preprocess_client.py`/`promotion_sweep.py` but had zero test coverage for that surface. A regression test requirement was added.
-
-### Recommended sequencing before dispatch
-
-1. Resolve blocker 2 (Zone 2/3 recovery-coverage mechanism) as a design decision — this affects both zone specs and must be settled once, not per-zone.
-2. Resolve blocker 3 (Zone 3 missing recovery wiring) — extend `recovery_tag` coverage or add the explicit post-loop steps.
-3. Apply blocker 1's Wave 1 serialization (Zone 1 → Zone 4) before any fixer touches `converters.py:2299-2316`.
-4. Re-run zone-delta-analysis / triage against the corrected specs before dispatching fixers, per the project's standard zone-remediation pipeline (delta → triage → fix → verify).
+**Recommendation:** do not begin wave execution on any zone until that zone's blocking/major gaps (called out inline in its Fix Spec above) are closed by the implementing agent or explicitly waived by the user. Minors may be fixed opportunistically during implementation without re-gating the wave.

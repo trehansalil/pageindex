@@ -521,6 +521,79 @@ async def run_auto_backfill() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Zone-4: Redis verdict retry queue drain
+# ---------------------------------------------------------------------------
+
+# Key prefix matches worker.py's _VERDICT_RETRY_KEY_PREFIX.
+_VERDICT_RETRY_SCAN_PATTERN = "pageindex:verdict_retry:*"
+_VERDICT_RETRY_DRAIN_BATCH = 100  # SCAN COUNT per iteration
+
+
+async def _drain_verdict_retry_queue(redis_client: Any) -> None:
+    """Drain Redis verdict-retry keys, replaying each into Postgres + MinIO.
+
+    Best-effort: individual key failures are logged and skipped so the
+    reconcile cron continues.  The function never raises.
+    """
+    import json as _json
+
+    from .registry import upsert_verdict
+    from .storage import save_doc_meta
+
+    drained = 0
+    failed = 0
+    try:
+        cursor: int | bytes = 0
+        while True:
+            cursor, keys = await redis_client.scan(
+                cursor=cursor,
+                match=_VERDICT_RETRY_SCAN_PATTERN,
+                count=_VERDICT_RETRY_DRAIN_BATCH,
+            )
+            for key in keys:
+                # Key format: pageindex:verdict_retry:<doc_id>
+                key_str = key.decode() if isinstance(key, bytes) else key
+                doc_id = key_str.rsplit(":", 1)[-1]
+                try:
+                    raw = await redis_client.get(key)
+                    if raw is None:
+                        # Already expired or consumed by another worker.
+                        await redis_client.delete(key)
+                        continue
+                    verdict_fields = _json.loads(
+                        raw.decode() if isinstance(raw, bytes) else raw
+                    )
+
+                    # Replay: Postgres first, then MinIO sidecar backfill.
+                    winning = await upsert_verdict(doc_id, verdict_fields)
+                    if winning:
+                        await asyncio.to_thread(save_doc_meta, doc_id, winning)
+
+                    await redis_client.delete(key)
+                    drained += 1
+                except Exception as exc:
+                    failed += 1
+                    logger.warning(
+                        "reconcile: verdict-retry drain failed for %s: %s",
+                        key_str, exc,
+                    )
+
+            # cursor == 0 means the SCAN is complete.
+            if cursor == 0 or cursor == b"0":
+                break
+    except Exception as exc:
+        logger.warning(
+            "reconcile: verdict-retry drain aborted (non-fatal): %s", exc
+        )
+
+    if drained or failed:
+        logger.info(
+            "reconcile: verdict-retry drain: %d replayed, %d failed",
+            drained, failed,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Periodic reconciliation (Phase 3 audit Issue A #3 — arq cron target)
 # ---------------------------------------------------------------------------
 
@@ -558,6 +631,14 @@ async def reconcile_registry_drift() -> None:
     except Exception as exc:
         logger.warning("reconcile_registry_drift: Redis connect failed, skipping: %s", exc)
         return
+
+    # Zone-4: drain Redis verdict retry queue before the MinIO scan so that
+    # verdicts lost during a Postgres outage under Postgres-authority mode
+    # are healed before the incremental reconcile overwrites them with stale
+    # MinIO data.  Best-effort — a failure here must NOT block the existing
+    # MinIO reconcile path.
+    if settings.registry_verdict_authority == "postgres":
+        await _drain_verdict_retry_queue(redis_client)
 
     # C-3 (audit Finding 9): incremental O(Δ) reconcile. The listing carries each
     # sidecar's etag for free (no per-object GET); we only touch docs whose etag

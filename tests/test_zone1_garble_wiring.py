@@ -7,6 +7,10 @@ Contracts locked:
    converters.py and client.py must not reference them.
 3. **Integration** -- classify_verdict flat-doc path threads expected_script
    through to check_garble.
+4. **Wiring** -- _has_sparse_mojibake removed from helpers.py (inlined).
+5. **Wiring** -- garble_prongs accepts had_presentation_forms and original_text.
+6. **Wiring** -- check_garble accepts had_presentation_forms kwarg.
+7. **Wiring** -- no infer_script fallback pattern outside allowed sites.
 """
 
 from __future__ import annotations
@@ -255,4 +259,101 @@ class TestClassifyVerdictFlatDocIntegration:
         )
         assert result_latn is False, (
             "expected_script='Latn' must NOT trigger latin_gibberish prong"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Wiring: _has_sparse_mojibake removed (inlined into garble_prongs)
+# ---------------------------------------------------------------------------
+
+class TestWiringSparseMojibakeInlined:
+    """_has_sparse_mojibake must not exist as a top-level function in helpers.py;
+    its logic is now the 'sparse_mojibake' prong inside garble_prongs."""
+
+    def test_has_sparse_mojibake_not_defined(self):
+        tree = _parse_file(_PRODUCTION_FILES["helpers.py"])
+        func_defs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_has_sparse_mojibake"
+        ]
+        assert len(func_defs) == 0, (
+            "_has_sparse_mojibake should have been removed from helpers.py "
+            "(inlined into garble_prongs as 'sparse_mojibake' prong)"
+        )
+
+    def test_check_garble_does_not_call_has_sparse_mojibake(self):
+        """check_garble must not call _has_sparse_mojibake separately --
+        the prong is now inside garble_prongs."""
+        tree = _parse_file(_PRODUCTION_FILES["helpers.py"])
+        calls = _find_calls_to(tree, "_has_sparse_mojibake")
+        assert len(calls) == 0, (
+            f"helpers.py still calls _has_sparse_mojibake ({len(calls)} call(s)) "
+            f"-- should be inlined into garble_prongs"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 5. Wiring: garble_prongs signature includes new params
+# ---------------------------------------------------------------------------
+
+class TestWiringGarbleProngsSignature:
+    """garble_prongs must accept had_presentation_forms and original_text."""
+
+    def test_garble_prongs_accepts_had_presentation_forms(self):
+        """garble_prongs must accept had_presentation_forms=True without error."""
+        from pageindex_mcp.helpers import garble_prongs
+        result = garble_prongs(
+            "test text",
+            expected_script="Latn",
+            had_presentation_forms=True,
+        )
+        assert isinstance(result, frozenset)
+
+    def test_garble_prongs_accepts_original_text(self):
+        """garble_prongs must accept original_text=... without error."""
+        from pageindex_mcp.helpers import garble_prongs
+        result = garble_prongs(
+            "test text",
+            expected_script="Latn",
+            original_text="raw text",
+        )
+        assert isinstance(result, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# 6. Wiring: check_garble accepts had_presentation_forms
+# ---------------------------------------------------------------------------
+
+class TestWiringCheckGarbleNewParams:
+    """check_garble must accept had_presentation_forms as a keyword argument."""
+
+    def test_check_garble_had_presentation_forms(self):
+        result = check_garble(
+            "test text",
+            expected_script="Latn",
+            profile=BULK_PROFILE,
+            had_presentation_forms=False,
+        )
+        assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# 7. Wiring: no infer_script fallback in client.py or converters.py
+# ---------------------------------------------------------------------------
+
+class TestWiringNoInferScriptFallback:
+    """client.py and converters.py must not contain the pattern
+    'expected_script or infer_script(' -- the fallback is centralized
+    inside check_garble."""
+
+    @pytest.mark.parametrize("fname", ["client.py", "converters.py"])
+    def test_no_infer_script_fallback_pattern(self, fname):
+        import re
+        source = _PRODUCTION_FILES[fname].read_text()
+        pattern = re.compile(r"expected_script\s+or\s+_?infer_script\s*\(")
+        matches = list(pattern.finditer(source))
+        assert len(matches) == 0, (
+            f"{fname} still contains 'expected_script or infer_script(' pattern "
+            f"at {len(matches)} site(s) -- fallback should be centralized in check_garble"
         )

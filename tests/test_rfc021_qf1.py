@@ -133,7 +133,8 @@ async def test_qf1_ocr_deferral_default(monkeypatch, pdf_file_with_content):
 
     await c.index(pdf_file_with_content)
 
-    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script=None)
+    # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script="Latn")
     mocks["save_doc"].assert_called_once()
 
 
@@ -153,11 +154,12 @@ async def test_qf1_ocr_deferral_rollback(monkeypatch, pdf_file_with_content):
 
     await c.index(pdf_file_with_content)
 
+    # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
     conv_mock.assert_called_once_with(
         pdf_file_with_content,
         True,
         ocr_lang_override=["eng"],
-        expected_script=None,
+        expected_script="Latn",
     )
     mocks["save_doc"].assert_called_once()
 
@@ -184,7 +186,8 @@ async def test_qf1_picture_items_preserved(monkeypatch, pdf_file_with_content):
 
     await c.index(pdf_file_with_content)
 
-    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script=None)
+    # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script="Latn")
     mocks["splice_picture_text_for_tree"].assert_called_once()
     spliced_pics = mocks["splice_picture_text_for_tree"].call_args.args[1]
     assert spliced_pics == picture_results
@@ -231,7 +234,8 @@ async def test_qf1_fix3_retry_still_fires(monkeypatch, pdf_file_with_content):
     doc_id = await c.index(pdf_file_with_content)
 
     # Primary attempt deferred (no forced-OCR args).
-    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script=None)
+    # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+    conv_mock.assert_called_once_with(pdf_file_with_content, expected_script="Latn")
     # Fix-3 escalation fired exactly once, WITH forced OCR.
     assert len(escalation_calls) == 1
     assert escalation_calls[0]["force_full_page_ocr"] is True

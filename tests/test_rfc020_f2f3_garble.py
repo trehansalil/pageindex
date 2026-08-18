@@ -33,7 +33,8 @@ class TestExpectedScriptThreading:
         assert _script_from_filename("وارد_597.pdf") == "Arab"
 
     def test_script_from_filename_german(self):
-        assert _script_from_filename("Haftpflicht_2024.pdf") is None
+        # Zone-1: _script_from_filename now returns "Latn" for deu/eng filenames
+        assert _script_from_filename("Haftpflicht_2024.pdf") == "Latn"
 
     def test_tree_bulk_garble_with_arab_script_latin_gibberish(self):
         nodes = [{"text": _LATIN_GIBBERISH}]

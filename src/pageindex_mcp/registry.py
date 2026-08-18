@@ -172,17 +172,34 @@ INSERT INTO doc_registry (
     verdict_computed_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT (doc_id) DO UPDATE SET
+    -- Facet / descriptor columns: unconditional last-writer-wins.
     doc_name        = EXCLUDED.doc_name,
     source_url      = EXCLUDED.source_url,
-    processed_at    = EXCLUDED.processed_at,
     content_class   = EXCLUDED.content_class,
-    sha256          = EXCLUDED.sha256,
     product         = EXCLUDED.product,
     tier            = EXCLUDED.tier,
     doc_family      = EXCLUDED.doc_family,
     effective_date  = EXCLUDED.effective_date,
     doc_description = EXCLUDED.doc_description,
-    node_count      = EXCLUDED.node_count,
+    -- Zone-4: processed_at CAS guard — prevent stale reconcile data from
+    -- regressing sha256, node_count, processed_at.  COALESCE-to-empty-string
+    -- mirrors the verdict CAS pattern so a row with NULL/empty processed_at
+    -- always accepts an incoming value.
+    processed_at = CASE
+        WHEN EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at, '')
+        THEN EXCLUDED.processed_at
+        ELSE doc_registry.processed_at
+    END,
+    sha256 = CASE
+        WHEN EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at, '')
+        THEN EXCLUDED.sha256
+        ELSE doc_registry.sha256
+    END,
+    node_count = CASE
+        WHEN EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at, '')
+        THEN EXCLUDED.node_count
+        ELSE doc_registry.node_count
+    END,
     -- Zone-8: temporal CAS guard — prefer newer verdict_computed_at.
     -- Existing rows with NULL/empty verdict_computed_at always accept any
     -- incoming verdict (COALESCE to '' ensures '' < any ISO timestamp).
@@ -250,6 +267,81 @@ async def upsert_doc(meta: dict) -> None:
         meta.get("verdict_computed_at", ""),
     )
     logger.debug("registry: upserted doc_id=%s", doc_id)
+
+
+# ---------------------------------------------------------------------------
+# Zone-4: verdict-only upsert with RETURNING (sole CAS-guarded verdict write)
+# ---------------------------------------------------------------------------
+
+_UPSERT_VERDICT_SQL = """
+INSERT INTO doc_registry (
+    doc_id, doc_name, source_url, processed_at,
+    content_class, sha256, product, tier, doc_family,
+    effective_date, doc_description, node_count,
+    verdict, pipeline_version, permanent_marginal,
+    verdict_computed_at
+) VALUES ($1, '', '', '', '', '', '', '', '', '', '', NULL, $2, $3, $4, $5)
+ON CONFLICT (doc_id) DO UPDATE SET
+    -- Zone-8: temporal guard — same CAS logic as _UPSERT_SQL.
+    verdict = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict)
+        ELSE doc_registry.verdict
+    END,
+    pipeline_version = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN EXCLUDED.pipeline_version
+        ELSE doc_registry.pipeline_version
+    END,
+    permanent_marginal = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN EXCLUDED.permanent_marginal
+        ELSE doc_registry.permanent_marginal
+    END,
+    verdict_computed_at = CASE
+        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        THEN EXCLUDED.verdict_computed_at
+        ELSE doc_registry.verdict_computed_at
+    END
+RETURNING doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at;
+"""
+
+
+async def upsert_verdict(doc_id: str, verdict_fields: dict[str, Any]) -> dict[str, Any] | None:
+    """CAS-guarded verdict-only upsert with RETURNING.
+
+    Writes *only* the four verdict columns (verdict, pipeline_version,
+    permanent_marginal, verdict_computed_at) using the same temporal CAS guard
+    as ``_UPSERT_SQL``.  Returns the winning row's verdict columns as a dict
+    so the caller knows exactly which values landed in Postgres, regardless of
+    whether the incoming write won or the existing row's values were preserved.
+
+    Returns ``None`` when the pool is unavailable or ``doc_id`` is empty.
+    Never raises — callers must handle ``None`` as "Postgres unavailable".
+
+    This is the sole CAS-guarded verdict write entry point for the
+    Postgres-authority (``REGISTRY_VERDICT_AUTHORITY=postgres``) path.
+    """
+    pool = get_pool()
+    if pool is None:
+        return None
+    if not doc_id:
+        logger.warning("registry.upsert_verdict: skipping empty doc_id")
+        return None
+
+    row = await pool.fetchrow(
+        _UPSERT_VERDICT_SQL,
+        doc_id,
+        verdict_fields.get("verdict", ""),
+        verdict_fields.get("pipeline_version"),
+        verdict_fields.get("permanent_marginal", False),
+        verdict_fields.get("verdict_computed_at", ""),
+    )
+    if row is None:
+        return None
+    result = dict(row)
+    logger.debug("registry: upsert_verdict doc_id=%s winning_verdict=%s", doc_id, result.get("verdict"))
+    return result
 
 
 # ---------------------------------------------------------------------------

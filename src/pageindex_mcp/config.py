@@ -158,6 +158,15 @@ class Settings:
     # any URL was returned), so it falls back to storage.DEFAULT_PRESIGN_REGION.
     # Set this only when your MinIO/S3 is configured with a non-default region.
     minio_region: str
+    # Zone-4: verdict authority mode.  Controls which store is written first
+    # during dual-write and whether MinIO sidecar barriers are skipped.
+    #   "minio"    — existing behaviour: MinIO sidecar is source of truth,
+    #                Postgres is the best-effort secondary (RFC-006 baseline).
+    #   "postgres" — Postgres-first: upsert_verdict() writes Postgres with
+    #                RETURNING, then backfills the MinIO sidecar.
+    # Default "minio" for zero-risk Phase 1.  Flip to "postgres" after Phase 2
+    # validation over 2+ corpus runs; remove the flag entirely in Phase 3.
+    registry_verdict_authority: str
 
 
 # HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
@@ -255,11 +264,23 @@ def _load_settings() -> Settings:
             os.environ.get("MINIO_PRESIGN_PATH_PREFIX", "")
         ),
         minio_region=os.environ.get("MINIO_REGION", ""),
+        registry_verdict_authority=os.environ.get(
+            "REGISTRY_VERDICT_AUTHORITY", "minio"
+        ).strip().lower(),
     )
 
 
 # Module-level singleton — all other modules do `from .config import settings`
 settings: Settings = _load_settings()
+
+# Zone-4: validate registry_verdict_authority at import time so a typo is
+# caught at startup, not deep inside a job's dual-write path.
+_VALID_VERDICT_AUTHORITY = ("minio", "postgres")
+if settings.registry_verdict_authority not in _VALID_VERDICT_AUTHORITY:
+    raise ValueError(
+        f"REGISTRY_VERDICT_AUTHORITY must be one of {_VALID_VERDICT_AUTHORITY}, "
+        f"got {settings.registry_verdict_authority!r}"
+    )
 
 
 def _envbool(key: str, default: str) -> bool:
