@@ -54,7 +54,8 @@ from .picture_plane import (
 )
 from .script import RtlDecision, decide_rtl
 from .helpers import (
-    ExtractionSnapshot,
+    GATES,
+    RecoveryOutcome,
     ExtractionState,
     BULK_PROFILE,
     FLAT_MARKDOWN_PROFILE,
@@ -970,34 +971,6 @@ class CustomPageIndexClient(PageIndexClient):
         )
         state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
         state.ok, state.reason = _vt_raw
-        state.original_gate_result = state.gate_result
-
-    def _finalize_routing(self, state: ExtractionState) -> None:
-        """Reconcile route/first_defect after the recovery pipeline completes.
-
-        Zone-2 fix: recovery methods may override ``state.route`` directly
-        (bypassing ``decide_route``).  When ``route_overridden`` is True the
-        override is intentional and must not be clobbered.  When the tree
-        passed validation (``state.ok`` is True) no rerouting is needed.
-
-        Otherwise re-derive ``first_defect`` from the current gate result and
-        recompute ``state.route`` via ``decide_route`` so the downstream
-        match/case dispatch sees a consistent (ok, route) pair.
-        """
-        if state.route_overridden or state.ok:
-            return
-
-        # Recompute first_defect from current gate result (may have changed
-        # during recovery reconvert-and-revalidate cycles).
-        if state.gate_result is not None:
-            state.first_defect = state.gate_result.defect
-        else:
-            state.first_defect = _defect_from_reason_str(state.reason)
-
-        state.route = decide_route(state.first_defect, settings.flat_doc_routing)
-        state.total_chars = len(
-            _flatten_tree_text(state.result.get("structure", []))
-        )
 
     async def _convert_to_tree(
         self,
@@ -1317,7 +1290,6 @@ class CustomPageIndexClient(PageIndexClient):
             else _defect_from_reason_str(state.reason)
         )
         state.route = decide_route(state.first_defect, settings.flat_doc_routing)
-        state.original_gate_result = state.gate_result
         state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
     async def _recover_ocr_escalation(
@@ -1344,11 +1316,10 @@ class CustomPageIndexClient(PageIndexClient):
         ):
             return
 
-        pre_retry = ExtractionSnapshot(
+        pre_retry = RecoveryOutcome(
             result=state.result,
             ok=state.ok,
-            defect=state.first_defect,
-            reason_str=state.reason,
+            reason=state.reason,
             gate_result=state.gate_result,
             total_chars=state.total_chars,
             md_content=state.md_content,
@@ -1397,7 +1368,6 @@ class CustomPageIndexClient(PageIndexClient):
             await self._reconvert_and_revalidate(
                 state, state.md_content, expected_script=expected_script
             )
-            state.original_gate_result = state.gate_result
 
             post_retry_chars = len(
                 _flatten_tree_text(state.result.get("structure", []))
@@ -1470,12 +1440,7 @@ class CustomPageIndexClient(PageIndexClient):
                 else:
                     retry_wins = True
             if not retry_wins:
-                (
-                    state.result, state.ok, state.reason,
-                    state.gate_result, state.original_gate_result,
-                    state.md_content, state.pic_results, state.used_converter,
-                ) = pre_retry.restore()
-                state.total_chars = pre_retry.total_chars
+                pre_retry.apply(state)
                 if state.tmp_md_path and os.path.exists(state.tmp_md_path):
                     os.unlink(state.tmp_md_path)
                 with tempfile.NamedTemporaryFile(
@@ -1525,7 +1490,6 @@ class CustomPageIndexClient(PageIndexClient):
             )
             state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
             state.ok, state.reason = _vt_raw
-            state.original_gate_result = state.gate_result
             logger.warning(
                 "RTL reversal on %s; reconstruct_bidi_order repair %s",
                 filename,
@@ -1570,7 +1534,6 @@ class CustomPageIndexClient(PageIndexClient):
                     filename,
                 )
                 state.route = Route.FLAT
-                state.route_overridden = True
         except Exception as _flat_cmp_exc:
             logger.warning(
                 "RFC-033 D8: flat-path reversal comparison failed for %s (%s); "
@@ -1628,7 +1591,6 @@ class CustomPageIndexClient(PageIndexClient):
                     state.md_content = recovered_md
                     state.pic_results = []
                     state.route = Route.FLAT
-                    state.route_overridden = True
         except Exception as vlm_exc:
             VLM_FALLBACK_TOTAL.labels(result="error").inc()
             logger.error(
@@ -1645,7 +1607,6 @@ class CustomPageIndexClient(PageIndexClient):
                     state.md_content = recovered_md
                     state.pic_results = []
                     state.route = Route.FLAT
-                    state.route_overridden = True
 
     async def _recover_image_dominant_ocr(
         self,
@@ -1761,7 +1722,6 @@ class CustomPageIndexClient(PageIndexClient):
                 )
                 state.ok = False
                 state.route = Route.FLAT
-                state.route_overridden = True
         except Exception as _flat_exc:
             logger.warning(
                 "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
@@ -1792,7 +1752,6 @@ class CustomPageIndexClient(PageIndexClient):
             )
             state.ok = False
             state.route = Route.FLAT
-            state.route_overridden = True
 
     async def _persist_flat_result(
         self,
@@ -2017,7 +1976,7 @@ class CustomPageIndexClient(PageIndexClient):
         _vr = compute_verdict(
             structure,
             "",
-            state.original_gate_result,
+            state.gate_result,
             inspector_class=(
                 pdf_classification.get("pdf_type") if pdf_classification else None
             ),
@@ -2066,11 +2025,11 @@ class CustomPageIndexClient(PageIndexClient):
             "verdict_computed_at": _verdict_computed_at,
         }
         if (
-            state.original_gate_result is not None
-            and state.original_gate_result.all_defects
+            state.gate_result is not None
+            and state.gate_result.all_defects
         ):
             meta["all_defects"] = sorted(
-                d.value for d in state.original_gate_result.all_defects
+                d.value for d in state.gate_result.all_defects
             )
         if _effective_config_at_job_start is not None:
             meta["effective_config_at_job_start"] = _effective_config_at_job_start
@@ -2190,7 +2149,6 @@ class CustomPageIndexClient(PageIndexClient):
             ok=False,
             reason="",
             gate_result=None,
-            original_gate_result=None,
             first_defect=TreeDefect.NODE_COUNT_LOW,
             route=Route.REJECT,
             md_content=None,
@@ -2206,23 +2164,81 @@ class CustomPageIndexClient(PageIndexClient):
                 state, file_path, filename, ext, expected_script, pdf_classification
             )
 
-            # Recovery pipeline
-            await self._recover_ocr_escalation(
-                state, file_path, filename, ext, expected_script
+            # Zone-3: declarative gate-driven recovery loop.
+            # RECOVERY_DISPATCH maps each recovery_tag to the ordered list of
+            # recovery coroutines that must fire for that tag.  Iteration
+            # follows GATES table order (severity ranking); each tag fires
+            # at most once (deduplication via seen_tags).
+            _recovery_dispatch: dict[str, list] = {
+                "ocr_escalation": [
+                    lambda: self._recover_ocr_escalation(
+                        state, file_path, filename, ext, expected_script
+                    ),
+                    lambda: self._recover_vlm_fallback(
+                        state, file_path, filename, ext, expected_script
+                    ),
+                ],
+                "rtl_repair": [
+                    lambda: self._recover_rtl_repair(
+                        state, filename, ext, expected_script
+                    ),
+                    lambda: self._recover_rtl_flat_compare(
+                        state, filename, ext, expected_script
+                    ),
+                ],
+            }
+            # Import-time safety: every recovery_tag in GATES has a dispatch.
+            _gate_tags = {g.recovery_tag for g in GATES if g.recovery_tag is not None}
+            assert _gate_tags <= set(_recovery_dispatch), (
+                f"recovery_tag(s) without dispatch entry: "
+                f"{_gate_tags - set(_recovery_dispatch)}"
             )
-            await self._recover_rtl_repair(state, filename, ext, expected_script)
-            await self._recover_rtl_flat_compare(state, filename, ext, expected_script)
-            await self._recover_vlm_fallback(
-                state, file_path, filename, ext, expected_script
-            )
+
+            _seen_tags: set[str] = set()
+            for _gate in GATES:
+                if _gate.recovery_tag is None or _gate.recovery_tag in _seen_tags:
+                    continue
+                _seen_tags.add(_gate.recovery_tag)
+                _pre_route = state.route
+                for _recover_fn in _recovery_dispatch[_gate.recovery_tag]:
+                    await _recover_fn()
+                # Re-derive first_defect/route after each recovery tag
+                # (inlined from deleted _finalize_routing).  Skip when ok=True
+                # (tree valid, no rerouting needed) or when a recovery method
+                # explicitly overrode state.route.
+                if not state.ok and state.route == _pre_route:
+                    if state.gate_result is not None:
+                        state.first_defect = state.gate_result.defect
+                    else:
+                        state.first_defect = _defect_from_reason_str(state.reason)
+                    state.route = decide_route(
+                        state.first_defect, settings.flat_doc_routing
+                    )
+                state.total_chars = len(
+                    _flatten_tree_text(state.result.get("structure", []))
+                )
+
+            # Post-loop recoveries: not gate-driven (ad hoc guards).
             await self._recover_image_dominant_ocr(
                 state, file_path, filename, ext, expected_script
             )
+            # Re-derive after image-dominant OCR (may reconvert tree).
+            if not state.ok:
+                if state.gate_result is not None:
+                    state.first_defect = state.gate_result.defect
+                else:
+                    state.first_defect = _defect_from_reason_str(state.reason)
+                state.route = decide_route(
+                    state.first_defect, settings.flat_doc_routing
+                )
+            state.total_chars = len(
+                _flatten_tree_text(state.result.get("structure", []))
+            )
+
+            # Quality checks (may override route intentionally — no
+            # re-derivation afterwards).
             await self._recover_flat_prefer(state, filename, ext)
             await self._recover_landscape_reroute(state, filename)
-
-            # Zone-2: reconcile route/first_defect after recovery pipeline
-            self._finalize_routing(state)
 
             # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered
             # is currently only set inside _persist_flat_result, but it is an
@@ -2247,17 +2263,17 @@ class CustomPageIndexClient(PageIndexClient):
 
                 case (True, Route.REJECT) | (True, Route.PERSIST_FAIL):
                     # Recovery fixed the tree (ok=True) but route is stale
-                    # from pre-recovery state; _finalize_routing skips
-                    # recomputation when ok=True since the tree is valid.
+                    # from pre-recovery state; the recovery loop skips
+                    # re-derivation when ok=True since the tree is valid.
                     pass  # persist tree below
 
                 case (True, Route.FLAT):
                     # Reachable when decide_route initially returned FLAT
                     # (e.g. NODE_COUNT_LOW/DEPTH_LOW with flat routing) and a
                     # recovery method fixed the tree (ok=True) without
-                    # overriding state.route.  _finalize_routing skips when
-                    # ok=True, leaving the stale FLAT route.  The tree is
-                    # valid — persist it.
+                    # overriding state.route.  The recovery loop skips
+                    # re-derivation when ok=True, leaving the stale FLAT
+                    # route.  The tree is valid — persist it.
                     pass  # persist tree below
 
                 case (False, Route.FLAT):

@@ -411,7 +411,7 @@ async def test_verdict_fields_are_json_serializable():
         patch("pageindex_mcp.client.save_doc_meta", MagicMock()),
         patch("pageindex_mcp.client.save_raw", MagicMock()),
         patch("pageindex_mcp.client.hash_cache_set", MagicMock()),
-        patch("pageindex_mcp.client.classify_verdict", return_value=("PASS", "")),
+        patch("pageindex_mcp.client.compute_verdict", return_value=VerdictResult(verdict="PASS", reason="")),
         patch("pageindex_mcp.client._tree_max_leaf_ratio", return_value=(0, 0, 0.3)),
         patch("pageindex_mcp.client._flatten_tree_text", return_value="x" * 100),
         patch("pageindex_mcp.client.settings") as mock_settings,

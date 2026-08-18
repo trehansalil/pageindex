@@ -132,73 +132,71 @@ class VerdictResult:
         yield self.reason
 
 
+class _Unset:
+    """Sentinel: field was not provided in :class:`RecoveryOutcome`."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<UNSET>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_UNSET = _Unset()
+
+
 @dataclass(frozen=True)
-class ExtractionSnapshot:
-    """Zone-5: frozen snapshot of pre-retry extraction state.
+class RecoveryOutcome:
+    """Zone-3: frozen pre-retry snapshot for OCR-escalation revert.
 
-    Consolidates the six+ separate ``pre_retry_*`` variables into a single
-    immutable object.  ``first_defect`` is intentionally excluded -- it is
-    write-once per extraction attempt and must NOT be reverted on retry loss.
+    All fields default to ``_UNSET`` (not provided).  ``apply(state)``
+    writes only provided fields back to *state*.  For ``rtl_decision``,
+    ``_UNSET`` means *no change* and ``None`` means *clear to None*.
+
+    Replaces the positional-tuple ``ExtractionSnapshot.restore()``
+    pattern with explicit field-by-field apply.
     """
-    result: dict
-    ok: bool
-    defect: TreeDefect
-    reason_str: str
-    gate_result: TreeGateResult | None
-    total_chars: int
-    md_content: str | None
-    pic_results: list
-    used_converter: str | None
 
-    @classmethod
-    def from_state(
-        cls,
-        *,
-        result: dict,
-        ok: bool,
-        defect: TreeDefect,
-        reason_str: str,
-        gate_result: TreeGateResult | None,
-        total_chars: int,
-        md_content: str | None,
-        pic_results: list,
-        used_converter: str | None,
-    ) -> "ExtractionSnapshot":
-        return cls(
-            result=result,
-            ok=ok,
-            defect=defect,
-            reason_str=reason_str,
-            gate_result=gate_result,
-            total_chars=total_chars,
-            md_content=md_content,
-            pic_results=pic_results,
-            used_converter=used_converter,
-        )
+    result: dict | _Unset = _UNSET  # type: ignore[assignment]
+    ok: bool | _Unset = _UNSET  # type: ignore[assignment]
+    reason: str | _Unset = _UNSET  # type: ignore[assignment]
+    gate_result: "TreeGateResult | None | _Unset" = _UNSET  # type: ignore[assignment]
+    md_content: str | None | _Unset = _UNSET  # type: ignore[assignment]
+    pic_results: list | _Unset = _UNSET  # type: ignore[assignment]
+    used_converter: str | None | _Unset = _UNSET  # type: ignore[assignment]
+    total_chars: int | _Unset = _UNSET  # type: ignore[assignment]
+    route: "Route | _Unset" = _UNSET  # type: ignore[assignment]
+    rtl_decision: "RtlDecision | None | _Unset" = _UNSET  # type: ignore[assignment]
 
-    def restore(self) -> tuple:
-        """Return all fields as a tuple for easy destructuring.
+    def apply(self, state: "ExtractionState") -> None:
+        """Write provided (non-``_UNSET``) fields back to *state*."""
+        if not isinstance(self.result, _Unset):
+            state.result = self.result
+        if not isinstance(self.ok, _Unset):
+            state.ok = self.ok
+        if not isinstance(self.reason, _Unset):
+            state.reason = self.reason
+        if not isinstance(self.gate_result, _Unset):
+            state.gate_result = self.gate_result
+        if not isinstance(self.md_content, _Unset):
+            state.md_content = self.md_content
+        if not isinstance(self.pic_results, _Unset):
+            state.pic_results = self.pic_results
+        if not isinstance(self.used_converter, _Unset):
+            state.used_converter = self.used_converter
+        if not isinstance(self.total_chars, _Unset):
+            state.total_chars = self.total_chars
+        if not isinstance(self.route, _Unset):
+            state.route = self.route
+        if not isinstance(self.rtl_decision, _Unset):
+            state.rtl_decision = self.rtl_decision
 
-        Usage::
 
-            result, ok, reason, gate_result, original_gate_result, \
-                md_content, pic_results, used_converter = snapshot.restore()
-            total_chars = snapshot.total_chars
-
-        ``gate_result`` appears twice (for both ``gate_result`` and
-        ``original_gate_result``) because both must revert to the
-        pre-retry value on a lost retry.
-        """
-        return (
-            self.result,
-            self.ok,
-            self.reason_str,
-            self.gate_result,
-            self.gate_result,  # original_gate_result
-            self.md_content,
-            self.pic_results,
-            self.used_converter,
-        )
+# Backward-compat alias so test files that import ExtractionSnapshot
+# continue to resolve until the test-update phase runs.
+ExtractionSnapshot = RecoveryOutcome
 
 
 @dataclass
@@ -217,7 +215,6 @@ class ExtractionState:
     ok: bool
     reason: str
     gate_result: "TreeGateResult | None"
-    original_gate_result: "TreeGateResult | None"
     first_defect: "TreeDefect"
     route: "Route"
     md_content: str | None
@@ -231,7 +228,6 @@ class ExtractionState:
     use_remote: bool = False
     tmp_lo_dir: str | None = None
     flat_garble_unrecovered: bool = False
-    route_overridden: bool = False
     rtl_decision: "RtlDecision | None" = None
 
 
@@ -254,11 +250,16 @@ class GateSpec:
 
     ``gate_fn`` is ``None`` for deprecated / dead gates (e.g.
     ARABIC_LOW_CONTENT_RATIO) and for TreeDefect.OK (which is not a gate).
+    ``recovery_tag`` (Zone-3) maps this gate to one or more recovery methods
+    in the declarative recovery dispatch loop.  Non-``None`` only for
+    ``RETRY_OCR`` and ``RETRY_RTL`` policy gates — ``RAISE``/``OK``/
+    ``CAP_MARGINAL``/``PERSIST_FAIL`` gates do not trigger recovery.
     """
     defect: TreeDefect
     policy: _ReasonPolicy
     hard_fail: bool = False
     gate_fn: _GateFn | None = None
+    recovery_tag: str | None = None
 
 
 # REASON_POLICY, HARD_FAIL_DEFECTS, GATE_TABLE and _GATE_PRIORITY are
@@ -1823,12 +1824,12 @@ _GateFn = Callable[
 # has PERSIST_FAIL AND hard_fail=True.  This is intentional dual-axis
 # design, not a bug to collapse.
 GATES: list[GateSpec] = [
-    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling),
+    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling, recovery_tag="ocr_escalation"),
     GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low),
     GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low),
-    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling),
+    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling, recovery_tag="ocr_escalation"),
     GateSpec(TreeDefect.REORDERED, _ReasonPolicy.RAISE, hard_fail=True, gate_fn=_gate_reordered),
-    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal),
+    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal, recovery_tag="rtl_repair"),
     GateSpec(TreeDefect.BIDI_DEGRADED, _ReasonPolicy.CAP_MARGINAL, gate_fn=_gate_bidi_degraded),
     GateSpec(TreeDefect.EMPTY_NODE_CONTAMINATION, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_empty_node_contamination),
     GateSpec(TreeDefect.LOW_CONTENT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_low_content_density),
@@ -1854,6 +1855,16 @@ REASON_POLICY = {g.defect: g.policy for g in GATES}
 assert set(REASON_POLICY) == set(TreeDefect), (
     f"REASON_POLICY missing: {set(TreeDefect) - set(REASON_POLICY)}"
 )
+
+# Zone-3: every RETRY_OCR/RETRY_RTL gate must have a recovery_tag so the
+# declarative recovery loop can dispatch to the right recovery method.
+for _g in GATES:
+    if _g.policy in (_ReasonPolicy.RETRY_OCR, _ReasonPolicy.RETRY_RTL):
+        assert _g.recovery_tag is not None, (
+            f"GateSpec for {_g.defect.name} has {_g.policy.value} policy "
+            f"but no recovery_tag — add a recovery_tag to wire it into "
+            f"the recovery dispatch loop"
+        )
 
 # HARD_FAIL_DEFECTS: any of these in all_defects -> classify_verdict returns FAIL.
 HARD_FAIL_DEFECTS = frozenset(g.defect for g in GATES if g.hard_fail)

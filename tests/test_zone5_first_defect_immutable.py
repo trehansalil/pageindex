@@ -1,9 +1,17 @@
 """Zone 5: first_defect assignment regression guard.
 
 Static analysis of client.py to ensure ``first_defect =`` (assignment)
-appears only at the expected sites (_convert_to_tree initial +
-_finalize_routing post-recovery recomputation) and is NOT inside
-the ExtractionSnapshot revert block.
+appears only at the expected sites and is NOT inside the RecoveryOutcome
+revert block.
+
+Zone-3 deleted ``_finalize_routing`` and inlined its recomputation
+directly into the gate-driven recovery loop in ``index()`` (once per
+loop iteration) plus once more after the post-loop image-dominant-OCR
+recovery. Expected sites are therefore:
+  1. ``_convert_to_tree`` initial assignment (1 site)
+  2. in-loop re-derivation, if/else branch on ``state.gate_result`` (2 sites)
+  3. post-loop re-derivation, same if/else branch (2 sites)
+Total: 5.
 """
 from __future__ import annotations
 
@@ -18,7 +26,9 @@ def _read_client() -> str:
 
 
 class TestFirstDefectAssignmentSites:
-    """first_defect is assigned in _convert_to_tree (1) and _finalize_routing (2)."""
+    """first_defect is assigned in _convert_to_tree (1) plus the inlined
+    in-loop and post-loop re-derivation blocks (2 + 2) that replaced
+    _finalize_routing under Zone-3."""
 
     _ASSIGN_RE = re.compile(
         r"^\s*(?:state\.)?first_defect\s*(?::.*)?=\s", re.MULTILINE
@@ -27,15 +37,22 @@ class TestFirstDefectAssignmentSites:
     def test_known_assignment_count(self):
         source = _read_client()
         matches = self._ASSIGN_RE.findall(source)
-        assert len(matches) == 3, (
-            f"Expected 3 `first_defect =` assignments "
-            f"(1 in _convert_to_tree + 2 in _finalize_routing), "
+        assert len(matches) == 5, (
+            f"Expected 5 `first_defect =` assignments "
+            f"(1 in _convert_to_tree + 2 in-loop + 2 post-loop "
+            f"re-derivation sites inlined from deleted _finalize_routing), "
             f"found {len(matches)}: {matches}"
         )
 
 
 class TestFirstDefectNotInRevertBlock:
-    """first_defect must NOT be reassigned inside the ExtractionSnapshot revert block."""
+    """first_defect must NOT be reassigned inside a RecoveryOutcome revert block.
+
+    Zone-3 replaced ExtractionSnapshot.restore() with RecoveryOutcome.apply();
+    client.py no longer calls .restore() at all, so this guard is
+    vacuously satisfied post-refactor -- kept as a regression guard in
+    case a future revert-style call is reintroduced under either name.
+    """
 
     def test_no_assignment_after_restore(self):
         source = _read_client()
@@ -45,8 +62,8 @@ class TestFirstDefectNotInRevertBlock:
         violations = []
 
         for i, line in enumerate(lines, 1):
-            # Detect the restore() call that begins the revert block
-            if ".restore()" in line:
+            # Detect a restore()/apply() call that begins a revert block
+            if ".restore()" in line or ".apply(state)" in line:
                 in_revert = True
                 revert_indent = len(line) - len(line.lstrip())
                 continue
