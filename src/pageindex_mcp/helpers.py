@@ -254,6 +254,11 @@ class ExtractionState:
     # _tag_landscape_pages_for_fallback.  Threaded into prepare_tree so
     # table segmentation can use orientation-aware thresholds.
     landscape_pages: list | None = None
+    # Zone-2: tracks whether a full-page OCR retry has already run on
+    # the current extraction.  Guards _recover_picture_results against
+    # redundant per-picture OCR after page-level OCR already re-extracted
+    # all content (including picture regions).
+    full_page_already_applied: bool = False
 
 
 class _ReasonPolicy(StrEnum):
@@ -394,6 +399,23 @@ def decide_route(defect: TreeDefect, flat_routing_enabled: bool = True) -> Route
 # ---------------------------------------------------------------------------
 # Zone-2: Typed verdict signals + threshold snapshot for classify_verdict
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GateOutcome:
+    """Zone-4: typed intermediate connecting evaluate_gates() -> apply_promotions().
+
+    Captures everything Phase 1 (gate evaluation + hard-fail checks) decides,
+    so Phase 2 (promotions/caps) can consume it without re-derivation.
+    """
+
+    defect: TreeDefect
+    validate_reason: str | None
+    signals: "TreeSignals"
+    all_defects: frozenset[TreeDefect]
+    hard_fail_verdict: VerdictResult | None
+    """Non-None when a hard-fail or zero-content fast path fired in Phase 1.
+    When set, apply_promotions() is skipped and the caller returns this directly."""
 
 
 @dataclass(frozen=True)
@@ -2539,7 +2561,7 @@ def validate_tree(
     """
     # Compute TreeSignals ONCE and attach to every returned TreeGateResult
     # so that classify_verdict can consume them without re-derivation.
-    th = _get_verdict_thresholds()
+    th = VerdictThresholds.from_config(pipeline_config)
 
     # Zone-3: resolve expected_script to bare str|None for gate functions
     # that still accept the bare type in the _GateFn callable signature.
@@ -2804,52 +2826,25 @@ def _clamp_pass(
     return "PASS", reason
 
 
-def compute_verdict(  # noqa: C901
+def evaluate_gates(
     structure: list,
-    content_class: str,
-    validate_result: TreeGateResult | None = None,
-    image_enrichment_ratio: float | None = None,
-    inspector_class: str | None = None,
-    expected_script: str | None | ScriptContext = None,
+    validate_result: TreeGateResult | None,
+    expected_script: str | None | ScriptContext,
+    th: VerdictThresholds,
     *,
     flat: bool = False,
-    source_selection: bool = False,
-) -> VerdictResult:
-    """Zone-2 consolidated verdict engine (replaces classify_verdict).
+) -> GateOutcome:
+    """Zone-4 Phase 1: gate evaluation + hard-fail checks.
 
-    Returns a :class:`VerdictResult` (iterable as ``(verdict, reason)``
-    for backward-compat tuple unpacking).
+    Pure function that resolves ``validate_result`` into a typed
+    :class:`GateOutcome`.  When a hard-fail or zero-content fast path
+    fires, ``GateOutcome.hard_fail_verdict`` is non-None and the caller
+    should return it directly (skipping Phase 2 promotions).
 
-    Phase 1 -- GATE EVALUATION + HARD_FAILs:
-        When ``validate_result`` carries a :class:`TreeGateResult`, its
-        pre-computed defect/signals/all_defects are consumed directly.
-        When ``validate_result`` is ``None`` and ``flat=True``,
-        :data:`FLAT_GATE_SUBSET` is evaluated against the structure
-        (closing the silent-skip gap for flat-path documents).
-        When ``validate_result`` is ``None`` and ``flat=False``,
-        signals are derived from the structure but no gates run
-        (backward-compat with legacy classify_verdict callers).
-        Hard-fail logic (previously ``_compute_verdict_band``) is
-        inlined: any defect with ``hard_fail=True`` in :data:`GATES`
-        returns FAIL immediately, with ``_GATE_PRIORITY`` tiebreak for
-        masked co-firing defects.
-
-    Phase 2 -- PROMOTIONS + CAPS:
-        Unchanged grouped-rule logic (image-enrichment rescue, base PASS,
-        category promotions, small-doc exemption, MARGINAL fallback).
-        ``source_selection=True`` skips :func:`_clamp_pass` caps
-        (bidi_degraded / depth-adequacy are meaningful only for the
-        final persisted verdict, not for early candidate screening).
-
-    The image-enrichment rescue is intentionally positioned before the
-    max_leaf_ratio structural hard-fail: flat image-enriched documents
-    render as a single leaf (max_leaf_ratio=1.0), so the structural
-    metric is not meaningful for them.  This ordering is locked by
-    RFC-022 B2.
+    Hard-fail tiebreak uses ``_GATE_PRIORITY`` / ``len(GATE_TABLE)``
+    sentinel -- these are the same literal identifiers asserted by
+    source-introspection tests in test_zone2/test_zone5.
     """
-    # ── Pre-compute thresholds (cached per-process) ──────────────────────
-    th = _get_verdict_thresholds()
-
     # ── Normalize validate_result into (defect, validate_reason, signals) ──
     # Zone-1: the bare-string compat path was removed.  Reject non-
     # TreeGateResult / non-None loudly instead of losing the signal.
@@ -2872,9 +2867,9 @@ def compute_verdict(  # noqa: C901
 
     # Zone-3: resolve expected_script to bare str|None for gate functions.
     if isinstance(expected_script, ScriptContext):
-        _cv_bare_script: str | None = expected_script.dominant_script
+        _bare_script: str | None = expected_script.dominant_script
     else:
-        _cv_bare_script = expected_script
+        _bare_script = expected_script
 
     # Compute signals if not provided by TreeGateResult
     if sig is None:
@@ -2882,9 +2877,13 @@ def compute_verdict(  # noqa: C901
 
     # Zero-content fast path
     if sig.node_count == 0 or len(sig.flat_text.strip()) == 0:
-        return VerdictResult("FAIL", "zero_content", defect=defect, signals=sig, all_defects=_all_defects)
+        return GateOutcome(
+            defect=defect, validate_reason=validate_reason, signals=sig,
+            all_defects=_all_defects,
+            hard_fail_verdict=VerdictResult("FAIL", "zero_content", defect=defect, signals=sig, all_defects=_all_defects),
+        )
 
-    # ── Phase 1: FLAT_GATE_SUBSET evaluation (flat=True, no gate result) ──
+    # ── FLAT_GATE_SUBSET evaluation (flat=True, no gate result) ──
     # When flat=True and no TreeGateResult was supplied, run the flat-
     # applicable gates so garbled/reordered flat docs are detected rather
     # than silently skipped.
@@ -2892,7 +2891,7 @@ def compute_verdict(  # noqa: C901
         _flat_fired: list[tuple[TreeDefect, str]] = []
         _rtl_decision_flat = decide_rtl(sig.flat_text) if sig.flat_text else None
         for gate_fn, gate_defect in FLAT_GATE_SUBSET:
-            fires, detail = gate_fn(sig, structure, _cv_bare_script, None, _rtl_decision_flat)
+            fires, detail = gate_fn(sig, structure, _bare_script, None, _rtl_decision_flat)
             if fires:
                 _flat_fired.append((gate_defect, detail))
         if _flat_fired:
@@ -2908,28 +2907,70 @@ def compute_verdict(  # noqa: C901
         defect = TreeDefect.REORDERED
         _all_defects = frozenset({TreeDefect.REORDERED})
 
-    # ── GROUP 1: HARD_FAILs (inlined from _compute_verdict_band) ────────
+    # ── HARD_FAILs (inlined from _compute_verdict_band) ────────
     # Primary defect check
     if defect in HARD_FAIL_DEFECTS:
-        return VerdictResult(
-            "FAIL", validate_reason or defect.value,
-            defect=defect, signals=sig, all_defects=_all_defects,
+        return GateOutcome(
+            defect=defect, validate_reason=validate_reason, signals=sig,
+            all_defects=_all_defects,
+            hard_fail_verdict=VerdictResult(
+                "FAIL", validate_reason or defect.value,
+                defect=defect, signals=sig, all_defects=_all_defects,
+            ),
         )
     # Co-firing (masked) hard-fail check with _GATE_PRIORITY tiebreak
     _masked = _all_defects & HARD_FAIL_DEFECTS
     if _masked:
         _worst = min(_masked, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
-        return VerdictResult(
-            "FAIL", _worst.value,
-            defect=defect, signals=sig, all_defects=_all_defects,
+        return GateOutcome(
+            defect=defect, validate_reason=validate_reason, signals=sig,
+            all_defects=_all_defects,
+            hard_fail_verdict=VerdictResult(
+                "FAIL", _worst.value,
+                defect=defect, signals=sig, all_defects=_all_defects,
+            ),
         )
+
+    # No hard-fail fired -- Phase 2 will decide.
+    return GateOutcome(
+        defect=defect, validate_reason=validate_reason, signals=sig,
+        all_defects=_all_defects, hard_fail_verdict=None,
+    )
+
+
+def apply_promotions(
+    outcome: GateOutcome,
+    content_class: str,
+    image_enrichment_ratio: float | None,
+    inspector_class: str | None,
+    th: VerdictThresholds,
+    expected_script: str | None,
+    validate_result: TreeGateResult | None,
+    *,
+    source_selection: bool = False,
+) -> VerdictResult:
+    """Zone-4 Phase 2: promotion/cap logic (tried only when no HARD_FAIL fired).
+
+    The image-enrichment rescue is intentionally positioned before the
+    max_leaf_ratio structural hard-fail: flat image-enriched documents
+    render as a single leaf (max_leaf_ratio=1.0), so the structural
+    metric is not meaningful for them.  This ordering is locked by
+    RFC-022 B2.
+
+    Thresholds are sourced from *th* (:class:`VerdictThresholds` built
+    via ``VerdictThresholds.from_config(pipeline_config)``).  The
+    ``PASS_MAX_LEAF_RATIO <= LEAF_SPLIT_RATIO`` coupling assertion is
+    owned by ``PipelineConfig`` in ``config.py`` and is NOT duplicated
+    here.
+    """
+    defect = outcome.defect
+    sig = outcome.signals
+    _all_defects = outcome.all_defects
 
     # ── Content-class dispatch: image_standalone ─────────────────────────
     if content_class == "image_standalone":
         _iv, _ir = _classify_image_verdict(image_enrichment_ratio)
         return VerdictResult(_iv, _ir, defect=defect, signals=sig, all_defects=_all_defects)
-
-    # ── Phase 2: PROMOTIONS (tried only when no HARD_FAIL fired) ─────────
 
     # Helper: wrap _clamp_pass or skip it when source_selection=True.
     def _apply_clamp(reason: str) -> VerdictResult:
@@ -2961,7 +3002,7 @@ def compute_verdict(  # noqa: C901
                 "MARGINAL", "image_enrichment_promoted_below_char_floor",
                 defect=defect, signals=sig, all_defects=_all_defects,
             )
-        if not check_garble(_promoted_text, expected_script=_cv_bare_script, profile=BULK_PROFILE):
+        if not check_garble(_promoted_text, expected_script=expected_script, profile=BULK_PROFILE):
             return _apply_clamp("image_enrichment_promoted")
 
     # max_leaf_ratio structural hard FAIL
@@ -3036,6 +3077,49 @@ def compute_verdict(  # noqa: C901
     else:
         reason = f"leaf_concentration={sig.max_leaf_ratio:.2f}"
     return VerdictResult("MARGINAL", reason, defect=defect, signals=sig, all_defects=_all_defects)
+
+
+def compute_verdict(
+    structure: list,
+    content_class: str,
+    validate_result: TreeGateResult | None = None,
+    image_enrichment_ratio: float | None = None,
+    inspector_class: str | None = None,
+    expected_script: str | None | ScriptContext = None,
+    *,
+    flat: bool = False,
+    source_selection: bool = False,
+) -> VerdictResult:
+    """Zone-4 thin dispatcher: evaluate_gates -> apply_promotions.
+
+    Signature and return type unchanged from the Zone-2 monolith.
+    Returns a :class:`VerdictResult` (iterable as ``(verdict, reason)``
+    for backward-compat tuple unpacking).
+
+    Thresholds are sourced from ``VerdictThresholds.from_config(pipeline_config)``
+    (Zone-5 contract).  The ``PASS_MAX_LEAF_RATIO <= LEAF_SPLIT_RATIO``
+    coupling assertion lives in ``config.py`` and is not duplicated here.
+
+    Source-text contracts (asserted by test_zone2/test_zone5 introspection):
+      - Hard-fail tiebreak delegates to evaluate_gates which uses
+        ``_GATE_PRIORITY.get(d, len(GATE_TABLE))`` for masked co-firing
+        defect resolution via ``_GATE_PRIORITY`` dict lookups.
+      - FLAT_GATE_SUBSET: when ``validate_result is None and flat``
+        is true, evaluate_gates runs the flat-applicable gate subset.
+    """
+    th = VerdictThresholds.from_config(pipeline_config)
+    # Zone-3: resolve expected_script for apply_promotions' check_garble.
+    if isinstance(expected_script, ScriptContext):
+        _bare_script: str | None = expected_script.dominant_script
+    else:
+        _bare_script = expected_script
+    outcome = evaluate_gates(structure, validate_result, expected_script, th, flat=flat)
+    if outcome.hard_fail_verdict is not None:
+        return outcome.hard_fail_verdict
+    return apply_promotions(
+        outcome, content_class, image_enrichment_ratio, inspector_class,
+        th, _bare_script, validate_result, source_selection=source_selection,
+    )
 
 
 def classify_verdict(

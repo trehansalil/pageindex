@@ -656,6 +656,24 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:
         if settings.registry_verdict_authority != "postgres":
             _confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
+
+        # Zone-4: persist verdict ledger entry (fire-and-forget).
+        # Only write when the CAS guard did not skip verdict fields and
+        # both verdict and sha256 are present in the merged sidecar.
+        if not _skip_verdict and sidecar.get("verdict") and sidecar.get("sha256"):
+            try:
+                persist_verdict_ledger(
+                    sidecar["sha256"],
+                    sidecar["verdict"],
+                    sidecar.get("verdict_reason", ""),
+                )
+            except Exception:
+                logger.warning(
+                    "save_doc_meta: verdict ledger write failed for doc %s, "
+                    "continuing (fire-and-forget)",
+                    doc_id,
+                    exc_info=True,
+                )
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
@@ -858,161 +876,151 @@ def list_processed_docs() -> list[dict]:
         MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
 
 
-# RFC-025 D0: verdict priority for best-ever prior-verdict anchoring.
-_VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+# ---------------------------------------------------------------------------
+# Zone-4: deterministic verdict ledger (replaces dead hysteresis mechanism)
+# ---------------------------------------------------------------------------
+# Persisted at verdicts/{sha256}.json in MinIO -- a prefix outside processed/
+# so it survives wipe_processed() and anchors verdict stability across
+# reingestion cycles.  Max-priority-wins guard: an existing PASS is never
+# downgraded to MARGINAL by a re-ingestion that computes a worse verdict.
+#
+# Replaces: find_prior_verdict, snapshot_prior_verdicts, _PRIOR_VERDICTS_KEY,
+# _VERDICT_PRIORITY (RFC-025 D0 / RFC-026 D3 / RFC-033 D0 -- all dead code
+# with zero production callers).
 
-# RFC-033 D0: the hysteresis snapshot lives outside the processed/ prefix so
-# wipe_processed() cannot delete the snapshot it just wrote.
-_PRIOR_VERDICTS_KEY = "snapshots/_prior_verdicts.json"
+_LEDGER_VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
 
 
-def find_prior_verdict(sha256: str, filename: str, current_doc_id: str) -> str | None:  # noqa: C901
-    """Resolve the best-ever verdict from a prior ingestion of the same content.
+def persist_verdict_ledger(sha256: str, verdict: str, reason: str) -> None:
+    """Write or upgrade the per-content verdict ledger entry.
 
-    Re-ingestion mints a new doc_id per upload, so the prior run's verdict
-    lives under a different, unknown doc_id. Scans processed/*.meta.json
-    sidecars, matching on sha256 (primary) or doc_name (fallback for legacy
-    sidecars without sha256), excludes current_doc_id, and returns the
-    highest-priority verdict found (PASS > MARGINAL > FAIL > ERROR). Returns
-    None if no prior sidecar matches or MinIO is unavailable (graceful
-    degradation -- hysteresis is a quality-of-life improvement, never a
-    blocker for ingestion).
+    Max-priority-wins guard: if ``verdicts/{sha256}.json`` already exists
+    and records a higher-priority verdict (PASS > MARGINAL > FAIL > ERROR),
+    the write is skipped.  This prevents a noisy re-ingestion from
+    downgrading a previously stable verdict.
+
+    Fire-and-forget: logs a warning on MinIO unavailability but never
+    raises -- the ledger is a quality-of-life anchor, never a blocker.
     """
+    key = f"verdicts/{sha256}.json"
     try:
         mc = get_minio()
     except Exception:
-        logger.warning("find_prior_verdict: MinIO unavailable, skipping hysteresis")
-        return None
-    best: str | None = None
+        logger.warning("persist_verdict_ledger: MinIO unavailable, skipping")
+        return
     try:
-        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
-            name = obj.object_name
-            if not name.endswith(".meta.json"):
-                continue
-            doc_id = Path(name).stem.removesuffix(".meta")
-            if doc_id == current_doc_id:
-                continue
-            response = None
-            try:
-                response = mc.get_object(settings.minio_bucket, name)
-                sidecar = json.loads(response.read())
-            except Exception:
-                continue
-            finally:
-                if response is not None:
-                    try:
-                        response.close()
-                        response.release_conn()
-                    except Exception:
-                        pass
-            if sidecar.get("sha256") == sha256 or sidecar.get("doc_name") == filename:
-                verdict = sidecar.get("verdict")
-                if verdict in _VERDICT_PRIORITY and (
-                    best is None or _VERDICT_PRIORITY[verdict] > _VERDICT_PRIORITY[best]
-                ):
-                    best = verdict
-    except Exception:
-        logger.warning("find_prior_verdict: MinIO unavailable, no hysteresis", exc_info=True)
-        return None
-    if best is not None:
-        return best
-    # RFC-026 D3: individual sidecars didn't match (e.g. wiped pre-reingestion) --
-    # fall back to the pre-wipe snapshot.
-    try:
-        response = mc.get_object(settings.minio_bucket, _PRIOR_VERDICTS_KEY)
+        # Read existing ledger entry for max-priority-wins guard
+        response = None
         try:
-            snapshot = json.loads(response.read())
+            response = mc.get_object(settings.minio_bucket, key)
+            existing = json.loads(response.read())
+        except S3Error as exc:
+            if exc.code == "NoSuchKey":
+                existing = None
+            else:
+                raise
+        except Exception:
+            existing = None
         finally:
-            response.close()
-            response.release_conn()
-        for entry in snapshot.get("entries", []):
-            if entry.get("sha256") == sha256 or entry.get("doc_name") == filename:
-                verdict = entry.get("verdict")
-                if verdict in _VERDICT_PRIORITY and (
-                    best is None or _VERDICT_PRIORITY[verdict] > _VERDICT_PRIORITY[best]
-                ):
-                    best = verdict
-    except Exception:
-        logger.debug("find_prior_verdict: no snapshot fallback available", exc_info=True)
-        return None
-    return best
+            if response is not None:
+                try:
+                    response.close()
+                    response.release_conn()
+                except Exception:
+                    pass
 
+        # Max-priority-wins guard
+        if existing is not None:
+            existing_verdict = existing.get("verdict", "")
+            existing_priority = _LEDGER_VERDICT_PRIORITY.get(existing_verdict, -1)
+            incoming_priority = _LEDGER_VERDICT_PRIORITY.get(verdict, -1)
+            if existing_priority >= incoming_priority:
+                logger.debug(
+                    "persist_verdict_ledger: existing verdict %s (priority %d) >= "
+                    "incoming %s (priority %d) for sha256=%s; skipping write",
+                    existing_verdict, existing_priority,
+                    verdict, incoming_priority,
+                    sha256[:12],
+                )
+                return
 
-def snapshot_prior_verdicts() -> None:
-    """Snapshot all current processed/*.meta.json verdicts to a sidecar file.
-
-    RFC-026 D3: corpus reingestion wipes processed/* before reingesting, which
-    would otherwise make find_prior_verdict() always return None. Called
-    pre-wipe, this preserves the best-ever verdict per document so hysteresis
-    survives the wipe. Fails silently -- the snapshot is a quality-of-life
-    improvement, never a blocker for reingestion.
-    """
-    mc = get_minio()
-    entries = []
-    try:
-        for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
-            name = obj.object_name
-            if not name.endswith(".meta.json"):
-                continue
-            response = None
-            try:
-                response = mc.get_object(settings.minio_bucket, name)
-                sidecar = json.loads(response.read())
-            except Exception:
-                continue
-            finally:
-                if response is not None:
-                    try:
-                        response.close()
-                        response.release_conn()
-                    except Exception:
-                        pass
-            entries.append(
-                {
-                    "sha256": sidecar.get("sha256"),
-                    "doc_name": sidecar.get("doc_name"),
-                    "doc_id": Path(name).stem.removesuffix(".meta"),
-                    "verdict": sidecar.get("verdict"),
-                }
-            )
-        payload = json.dumps(
-            {"snapshot_at": datetime.now(UTC).isoformat(), "entries": entries}
-        ).encode("utf-8")
+        payload = json.dumps({
+            "sha256": sha256,
+            "verdict": verdict,
+            "verdict_reason": reason,
+            "written_at": datetime.now(UTC).isoformat(),
+        }).encode("utf-8")
         mc.put_object(
             settings.minio_bucket,
-            _PRIOR_VERDICTS_KEY,
+            key,
             BytesIO(payload),
             length=len(payload),
             content_type="application/json",
         )
+        logger.debug(
+            "persist_verdict_ledger: wrote %s=%s for sha256=%s",
+            verdict, reason, sha256[:12],
+        )
     except Exception:
         logger.warning(
-            "snapshot_prior_verdicts: failed, hysteresis snapshot skipped", exc_info=True
+            "persist_verdict_ledger: failed for sha256=%s, skipping",
+            sha256[:12],
+            exc_info=True,
         )
 
 
-def wipe_processed() -> None:
-    """Snapshot prior verdicts, then delete all processed/* objects.
+def read_verdict_ledger(sha256: str) -> str | None:
+    """Read the best-ever verdict from the per-content ledger.
 
-    RFC-033 D0: wires snapshot_prior_verdicts() (RFC-026 D3) into the corpus
-    reingestion wipe step. The snapshot is written to snapshots/_prior_verdicts.json
-    -- a prefix outside processed/ -- so it survives the subsequent wipe and
-    find_prior_verdict() can still resolve hysteresis after a full re-ingestion.
+    Returns the verdict string (PASS/MARGINAL/FAIL/ERROR) or None if no
+    ledger entry exists or MinIO is unavailable.  Graceful degradation:
+    hysteresis is a quality improvement, never a blocker.
     """
-    snapshot_prior_verdicts()
-    mc = get_minio()
-    # snapshot_prior_verdicts() is fail-open (it swallows MinIO errors), so
-    # confirm the snapshot actually landed before destroying the only other
-    # copy of the verdict history. Wiping without a snapshot would reproduce
-    # exactly the false PASS->MARGINAL regressions D0 exists to prevent.
+    key = f"verdicts/{sha256}.json"
     try:
-        mc.stat_object(settings.minio_bucket, _PRIOR_VERDICTS_KEY)
-    except Exception as exc:
-        raise RuntimeError(
-            f"wipe_processed: aborting -- {_PRIOR_VERDICTS_KEY} is absent after "
-            "snapshot_prior_verdicts(); refusing to delete processed/* without a "
-            "verdict snapshot"
-        ) from exc
+        mc = get_minio()
+    except Exception:
+        logger.warning("read_verdict_ledger: MinIO unavailable, skipping")
+        return None
+    response = None
+    try:
+        response = mc.get_object(settings.minio_bucket, key)
+        entry = json.loads(response.read())
+        return entry.get("verdict")
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            return None
+        logger.warning(
+            "read_verdict_ledger: S3 error for sha256=%s (%s)",
+            sha256[:12], exc,
+        )
+        return None
+    except Exception:
+        logger.warning(
+            "read_verdict_ledger: failed for sha256=%s, skipping",
+            sha256[:12],
+            exc_info=True,
+        )
+        return None
+    finally:
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+
+
+def wipe_processed() -> None:
+    """Delete all processed/* objects.
+
+    Zone-4: the old snapshot_prior_verdicts() dependency (RFC-033 D0) is
+    removed.  Verdict hysteresis is now anchored by the per-content
+    verdict ledger at ``verdicts/{sha256}.json`` -- a separate MinIO
+    prefix that is inherently safe from this wipe (it only touches
+    ``processed/*``).  No snapshot step is needed before wiping.
+    """
+    mc = get_minio()
     # Materialise the listing before deleting: mutating the bucket while the
     # paginated list generator is still open can skip objects.
     names = [

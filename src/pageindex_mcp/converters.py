@@ -3603,6 +3603,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         expected_script=expected_script,
         landscape_fallback_pages=landscape_fallback_pages,
         heading_pages=heading_pages_for_md,
+        # Zone-2: wire the same-call re-entry guard — when force_full_page_ocr
+        # is True the Docling converter already ran full-page OCR, so
+        # _recover_picture_results should short-circuit to [].
+        force_full_page_ocr_applied=force_full_page_ocr,
     )
     extraction_stages.update(fallback_records)
 
@@ -3618,6 +3622,7 @@ def _fallback_and_recover_pictures(
     expected_script: str | None,
     landscape_fallback_pages: list[dict],
     heading_pages: dict[str, list[int]],
+    force_full_page_ocr_applied: bool = False,
 ) -> tuple[str, list["PictureResult"], dict[str, dict]]:
     """Run post-fallback stages and picture recovery with structural ordering.
 
@@ -3627,6 +3632,10 @@ def _fallback_and_recover_pictures(
     appends the raw pdfium text layer. This function boundary makes it
     impossible for callers to accidentally pass post-fallback text to the
     containment check in ``_recover_picture_results``.
+
+    ``force_full_page_ocr_applied``: Zone-2 re-entry guard forwarded to
+    ``_recover_picture_results``.  When ``True``, a full-page OCR pass has
+    already re-extracted all content, so per-picture OCR is skipped.
 
     Returns ``(post_fallback_md, pic_results, stage_records)``.
     """
@@ -3652,6 +3661,7 @@ def _fallback_and_recover_pictures(
         md, document, pdf_path, filename,
         body_for_containment=body_for_containment,
         expected_script=expected_script,
+        force_full_page_ocr_applied=force_full_page_ocr_applied,
     )
 
     # RFC-035 D2 Fix: surface landscape-fallback pages with pictures as

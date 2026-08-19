@@ -47,10 +47,12 @@ from .converters import (
     zdr_egress_gate,
 )
 from .picture_plane import (
+    OcrDecision,
     OcrMode,
     PictureRegion,
     SkipReason,
     decide_ocr_mode,
+    decide_ocr_strategy,
     skip_reason_from_str,
 )
 from .script import RtlDecision, ScriptContext, decide_rtl
@@ -104,6 +106,7 @@ from .storage import (
     hash_cache_get,
     hash_cache_set,
     list_processed_docs,
+    read_verdict_ledger,
     save_doc,
     save_doc_meta,
     save_figure,
@@ -1074,13 +1077,15 @@ class CustomPageIndexClient(PageIndexClient):
                 os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
             )
 
-            ocr_mode = decide_ocr_mode(
-                ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
-                has_image_markers=False,
-                force_full_page=(
-                    inspector_force_ocr
-                    or (state.pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED)
-                ),
+            # Zone-2: force_full_page is a pre-conversion decision independent
+            # of has_image_markers (which is unknown until the converter returns).
+            # The PER_PICTURE decision is deferred to the converter chain
+            # (_recover_picture_results) where has_image_markers reflects actual
+            # content.  decide_ocr_strategy is called post-conversion to produce
+            # the unified OcrDecision with real document state.
+            force_full_page = (
+                inspector_force_ocr
+                or (state.pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED)
             )
 
             chain = pdf_markdown_converters()
@@ -1108,7 +1113,7 @@ class CustomPageIndexClient(PageIndexClient):
                             filename,
                             settings.docling_service_url,
                         )
-                        if ocr_mode == OcrMode.FULL_PAGE:
+                        if force_full_page:
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
                                 self._staging_key,
                                 force_full_page_ocr=True,
@@ -1124,7 +1129,7 @@ class CustomPageIndexClient(PageIndexClient):
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
                                 self._staging_key,
                             )
-                    elif ocr_mode == OcrMode.FULL_PAGE and "docling" in conv_name:
+                    elif force_full_page and "docling" in conv_name:
                         md_content, state.pic_results, stages_out = _split_converter_output(
                             await asyncio.to_thread(
                                 conv_fn,
@@ -1181,6 +1186,29 @@ class CustomPageIndexClient(PageIndexClient):
                             conv_exc,
                         )
             if md_content is not None:
+                # Zone-2: stamp full_page_already_applied when the initial
+                # conversion itself used force_full_page OCR.  This prevents
+                # downstream per-picture OCR from re-processing regions that
+                # the full-page OCR already covered.
+                if force_full_page:
+                    state.full_page_already_applied = True
+                # Zone-2: post-conversion OcrDecision with actual has_image_markers
+                # (was hardcoded False pre-conversion; now reflects real content).
+                _ocr_decision = decide_ocr_strategy(
+                    ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
+                    has_image_markers=bool(md_content and "<!-- image -->" in md_content),
+                    force_full_page=force_full_page,
+                    garble_status=state.pre_garbled,
+                    full_page_already_applied=state.full_page_already_applied,
+                )
+                logger.debug(
+                    "Zone-2: post-conversion OcrDecision for %s: mode=%s, "
+                    "has_image_markers=%s, full_page_already_applied=%s",
+                    filename,
+                    _ocr_decision.mode.value,
+                    _ocr_decision.has_image_markers,
+                    _ocr_decision.full_page_already_applied,
+                )
                 if primary_name is not None and state.used_converter != primary_name:
                     logger.error(
                         "PDF %s extracted by FALLBACK converter '%s' because primary "
@@ -1411,6 +1439,13 @@ class CustomPageIndexClient(PageIndexClient):
                 if stages_out:
                     state.extraction_stages_captured = stages_out
             state.used_converter = "docling"
+            # Zone-2: stamp full_page_already_applied after successful
+            # full-page OCR re-extraction.  This cross-call re-entry guard
+            # prevents downstream _recover_picture_results from firing
+            # redundant per-picture OCR on content that was already
+            # re-extracted via full-page OCR.  Set once regardless of which
+            # of the three split recovery methods invoked _execute_ocr_retry.
+            state.full_page_already_applied = True
 
             # ---- Picture splice ----
             if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
@@ -1978,6 +2013,33 @@ class CustomPageIndexClient(PageIndexClient):
             flat=True,
         )
         f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
+
+        # Zone-4: hysteresis anchoring via verdict ledger.
+        # If the ledger records a higher-priority verdict for this content
+        # (keyed by sha256), override the just-computed verdict to prevent
+        # oscillation across re-ingestions.  Non-blocking, graceful degradation.
+        _LEDGER_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+        try:
+            _prior_verdict = await asyncio.to_thread(read_verdict_ledger, sha256)
+            if (
+                _prior_verdict is not None
+                and _LEDGER_PRIORITY.get(_prior_verdict, -1) > _LEDGER_PRIORITY.get(f_verdict, -1)
+            ):
+                logger.info(
+                    "Zone-4 hysteresis anchor: overriding flat verdict %s -> %s "
+                    "for %s (sha256=%s, anchored_by_ledger)",
+                    f_verdict, _prior_verdict, filename, sha256[:12],
+                )
+                f_verdict_reason = f"anchored_by_ledger(was={f_verdict}:{f_verdict_reason})"
+                f_verdict = _prior_verdict
+        except Exception:
+            logger.warning(
+                "Zone-4 hysteresis: ledger read failed for %s, continuing "
+                "with computed verdict (graceful degradation)",
+                filename,
+                exc_info=True,
+            )
+
         _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
         flat_desc = await asyncio.to_thread(
@@ -2089,6 +2151,32 @@ class CustomPageIndexClient(PageIndexClient):
             expected_script=expected_script,
         )
         verdict, verdict_reason = _vr.verdict, _vr.reason
+
+        # Zone-4: hysteresis anchoring via verdict ledger.
+        # Same logic as flat path -- if the ledger records a higher-priority
+        # verdict for this content, override to prevent oscillation.
+        _LEDGER_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+        try:
+            _prior_verdict = await asyncio.to_thread(read_verdict_ledger, sha256)
+            if (
+                _prior_verdict is not None
+                and _LEDGER_PRIORITY.get(_prior_verdict, -1) > _LEDGER_PRIORITY.get(verdict, -1)
+            ):
+                logger.info(
+                    "Zone-4 hysteresis anchor: overriding tree verdict %s -> %s "
+                    "for %s (sha256=%s, anchored_by_ledger)",
+                    verdict, _prior_verdict, filename, sha256[:12],
+                )
+                verdict_reason = f"anchored_by_ledger(was={verdict}:{verdict_reason})"
+                verdict = _prior_verdict
+        except Exception:
+            logger.warning(
+                "Zone-4 hysteresis: ledger read failed for %s, continuing "
+                "with computed verdict (graceful degradation)",
+                filename,
+                exc_info=True,
+            )
+
         _, _, mlr = _tree_max_leaf_ratio(structure)
         _verdict_computed_at = datetime.now(UTC).isoformat()
 

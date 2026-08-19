@@ -32,6 +32,21 @@ class OcrMode(StrEnum):
     PER_PICTURE = "per_picture"
 
 
+@dataclass(frozen=True)
+class OcrDecision:
+    """Zone-2: sealed OCR-strategy instruction produced once by ``decide_ocr_strategy``.
+
+    Frozen: once the decision is made it cannot be mutated.  This replaces
+    the dual independent ``decide_ocr_mode`` calls with a single authoritative
+    instruction encoding exactly one of: no-OCR, full-page-OCR, per-picture-OCR.
+    """
+
+    mode: OcrMode
+    full_page_already_applied: bool = False
+    has_image_markers: bool = False
+    garble_status: bool = False
+
+
 # ---------------------------------------------------------------------------
 # SkipReason: why a picture region was not enriched
 # ---------------------------------------------------------------------------
@@ -319,7 +334,57 @@ def _classify_region(
 
 
 # ---------------------------------------------------------------------------
-# decide_ocr_mode: centralised OCR-mode decision
+# decide_ocr_strategy: unified OCR-mode decision (Zone-2)
+# ---------------------------------------------------------------------------
+
+
+def decide_ocr_strategy(
+    *,
+    ocr_escalation_enabled: bool,
+    has_image_markers: bool,
+    force_full_page: bool = False,
+    garble_status: bool = False,
+    full_page_already_applied: bool = False,
+) -> OcrDecision:
+    """Unified OCR-mode decision producing a sealed ``OcrDecision``.
+
+    Replaces the dual-site ``decide_ocr_mode`` pattern with a single
+    decision point that takes complete document state and emits exactly
+    one of: no-OCR, full-page-OCR, per-picture-OCR.
+
+    ``full_page_already_applied`` short-circuits to NONE when a prior
+    full-page OCR pass has already run (cross-call re-entry guard).
+
+    Pure function, no side effects.
+    """
+    if full_page_already_applied:
+        return OcrDecision(
+            mode=OcrMode.NONE,
+            full_page_already_applied=True,
+            has_image_markers=has_image_markers,
+            garble_status=garble_status,
+        )
+    if force_full_page:
+        return OcrDecision(
+            mode=OcrMode.FULL_PAGE,
+            has_image_markers=has_image_markers,
+            garble_status=garble_status,
+        )
+    if ocr_escalation_enabled and has_image_markers:
+        return OcrDecision(
+            mode=OcrMode.PER_PICTURE,
+            has_image_markers=has_image_markers,
+            garble_status=garble_status,
+        )
+    return OcrDecision(
+        mode=OcrMode.NONE,
+        has_image_markers=has_image_markers,
+        garble_status=garble_status,
+    )
+
+
+# ---------------------------------------------------------------------------
+# decide_ocr_mode: backward-compat wrapper (delegates to decide_ocr_strategy)
 # ---------------------------------------------------------------------------
 
 
@@ -329,23 +394,19 @@ def decide_ocr_mode(
     has_image_markers: bool,
     force_full_page: bool = False,
 ) -> OcrMode:
-    """Determine the OCR strategy from the document's state.
+    """Thin backward-compat wrapper delegating to ``decide_ocr_strategy``.
 
-    Encodes the mutual exclusion that was previously implicit across
-    four branches in client.py:
-
-    * ``force_full_page`` (garble escalation, image-dominant escalation,
-      inspector pre-classify) -> FULL_PAGE
-    * ``has_image_markers`` and ``ocr_escalation_enabled`` -> PER_PICTURE
-    * otherwise -> NONE
+    Preserves the existing 3-arg keyword-only signature so all call sites
+    (including test exhaustive truth-table assertions) continue to work
+    without a synchronized multi-file rewrite.
 
     Pure function, no side effects.
     """
-    if force_full_page:
-        return OcrMode.FULL_PAGE
-    if ocr_escalation_enabled and has_image_markers:
-        return OcrMode.PER_PICTURE
-    return OcrMode.NONE
+    return decide_ocr_strategy(
+        ocr_escalation_enabled=ocr_escalation_enabled,
+        has_image_markers=has_image_markers,
+        force_full_page=force_full_page,
+    ).mode
 
 
 # ---------------------------------------------------------------------------

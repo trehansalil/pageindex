@@ -1,15 +1,14 @@
 """Zone-2 OCR recovery contract tests.
 
-Validates the Zone-2 refactor of the OCR recovery pipeline:
-1. OcrRetryReason enum exhaustiveness (3 members: GARBLE, LOW_CONTENT, IMAGE_DOMINANT)
-2. Independent per-reason flag gating (GARBLE/LOW_CONTENT -> OCR_ESCALATION_GARBLE,
-   IMAGE_DOMINANT -> IMAGE_DOMINANT_OCR_ESCALATION_ENABLED)
-3. Unconditional rtl_decision clear on every recovery path
-4. _repeating_token_density returns 1.0 (not None) for <20 tokens
-5. IMAGE_DOMINANT skips keep-best heuristic (no pre-retry snapshot)
-6. Pre-retry snapshot only for GARBLE/LOW_CONTENT
-7. Per-picture re-entry guard in converters._recover_picture_results
-8. Config canonical flag source (IMAGE_DOMINANT_OCR_ESCALATION_ENABLED in config.py)
+Validates the Zone-2 OCR recovery pipeline after Zone-1 refactor:
+1. Per-picture re-entry guard in converters._recover_picture_results
+2. Config canonical flag source (IMAGE_DOMINANT_OCR_ESCALATION_ENABLED)
+3. ExtractionState.full_page_already_applied flag regression
+4. _execute_ocr_retry stamps full_page_already_applied on success path
+
+NOTE: OcrRetryReason was deleted by Zone-1.  Tests now target the
+GateSpec-driven recovery API (_execute_ocr_retry, _recover_garble_ocr,
+_recover_low_content_ocr, _recover_image_dominant_ocr).
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ import pytest
 
 from pageindex_mcp.helpers import (
     ExtractionState,
-    OcrRetryReason,
     RecoveryOutcome,
     Route,
     TreeDefect,
@@ -30,365 +28,81 @@ from pageindex_mcp.helpers import (
 
 
 # ---------------------------------------------------------------------------
-# 1. OcrRetryReason enum exhaustiveness
+# 1. _execute_ocr_retry stamps full_page_already_applied (Zone-1 shared helper)
 # ---------------------------------------------------------------------------
 
 
-class TestOcrRetryReasonExhaustiveness:
-    """OcrRetryReason must have exactly 3 members matching the recovery dispatch."""
+class TestExecuteOcrRetryStampsFlag:
+    """state.full_page_already_applied = True must be set inside
+    _execute_ocr_retry after OCR dispatch."""
 
-    def test_exactly_three_members(self):
-        members = list(OcrRetryReason)
-        assert len(members) == 3, (
-            f"OcrRetryReason must have exactly 3 members, got {len(members)}: {members}"
-        )
-
-    def test_garble_member(self):
-        assert OcrRetryReason.GARBLE == "garble"
-
-    def test_low_content_member(self):
-        assert OcrRetryReason.LOW_CONTENT == "low_content"
-
-    def test_image_dominant_member(self):
-        assert OcrRetryReason.IMAGE_DOMINANT == "image_dominant"
-
-    def test_is_str_enum(self):
-        from enum import StrEnum
-
-        assert issubclass(OcrRetryReason, StrEnum)
-
-    def test_every_member_has_reason_label_in_recover_ocr_retry(self):
-        """Every OcrRetryReason member must appear in _reason_label and
-        _splice_label dicts inside _recover_ocr_retry (source-level check)."""
+    def test_stamp_present(self):
         from pageindex_mcp.client import CustomPageIndexClient
 
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        for member in OcrRetryReason:
-            ref = f"OcrRetryReason.{member.name}"
-            assert ref in src, (
-                f"OcrRetryReason.{member.name} not referenced in _recover_ocr_retry"
+        src = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
+        assert "state.full_page_already_applied = True" in src
+
+    def test_stamp_not_in_except_block(self):
+        """The stamp must NOT be in an except handler."""
+        from pageindex_mcp.client import CustomPageIndexClient
+
+        src = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
+        tree = ast.parse(textwrap.dedent(src))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try):
+                for handler in node.handlers:
+                    handler_src = ast.get_source_segment(textwrap.dedent(src), handler)
+                    if handler_src and "state.full_page_already_applied = True" in handler_src:
+                        pytest.fail(
+                            "full_page_already_applied stamp in except block"
+                        )
+
+    def test_three_recovery_methods_use_shared_execute(self):
+        """All three split recovery methods (_recover_garble_ocr,
+        _recover_low_content_ocr, _recover_image_dominant_ocr) must call
+        _execute_ocr_retry."""
+        from pageindex_mcp.client import CustomPageIndexClient
+
+        for method_name in (
+            "_recover_garble_ocr",
+            "_recover_low_content_ocr",
+            "_recover_image_dominant_ocr",
+        ):
+            method = getattr(CustomPageIndexClient, method_name)
+            src = inspect.getsource(method)
+            assert "_execute_ocr_retry" in src, (
+                f"{method_name} does not call _execute_ocr_retry"
             )
 
-    def test_every_member_has_metric_result_mapping(self):
-        """_metric_result dict in _recover_ocr_retry must map every reason."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # The _metric_result dict should contain all three reason names.
-        for member in OcrRetryReason:
-            assert f"OcrRetryReason.{member.name}" in src
-
 
 # ---------------------------------------------------------------------------
-# 2. Independent per-reason flag gating
-# ---------------------------------------------------------------------------
-
-
-class TestPerReasonFlagGating:
-    """GARBLE/LOW_CONTENT gate on OCR_ESCALATION_GARBLE;
-    IMAGE_DOMINANT gates on IMAGE_DOMINANT_OCR_ESCALATION_ENABLED.
-    These must be independent -- toggling one must not affect the other."""
-
-    def test_garble_checks_ocr_escalation_garble_flag(self):
-        """The GARBLE branch must check _OCR_ESCALATION_GARBLE (not IMAGE_DOMINANT)."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # Parse to AST and find the GARBLE branch.
-        tree = ast.parse(textwrap.dedent(src))
-        garble_branch_found = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Compare):
-                # Look for `reason == OcrRetryReason.GARBLE`
-                if (
-                    isinstance(node.comparators[0], ast.Attribute)
-                    and getattr(node.comparators[0], "attr", None) == "GARBLE"
-                ):
-                    garble_branch_found = True
-        assert garble_branch_found, "GARBLE comparison not found in _recover_ocr_retry"
-
-        # Source-level: GARBLE branch references _OCR_ESCALATION_GARBLE.
-        # Extract lines between GARBLE check and the next elif/else.
-        lines = src.split("\n")
-        in_garble_block = False
-        garble_block = []
-        for line in lines:
-            if "reason == OcrRetryReason.GARBLE" in line:
-                in_garble_block = True
-                continue
-            if in_garble_block:
-                if "elif reason ==" in line or "else:" in line:
-                    break
-                garble_block.append(line)
-        garble_src = "\n".join(garble_block)
-        assert "_OCR_ESCALATION_GARBLE" in garble_src, (
-            "GARBLE branch does not check _OCR_ESCALATION_GARBLE"
-        )
-
-    def test_low_content_checks_ocr_escalation_garble_flag(self):
-        """LOW_CONTENT branch must also check _OCR_ESCALATION_GARBLE."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        lines = src.split("\n")
-        in_low_content_block = False
-        low_content_block = []
-        for line in lines:
-            if "reason == OcrRetryReason.LOW_CONTENT" in line:
-                in_low_content_block = True
-                continue
-            if in_low_content_block:
-                if "elif reason ==" in line or "else:" in line:
-                    break
-                low_content_block.append(line)
-        low_content_src = "\n".join(low_content_block)
-        assert "_OCR_ESCALATION_GARBLE" in low_content_src, (
-            "LOW_CONTENT branch does not check _OCR_ESCALATION_GARBLE"
-        )
-
-    def test_image_dominant_checks_independent_flag(self):
-        """IMAGE_DOMINANT branch must check _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
-        NOT _OCR_ESCALATION_GARBLE."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        lines = src.split("\n")
-        in_image_dominant_block = False
-        image_dominant_block = []
-        for line in lines:
-            if "reason == OcrRetryReason.IMAGE_DOMINANT" in line:
-                in_image_dominant_block = True
-                continue
-            if in_image_dominant_block:
-                if "# ---- Pre-retry" in line or "_use_keep_best" in line:
-                    break
-                image_dominant_block.append(line)
-        image_dominant_src = "\n".join(image_dominant_block)
-        assert "_IMAGE_DOMINANT_OCR_ESCALATION_ENABLED" in image_dominant_src, (
-            "IMAGE_DOMINANT branch does not check _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED"
-        )
-        # Must NOT gate on _OCR_ESCALATION_GARBLE (that would be flag conflation).
-        assert "_OCR_ESCALATION_GARBLE" not in image_dominant_src, (
-            "IMAGE_DOMINANT branch still gates on _OCR_ESCALATION_GARBLE "
-            "(flag conflation not fully decoupled)"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 3. Unconditional rtl_decision clear
+# 2. Unconditional rtl_decision clear (via _execute_ocr_retry)
 # ---------------------------------------------------------------------------
 
 
 class TestUnconditionalRtlDecisionClear:
     """rtl_decision must be cleared on every recovery path, not just
-    the remote+renormalize branch (the pre-Zone-2 inconsistency)."""
+    the remote+renormalize branch."""
 
-    def test_rtl_decision_cleared_on_all_paths(self):
-        """Both the remote+renormalize branch and the else branch must
-        clear (or set) rtl_decision."""
+    def test_rtl_decision_cleared(self):
         from pageindex_mcp.client import CustomPageIndexClient
 
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # The else branch sets state.rtl_decision = None.
+        src = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         assert "state.rtl_decision = None" in src, (
-            "rtl_decision not unconditionally cleared in _recover_ocr_retry"
+            "rtl_decision not unconditionally cleared in _execute_ocr_retry"
         )
-        # The if branch (renormalize) sets it via _renormalize_bidi_guarded return.
+
+    def test_renormalize_called(self):
+        from pageindex_mcp.client import CustomPageIndexClient
+
+        src = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         assert "_renormalize_bidi_guarded" in src, (
-            "_renormalize_bidi_guarded not called in _recover_ocr_retry"
-        )
-
-    def test_rtl_decision_clear_not_reason_gated(self):
-        """The rtl_decision clearing code must NOT be inside a per-reason
-        if/elif block -- it must apply to all reasons."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # Find the rtl_decision clearing: it should be after the OCR dispatch
-        # and before _reconvert_and_revalidate, NOT inside a reason== branch.
-        lines = src.split("\n")
-        rtl_clear_line = None
-        for i, line in enumerate(lines):
-            if "state.rtl_decision = None" in line:
-                rtl_clear_line = i
-                break
-        assert rtl_clear_line is not None
-        # Verify it's not inside a `if reason ==` block by checking indentation
-        # relative to the reason-gating blocks (which end before the try: block).
-        # The rtl_decision clear should be at the try-block indentation level,
-        # not deeper inside a reason-specific branch.
-        reconvert_line = None
-        for i, line in enumerate(lines):
-            if "_reconvert_and_revalidate" in line:
-                reconvert_line = i
-                break
-        assert reconvert_line is not None
-        # rtl_decision clear must come before reconvert_and_revalidate
-        assert rtl_clear_line < reconvert_line, (
-            "rtl_decision clear must come before _reconvert_and_revalidate"
+            "_renormalize_bidi_guarded not called in _execute_ocr_retry"
         )
 
 
 # ---------------------------------------------------------------------------
-# 4. _repeating_token_density returns 1.0 for <20 tokens
-# ---------------------------------------------------------------------------
-
-
-class TestRepeatingTokenDensity:
-    """_repeating_token_density must return 1.0 (not None) for <20 tokens,
-    ensuring RFC-029 D4 density comparison always runs."""
-
-    def _get_density_fn(self):
-        """Extract and compile the nested _repeating_token_density function."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # Parse the source to find the nested function definition.
-        lines = src.split("\n")
-        fn_lines = []
-        capture = False
-        base_indent = None
-        for line in lines:
-            if "def _repeating_token_density" in line:
-                capture = True
-                base_indent = len(line) - len(line.lstrip())
-                fn_lines.append(line[base_indent:])
-                continue
-            if capture:
-                stripped = line.lstrip()
-                if stripped and not line.startswith(" " * (base_indent + 1)) and not stripped.startswith("#") and not stripped.startswith('"""') and not stripped.startswith("'"):
-                    # Check if this is continuation of docstring or body
-                    current_indent = len(line) - len(line.lstrip())
-                    if current_indent <= base_indent and stripped:
-                        break
-                fn_lines.append(line[base_indent:] if len(line) >= base_indent else line)
-
-        fn_src = "\n".join(fn_lines)
-        ns: dict = {}
-        exec(fn_src, ns)
-        return ns["_repeating_token_density"]
-
-    def test_returns_float_for_short_text(self):
-        """<20 alnum tokens must return 1.0, not None."""
-        fn = self._get_density_fn()
-        result = fn("hello world")
-        assert result == 1.0, (
-            f"Expected 1.0 for <20 tokens, got {result!r} (was None pre-fix)"
-        )
-
-    def test_returns_float_for_empty_text(self):
-        fn = self._get_density_fn()
-        result = fn("")
-        assert result == 1.0
-
-    def test_return_type_is_always_float(self):
-        """Return type annotation must be float (not float | None)."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # Find the function signature line.
-        for line in src.split("\n"):
-            if "def _repeating_token_density" in line:
-                assert "-> float:" in line or "-> float :" in line, (
-                    f"_repeating_token_density return type must be float, got: {line.strip()}"
-                )
-                # Must NOT return Optional/None.
-                assert "None" not in line, (
-                    f"_repeating_token_density signature still references None: {line.strip()}"
-                )
-                break
-
-    def test_returns_density_for_20plus_tokens(self):
-        """>=20 alnum tokens must return a real density (0.0-1.0)."""
-        fn = self._get_density_fn()
-        text = " ".join(f"word{i}" for i in range(25))
-        result = fn(text)
-        assert isinstance(result, float)
-        assert 0.0 <= result <= 1.0
-        # All unique tokens -> low density.
-        assert result < 0.2
-
-    def test_high_repetition_gives_high_density(self):
-        fn = self._get_density_fn()
-        text = " ".join(["repeated"] * 25)
-        result = fn(text)
-        assert result == 1.0
-
-    def test_no_none_branches_in_keep_best(self):
-        """After the fix, there must be no '_pre_density is None' or
-        '_post_density is None' branches in the keep-best heuristic."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        assert "_pre_density is None" not in src, (
-            "Stale None-density branch still exists in keep-best heuristic"
-        )
-        assert "_post_density is None" not in src, (
-            "Stale None-density branch still exists in keep-best heuristic"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 5. IMAGE_DOMINANT skips keep-best heuristic
-# ---------------------------------------------------------------------------
-
-
-class TestImageDominantSkipsKeepBest:
-    """IMAGE_DOMINANT must accept recovery unconditionally -- no pre-retry
-    snapshot, no revert."""
-
-    def test_use_keep_best_excludes_image_dominant(self):
-        """_use_keep_best must be True only for GARBLE/LOW_CONTENT."""
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        # Find the _use_keep_best assignment.
-        for line in src.split("\n"):
-            if "_use_keep_best" in line and "=" in line and "reason in" in line:
-                # Must include GARBLE and LOW_CONTENT but not IMAGE_DOMINANT.
-                assert "GARBLE" in line
-                assert "LOW_CONTENT" in line
-                assert "IMAGE_DOMINANT" not in line, (
-                    "_use_keep_best includes IMAGE_DOMINANT -- "
-                    "image-dominant should skip the keep-best heuristic"
-                )
-                break
-        else:
-            pytest.fail("_use_keep_best assignment not found in _recover_ocr_retry")
-
-
-# ---------------------------------------------------------------------------
-# 6. Pre-retry snapshot only for GARBLE/LOW_CONTENT
-# ---------------------------------------------------------------------------
-
-
-class TestPreRetrySnapshot:
-    """RecoveryOutcome snapshot must be created only when _use_keep_best is True,
-    which covers GARBLE and LOW_CONTENT but not IMAGE_DOMINANT."""
-
-    def test_pre_retry_gated_by_use_keep_best(self):
-        from pageindex_mcp.client import CustomPageIndexClient
-
-        src = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
-        lines = src.split("\n")
-        # Find "if _use_keep_best:" guarding RecoveryOutcome construction.
-        snapshot_guard_found = False
-        for i, line in enumerate(lines):
-            if "_use_keep_best" in line and "if" in line:
-                # Check that RecoveryOutcome appears after it.
-                for j in range(i + 1, min(i + 15, len(lines))):
-                    if "RecoveryOutcome(" in lines[j]:
-                        snapshot_guard_found = True
-                        break
-                if snapshot_guard_found:
-                    break
-        assert snapshot_guard_found, (
-            "RecoveryOutcome pre-retry snapshot not guarded by _use_keep_best"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 7. Per-picture re-entry guard
+# 3. Per-picture re-entry guard (REGRESSION from original Zone-2 tests)
 # ---------------------------------------------------------------------------
 
 
@@ -421,10 +135,8 @@ class TestPerPictureReentryGuard:
 
         src = inspect.getsource(_recover_picture_results)
         lines = src.split("\n")
-        # Find the guard check and verify it returns [].
         for i, line in enumerate(lines):
             if "force_full_page_ocr_applied" in line and "if" in line:
-                # Next non-comment, non-blank line should be return [].
                 for j in range(i + 1, min(i + 5, len(lines))):
                     stripped = lines[j].strip()
                     if stripped and not stripped.startswith("#"):
@@ -436,7 +148,57 @@ class TestPerPictureReentryGuard:
 
 
 # ---------------------------------------------------------------------------
-# 8. Config canonical flag source
+# 4. ExtractionState.full_page_already_applied regression
+# ---------------------------------------------------------------------------
+
+
+class TestFullPageAlreadyAppliedRegression:
+    """ExtractionState.full_page_already_applied must propagate correctly."""
+
+    def test_field_exists_and_defaults_false(self):
+        import dataclasses
+
+        fields = {f.name: f for f in dataclasses.fields(ExtractionState)}
+        assert "full_page_already_applied" in fields
+        assert fields["full_page_already_applied"].default is False
+
+    def test_flag_is_mutable(self):
+        """ExtractionState is not frozen; the flag must be settable."""
+        state = ExtractionState(
+            result={},
+            ok=True,
+            reason="",
+            gate_result=None,
+            first_defect=TreeDefect.OK,
+            route=Route.TREE,
+            md_content=None,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter=None,
+            total_chars=0,
+            extraction_stages_captured=[],
+        )
+        assert state.full_page_already_applied is False
+        state.full_page_already_applied = True
+        assert state.full_page_already_applied is True
+
+    def test_full_page_applied_causes_none_mode(self):
+        """When full_page_already_applied=True, decide_ocr_strategy returns
+        NONE even with all triggers active."""
+        from pageindex_mcp.picture_plane import OcrMode, decide_ocr_strategy
+
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=True,
+            has_image_markers=True,
+            force_full_page=True,
+            garble_status=True,
+            full_page_already_applied=True,
+        )
+        assert result.mode == OcrMode.NONE
+
+
+# ---------------------------------------------------------------------------
+# 5. Config canonical flag source (REGRESSION from original Zone-2 tests)
 # ---------------------------------------------------------------------------
 
 
@@ -474,10 +236,7 @@ class TestConfigCanonicalFlagSource:
         src_path = inspect.getfile(client_mod)
         with open(src_path) as f:
             src = f.read()
-        # Must have an import line from .config.
         assert "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED" in src
-        # Must NOT have a local os.getenv("IMAGE_DOMINANT_OCR_ESCALATION_ENABLED")
-        # as the gating mechanism (a comment reference is ok).
         lines = src.split("\n")
         for line in lines:
             stripped = line.strip()
@@ -496,3 +255,31 @@ class TestConfigCanonicalFlagSource:
         assert hasattr(config, "OCR_ESCALATION_GARBLE")
         assert hasattr(config, "OCR_ESCALATION_PER_PICTURE")
         assert hasattr(config, "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED")
+
+
+# ---------------------------------------------------------------------------
+# 6. Pre-retry snapshot via RecoveryOutcome
+# ---------------------------------------------------------------------------
+
+
+class TestPreRetrySnapshot:
+    """RecoveryOutcome snapshot must be created only when use_keep_best=True
+    (GARBLE/LOW_CONTENT), not for IMAGE_DOMINANT."""
+
+    def test_pre_retry_gated_by_use_keep_best(self):
+        from pageindex_mcp.client import CustomPageIndexClient
+
+        src = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
+        lines = src.split("\n")
+        snapshot_guard_found = False
+        for i, line in enumerate(lines):
+            if "use_keep_best" in line and "if" in line:
+                for j in range(i + 1, min(i + 15, len(lines))):
+                    if "RecoveryOutcome(" in lines[j]:
+                        snapshot_guard_found = True
+                        break
+                if snapshot_guard_found:
+                    break
+        assert snapshot_guard_found, (
+            "RecoveryOutcome pre-retry snapshot not guarded by use_keep_best"
+        )

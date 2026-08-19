@@ -361,3 +361,113 @@ class TestSkipReasonFromStr:
         from pageindex_mcp.picture_plane import skip_reason_from_str
 
         assert skip_reason_from_str("") is None
+
+
+# ---------------------------------------------------------------------------
+# 8. OcrMode StrEnum regression
+# ---------------------------------------------------------------------------
+
+
+class TestOcrModeRegression:
+    """OcrMode must remain a StrEnum with exactly 3 members."""
+
+    def test_is_str_enum(self):
+        from enum import StrEnum
+
+        from pageindex_mcp.picture_plane import OcrMode
+
+        assert issubclass(OcrMode, StrEnum)
+
+    def test_exactly_three_members(self):
+        from pageindex_mcp.picture_plane import OcrMode
+
+        assert set(OcrMode) == {OcrMode.NONE, OcrMode.FULL_PAGE, OcrMode.PER_PICTURE}
+
+    def test_string_values(self):
+        from pageindex_mcp.picture_plane import OcrMode
+
+        assert OcrMode.NONE == "none"
+        assert OcrMode.FULL_PAGE == "full_page"
+        assert OcrMode.PER_PICTURE == "per_picture"
+
+
+# ---------------------------------------------------------------------------
+# 9. PictureGateConfig contract regression
+# ---------------------------------------------------------------------------
+
+
+class TestPictureGateConfigRegression:
+    """PictureGateConfig must remain a frozen dataclass with expected fields."""
+
+    def test_is_frozen_dataclass(self):
+        import dataclasses
+
+        from pageindex_mcp.picture_plane import PictureGateConfig
+
+        assert dataclasses.is_dataclass(PictureGateConfig)
+
+    def test_expected_fields_present(self):
+        import dataclasses
+
+        from pageindex_mcp.picture_plane import PictureGateConfig
+
+        field_names = {f.name for f in dataclasses.fields(PictureGateConfig)}
+        # Core fields that must remain stable
+        assert "page_coverage_threshold" in field_names
+        assert "decorative_icon_min_dim_pt" in field_names
+        assert "clip_text_capture_enabled" in field_names
+
+
+# ---------------------------------------------------------------------------
+# 10. _classify_region contract regression
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyRegionRegression:
+    """_classify_region must remain importable and return RegionClassification."""
+
+    def test_importable(self):
+        from pageindex_mcp.picture_plane import _classify_region
+
+        assert callable(_classify_region)
+
+    def test_returns_region_classification(self):
+        from pageindex_mcp.picture_plane import (
+            PictureGateConfig,
+            RegionClassification,
+            _classify_region,
+        )
+
+        config = PictureGateConfig()
+        result = _classify_region(
+            coverage=0.1,
+            has_own_text=False,
+            clip_text_len=0,
+            clip_text_contained=False,
+            rect_width=100,
+            rect_height=100,
+            fullpage_count=0,
+            config=config,
+        )
+        assert isinstance(result, RegionClassification)
+
+
+# ---------------------------------------------------------------------------
+# 11. bind_markers contract regression
+# ---------------------------------------------------------------------------
+
+
+class TestBindMarkersRegression:
+    """bind_markers must remain importable and handle basic cases."""
+
+    def test_importable(self):
+        from pageindex_mcp.picture_plane import bind_markers
+
+        assert callable(bind_markers)
+
+    def test_no_markers_no_change(self):
+        from pageindex_mcp.picture_plane import bind_markers
+
+        md = "plain text with no markers"
+        result = bind_markers(md, [], inject_chart_text=True)
+        assert result == md
