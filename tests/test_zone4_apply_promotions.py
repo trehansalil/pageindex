@@ -298,7 +298,7 @@ class TestSourceSelectionSkipsClamp:
             {
                 "node_id": "1", "title": "Root", "text": "",
                 "nodes": [
-                    {"node_id": str(i), "title": f"Ch{i}", "text": "word " * 50, "nodes": []}
+                    {"node_id": str(i), "title": f"Chapter {i}", "text": _varied_text(i), "nodes": []}
                     for i in range(2, 12)
                 ],
             }

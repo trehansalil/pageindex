@@ -233,12 +233,24 @@ class TestWipeProcessedPreservesLedger:
         assert "verdicts/abc123.json" in mc._store
 
     def test_wipe_processed_does_not_call_snapshot_prior_verdicts(self):
-        """wipe_processed must NOT call the removed snapshot_prior_verdicts."""
+        """wipe_processed must NOT call the removed snapshot_prior_verdicts()."""
+        import ast
         import inspect
         src = inspect.getsource(wipe_processed)
-        assert "snapshot_prior_verdicts" not in src, (
-            "wipe_processed must not reference removed snapshot_prior_verdicts"
-        )
+        # Parse the function body and check that no AST Call node invokes
+        # snapshot_prior_verdicts (docstring/comment mentions are fine).
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = None
+                if isinstance(func, ast.Name):
+                    name = func.id
+                elif isinstance(func, ast.Attribute):
+                    name = func.attr
+                assert name != "snapshot_prior_verdicts", (
+                    "wipe_processed must not call removed snapshot_prior_verdicts()"
+                )
 
 
 # ---------------------------------------------------------------------------
