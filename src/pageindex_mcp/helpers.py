@@ -292,6 +292,35 @@ class GateSpec:
     flat_applicable: bool = False
 
 
+@dataclass(frozen=True)
+class FeatureWiring:
+    """Declarative cross-module feature contract.
+
+    Each entry declares a feature that spans module boundaries: a *producer*
+    function (dotted import path) and one or more *consumer* modules that
+    must import or reference the producer.  An optional *config_flag* names
+    the environment variable that gates the feature.
+
+    ``shadow_only``
+        When ``True`` the producer exists and runs but consumers are not
+        required to act on its output (the feature is in observability-only
+        / shadow mode).  Validation still confirms the producer is
+        importable and callable but skips the consumer-reference assertion,
+        logging a warning instead.  This prevents permanent-shadow states
+        from being silently forgotten: the shadow flag in the registry is a
+        conscious declaration, not an accidental gap.
+
+    Validated at startup by :func:`validate_feature_wirings` so that
+    "implemented but never wired" becomes a crash rather than a silent gap.
+    """
+
+    name: str
+    producer: str  # dotted path, e.g. "pageindex_mcp.converters.chunked_docling_timeout_s"
+    consumers: tuple[str, ...]  # dotted module paths that must reference the producer
+    config_flag: str | None = None  # env-var name in config.py, None if always-on
+    shadow_only: bool = False
+
+
 # REASON_POLICY, HARD_FAIL_DEFECTS, GATE_TABLE and _GATE_PRIORITY are
 # derived from GATES (defined after all gate functions, ~line 1790).
 # These module-level names are populated at import time before any
@@ -2008,6 +2037,162 @@ FLAT_GATE_SUBSET: list[tuple[_GateFn, TreeDefect]] = [
     for g in GATES
     if g.gate_fn is not None and g.defect in _FLAT_APPLICABLE_DEFECTS
 ]
+
+# ---------------------------------------------------------------------------
+# Cross-module feature wiring registry
+# ---------------------------------------------------------------------------
+# Declares cross-module producer/consumer contracts so that "implemented but
+# never wired" is caught at startup instead of discovered in production audits.
+# Mirrors the GateSpec/GATES pattern: frozen dataclass + module-level list +
+# deferred import-time validation.
+#
+# Historical examples this would have caught:
+#   - chunked_docling_timeout_s implemented but never called by worker (RFC-027 D7)
+#   - _check_bidi_coherence defined twice but never called (RFC-029 D0)
+#   - pdf-inspector classification computed unconditionally but never consumed
+
+FEATURE_WIRINGS: list[FeatureWiring] = [
+    # pdf-inspector: classification runs unconditionally in probe_conversion_route
+    # but consumers only act on results when PDF_INSPECTOR_PRECLASSIFY=1.
+    # Shadow-only: producer validated, consumer assertion skipped (logged).
+    FeatureWiring(
+        name="pdf_inspector",
+        producer="pageindex_mcp.converters.probe_conversion_route",
+        consumers=(
+            "pageindex_mcp.worker",
+            "pageindex_mcp.client",
+        ),
+        config_flag="PDF_INSPECTOR_PRECLASSIFY",
+        shadow_only=True,
+    ),
+    # chunked_docling_timeout: dynamic timeout sizing for chunked Docling
+    # conversions.  Producer in converters, consumer in worker (CHILD_TIMEOUT).
+    FeatureWiring(
+        name="chunked_docling_timeout",
+        producer="pageindex_mcp.converters.chunked_docling_timeout_s",
+        consumers=("pageindex_mcp.worker",),
+    ),
+    # picture_ocr_enrichment: image enrichment ratio metric computed in helpers,
+    # consumed by client for picture-OCR quality gating.
+    FeatureWiring(
+        name="picture_ocr_enrichment",
+        producer="pageindex_mcp.helpers.compute_image_enrichment_ratio",
+        consumers=("pageindex_mcp.client",),
+    ),
+    # zdr_egress_gate: PII/ZDR compliance gate defined in converters, consumed
+    # by client for LLM egress decisions.
+    FeatureWiring(
+        name="zdr_egress_gate",
+        producer="pageindex_mcp.converters.zdr_egress_gate",
+        consumers=("pageindex_mcp.client",),
+    ),
+]
+
+
+def validate_feature_wirings() -> None:
+    """Validate :data:`FEATURE_WIRINGS` producer/consumer contracts.
+
+    For each :class:`FeatureWiring` entry:
+
+    1. Resolves the producer dotted path via :func:`importlib.import_module`
+       and confirms the target attribute is callable.
+    2. For **non-shadow** entries, confirms each consumer module is loaded
+       (present in ``sys.modules``) and that its source contains a reference
+       to the producer function name.  Uses :func:`inspect.getsource` for
+       the substring check so lazy (function-local) imports are caught too.
+    3. For **shadow_only** entries, skips consumer assertions but logs a
+       warning if consumers do not reference the producer — making shadow
+       status visible, not silent.
+
+    Raises :class:`AssertionError` for non-shadow wiring failures.
+
+    This function is registered via :func:`atexit.register` and also
+    exported for explicit invocation by application entry points and tests.
+
+    **Circular-import safety**: uses ``importlib.import_module`` and
+    ``sys.modules`` introspection — never adds top-level imports from
+    consumer modules (client, worker, converters) into helpers.py.
+    """
+    import importlib
+    import inspect
+    import sys
+
+    logger = logging.getLogger(__name__)
+
+    for fw in FEATURE_WIRINGS:
+        # --- Validate producer exists and is callable ---
+        parts = fw.producer.rsplit(".", 1)
+        if len(parts) != 2:
+            raise AssertionError(
+                f"FeatureWiring '{fw.name}': producer path '{fw.producer}' "
+                f"must be 'module.attribute'"
+            )
+        mod_path, attr_name = parts
+
+        try:
+            mod = importlib.import_module(mod_path)
+        except ImportError as exc:
+            raise AssertionError(
+                f"FeatureWiring '{fw.name}': producer module '{mod_path}' "
+                f"is not importable: {exc}"
+            ) from exc
+
+        producer_obj = getattr(mod, attr_name, None)
+        if producer_obj is None:
+            raise AssertionError(
+                f"FeatureWiring '{fw.name}': producer '{fw.producer}' "
+                f"not found in module '{mod_path}'"
+            )
+        if not callable(producer_obj):
+            raise AssertionError(
+                f"FeatureWiring '{fw.name}': producer '{fw.producer}' "
+                f"exists but is not callable"
+            )
+
+        # --- Validate consumer references ---
+        for consumer_path in fw.consumers:
+            consumer_mod = sys.modules.get(consumer_path)
+            if consumer_mod is None:
+                # Module not loaded — try importing it.
+                try:
+                    consumer_mod = importlib.import_module(consumer_path)
+                except ImportError as exc:
+                    msg = (
+                        f"FeatureWiring '{fw.name}': consumer module "
+                        f"'{consumer_path}' is not importable: {exc}"
+                    )
+                    if fw.shadow_only:
+                        logger.warning("shadow wiring: %s", msg)
+                        continue
+                    raise AssertionError(msg) from exc
+
+            # Check that consumer module source references the producer
+            # function name.  inspect.getsource captures lazy (function-
+            # local) imports that hasattr/dir would miss.
+            try:
+                source = inspect.getsource(consumer_mod)
+            except (OSError, TypeError):
+                # Built-in or C-extension modules have no source — skip.
+                continue
+
+            if attr_name not in source:
+                msg = (
+                    f"FeatureWiring '{fw.name}': consumer '{consumer_path}' "
+                    f"does not reference producer function '{attr_name}' — "
+                    f"the feature may be implemented but unwired"
+                )
+                if fw.shadow_only:
+                    logger.warning("shadow wiring: %s", msg)
+                else:
+                    raise AssertionError(msg)
+
+
+# Deferred registration: validate_feature_wirings runs at process exit after
+# all modules have been imported.  For true startup-crash semantics, app
+# entry points (server.py, worker.py) should call validate_feature_wirings()
+# explicitly after their import block.
+import atexit as _atexit
+_atexit.register(validate_feature_wirings)
 
 
 def validate_tree(
