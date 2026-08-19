@@ -262,7 +262,8 @@ class _ReasonPolicy(StrEnum):
 class GateSpec:
     """Unified per-defect gate metadata (single source of truth).
 
-    Consolidates GATE_TABLE, REASON_POLICY, and HARD_FAIL_DEFECTS into one
+    Consolidates GATE_TABLE, REASON_POLICY, HARD_FAIL_DEFECTS,
+    ``_GATE_PRIORITY``, and ``_FLAT_APPLICABLE_DEFECTS`` into one
     declarative list (:data:`GATES`).  Legacy dicts are derived from GATES
     at import time for backward-compat consumers.
 
@@ -272,12 +273,23 @@ class GateSpec:
     in the declarative recovery dispatch loop.  Non-``None`` only for
     ``RETRY_OCR`` and ``RETRY_RTL`` policy gates — ``RAISE``/``OK``/
     ``CAP_MARGINAL``/``PERSIST_FAIL`` gates do not trigger recovery.
+
+    ``severity`` declares the gate's priority rank (lower = more severe).
+    Active gates (``gate_fn is not None``) must have unique severity values;
+    dead/placeholder gates use the default 99.  ``_GATE_PRIORITY`` is derived
+    from this field rather than from GATE_TABLE list position.
+
+    ``flat_applicable`` marks defects that apply to flat-path documents
+    (no heading hierarchy).  ``_FLAT_APPLICABLE_DEFECTS`` is derived from
+    this field rather than a hardcoded set.
     """
     defect: TreeDefect
     policy: _ReasonPolicy
     hard_fail: bool = False
     gate_fn: _GateFn | None = None
     recovery_tag: str | None = None
+    severity: int = 99
+    flat_applicable: bool = False
 
 
 # REASON_POLICY, HARD_FAIL_DEFECTS, GATE_TABLE and _GATE_PRIORITY are
@@ -1909,20 +1921,21 @@ _GateFn = Callable[
 # has PERSIST_FAIL AND hard_fail=True.  This is intentional dual-axis
 # design, not a bug to collapse.
 GATES: list[GateSpec] = [
-    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling, recovery_tag="ocr_escalation"),
-    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low, recovery_tag="ocr_escalation"),
-    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low, recovery_tag="ocr_escalation"),
-    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling, recovery_tag="ocr_escalation"),
-    GateSpec(TreeDefect.REORDERED, _ReasonPolicy.RAISE, hard_fail=True, gate_fn=_gate_reordered),
-    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal, recovery_tag="rtl_repair"),
-    GateSpec(TreeDefect.BIDI_DEGRADED, _ReasonPolicy.CAP_MARGINAL, gate_fn=_gate_bidi_degraded),
-    GateSpec(TreeDefect.EMPTY_NODE_CONTAMINATION, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_empty_node_contamination),
-    GateSpec(TreeDefect.LOW_CONTENT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_low_content_density),
-    GateSpec(TreeDefect.SUSPECT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_suspect_density),
+    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling, recovery_tag="ocr_escalation", severity=0, flat_applicable=True),
+    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low, recovery_tag="ocr_escalation", severity=1),
+    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low, recovery_tag="ocr_escalation", severity=2),
+    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling, recovery_tag="ocr_escalation", severity=3, flat_applicable=True),
+    GateSpec(TreeDefect.REORDERED, _ReasonPolicy.RAISE, hard_fail=True, gate_fn=_gate_reordered, severity=4, flat_applicable=True),
+    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal, recovery_tag="rtl_repair", severity=5),
+    GateSpec(TreeDefect.BIDI_DEGRADED, _ReasonPolicy.CAP_MARGINAL, gate_fn=_gate_bidi_degraded, severity=6),
+    GateSpec(TreeDefect.EMPTY_NODE_CONTAMINATION, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_empty_node_contamination, severity=7),
+    GateSpec(TreeDefect.LOW_CONTENT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_low_content_density, severity=8),
+    GateSpec(TreeDefect.SUSPECT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_suspect_density, severity=9),
     # Dead gate: strict subset of GARBLING; kept for persisted verdict_reason
-    # compat and REASON_POLICY completeness.
+    # compat and REASON_POLICY completeness.  severity=99 (default/dead).
     GateSpec(TreeDefect.ARABIC_LOW_CONTENT_RATIO, _ReasonPolicy.CAP_MARGINAL),
     # OK is not a gate — present for REASON_POLICY completeness only.
+    # severity=99 (default/dead).
     GateSpec(TreeDefect.OK, _ReasonPolicy.OK),
 ]
 
@@ -1954,21 +1967,38 @@ for _g in GATES:
 # HARD_FAIL_DEFECTS: any of these in all_defects -> classify_verdict returns FAIL.
 HARD_FAIL_DEFECTS = frozenset(g.defect for g in GATES if g.hard_fail)
 
-# Severity rank per defect, derived from GATE_TABLE order (lower = more
+# Severity rank per defect, derived from GateSpec.severity field (lower = more
 # severe).  Used by classify_verdict to pick a deterministic reason when a
 # hard-fail defect co-fires behind a less-severe primary defect.
+# NOTE: severity values must mirror GATES list order for active gates so that
+# validate_tree's list-order primary-defect selection stays consistent with
+# compute_verdict's severity-based hard-fail tiebreak.
 _GATE_PRIORITY: dict[TreeDefect, int] = {
-    defect: idx for idx, (_fn, defect) in enumerate(GATE_TABLE)
+    g.defect: g.severity for g in GATES if g.gate_fn is not None
 }
 
-# Zone-2: defects applicable to flat-path documents (no heading hierarchy).
+# Import-time assertion: active-gate severities must be unique (no two active
+# gates share the same severity value) to guarantee deterministic tiebreak.
+_active_severities = [g.severity for g in GATES if g.gate_fn is not None]
+assert len(_active_severities) == len(set(_active_severities)), (
+    f"Active-gate severity values are not unique: {_active_severities}"
+)
+
+# Zone-2: defects applicable to flat-path documents (no heading hierarchy),
+# derived from GateSpec.flat_applicable field.
 # NODE_COUNT_LOW / DEPTH_LOW are excluded — flat docs by definition have no
 # node-count / depth structure worth gating on.
-_FLAT_APPLICABLE_DEFECTS: frozenset[TreeDefect] = frozenset({
-    TreeDefect.GARBLING,
-    TreeDefect.NODE_GARBLING,
-    TreeDefect.REORDERED,
-})
+_FLAT_APPLICABLE_DEFECTS: frozenset[TreeDefect] = frozenset(
+    g.defect for g in GATES if g.flat_applicable
+)
+
+# Import-time assertion: flat-applicable set matches expected defects.
+assert _FLAT_APPLICABLE_DEFECTS == frozenset({
+    TreeDefect.GARBLING, TreeDefect.NODE_GARBLING, TreeDefect.REORDERED,
+}), (
+    f"_FLAT_APPLICABLE_DEFECTS derived from GateSpec.flat_applicable does not "
+    f"match expected set: got {_FLAT_APPLICABLE_DEFECTS}"
+)
 
 # FLAT_GATE_SUBSET: active gates for flat-path documents, derived from GATES
 # so new gates auto-sync.  Only gates whose defect is in
