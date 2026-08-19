@@ -256,18 +256,6 @@ class ExtractionState:
     landscape_pages: list | None = None
 
 
-class OcrRetryReason(StrEnum):
-    """Zone-2: typed reason for unified OCR retry dispatch.
-
-    Discriminates the three independent OCR-escalation triggers so that
-    ``_recover_ocr_retry`` can branch on reason instead of relying on
-    implicit mutable-state ordering or flag conflation.
-    """
-    GARBLE = "garble"
-    LOW_CONTENT = "low_content"
-    IMAGE_DOMINANT = "image_dominant"
-
-
 class _ReasonPolicy(StrEnum):
     RAISE = "raise"
     RETRY_OCR = "retry_ocr"
@@ -282,16 +270,20 @@ class GateSpec:
     """Unified per-defect gate metadata (single source of truth).
 
     Consolidates GATE_TABLE, REASON_POLICY, HARD_FAIL_DEFECTS,
-    ``_GATE_PRIORITY``, and ``_FLAT_APPLICABLE_DEFECTS`` into one
-    declarative list (:data:`GATES`).  Legacy dicts are derived from GATES
-    at import time for backward-compat consumers.
+    ``_GATE_PRIORITY``, ``_FLAT_APPLICABLE_DEFECTS``, and recovery dispatch
+    into one declarative list (:data:`GATES`).  Legacy dicts are derived
+    from GATES at import time for backward-compat consumers.
 
     ``gate_fn`` is ``None`` for deprecated / dead gates (e.g.
     ARABIC_LOW_CONTENT_RATIO) and for TreeDefect.OK (which is not a gate).
-    ``recovery_tag`` (Zone-3) maps this gate to one or more recovery methods
-    in the declarative recovery dispatch loop.  Non-``None`` only for
-    ``RETRY_OCR`` and ``RETRY_RTL`` policy gates — ``RAISE``/``OK``/
-    ``CAP_MARGINAL``/``PERSIST_FAIL`` gates do not trigger recovery.
+
+    ``recovery_eligible`` (Zone-1) is a predicate that checks whether
+    recovery should be attempted for this gate given the current
+    :class:`ExtractionState`.  ``recovery_fns`` is a tuple of method-name
+    strings resolved via ``getattr(client, fn_name)`` at call time.
+    Together they replace the former ``recovery_tag`` + client-side
+    ``_recovery_dispatch`` dict, making GateSpec the single source of
+    truth for both gate evaluation AND recovery routing.
 
     ``severity`` declares the gate's priority rank (lower = more severe).
     Active gates (``gate_fn is not None``) must have unique severity values;
@@ -306,9 +298,10 @@ class GateSpec:
     policy: _ReasonPolicy
     hard_fail: bool = False
     gate_fn: _GateFn | None = None
-    recovery_tag: str | None = None
     severity: int = 99
     flat_applicable: bool = False
+    recovery_eligible: "Callable[[ExtractionState], bool] | None" = None
+    recovery_fns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2148,6 +2141,62 @@ _GateFn = Callable[
 ]
 
 # ---------------------------------------------------------------------------
+# Zone-1: Recovery eligibility predicates (single source of truth)
+# ---------------------------------------------------------------------------
+# Each predicate gates a GateSpec's recovery pipeline.  Defect-type matching
+# replaces the hardcoded first_defect guards formerly inside client.py
+# recovery methods.  Flag reads source pipeline_config (Zone-5).
+
+
+def _eligible_garble(state: ExtractionState) -> bool:
+    """Garble-type OCR + VLM recovery eligibility (GARBLING or NODE_GARBLING).
+
+    Flag gates for OCR escalation and VLM are checked inside the individual
+    recovery methods (_recover_garble_ocr, _recover_vlm_fallback) to preserve
+    their independence (VLM can fire even when OCR escalation is off).
+    """
+    return (
+        not state.ok
+        and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+    )
+
+
+def _eligible_low_content(state: ExtractionState) -> bool:
+    """Low-content / image-dominant recovery eligibility (NODE_COUNT_LOW).
+
+    Combined OR-gate: at least one of ocr_escalation_garble or
+    image_dominant_ocr_escalation_enabled must be active.  Individual
+    recovery methods check their specific flag.
+    """
+    return (
+        not state.ok
+        and state.first_defect == TreeDefect.NODE_COUNT_LOW
+        and (
+            pipeline_config.ocr_escalation_garble
+            or pipeline_config.image_dominant_ocr_escalation_enabled
+        )
+    )
+
+
+def _eligible_image_dominant(state: ExtractionState) -> bool:
+    """Image-dominant OCR recovery eligibility (DEPTH_LOW).
+
+    DEPTH_LOW only has image-dominant recovery; the flag is checked here
+    so the gate is skipped entirely when disabled.
+    """
+    return (
+        not state.ok
+        and pipeline_config.image_dominant_ocr_escalation_enabled
+        and state.first_defect == TreeDefect.DEPTH_LOW
+    )
+
+
+def _eligible_rtl(state: ExtractionState) -> bool:
+    """RTL repair eligibility (RTL_REVERSAL)."""
+    return not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL
+
+
+# ---------------------------------------------------------------------------
 # Zone-3: Unified gate registry — single source of truth
 # ---------------------------------------------------------------------------
 
@@ -2163,13 +2212,26 @@ _GateFn = Callable[
 # (recovery policy) AND hard_fail=True (verdict-floor); SUSPECT_DENSITY
 # has PERSIST_FAIL AND hard_fail=True.  This is intentional dual-axis
 # design, not a bug to collapse.
+#
+# Zone-1: ``recovery_eligible`` and ``recovery_fns`` replace the former
+# ``recovery_tag`` + client-side ``_recovery_dispatch`` dict.  Each gate
+# with recovery declares its eligibility predicate and the tuple of
+# recovery method names to invoke (resolved via getattr at call time).
+# GARBLING handles both GARBLING and NODE_GARBLING defects via
+# ``_eligible_garble``; NODE_GARBLING carries the same recovery_fns for
+# the bidirectional exhaustiveness assertion.
 GATES: list[GateSpec] = [
-    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling, recovery_tag="ocr_escalation", severity=0, flat_applicable=True),
-    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low, recovery_tag="ocr_escalation", severity=1),
-    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low, recovery_tag="ocr_escalation", severity=2),
-    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling, recovery_tag="ocr_escalation", severity=3, flat_applicable=True),
+    GateSpec(TreeDefect.GARBLING, _ReasonPolicy.RETRY_OCR, hard_fail=True, gate_fn=_gate_garbling, severity=0, flat_applicable=True,
+             recovery_eligible=_eligible_garble, recovery_fns=("_recover_garble_ocr", "_recover_vlm_fallback")),
+    GateSpec(TreeDefect.NODE_COUNT_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_node_count_low, severity=1,
+             recovery_eligible=_eligible_low_content, recovery_fns=("_recover_low_content_ocr", "_recover_image_dominant_ocr")),
+    GateSpec(TreeDefect.DEPTH_LOW, _ReasonPolicy.RAISE, gate_fn=_gate_depth_low, severity=2,
+             recovery_eligible=_eligible_image_dominant, recovery_fns=("_recover_image_dominant_ocr",)),
+    GateSpec(TreeDefect.NODE_GARBLING, _ReasonPolicy.RETRY_OCR, gate_fn=_gate_node_garbling, severity=3, flat_applicable=True,
+             recovery_eligible=_eligible_garble, recovery_fns=("_recover_garble_ocr", "_recover_vlm_fallback")),
     GateSpec(TreeDefect.REORDERED, _ReasonPolicy.RAISE, hard_fail=True, gate_fn=_gate_reordered, severity=4, flat_applicable=True),
-    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal, recovery_tag="rtl_repair", severity=5),
+    GateSpec(TreeDefect.RTL_REVERSAL, _ReasonPolicy.RETRY_RTL, gate_fn=_gate_rtl_reversal, severity=5,
+             recovery_eligible=_eligible_rtl, recovery_fns=("_recover_rtl_repair", "_recover_rtl_flat_compare")),
     GateSpec(TreeDefect.BIDI_DEGRADED, _ReasonPolicy.CAP_MARGINAL, gate_fn=_gate_bidi_degraded, severity=6),
     GateSpec(TreeDefect.EMPTY_NODE_CONTAMINATION, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_empty_node_contamination, severity=7),
     GateSpec(TreeDefect.LOW_CONTENT_DENSITY, _ReasonPolicy.PERSIST_FAIL, hard_fail=True, gate_fn=_gate_low_content_density, severity=8),
@@ -2197,14 +2259,25 @@ assert set(REASON_POLICY) == set(TreeDefect), (
     f"REASON_POLICY missing: {set(TreeDefect) - set(REASON_POLICY)}"
 )
 
-# Zone-3: every RETRY_OCR/RETRY_RTL gate must have a recovery_tag so the
-# declarative recovery loop can dispatch to the right recovery method.
+# Zone-1: bidirectional exhaustiveness assertion.
+# Forward: every RETRY_OCR/RETRY_RTL gate must have non-empty recovery_fns
+# and a non-None recovery_eligible so the GateSpec-driven recovery loop
+# can dispatch to the right recovery method.
 for _g in GATES:
     if _g.policy in (_ReasonPolicy.RETRY_OCR, _ReasonPolicy.RETRY_RTL):
-        assert _g.recovery_tag is not None, (
+        assert _g.recovery_fns and _g.recovery_eligible is not None, (
             f"GateSpec for {_g.defect.name} has {_g.policy.value} policy "
-            f"but no recovery_tag — add a recovery_tag to wire it into "
-            f"the recovery dispatch loop"
+            f"but missing recovery_fns or recovery_eligible — wire them "
+            f"to close the gate-to-recovery dispatch gap"
+        )
+# Reverse: every gate with non-empty recovery_fns must have a non-None
+# recovery_eligible predicate (prevents orphaned recovery methods that
+# never fire because the eligibility check is missing).
+for _g in GATES:
+    if _g.recovery_fns:
+        assert _g.recovery_eligible is not None, (
+            f"GateSpec for {_g.defect.name} has recovery_fns={_g.recovery_fns} "
+            f"but no recovery_eligible predicate"
         )
 
 # HARD_FAIL_DEFECTS: any of these in all_defects -> classify_verdict returns FAIL.

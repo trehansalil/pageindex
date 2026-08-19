@@ -1,6 +1,6 @@
 """Zone-1 GATE_TABLE tests.
 
-Three contracts are locked here:
+Four contracts are locked here:
 
 1. **Exhaustiveness** — every non-excluded :class:`TreeDefect` member has
    exactly one gate in :data:`GATE_TABLE`, so a newly added defect cannot
@@ -13,19 +13,26 @@ Three contracts are locked here:
    table order) one as the primary ``defect``.  The ward-597-class
    regression (``node_count<3`` masking ``garbling``) is locked
    unconditionally.
+4. **Zone-1 GateSpec field migration** — ``OcrRetryReason`` is deleted;
+   ``recovery_tag`` is removed; ``recovery_eligible`` and ``recovery_fns``
+   exist on :class:`GateSpec`.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 
 import pytest
 
 from pageindex_mcp.helpers import (
+    GATES,
     GATE_TABLE,
+    GateSpec,
     TreeDefect,
     validate_tree,
 )
+from pageindex_mcp.client import CustomPageIndexClient
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -328,3 +335,83 @@ class TestCoFiringAntiMasking:
                 f"case {defect.value}: primary {result.defect.value} not in "
                 f"all_defects"
             )
+
+
+# ---------------------------------------------------------------------------
+# 4. Zone-1 GateSpec field migration contracts
+# ---------------------------------------------------------------------------
+
+
+class TestOcrRetryReasonDeleted:
+    """OcrRetryReason was deleted by Zone-1; importing it must fail."""
+
+    def test_import_raises(self):
+        with pytest.raises(ImportError):
+            from pageindex_mcp.helpers import OcrRetryReason  # noqa: F401
+
+
+class TestRecoveryTagRemoved:
+    """The ``recovery_tag`` field no longer exists on GateSpec."""
+
+    def test_field_not_in_dataclass(self):
+        field_names = {f.name for f in dataclasses.fields(GateSpec)}
+        assert "recovery_tag" not in field_names, (
+            "recovery_tag still exists on GateSpec -- Zone-1 should have "
+            "replaced it with recovery_eligible + recovery_fns"
+        )
+
+    def test_no_recovery_tag_attribute(self):
+        g = GateSpec(TreeDefect.OK, _ReasonPolicy_for_test())
+        assert not hasattr(g, "recovery_tag")
+
+
+class TestRecoveryFieldsExist:
+    """recovery_eligible and recovery_fns exist on GateSpec as dataclass
+    fields with correct defaults."""
+
+    def test_recovery_eligible_field_exists(self):
+        field_names = {f.name for f in dataclasses.fields(GateSpec)}
+        assert "recovery_eligible" in field_names
+
+    def test_recovery_fns_field_exists(self):
+        field_names = {f.name for f in dataclasses.fields(GateSpec)}
+        assert "recovery_fns" in field_names
+
+    def test_recovery_eligible_default_is_none(self):
+        g = GateSpec(TreeDefect.OK, _ReasonPolicy_for_test())
+        assert g.recovery_eligible is None
+
+    def test_recovery_fns_default_is_empty_tuple(self):
+        g = GateSpec(TreeDefect.OK, _ReasonPolicy_for_test())
+        assert g.recovery_fns == ()
+
+    def test_backward_compat_positional_construction(self):
+        """GateSpec(defect, policy) must still work without keyword args
+        for recovery fields (positional backward compat)."""
+        g = GateSpec(TreeDefect.OK, _ReasonPolicy_for_test())
+        assert g.defect == TreeDefect.OK
+
+
+class TestRecoveryFnsResolvable:
+    """Every recovery_fns string on every GATES entry must resolve to a
+    real method on CustomPageIndexClient."""
+
+    @pytest.mark.parametrize(
+        "gate",
+        [g for g in GATES if g.recovery_fns],
+        ids=[g.defect.name for g in GATES if g.recovery_fns],
+    )
+    def test_all_fns_resolvable(self, gate):
+        for fn_name in gate.recovery_fns:
+            assert hasattr(CustomPageIndexClient, fn_name), (
+                f"{gate.defect.name}: recovery_fns entry '{fn_name}' not "
+                f"found on CustomPageIndexClient"
+            )
+
+
+# Helper to get a valid _ReasonPolicy without importing the private enum
+# at top-level (it is already importable via helpers but we avoid cluttering
+# the main import block).
+def _ReasonPolicy_for_test():
+    from pageindex_mcp.helpers import _ReasonPolicy
+    return _ReasonPolicy.OK

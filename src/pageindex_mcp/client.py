@@ -57,7 +57,6 @@ from .script import RtlDecision, ScriptContext, decide_rtl
 from .helpers import (
     GATES,
     GarbleReport,
-    OcrRetryReason,
     RecoveryOutcome,
     ExtractionState,
     BULK_PROFILE,
@@ -1331,66 +1330,31 @@ class CustomPageIndexClient(PageIndexClient):
         state.route = decide_route(state.first_defect, settings.flat_doc_routing)
         state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
-    async def _recover_ocr_retry(
+    async def _execute_ocr_retry(
         self,
-        reason: OcrRetryReason,
         state: ExtractionState,
         file_path: str,
         filename: str,
         ext: str,
         expected_script: str | None,
+        *,
+        reason_label: str,
+        splice_label: str,
+        use_keep_best: bool,
+        metric_fail_label: str,
     ) -> None:
-        """Unified OCR retry recovery (Zone-2: eliminates flag conflation + mutable-state ordering).
+        """Zone-1: shared OCR retry execution (language derivation, OCR
+        dispatch, picture splice, reconvert + revalidate, keep-best, metrics).
 
-        Replaces former Recovery 1 (_recover_ocr_escalation) and Recovery 5
-        (_recover_image_dominant_ocr) with a single method dispatching on
-        ``OcrRetryReason``.  Each reason has its own independent flag gate,
-        eligibility check, and metric label.
-
-        ``reason`` discriminates:
-        - GARBLE: page-level garble retry (first_defect in GARBLING/NODE_GARBLING).
-        - LOW_CONTENT: low-char-count OCR retry (first_defect NODE_COUNT_LOW, chars < floor).
-        - IMAGE_DOMINANT: image-dominant structural retry (first_defect NODE_COUNT_LOW/DEPTH_LOW,
-          image-line ratio > 50%).
-
-        Pre-retry snapshot + keep-best heuristic apply only for GARBLE/LOW_CONTENT.
-        IMAGE_DOMINANT accepts unconditionally (no revert).
+        Called by ``_recover_garble_ocr``, ``_recover_low_content_ocr``, and
+        ``_recover_image_dominant_ocr`` after their per-method eligibility
+        checks.  Factoring the ~150-line shared tail into one helper avoids
+        the duplication that motivated the former ``_recover_ocr_retry``
+        unification while keeping per-method eligibility decoupled.
         """
-        if state.ok or ext != ".pdf":
-            return
-
-        # ---- Per-reason independent flag gate + eligibility check ----
-        if reason == OcrRetryReason.GARBLE:
-            if not _OCR_ESCALATION_GARBLE:
-                return
-            if state.first_defect not in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING):
-                return
-        elif reason == OcrRetryReason.LOW_CONTENT:
-            if not _OCR_ESCALATION_GARBLE:
-                return
-            if not (
-                state.first_defect == TreeDefect.NODE_COUNT_LOW
-                and state.total_chars < LOW_CONTENT_OCR_CHAR_FLOOR
-            ):
-                return
-        elif reason == OcrRetryReason.IMAGE_DOMINANT:
-            if not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
-                return
-            if state.first_defect not in (TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW):
-                return
-            if not (settings.flat_doc_routing and state.md_content):
-                return
-            # Image-line ratio gate (>50% non-empty lines must be image markers).
-            total_lines = state.md_content.splitlines()
-            non_empty_lines = [ln for ln in total_lines if ln.strip()]
-            image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
-            if not non_empty_lines or (image_lines / len(non_empty_lines)) <= 0.50:
-                return
-
         # ---- Pre-retry snapshot (GARBLE/LOW_CONTENT only) ----
-        _use_keep_best = reason in (OcrRetryReason.GARBLE, OcrRetryReason.LOW_CONTENT)
         pre_retry: RecoveryOutcome | None = None
-        if _use_keep_best:
+        if use_keep_best:
             pre_retry = RecoveryOutcome(
                 result=state.result,
                 ok=state.ok,
@@ -1408,19 +1372,8 @@ class CustomPageIndexClient(PageIndexClient):
                 bidi_renorm_applied=state.bidi_renorm_applied,
             )
 
-        _reason_label = {
-            OcrRetryReason.GARBLE: "Garbling",
-            OcrRetryReason.LOW_CONTENT: "Low content",
-            OcrRetryReason.IMAGE_DOMINANT: "Image-dominant",
-        }[reason]
-        _splice_label = {
-            OcrRetryReason.GARBLE: "garble_escalation",
-            OcrRetryReason.LOW_CONTENT: "garble_escalation",
-            OcrRetryReason.IMAGE_DOMINANT: "image_dominant_escalation",
-        }[reason]
-
         try:
-            # ---- Unified language derivation ----
+            # ---- Language derivation ----
             escalation_langs: list[str] = []
             for src in (
                 detect_ocr_langs(filename),
@@ -1431,27 +1384,14 @@ class CustomPageIndexClient(PageIndexClient):
                         escalation_langs.append(lg)
             langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
 
-            if reason == OcrRetryReason.IMAGE_DOMINANT:
-                total_lines_log = state.md_content.splitlines()
-                non_empty_log = [ln for ln in total_lines_log if ln.strip()]
-                image_lines_log = sum(1 for ln in non_empty_log if "<!-- image -->" in ln)
-                logger.warning(
-                    "Image-dominant (%d/%d non-empty lines) on %s; "
-                    "escalating to force_full_page_ocr (lang=%s)",
-                    image_lines_log,
-                    len(non_empty_log),
-                    filename,
-                    langs,
-                )
-            else:
-                logger.warning(
-                    "%s on %s; escalating to force_full_page_ocr (lang=%s)",
-                    _reason_label,
-                    filename,
-                    langs,
-                )
+            logger.warning(
+                "%s on %s; escalating to force_full_page_ocr (lang=%s)",
+                reason_label,
+                filename,
+                langs,
+            )
 
-            # ---- Unified OCR dispatch ----
+            # ---- OCR dispatch ----
             # Zone-7: OCR re-extraction produces new md_content; reset
             # bidi_renorm_applied so the flag reflects the new content.
             state.bidi_renorm_applied = False
@@ -1472,9 +1412,9 @@ class CustomPageIndexClient(PageIndexClient):
                     state.extraction_stages_captured = stages_out
             state.used_converter = "docling"
 
-            # ---- Unified picture splice ----
+            # ---- Picture splice ----
             if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
-                _log_pic_splice_trace(filename, _splice_label, state.pic_results)
+                _log_pic_splice_trace(filename, splice_label, state.pic_results)
                 state.md_content = splice_picture_text_for_tree(
                     state.md_content, state.pic_results
                 )
@@ -1497,7 +1437,7 @@ class CustomPageIndexClient(PageIndexClient):
             )
 
             # ---- Keep-best heuristic (GARBLE/LOW_CONTENT only) ----
-            if _use_keep_best and pre_retry is not None:
+            if use_keep_best and pre_retry is not None:
                 post_retry_chars = len(
                     _flatten_tree_text(state.result.get("structure", []))
                 )
@@ -1579,22 +1519,109 @@ class CustomPageIndexClient(PageIndexClient):
                         state.tmp_md_path = md_tmp.name
 
             # ---- Metric ----
-            _metric_result = {
-                OcrRetryReason.GARBLE: "recovered" if state.ok else "still_garbled",
-                OcrRetryReason.LOW_CONTENT: "recovered" if state.ok else "still_garbled",
-                OcrRetryReason.IMAGE_DOMINANT: "recovered" if state.ok else "still_image_only",
-            }[reason]
+            _metric_result = "recovered" if state.ok else metric_fail_label
             OCR_ESCALATION_TOTAL.labels(result=_metric_result).inc()
         except Exception as ocr_exc:
             OCR_ESCALATION_TOTAL.labels(result="error").inc()
             logger.error(
                 "%s OCR escalation failed for %s (%s)",
-                _reason_label, filename, ocr_exc, exc_info=True,
+                reason_label, filename, ocr_exc, exc_info=True,
             )
+
+    # -- Zone-1: per-defect OCR recovery methods (split from _recover_ocr_retry) --
+
+    async def _recover_garble_ocr(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 1: garble OCR escalation. Mutates state.
+
+        Defect-type eligibility (GARBLING / NODE_GARBLING) is enforced by
+        ``GateSpec.recovery_eligible`` — this method checks only the flag
+        gate and basic preconditions.
+        """
+        if state.ok or ext != ".pdf":
+            return
+        if not _OCR_ESCALATION_GARBLE:
+            return
+        await self._execute_ocr_retry(
+            state, file_path, filename, ext, expected_script,
+            reason_label="Garbling",
+            splice_label="garble_escalation",
+            use_keep_best=True,
+            metric_fail_label="still_garbled",
+        )
+
+    async def _recover_low_content_ocr(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 1b: low-content OCR escalation. Mutates state.
+
+        Defect-type eligibility (NODE_COUNT_LOW) is enforced by
+        ``GateSpec.recovery_eligible`` — this method checks the flag gate
+        and the character-count floor.
+        """
+        if state.ok or ext != ".pdf":
+            return
+        if not _OCR_ESCALATION_GARBLE:
+            return
+        if state.total_chars >= LOW_CONTENT_OCR_CHAR_FLOOR:
+            return
+        await self._execute_ocr_retry(
+            state, file_path, filename, ext, expected_script,
+            reason_label="Low content",
+            splice_label="garble_escalation",
+            use_keep_best=True,
+            metric_fail_label="still_garbled",
+        )
+
+    async def _recover_image_dominant_ocr(
+        self,
+        state: ExtractionState,
+        file_path: str,
+        filename: str,
+        ext: str,
+        expected_script: str | None,
+    ) -> None:
+        """Recovery 5: image-dominant OCR escalation. Mutates state.
+
+        Defect-type eligibility (NODE_COUNT_LOW / DEPTH_LOW) is enforced by
+        ``GateSpec.recovery_eligible`` — this method checks the flag gate,
+        flat routing availability, and image-line ratio.
+        """
+        if state.ok or ext != ".pdf":
+            return
+        if not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
+            return
+        if not (settings.flat_doc_routing and state.md_content):
+            return
+        # Image-line ratio gate (>50% non-empty lines must be image markers).
+        total_lines = state.md_content.splitlines()
+        non_empty_lines = [ln for ln in total_lines if ln.strip()]
+        image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
+        if not non_empty_lines or (image_lines / len(non_empty_lines)) <= 0.50:
+            return
+        await self._execute_ocr_retry(
+            state, file_path, filename, ext, expected_script,
+            reason_label=f"Image-dominant ({image_lines}/{len(non_empty_lines)} non-empty lines)",
+            splice_label="image_dominant_escalation",
+            use_keep_best=False,
+            metric_fail_label="still_image_only",
+        )
 
     async def _recover_rtl_repair(
         self,
         state: ExtractionState,
+        file_path: str,
         filename: str,
         ext: str,
         expected_script: str | None,
@@ -1651,6 +1678,7 @@ class CustomPageIndexClient(PageIndexClient):
     async def _recover_rtl_flat_compare(
         self,
         state: ExtractionState,
+        file_path: str,
         filename: str,
         ext: str,
         expected_script: str | None,
@@ -1698,10 +1726,14 @@ class CustomPageIndexClient(PageIndexClient):
         ext: str,
         expected_script: str | None,
     ) -> None:
-        """Recovery 4: VLM last-resort fallback for garble-rejected PDFs. Mutates state."""
+        """Recovery 4: VLM last-resort fallback for garble-rejected PDFs. Mutates state.
+
+        Zone-1: defect-type eligibility (GARBLING / NODE_GARBLING) is enforced
+        by ``GateSpec.recovery_eligible`` — only GateSpecs for garble-type
+        defects list this method in ``recovery_fns``.
+        """
         if not (
             not state.ok
-            and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
             and ext == ".pdf"
             and settings.vlm_fallback
         ):
@@ -2244,62 +2276,28 @@ class CustomPageIndexClient(PageIndexClient):
                 state, file_path, filename, ext, expected_script, pdf_classification
             )
 
-            # Zone-3: declarative gate-driven recovery loop.
-            # RECOVERY_DISPATCH maps each recovery_tag to the ordered list of
-            # recovery coroutines that must fire for that tag.  Iteration
-            # follows GATES table order (severity ranking); each tag fires
-            # at most once (deduplication via seen_tags).
-            _recovery_dispatch: dict[str, list] = {
-                "ocr_escalation": [
-                    # Zone-2: unified _recover_ocr_retry dispatches on
-                    # OcrRetryReason; ordering preserves Recovery 1 (garble)
-                    # before Recovery 5 (image-dominant) semantics, with
-                    # LOW_CONTENT between them.  Each reason has its own
-                    # independent flag gate; only one will fire per doc.
-                    lambda: self._recover_ocr_retry(
-                        OcrRetryReason.GARBLE,
-                        state, file_path, filename, ext, expected_script,
-                    ),
-                    lambda: self._recover_ocr_retry(
-                        OcrRetryReason.LOW_CONTENT,
-                        state, file_path, filename, ext, expected_script,
-                    ),
-                    lambda: self._recover_ocr_retry(
-                        OcrRetryReason.IMAGE_DOMINANT,
-                        state, file_path, filename, ext, expected_script,
-                    ),
-                    lambda: self._recover_vlm_fallback(
-                        state, file_path, filename, ext, expected_script
-                    ),
-                ],
-                "rtl_repair": [
-                    lambda: self._recover_rtl_repair(
-                        state, filename, ext, expected_script
-                    ),
-                    lambda: self._recover_rtl_flat_compare(
-                        state, filename, ext, expected_script
-                    ),
-                ],
-            }
-            # Import-time safety: every recovery_tag in GATES has a dispatch.
-            _gate_tags = {g.recovery_tag for g in GATES if g.recovery_tag is not None}
-            assert _gate_tags <= set(_recovery_dispatch), (
-                f"recovery_tag(s) without dispatch entry: "
-                f"{_gate_tags - set(_recovery_dispatch)}"
-            )
-
-            _seen_tags: set[str] = set()
+            # Zone-1: GateSpec-driven recovery loop (single source of truth).
+            # Each GateSpec with non-empty recovery_fns declares its own
+            # recovery_eligible predicate and recovery method names.
+            # Iteration follows GATES severity order; dedup by recovery_fns
+            # tuple prevents repeated firing when multiple GateSpecs share
+            # the same recovery pipeline (e.g. GARBLING and NODE_GARBLING
+            # both carry _eligible_garble + the same recovery_fns).
+            _fired_recovery: set[tuple[str, ...]] = set()
             for _gate in GATES:
-                if _gate.recovery_tag is None or _gate.recovery_tag in _seen_tags:
+                if not _gate.recovery_fns or _gate.recovery_fns in _fired_recovery:
                     continue
-                _seen_tags.add(_gate.recovery_tag)
+                if _gate.recovery_eligible is None or not _gate.recovery_eligible(state):
+                    continue
+                _fired_recovery.add(_gate.recovery_fns)
                 _pre_route = state.route
-                for _recover_fn in _recovery_dispatch[_gate.recovery_tag]:
-                    await _recover_fn()
-                # Re-derive first_defect/route after each recovery tag
-                # (inlined from deleted _finalize_routing).  Skip when ok=True
-                # (tree valid, no rerouting needed) or when a recovery method
-                # explicitly overrode state.route.
+                for _fn_name in _gate.recovery_fns:
+                    await getattr(self, _fn_name)(
+                        state, file_path, filename, ext, expected_script
+                    )
+                # Re-derive first_defect/route after each gate's recovery
+                # block.  Skip when ok=True (tree valid, no rerouting needed)
+                # or when a recovery method explicitly overrode state.route.
                 if not state.ok and state.route == _pre_route:
                     if state.gate_result is not None:
                         state.first_defect = state.gate_result.defect
