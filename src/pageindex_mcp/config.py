@@ -1,5 +1,6 @@
 """Application configuration: env loading, path setup, settings dataclass."""
 
+import dataclasses
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -293,65 +294,226 @@ def _envbool(key: str, default: str) -> bool:
     return os.environ.get(key, default).strip().lower() in ("1", "true", "yes")
 
 
+# ---------------------------------------------------------------------------
+# Zone-5: PipelineConfig — single frozen snapshot of all pipeline-behavior
+# env vars.  Replaces three competing read sites (effective_config_snapshot
+# per-call reread, VerdictThresholds lazy-cached singleton, module-level
+# frozen constants in helpers.py) with one canonical read at module load.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """Frozen snapshot of every pipeline-behavior env var.
+
+    Instantiated once at module load via ``from_env()``.  Infra settings
+    (MinIO/Redis/Postgres) remain in :class:`Settings` — this dataclass
+    covers only flags that alter document processing behavior.
+
+    ``effective_config_snapshot()`` is now ``dataclasses.asdict(pipeline_config)``
+    and the VerdictThresholds lazy cache is replaced by
+    ``VerdictThresholds.from_config(pipeline_config)``.
+    """
+
+    # --- effective_config_snapshot fields (25 behavior flags) ---------------
+    pipeline_version: int
+    pdf_inspector_preclassify: bool
+    allow_agpl_fallback: bool
+    remote_md_renormalize: bool
+    ocr_escalation_garble: bool
+    ocr_escalation_per_picture: bool
+    pre_garble_force_ocr_enabled: bool
+    d7_garble_recovery_enabled: bool
+    image_standalone_pipeline_enabled: bool
+    image_dominant_ocr_escalation_enabled: bool
+    vlm_tesseract_fallback_enabled: bool
+    garble_latin_gibberish_enabled: bool
+    garble_latin_ratio: float
+    garble_nonsense_ratio: float
+    garble_node_ratio_threshold: float
+    pass_max_leaf_ratio: float
+    bidi_coherence_enforce: bool
+    small_doc_promotion_enabled: bool
+    leaf_concentration_paragraph_split_enabled: bool
+    leaf_split_ratio: float
+    pdf_converter: str
+    text_layer_garble_check_enabled: bool
+    region_aware_text_check_enabled: bool
+    tree_path_picture_splice_enabled: bool
+    low_content_ocr_char_floor: int
+    rfc029_flat_prefer_multiplier: float
+    rfc029_min_chars_per_node: float
+
+    # --- VerdictThresholds fields (from helpers.py VerdictThresholds.from_env) ---
+    garble_window_ratio_threshold: float
+    min_image_promoted_chars: int
+    min_flat_promotion_chars: int
+
+    # --- Module-level frozen constants from helpers.py ----------------------
+    garble_short_text_default: bool
+    garble_flat_markdown_normalize: bool
+    empty_node_fraction_threshold: float
+    rfc029_min_chars_per_node_deep: float
+    rfc029_min_scanned_density_floor: float
+    rfc029_table_segment_char_threshold: int
+    rfc029_table_segment_min_rows: int
+    rfc036_singleton_row_ratio_threshold: float
+    rfc029_table_segment_min_rows_landscape: int
+    rfc036_singleton_ratio_landscape: float
+
+    @classmethod
+    def from_env(cls) -> "PipelineConfig":
+        """Read all pipeline-behavior env vars once and return a frozen snapshot."""
+        _gnrt_raw = float(os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
+        _gnrt = _gnrt_raw if 0 <= _gnrt_raw <= 1 else 0.10
+        return cls(
+            pipeline_version=CURRENT_PIPELINE_VERSION,
+            pdf_inspector_preclassify=PDF_INSPECTOR_PRECLASSIFY,
+            allow_agpl_fallback=ALLOW_AGPL_FALLBACK,
+            remote_md_renormalize=REMOTE_MD_RENORMALIZE,
+            ocr_escalation_garble=OCR_ESCALATION_GARBLE,
+            ocr_escalation_per_picture=OCR_ESCALATION_PER_PICTURE,
+            pre_garble_force_ocr_enabled=os.environ.get(
+                "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
+            ).lower() == "true",
+            d7_garble_recovery_enabled=_envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
+            image_standalone_pipeline_enabled=_envbool(
+                "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
+            ),
+            image_dominant_ocr_escalation_enabled=IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
+            vlm_tesseract_fallback_enabled=_envbool(
+                "VLM_TESSERACT_FALLBACK_ENABLED", "true"
+            ),
+            garble_latin_gibberish_enabled=_envbool(
+                "GARBLE_LATIN_GIBBERISH_ENABLED", "true"
+            ),
+            garble_latin_ratio=float(
+                os.environ.get("GARBLE_LATIN_RATIO", "0.4")
+            ),
+            garble_nonsense_ratio=float(
+                os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")
+            ),
+            garble_node_ratio_threshold=_gnrt,
+            pass_max_leaf_ratio=float(
+                os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")
+            ),
+            bidi_coherence_enforce=_envbool("BIDI_COHERENCE_ENFORCE", "true"),
+            small_doc_promotion_enabled=_envbool(
+                "SMALL_DOC_PROMOTION_ENABLED", "true"
+            ),
+            leaf_concentration_paragraph_split_enabled=_envbool(
+                "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
+            ),
+            leaf_split_ratio=float(
+                os.environ.get("LEAF_SPLIT_RATIO", "0.30")
+            ),
+            pdf_converter=os.environ.get("PDF_CONVERTER", "docling"),
+            text_layer_garble_check_enabled=_envbool(
+                "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
+            ),
+            region_aware_text_check_enabled=_envbool(
+                "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
+            ),
+            tree_path_picture_splice_enabled=_envbool(
+                "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
+            ),
+            low_content_ocr_char_floor=int(
+                os.environ.get("LOW_CONTENT_OCR_CHAR_FLOOR", "300")
+            ),
+            rfc029_flat_prefer_multiplier=float(
+                os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
+            ),
+            rfc029_min_chars_per_node=float(
+                os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")
+            ),
+            # VerdictThresholds fields
+            garble_window_ratio_threshold=float(
+                os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")
+            ),
+            min_image_promoted_chars=int(
+                os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")
+            ),
+            min_flat_promotion_chars=int(
+                os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")
+            ),
+            # Module-level frozen constants from helpers.py
+            garble_short_text_default=os.getenv(
+                "GARBLE_SHORT_TEXT_DEFAULT", "true"
+            ).lower() == "true",
+            garble_flat_markdown_normalize=os.getenv(
+                "GARBLE_FLAT_MARKDOWN_NORMALIZE", "true"
+            ).lower() == "true",
+            empty_node_fraction_threshold=float(
+                os.environ.get("EMPTY_NODE_FRACTION_THRESHOLD", "0.30")
+            ),
+            rfc029_min_chars_per_node_deep=float(
+                os.environ.get("RFC029_MIN_CHARS_PER_NODE_DEEP", "50")
+            ),
+            rfc029_min_scanned_density_floor=float(
+                os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR", "1500")
+            ),
+            rfc029_table_segment_char_threshold=int(
+                os.environ.get("RFC029_TABLE_SEGMENT_CHAR_THRESHOLD", "2000")
+            ),
+            rfc029_table_segment_min_rows=int(
+                os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5")
+            ),
+            rfc036_singleton_row_ratio_threshold=float(
+                os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
+            ),
+            rfc029_table_segment_min_rows_landscape=int(
+                os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE", "10")
+            ),
+            rfc036_singleton_ratio_landscape=float(
+                os.environ.get("RFC036_SINGLETON_RATIO_LANDSCAPE", "0.4")
+            ),
+        )
+
+
+# Module-level singleton — frozen at process start.
+pipeline_config: PipelineConfig = PipelineConfig.from_env()
+
+# Import-time assertion: pass_max_leaf_ratio must not exceed leaf_split_ratio.
+assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.leaf_split_ratio, (
+    f"PASS_MAX_LEAF_RATIO ({pipeline_config.pass_max_leaf_ratio}) must be "
+    f"<= LEAF_SPLIT_RATIO ({pipeline_config.leaf_split_ratio})"
+)
+
+
+def reset_pipeline_config() -> None:
+    """Re-read env vars and rebuild the pipeline_config singleton.
+
+    For test fixtures that manipulate env vars between tests.  Replaces
+    the old ``reset_verdict_thresholds()`` with a single function that
+    resets ALL pipeline-behavior config at once.
+    """
+    global pipeline_config
+    pipeline_config = PipelineConfig.from_env()
+
+
 def effective_config_snapshot() -> dict:
-    """Snapshot the 19 behavior-altering flags at call time for sidecar persistence."""
-    return {
-        "pipeline_version": CURRENT_PIPELINE_VERSION,
-        "pdf_inspector_preclassify": PDF_INSPECTOR_PRECLASSIFY,
-        "allow_agpl_fallback": ALLOW_AGPL_FALLBACK,
-        "remote_md_renormalize": REMOTE_MD_RENORMALIZE,
-        "ocr_escalation_garble": OCR_ESCALATION_GARBLE,
-        "ocr_escalation_per_picture": OCR_ESCALATION_PER_PICTURE,
-        "pre_garble_force_ocr_enabled": os.environ.get(
-            "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
-        ).lower() == "true",
-        "d7_garble_recovery_enabled": _envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
-        "image_standalone_pipeline_enabled": _envbool(
-            "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
-        ),
-        "image_dominant_ocr_escalation_enabled": IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
-        "vlm_tesseract_fallback_enabled": _envbool(
-            "VLM_TESSERACT_FALLBACK_ENABLED", "true"
-        ),
-        "garble_latin_gibberish_enabled": _envbool(
-            "GARBLE_LATIN_GIBBERISH_ENABLED", "true"
-        ),
-        "garble_latin_ratio": float(
-            os.environ.get("GARBLE_LATIN_RATIO", "0.4")
-        ),
-        "garble_node_ratio_threshold": float(
-            os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", "0.10")
-        ),
-        "pass_max_leaf_ratio": float(
-            os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")
-        ),
-        "bidi_coherence_enforce": _envbool("BIDI_COHERENCE_ENFORCE", "true"),
-        "small_doc_promotion_enabled": _envbool(
-            "SMALL_DOC_PROMOTION_ENABLED", "true"
-        ),
-        "leaf_concentration_paragraph_split_enabled": _envbool(
-            "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
-        ),
-        "leaf_split_ratio": float(
-            os.environ.get("LEAF_SPLIT_RATIO", "0.30")
-        ),
-        "pdf_converter": os.environ.get("PDF_CONVERTER", "docling"),
-        "text_layer_garble_check_enabled": _envbool(
-            "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
-        ),
-        "region_aware_text_check_enabled": _envbool(
-            "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
-        ),
-        "tree_path_picture_splice_enabled": _envbool(
-            "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
-        ),
-        "low_content_ocr_char_floor": int(
-            os.environ.get("LOW_CONTENT_OCR_CHAR_FLOOR", "300")
-        ),
-        "rfc029_flat_prefer_multiplier": float(
-            os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
-        ),
-        "rfc029_min_chars_per_node": float(
-            os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")
-        ),
-    }
+    """Snapshot the pipeline-behavior flags for sidecar persistence.
+
+    Now a thin wrapper around ``dataclasses.asdict(pipeline_config)``,
+    filtered to the original 25 sidecar-schema fields so the meta.json
+    shape is byte-identical to prior versions.
+    """
+    # The sidecar schema (meta.json version 4) expects exactly these keys.
+    # PipelineConfig has additional fields (VerdictThresholds, module-level
+    # constants) that were never part of the sidecar — filter them out.
+    _SIDECAR_FIELDS = frozenset(f.name for f in dataclasses.fields(PipelineConfig) if f.name in {
+        "pipeline_version", "pdf_inspector_preclassify", "allow_agpl_fallback",
+        "remote_md_renormalize", "ocr_escalation_garble", "ocr_escalation_per_picture",
+        "pre_garble_force_ocr_enabled", "d7_garble_recovery_enabled",
+        "image_standalone_pipeline_enabled", "image_dominant_ocr_escalation_enabled",
+        "vlm_tesseract_fallback_enabled", "garble_latin_gibberish_enabled",
+        "garble_latin_ratio", "garble_node_ratio_threshold", "pass_max_leaf_ratio",
+        "bidi_coherence_enforce", "small_doc_promotion_enabled",
+        "leaf_concentration_paragraph_split_enabled", "leaf_split_ratio",
+        "pdf_converter", "text_layer_garble_check_enabled",
+        "region_aware_text_check_enabled", "tree_path_picture_splice_enabled",
+        "low_content_ocr_char_floor", "rfc029_flat_prefer_multiplier",
+        "rfc029_min_chars_per_node",
+    })
+    full = dataclasses.asdict(pipeline_config)
+    return {k: v for k, v in full.items() if k in _SIDECAR_FIELDS}

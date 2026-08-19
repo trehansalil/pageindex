@@ -317,6 +317,10 @@ async def test_flat_path_garble_gate_vlm_exception(monkeypatch, pdf_file):
     monkeypatch.setattr(
         client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: "# garbled md")]
     )
+    # Zone-3: patch both detect_garble (primary flat gate) and check_garble (VLM recovery)
+    from pageindex_mcp.helpers import GarbleReport
+    _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
+    monkeypatch.setattr(client_mod, "detect_garble", lambda text, **kw: _garbled)
     monkeypatch.setattr(client_mod, "check_garble", lambda text, **kw: True)
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))

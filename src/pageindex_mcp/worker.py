@@ -10,6 +10,7 @@ See plans/01-subprocess-isolated-converter.md.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -103,17 +104,46 @@ def resolve_max_jobs(raw: str | None) -> int:
 
 
 MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
-# Map child-reported exception class names (from converters_cli.py stdout JSON
-# "error" field) to the documented, stable Redis ``reason`` codes. Unknown
-# classes fall back to the generic ``converter_child_failed`` so the reason
-# field remains a finite, machine-consumable set rather than leaking
-# arbitrary Python class names.
-_CHILD_ERROR_REASON: dict[str, str] = {
-    "LowQualityTreeError": "low_quality_tree",
-    "FileNotFoundError": "input_missing",
-    "RuntimeError": "converter_child_failed",
-    "ArgparseExit": "converter_child_failed",
+
+
+# ---------------------------------------------------------------------------
+# Zone 6 (Part A): ChildErrorClassification — exhaustive child error registry
+# ---------------------------------------------------------------------------
+# The converter child (converters_cli.py:176) emits ``type(exc).__name__`` as the
+# ``error`` field.  This registry maps every known exception class name to a stable
+# Redis ``reason`` code and a ``terminal`` flag (True = deterministic w.r.t. input;
+# retrying wastes worker time).  Unknown classes fall through to
+# ``_DEFAULT_CHILD_CLASSIFICATION`` so the reason field remains a finite,
+# machine-consumable set.
+#
+# ``LLMTransientFailure`` is intentionally ABSENT — it is classified by
+# ``_classify_llm_failure`` (see below) before the registry lookup fires.
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ChildErrorClassification:
+    """Frozen classification of a child-reported exception class."""
+
+    reason: str
+    terminal: bool
+
+
+_CHILD_ERROR_REGISTRY: dict[str, ChildErrorClassification] = {
+    # Deterministic: same input always produces same failure → no retry
+    "LowQualityTreeError": ChildErrorClassification("low_quality_tree", terminal=True),
+    "TessdataUnavailableError": ChildErrorClassification("converter_env_missing", terminal=True),
+    "FuturesTimeoutError": ChildErrorClassification("converter_timeout", terminal=True),
+    # Transient: may recover on retry (MinIO glitch, transient env issue, etc.)
+    "FileNotFoundError": ChildErrorClassification("input_missing", terminal=False),
+    "RuntimeError": ChildErrorClassification("converter_child_failed", terminal=False),
+    "ArgparseExit": ChildErrorClassification("converter_child_failed", terminal=False),
+    "HeaderNotFoundException": ChildErrorClassification("converter_child_failed", terminal=False),
+    "ImplausibleHeadingStructureException": ChildErrorClassification("converter_child_failed", terminal=False),
+    "TypeError": ChildErrorClassification("converter_child_failed", terminal=False),
 }
+
+# Default for unknown exception classes: transient (fail-open toward retry).
+_DEFAULT_CHILD_CLASSIFICATION = ChildErrorClassification("converter_child_failed", terminal=False)
+
 # Reasons that are deterministic with respect to the input document: retrying
 # the same job on the same staged file will produce the same failure, so arq
 # retries / DLQ pushes only waste worker time. We treat these as terminal —
@@ -121,12 +151,26 @@ _CHILD_ERROR_REASON: dict[str, str] = {
 # does not requeue. ``input_missing`` is NOT in this set: a transient MinIO
 # read failure can in principle recover on retry, and the wasted retry on a
 # genuinely-missing file is cheap (one extra download attempt).
-_TERMINAL_CHILD_REASONS: frozenset[str] = frozenset(
-    {
-        "low_quality_tree",
-        "llm_failure_terminal",
-    }
+#
+# Derived from the registry + the LLM-failure classifier's terminal output.
+_TERMINAL_CHILD_REASONS: frozenset[str] = (
+    frozenset(c.reason for c in _CHILD_ERROR_REGISTRY.values() if c.terminal)
+    | {"llm_failure_terminal"}
 )
+
+# Module-level exhaustiveness assertion (Part E): every terminal reason in the
+# registry is in _TERMINAL_CHILD_REASONS and vice versa, accounting for
+# ``llm_failure_terminal`` which comes from _classify_llm_failure (not the
+# registry).
+_registry_terminal_reasons = frozenset(
+    c.reason for c in _CHILD_ERROR_REGISTRY.values() if c.terminal
+)
+_expected_terminal = _registry_terminal_reasons | {"llm_failure_terminal"}
+assert _TERMINAL_CHILD_REASONS == _expected_terminal, (
+    f"_TERMINAL_CHILD_REASONS is out of sync with _CHILD_ERROR_REGISTRY: "
+    f"symmetric diff = {_TERMINAL_CHILD_REASONS ^ _expected_terminal}"
+)
+del _registry_terminal_reasons, _expected_terminal
 # Substrings in an LLMTransientFailure's stderr_tail that indicate a
 # deterministic failure (retrying the same input reproduces it). Checked
 # before any rate-limit/transient indicator so a stderr_tail carrying both
@@ -383,6 +427,9 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 await _mirror_bridged_set("converter_child_peak_rss_kib", peak_kib)
         except (TypeError, ValueError):
             pass
+        # Zone 6 (Part B): surface the effective timeout so the caller can
+        # record it in the Redis hash for the reaper's dynamic cutoff.
+        result["_effective_timeout"] = effective_timeout
         return result
 
     # The CLI emits the failure JSON on stdout even when exiting non-zero,
@@ -443,12 +490,20 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         # Stamp a wall-clock start time (epoch seconds, NOT time.monotonic which is
         # process-relative and meaningless across the worker restart a crash causes)
         # so reap_stale_jobs can later detect a job orphaned mid-processing.
+        #
+        # Zone 6 (Part B): also record effective_timeout_at — the absolute wall-clock
+        # deadline after which the reaper may declare this job stale.  We write a
+        # conservative initial value based on JOB_TIMEOUT; if the child's handshake
+        # reveals a longer effective_timeout (e.g. 16.5x for scanned PDFs), we
+        # update effective_timeout_at via a direct hset after the subprocess returns.
+        processing_now = int(time.time())
         await _set_job_status(
             redis,
             job_id,
             JobStatus.PROCESSING,
             ttl=JOB_TTL,
-            processing_started_at=str(int(time.time())),
+            processing_started_at=str(processing_now),
+            effective_timeout_at=str(processing_now + JOB_TIMEOUT + REAP_GRACE),
             **job_start_fields,
         )
         # Download staged file from MinIO to local temp
@@ -500,7 +555,10 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
             if exc.error_class == "LLMTransientFailure":
                 reason = _classify_llm_failure(exc.stderr_tail)
             else:
-                reason = _CHILD_ERROR_REASON.get(exc.error_class or "", "converter_child_failed")
+                classification = _CHILD_ERROR_REGISTRY.get(
+                    exc.error_class or "", _DEFAULT_CHILD_CLASSIFICATION
+                )
+                reason = classification.reason
             await _set_job_status(
                 redis,
                 job_id,
@@ -532,6 +590,23 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
                 return ""
             raise
 
+        # Zone 6 (Part B): if the child's handshake negotiated a longer
+        # effective_timeout (scanned/image PDF 16.5x, chunked Docling), update
+        # the Redis hash so reap_stale_jobs respects the actual deadline.  This
+        # is a field-only write (no status transition), bypassing _set_job_status
+        # to avoid needing a PROCESSING->PROCESSING self-transition.
+        child_effective_timeout = result.get("_effective_timeout", CHILD_TIMEOUT)
+        if child_effective_timeout > CHILD_TIMEOUT:
+            new_deadline = processing_now + int(child_effective_timeout) + REAP_GRACE
+            job_key = _job_key(job_id)
+            await redis.hset(job_key, "effective_timeout_at", str(new_deadline))
+            logger.info(
+                "Updated effective_timeout_at for job=%s: %ss (child_effective_timeout=%ss)",
+                job_id,
+                new_deadline,
+                child_effective_timeout,
+            )
+
         doc_id = result["doc_id"]
         # A flat-document result (RFC-004 Amendment 1) carries a content_class:
         # the job still completes as a SUCCESS (status=done), but surfaces the
@@ -545,17 +620,54 @@ async def process_document_job(ctx: dict, staging_key: str, job_id: str) -> str:
         }
         if content_class:
             done_fields["content_class"] = content_class
-        await _set_job_status(
-            redis,
-            job_id,
-            JobStatus.DONE,
-            ttl=JOB_TTL,
-            **done_fields,
-        )
+        # Zone 6 (Part C): wrap in try/except ValueError so a reaped-then-
+        # completed job (ERROR->DONE) still records the doc_id and registry
+        # row.  With ERROR->DONE in _VALID_TRANSITIONS, the normal path
+        # succeeds and writes ``late_success``/``reaped_recovery`` flags.
+        # The except path is a safety net for any future transition rejection.
+        late_success = False
+        try:
+            # Check current status to detect late-success (reap recovery)
+            current_raw = await redis.hget(_job_key(job_id), "status")
+            if current_raw == JobStatus.ERROR.value:
+                late_success = True
+                done_fields["late_success"] = "true"
+                done_fields["reaped_recovery"] = "true"
+            await _set_job_status(
+                redis,
+                job_id,
+                JobStatus.DONE,
+                ttl=JOB_TTL,
+                **done_fields,
+            )
+        except ValueError:
+            # Safety net: transition rejected (should not happen now that
+            # ERROR->DONE exists, but guard against future state-machine
+            # changes).  Log the anomaly but still proceed to record the
+            # doc_id and upsert the registry row — losing the document
+            # is worse than an unexpected state-machine edge.
+            logger.warning(
+                "Zone 6 safety net: _set_job_status(DONE) raised ValueError for "
+                "job=%s doc_id=%s; proceeding with registry write.",
+                job_id,
+                doc_id,
+            )
+            late_success = True
+        if late_success:
+            logger.warning(
+                "Late success (reap recovery): job=%s doc_id=%s completed after "
+                "reaper had marked it ERROR.",
+                job_id,
+                doc_id,
+            )
         UPLOADS.labels(status="success").inc()
         await _mirror_bridged_incr("uploads_total:success")
         logger.info(
-            "Worker done: job=%s doc_id=%s (%.1fs)", job_id, doc_id, time.monotonic() - start
+            "Worker done: job=%s doc_id=%s (%.1fs)%s",
+            job_id,
+            doc_id,
+            time.monotonic() - start,
+            " [late_success]" if late_success else "",
         )
         # RFC-006 dual-write: the document save (and the fork's save_doc_meta)
         # ran in the isolated converter child, which has no registry pool. The
@@ -641,7 +753,7 @@ async def reap_stale_jobs(ctx: dict) -> None:
     never wrongly failed.
     """
     redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
-    cutoff = JOB_TIMEOUT + REAP_GRACE
+    default_cutoff = JOB_TIMEOUT + REAP_GRACE
     now = int(time.time())
     reaped = 0
     async for key in redis.scan_iter(match=f"{_job_key('')}*"):
@@ -653,9 +765,18 @@ async def reap_stale_jobs(ctx: dict) -> None:
         except (KeyError, ValueError, TypeError):
             # Cannot determine age -> cannot prove staleness -> leave untouched.
             continue
-        age = now - started
-        if age <= cutoff:
+        # Zone 6 (Part B): prefer per-job effective_timeout_at (absolute
+        # wall-clock deadline) over the fixed default_cutoff.  Jobs created
+        # before the Part B fix lack this field — fall back to
+        # processing_started_at + JOB_TIMEOUT + REAP_GRACE for backward
+        # compatibility.
+        try:
+            deadline = int(data["effective_timeout_at"])
+        except (KeyError, ValueError, TypeError):
+            deadline = started + default_cutoff
+        if now <= deadline:
             continue
+        age = now - started
         # Extract job_id from key (format: pageindex:job:<job_id>)
         reap_job_id = key.rsplit(":", 1)[-1] if isinstance(key, str) else key.decode().rsplit(":", 1)[-1]
         try:
@@ -859,6 +980,18 @@ async def _mirror_registry_write_failure_to_redis() -> None:
 
 
 async def startup(ctx: dict) -> None:
+    # Zone-5: validate cross-module feature wiring contracts at worker startup.
+    # Failures raise AssertionError, refusing to start the worker.
+    from .helpers import validate_feature_wirings
+
+    try:
+        validate_feature_wirings()
+    except AssertionError:
+        logger.error(
+            "Feature wiring validation failed at worker startup — refusing to start"
+        )
+        raise
+
     ctx["redis"] = aioredis.from_url(settings.redis_url, decode_responses=True)
     # RFC-006: open the Postgres registry pool so save_doc_meta's dual-write
     # (storage.py) actually reaches Postgres. Without this, get_pool() stays None

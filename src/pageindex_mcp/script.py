@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Canonical Unicode block ranges
@@ -145,16 +148,46 @@ def arabic_letter_ratio(text: str) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _infer_script(text: str) -> str | None:
+    """Canonical script inference -- returns 'Arab', 'Latn', or None.
+
+    Zone-3: moved here from helpers.py to break the circular dependency.
+    script.py is the dependency-free leaf; helpers.py re-exports this.
+
+    Guards (all intentional -- do NOT remove without corpus validation):
+    * Short-text floor: < 10 stripped chars -> None.
+    * Low-signal floor: < 5 total script chars -> None.
+    * Extended Latin: U+00C0-U+024F counted as Latin (catches accented chars).
+    * Strict majority: > 50% required (ties -> None, not 'Arab').
+    """
+    if len(text.strip()) < 10:
+        return None
+    arab_count = 0
+    latn_count = 0
+    for ch in text:
+        cp = ord(ch)
+        if any(lo <= cp <= hi for lo, hi in ARABIC_RANGES):
+            arab_count += 1
+        elif (0x0041 <= cp <= 0x005A) or (0x0061 <= cp <= 0x007A) or (0x00C0 <= cp <= 0x024F):
+            latn_count += 1
+    total = arab_count + latn_count
+    if total < 5:
+        return None
+    if arab_count / total > 0.5:
+        return "Arab"
+    if latn_count / total > 0.5:
+        return "Latn"
+    return None
+
+
 def infer_script(text: str) -> str | None:
     """Return 'Arab', 'Latn', or None based on majority script.
 
-    Delegates to the canonical implementation in ``helpers._infer_script``
-    which provides min-length (< 10 chars), min-signal (< 5 script chars),
-    extended-Latin (U+00C0-U+024F), and strict-majority (> 50%) guards.
+    Public wrapper around :func:`_infer_script`.
 
-    Zone-7: unified to eliminate dual script-inference paths.
+    Zone-3: canonical implementation now lives in script.py (was
+    helpers._infer_script).  No late import needed.
     """
-    from .helpers import _infer_script  # late: avoids circular at module-load time
     return _infer_script(text)
 
 
@@ -577,3 +610,127 @@ def apply_rtl(text: str, *, reversed_flag: bool) -> str:
         trail = line[len(line.rstrip()):]
         out.append(indent + heading_prefix + best + trail)
     return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Zone-3: filename-based script inference (moved from helpers.py)
+# ---------------------------------------------------------------------------
+
+
+def _script_from_filename(filename: str) -> str | None:
+    """Derive expected Unicode script from filename via OCR-language detection.
+
+    Returns ``"Arab"`` when the filename signals Arabic content,
+    ``"Latn"`` for German/English, else ``None``.
+
+    Zone-3: moved from helpers.py to script.py so ScriptContext.from_document
+    can call it without cross-module import.  Late import of
+    ``converters.detect_ocr_langs`` preserved to avoid circular dependency
+    (converters.py is a high-level module; script.py is a leaf).
+    """
+    from .converters import detect_ocr_langs  # late import: avoids circular dep
+
+    langs = detect_ocr_langs(filename)
+    if "ara" in langs:
+        return "Arab"
+    if any(lg in langs for lg in ("deu", "eng")):
+        return "Latn"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Zone-3: ScriptContext — per-document script detection context
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScriptContext:
+    """Frozen per-document script detection context (Zone-3).
+
+    Computed once per ``index()`` entry from filename + raw text (before any
+    NFKC normalization), then threaded through all garble/gate call sites.
+    Replaces the scattered ``_infer_script()`` calls and the bare
+    ``expected_script: str | None`` parameter.
+
+    ``dominant_script``
+        The document-level script (``"Arab"``, ``"Latn"``, or ``None``).
+        Filename inference takes precedence; text inference is the fallback.
+
+    ``had_presentation_forms``
+        ``True`` when Arabic Presentation-Forms ratio > 50% of Arabic-range
+        chars was detected in the **raw** text (pre-NFKC).  Post-NFKC the
+        ratio is always 0 because presentation-form codepoints are
+        decomposed into logical Arabic.
+
+    ``source``
+        Provenance: ``"filename"``, ``"text_inference"``, ``"combined"``,
+        or ``"none"``.  Diagnostic only.
+    """
+
+    dominant_script: str | None
+    had_presentation_forms: bool
+    source: str
+
+    @classmethod
+    def from_document(cls, filename: str, raw_text: str = "") -> ScriptContext:
+        """Factory: compute ScriptContext from filename + raw text.
+
+        Scans ``raw_text`` for Presentation Forms ratio **before** any NFKC
+        normalization (post-NFKC, presentation-form codepoints are
+        decomposed into logical Arabic and the ratio is always 0).
+        Falls back to filename inference via :func:`_script_from_filename`,
+        then text inference via :func:`_infer_script`.
+        """
+        # 1. Presentation forms scan on raw text (pre-NFKC)
+        had_pf = False
+        if raw_text:
+            pf_count = sum(
+                1
+                for c in raw_text
+                if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
+            )
+            ar_count = sum(
+                1
+                for c in raw_text
+                if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
+            )
+            if ar_count > 0 and (pf_count / ar_count) > 0.50:
+                had_pf = True
+
+        # 2. Filename-based script inference
+        fn_script = _script_from_filename(filename)
+
+        # 3. Text-based script inference
+        text_script = _infer_script(raw_text) if raw_text else None
+
+        # 4. Combine: filename takes precedence, text inference as fallback
+        if fn_script is not None:
+            dominant = fn_script
+            source = "combined" if text_script is not None else "filename"
+        elif text_script is not None:
+            dominant = text_script
+            source = "text_inference"
+        else:
+            dominant = None
+            source = "none"
+
+        return cls(
+            dominant_script=dominant,
+            had_presentation_forms=had_pf,
+            source=source,
+        )
+
+    @classmethod
+    def from_script_str(cls, expected_script: str | None) -> ScriptContext:
+        """Backward-compat factory: wrap a bare ``expected_script`` string.
+
+        Used by :func:`check_garble` (thin wrapper) and test code that
+        passes ``expected_script`` as a plain string.  ``had_presentation_forms``
+        defaults to ``False`` (callers that have this info should use
+        ``from_document`` or construct directly).
+        """
+        return cls(
+            dominant_script=expected_script,
+            had_presentation_forms=False,
+            source="legacy",
+        )

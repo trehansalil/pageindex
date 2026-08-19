@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pageindex_mcp.helpers import VerdictResult
+from pageindex_mcp.helpers import GarbleReport, VerdictResult
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +169,7 @@ async def test_persist_flat_result_sets_last_verdict_fields():
         patch("pageindex_mcp.client._generate_flat_doc_description", return_value="desc"),
         patch("pageindex_mcp.client._flat_block_primary_text", side_effect=lambda b: b.get("text", "")),
         patch("pageindex_mcp.client.check_garble", return_value=False),
+        patch("pageindex_mcp.client.detect_garble", return_value=GarbleReport(is_garbled=False, fired_prongs=frozenset())),
         patch("pageindex_mcp.client.splice_figure_markers", side_effect=lambda md, _: md),
         patch("pageindex_mcp.client._log_pic_splice_trace", MagicMock()),
         patch(

@@ -94,19 +94,23 @@ class TestUnifiedTextLayerHasContent:
     def test_garble_check_always_runs_page_level(self):
         """Garbled page-level text returns False (garble check always on)."""
         from pageindex_mcp.converters import _text_layer_has_content
+        from pageindex_mcp.helpers import GarbleReport
 
+        garble_report = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
         page = self._make_page("A" * 100)
-        with patch("pageindex_mcp.helpers.check_garble", return_value=True):
+        with patch("pageindex_mcp.converters.detect_garble", return_value=garble_report):
             result = _text_layer_has_content(page)
         assert result is False
 
     def test_garble_check_always_runs_region_level(self):
         """Garbled region text returns False (garble check always on)."""
         from pageindex_mcp.converters import _text_layer_has_content
+        from pageindex_mcp.helpers import GarbleReport
 
+        garble_report = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
         region_rect = MagicMock()
         page = self._make_page("page text", region_text="A" * 100)
-        with patch("pageindex_mcp.helpers.check_garble", return_value=True):
+        with patch("pageindex_mcp.converters.detect_garble", return_value=garble_report):
             result = _text_layer_has_content(page, region_rect=region_rect)
         assert result is False
 
@@ -114,9 +118,12 @@ class TestUnifiedTextLayerHasContent:
         """When region_rect is passed, get_text is called with clip=region_rect."""
         from pageindex_mcp.converters import _text_layer_has_content
 
+        from pageindex_mcp.helpers import GarbleReport
+
+        not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
         region_rect = MagicMock()
         page = self._make_page("A" * 100, region_text="A" * 100)
-        with patch("pageindex_mcp.helpers.check_garble", return_value=False):
+        with patch("pageindex_mcp.converters.detect_garble", return_value=not_garbled):
             _text_layer_has_content(page, region_rect=region_rect)
         # Verify clip was passed
         page.get_text.assert_called_with("text", clip=region_rect)
@@ -124,23 +131,28 @@ class TestUnifiedTextLayerHasContent:
     def test_no_region_rect_full_page(self):
         """Without region_rect, get_text is called without clip."""
         from pageindex_mcp.converters import _text_layer_has_content
+        from pageindex_mcp.helpers import GarbleReport
 
+        not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
         page = self._make_page("A" * 100)
-        with patch("pageindex_mcp.helpers.check_garble", return_value=False):
+        with patch("pageindex_mcp.converters.detect_garble", return_value=not_garbled):
             _text_layer_has_content(page)
         page.get_text.assert_called_with("text")
 
     def test_expected_script_forwarded_to_garble_check(self):
-        """expected_script is passed through to check_garble."""
+        """expected_script is passed through to detect_garble via ScriptContext."""
         from pageindex_mcp.converters import _text_layer_has_content
+        from pageindex_mcp.helpers import GarbleReport
 
+        not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
         page = self._make_page("A" * 100)
-        with patch("pageindex_mcp.helpers.check_garble", return_value=False) as mock_garble:
-            with patch("pageindex_mcp.helpers.infer_script", return_value="Latin"):
-                _text_layer_has_content(page, expected_script="Arabic")
-        # check_garble should have been called with expected_script="Arabic"
+        with patch("pageindex_mcp.converters.detect_garble", return_value=not_garbled) as mock_garble:
+            _text_layer_has_content(page, expected_script="Arabic")
+        # detect_garble should have been called with script_context carrying dominant_script="Arabic"
         call_kwargs = mock_garble.call_args
-        assert call_kwargs.kwargs.get("expected_script") == "Arabic"
+        script_ctx = call_kwargs.kwargs.get("script_context")
+        assert script_ctx is not None, "detect_garble must receive script_context"
+        assert script_ctx.dominant_script == "Arabic"
 
 
 class TestRecoverPictureTextUsesUnifiedCheck:

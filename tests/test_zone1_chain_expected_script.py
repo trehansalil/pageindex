@@ -153,44 +153,48 @@ class TestExpectedScriptReachesDownstreamChecks:
 
     def test_text_layer_has_content_uses_provided_script(self):
         """When expected_script='Arab' is passed, _text_layer_has_content
-        should forward it to check_garble as-is, not re-infer."""
+        should forward it to detect_garble via ScriptContext."""
         captured_kwargs: list[dict] = []
 
-        original_check_garble = None
+        from pageindex_mcp.helpers import GarbleReport
 
-        def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
+        not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
+
+        def spy_detect_garble(text, *, title="", script_context=None, config=None, blob_kind=None, original_defect=None):
             captured_kwargs.append({
-                "expected_script": expected_script,
-                "profile": profile,
+                "dominant_script": script_context.dominant_script if script_context else None,
             })
-            return False  # not garbled
+            return not_garbled
 
         mock_page = MagicMock()
         mock_page.get_text.return_value = "x" * 200  # above _PICTURE_OCR_MIN_CHARS
 
-        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble):
+        with patch("pageindex_mcp.converters.detect_garble", spy_detect_garble):
             from pageindex_mcp.converters import _text_layer_has_content
             _text_layer_has_content(mock_page, expected_script="Arab")
 
         assert len(captured_kwargs) == 1, (
-            f"check_garble should be called once, called {len(captured_kwargs)} times"
+            f"detect_garble should be called once, called {len(captured_kwargs)} times"
         )
-        assert captured_kwargs[0]["expected_script"] == "Arab", (
-            f"expected_script should be 'Arab' (passed through), "
-            f"got '{captured_kwargs[0]['expected_script']}'"
+        assert captured_kwargs[0]["dominant_script"] == "Arab", (
+            f"dominant_script should be 'Arab' (passed through via ScriptContext), "
+            f"got '{captured_kwargs[0]['dominant_script']}'"
         )
 
     def test_document_level_text_fallback_uses_provided_script(self):
         """When expected_script='Arab' is passed, _document_level_text_fallback
-        should forward it to check_garble as-is."""
+        should forward it to detect_garble via ScriptContext."""
         captured_kwargs: list[dict] = []
 
-        def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
+        from pageindex_mcp.helpers import GarbleReport
+
+        not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
+
+        def spy_detect_garble(text, *, title="", script_context=None, config=None, blob_kind=None, original_defect=None):
             captured_kwargs.append({
-                "expected_script": expected_script,
-                "profile": profile,
+                "dominant_script": script_context.dominant_script if script_context else None,
             })
-            return False  # not garbled -> will append text
+            return not_garbled
 
         # Mock pypdfium2 page/textpage to return meaningful text
         mock_textpage = MagicMock()
@@ -204,41 +208,44 @@ class TestExpectedScriptReachesDownstreamChecks:
         mock_pdoc.close = MagicMock()
 
         import pypdfium2
-        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble), \
+        with patch("pageindex_mcp.converters.detect_garble", spy_detect_garble), \
              patch.object(pypdfium2, "PdfDocument", return_value=mock_pdoc):
             from pageindex_mcp.converters import _document_level_text_fallback
             _document_level_text_fallback("short", pdf_path="dummy.pdf", expected_script="Arab")
 
-        assert len(captured_kwargs) >= 1, "check_garble should be called at least once"
-        assert captured_kwargs[0]["expected_script"] == "Arab", (
-            f"expected_script should be 'Arab' (passed through), "
-            f"got '{captured_kwargs[0]['expected_script']}'"
+        assert len(captured_kwargs) >= 1, "detect_garble should be called at least once"
+        assert captured_kwargs[0]["dominant_script"] == "Arab", (
+            f"dominant_script should be 'Arab' (passed through via ScriptContext), "
+            f"got '{captured_kwargs[0]['dominant_script']}'"
         )
 
     def test_none_expected_script_falls_back_to_infer(self):
-        """Zone-1 consolidation: when expected_script=None, the caller passes
-        None through to check_garble, which centralizes _infer_script fallback
-        internally.  The caller must NOT do ``or infer_script(text)`` itself."""
+        """Zone-3: when expected_script=None, _text_layer_has_content passes
+        None as dominant_script in ScriptContext; detect_garble centralizes
+        _infer_script fallback internally."""
         captured_kwargs: list[dict] = []
 
-        def spy_check_garble(text, *, expected_script=None, profile=None, original_defect=None):
+        from pageindex_mcp.helpers import GarbleReport
+
+        not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
+
+        def spy_detect_garble(text, *, title="", script_context=None, config=None, blob_kind=None, original_defect=None):
             captured_kwargs.append({
-                "expected_script": expected_script,
-                "profile": profile,
+                "dominant_script": script_context.dominant_script if script_context else None,
             })
-            return False
+            return not_garbled
 
         mock_page = MagicMock()
         mock_page.get_text.return_value = "x" * 200
 
-        with patch("pageindex_mcp.helpers.check_garble", spy_check_garble):
+        with patch("pageindex_mcp.converters.detect_garble", spy_detect_garble):
             from pageindex_mcp.converters import _text_layer_has_content
             _text_layer_has_content(mock_page, expected_script=None)
 
         assert len(captured_kwargs) == 1
-        # Zone-1: caller passes None; check_garble centralizes _infer_script
-        assert captured_kwargs[0]["expected_script"] is None, (
-            "Caller should pass expected_script=None; inference is centralized in check_garble"
+        # Zone-3: caller passes None; detect_garble centralizes _infer_script
+        assert captured_kwargs[0]["dominant_script"] is None, (
+            "Caller should pass dominant_script=None via ScriptContext; inference is centralized in detect_garble"
         )
 
 

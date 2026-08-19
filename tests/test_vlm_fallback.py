@@ -250,14 +250,23 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
             TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),  # initial — routes to flat path
         ],
     )
-    # check_garble(FLAT_MARKDOWN) returns True for the original garbled markdown,
-    # False for the VLM-recovered markdown.
+    # detect_garble returns garbled for the original markdown, not-garbled for VLM output.
+    # check_garble (VLM recovery path) follows the same pattern.
+    from pageindex_mcp.helpers import GarbleReport
     garble_calls = []
 
-    def _fake_flat_garble(text, **kw):
+    def _fake_detect_garble(text, **kw):
         garble_calls.append(text)
+        is_garbled = "VLM recovered" not in text
+        return GarbleReport(
+            is_garbled=is_garbled,
+            fired_prongs=frozenset({"test"}) if is_garbled else frozenset(),
+        )
+
+    def _fake_flat_garble(text, **kw):
         return "VLM recovered" not in text
 
+    monkeypatch.setattr(client_mod, "detect_garble", _fake_detect_garble)
     monkeypatch.setattr(client_mod, "check_garble", _fake_flat_garble)
 
     c = _make_client()
@@ -284,6 +293,10 @@ async def test_VLM_C7_flat_path_garble_still_garbled(monkeypatch, pdf_file):
             TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
         ],
     )
+    # Zone-3: patch both detect_garble (primary gate) and check_garble (VLM recovery)
+    from pageindex_mcp.helpers import GarbleReport
+    _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
+    monkeypatch.setattr(client_mod, "detect_garble", lambda text, **kw: _garbled)
     monkeypatch.setattr(client_mod, "check_garble", lambda text, **kw: True)
 
     c = _make_client()

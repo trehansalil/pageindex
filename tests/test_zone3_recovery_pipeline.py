@@ -93,6 +93,8 @@ class TestRecoveryOutcomeFrozen:
             "result", "ok", "reason", "gate_result", "md_content",
             "pic_results", "used_converter", "total_chars", "route",
             "rtl_decision",
+            # Zone-7 additions: tmp_md_path + bidi_renorm_applied
+            "tmp_md_path", "bidi_renorm_applied",
         }
         actual = {f.name for f in dataclasses.fields(RecoveryOutcome)}
         assert actual == expected

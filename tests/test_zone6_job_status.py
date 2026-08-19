@@ -155,6 +155,42 @@ class TestJobStatusTransitions:
         mock_redis.hset.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_error_to_done_allowed(self, mock_redis):
+        """ERROR -> DONE is allowed (Zone 6 Part C: late-success reap recovery).
+        A legitimately-processing job reaped to ERROR whose child later
+        succeeds may record DONE."""
+        mock_redis.hget.return_value = JobStatus.ERROR.value
+        await _set_job_status(mock_redis, "job-error-done", JobStatus.DONE)
+        mock_redis.hset.assert_called_once()
+        call_args = mock_redis.hset.call_args
+        mapping = call_args[1]["mapping"] if "mapping" in call_args[1] else call_args[0][1]
+        assert mapping["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_done_to_error_forbidden(self, mock_redis):
+        """DONE -> ERROR must remain forbidden. Only ERROR->DONE is widened,
+        not the reverse."""
+        mock_redis.hget.return_value = JobStatus.DONE.value
+        with pytest.raises(ValueError, match="Invalid job status transition"):
+            await _set_job_status(mock_redis, "job-done-error", JobStatus.ERROR)
+
+    @pytest.mark.asyncio
+    async def test_error_to_done_no_valueerror(self, mock_redis):
+        """ERROR -> DONE must succeed without ValueError (the whole point
+        of the Zone 6 Part C transition widening)."""
+        mock_redis.hget.return_value = JobStatus.ERROR.value
+        # This must not raise
+        await _set_job_status(
+            mock_redis, "job-recovery", JobStatus.DONE,
+            doc_id="doc-recovered", late_success="true",
+        )
+        call_args = mock_redis.hset.call_args
+        mapping = call_args[1]["mapping"]
+        assert mapping["status"] == "done"
+        assert mapping["doc_id"] == "doc-recovered"
+        assert mapping["late_success"] == "true"
+
+    @pytest.mark.asyncio
     async def test_initial_write_accepts_pending(self, mock_redis):
         """When no prior status exists (None), PENDING is accepted."""
         mock_redis.hget.return_value = None

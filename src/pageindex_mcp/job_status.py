@@ -37,10 +37,13 @@ _VALID_TRANSITIONS: dict[JobStatus | None, frozenset[JobStatus]] = {
     None: frozenset({JobStatus.PENDING}),
     JobStatus.PENDING: frozenset({JobStatus.PROCESSING}),
     JobStatus.PROCESSING: frozenset({JobStatus.DONE, JobStatus.ERROR}),
-    # Terminal states: no transitions out (except ERROR->ERROR for the reaper
-    # overwriting a stale processing job already flipped to error).
+    # Terminal states: DONE has no outgoing transitions.  ERROR permits
+    # self-overwrite (reaper re-marking a stale job) and the narrow
+    # ERROR->DONE recovery: a legitimately-processing job reaped to ERROR
+    # whose child later succeeds may record its success with a ``late_success``
+    # flag so the outcome is observable (Zone 6, Part C).
     JobStatus.DONE: frozenset(),
-    JobStatus.ERROR: frozenset({JobStatus.ERROR}),
+    JobStatus.ERROR: frozenset({JobStatus.ERROR, JobStatus.DONE}),
 }
 
 

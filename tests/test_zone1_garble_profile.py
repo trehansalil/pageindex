@@ -381,25 +381,32 @@ class TestWiringVerification:
         assert hasattr(c, "BULK_PROFILE")
         assert hasattr(c, "FLAT_MARKDOWN_PROFILE")
 
-    def test_converters_lazy_imports_bulk_profile(self):
-        """converters.py uses lazy imports of BULK_PROFILE in at least
-        _text_layer_has_content and _document_level_text_fallback."""
+    def test_converters_imports_detect_garble_and_config(self):
+        """converters.py imports detect_garble + _garble_config (Zone-3 unified API),
+        replacing the former lazy BULK_PROFILE + check_garble imports."""
         import ast
 
         import pageindex_mcp.converters as conv
 
         source = inspect.getsource(conv)
         tree = ast.parse(source)
-        # Find function-level imports of BULK_PROFILE
-        bulk_imports = []
+        # Find top-level imports of detect_garble and _garble_config
+        detect_imports = []
+        config_imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and "helpers" in node.module:
                 for alias in node.names:
-                    if alias.name == "BULK_PROFILE":
-                        bulk_imports.append(node)
-        assert len(bulk_imports) >= 2, (
-            f"Expected at least 2 lazy imports of BULK_PROFILE in converters.py, "
-            f"found {len(bulk_imports)}"
+                    if alias.name == "detect_garble":
+                        detect_imports.append(node)
+                    if alias.name == "_garble_config":
+                        config_imports.append(node)
+        assert len(detect_imports) >= 1, (
+            f"Expected at least 1 import of detect_garble in converters.py, "
+            f"found {len(detect_imports)}"
+        )
+        assert len(config_imports) >= 1, (
+            f"Expected at least 1 import of _garble_config in converters.py, "
+            f"found {len(config_imports)}"
         )
 
     def test_no_garble_context_in_production_imports(self):

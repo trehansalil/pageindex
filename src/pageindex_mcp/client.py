@@ -53,9 +53,10 @@ from .picture_plane import (
     decide_ocr_mode,
     skip_reason_from_str,
 )
-from .script import RtlDecision, decide_rtl
+from .script import RtlDecision, ScriptContext, decide_rtl
 from .helpers import (
     GATES,
+    GarbleReport,
     OcrRetryReason,
     RecoveryOutcome,
     ExtractionState,
@@ -70,6 +71,7 @@ from .helpers import (
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,
+    _garble_config,
     _script_from_filename,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
@@ -80,6 +82,7 @@ from .helpers import (
     compute_verdict,
     compute_image_enrichment_ratio,
     decide_route,
+    detect_garble,
     prepare_tree,
     route_and_extract_flat,
     validate_tree,
@@ -1197,6 +1200,9 @@ class CustomPageIndexClient(PageIndexClient):
                     md_content, state.rtl_decision = _renormalize_bidi_guarded(
                         md_content, filename,
                     )
+                    # Zone-7: mark bidi renorm as applied so downstream
+                    # _recover_rtl_repair skips per-node double-correction.
+                    state.bidi_renorm_applied = True
                 with tempfile.NamedTemporaryFile(
                     suffix=".md", delete=False, mode="w", encoding="utf-8"
                 ) as md_tmp:
@@ -1394,6 +1400,12 @@ class CustomPageIndexClient(PageIndexClient):
                 md_content=state.md_content,
                 pic_results=state.pic_results,
                 used_converter=state.used_converter,
+                # Zone-7: capture full recovery-relevant state so
+                # keep-best revert restores a consistent snapshot.
+                route=state.route,
+                rtl_decision=state.rtl_decision,
+                tmp_md_path=state.tmp_md_path,
+                bidi_renorm_applied=state.bidi_renorm_applied,
             )
 
         _reason_label = {
@@ -1440,6 +1452,9 @@ class CustomPageIndexClient(PageIndexClient):
                 )
 
             # ---- Unified OCR dispatch ----
+            # Zone-7: OCR re-extraction produces new md_content; reset
+            # bidi_renorm_applied so the flag reflects the new content.
+            state.bidi_renorm_applied = False
             if state.use_remote:
                 state.md_content, state.pic_results = await _remote_pdf_to_markdown(
                     self._staging_key,
@@ -1472,6 +1487,8 @@ class CustomPageIndexClient(PageIndexClient):
                 state.md_content, state.rtl_decision = _renormalize_bidi_guarded(
                     state.md_content, filename,
                 )
+                # Zone-7: mark bidi renorm as applied on new OCR content.
+                state.bidi_renorm_applied = True
             else:
                 state.rtl_decision = None
 
@@ -1547,6 +1564,12 @@ class CustomPageIndexClient(PageIndexClient):
                         retry_wins = True
                 if not retry_wins:
                     pre_retry.apply(state)
+                    # Zone-7: apply() restores state.tmp_md_path to the
+                    # pre-retry path string, but _reconvert_and_revalidate
+                    # may have unlinked the file at that path during the
+                    # OCR retry.  Re-materialise the tempfile from the
+                    # (now-restored) state.md_content so downstream
+                    # consumers find valid content on disk.
                     if state.tmp_md_path and os.path.exists(state.tmp_md_path):
                         os.unlink(state.tmp_md_path)
                     with tempfile.NamedTemporaryFile(
@@ -1578,6 +1601,19 @@ class CustomPageIndexClient(PageIndexClient):
     ) -> None:
         """Recovery 2: RTL bidi repair in-place. Mutates state."""
         if not (not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf"):
+            return
+        # Zone-7: guard against double bidi correction.
+        # _renormalize_bidi_guarded (whole-markdown-level) already ran on
+        # this md_content during _convert_to_tree or _recover_ocr_retry.
+        # Running per-node reconstruct_bidi_order again would over-correct
+        # already-fixed RTL text, collapsing bilingual content structure.
+        if state.bidi_renorm_applied:
+            logger.info(
+                "RTL_REVERSAL on %s but bidi_renorm already applied "
+                "— skipping per-node reconstruct_bidi_order to avoid "
+                "double-correction",
+                filename,
+            )
             return
         try:
 
@@ -1815,18 +1851,28 @@ class CustomPageIndexClient(PageIndexClient):
         flat_md = splice_figure_markers(flat_md, state.pic_results)
 
         state.flat_garble_unrecovered = False
-        if check_garble(
+        # Zone-3: detect_garble with ScriptContext + GarbleConfig (unified API)
+        _flat_garble_ctx = ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=False,
+            source="flat_garble_gate",
+        )
+        from .script import BlobKind as _BlobKind
+        _flat_garble_report: GarbleReport = detect_garble(
             flat_md,
-            expected_script=expected_script,
-            profile=FLAT_MARKDOWN_PROFILE,
+            script_context=_flat_garble_ctx,
+            config=_garble_config,
+            blob_kind=_BlobKind.RAW_MARKDOWN,
             original_defect=state.first_defect,
-        ):
+        )
+        if _flat_garble_report:
             state.flat_garble_unrecovered = True
             state.reason = "garbling"
             logger.warning(
                 "Flat-path garble gate triggered for %s; "
-                "overriding reason to garbling",
+                "overriding reason to garbling (prongs=%s)",
                 filename,
+                _flat_garble_report.fired_prongs,
             )
             if ext == ".pdf" and settings.vlm_fallback:
                 try:
@@ -2150,7 +2196,13 @@ class CustomPageIndexClient(PageIndexClient):
         ext = Path(filename).suffix.lower()
         logger.info("Indexing file: %s (ext=%s)", filename, ext)
 
-        expected_script = _script_from_filename(filename)
+        # Zone-3: compute ScriptContext once per index entry, thread through
+        # all garble/gate call sites.  Filename-based inference runs here;
+        # raw_text is not available yet (PDF text layer comes from the fitz
+        # probe inside _convert_to_tree).  ScriptContext.from_document
+        # handles empty raw_text gracefully (filename-only inference).
+        script_context = ScriptContext.from_document(filename)
+        expected_script = script_context.dominant_script
 
         if ext not in _SUPPORTED:
             raise ValueError(

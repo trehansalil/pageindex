@@ -202,4 +202,26 @@ def create_upload_app() -> FastAPI:
         logger.debug("Status poll: job=%s status=%s", job_id, data.get("status"))
         return {"job_id": job_id, **data}
 
+    @app.delete("/docs/{doc_id}")
+    async def delete_document(
+        doc_id: str,
+        _: None = Depends(require_api_key),
+    ) -> dict:
+        """HR2 right-to-erasure: cascade-delete a document and all derived stores.
+
+        Zone-5: exposes storage.delete_doc so the right-to-erasure cascade
+        is reachable in production (CLAUDE.md Hard Rule 2).
+
+        Purges uploads/, processed/*.json, processed/*.meta.json, Redis cache,
+        reconcile-etag, hash-cache, Postgres registry row, and preloaded/ —
+        in that order.
+
+        Returns ``{"doc_id": ..., "errors": [...]}`` so partial failures are
+        visible to the caller.
+        """
+        from .storage import delete_doc
+
+        result = await delete_doc(doc_id)
+        return {"doc_id": doc_id, **result}
+
     return app

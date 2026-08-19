@@ -23,7 +23,13 @@ from typing import TYPE_CHECKING, TypedDict, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
-from .helpers import classify_verdict, compute_verdict
+from .helpers import (
+    GarbleConfig,
+    _garble_config,
+    classify_verdict,
+    compute_verdict,
+    detect_garble,
+)
 from .picture_plane import (
     OcrMode,
     PictureGateConfig,
@@ -37,7 +43,7 @@ from .picture_plane import (
 from .script import _AR_COMMON_WORDS as _AR_COMMON_WORDS
 from .script import AR_CHAR_RE as _AR_LETTER_RE
 from .script import AR_CHAR_RE as _AR_SCRIPT_RE
-from .script import BlobKind, RtlDecision, _word_has_reversed_morphology, apply_rtl, decide_rtl, normalize_dashes
+from .script import BlobKind, RtlDecision, ScriptContext, _word_has_reversed_morphology, apply_rtl, decide_rtl, normalize_dashes
 from .script import arabic_readability_score as _arabic_readability_score
 from .script import is_arabic_char as _is_arabic_char
 
@@ -1780,9 +1786,13 @@ def _text_layer_has_content(
     )
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
-    from .helpers import BULK_PROFILE, check_garble  # Zone-1: profile-based
-
-    if check_garble(text, expected_script=expected_script, profile=BULK_PROFILE):
+    # Zone-3: use detect_garble with ScriptContext + GarbleConfig (unified API)
+    _ctx = ScriptContext(
+        dominant_script=expected_script,
+        had_presentation_forms=False,
+        source="picture_text_probe",
+    )
+    if detect_garble(text, script_context=_ctx, config=_garble_config):
         return False
     return True
 
@@ -1892,12 +1902,19 @@ def _document_level_text_fallback(md: str, pdf_path: str, expected_script: str |
         return md
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
-    from .helpers import BULK_PROFILE, check_garble  # Zone-1: profile-based
-
-    if check_garble(full_text, expected_script=expected_script, profile=BULK_PROFILE):
+    # Zone-3: detect_garble with ScriptContext + GarbleConfig (unified API)
+    _ctx = ScriptContext(
+        dominant_script=expected_script,
+        had_presentation_forms=False,
+        source="doc_text_fallback",
+    )
+    _garble_report = detect_garble(full_text, script_context=_ctx, config=_garble_config)
+    if _garble_report:
         logger.warning(
-            "document-level text-layer fallback skipped for %s: text layer is garbled",
+            "document-level text-layer fallback skipped for %s: text layer is garbled "
+            "(prongs=%s)",
             pdf_path,
+            _garble_report.fired_prongs,
         )
         return md
     logger.info(

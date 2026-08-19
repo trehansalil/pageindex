@@ -18,7 +18,7 @@ from collections.abc import Callable
 from typing import Iterator
 
 from .cache import get_doc
-from .config import settings
+from .config import pipeline_config, settings
 from .metrics import (
     FENCE_PARITY_WARNING,
     LLM_CALLS,
@@ -41,6 +41,9 @@ from .script import (
     BlobKind,
     PRESENTATION_RANGES,
     RtlDecision,
+    ScriptContext,
+    _infer_script as _infer_script,
+    _script_from_filename as _script_from_filename,
     _word_has_reversed_morphology,
     decide_rtl,
     normalize_dashes,
@@ -171,6 +174,10 @@ class RecoveryOutcome:
     total_chars: int | _Unset = _UNSET  # type: ignore[assignment]
     route: "Route | _Unset" = _UNSET  # type: ignore[assignment]
     rtl_decision: "RtlDecision | None | _Unset" = _UNSET  # type: ignore[assignment]
+    # Zone-7: snapshot the pre-retry tempfile path and bidi renorm flag
+    # so keep-best revert restores fully consistent state.
+    tmp_md_path: str | None | _Unset = _UNSET  # type: ignore[assignment]
+    bidi_renorm_applied: bool | _Unset = _UNSET  # type: ignore[assignment]
 
     def apply(self, state: "ExtractionState") -> None:
         """Write provided (non-``_UNSET``) fields back to *state*."""
@@ -194,6 +201,14 @@ class RecoveryOutcome:
             state.route = self.route
         if not isinstance(self.rtl_decision, _Unset):
             state.rtl_decision = self.rtl_decision
+        # Zone-7: restore tmp_md_path string and bidi renorm flag.
+        # NOTE: apply() restores the *path string* but not the guarantee
+        # that the file at that path still holds valid content -- the
+        # caller must re-materialise the tempfile if needed.
+        if not isinstance(self.tmp_md_path, _Unset):
+            state.tmp_md_path = self.tmp_md_path
+        if not isinstance(self.bidi_renorm_applied, _Unset):
+            state.bidi_renorm_applied = self.bidi_renorm_applied
 
 
 # Backward-compat alias so test files that import ExtractionSnapshot
@@ -230,6 +245,10 @@ class ExtractionState:
     use_remote: bool = False
     tmp_lo_dir: str | None = None
     flat_garble_unrecovered: bool = False
+    # Zone-7: tracks whether _renormalize_bidi_guarded has already run on
+    # the current md_content.  Guards _recover_rtl_repair against
+    # double-applying reconstruct_bidi_order on already-corrected text.
+    bidi_renorm_applied: bool = False
     rtl_decision: "RtlDecision | None" = None
     # Zone-6 Step C: per-page landscape orientation data from
     # _tag_landscape_pages_for_fallback.  Threaded into prepare_tree so
@@ -398,43 +417,47 @@ class VerdictThresholds:
 
     @classmethod
     def from_env(cls) -> "VerdictThresholds":
+        """Legacy constructor -- delegates to from_config(pipeline_config)."""
+        return cls.from_config(pipeline_config)
+
+    @classmethod
+    def from_config(cls, cfg: "PipelineConfig") -> "VerdictThresholds":
+        """Build a typed threshold subset from a frozen PipelineConfig."""
         from .config import CATEGORY_BC_PROMOTION_THRESHOLD
 
         return cls(
             hard_fail_max_leaf_ratio=0.75,
-            pass_max_leaf_ratio=float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")),
-            garble_threshold=float(os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")),
+            pass_max_leaf_ratio=cfg.pass_max_leaf_ratio,
+            garble_threshold=cfg.garble_window_ratio_threshold,
             cat_bc_promotion_threshold=CATEGORY_BC_PROMOTION_THRESHOLD,
-            min_image_promoted_chars=int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")),
-            min_flat_promotion_chars=int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")),
-            small_doc_enabled=os.environ.get("SMALL_DOC_PROMOTION_ENABLED", "true").lower() == "true",
+            min_image_promoted_chars=cfg.min_image_promoted_chars,
+            min_flat_promotion_chars=cfg.min_flat_promotion_chars,
+            small_doc_enabled=cfg.small_doc_promotion_enabled,
             small_doc_leaf_ratio_bound_low=0.20,
             small_doc_leaf_ratio_bound_high=0.40,
         )
 
 
-# Module-level cache for VerdictThresholds — avoids re-reading env vars on
-# every classify_verdict call.  Use reset_verdict_thresholds() in tests that
-# manipulate threshold env vars.
-_verdict_thresholds_cache: VerdictThresholds | None = None
-
-
+# Zone-5: _verdict_thresholds_cache, _get_verdict_thresholds(), and
+# reset_verdict_thresholds() DELETED.  All threshold reads now go through
+# pipeline_config (frozen at process start).  For tests, use
+# reset_pipeline_config() from .config which rebuilds the singleton.
+#
+# Backward-compat aliases kept as thin wrappers so existing test imports
+# that reference these names do not break at collection time.
 def _get_verdict_thresholds() -> VerdictThresholds:
-    """Return the cached VerdictThresholds, populating on first call."""
-    global _verdict_thresholds_cache
-    if _verdict_thresholds_cache is None:
-        _verdict_thresholds_cache = VerdictThresholds.from_env()
-    return _verdict_thresholds_cache
+    """Return VerdictThresholds derived from the current pipeline_config."""
+    return VerdictThresholds.from_config(pipeline_config)
 
 
 def reset_verdict_thresholds() -> None:
-    """Clear the cached VerdictThresholds.
+    """Legacy shim -- delegates to reset_pipeline_config().
 
-    Call this in test fixtures that set env vars for threshold tuning so the
-    next ``_get_verdict_thresholds()`` call picks up the new values.
+    Kept so tests importing this name do not break at collection time.
+    A separate test-update phase will migrate callers.
     """
-    global _verdict_thresholds_cache
-    _verdict_thresholds_cache = None
+    from .config import reset_pipeline_config
+    reset_pipeline_config()
 
 
 @dataclass(frozen=True)
@@ -460,23 +483,35 @@ class TreeSignals:
     def from_tree(
         cls,
         structure: list,
-        expected_script: str | None = None,
+        expected_script: str | None | ScriptContext = None,
         garble_threshold: float = 0.05,
     ) -> "TreeSignals":
         node_count = _tree_node_count(structure)
         depth = _tree_depth(structure)
         _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
         flat_text = _flatten_tree_text(structure)
+
+        # Zone-3: accept either ScriptContext or bare str|None.
+        if isinstance(expected_script, ScriptContext):
+            _eff_script: str | None = expected_script.dominant_script
+            _had_pf = expected_script.had_presentation_forms
+        else:
+            # Backward-compat: when expected_script is None, infer from flat_text.
+            _eff_script = (
+                expected_script if expected_script is not None else _infer_script(flat_text)
+            )
+            _had_pf = False
+
         # Zone-1: explicit script inference replaces garble_prongs'
         # internal self-inference (purified).
-        eff_script = expected_script or _infer_script(flat_text)
         garbled = bool(structure) and check_garble(
             flat_text,
-            expected_script=eff_script,
+            expected_script=_eff_script,
             profile=BULK_PROFILE,
+            had_presentation_forms=_had_pf,
         )
         if garbled:
-            gr = _garble_ratio(flat_text, expected_script=eff_script)
+            gr = _garble_ratio(flat_text, expected_script=_eff_script)
             effectively_garbled = gr >= garble_threshold
         else:
             gr = 0.0
@@ -1345,6 +1380,7 @@ def garble_prongs(
     expected_script: str | None = None,
     original_text: str | None = None,
     had_presentation_forms: bool = False,
+    config: GarbleConfig | None = None,
 ) -> frozenset[str]:
     """Return the set of garble-detection prongs that fired on *norm_blob*.
 
@@ -1363,7 +1399,11 @@ def garble_prongs(
     Arabic Presentation-Forms ratio > 50% of Arabic-range chars was
     detected (typically from RtlDecision or computed by check_garble
     before NFKC normalization destroys the codepoints).
+
+    ``config``: Zone-3 consolidated garble config.  When ``None``
+    (backward compat), falls back to the module-level ``_garble_config``.
     """
+    cfg = config if config is not None else _garble_config
     prongs: set[str] = set()
 
     if not norm_blob.strip():
@@ -1399,10 +1439,8 @@ def garble_prongs(
         if (single_char_fragments / len(arabic_tokens)) > 0.40:
             prongs.add("single_letter_fragments")
 
-    # Digit ratio > 60% on blobs > GARBLE_DIGIT_FLOOR chars
-    from .script import GARBLE_DIGIT_FLOOR
-
-    if len(norm) > GARBLE_DIGIT_FLOOR:
+    # Digit ratio > 60% on blobs > garble_digit_floor chars
+    if len(norm) > cfg.garble_digit_floor:
         digits = sum(1 for c in norm if c.isdigit())
         if (digits / len(norm)) > 0.60:
             prongs.add("digit_ratio")
@@ -1418,14 +1456,15 @@ def garble_prongs(
     # Latin-gibberish in non-Latin script context (D2 / RFC-019)
     # Zone-1 purification: callers must now pass explicitly-inferred script;
     # garble_prongs no longer self-infers when expected_script is None.
+    # Zone-3: env vars replaced by GarbleConfig fields.
     _effective_script = expected_script
     if (
         _effective_script is not None
         and _effective_script != "Latn"
-        and os.environ.get("GARBLE_LATIN_GIBBERISH_ENABLED", "true").lower() != "false"
+        and cfg.garble_latin_gibberish_enabled
     ):
-        latin_ratio_threshold = float(os.environ.get("GARBLE_LATIN_RATIO", "0.4"))
-        nonsense_threshold = float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7"))
+        latin_ratio_threshold = cfg.garble_latin_ratio
+        nonsense_threshold = cfg.garble_nonsense_ratio
         ratio, latin_tokens = _latin_token_ratio(norm)
         if ratio > latin_ratio_threshold and len(latin_tokens) >= 5:
             nonsense = sum(1 for t in latin_tokens if _is_morphologically_nonsense(t))
@@ -1465,11 +1504,203 @@ class GarbleProfile:
 BULK_PROFILE = GarbleProfile()
 FLAT_MARKDOWN_PROFILE = GarbleProfile(normalize_markdown=True, short_circuit_prior_garble=True)
 
-# Env-var gates — kept as module-level names so tests can monkeypatch them
-# (test_rfc025_d2.py, test_zone1_garble_consolidation.py).  Read at CALL TIME
-# inside check_garble, not frozen into the profile at import time.
-_GARBLE_SHORT_TEXT_DEFAULT = os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower() == "true"
-_GARBLE_FLAT_MARKDOWN_NORMALIZE = os.getenv("GARBLE_FLAT_MARKDOWN_NORMALIZE", "true").lower() == "true"
+# Zone-5: garble env-var gates now sourced from pipeline_config (frozen at
+# process start).  Module-level names preserved so tests can still monkeypatch
+# them (test_rfc025_d2.py, test_zone1_garble_consolidation.py).
+_GARBLE_SHORT_TEXT_DEFAULT = pipeline_config.garble_short_text_default
+_GARBLE_FLAT_MARKDOWN_NORMALIZE = pipeline_config.garble_flat_markdown_normalize
+
+
+# ---------------------------------------------------------------------------
+# Zone-3: GarbleConfig — frozen garble env-var consolidation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GarbleConfig:
+    """Zone-3: consolidated garble detection configuration.
+
+    Sourced from :data:`pipeline_config` (not ``os.environ``).  Replaces
+    7 scattered ``os.environ.get`` calls with a single frozen snapshot.
+    Defaults match the prior scattered defaults exactly.
+    """
+
+    garble_latin_gibberish_enabled: bool = True
+    garble_latin_ratio: float = 0.4
+    garble_nonsense_ratio: float = 0.7
+    garble_short_text_default: bool = True
+    garble_flat_markdown_normalize: bool = True
+    garble_node_ratio_threshold: float = 0.10
+    garble_digit_floor: int = 500
+
+    @classmethod
+    def from_config(cls, cfg: "PipelineConfig") -> "GarbleConfig":
+        """Build GarbleConfig from a frozen PipelineConfig."""
+        return cls(
+            garble_latin_gibberish_enabled=cfg.garble_latin_gibberish_enabled,
+            garble_latin_ratio=cfg.garble_latin_ratio,
+            garble_nonsense_ratio=cfg.garble_nonsense_ratio,
+            garble_short_text_default=cfg.garble_short_text_default,
+            garble_flat_markdown_normalize=cfg.garble_flat_markdown_normalize,
+            garble_node_ratio_threshold=cfg.garble_node_ratio_threshold,
+            garble_digit_floor=500,  # Hardcoded constant (not env-sourced)
+        )
+
+
+# Module-level singleton — all garble detection reads from this instance.
+_garble_config: GarbleConfig = GarbleConfig.from_config(pipeline_config)
+
+
+# ---------------------------------------------------------------------------
+# Zone-3: GarbleReport — structured garble detection result
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GarbleReport:
+    """Zone-3: structured result from :func:`detect_garble`.
+
+    Carries the boolean verdict alongside the prongs that fired and the
+    garble ratio, so callers can inspect *why* garbling was detected
+    without re-running the heuristics.  ``__bool__`` returns
+    ``is_garbled`` so the report is drop-in compatible with the prior
+    bare-``bool`` return value of ``detect_garble``.
+
+    ``fired_prongs``
+        The set of garble-detection prongs that triggered (empty when
+        ``is_garbled`` is ``False``).  E.g. ``{"pua_chars", "digit_ratio"}``.
+
+    ``garble_ratio``
+        Windowed garble ratio (fraction of 2000-char windows that
+        individually trigger garble detection).  ``0.0`` when not garbled.
+    """
+
+    is_garbled: bool
+    fired_prongs: frozenset[str] = frozenset()
+    garble_ratio: float = 0.0
+
+    def __bool__(self) -> bool:
+        """Drop-in backward-compat: ``if detect_garble(...)`` works."""
+        return self.is_garbled
+
+
+# ---------------------------------------------------------------------------
+# Zone-3: detect_garble — unified entry point
+# ---------------------------------------------------------------------------
+
+
+def detect_garble(
+    text: str,
+    *,
+    title: str = "",
+    script_context: ScriptContext,
+    config: GarbleConfig,
+    blob_kind: BlobKind = BlobKind.TREE_TEXT,
+    original_defect: "TreeDefect | None" = None,
+) -> GarbleReport:
+    """Unified garble evaluation entry point (Zone-3).
+
+    Single-surface API: all garble heuristics (bulk prongs + sparse mojibake
+    + presentation-forms) run inside ``garble_prongs``.
+
+    Returns a :class:`GarbleReport` carrying the boolean verdict, the set
+    of prongs that fired, and the garble ratio.  The report's ``__bool__``
+    method returns ``is_garbled`` so existing ``if detect_garble(...)``
+    call sites keep working without changes.
+
+    ``script_context`` provides the document-level script and
+    presentation-forms flag (computed once per index entry, pre-NFKC).
+    ``config`` provides the garble detection thresholds (sourced from
+    ``pipeline_config``, not ``os.environ``).
+    ``blob_kind`` selects normalization strategy (replaces the
+    ``GarbleProfile.normalize_markdown`` boolean).
+    ``original_defect`` enables the short-circuit for flat-markdown
+    short-text garble-by-default (RFC-025 D2).
+    """
+    blob = text or ""
+
+    # Short-circuit: short text + pre-existing garble defect
+    # (replaces GarbleProfile.short_circuit_prior_garble + GARBLE_SHORT_TEXT_DEFAULT)
+    if (
+        blob_kind == BlobKind.RAW_MARKDOWN
+        and config.garble_short_text_default
+        and len(blob) < 200
+        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+    ):
+        return GarbleReport(
+            is_garbled=True,
+            fired_prongs=frozenset({"short_text_prior_garble"}),
+            garble_ratio=1.0,
+        )
+
+    # Script from ScriptContext; fallback to text inference when None.
+    _effective_script = script_context.dominant_script
+    if _effective_script is None:
+        _effective_script = _infer_script(blob)
+
+    # Presentation-forms: use ScriptContext's pre-NFKC flag; if not set,
+    # compute from the original blob (pre-normalization) as a fallback.
+    _had_pf = script_context.had_presentation_forms
+    if not _had_pf:
+        _pf = sum(
+            1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
+        )
+        _arc = sum(
+            1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
+        )
+        if _arc > 0 and (_pf / _arc) > 0.50:
+            _had_pf = True
+
+    # Normalization strategy from blob_kind + config
+    _use_raw_md = (
+        blob_kind == BlobKind.RAW_MARKDOWN and config.garble_flat_markdown_normalize
+    )
+    _norm_kind = BlobKind.RAW_MARKDOWN if _use_raw_md else BlobKind.TREE_TEXT
+    norm = normalize_for_garble(blob, _norm_kind)
+    if not norm.strip():
+        norm = blob  # fallback: normalization collapsed everything
+
+    # Single surface: garble_prongs includes sparse_mojibake prong
+    prongs = garble_prongs(
+        norm,
+        expected_script=_effective_script,
+        original_text=blob,
+        had_presentation_forms=_had_pf,
+        config=config,
+    )
+    return GarbleReport(
+        is_garbled=bool(prongs),
+        fired_prongs=prongs,
+        garble_ratio=1.0 if prongs else 0.0,
+    )
+
+
+def _rebuild_garble_config_compat() -> GarbleConfig:
+    """Rebuild GarbleConfig for backward-compat at call time.
+
+    Reads from **module-level names** where they exist (these are what
+    tests monkeypatch via ``patch("pageindex_mcp.helpers._GARBLE_SHORT_TEXT_DEFAULT", ...)``)
+    and from **os.environ** for the 3 env vars that ``garble_prongs``
+    used to read directly (these are what tests ``patch.dict(os.environ, ...)``).
+
+    New code should use ``detect_garble`` with an explicit ``config``
+    parameter (typically ``_garble_config``) instead of relying on this
+    per-call rebuild.
+    """
+    return GarbleConfig(
+        # These 3 were read from os.environ directly by garble_prongs:
+        garble_latin_gibberish_enabled=(
+            os.environ.get("GARBLE_LATIN_GIBBERISH_ENABLED", "true").lower()
+            not in ("false", "0", "no")
+        ),
+        garble_latin_ratio=float(os.environ.get("GARBLE_LATIN_RATIO", "0.4")),
+        garble_nonsense_ratio=float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")),
+        # These are sourced from module-level names (monkeypatchable):
+        garble_short_text_default=_GARBLE_SHORT_TEXT_DEFAULT,
+        garble_flat_markdown_normalize=_GARBLE_FLAT_MARKDOWN_NORMALIZE,
+        garble_node_ratio_threshold=_GARBLE_NODE_RATIO_THRESHOLD,
+        garble_digit_floor=500,
+    )
 
 
 def check_garble(
@@ -1480,71 +1711,43 @@ def check_garble(
     original_defect: "TreeDefect | None" = None,
     had_presentation_forms: bool = False,
 ) -> bool:
-    """Consolidated garble evaluation entry point (Zone-1).
+    """Backward-compat wrapper around :func:`detect_garble` (Zone-3).
 
-    Single-surface API: all garble heuristics (bulk prongs + sparse mojibake
-    + presentation-forms) run inside ``garble_prongs``.
+    Translates the legacy ``expected_script`` + ``GarbleProfile`` interface
+    into a :class:`ScriptContext` + :class:`GarbleConfig` + ``BlobKind``
+    call to :func:`detect_garble`, which runs garble_prongs internally.
 
-    ``expected_script`` is required keyword-only so callers can never silently
-    omit it (the latin_gibberish prong depends on it).  When the caller cannot
-    determine the script from metadata, ``check_garble`` applies a centralized
-    ``_infer_script`` fallback — the ONLY surviving self-inference site in the
-    garble pipeline.
+    Rebuilds ``GarbleConfig`` from current ``os.environ`` at call time so
+    tests that ``patch.dict(os.environ, ...)`` keep working.  New code
+    should use ``detect_garble`` with an explicit frozen ``config``.
 
-    ``profile`` selects context-specific behavior via two boolean fields:
-    * short-circuit for FLAT_MARKDOWN short-text garble-by-default (RFC-025 D2)
-    * RAW_MARKDOWN normalization for flat-routed documents
-
-    ``had_presentation_forms``: pre-computed boolean from RtlDecision or
-    caller; when False (default), check_garble computes the presentation-forms
-    ratio from the ORIGINAL blob before normalization destroys the codepoints.
+    Kept callable with the current signature for one release cycle so
+    existing call sites and tests do not need to change atomically.
     """
-    blob = text or ""
-
-    # Short-circuit: FLAT_MARKDOWN + short text + pre-existing garble defect
-    if (
-        profile.short_circuit_prior_garble
-        and _GARBLE_SHORT_TEXT_DEFAULT
-        and len(blob) < 200
-        and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-    ):
-        return True
-
-    # Centralized script-inference fallback — the ONLY place self-inference
-    # survives.  Downstream call sites pass bare expected_script (metadata-
-    # derived); when that is None (e.g. hash-named uploads), we infer here
-    # so the latin_gibberish prong is not silently disabled.
-    _effective_script = expected_script if expected_script is not None else _infer_script(blob)
-
-    # Compute had_presentation_forms from the ORIGINAL blob (pre-normalization)
-    # when the caller did not supply it.  NFKC decomposes presentation-form
-    # codepoints into logical Arabic, making the scan worthless post-normalize.
-    if not had_presentation_forms:
-        _pf = sum(
-            1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
-        )
-        _arc = sum(
-            1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
-        )
-        if _arc > 0 and (_pf / _arc) > 0.50:
-            had_presentation_forms = True
-
-    # Normalization strategy from profile
-    blob_kind = (
+    # Translate GarbleProfile -> BlobKind
+    _blob_kind = (
         BlobKind.RAW_MARKDOWN
-        if profile.normalize_markdown and _GARBLE_FLAT_MARKDOWN_NORMALIZE
+        if profile.normalize_markdown
         else BlobKind.TREE_TEXT
     )
-    norm = normalize_for_garble(blob, blob_kind)
-    if not norm.strip():
-        norm = blob  # fallback: normalization collapsed everything
 
-    # Single surface: garble_prongs now includes sparse_mojibake prong
-    return bool(garble_prongs(
-        norm,
-        expected_script=_effective_script,
-        original_text=blob,
+    # Wrap bare expected_script into ScriptContext
+    _ctx = ScriptContext(
+        dominant_script=expected_script,
         had_presentation_forms=had_presentation_forms,
+        source="legacy",
+    )
+
+    # Rebuild config from current os.environ for backward compat with
+    # tests that patch env vars without calling reset_pipeline_config().
+    _compat_cfg = _rebuild_garble_config_compat()
+
+    return bool(detect_garble(
+        text,
+        script_context=_ctx,
+        config=_compat_cfg,
+        blob_kind=_blob_kind,
+        original_defect=original_defect,
     ))
 
 
@@ -1581,69 +1784,28 @@ _MIXED_SCRIPT_RE = re.compile(
 # RTL_REVERSAL gate.
 
 
-_GARBLE_NODE_RATIO_THRESHOLD_RAW = float(os.getenv("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
-_GARBLE_NODE_RATIO_THRESHOLD = (
-    _GARBLE_NODE_RATIO_THRESHOLD_RAW if 0 <= _GARBLE_NODE_RATIO_THRESHOLD_RAW <= 1 else 0.10
-)
-# RFC-029 D10: zero-body contamination gate — fraction of non-root nodes whose
-# stripped body text is empty.  Threshold is env-overridable for calibration.
-_EMPTY_NODE_FRACTION_THRESHOLD_RAW = 0.30
-_EMPTY_NODE_FRACTION_THRESHOLD = float(
-    os.environ.get("EMPTY_NODE_FRACTION_THRESHOLD", str(_EMPTY_NODE_FRACTION_THRESHOLD_RAW))
-)
-# RFC-029 D1 (Task 3.1): flat-prefer multiplier — when flat char count exceeds
-# tree char count by this factor, prefer the flat result over the tree result.
-_RFC029_FLAT_PREFER_MULTIPLIER = float(os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
-# RFC-029 D1 (Task 3.1): minimum chars-per-node floor; trees below this floor
-# (with enough nodes to make the metric meaningful) fail with low_content_density.
-_RFC029_MIN_CHARS_PER_NODE = float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150"))
-# Zone-6 Step B: script/depth-aware chars-per-node floor.  Deep trees
-# (depth >= 4) and Arabic-script documents use a lower floor to avoid
-# false-rejecting well-structured legal hierarchies (RFC-030 D3 regression).
-_RFC029_MIN_CHARS_PER_NODE_DEEP = float(
-    os.environ.get("RFC029_MIN_CHARS_PER_NODE_DEEP", "50")
-)
+# Zone-5: all pipeline-behavior constants now sourced from pipeline_config.
+# Module-level names preserved for backward-compat (gate functions, tests).
+_GARBLE_NODE_RATIO_THRESHOLD_RAW = pipeline_config.garble_node_ratio_threshold
+_GARBLE_NODE_RATIO_THRESHOLD = pipeline_config.garble_node_ratio_threshold
+# RFC-029 D10: zero-body contamination gate.
+_EMPTY_NODE_FRACTION_THRESHOLD = pipeline_config.empty_node_fraction_threshold
+# RFC-029 D1 (Task 3.1): flat-prefer multiplier.
+_RFC029_FLAT_PREFER_MULTIPLIER = pipeline_config.rfc029_flat_prefer_multiplier
+# RFC-029 D1 (Task 3.1): minimum chars-per-node floor.
+_RFC029_MIN_CHARS_PER_NODE = pipeline_config.rfc029_min_chars_per_node
+# Zone-6 Step B: script/depth-aware chars-per-node floor.
+_RFC029_MIN_CHARS_PER_NODE_DEEP = pipeline_config.rfc029_min_chars_per_node_deep
 # Depth threshold above which the deep-tree floor applies.
 _RFC029_DEEP_TREE_DEPTH_THRESHOLD = 4
-# RFC-029 D2 (Task 3.3): minimum chars-per-page floor for scanned density check;
-# trees below this floor (when page_count is known) fail with suspect_density.
-_RFC029_MIN_SCANNED_DENSITY_FLOOR = float(
-    os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR", "1500")
-)
+# RFC-029 D2 (Task 3.3): minimum chars-per-page floor for scanned density check.
+_RFC029_MIN_SCANNED_DENSITY_FLOOR = pipeline_config.rfc029_min_scanned_density_floor
 
 
-def _infer_script(text: str) -> str | None:
-    """Canonical script inference — returns 'Arab', 'Latn', or None.
-
-    Zone-7: this is the SINGLE canonical implementation.  ``script.infer_script``
-    delegates here; callers that need both ``check_garble`` and script inference
-    from a single module can import ``infer_script`` (the public re-export below).
-
-    Guards (all intentional — do NOT remove without corpus validation):
-    * Short-text floor: < 10 stripped chars -> None.
-    * Low-signal floor: < 5 total script chars -> None.
-    * Extended Latin: U+00C0-U+024F counted as Latin (catches accented chars).
-    * Strict majority: > 50% required (ties -> None, not 'Arab').
-    """
-    if len(text.strip()) < 10:
-        return None
-    arab_count = 0
-    latn_count = 0
-    for ch in text:
-        cp = ord(ch)
-        if any(lo <= cp <= hi for lo, hi in ARABIC_RANGES):
-            arab_count += 1
-        elif (0x0041 <= cp <= 0x005A) or (0x0061 <= cp <= 0x007A) or (0x00C0 <= cp <= 0x024F):
-            latn_count += 1
-    total = arab_count + latn_count
-    if total < 5:
-        return None
-    if arab_count / total > 0.5:
-        return "Arab"
-    if latn_count / total > 0.5:
-        return "Latn"
-    return None
-
+# Zone-3: _infer_script and _script_from_filename now live in script.py
+# (dependency-free leaf).  Re-exported here via the import block above
+# (``from .script import _infer_script as _infer_script, ...``) so
+# existing callers (converters.py, tests) keep working without changes.
 
 # Public re-export: callers that need both check_garble and script inference
 # from a single module (converters.py) import this instead of reaching into
@@ -1651,51 +1813,66 @@ def _infer_script(text: str) -> str | None:
 infer_script = _infer_script
 
 
-def _script_from_filename(filename: str) -> str | None:
-    """Derive expected Unicode script from filename via OCR-language detection.
-
-    Returns ``"Arab"`` when the filename signals Arabic content,
-    ``"Latn"`` for German/English, else ``None``.
-    """
-    from .converters import detect_ocr_langs  # late import avoids adding a top-level dep
-
-    langs = detect_ocr_langs(filename)
-    if "ara" in langs:
-        return "Arab"
-    if any(lg in langs for lg in ("deu", "eng")):
-        return "Latn"
-    return None
-
-
 def _garble_check_nodes(
-    nodes: list[dict], page_script: str | None = None, expected_script: str | None = None
+    nodes: list[dict],
+    page_script: str | None = None,
+    expected_script: str | None = None,
+    *,
+    script_context: ScriptContext | None = None,
+    config: GarbleConfig | None = None,
 ) -> int:
-    """Recursively count nodes whose text or title is individually garbled."""
+    """Recursively count nodes whose text or title is individually garbled.
+
+    Zone-3: accepts ``script_context`` + ``config`` for consolidated
+    garble detection.  When ``script_context`` is provided, the
+    document-level script comes from it; per-node override (QF3/RFC-021)
+    is still computed for nodes >= 50 chars whose text-inferred script
+    disagrees with the document-level script.
+
+    Falls back to bare ``expected_script``/``page_script`` when
+    ``script_context`` is not provided (backward compat).
+    """
+    _cfg = config if config is not None else _garble_config
+    _doc_script = (
+        script_context.dominant_script
+        if script_context is not None
+        else expected_script
+    )
+
     garbled = 0
     for node in nodes:
         node_garbled = False
         text = node.get("text") or ""
         if text.strip():
-            if expected_script is not None:
+            if _doc_script is not None:
                 # QF3 (RFC-021): when text-inferred script disagrees with
                 # filename-derived expected_script, use the INFERRED script
                 # for this node.  Previously expected_script always won,
                 # causing English-only nodes in bilingual docs to be checked
                 # as Arabic, which false-flagged legitimate English text.
                 inferred = _infer_script(text) if len(text) >= 50 else None
-                if inferred is not None and inferred != expected_script:
+                if inferred is not None and inferred != _doc_script:
                     logger.warning(
                         "Script mismatch: filename-derived=%s, text-inferred=%s "
                         "(using text-inferred for this node)",
-                        expected_script,
+                        _doc_script,
                         inferred,
                     )
                     node_script = inferred
                 else:
-                    node_script = expected_script
+                    node_script = _doc_script
             else:
                 node_script = _infer_script(text) if len(text) >= 50 else page_script
-            if check_garble(text, expected_script=node_script, profile=BULK_PROFILE):
+            _node_ctx = ScriptContext(
+                dominant_script=node_script,
+                had_presentation_forms=(
+                    script_context.had_presentation_forms
+                    if script_context is not None
+                    else False
+                ),
+                source="per_node",
+            )
+            if detect_garble(text, script_context=_node_ctx, config=_cfg):
                 node_garbled = True
         # RFC-030 D4: titles carry user-visible content too (23/24 reversed
         # RTL titles in siyasat-hawkama were invisible to this gate). Titles
@@ -1706,14 +1883,30 @@ def _garble_check_nodes(
         title = node.get("title") or ""
         if title.strip() and (
             any(_word_has_reversed_morphology(w) for w in title.split())
-            or check_garble(title, expected_script=expected_script or page_script, profile=BULK_PROFILE)
+            or detect_garble(
+                title,
+                script_context=ScriptContext(
+                    dominant_script=_doc_script or page_script,
+                    had_presentation_forms=(
+                        script_context.had_presentation_forms
+                        if script_context is not None
+                        else False
+                    ),
+                    source="per_node_title",
+                ),
+                config=_cfg,
+            )
         ):
             node_garbled = True
         if node_garbled:
             garbled += 1
         children = node.get("nodes") or []
         garbled += _garble_check_nodes(
-            children, page_script=page_script, expected_script=expected_script
+            children,
+            page_script=page_script,
+            expected_script=expected_script,
+            script_context=script_context,
+            config=config,
         )
     return garbled
 
@@ -1772,15 +1965,36 @@ def _gate_node_garbling(
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
-    """Gate 4: per-node garble ratio (RFC-018 D3b)."""
+    """Gate 4: per-node garble ratio (RFC-018 D3b).
+
+    Zone-3: uses ScriptContext + GarbleConfig instead of re-inferring
+    script from sig.flat_text.  The document-level script is resolved
+    from expected_script (filename-derived) or inferred from flat_text
+    as a fallback, then wrapped into a ScriptContext for threaded
+    garble detection.
+    """
     if sig.node_count <= 0:
         return (False, "")
-    doc_script = _infer_script(sig.flat_text)
+    # Zone-3: build ScriptContext from expected_script, falling back to
+    # text inference.  Eliminates the redundant _infer_script(sig.flat_text)
+    # call that ran independently from _garble_check_nodes' own inference.
+    doc_script = expected_script if expected_script is not None else _infer_script(sig.flat_text)
+    _ctx = ScriptContext(
+        dominant_script=doc_script,
+        had_presentation_forms=False,
+        source="gate_node_garbling",
+    )
     ratio = (
-        _garble_check_nodes(structure, page_script=doc_script, expected_script=expected_script)
+        _garble_check_nodes(
+            structure,
+            page_script=doc_script,
+            expected_script=expected_script,
+            script_context=_ctx,
+            config=_garble_config,
+        )
         / sig.node_count
     )
-    fires = ratio > _GARBLE_NODE_RATIO_THRESHOLD
+    fires = ratio > _garble_config.garble_node_ratio_threshold
     return (fires, "")
 
 
@@ -2086,6 +2300,26 @@ FEATURE_WIRINGS: list[FeatureWiring] = [
         producer="pageindex_mcp.converters.zdr_egress_gate",
         consumers=("pageindex_mcp.client",),
     ),
+    # Zone-5: RTL decision — decide_rtl is the canonical computation site;
+    # both helpers.py (validate_tree) and client.py (index entry, RTL repair)
+    # consume it.  Catches divergence between the two call sites at startup.
+    FeatureWiring(
+        name="rtl_decision",
+        producer="pageindex_mcp.script.decide_rtl",
+        consumers=(
+            "pageindex_mcp.helpers",
+            "pageindex_mcp.client",
+        ),
+    ),
+    # Zone-5: GATES list-order consistency — GATES is the declarative gate
+    # registry (module-level data export, not callable);
+    # validate_feature_wirings handles this via the non-callable producer path.
+    # Consumer: client imports GATES for recovery dispatch iteration.
+    FeatureWiring(
+        name="gate_recovery_dispatch",
+        producer="pageindex_mcp.helpers.GATES",
+        consumers=("pageindex_mcp.client",),
+    ),
 ]
 
 
@@ -2095,7 +2329,9 @@ def validate_feature_wirings() -> None:
     For each :class:`FeatureWiring` entry:
 
     1. Resolves the producer dotted path via :func:`importlib.import_module`
-       and confirms the target attribute is callable.
+       and confirms the target attribute exists.  Callable producers are
+       verified as callable; non-callable producers (module-level data
+       exports like ``GATE_TABLE``) are accepted as-is.
     2. For **non-shadow** entries, confirms each consumer module is loaded
        (present in ``sys.modules``) and that its source contains a reference
        to the producer function name.  Uses :func:`inspect.getsource` for
@@ -2106,8 +2342,8 @@ def validate_feature_wirings() -> None:
 
     Raises :class:`AssertionError` for non-shadow wiring failures.
 
-    This function is registered via :func:`atexit.register` and also
-    exported for explicit invocation by application entry points and tests.
+    Exported for explicit invocation by application entry points
+    (server.py lifespan, worker.py startup) and tests.
 
     **Circular-import safety**: uses ``importlib.import_module`` and
     ``sys.modules`` introspection — never adds top-level imports from
@@ -2120,7 +2356,7 @@ def validate_feature_wirings() -> None:
     logger = logging.getLogger(__name__)
 
     for fw in FEATURE_WIRINGS:
-        # --- Validate producer exists and is callable ---
+        # --- Validate producer exists ---
         parts = fw.producer.rsplit(".", 1)
         if len(parts) != 2:
             raise AssertionError(
@@ -2143,10 +2379,15 @@ def validate_feature_wirings() -> None:
                 f"FeatureWiring '{fw.name}': producer '{fw.producer}' "
                 f"not found in module '{mod_path}'"
             )
-        if not callable(producer_obj):
-            raise AssertionError(
-                f"FeatureWiring '{fw.name}': producer '{fw.producer}' "
-                f"exists but is not callable"
+        # Zone-5: non-callable producers (module-level data exports like
+        # GATE_TABLE) are valid — skip the callable check for them.
+        if callable(producer_obj):
+            pass  # callable confirmed
+        else:
+            logger.debug(
+                "FeatureWiring '%s': producer '%s' is a non-callable "
+                "data export (type=%s) — accepted",
+                fw.name, fw.producer, type(producer_obj).__name__,
             )
 
         # --- Validate consumer references ---
@@ -2187,17 +2428,16 @@ def validate_feature_wirings() -> None:
                     raise AssertionError(msg)
 
 
-# Deferred registration: validate_feature_wirings runs at process exit after
-# all modules have been imported.  For true startup-crash semantics, app
-# entry points (server.py, worker.py) should call validate_feature_wirings()
-# explicitly after their import block.
-import atexit as _atexit
-_atexit.register(validate_feature_wirings)
+# Zone-5: atexit.register(validate_feature_wirings) REMOVED.
+# Wiring is now validated explicitly at startup in server.py's lifespan
+# hook and worker.py's startup() coroutine, so failures crash the process
+# before any request/job runs instead of surfacing only at exit.
+# validate_feature_wirings remains importable for tests and explicit calls.
 
 
 def validate_tree(
     structure: list,
-    expected_script: str | None = None,
+    expected_script: str | None | ScriptContext = None,
     page_count: int | None = None,
     *,
     rtl_decision: RtlDecision | None = None,
@@ -2227,6 +2467,14 @@ def validate_tree(
     # Compute TreeSignals ONCE and attach to every returned TreeGateResult
     # so that classify_verdict can consume them without re-derivation.
     th = _get_verdict_thresholds()
+
+    # Zone-3: resolve expected_script to bare str|None for gate functions
+    # that still accept the bare type in the _GateFn callable signature.
+    if isinstance(expected_script, ScriptContext):
+        _bare_script: str | None = expected_script.dominant_script
+    else:
+        _bare_script = expected_script
+
     sig = TreeSignals.from_tree(
         structure,
         expected_script=expected_script,
@@ -2243,7 +2491,7 @@ def validate_tree(
     # Evaluate ALL gates exhaustively — collect every firing defect.
     fired: list[tuple[TreeDefect, str]] = []
     for gate_fn, defect in GATE_TABLE:
-        fires, detail = gate_fn(sig, structure, expected_script, page_count, _rtl_decision)
+        fires, detail = gate_fn(sig, structure, _bare_script, page_count, _rtl_decision)
         if fires:
             fired.append((defect, detail))
 
@@ -2489,7 +2737,7 @@ def compute_verdict(  # noqa: C901
     validate_result: TreeGateResult | None = None,
     image_enrichment_ratio: float | None = None,
     inspector_class: str | None = None,
-    expected_script: str | None = None,
+    expected_script: str | None | ScriptContext = None,
     *,
     flat: bool = False,
     source_selection: bool = False,
@@ -2549,6 +2797,12 @@ def compute_verdict(  # noqa: C901
         sig = None
         _all_defects = frozenset[TreeDefect]()
 
+    # Zone-3: resolve expected_script to bare str|None for gate functions.
+    if isinstance(expected_script, ScriptContext):
+        _cv_bare_script: str | None = expected_script.dominant_script
+    else:
+        _cv_bare_script = expected_script
+
     # Compute signals if not provided by TreeGateResult
     if sig is None:
         sig = TreeSignals.from_tree(structure, expected_script=expected_script, garble_threshold=th.garble_threshold)
@@ -2565,7 +2819,7 @@ def compute_verdict(  # noqa: C901
         _flat_fired: list[tuple[TreeDefect, str]] = []
         _rtl_decision_flat = decide_rtl(sig.flat_text) if sig.flat_text else None
         for gate_fn, gate_defect in FLAT_GATE_SUBSET:
-            fires, detail = gate_fn(sig, structure, expected_script, None, _rtl_decision_flat)
+            fires, detail = gate_fn(sig, structure, _cv_bare_script, None, _rtl_decision_flat)
             if fires:
                 _flat_fired.append((gate_defect, detail))
         if _flat_fired:
@@ -2634,7 +2888,7 @@ def compute_verdict(  # noqa: C901
                 "MARGINAL", "image_enrichment_promoted_below_char_floor",
                 defect=defect, signals=sig, all_defects=_all_defects,
             )
-        if not check_garble(_promoted_text, expected_script=expected_script, profile=BULK_PROFILE):
+        if not check_garble(_promoted_text, expected_script=_cv_bare_script, profile=BULK_PROFILE):
             return _apply_clamp("image_enrichment_promoted")
 
     # max_leaf_ratio structural hard FAIL
@@ -3966,33 +4220,13 @@ def _strip_toc_heading_nodes_guarded(nodes: list[dict], doc_name: str = "") -> l
     return candidate
 
 
-# RFC-029 D7 (Task 5.3) — table-aware node segmentation constants.
-# Node char threshold above which table-segmentation is attempted.
-_RFC029_TABLE_SEGMENT_CHAR_THRESHOLD: int = int(
-    os.environ.get("RFC029_TABLE_SEGMENT_CHAR_THRESHOLD", "2000")
-)
-# Minimum pipe-table data rows (excluding header + separator) required to
-# trigger segmentation — avoids fragmenting small 2-3 row reference tables.
-_RFC029_TABLE_SEGMENT_MIN_ROWS: int = int(os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5"))
-
-# RFC-036 D0 — singleton-ratio fragmentation guard. When more than this
-# fraction of a table's data rows are single-value cells (chart axis
-# labels), the table is chart-content, not a real multi-column table —
-# segmenting it explodes into dozens of singleton kv nodes. Skip segmentation
-# and keep the block intact instead.
-_RFC036_SINGLETON_ROW_RATIO_THRESHOLD: float = float(
-    os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
-)
-
+# Zone-5: table-segmentation constants now sourced from pipeline_config.
+_RFC029_TABLE_SEGMENT_CHAR_THRESHOLD: int = pipeline_config.rfc029_table_segment_char_threshold
+_RFC029_TABLE_SEGMENT_MIN_ROWS: int = pipeline_config.rfc029_table_segment_min_rows
+_RFC036_SINGLETON_ROW_RATIO_THRESHOLD: float = pipeline_config.rfc036_singleton_row_ratio_threshold
 # Zone-6 Step C: orientation-aware table segmentation constants.
-# Landscape pages use more conservative thresholds to avoid over-segmenting
-# wide tables that are chart content or multi-span layouts.
-_RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE: int = int(
-    os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE", "10")
-)
-_RFC036_SINGLETON_RATIO_LANDSCAPE: float = float(
-    os.environ.get("RFC036_SINGLETON_RATIO_LANDSCAPE", "0.4")
-)
+_RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE: int = pipeline_config.rfc029_table_segment_min_rows_landscape
+_RFC036_SINGLETON_RATIO_LANDSCAPE: float = pipeline_config.rfc036_singleton_ratio_landscape
 
 
 def _looks_like_toc_page(block_text: str) -> bool:

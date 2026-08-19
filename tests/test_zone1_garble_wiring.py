@@ -90,16 +90,16 @@ class TestWiringCheckGarbleUsed:
             f"classify_verdict image-enrichment), found {len(calls)}"
         )
 
-    def test_converters_imports_check_garble(self):
-        """converters.py must import check_garble (3 callsites)."""
+    def test_converters_imports_detect_garble(self):
+        """converters.py must import detect_garble (Zone-3 unified API)."""
         tree = _parse_file(_PRODUCTION_FILES["converters.py"])
-        imports = _find_imports_of(tree, "check_garble")
+        imports = _find_imports_of(tree, "detect_garble")
         assert len(imports) >= 1, (
-            "converters.py must import check_garble from helpers"
+            "converters.py must import detect_garble from helpers"
         )
-        calls = _find_calls_to(tree, "check_garble")
+        calls = _find_calls_to(tree, "detect_garble")
         assert len(calls) >= 2, (
-            f"converters.py should have at least 2 check_garble calls "
+            f"converters.py should have at least 2 detect_garble calls "
             f"(_text_layer_has_content, _document_level_text_fallback), found {len(calls)}"
         )
 
@@ -116,12 +116,12 @@ class TestWiringCheckGarbleUsed:
             f"(retry-comparison pre/post), found {len(calls)}"
         )
 
-    def test_converters_imports_bulk_profile(self):
-        """converters.py must import BULK_PROFILE."""
+    def test_converters_imports_garble_config(self):
+        """converters.py must import _garble_config (Zone-3 unified config)."""
         tree = _parse_file(_PRODUCTION_FILES["converters.py"])
-        imports = _find_imports_of(tree, "BULK_PROFILE")
+        imports = _find_imports_of(tree, "_garble_config")
         assert len(imports) >= 1, (
-            "converters.py must import BULK_PROFILE from helpers"
+            "converters.py must import _garble_config from helpers"
         )
 
     def test_client_imports_bulk_profile(self):
