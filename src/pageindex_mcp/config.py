@@ -486,9 +486,16 @@ def reset_pipeline_config() -> None:
     For test fixtures that manipulate env vars between tests.  Replaces
     the old ``reset_verdict_thresholds()`` with a single function that
     resets ALL pipeline-behavior config at once.
+
+    Also patches re-importers (``helpers.pipeline_config``) so that
+    ``compute_verdict`` and friends see the fresh config immediately.
     """
     global pipeline_config
     pipeline_config = PipelineConfig.from_env()
+    import sys
+    _helpers = sys.modules.get("pageindex_mcp.helpers")
+    if _helpers is not None:
+        _helpers.pipeline_config = pipeline_config
 
 
 def effective_config_snapshot() -> dict:

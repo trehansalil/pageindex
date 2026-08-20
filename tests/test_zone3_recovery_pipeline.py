@@ -196,73 +196,72 @@ class TestUnsetSentinel:
 
 
 # ===========================================================================
-# 4. GateSpec.recovery_tag field exists and is populated correctly
+# 4. GateSpec recovery_eligible / recovery_fns wiring
 # ===========================================================================
 
 
-class TestGateSpecRecoveryTag:
-    """GateSpec must have recovery_tag; RETRY_OCR/RETRY_RTL gates must set it."""
+class TestGateSpecRecoveryWiring:
+    """GateSpec must have recovery_eligible (callable predicate) and recovery_fns
+    (tuple of method-name strings) replacing the former recovery_tag field."""
 
-    def test_recovery_tag_field_exists(self):
-        """GateSpec dataclass has a recovery_tag field."""
+    def test_recovery_eligible_field_exists(self):
+        """GateSpec dataclass has a recovery_eligible field."""
         field_names = {f.name for f in dataclasses.fields(GateSpec)}
-        assert "recovery_tag" in field_names
+        assert "recovery_eligible" in field_names
 
-    def test_retry_ocr_gates_have_recovery_tag(self):
-        """Every RETRY_OCR-policy gate has a non-None recovery_tag."""
+    def test_recovery_fns_field_exists(self):
+        """GateSpec dataclass has a recovery_fns field."""
+        field_names = {f.name for f in dataclasses.fields(GateSpec)}
+        assert "recovery_fns" in field_names
+
+    def test_retry_ocr_gates_have_recovery_fns(self):
+        """Every RETRY_OCR-policy gate has non-empty recovery_fns."""
         for g in GATES:
             if g.policy == _ReasonPolicy.RETRY_OCR:
-                assert g.recovery_tag is not None, (
-                    f"RETRY_OCR gate {g.defect.name} has no recovery_tag"
+                assert g.recovery_fns, (
+                    f"RETRY_OCR gate {g.defect.name} has empty recovery_fns"
                 )
 
-    def test_retry_rtl_gates_have_recovery_tag(self):
-        """Every RETRY_RTL-policy gate has a non-None recovery_tag."""
+    def test_retry_rtl_gates_have_recovery_fns(self):
+        """Every RETRY_RTL-policy gate has non-empty recovery_fns."""
         for g in GATES:
             if g.policy == _ReasonPolicy.RETRY_RTL:
-                assert g.recovery_tag is not None, (
-                    f"RETRY_RTL gate {g.defect.name} has no recovery_tag"
+                assert g.recovery_fns, (
+                    f"RETRY_RTL gate {g.defect.name} has empty recovery_fns"
                 )
 
-    def test_non_retry_gates_have_no_recovery_tag(self):
-        """OK/CAP_MARGINAL/PERSIST_FAIL gates must NOT have recovery_tag.
-        RAISE-policy gates MAY have recovery_tag when wired for OCR escalation
-        (NODE_COUNT_LOW, DEPTH_LOW)."""
-        no_tag_policies = {
+    def test_non_retry_gates_have_no_recovery_fns(self):
+        """OK/CAP_MARGINAL/PERSIST_FAIL gates must have empty recovery_fns."""
+        no_recovery_policies = {
             _ReasonPolicy.OK, _ReasonPolicy.CAP_MARGINAL, _ReasonPolicy.PERSIST_FAIL,
         }
-        raise_ocr_escalation = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}
         for g in GATES:
-            if g.policy in no_tag_policies:
-                assert g.recovery_tag is None, (
+            if g.policy in no_recovery_policies:
+                assert not g.recovery_fns, (
                     f"Non-retry gate {g.defect.name} ({g.policy}) should not "
-                    f"have recovery_tag={g.recovery_tag!r}"
-                )
-            elif g.policy == _ReasonPolicy.RAISE and g.defect not in raise_ocr_escalation:
-                assert g.recovery_tag is None, (
-                    f"RAISE gate {g.defect.name} should not have "
-                    f"recovery_tag={g.recovery_tag!r} (not in OCR-escalation set)"
+                    f"have recovery_fns={g.recovery_fns!r}"
                 )
 
-    def test_garbling_and_node_garbling_share_ocr_tag(self):
-        """GARBLING and NODE_GARBLING both map to 'ocr_escalation'."""
-        garble_tags = {
-            g.defect: g.recovery_tag
+    def test_garbling_and_node_garbling_share_recovery_fns(self):
+        """GARBLING and NODE_GARBLING share the same recovery_fns tuple."""
+        garble_fns = {
+            g.defect: g.recovery_fns
             for g in GATES
             if g.defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
         }
-        assert garble_tags[TreeDefect.GARBLING] == "ocr_escalation"
-        assert garble_tags[TreeDefect.NODE_GARBLING] == "ocr_escalation"
+        assert garble_fns[TreeDefect.GARBLING] == garble_fns[TreeDefect.NODE_GARBLING]
+        assert garble_fns[TreeDefect.GARBLING], "recovery_fns should be non-empty"
 
-    def test_rtl_reversal_maps_to_rtl_repair(self):
-        """RTL_REVERSAL gate has recovery_tag='rtl_repair'."""
+    def test_rtl_reversal_has_rtl_repair_fn(self):
+        """RTL_REVERSAL gate has '_recover_rtl_repair' in recovery_fns."""
         rtl_gate = next(g for g in GATES if g.defect == TreeDefect.RTL_REVERSAL)
-        assert rtl_gate.recovery_tag == "rtl_repair"
+        assert "_recover_rtl_repair" in rtl_gate.recovery_fns
 
-    def test_recovery_tag_default_is_none(self):
-        """New GateSpec without recovery_tag defaults to None."""
+    def test_recovery_fns_default_is_empty(self):
+        """New GateSpec without recovery_fns defaults to empty tuple."""
         gs = GateSpec(TreeDefect.OK, _ReasonPolicy.OK)
-        assert gs.recovery_tag is None
+        assert gs.recovery_fns == ()
+        assert gs.recovery_eligible is None
 
 
 # ===========================================================================
@@ -337,58 +336,49 @@ class TestFinalizeRoutingDeleted:
 
 
 class TestGateDrivenLoopStructure:
-    """The gate-driven loop in index() must iterate GATES in order and deduplicate tags."""
+    """The gate-driven loop in index() must iterate GATES in order and deduplicate
+    recovery_fns tuples (Zone-1 replaced _seen_tags with _fired_recovery set)."""
 
-    def test_recovery_dispatch_covers_all_tags(self):
-        """Every recovery_tag present in GATES must have a dispatch entry in index().
-
-        This is a static contract -- we verify the assertion code exists in
-        the index() method source rather than running it (which requires
-        full async infrastructure).
-        """
+    def test_recovery_dispatch_covers_all_fns(self):
+        """Every gate with non-empty recovery_fns must have all fns resolvable
+        on CustomPageIndexClient."""
         from pageindex_mcp.client import CustomPageIndexClient
-        source = inspect.getsource(CustomPageIndexClient.index)
-        # The assertion checking tag coverage must be present
-        assert "_gate_tags" in source, (
-            "index() must contain the _gate_tags coverage assertion"
-        )
-        assert "recovery_tag" in source
-        assert "_recovery_dispatch" in source
+        for g in GATES:
+            for fn_name in g.recovery_fns:
+                assert hasattr(CustomPageIndexClient, fn_name), (
+                    f"GateSpec {g.defect.name} lists recovery_fn {fn_name!r} "
+                    f"but CustomPageIndexClient has no such method"
+                )
 
     def test_loop_iterates_gates_not_hardcoded_list(self):
         """The recovery loop must iterate GATES, not a hardcoded method list."""
         from pageindex_mcp.client import CustomPageIndexClient
         source = inspect.getsource(CustomPageIndexClient.index)
-        # Must iterate GATES
         assert "for _gate in GATES" in source or "for _gate in GATES:" in source, (
             "index() must iterate over GATES table for recovery dispatch"
         )
 
-    def test_loop_deduplicates_tags(self):
-        """The loop must track seen tags to avoid firing the same tag twice."""
+    def test_loop_deduplicates_recovery_fns(self):
+        """The loop must track fired recovery_fns tuples to avoid re-firing."""
         from pageindex_mcp.client import CustomPageIndexClient
         source = inspect.getsource(CustomPageIndexClient.index)
-        assert "_seen_tags" in source, (
-            "index() must track _seen_tags for deduplication"
+        assert "_fired_recovery" in source, (
+            "index() must track _fired_recovery for deduplication"
         )
 
     def test_post_loop_rederivation_present(self):
-        """After each recovery tag, first_defect/route must be re-derived
-        (inlined from deleted _finalize_routing)."""
+        """After each recovery gate, first_defect/route must be re-derived."""
         from pageindex_mcp.client import CustomPageIndexClient
         source = inspect.getsource(CustomPageIndexClient.index)
-        # Must contain the re-derivation logic: setting first_defect from gate_result
         assert "state.first_defect = state.gate_result.defect" in source, (
             "index() must re-derive first_defect from gate_result after recovery"
         )
-        # Must contain decide_route call for route re-derivation
         assert "decide_route" in source
 
     def test_rederivation_skips_when_ok(self):
         """Re-derivation must be skipped when state.ok is True."""
         from pageindex_mcp.client import CustomPageIndexClient
         source = inspect.getsource(CustomPageIndexClient.index)
-        # The guard: `if not state.ok and state.route == _pre_route:`
         assert "not state.ok" in source, (
             "Re-derivation must be guarded by 'not state.ok'"
         )
@@ -453,16 +443,19 @@ class TestGatesTableOrder:
         defects = [g.defect for g in GATES]
         assert defects.index(TreeDefect.GARBLING) < defects.index(TreeDefect.NODE_GARBLING)
 
-    def test_recovery_tags_fire_in_table_order(self):
-        """The unique recovery_tag sequence follows GATES table order."""
-        seen: list[str] = []
+    def test_recovery_fns_fire_in_table_order(self):
+        """The unique recovery_fns sequence follows GATES table order:
+        OCR recovery gates appear before RTL recovery gates."""
+        seen: list[tuple[str, ...]] = []
         for g in GATES:
-            if g.recovery_tag is not None and g.recovery_tag not in seen:
-                seen.append(g.recovery_tag)
-        # ocr_escalation must come before rtl_repair
-        assert seen.index("ocr_escalation") < seen.index("rtl_repair"), (
-            "ocr_escalation must fire before rtl_repair per GATES order"
-        )
+            if g.recovery_fns and g.recovery_fns not in seen:
+                seen.append(g.recovery_fns)
+        ocr_fns = [fns for fns in seen if any("ocr" in fn or "garble" in fn for fn in fns)]
+        rtl_fns = [fns for fns in seen if any("rtl" in fn for fn in fns)]
+        if ocr_fns and rtl_fns:
+            assert seen.index(ocr_fns[0]) < seen.index(rtl_fns[0]), (
+                "OCR recovery must fire before RTL recovery per GATES order"
+            )
 
 
 # ===========================================================================
@@ -515,21 +508,20 @@ class TestPostLoopQualityChecks:
         """_recover_flat_prefer must be called outside the gate-driven loop."""
         from pageindex_mcp.client import CustomPageIndexClient
         source = inspect.getsource(CustomPageIndexClient.index)
-        # flat_prefer must NOT appear inside _recovery_dispatch
-        dispatch_start = source.index("_recovery_dispatch")
-        dispatch_end = source.index("_seen_tags")
-        dispatch_block = source[dispatch_start:dispatch_end]
-        assert "flat_prefer" not in dispatch_block, (
-            "_recover_flat_prefer should not be in _recovery_dispatch"
+        loop_start = source.index("_fired_recovery")
+        loop_end = source.index("_recover_flat_prefer")
+        loop_block = source[loop_start:loop_end]
+        assert "flat_prefer" not in loop_block, (
+            "_recover_flat_prefer should not be inside the gate-driven loop"
         )
 
     def test_landscape_reroute_called_after_loop(self):
         """_recover_landscape_reroute must be called outside the gate-driven loop."""
         from pageindex_mcp.client import CustomPageIndexClient
         source = inspect.getsource(CustomPageIndexClient.index)
-        dispatch_start = source.index("_recovery_dispatch")
-        dispatch_end = source.index("_seen_tags")
-        dispatch_block = source[dispatch_start:dispatch_end]
-        assert "landscape_reroute" not in dispatch_block, (
-            "_recover_landscape_reroute should not be in _recovery_dispatch"
+        loop_start = source.index("_fired_recovery")
+        loop_end = source.index("_recover_landscape_reroute")
+        loop_block = source[loop_start:loop_end]
+        assert "landscape_reroute" not in loop_block, (
+            "_recover_landscape_reroute should not be inside the gate-driven loop"
         )

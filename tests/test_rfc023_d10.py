@@ -55,6 +55,8 @@ class TestPassMaxLeafRatioEnvVar:
     def test_ratio_above_widened_threshold_stays_marginal(self, monkeypatch):
         """max_leaf_ratio=0.22 with PASS_MAX_LEAF_RATIO=0.20 -> MARGINAL."""
         monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.20")
+        from pageindex_mcp.config import reset_pipeline_config
+        reset_pipeline_config()
         structure = _tree_with_ratio(0.22)
         verdict, reason = classify_verdict(structure, "hierarchical", None)
         assert verdict == "MARGINAL"

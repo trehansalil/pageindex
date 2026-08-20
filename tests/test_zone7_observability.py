@@ -91,7 +91,8 @@ def test_effective_config_snapshot_respects_env_overrides(monkeypatch):
     import pageindex_mcp.config as cfg_mod
     monkeypatch.setattr(cfg_mod, "OCR_ESCALATION_GARBLE", False)
 
-    from pageindex_mcp.config import effective_config_snapshot
+    from pageindex_mcp.config import effective_config_snapshot, reset_pipeline_config
+    reset_pipeline_config()
 
     snap = effective_config_snapshot()
 

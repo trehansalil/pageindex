@@ -167,16 +167,15 @@ class TestClientWiring:
         assert isinstance(_OCR_ESCALATION_GARBLE, bool)
         assert isinstance(_OCR_ESCALATION_PER_PICTURE, bool)
 
-    def test_client_imports_decide_ocr_mode(self):
-        """client.py uses the centralized decide_ocr_mode, not inline logic."""
+    def test_client_imports_decide_ocr_strategy(self):
+        """client.py uses the centralized decide_ocr_strategy, not inline logic."""
         import inspect
 
         from pageindex_mcp import client as cli_mod
-        from pageindex_mcp.picture_plane import decide_ocr_mode
+        from pageindex_mcp.picture_plane import decide_ocr_strategy
 
-        # Verify it's actually called in the source
         src = inspect.getsource(cli_mod)
-        assert "decide_ocr_mode(" in src, (
-            "client.py does not call decide_ocr_mode -- OCR mode decision "
+        assert "decide_ocr_strategy(" in src, (
+            "client.py does not call decide_ocr_strategy -- OCR mode decision "
             "may have regressed to inline logic"
         )

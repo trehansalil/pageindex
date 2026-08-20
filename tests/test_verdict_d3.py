@@ -98,6 +98,7 @@ async def test_sweep_idempotence():
         patch("promotion_sweep.close_registry", new_callable=AsyncMock),
         patch("promotion_sweep.sweep_candidates", side_effect=fake_sweep_candidates),
         patch("promotion_sweep.get_minio", return_value=mock_mc),
+        patch("promotion_sweep.write_verdict"),
         patch("promotion_sweep.save_doc_meta"),
         patch("promotion_sweep.upsert_doc", new_callable=AsyncMock),
     ):

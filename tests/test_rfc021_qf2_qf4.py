@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from pageindex_mcp.config import reset_pipeline_config
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
     _flatten_tree_text,
@@ -152,6 +153,7 @@ def test_qf2b_env_var_override():
     # is what pushes this doc all the way down to MARGINAL.
     tree = _make_tree([160] + [10] * 84, depth=2)
     with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.15"}):
+        reset_pipeline_config()
         verdict, reason = classify_verdict(tree, "ocr_rescued", None)
     assert verdict == "MARGINAL"
     assert reason == "leaf_concentration=0.16"
@@ -184,8 +186,10 @@ def test_qf2c_small_doc_promoted():
     # PASS_MAX_LEAF_RATIO is forced low here to reach the base MARGINAL
     # tier and isolate the QF2c small-doc-exemption path specifically.
     with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.10"}):
+        reset_pipeline_config()
         tree = _shared_root_tree([216, 164, 164, 164, 164, 164, 164])
         verdict, reason = classify_verdict(tree, "flat_prose", None)
+    reset_pipeline_config()
     assert (verdict, reason) == ("PASS", "small_doc_promoted")
 
 
@@ -195,6 +199,7 @@ def test_qf2c_too_many_nodes():
     # forced low (see test_qf2c_small_doc_promoted) so the base gate doesn't
     # mask the node-count rejection.
     with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.10"}):
+        reset_pipeline_config()
         tree = _shared_root_tree([2340] + [820] * 13)
         verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert verdict == "MARGINAL"
@@ -207,6 +212,7 @@ def test_qf2c_too_long_text():
     # low (see test_qf2c_small_doc_promoted) so the base gate doesn't mask
     # the text-length rejection.
     with patch.dict(os.environ, {"PASS_MAX_LEAF_RATIO": "0.10"}):
+        reset_pipeline_config()
         tree = _shared_root_tree([2880] + [1640] * 8)
         verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert verdict == "MARGINAL"
@@ -232,6 +238,7 @@ def test_qf2c_disabled_via_env():
         os.environ,
         {"SMALL_DOC_PROMOTION_ENABLED": "false", "PASS_MAX_LEAF_RATIO": "0.10"},
     ):
+        reset_pipeline_config()
         verdict, reason = classify_verdict(tree, "flat_prose", None)
     assert verdict == "MARGINAL"
     assert reason == "leaf_concentration=0.18"
@@ -338,8 +345,7 @@ def test_classify_verdict_garble_ratio_threshold():
     assert reason == "garbling(ratio=1.00)"
 
     with patch.dict(os.environ, {"GARBLE_WINDOW_RATIO_THRESHOLD": "2.0"}):
-        from pageindex_mcp.helpers import reset_verdict_thresholds
-        reset_verdict_thresholds()
+        reset_pipeline_config()
         verdict, reason = classify_verdict(tree, "default", None)
     assert (verdict, reason) == ("PASS", "")
     assert "garbling" not in reason

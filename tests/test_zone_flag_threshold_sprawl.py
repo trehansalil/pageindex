@@ -190,7 +190,10 @@ class TestConfigSnapshotDecoupled:
             "RFC029_MIN_CHARS_PER_NODE": "200",
         }
         with patch.dict(os.environ, overrides):
+            from pageindex_mcp.config import reset_pipeline_config
+            reset_pipeline_config()
             snap = effective_config_snapshot()
+        reset_pipeline_config()
         assert snap["tree_path_picture_splice_enabled"] is False
         assert snap["low_content_ocr_char_floor"] == 500
         assert snap["rfc029_flat_prefer_multiplier"] == pytest.approx(5.0)
@@ -324,6 +327,8 @@ class TestSnapshotCompleteness:
             "PASS_MAX_LEAF_RATIO": "0.50",
             "LEAF_SPLIT_RATIO": "0.20",
         }):
+            from pageindex_mcp.config import reset_pipeline_config
+            reset_pipeline_config()
             snap = effective_config_snapshot()
         assert snap["pass_max_leaf_ratio"] == pytest.approx(0.50)
         assert snap["leaf_split_ratio"] == pytest.approx(0.20)

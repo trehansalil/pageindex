@@ -559,7 +559,11 @@ def test_save_doc_meta_merges_with_existing_sidecar(mock_minio):
         "pipeline_version": "2.0",
     }
     save_doc_meta("merge01", meta)
-    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar_call = next(
+        c for c in mock_minio.put_object.call_args_list
+        if c[0][1].startswith("processed/")
+    )
+    written = sidecar_call[0][2].read()
     sidecar = json.loads(written)
 
     assert sidecar["sha256"] == "abc123"

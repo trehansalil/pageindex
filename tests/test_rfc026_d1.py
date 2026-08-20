@@ -37,6 +37,8 @@ class TestImageEnrichmentPromotedVolumeFloor:
         """MIN_IMAGE_PROMOTED_CHARS=100 lowers the floor: 150 chars, which
         would MARGINAL under the default 500-char floor, now PASSes."""
         monkeypatch.setenv("MIN_IMAGE_PROMOTED_CHARS", "100")
+        from pageindex_mcp.config import reset_pipeline_config
+        reset_pipeline_config()
         structure = _structure_with_chars(150)
         verdict, reason = classify_verdict(
             structure, "flat_mixed", None, image_enrichment_ratio=0.85

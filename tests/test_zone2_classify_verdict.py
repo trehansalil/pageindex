@@ -103,6 +103,8 @@ class TestVerdictThresholds:
 
     def test_env_overrides(self, monkeypatch):
         monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.50")
+        from pageindex_mcp.config import reset_pipeline_config
+        reset_pipeline_config()
         th = VerdictThresholds.from_env()
         assert th.pass_max_leaf_ratio == 0.50
 

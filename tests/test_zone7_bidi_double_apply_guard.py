@@ -111,13 +111,13 @@ class TestRtlRepairBidiGuard:
 
 
 class TestOcrRetryResetsFlag:
-    """_recover_ocr_retry must reset bidi_renorm_applied=False before OCR
+    """_execute_ocr_retry must reset bidi_renorm_applied=False before OCR
     dispatch and set it to True only when renorm actually runs."""
 
     def test_reset_before_dispatch(self):
         """bidi_renorm_applied = False appears before the OCR dispatch block."""
         from pageindex_mcp.client import CustomPageIndexClient
-        source = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
+        source = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         # Reset must appear before the dispatch
         reset_idx = source.index("bidi_renorm_applied = False")
         # The dispatch block contains _remote_pdf_to_markdown
@@ -130,7 +130,7 @@ class TestOcrRetryResetsFlag:
         """bidi_renorm_applied = True appears inside the
         'if state.use_remote and REMOTE_MD_RENORMALIZE' block after renorm."""
         from pageindex_mcp.client import CustomPageIndexClient
-        source = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
+        source = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         # Find the renorm guard in _recover_ocr_retry
         renorm_guard_idx = source.index("_renormalize_bidi_guarded")
         # bidi_renorm_applied = True must come after _renormalize_bidi_guarded
@@ -141,7 +141,7 @@ class TestOcrRetryResetsFlag:
         """bidi_renorm_applied = True must NOT appear in the else branch
         (where renorm did NOT run)."""
         from pageindex_mcp.client import CustomPageIndexClient
-        source = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
+        source = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         # Find the 'else: state.rtl_decision = None' block after renorm
         renorm_idx = source.index("_renormalize_bidi_guarded")
         else_idx = source.index("state.rtl_decision = None", renorm_idx)
@@ -164,7 +164,7 @@ class TestKeepBestRevertBidiFlag:
     def test_pre_retry_snapshot_captures_bidi_flag(self):
         """Pre-retry RecoveryOutcome construction includes bidi_renorm_applied."""
         from pageindex_mcp.client import CustomPageIndexClient
-        source = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
+        source = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         # The pre_retry construction must include bidi_renorm_applied
         snapshot_idx = source.index("pre_retry = RecoveryOutcome(")
         snapshot_end = source.index(")", snapshot_idx + 30)
@@ -176,7 +176,7 @@ class TestKeepBestRevertBidiFlag:
     def test_pre_retry_snapshot_captures_tmp_md_path(self):
         """Pre-retry RecoveryOutcome construction includes tmp_md_path."""
         from pageindex_mcp.client import CustomPageIndexClient
-        source = inspect.getsource(CustomPageIndexClient._recover_ocr_retry)
+        source = inspect.getsource(CustomPageIndexClient._execute_ocr_retry)
         snapshot_idx = source.index("pre_retry = RecoveryOutcome(")
         snapshot_end = source.index(")", snapshot_idx + 30)
         snapshot_block = source[snapshot_idx:snapshot_end]

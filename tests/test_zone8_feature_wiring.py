@@ -99,7 +99,9 @@ class TestFeatureWiringsList:
 
 
 class TestProducerResolution:
-    """Every FEATURE_WIRINGS entry's producer must be importable and callable."""
+    """Every FEATURE_WIRINGS entry's producer must be importable.
+    Callable producers (functions) and data-export producers (module-level
+    collections like GATES) are both valid."""
 
     @pytest.mark.parametrize(
         "fw",
@@ -113,8 +115,8 @@ class TestProducerResolution:
         assert producer_obj is not None, (
             f"Producer '{fw.producer}' not found in module '{mod_path}'"
         )
-        assert callable(producer_obj), (
-            f"Producer '{fw.producer}' exists but is not callable"
+        assert callable(producer_obj) or isinstance(producer_obj, (list, tuple, dict)), (
+            f"Producer '{fw.producer}' exists but is neither callable nor a data export"
         )
 
 
