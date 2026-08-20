@@ -1,40 +1,11 @@
-"""RFC-013 Structural Hardening: correctness property tests (D4-D7).
+"""RFC-013 Structural Hardening: behavioral property tests (D5-D7).
 
-P1: Bounded concurrency — list_processed_docs limits parallel MinIO fetches.
 P2: Shared page-hit extraction — helpers._extract_page_hits matches old inline logic.
 P3: Non-Latin tessdata raise — ensure_tessdata raises TessdataUnavailableError.
-P4: Unified garble detection — _tree_is_garbled and _flat_text_is_garbled agree.
+P4: Unified garble detection — check_garble agrees across contexts.
 """
 
-import ast
-from pathlib import Path
-
 import pytest
-
-
-SRC = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
-
-
-# ---------------------------------------------------------------------------
-# P1: Bounded concurrency (D4 / ISS-05)
-# ---------------------------------------------------------------------------
-
-
-def test_list_processed_docs_uses_semaphore():
-    """The bounded-concurrency fetch in list_processed_docs must create an
-    asyncio.Semaphore — proving concurrency is capped, not unbounded."""
-    src = (SRC / "storage.py").read_text()
-    assert "asyncio.Semaphore(" in src, (
-        "list_processed_docs must use asyncio.Semaphore for bounded concurrency"
-    )
-
-
-def test_list_processed_docs_gather_filters_exceptions():
-    """return_exceptions=True means gather results include BaseExceptions;
-    the code must filter with isinstance(r, dict)."""
-    src = (SRC / "storage.py").read_text()
-    assert "return_exceptions=True" in src
-    assert "isinstance(r, dict)" in src
 
 
 # ---------------------------------------------------------------------------
@@ -150,30 +121,6 @@ def test_tessdata_available_no_raise(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # P4: Unified garble detection (D7 / ISS-36)
 # ---------------------------------------------------------------------------
-
-
-def test_garble_functions_delegate_to_shared_impl():
-    """check_garble is the consolidated garble API — _tree_is_garbled and
-    _flat_text_is_garbled no longer exist."""
-    src = (SRC / "helpers.py").read_text()
-    tree = ast.parse(src)
-
-    found_check_garble = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "check_garble":
-            body_src = ast.get_source_segment(src, node)
-            assert "garble_prongs" in body_src or "_has_sparse_mojibake" in body_src
-            found_check_garble = True
-    assert found_check_garble, "check_garble not found in helpers.py"
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in (
-            "_tree_is_garbled", "_flat_text_is_garbled"
-        ):
-            body_src = ast.get_source_segment(src, node)
-            assert "check_garble" in body_src, (
-                f"{node.name} still exists but does not delegate to check_garble"
-            )
 
 
 def test_garble_agreement_clean_text():

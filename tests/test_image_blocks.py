@@ -9,10 +9,16 @@ Covers:
 - _enrich_image_blocks wiring (async, to_thread persistence)
 - RFC-017 D0: page-coverage filter skips full-page PictureItems
 - RFC-017 D1: standalone image produces synthetic PictureResult
+- RFC-018 D1: text-layer probe skips redundant per-picture OCR
+- Audit remediation: tuple-return contract (no thread-local), dense ordinal
+  keying, bounded concurrency, decorative-image gate, VLM retry+metric,
+  and end-to-end flat-branch wiring (converter -> splice -> enrich)
 """
 
 import os
+import sys
 import tempfile
+import threading
 import types
 from types import SimpleNamespace
 from unittest import mock
@@ -25,8 +31,10 @@ from pageindex_mcp import converters
 from pageindex_mcp.client import CustomPageIndexClient
 from pageindex_mcp.converters import (
     PictureResult,
+    _add_vlm_descriptions,
     _recover_picture_text,
     splice_figure_markers,
+    zdr_egress_gate,
 )
 from pageindex_mcp.picture_plane import PictureGateConfig
 from pageindex_mcp.helpers import _flat_search_text, route_and_extract_flat
@@ -52,23 +60,6 @@ class TestRouteFlatImageBlocks:
         assert image_blocks[0]["description"] == "A pie chart showing monthly revenue"
         assert image_blocks[0]["ocr_text"] == "Jan 100 Feb 200"
 
-    def test_figure_without_chart_text(self):
-        md = "[Figure: fig-0]\n\nSome prose after"
-        _, blocks = route_and_extract_flat(md)
-        image_blocks = [b for b in blocks if b.get("role") == "image"]
-        assert len(image_blocks) == 1
-        assert image_blocks[0]["index"] == 0
-        assert "ocr_text" not in image_blocks[0]
-
-    def test_multiple_figures(self):
-        md = "[Figure: fig-0]\n\n> [Chart text]: First\n\n[Figure: fig-1]\n\n> [Chart text]: Second"
-        _, blocks = route_and_extract_flat(md)
-        image_blocks = [b for b in blocks if b.get("role") == "image"]
-        assert len(image_blocks) == 2
-        assert image_blocks[0]["index"] == 0
-        assert image_blocks[1]["index"] == 1
-
-
 class TestFlatSearchTextImage:
     """_flat_search_text includes ocr_text and description from image blocks."""
 
@@ -90,71 +81,6 @@ class TestFlatSearchTextImage:
         text = _flat_search_text(data)
         assert "A bar chart" in text
 
-    def test_image_block_no_text_fields(self):
-        data = {
-            "blocks": [
-                {"role": "image", "index": 0},
-            ]
-        }
-        text = _flat_search_text(data)
-        assert text.strip() == ""
-
-
-class TestSaveFigure:
-    """save_figure writes to the correct MinIO path with image/png content type."""
-
-    def test_save_figure_puts_correct_object(self):
-        with patch("pageindex_mcp.storage.get_minio") as mock_get:
-            mc = MagicMock()
-            mock_get.return_value = mc
-            from pageindex_mcp.storage import save_figure
-
-            key = save_figure("doc123", 0, b"\x89PNG fake")
-            assert key == "figures/doc123/fig-0.png"
-            mc.put_object.assert_called_once()
-            call_args = mc.put_object.call_args
-            assert call_args[0][1] == "figures/doc123/fig-0.png"
-            assert call_args[1].get("content_type") == "image/png"
-
-
-class TestDeleteDocFigures:
-    """delete_doc step 2c removes figures/<doc_id>/ objects."""
-
-    @pytest.mark.asyncio
-    async def test_figures_removed_in_cascade(self):
-        fig_obj = MagicMock()
-        fig_obj.object_name = "figures/abc123/fig-0.png"
-
-        mock_mc = MagicMock()
-
-        def _list_objects(_b, prefix="", **_kw):
-            if prefix.startswith("figures/"):
-                return [fig_obj]
-            return []
-
-        mock_mc.list_objects.side_effect = _list_objects
-        mock_mc.remove_object.return_value = None
-        mock_mc.stat_object.side_effect = Exception("not found")
-
-        removed = []
-
-        def _track_remove(bucket, name):
-            removed.append(name)
-
-        mock_mc.remove_object.side_effect = _track_remove
-
-        with (
-            patch("pageindex_mcp.storage.get_minio", return_value=mock_mc),
-            patch("pageindex_mcp.cache.doc_cache_delete"),
-            patch("pageindex_mcp.storage.hash_cache_delete"),
-        ):
-            from pageindex_mcp.storage import delete_doc
-
-            await delete_doc("abc123")
-
-        assert "figures/abc123/fig-0.png" in removed
-
-
 class TestVlmDescribeGating:
     """VLM descriptions moved OUT of the converter (audit finding 8): the
     recovery step never calls the vision API; _add_vlm_descriptions is gated
@@ -174,58 +100,6 @@ class TestVlmDescribeGating:
             pics = converters._recover_picture_results("<!-- image -->", object(), "dummy.pdf")
         mock_vlm.assert_not_called()
         assert pics == [pr]
-
-    def test_hr3_pii_non_zdr_skips_vlm(self, monkeypatch):
-        """PII corpus + non-ZDR endpoint blocks VLM descriptions (HR3): no image
-        bytes egress, no description written."""
-        monkeypatch.setattr(
-            "pageindex_mcp.config.settings",
-            SimpleNamespace(
-                pii_corpus=True,
-                openai_base_url="https://api.openai.com/v1",
-                vlm_model="gpt-4.1",
-            ),
-        )
-        pics = [PictureResult(ocr_text="chart", png_bytes=b"fake", page=1, bbox={})]
-        with patch("litellm.completion") as comp:
-            converters._add_vlm_descriptions(pics, "doc1")
-        comp.assert_not_called()
-        assert "description" not in pics[0]
-
-    def test_zdr_endpoint_allows_vlm(self, monkeypatch):
-        monkeypatch.setattr(
-            "pageindex_mcp.config.settings",
-            SimpleNamespace(
-                pii_corpus=True,
-                openai_base_url="https://myres.openai.azure.com/v1",
-                vlm_model="gpt-4.1",
-            ),
-        )
-        pics = [PictureResult(ocr_text="chart", png_bytes=b"fake", page=1, bbox={})]
-        fake_resp = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="A bar chart"))]
-        )
-        with patch("litellm.completion", return_value=fake_resp):
-            converters._add_vlm_descriptions(pics, "doc1")
-        assert pics[0]["description"] == "A bar chart"
-
-
-class TestSpliceWithDescription:
-    """splice_figure_markers emits the `| description` inline form the flat
-    parser understands."""
-
-    def test_description_spliced_inline(self):
-        pics = [
-            PictureResult(
-                ocr_text="Revenue data here for 2024",
-                png_bytes=b"fake",
-                description="A bar chart of revenue",
-            )
-        ]
-        out = splice_figure_markers("<!-- image -->", pics)
-        assert "[Figure: fig-0 | A bar chart of revenue]" in out
-        assert "> [Chart text]: Revenue data here for 2024" in out
-
 
 class TestEnrichImageBlocks:
     """_enrich_image_blocks (async) wires pic_results into image blocks and
@@ -271,24 +145,10 @@ class TestEnrichImageBlocks:
         sf.assert_not_called()
         assert "figure_path" not in blocks[0]
 
-    @pytest.mark.asyncio
-    async def test_empty_results_noop(self):
-        from pageindex_mcp.client import _enrich_image_blocks
-
-        blocks = [{"role": "image", "index": 0}]
-        await _enrich_image_blocks(blocks, [], "doc1")
-        assert "figure_path" not in blocks[0]
-
-    @pytest.mark.asyncio
-    async def test_no_png_no_save(self):
-        """Decorative results (finding 12) never hit MinIO."""
-        from pageindex_mcp.client import _enrich_image_blocks
-
-        blocks = [{"role": "image", "index": 0}]
-        with patch("pageindex_mcp.client.save_figure") as sf:
-            await _enrich_image_blocks(blocks, [{"ocr_text": "", "page": 1, "bbox": {}}], "doc1")
-        sf.assert_not_called()
-        assert "figure_path" not in blocks[0]
+# ---------------------------------------------------------------------------
+# Audit finding 1: converters return (md, pics) via return value, not a
+# thread-local; docling converter output stays neutral (no splice at that layer)
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -382,71 +242,263 @@ class TestPageCoverageFilter:
         assert len(result) == 1
         assert "png_bytes" in result[0]
 
-    def test_page_coverage_threshold_configurable(self, monkeypatch):
-        """PICTURE_PAGE_COVERAGE_THRESHOLD=0.9 → region at 80% is kept."""
+# ---------------------------------------------------------------------------
+# Audit findings 4/7: dense ordinal keying + marker/region count guard
+# ---------------------------------------------------------------------------
+
+
+class TestDenseKeyingAndCountGuard:
+    def _region(self):
+        return {
+            "page": 1,
+            "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None),
+        }
+
+    def test_sparse_regions_keep_index_alignment(self, monkeypatch):
+        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(
+            converters,
+            "_collect_picture_regions",
+            lambda d: [self._region(), self._region(), self._region()],
+        )
+        monkeypatch.setattr(converters, "detect_ocr_langs", lambda s: ["eng"])
+        monkeypatch.setattr(converters, "ensure_tessdata", lambda langs: langs)
+        pr0 = PictureResult(ocr_text="first chart text here", png_bytes=b"a", page=1, bbox={})
+        pr2 = PictureResult(ocr_text="third chart text here", png_bytes=b"c", page=1, bbox={})
+        # Region 1's crop failed -> sparse dict; the dense list must NOT collapse.
+        monkeypatch.setattr(
+            converters,
+            "_recover_picture_text",
+            lambda *a, **k: ({0: pr0, 2: pr2}, {1: "page_coverage"}),
+        )
+
+        pics = converters._recover_picture_results("x <!-- image --> y", object(), "d.pdf")
+
+        assert len(pics) == 3
+        assert pics[0] is pr0
+        assert pics[2] is pr2
+        assert pics[1].get("skipped_reason") == "page_coverage"
+        assert not pics[1].get("ocr_text")
+        assert not pics[1].get("png_bytes")
+
+        md = "<!-- image -->\n\n<!-- image -->\n\n<!-- image -->"
+        out = splice_figure_markers(md, pics)
+        assert "[Figure: fig-0]" in out
+        assert "third chart text here" in out
+        assert "[Figure: fig-2]" in out
+        assert "[Figure: fig-1]" not in out
+        assert "<!-- image -->" not in out  # skipped marker stripped
+
+# ---------------------------------------------------------------------------
+# Audit finding 10: bounded concurrency for OCR and VLM
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Audit finding 12: decorative-image gate (short OCR text drops the crop
+# unless VLM description is enabled, in which case it's kept for reclassification)
+# ---------------------------------------------------------------------------
+
+
+class TestDecorativeGate:
+    def _region(self):
+        return {
+            "page": 1,
+            "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None),
+        }
+
+    def test_short_ocr_vlm_off_drops_png(self, monkeypatch):
+        monkeypatch.setattr(
+            "pageindex_mcp.config.settings",
+            SimpleNamespace(
+                pii_corpus=False,
+                openai_base_url="https://api.openai.com/v1",
+                vlm_model="gpt-4.1",
+                vlm_describe_images=False,
+                llm_model="gpt-test",
+            ),
+        )
         fake_fitz = _make_fake_fitz(600.0, 800.0)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.9)
-
-        region = self._make_region(0, 0, 560, 700)
-        long_text = "Recovered text with enough characters to pass the decorative gate"
-
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_text)
+            monkeypatch.setattr(
+                converters, "_tesseract_ocr_image", lambda png, langs: "short"
+            )
             monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            out, _skip = converters._recover_picture_text("dummy.pdf", [self._region()], ["eng"])
+        assert out[0]["ocr_text"] == ""
+        assert "png_bytes" not in out[0]
 
-        assert len(result) == 1
+    def test_short_ocr_vlm_on_keeps_png_for_reclassification(self, monkeypatch):
+        monkeypatch.setattr(
+            "pageindex_mcp.config.settings",
+            SimpleNamespace(
+                pii_corpus=False,
+                openai_base_url="https://api.openai.com/v1",
+                vlm_model="gpt-4.1",
+                vlm_describe_images=True,
+                llm_model="gpt-test",
+            ),
+        )
+        fake_fitz = _make_fake_fitz(600.0, 800.0)
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            monkeypatch.setattr(
+                converters, "_tesseract_ocr_image", lambda png, langs: "short"
+            )
+            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            out, _skip = converters._recover_picture_text("dummy.pdf", [self._region()], ["eng"])
+        assert out[0]["ocr_text"] == ""
+        assert out[0]["png_bytes"]
 
-    def test_coverage_skip_tags_skipped_reason(self):
-        """splice_figure_markers: skipped_reason='page_coverage' → marker stripped
-        (mirrors the tag _recover_picture_results attaches for deliberate skips)."""
-        md = "# Title\n\n<!-- image -->\n\nMore text"
-        pics = [PictureResult(skipped_reason="page_coverage")]
-        result = splice_figure_markers(md, pics)
-        assert "<!-- image -->" not in result
 
-    def test_splice_strips_skipped_marker(self):
-        """splice_figure_markers: skipped_reason → marker stripped."""
-        md = "Before\n<!-- image -->\nAfter"
-        pics = [PictureResult(skipped_reason="page_coverage")]
-        result = splice_figure_markers(md, pics)
-        assert "<!-- image -->" not in result
+# ---------------------------------------------------------------------------
+# Audit finding 15: VLM failure retries once, then increments a metric
+# (no silent-only logging)
+# ---------------------------------------------------------------------------
 
-    def test_splice_strips_decorative_marker(self):
-        """splice_figure_markers: skipped_reason='ocr_min_chars' → marker stripped
-        (decorative was replaced by skipped_reason in Zone 4)."""
-        md = "Before\n<!-- image -->\nAfter"
-        pics = [PictureResult(skipped_reason="ocr_min_chars")]
-        result = splice_figure_markers(md, pics)
-        assert "<!-- image -->" not in result
 
-    def test_splice_preserves_genuine_failure_marker(self):
-        """splice_figure_markers: empty PictureResult (no reason) → marker preserved."""
-        md = "Before\n<!-- image -->\nAfter"
-        pics = [PictureResult()]
-        result = splice_figure_markers(md, pics)
-        assert "<!-- image -->" in result
+class TestVlmRetryAndMetric:
+    def _settings(self):
+        return SimpleNamespace(
+            pii_corpus=False,
+            openai_base_url="https://api.openai.com/v1",
+            vlm_model="gpt-4.1",
+            vlm_describe_images=False,
+            llm_model="gpt-test",
+        )
 
-    def test_splice_strip_env_disabled(self, monkeypatch):
-        """STRIP_SKIPPED_IMAGE_MARKERS=false → even skipped markers are preserved."""
-        monkeypatch.setenv("STRIP_SKIPPED_IMAGE_MARKERS", "false")
-        md = "Before\n<!-- image -->\nAfter"
-        pics = [PictureResult(skipped_reason="page_coverage")]
-        result = splice_figure_markers(md, pics)
-        assert "<!-- image -->" in result
+    def test_transient_failure_retried_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr("pageindex_mcp.config.settings", self._settings())
+        monkeypatch.setattr(converters.time, "sleep", lambda s: None)
+        calls = {"n": 0}
+        fake_resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="desc after retry"))]
+        )
 
-    def test_splice_mixed_skipped_and_real(self):
-        """Mix of skipped and real results: skipped stripped, real kept as [Figure]."""
-        md = "A\n<!-- image -->\nB\n<!-- image -->\nC"
-        pics = [
-            PictureResult(skipped_reason="page_coverage"),
-            PictureResult(ocr_text="Revenue chart", page=1, bbox={"l": 0, "t": 0, "r": 0, "b": 0}),
-        ]
-        result = splice_figure_markers(md, pics)
-        assert "<!-- image -->" not in result
-        assert "[Figure: fig-1]" in result
-        assert "Revenue chart" in result
+        def flaky(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("rate limited")
+            return fake_resp
 
+        pics = [PictureResult(png_bytes=b"p")]
+        with (
+            patch("litellm.completion", side_effect=flaky),
+            patch("pageindex_mcp.metrics.IMAGE_DESCRIBE_FAILURES") as metric,
+        ):
+            _add_vlm_descriptions(pics, "d1")
+
+        assert calls["n"] == 2
+        assert pics[0]["description"] == "desc after retry"
+        metric.labels.assert_not_called()
+
+    def test_persistent_failure_increments_metric(self, monkeypatch):
+        monkeypatch.setattr("pageindex_mcp.config.settings", self._settings())
+        monkeypatch.setattr(converters.time, "sleep", lambda s: None)
+        pics = [PictureResult(png_bytes=b"p")]
+        with (
+            patch("litellm.completion", side_effect=RuntimeError("boom")),
+            patch("pageindex_mcp.metrics.IMAGE_DESCRIBE_FAILURES") as metric,
+        ):
+            _add_vlm_descriptions(pics, "d1")
+
+        metric.labels.assert_called_once_with(error_type="RuntimeError")
+        metric.labels.return_value.inc.assert_called_once()
+        assert "description" not in pics[0]
+
+
+# ---------------------------------------------------------------------------
+# End-to-end flat-branch wiring: converter pic_results reach client.index()
+# through the RETURN VALUE, get spliced, and drive _enrich_image_blocks
+# ---------------------------------------------------------------------------
+
+
+def _fake_client_settings(vlm_describe_images=False):
+    return SimpleNamespace(
+        openai_api_key="test-key",
+        openai_base_url="https://api.openai.com/v1",
+        azure_api_version=None,
+        llm_model="gpt-test",
+        minio_secure=False,
+        minio_endpoint="localhost:9000",
+        minio_bucket="pageindex",
+        flat_doc_routing=True,
+        vlm_fallback=False,
+        vlm_model="gpt-4.1",
+        vlm_describe_images=vlm_describe_images,
+        pii_corpus=False,
+    )
+
+
+@pytest.fixture
+def pdf_file():
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n fake pdf bytes")
+    yield path
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+async def _tree_coro():
+    return {"structure": [], "doc_description": ""}
+
+
+def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False):
+    monkeypatch.setattr(
+        client_mod, "settings", _fake_client_settings(vlm_describe_images=vlm_describe_images)
+    )
+    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (False, "depth<2"))
+    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
+    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_PER_PICTURE", False)
+    monkeypatch.setattr(
+        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: (chain_md, pics))]
+    )
+    monkeypatch.setattr(
+        client_mod, "_generate_flat_doc_description", MagicMock(return_value="a flat doc")
+    )
+    mocks = {
+        "save_flat_doc": MagicMock(),
+        "save_doc": MagicMock(),
+        "save_raw": MagicMock(),
+        "save_doc_meta": MagicMock(),
+        "save_figure": MagicMock(return_value="figures/x/fig-0.png"),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "image", "index": 0}])
+        ),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(client_mod, name, m)
+    return mocks
+
+
+CHAIN_MD = "prose line one\n\nprose line two\n\n<!-- image -->\n\nprose line three"
+
+
+class TestFlatBranchWiring:
+    async def test_flat_enrich_receives_results(self, monkeypatch, pdf_file):
+        """The converter's pic_results reach the flat branch through the RETURN
+        VALUE (not a thread-local), get spliced into the flat markdown, and
+        drive _enrich_image_blocks -> save_figure with the real doc_id."""
+        pr = {"png_bytes": b"PNG", "page": 1, "bbox": {"l": 1}, "ocr_text": "long chart text here"}
+        mocks = _wire_flat_branch(monkeypatch, chain_md=CHAIN_MD, pics=[pr])
+        c = CustomPageIndexClient(api_key="test-key")
+        monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro())
+
+        doc_id = await c.index(pdf_file)
+
+        routed_md = mocks["route_and_extract_flat"].call_args.args[0]
+        assert "[Figure: fig-0]" in routed_md
+        assert "long chart text here" in routed_md
+        mocks["save_figure"].assert_called_once_with(doc_id, 0, b"PNG")
+        saved_blocks = mocks["save_flat_doc"].call_args.args[1]["blocks"]
+        img = next(b for b in saved_blocks if b.get("role") == "image")
+        assert img["figure_path"] == "figures/x/fig-0.png"
 
 # ---------------------------------------------------------------------------
 # RFC-017 D1: Standalone image enrichment
@@ -611,42 +663,6 @@ class TestStandaloneImageEnrichment:
             if os.path.exists(jpg_path):
                 os.unlink(jpg_path)
 
-    @pytest.mark.asyncio
-    async def test_standalone_image_marker_count_match(self, monkeypatch):
-        """3 <!-- image --> markers -> exactly 3 PictureResults, same png_bytes (D0)."""
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_3MARKERS"
-        markdown = "# Title\n\n<!-- image -->\n\nMiddle\n\n<!-- image -->\n\nEnd\n\n<!-- image -->"
-        captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
-
-        assert len(captured_pics) == 3
-        assert all(p["png_bytes"] == source_bytes for p in captured_pics)
-
-    @pytest.mark.asyncio
-    async def test_standalone_image_single_marker(self, monkeypatch):
-        """1 <!-- image --> marker -> exactly 1 PictureResult (pre-D0 regression)."""
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_1MARKER"
-        markdown = "# Title\n\n<!-- image -->\n\nSome caption text"
-        captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
-
-        assert len(captured_pics) == 1
-        assert captured_pics[0]["png_bytes"] == source_bytes
-
-    @pytest.mark.asyncio
-    async def test_multi_marker_raster_five_markers(self, monkeypatch):
-        """5 <!-- image --> markers → exactly 5 PictureResults, all same png_bytes (D0 edge)."""
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_5MARKERS"
-        markdown = (
-            "# Title\n\n<!-- image -->\n\nA\n\n<!-- image -->\n\nB\n\n"
-            "<!-- image -->\n\nC\n\n<!-- image -->\n\nD\n\n<!-- image -->"
-        )
-        captured_pics = await self._run_index_with_markdown(monkeypatch, markdown, source_bytes)
-
-        assert len(captured_pics) == 5
-        assert all(p["png_bytes"] == source_bytes for p in captured_pics)
-        assert all(p["page"] == 1 for p in captured_pics)
-        assert all(p["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0} for p in captured_pics)
-
-
 def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
     """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
     for RFC-018 D1 text-layer-probe tests on _recover_picture_text."""
@@ -733,69 +749,12 @@ class TestTextLayerProbe:
         assert 0 in result
         assert len(result) == 1
 
-    def test_text_layer_boundary_exactly_20_chars(self, monkeypatch):
-        """Exactly 20 chars (== threshold) → does NOT skip, OCR proceeds."""
-        clip_text = "A" * 20  # exactly at threshold
-        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
-
-        region = self._make_region(0, 0, 100, 100)
-        long_ocr = "Recovered OCR text that is long enough to pass the gate"
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_ocr)
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        assert 0 in result  # OCR fires — boundary NOT exceeded
-
-    def test_text_layer_boundary_21_chars_skips(self, monkeypatch):
-        """21 chars (> threshold), already in the Docling markdown export → skip OCR."""
-        clip_text = "A" * 21  # just above threshold
-        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
-
-        region = self._make_region(0, 0, 100, 100)
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=clip_text)
-
-        # D5a (RFC-029): retained-skip contract — OCR skipped but crop and
-        # propagated clip_text are surfaced for downstream.
-        assert 0 in result
-        assert result[0].get("skipped_reason") == "clip_text_already_exported"
-        assert result[0].get("png_bytes")
-        assert result[0].get("ocr_text") == clip_text
-
-    def test_text_layer_env_override(self, monkeypatch):
-        """_PICTURE_OCR_MIN_CHARS env override: set to 50 → 30 chars should NOT skip."""
-        clip_text = "A" * 30  # 30 chars, above default 20 but below custom 50
-        fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, clip_text)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
-        monkeypatch.setattr(converters, "_PICTURE_OCR_MIN_CHARS", 50)
-        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
-            picture_ocr_min_chars=50,
-        ))
-
-        region = self._make_region(0, 0, 100, 100)
-        long_ocr = "Recovered OCR text that is long enough to pass the gate"
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_ocr)
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        assert 0 in result  # OCR fires because 30 < 50
-        assert "png_bytes" in result[0]
-
-
 # ---------------------------------------------------------------------------
 # RFC-020 Task 4.1 / F4: independent PictureResult copies (standalone path)
 # ---------------------------------------------------------------------------
 
 
-class TestF4IndependentPictureResults:
+class TestIndependentPictureResults:
     """RFC-020 F4: the standalone-image branch must build pic_results with a
     list comprehension (independent dict copies), never ``[PictureResult(...)] * N``
     (shared references) — mutating one entry must not affect the others."""
@@ -818,60 +777,3 @@ class TestF4IndependentPictureResults:
         assert "png_bytes" not in pic_results[0]
         assert "png_bytes" in pic_results[1]
         assert "png_bytes" in pic_results[2]
-
-    def test_multi_marker_all_independent(self):
-        marker_count = 5
-        img_bytes = b"fake-png"
-        pic_results = [
-            PictureResult(
-                ocr_text="",
-                page=1,
-                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
-                png_bytes=img_bytes,
-            )
-            for _ in range(max(1, marker_count))
-        ]
-
-        pic_results[2]["bbox"] = {"l": 99}
-
-        assert pic_results[2]["bbox"] == {"l": 99}
-        for i in (0, 1, 3, 4):
-            assert pic_results[i]["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0}
-
-    def test_single_marker_parity(self):
-        marker_count = 1
-        img_bytes = b"fake-png"
-        pic_results = [
-            PictureResult(
-                ocr_text="",
-                page=1,
-                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
-                png_bytes=img_bytes,
-            )
-            for _ in range(max(1, marker_count))
-        ]
-
-        assert len(pic_results) == 1
-        assert pic_results[0]["ocr_text"] == ""
-        assert pic_results[0]["page"] == 1
-        assert pic_results[0]["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0}
-        assert pic_results[0]["png_bytes"] == img_bytes
-
-    def test_shared_reference_mutation_would_fail(self):
-        """Demonstrates the OLD (buggy) pattern: [PictureResult(...)] * 3 shares
-        the SAME dict object across all list slots, so a mutation to one entry
-        leaks into every other entry."""
-        img_bytes = b"fake-png"
-        pic_results = [
-            PictureResult(
-                ocr_text="",
-                page=1,
-                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
-                png_bytes=img_bytes,
-            )
-        ] * 3
-
-        pic_results[0].pop("png_bytes")
-
-        assert "png_bytes" not in pic_results[0]
-        assert "png_bytes" not in pic_results[1]

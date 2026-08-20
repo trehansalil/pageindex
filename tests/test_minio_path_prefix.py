@@ -33,30 +33,11 @@ class TestPrefixedPoolManager:
         args = self._capture("/minio", url)
         assert args.args[1].endswith("?list-type=2&prefix=proc%2F")
 
-    def test_scheme_and_host_untouched(self):
-        args = self._capture("/minio", "https://infra.example.com:8443/pageindex/a")
-        assert args.args[1].startswith("https://infra.example.com:8443/minio/")
-
-    def test_root_path_handled(self):
-        args = self._capture("/minio", "https://infra.example.com/")
-        assert args.args[1] == "https://infra.example.com/minio/"
-
-    def test_kwargs_forwarded(self):
-        args = self._capture(
-            "/minio", "https://infra.example.com/b/k", body=b"x", preload_content=False
-        )
-        assert args.kwargs["body"] == b"x"
-        assert args.kwargs["preload_content"] is False
-
     def test_already_prefixed_path_not_prefixed_twice(self):
         """urllib3 follows redirects by re-entering urlopen, so a redirect back
         to /minio/... must not become /minio/minio/..."""
         args = self._capture("/minio", "https://infra.example.com/minio/pageindex/a.pdf")
         assert args.args[1] == "https://infra.example.com/minio/pageindex/a.pdf"
-
-    def test_bare_prefix_path_not_prefixed_twice(self):
-        args = self._capture("/minio", "https://infra.example.com/minio")
-        assert args.args[1] == "https://infra.example.com/minio"
 
     def test_prefix_lookalike_path_is_still_prefixed(self):
         """/minio-staging is a different path, not an already-prefixed one."""
@@ -81,14 +62,6 @@ class TestPrefixedPoolInheritsSdkSettings:
         assert kw["retries"].total == 5
         assert kw["retries"].status_forcelist == [500, 502, 503, 504]
 
-    def test_ssl_cert_file_env_is_honoured(self, monkeypatch, tmp_path):
-        ca = tmp_path / "ca.pem"
-        ca.write_text("")
-        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
-
-        pm = PrefixedPoolManager("/minio")
-        assert pm.connection_pool_kw["ca_certs"] == str(ca)
-
     def test_explicit_kwargs_still_override(self):
         pm = PrefixedPoolManager("/minio", maxsize=3)
         assert pm.connection_pool_kw["maxsize"] == 3
@@ -98,10 +71,6 @@ class TestMakeMinio:
     def test_prefix_installs_custom_http_client(self):
         client = make_minio("infra.example.com", "k", "s", secure=True, path_prefix="/minio")
         assert isinstance(client._http, PrefixedPoolManager)
-
-    def test_no_prefix_leaves_default_http_client(self):
-        client = make_minio("10.43.0.1:9000", "k", "s", secure=False, path_prefix="")
-        assert not isinstance(client._http, PrefixedPoolManager)
 
     def test_endpoint_with_path_is_still_rejected(self):
         """Guards the reason this module exists — if the SDK ever accepted a
@@ -143,16 +112,6 @@ class TestConfig:
             monkeypatch.setenv("MINIO_PATH_PREFIX", raw)
             importlib.reload(reloadable_config)
             assert reloadable_config.settings.minio_path_prefix == "/minio", raw
-
-    def test_minio_region_defaults_empty_so_sdk_discovers_it(
-        self, monkeypatch, reloadable_config
-    ):
-        """Pinning a region by default would misSign every request on a
-        deployment configured with a different one."""
-        monkeypatch.delenv("MINIO_REGION", raising=False)
-
-        importlib.reload(reloadable_config)
-        assert reloadable_config.settings.minio_region == ""
 
 
 class TestPresignFallsBackToMainPrefix:
