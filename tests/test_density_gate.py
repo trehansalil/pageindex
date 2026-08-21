@@ -12,10 +12,10 @@ Consolidates (former test_zone6_*.py files):
   - fallback_pipeline:    Candidate.has_depth / _heading_count / _run_stages
   - verdict_persistence:  five-writer verdict CAS + sidecar merge
 """
+
 from __future__ import annotations
 
 import copy
-import dataclasses
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,19 +31,11 @@ from pageindex_mcp.converters import (
     _run_stages,
 )
 from pageindex_mcp.helpers import (
+    _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD,
     TreeSignals,
     _gate_low_content_density,
-    _RFC029_MIN_CHARS_PER_NODE_DEEP,
-    _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD,
-    _RFC029_TABLE_SEGMENT_MIN_ROWS,
-    _RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE,
-    _RFC036_SINGLETON_RATIO_LANDSCAPE,
-    _RFC036_SINGLETON_ROW_RATIO_THRESHOLD,
-    _flatten_tree_text,
     _segment_table_nodes,
-    _split_on_atx_headings,
     _split_on_generic_numbered_lines,
-    _strip_toc_heading_nodes,
     _strip_toc_heading_nodes_guarded,
     _tree_depth,
     _tree_node_count,
@@ -58,25 +50,22 @@ from pageindex_mcp.metrics import (
     TOC_STRIP_SKIPPED,
 )
 from pageindex_mcp.storage import (
-    _VERDICT_CAS_FIELDS,
-    _read_existing_sidecar,
     _verdict_cas_guard,
     save_doc_meta,
     write_verdict,
 )
 from pageindex_mcp.worker import (
     CHILD_TIMEOUT,
-    JOB_TIMEOUT,
     REAP_GRACE,
     process_document_job,
     reap_stale_jobs,
 )
 from tests.conftest import filler_text
 
-
 # ===========================================================================
 # 1. _gate_low_content_density (Gate 9): script/depth-aware thresholds
 # ===========================================================================
+
 
 def _make_sig(node_count: int, depth: int, chars: int) -> TreeSignals:
     """Build a minimal TreeSignals with the given node_count, depth, and char count."""
@@ -118,9 +107,11 @@ class TestDensityGate:
         fired, _ = _gate_low_content_density(sig, [], None, 10, None)
         assert not fired, "node_count < 200 must gate entirely"
 
+
 # ===========================================================================
 # 2. _strip_toc_heading_nodes_guarded: char-loss abort + refined depth guard
 # ===========================================================================
+
 
 def _toc_node(title, text=""):
     """Build a node that looks like a ToC entry (dot-leader title, empty body)."""
@@ -165,9 +156,11 @@ class TestTocStripGuard:
         result = _strip_toc_heading_nodes_guarded(nodes, doc_name="test_delta1")
         assert _tree_node_count(result) <= _tree_node_count(nodes)
 
+
 # ===========================================================================
 # 3. prepare_tree orientation threading + _dominant_orientation
 # ===========================================================================
+
 
 def _pipe_table(n_data_rows: int, n_cols: int = 3) -> str:
     lines = ["| " + " | ".join(f"Col{c}" for c in range(n_cols)) + " |"]
@@ -201,16 +194,13 @@ class TestPrepareTreeOrientation:
 
         result_default = prepare_tree(s1)
         result_none = prepare_tree(s2, orientation=None)
-        result_manual = _segment_table_nodes(
-            split_oversized_leaf_nodes(s3), orientation=None
-        )
+        result_manual = _segment_table_nodes(split_oversized_leaf_nodes(s3), orientation=None)
 
-        assert result_default == result_none, (
-            "Default and explicit None must produce same result"
-        )
+        assert result_default == result_none, "Default and explicit None must produce same result"
         assert result_none == result_manual, (
             "prepare_tree(orientation=None) must match manual split+segment"
         )
+
 
 class TestDominantOrientation:
     """_dominant_orientation derives orientation from per-page landscape data."""
@@ -218,14 +208,36 @@ class TestDominantOrientation:
     def test_none_input(self):
         assert _dominant_orientation(None) is None
 
+
 # ===========================================================================
 # 4. split_oversized_leaf_nodes: ATX-heading / generic-numbered-line tiers
 # ===========================================================================
 
-_WORDS = (
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
-    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey "
-).split()
+_WORDS = [
+    "alpha",
+    "bravo",
+    "charlie",
+    "delta",
+    "echo",
+    "foxtrot",
+    "golf",
+    "hotel",
+    "india",
+    "juliet",
+    "kilo",
+    "lima",
+    "mike",
+    "november",
+    "oscar",
+    "papa",
+    "quebec",
+    "romeo",
+    "sierra",
+    "tango",
+    "uniform",
+    "victor",
+    "whiskey",
+]
 
 
 def _text_of_length(n: int) -> str:
@@ -260,12 +272,7 @@ class TestSplitterGenericTiers:
 
     def test_atx_heading_fallback_splits_run_together_headings(self):
         body = _text_of_length(20000)
-        text = (
-            f"Preamble text here.\n"
-            f"# Section 1\n{body}\n"
-            f"# Section 2\n{body}\n"
-            f"# Section 3\n{body}"
-        )
+        text = f"Preamble text here.\n# Section 1\n{body}\n# Section 2\n{body}\n# Section 3\n{body}"
         assert len(text) > 50000
 
         tree = [_make_leaf(text)]
@@ -312,8 +319,8 @@ class TestSplitterGenericTiers:
 # 5. _segment_table_nodes: orientation-aware table segmentation thresholds
 # ===========================================================================
 
-def _make_table_node2(title: str, n_data_rows: int, n_cols: int = 3,
-                       char_padding: int = 0) -> dict:
+
+def _make_table_node2(title: str, n_data_rows: int, n_cols: int = 3, char_padding: int = 0) -> dict:
     table = _pipe_table(n_data_rows, n_cols)
     if char_padding:
         text = _prose_of_length(char_padding) + "\n" + table
@@ -322,8 +329,7 @@ def _make_table_node2(title: str, n_data_rows: int, n_cols: int = 3,
     return {"title": title, "text": text, "nodes": []}
 
 
-def _make_singleton_table_node(title: str, n_data_rows: int,
-                                singleton_fraction: float) -> dict:
+def _make_singleton_table_node(title: str, n_data_rows: int, singleton_fraction: float) -> dict:
     n_singleton = int(n_data_rows * singleton_fraction)
     n_multi = n_data_rows - n_singleton
 
@@ -342,17 +348,23 @@ class TestTableSegmentOrientation:
 
     def test_landscape_segments_table_with_12_rows(self):
         """12 data rows: both portrait and landscape should segment."""
-        node = _make_table_node2("Table12", n_data_rows=12, n_cols=3,
-                                  char_padding=_RFC029_TABLE_SEGMENT_CHAR_THRESHOLD + 100)
+        node = _make_table_node2(
+            "Table12",
+            n_data_rows=12,
+            n_cols=3,
+            char_padding=_RFC029_TABLE_SEGMENT_CHAR_THRESHOLD + 100,
+        )
         result_portrait = _segment_table_nodes([copy.deepcopy(node)], orientation="portrait")
         result_landscape = _segment_table_nodes([copy.deepcopy(node)], orientation="landscape")
 
         assert bool(result_portrait[0].get("nodes")), "Portrait with 12 rows should segment"
         assert bool(result_landscape[0].get("nodes")), "Landscape with 12 rows should segment"
 
+
 # ===========================================================================
 # 6. reap_stale_jobs: dynamic per-job timeout
 # ===========================================================================
+
 
 def _make_job_hash(
     *,
@@ -372,6 +384,7 @@ def _make_scan_iter(keys: list[str]):
     async def _scan_iter(match=None):
         for k in keys:
             yield k
+
     return _scan_iter
 
 
@@ -424,9 +437,11 @@ class TestReapDynamicTimeout:
 
         mock_redis.hset.assert_not_called()
 
+
 # ===========================================================================
 # 7. route_and_extract_flat: fence-parity observability warnings
 # ===========================================================================
+
 
 def _fence_warning_count(kind: str) -> float:
     return FENCE_PARITY_WARNING.labels(kind=kind)._value.get()
@@ -465,9 +480,11 @@ class TestFenceObservability:
         assert "hello" in text or "pass" in text
         assert "After fence" in text
 
+
 # ===========================================================================
 # 8. process_document_job: late-success reap-recovery
 # ===========================================================================
+
 
 class TestLateSuccessReapRecovery:
     """A job reaped mid-processing (status flipped to ERROR) that then
@@ -486,45 +503,56 @@ class TestLateSuccessReapRecovery:
 
     def _patches(self, converter_result, job_dir):
         return (
-            patch("pageindex_mcp.worker.download_staging"),
-            patch("pageindex_mcp.worker.wait_for_memory", new_callable=AsyncMock),
+            patch("pageindex_mcp.worker.job.download_staging"),
+            patch("pageindex_mcp.worker.job.wait_for_memory", new_callable=AsyncMock),
             patch(
-                "pageindex_mcp.worker._run_converter_subprocess",
+                "pageindex_mcp.worker.job._run_converter_subprocess",
                 new_callable=AsyncMock,
                 return_value=converter_result,
             ),
-            patch("pageindex_mcp.worker._upsert_registry_row", new_callable=AsyncMock),
-            patch("pageindex_mcp.worker.delete_staging", return_value=True),
-            patch("pageindex_mcp.worker.ACTIVE_UPLOADS"),
-            patch("pageindex_mcp.worker.UPLOADS"),
-            patch("pageindex_mcp.worker.UPLOAD_DURATION"),
-            patch("pageindex_mcp.worker._mirror_bridged_incr", new_callable=AsyncMock),
-            patch("pageindex_mcp.worker.effective_config_snapshot", return_value={}),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._upsert_registry_row", new_callable=AsyncMock
+            ),
+            patch("pageindex_mcp.worker.job.delete_staging", return_value=True),
+            patch("pageindex_mcp.worker.job.ACTIVE_UPLOADS"),
+            patch("pageindex_mcp.worker.job.UPLOADS"),
+            patch("pageindex_mcp.worker.job.UPLOAD_DURATION"),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr", new_callable=AsyncMock
+            ),
+            patch("pageindex_mcp.worker.job.effective_config_snapshot", return_value={}),
             patch("tempfile.mkdtemp", return_value=job_dir),
             patch("shutil.rmtree"),
         )
 
     async def test_normal_success_no_late_success_flag(self, ctx, mock_redis):
         converter_result = {
-            "ok": True, "doc_id": "doc-456", "peak_rss_kib": 500,
-            "duration_ms": 2000, "_effective_timeout": 3600,
+            "ok": True,
+            "doc_id": "doc-456",
+            "peak_rss_kib": 500,
+            "duration_ms": 2000,
+            "_effective_timeout": 3600,
         }
         with (
-            patch("pageindex_mcp.worker.download_staging"),
-            patch("pageindex_mcp.worker.wait_for_memory", new_callable=AsyncMock),
+            patch("pageindex_mcp.worker.job.download_staging"),
+            patch("pageindex_mcp.worker.job.wait_for_memory", new_callable=AsyncMock),
             patch(
-                "pageindex_mcp.worker._run_converter_subprocess",
-                new_callable=AsyncMock, return_value=converter_result,
+                "pageindex_mcp.worker.job._run_converter_subprocess",
+                new_callable=AsyncMock,
+                return_value=converter_result,
             ),
             patch(
-                "pageindex_mcp.worker._upsert_registry_row", new_callable=AsyncMock,
+                "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
+                new_callable=AsyncMock,
             ) as mock_upsert,
-            patch("pageindex_mcp.worker.delete_staging", return_value=True),
-            patch("pageindex_mcp.worker.ACTIVE_UPLOADS"),
-            patch("pageindex_mcp.worker.UPLOADS"),
-            patch("pageindex_mcp.worker.UPLOAD_DURATION"),
-            patch("pageindex_mcp.worker._mirror_bridged_incr", new_callable=AsyncMock),
-            patch("pageindex_mcp.worker.effective_config_snapshot", return_value={}),
+            patch("pageindex_mcp.worker.job.delete_staging", return_value=True),
+            patch("pageindex_mcp.worker.job.ACTIVE_UPLOADS"),
+            patch("pageindex_mcp.worker.job.UPLOADS"),
+            patch("pageindex_mcp.worker.job.UPLOAD_DURATION"),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr", new_callable=AsyncMock
+            ),
+            patch("pageindex_mcp.worker.job.effective_config_snapshot", return_value={}),
             patch("tempfile.mkdtemp", return_value="/tmp/test-job2"),
             patch("shutil.rmtree"),
         ):
@@ -541,9 +569,7 @@ class TestLateSuccessReapRecovery:
 
             mock_redis.hget = AsyncMock(side_effect=normal_hget)
 
-            doc_id = await process_document_job(
-                ctx, "uploads/staging/job-2/normal.pdf", "job-2"
-            )
+            doc_id = await process_document_job(ctx, "uploads/staging/job-2/normal.pdf", "job-2")
 
             assert doc_id == "doc-456"
             mock_upsert.assert_called_once()
@@ -555,9 +581,11 @@ class TestLateSuccessReapRecovery:
                     assert "reaped_recovery" not in mapping
                     break
 
+
 # ===========================================================================
 # 9. converters: Candidate.has_depth / _heading_count / _run_stages
 # ===========================================================================
+
 
 class TestCandidateHasDepth:
     """Candidate.has_depth caches _has_structural_depth(md) at construction
@@ -574,6 +602,7 @@ class TestCandidateHasDepth:
         that construct Candidate with only md=)."""
         c = Candidate(md="# A\n\n## B\n\n## C\n\n## D")
         assert c.has_depth is False
+
 
 class TestHeadingCountHelper:
     """_heading_count is a thin wrapper consolidating repeated
@@ -595,9 +624,7 @@ class TestRunStagesRegression:
         def ok_stage(md: str) -> str:
             return md + "!"
 
-        result_md, records = _run_stages(
-            "x", [("fail", fail_stage), ("ok", ok_stage)]
-        )
+        result_md, records = _run_stages("x", [("fail", fail_stage), ("ok", ok_stage)])
         assert result_md == "x!"
         assert records["fail"]["error"] == "fail"
         assert records["ok"]["error"] is None
@@ -607,8 +634,10 @@ class TestRunStagesRegression:
 # 10. storage: five writers, lost-update sidecar merge (verdict persistence)
 # ===========================================================================
 
+
 def _nosuchkey():
     from minio.error import S3Error
+
     return S3Error(MagicMock(), "NoSuchKey", "missing", "res", "req", "host")
 
 
@@ -618,7 +647,7 @@ def mock_minio():
     client.bucket_exists.return_value = True
     client.get_object.side_effect = _nosuchkey()
 
-    with patch("pageindex_mcp.storage.get_minio", return_value=client):
+    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=client):
         yield client
 
 
@@ -640,25 +669,30 @@ class TestVerdictCasGuard:
 
     def test_allows_write_when_timestamps_equal(self):
         ts = "2026-08-05T00:00:00+00:00"
-        assert _verdict_cas_guard(
-            {"verdict_computed_at": ts}, {"verdict_computed_at": ts}
-        ) is False
+        assert _verdict_cas_guard({"verdict_computed_at": ts}, {"verdict_computed_at": ts}) is False
+
 
 class TestSaveDocMetaCasIntegration:
     """save_doc_meta rejects stale verdict fields but accepts non-verdict fields."""
 
     def test_newer_verdict_accepted(self, mock_minio):
         existing = {
-            "doc_id": "cas02", "doc_name": "report.pdf", "source_url": "",
-            "processed_at": "2026-01-01", "verdict": "MARGINAL",
-            "verdict_reason": "leaf_concentration", "pipeline_version": 3,
+            "doc_id": "cas02",
+            "doc_name": "report.pdf",
+            "source_url": "",
+            "processed_at": "2026-01-01",
+            "verdict": "MARGINAL",
+            "verdict_reason": "leaf_concentration",
+            "pipeline_version": 3,
             "verdict_computed_at": "2026-08-01T00:00:00+00:00",
             "max_leaf_ratio": 0.35,
         }
         _set_existing_sidecar(mock_minio, existing)
 
         meta = {
-            "doc_id": "cas02", "verdict": "PASS", "verdict_reason": "promoted",
+            "doc_id": "cas02",
+            "verdict": "PASS",
+            "verdict_reason": "promoted",
             "pipeline_version": 4,
             "verdict_computed_at": "2026-08-10T12:00:00+00:00",
             "max_leaf_ratio": 0.05,
@@ -676,8 +710,11 @@ class TestWriteVerdict:
 
     def test_max_leaf_ratio_rounded_to_4_decimals(self, mock_minio):
         write_verdict(
-            doc_id="wv04", verdict="PASS", verdict_reason="ok",
-            pipeline_version=4, verdict_computed_at="2026-08-12",
+            doc_id="wv04",
+            verdict="PASS",
+            verdict_reason="ok",
+            pipeline_version=4,
+            verdict_computed_at="2026-08-12",
             max_leaf_ratio=0.123456789,
         )
 
@@ -690,6 +727,7 @@ class TestReadRegistryFieldsSidecarFallback:
     """read_registry_fields falls back to the sidecar when the artifact
     lacks verdict fields (Zone-8 Target 4)."""
 
+
 class TestPromotionSweepVerdictRouting:
     """promotion_sweep.run_sweep routes verdict through write_verdict, never
     save_doc_meta."""
@@ -697,15 +735,20 @@ class TestPromotionSweepVerdictRouting:
     @pytest.mark.asyncio
     async def test_sweep_calls_write_verdict_not_save_doc_meta_for_verdict(self):
         sweep_meta = {
-            "doc_id": "sweep01", "doc_name": "sweep.pdf", "source_url": "",
+            "doc_id": "sweep01",
+            "doc_name": "sweep.pdf",
+            "source_url": "",
             "processed_at": "2026-01-01",
             "structure": [{"title": "Ch1", "text": "hello", "nodes": []}],
         }
         sweep_json = json.dumps(sweep_meta).encode()
-        sidecar_json = json.dumps({
-            "doc_id": "sweep01", "verdict": "MARGINAL",
-            "verdict_reason": "leaf_concentration",
-        }).encode()
+        sidecar_json = json.dumps(
+            {
+                "doc_id": "sweep01",
+                "verdict": "MARGINAL",
+                "verdict_reason": "leaf_concentration",
+            }
+        ).encode()
 
         with (
             patch("promotion_sweep.sweep_candidates", return_value=["sweep01"]),
@@ -733,6 +776,7 @@ class TestPromotionSweepVerdictRouting:
             mock_get_minio.return_value = mc
 
             from promotion_sweep import run_sweep
+
             await run_sweep()
 
             mock_wv.assert_called_once()
@@ -752,6 +796,7 @@ class TestRecomputeVerdictsWriteVerdict:
     """preprocess_client.recompute_verdicts calls write_verdict with the
     correct positional arguments."""
 
+
 class TestRegistryBackfillPropagationOnly:
     """_enrich_one and _heal_one are propagators, not computers -- they
     must never call classify_verdict or write_verdict."""
@@ -759,20 +804,24 @@ class TestRegistryBackfillPropagationOnly:
     @pytest.mark.asyncio
     async def test_heal_one_never_calls_classify_verdict_or_write_verdict(self):
         with (
-            patch("pageindex_mcp.registry_backfill.read_registry_fields") as mock_rrf,
-            patch("pageindex_mcp.registry_backfill.save_doc_meta"),
-            patch("pageindex_mcp.registry_backfill.upsert_doc"),
-            patch("pageindex_mcp.registry_backfill.get_minio"),
+            patch("pageindex_mcp.registry_backfill.backfill.read_registry_fields") as mock_rrf,
+            patch("pageindex_mcp.registry_backfill.backfill.save_doc_meta"),
+            patch("pageindex_mcp.registry_backfill.backfill.upsert_doc"),
+            patch("pageindex_mcp.registry_backfill.backfill.get_minio"),
             patch("pageindex_mcp.helpers.classify_verdict") as mock_cv,
             patch("pageindex_mcp.storage.write_verdict") as mock_wv,
         ):
             mock_rrf.return_value = {
-                "doc_id": "heal01", "doc_name": "test.pdf", "sha256": "abc",
-                "doc_description": "desc", "verdict": "PASS",
+                "doc_id": "heal01",
+                "doc_name": "test.pdf",
+                "sha256": "abc",
+                "doc_description": "desc",
+                "verdict": "PASS",
                 "verdict_reason": "base_pass",
             }
 
             from pageindex_mcp.registry_backfill import _heal_orphans
+
             await _heal_orphans({"heal01": None})
 
             mock_cv.assert_not_called()

@@ -59,7 +59,8 @@ def test_numeric_extension():
     )
     bad_lab = tuple(_segment_label("A.1.x"))
     assert not any(
-        bad_lab[:k] in anchors and all(c.isdigit() for c in bad_lab[k:]) for k in range(len(bad_lab) - 1, 0, -1)
+        bad_lab[:k] in anchors and all(c.isdigit() for c in bad_lab[k:])
+        for k in range(len(bad_lab) - 1, 0, -1)
     )
 
 
@@ -120,7 +121,9 @@ def test_split_oversized_english_paren_inline():
 
 def test_frontmatter_toc_left_intact():
     entries = "\n".join(
-        f"Chapter Title {i} for Dartmouth Publishing House Social Rights Review " + "." * 12 + f" {i}"
+        f"Chapter Title {i} for Dartmouth Publishing House Social Rights Review "
+        + "." * 12
+        + f" {i}"
         for i in range(40)
     )
     text = "حقـوق الإنسان\nDartmouth Publishing House, Social Rights Review 1996.\n" + entries

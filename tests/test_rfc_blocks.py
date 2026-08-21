@@ -20,8 +20,8 @@ mirrored predicate is exactly what let the override's total absence from
 client.py go undetected until Run-15.
 """
 
-from pageindex_mcp import client as client_module
 from pageindex_mcp.client import apply_image_ext_content_class_override
+from pageindex_mcp.client import images as _img
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
     _classify_image_verdict,
@@ -198,14 +198,16 @@ class TestImageExtensionRouting:
         assert content_class == "image_standalone"
 
     def test_pipeline_disabled_falls_back_to_flat_path(self, monkeypatch):
-        monkeypatch.setattr(client_module, "_IMAGE_STANDALONE_PIPELINE_ENABLED", False)
+        monkeypatch.setattr(_img, "_IMAGE_STANDALONE_PIPELINE_ENABLED", False)
         content_class = apply_image_ext_content_class_override(".jpg", "flat_prose")
         assert content_class == "flat_prose"
         # Even with the override disabled, the enrichment rescue gate (B2-B)
         # is defense-in-depth and still promotes a well-enriched flat doc —
         # but only when max_leaf_ratio is below the 0.75 hard-FAIL ceiling.
         structure = _multi_node_tree()
-        verdict, reason = classify_verdict(structure, content_class, None, image_enrichment_ratio=0.9)
+        verdict, reason = classify_verdict(
+            structure, content_class, None, image_enrichment_ratio=0.9
+        )
         assert (verdict, reason) == ("PASS", "image_enrichment_promoted")
 
 
@@ -231,7 +233,9 @@ class TestImageEnrichmentGateOrdering:
         structure (max_leaf_ratio=1.0). Without the rescue, every
         image-enriched flat doc would hard-FAIL on structure alone."""
         structure = _single_leaf_tree()
-        verdict, reason = classify_verdict(structure, "flat_prose", None, image_enrichment_ratio=0.9)
+        verdict, reason = classify_verdict(
+            structure, "flat_prose", None, image_enrichment_ratio=0.9
+        )
         assert verdict == "PASS"
         assert reason == "image_enrichment_promoted"
 
@@ -239,11 +243,15 @@ class TestImageEnrichmentGateOrdering:
         """When max_leaf_ratio is below 0.75, image-enrichment rescue
         promotes."""
         structure = _multi_node_tree()
-        verdict, reason = classify_verdict(structure, "flat_prose", None, image_enrichment_ratio=0.9)
+        verdict, reason = classify_verdict(
+            structure, "flat_prose", None, image_enrichment_ratio=0.9
+        )
         assert (verdict, reason) == ("PASS", "image_enrichment_promoted")
 
     def test_non_image_enriched_doc_still_fails_on_max_leaf_ratio(self):
         structure = _single_leaf_tree()
-        verdict, reason = classify_verdict(structure, "flat_prose", None, image_enrichment_ratio=None)
+        verdict, reason = classify_verdict(
+            structure, "flat_prose", None, image_enrichment_ratio=None
+        )
         assert verdict == "FAIL"
         assert reason.startswith("max_leaf_ratio=")

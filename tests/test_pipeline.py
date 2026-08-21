@@ -8,33 +8,27 @@ _text_layer_has_content, picture-result normalization, landscape renames.
 from __future__ import annotations
 
 import copy
-import dataclasses
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pageindex_mcp.config import pipeline_config
 from pageindex_mcp.helpers import (
-    FLAT_GATE_SUBSET,
-    GATES,
-    HARD_FAIL_DEFECTS,
     _GATE_PRIORITY,
+    HARD_FAIL_DEFECTS,
     GateOutcome,
     TreeDefect,
     TreeGateResult,
     TreeSignals,
     VerdictResult,
     VerdictThresholds,
+    _segment_table_nodes,
     apply_promotions,
-    compute_verdict,
     evaluate_gates,
     prepare_tree,
     split_oversized_leaf_nodes,
-    _segment_table_nodes,
 )
 from pageindex_mcp.script import ScriptContext
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures / helpers
@@ -85,8 +79,11 @@ def _outcome_for(
     if all_defects is None:
         all_defects = frozenset()
     return GateOutcome(
-        defect=defect, validate_reason=None, signals=sig,
-        all_defects=all_defects, hard_fail_verdict=None,
+        defect=defect,
+        validate_reason=None,
+        signals=sig,
+        all_defects=all_defects,
+        hard_fail_verdict=None,
     )
 
 
@@ -108,8 +105,11 @@ def _make_gate_result(
     if all_defects is None:
         all_defects = frozenset({defect}) if defect != TreeDefect.OK else frozenset()
     return TreeGateResult(
-        ok=(defect == TreeDefect.OK), defect=defect, detail=defect.value,
-        signals=sig, all_defects=all_defects,
+        ok=(defect == TreeDefect.OK),
+        defect=defect,
+        detail=defect.value,
+        signals=sig,
+        all_defects=all_defects,
     )
 
 
@@ -122,17 +122,28 @@ class TestApplyPromotions:
     def test_well_formed_passes(self):
         structure = [
             {
-                "node_id": "1", "title": "Root", "text": "",
+                "node_id": "1",
+                "title": "Root",
+                "text": "",
                 "nodes": [
-                    {"node_id": str(i), "title": f"Chapter {i}", "text": _varied_text(i), "nodes": []}
+                    {
+                        "node_id": str(i),
+                        "title": f"Chapter {i}",
+                        "text": _varied_text(i),
+                        "nodes": [],
+                    }
                     for i in range(2, 12)
                 ],
             }
         ]
         outcome = _outcome_for(structure=structure)
         vr = apply_promotions(
-            outcome, "", image_enrichment_ratio=None,
-            inspector_class=None, th=_th(), expected_script=None,
+            outcome,
+            "",
+            image_enrichment_ratio=None,
+            inspector_class=None,
+            th=_th(),
+            expected_script=None,
             validate_result=_make_ok_gate_result(structure),
         )
         assert vr.verdict == "PASS"
@@ -140,8 +151,12 @@ class TestApplyPromotions:
     def test_image_standalone_high_enrichment_passes(self):
         outcome = _outcome_for()
         vr = apply_promotions(
-            outcome, "image_standalone", image_enrichment_ratio=0.95,
-            inspector_class=None, th=_th(), expected_script=None,
+            outcome,
+            "image_standalone",
+            image_enrichment_ratio=0.95,
+            inspector_class=None,
+            th=_th(),
+            expected_script=None,
             validate_result=None,
         )
         assert vr.verdict == "PASS"
@@ -149,8 +164,12 @@ class TestApplyPromotions:
     def test_returns_verdict_result(self):
         outcome = _outcome_for()
         vr = apply_promotions(
-            outcome, "", image_enrichment_ratio=None,
-            inspector_class=None, th=_th(), expected_script=None,
+            outcome,
+            "",
+            image_enrichment_ratio=None,
+            inspector_class=None,
+            th=_th(),
+            expected_script=None,
             validate_result=None,
         )
         assert isinstance(vr, VerdictResult)
@@ -205,8 +224,14 @@ def _decomposed_verdict(structure, content_class, validate_result=None, **kw):
     if outcome.hard_fail_verdict is not None:
         return outcome.hard_fail_verdict
     return apply_promotions(
-        outcome, content_class, image_enrichment_ratio, None,
-        th, bare_script, validate_result, source_selection=source_selection,
+        outcome,
+        content_class,
+        image_enrichment_ratio,
+        None,
+        th,
+        bare_script,
+        validate_result,
+        source_selection=source_selection,
     )
 
 
@@ -217,6 +242,7 @@ def _decomposed_verdict(structure, content_class, validate_result=None, **kw):
 
 def _make_s3_error(code="NoSuchKey"):
     from minio.error import S3Error
+
     return S3Error(MagicMock(), code, "not found", "", "", "")
 
 
@@ -251,24 +277,28 @@ def _mock_minio():
 class TestLedger:
     def test_persist_and_read(self):
         from pageindex_mcp.storage import persist_verdict_ledger, read_verdict_ledger
+
         mc = _mock_minio()
-        with patch("pageindex_mcp.storage.get_minio", return_value=mc):
+        with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mc):
             persist_verdict_ledger("abc123", "PASS", "clean")
             assert read_verdict_ledger("abc123") == "PASS"
 
     def test_pass_not_downgraded(self):
         from pageindex_mcp.storage import persist_verdict_ledger, read_verdict_ledger
+
         mc = _mock_minio()
-        with patch("pageindex_mcp.storage.get_minio", return_value=mc):
+        with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mc):
             persist_verdict_ledger("h1", "PASS", "clean")
             persist_verdict_ledger("h1", "FAIL", "garbling")
             assert read_verdict_ledger("h1") == "PASS"
 
     def test_graceful_on_minio_unavailable(self):
         from pageindex_mcp.storage import persist_verdict_ledger, read_verdict_ledger
-        with patch("pageindex_mcp.storage.get_minio", side_effect=Exception("down")):
+
+        with patch("pageindex_mcp.storage.minio_ops.get_minio", side_effect=Exception("down")):
             persist_verdict_ledger("h1", "PASS", "clean")
             assert read_verdict_ledger("h1") is None
+
 
 # =============================================================================
 # Verdict authority
@@ -279,13 +309,22 @@ class TestVerdictAuthority:
     @pytest.mark.asyncio
     async def test_upsert_verdict_returns_winning_row(self):
         from pageindex_mcp.registry import upsert_verdict
-        winning = {"doc_id": "abc", "verdict": "PASS", "pipeline_version": 4,
-                   "permanent_marginal": False, "verdict_computed_at": "2026-08-18T12:00:00Z"}
+
+        winning = {
+            "doc_id": "abc",
+            "verdict": "PASS",
+            "pipeline_version": 4,
+            "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-18T12:00:00Z",
+        }
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=winning)
-        with patch("pageindex_mcp.registry.get_pool", return_value=mock_pool):
-            result = await upsert_verdict("abc", {"verdict": "PASS", "verdict_computed_at": "2026-08-18T12:00:00Z"})
+        with patch("pageindex_mcp.registry.schema.get_pool", return_value=mock_pool):
+            result = await upsert_verdict(
+                "abc", {"verdict": "PASS", "verdict_computed_at": "2026-08-18T12:00:00Z"}
+            )
         assert result["verdict"] == "PASS"
+
 
 # =============================================================================
 # _run_stages provenance
@@ -295,14 +334,20 @@ class TestVerdictAuthority:
 class TestRunStages:
     def test_return_type_and_order(self):
         from pageindex_mcp.converters import _run_stages
+
         stages = [("alpha", lambda m: m), ("beta", lambda m: m + "!")]
         md, records = _run_stages("x", stages)
         assert list(records.keys()) == ["alpha", "beta"]
 
     def test_failure_does_not_skip_next_stage(self):
         from pageindex_mcp.converters import _run_stages
-        def fail(md): raise RuntimeError("boom")
-        def ok(md): return md + " ok"
+
+        def fail(md):
+            raise RuntimeError("boom")
+
+        def ok(md):
+            return md + " ok"
+
         md, records = _run_stages("start", [("fail", fail), ("ok", ok)])
         assert md == "start ok"
         assert records["fail"]["error"] is not None
@@ -317,18 +362,21 @@ class TestRunStages:
 class TestTextLayerHasContent:
     def _make_page(self, text, region_text=None):
         page = MagicMock()
+
         def get_text_side_effect(mode="text", clip=None):
             if clip is not None and region_text is not None:
                 return region_text
             return text
+
         page.get_text = MagicMock(side_effect=get_text_side_effect)
         return page
 
     def test_garbled_returns_false(self):
         from pageindex_mcp.converters import _text_layer_has_content
         from pageindex_mcp.helpers import GarbleReport
+
         garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
-        with patch("pageindex_mcp.converters.detect_garble", return_value=garbled):
+        with patch("pageindex_mcp.converters.pictures.detect_garble", return_value=garbled):
             assert _text_layer_has_content(self._make_page("A" * 100)) is False
 
 
@@ -340,10 +388,14 @@ class TestTextLayerHasContent:
 class TestPictureResultSkip:
     def test_non_skipped_produces_figure(self):
         from pageindex_mcp.converters import PictureResult, splice_figure_markers
+
         md = "Text <!-- image --> more"
-        pics = [PictureResult(ocr_text="Chart data", page=0, bbox={"l": 0, "t": 0, "r": 100, "b": 100})]
+        pics = [
+            PictureResult(ocr_text="Chart data", page=0, bbox={"l": 0, "t": 0, "r": 100, "b": 100})
+        ]
         result = splice_figure_markers(md, pics)
         assert "[Figure: fig-0]" in result
+
 
 # =============================================================================
 # prepare_tree
@@ -353,8 +405,12 @@ class TestPictureResultSkip:
 class TestPrepareTree:
     def test_small_structure_unchanged(self):
         structure = [
-            {"title": "S1", "text": "Short.", "level": 1,
-             "nodes": [{"title": "Sub", "text": "Details.", "level": 2}]},
+            {
+                "title": "S1",
+                "text": "Short.",
+                "level": 1,
+                "nodes": [{"title": "Sub", "text": "Details.", "level": 2}],
+            },
         ]
         assert prepare_tree(copy.deepcopy(structure)) == structure
 
@@ -379,6 +435,7 @@ import fitz  # noqa: E402
 class TestLandscapeRenames:
     def test_tag_landscape_pages(self, tmp_path):
         from pageindex_mcp.converters import _tag_landscape_pages_for_fallback
+
         doc = fitz.open()
         doc.new_page(width=600, height=800)
         path = str(tmp_path / "portrait.pdf")
@@ -396,9 +453,12 @@ class TestLandscapeRenames:
 class TestBuildCandidate:
     def _old_mirrored(self, md):
         from pageindex_mcp.converters import (
-            _inject_arabic_structural_headings, _inject_english_article_headings,
-            _inject_german_clause_headings, _pre_inference_normalize,
+            _inject_arabic_structural_headings,
+            _inject_english_article_headings,
+            _inject_german_clause_headings,
+            _pre_inference_normalize,
         )
+
         md = _inject_arabic_structural_headings(md)
         md = _inject_german_clause_headings(md)
         md = _inject_english_article_headings(md)
@@ -406,10 +466,10 @@ class TestBuildCandidate:
 
     def test_empty(self):
         from pageindex_mcp.converters import _build_candidate
+
         assert _build_candidate("") == self._old_mirrored("")
 
 
 # =============================================================================
 # _has_structural_depth
 # =============================================================================
-

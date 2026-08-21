@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # presigned URL generation
 # ---------------------------------------------------------------------------
@@ -28,8 +27,8 @@ class TestPresignedUrl:
             "https://minio.example.com/bucket/key?sig=abc"
         )
         with (
-            patch("pageindex_mcp.storage.get_minio", return_value=mock_minio),
-            patch("pageindex_mcp.storage.settings") as mock_settings,
+            patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mock_minio),
+            patch("pageindex_mcp.storage.minio_ops.settings") as mock_settings,
         ):
             mock_settings.minio_presign_endpoint = None
             mock_settings.minio_endpoint = "minio.example.com"
@@ -47,8 +46,8 @@ class TestPresignedUrl:
             "https://public.minio.com/bucket/key?sig=xyz"
         )
         with (
-            patch("pageindex_mcp.storage._presign_client", mock_presign),
-            patch("pageindex_mcp.storage.settings") as mock_settings,
+            patch("pageindex_mcp.storage.minio_ops._presign_client", mock_presign),
+            patch("pageindex_mcp.storage.minio_ops.settings") as mock_settings,
         ):
             mock_settings.minio_presign_endpoint = "public.minio.com"
             mock_settings.minio_bucket = "pageindex"
@@ -108,7 +107,9 @@ class _MockAsyncClient:
         self._response = _FakeResponse(response_data)
         self._capture = capture_headers
         self._version_response = _FakeResponse(
-            version_data if version_data is not None else {"commit_sha": "unknown", "pipeline_version": 0}
+            version_data
+            if version_data is not None
+            else {"commit_sha": "unknown", "pipeline_version": 0}
         )
 
     async def __aenter__(self):
@@ -129,7 +130,7 @@ class _MockAsyncClient:
 @pytest.fixture(autouse=True)
 def _reset_remote_docling_version_cache():
     """RFC-034 D1: the version check caches its result on a module-level global."""
-    import pageindex_mcp.client as client_module
+    from pageindex_mcp.client import remote as client_module
 
     client_module._remote_docling_version = None
     yield
@@ -157,7 +158,7 @@ class TestRemotePdfToMarkdown:
         mock_client = _MockAsyncClient(response_data)
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
             patch("httpx.AsyncClient", return_value=mock_client),
             patch(
                 "pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key?sig=abc"
@@ -183,7 +184,7 @@ class TestRemotePdfToMarkdown:
         mock_client = _MockAsyncClient(response_data, capture_headers=captured)
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
         ):
@@ -204,7 +205,7 @@ class TestRemotePdfToMarkdown:
         mock_client = _MockAsyncClient(response_data, capture_headers=captured)
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
         ):
@@ -227,13 +228,13 @@ class TestRemotePdfToMarkdown:
         )
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
-            patch("pageindex_mcp.client._CLIENT_BUILD_SHA", "client-sha"),
-            patch("pageindex_mcp.client.CURRENT_PIPELINE_VERSION", 4),
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
+            patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-            patch("pageindex_mcp.client.logger") as mock_logger,
-            patch("pageindex_mcp.client.DOCLING_VERSION_SKEW") as mock_metric,
+            patch("pageindex_mcp.client.remote.logger") as mock_logger,
+            patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
         ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
@@ -258,13 +259,13 @@ class TestRemotePdfToMarkdown:
         )
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
-            patch("pageindex_mcp.client._CLIENT_BUILD_SHA", "client-sha"),
-            patch("pageindex_mcp.client.CURRENT_PIPELINE_VERSION", 4),
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
+            patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-            patch("pageindex_mcp.client.logger") as mock_logger,
-            patch("pageindex_mcp.client.DOCLING_VERSION_SKEW") as mock_metric,
+            patch("pageindex_mcp.client.remote.logger") as mock_logger,
+            patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
         ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
@@ -286,13 +287,13 @@ class TestRemotePdfToMarkdown:
         )
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
-            patch("pageindex_mcp.client._CLIENT_BUILD_SHA", "client-sha"),
-            patch("pageindex_mcp.client.CURRENT_PIPELINE_VERSION", 4),
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
+            patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-            patch("pageindex_mcp.client.logger") as mock_logger,
-            patch("pageindex_mcp.client.DOCLING_VERSION_SKEW") as mock_metric,
+            patch("pageindex_mcp.client.remote.logger") as mock_logger,
+            patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
         ):
             mock_settings.docling_service_url = "http://docling:8080"
             mock_settings.docling_service_timeout_s = 600
@@ -317,7 +318,7 @@ class TestRemotePdfToMarkdown:
         mock_client = _FailingGetClient(response_data)
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
         ):
@@ -339,7 +340,7 @@ class TestRemoteImageToMarkdown:
         mock_client = _MockAsyncClient(response_data)
 
         with (
-            patch("pageindex_mcp.client.settings") as mock_settings,
+            patch("pageindex_mcp.client.remote.settings") as mock_settings,
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
         ):

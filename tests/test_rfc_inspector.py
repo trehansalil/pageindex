@@ -26,9 +26,11 @@ import pytest
 pytest.importorskip("fitz")
 import fitz
 
-import pageindex_mcp.client as client_mod
 from pageindex_mcp import converters
 from pageindex_mcp.client import CustomPageIndexClient
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.converters import (
     _RFC029_TABLE_MIN_COLLAPSE_COLS,
     _landscape_pages_below_threshold,
@@ -193,9 +195,7 @@ class TestInspectorClassThreading:
         0.20 exceeds the default cat_c threshold (0.17) but clears the
         widened 0.204 (0.17 * 1.2) threshold -- promote cat_c_promoted."""
         structure = _flat_leaf_tree([20, 20, 20, 20, 20])
-        verdict, reason = classify_verdict(
-            structure, "", None, inspector_class="text_based"
-        )
+        verdict, reason = classify_verdict(structure, "", None, inspector_class="text_based")
         assert (verdict, reason) == ("PASS", "cat_c_promoted")
 
     def test_flat_mixed_content_class_takes_precedence_over_inspector_class(self):
@@ -260,7 +260,11 @@ class TestInspectorClassPrecedenceProperty:
                 )
                 assert result[1] != "cat_c_promoted"
             elif inspector_class == "text_based":
-                assert result == ("PASS", "cat_c_promoted"), (content_class, inspector_class, result)
+                assert result == ("PASS", "cat_c_promoted"), (
+                    content_class,
+                    inspector_class,
+                    result,
+                )
             else:
                 assert result == ("MARGINAL", "depth=1"), (content_class, inspector_class, result)
 
@@ -316,7 +320,7 @@ class TestFallbackTriggerSkip:
         # it also carries a detectable picture/graphic region (page 1,
         # 1-indexed) -- otherwise dense numeric-table pages false-positive.
         monkeypatch.setattr(
-            converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
+            converters.pictures, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
         )
         landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
         document = self._mock_document(200)
@@ -325,13 +329,11 @@ class TestFallbackTriggerSkip:
         assert below[0]["page_no"] == 0
         assert below[0]["char_count"] == 200
 
-    def test_landscape_page_below_threshold_without_picture_is_not_flagged(
-        self, monkeypatch
-    ):
+    def test_landscape_page_below_threshold_without_picture_is_not_flagged(self, monkeypatch):
         # RFC-036 D0c: dense numeric-table pages fall below the char
         # threshold but carry no picture region, so they no longer
         # false-positive trigger the rasterize-rotate-reextract fallback.
-        monkeypatch.setattr(converters, "_collect_picture_regions", lambda doc: [])
+        monkeypatch.setattr(converters.pictures, "_collect_picture_regions", lambda doc: [])
         landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
         document = self._mock_document(200)
         below = _landscape_pages_below_threshold(document, landscape_pages)
@@ -343,7 +345,7 @@ class TestFallbackTriggerSkip:
         a portrait page below it (e.g. a legitimately sparse cover/divider
         page) -- neither must be flagged."""
         monkeypatch.setattr(
-            converters, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
+            converters.pictures, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
         )
 
         landscape_above = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
@@ -359,12 +361,10 @@ class TestRasterizationFailureFallthrough:
     """Rasterization failure logs a warning and falls through rather than
     raising."""
 
-    def test_rasterize_failure_falls_through_without_raising(
-        self, tmp_path, monkeypatch, caplog
-    ):
+    def test_rasterize_failure_falls_through_without_raising(self, tmp_path, monkeypatch, caplog):
         path = _make_pdf(tmp_path, "any.pdf", width=800, height=600, rotate=0)
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_rasterize_rotate_page",
             MagicMock(side_effect=RuntimeError("render failed")),
         )
@@ -407,15 +407,17 @@ def pdf_file(tmp_path):
 
 def _wire_index(monkeypatch, *, pic_results, flat_return):
     fake_settings = _fake_settings()
-    monkeypatch.setattr(client_mod, "settings", fake_settings)
+    monkeypatch.setattr(_idx, "settings", fake_settings)
+    monkeypatch.setattr(_rec, "settings", fake_settings)
     # zdr_egress_gate re-imports settings from .config fresh on every call.
     monkeypatch.setattr("pageindex_mcp.config.settings", fake_settings)
-    monkeypatch.setattr(client_mod, "PDF_INSPECTOR_PRECLASSIFY", False)
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (True, None))
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(_idx, "PDF_INSPECTOR_PRECLASSIFY", False)
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: (True, None))
+    monkeypatch.setattr(_rec, "validate_tree", lambda structure, **kw: (True, None))
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
 
     # Large body so the RFC-029 D1 flat-prefer check (which also compares
     # flat vs. tree char counts) does not itself trigger and confound the
@@ -426,32 +428,47 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
     # doesn't spuriously trip it.
     # Zone-3: patch both detect_garble (primary flat gate) and check_garble
     _not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
-    monkeypatch.setattr(client_mod, "detect_garble", lambda *a, **kw: _not_garbled)
-    monkeypatch.setattr(client_mod, "check_garble", lambda *a, **kw: False)
+    monkeypatch.setattr(_idx, "detect_garble", lambda *a, **kw: _not_garbled)
+    monkeypatch.setattr(_idx, "check_garble", lambda *a, **kw: False)
+    monkeypatch.setattr(_rec, "check_garble", lambda *a, **kw: False)
     conv_fn = MagicMock(return_value=(md_text, pic_results))
-    monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
-    monkeypatch.setattr(
-        client_mod, "pdf_to_markdown_docling", MagicMock(return_value=(md_text, []))
-    )
-    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
+    monkeypatch.setattr(_rec, "pdf_to_markdown_docling", MagicMock(return_value=(md_text, [])))
+    monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+    monkeypatch.setattr(_rec, "ensure_tessdata", lambda langs: langs)
 
     mocks = {
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
-        "route_and_extract_flat": MagicMock(return_value=flat_return),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+
+    route_and_extract_flat = MagicMock(return_value=flat_return)
+    monkeypatch.setattr(_img, "route_and_extract_flat", route_and_extract_flat)
+    mocks["route_and_extract_flat"] = route_and_extract_flat
+
+    idx_metrics = {
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
-        "OCR_ESCALATION_TOTAL": MagicMock(),
         "VLM_FALLBACK_TOTAL": MagicMock(),
         "RAW_UPLOAD_FAILURES": MagicMock(),
         "PDF_PRIMARY_CONVERTER_FAILURES": MagicMock(),
         "PDF_EXTRACT_FALLBACKS": MagicMock(),
         "PDF_INSPECTOR_FORCED_OCR": MagicMock(),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in idx_metrics.items():
+        monkeypatch.setattr(_idx, name, m)
+    mocks.update(idx_metrics)
+
+    ocr_escalation_total = MagicMock()
+    monkeypatch.setattr(_rec, "OCR_ESCALATION_TOTAL", ocr_escalation_total)
+    monkeypatch.setattr(_rec, "VLM_FALLBACK_TOTAL", mocks["VLM_FALLBACK_TOTAL"])
+    monkeypatch.setattr(_img, "LOW_QUALITY_TREES", mocks["LOW_QUALITY_TREES"])
+    mocks["OCR_ESCALATION_TOTAL"] = ocr_escalation_total
+
     mocks["conv_fn"] = conv_fn
     return mocks
 
@@ -502,9 +519,7 @@ class TestRoutingReevaluationAfterFallbackReextraction:
         assert c.last_content_class == "flat_mixed"
         mocks["FLAT_DOCS_TOTAL"].labels.assert_called_once_with(content_class="flat_mixed")
 
-    async def test_no_picture_results_stays_on_original_routing_path(
-        self, monkeypatch, pdf_file
-    ):
+    async def test_no_picture_results_stays_on_original_routing_path(self, monkeypatch, pdf_file):
         c, doc_id, mocks = await _run_index(
             monkeypatch,
             pdf_file,

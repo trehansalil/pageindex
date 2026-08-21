@@ -16,9 +16,7 @@ Covers:
 """
 
 import os
-import sys
 import tempfile
-import threading
 import types
 from types import SimpleNamespace
 from unittest import mock
@@ -26,18 +24,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pageindex_mcp import client as client_mod
 from pageindex_mcp import converters
 from pageindex_mcp.client import CustomPageIndexClient
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.converters import (
     PictureResult,
     _add_vlm_descriptions,
     _recover_picture_text,
     splice_figure_markers,
-    zdr_egress_gate,
 )
-from pageindex_mcp.picture_plane import PictureGateConfig
 from pageindex_mcp.helpers import _flat_search_text, route_and_extract_flat
+from pageindex_mcp.picture_plane import PictureGateConfig
 
 
 class TestRouteFlatImageBlocks:
@@ -60,6 +59,7 @@ class TestRouteFlatImageBlocks:
         assert image_blocks[0]["description"] == "A pie chart showing monthly revenue"
         assert image_blocks[0]["ocr_text"] == "Jan 100 Feb 200"
 
+
 class TestFlatSearchTextImage:
     """_flat_search_text includes ocr_text and description from image blocks."""
 
@@ -81,6 +81,7 @@ class TestFlatSearchTextImage:
         text = _flat_search_text(data)
         assert "A bar chart" in text
 
+
 class TestVlmDescribeGating:
     """VLM descriptions moved OUT of the converter (audit finding 8): the
     recovery step never calls the vision API; _add_vlm_descriptions is gated
@@ -89,17 +90,20 @@ class TestVlmDescribeGating:
     def test_recover_picture_results_never_calls_vlm(self, monkeypatch):
         """The converter-side recovery is OCR/crop only — no VLM, whatever the flag."""
         pr = PictureResult(ocr_text="chart text", png_bytes=b"fake", page=1, bbox={})
-        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
-            converters, "_collect_picture_regions", lambda d: [{"page": 1, "bbox": None}]
+            converters.pictures, "_collect_picture_regions", lambda d: [{"page": 1, "bbox": None}]
         )
-        monkeypatch.setattr(converters, "detect_ocr_langs", lambda s: ["eng"])
-        monkeypatch.setattr(converters, "ensure_tessdata", lambda langs: langs)
-        monkeypatch.setattr(converters, "_recover_picture_text", lambda *a, **k: ({0: pr}, {}))
-        with mock.patch.object(converters, "_add_vlm_descriptions") as mock_vlm:
+        monkeypatch.setattr(converters.pictures, "detect_ocr_langs", lambda s: ["eng"])
+        monkeypatch.setattr(converters.pictures, "ensure_tessdata", lambda langs: langs)
+        monkeypatch.setattr(
+            converters.pictures, "_recover_picture_text", lambda *a, **k: ({0: pr}, {})
+        )
+        with mock.patch.object(converters.pictures, "_add_vlm_descriptions") as mock_vlm:
             pics = converters._recover_picture_results("<!-- image -->", object(), "dummy.pdf")
         mock_vlm.assert_not_called()
         assert pics == [pr]
+
 
 class TestEnrichImageBlocks:
     """_enrich_image_blocks (async) wires pic_results into image blocks and
@@ -123,7 +127,9 @@ class TestEnrichImageBlocks:
             },
         ]
 
-        with patch("pageindex_mcp.client.save_figure", return_value="figures/doc1/fig-0.png"):
+        with patch(
+            "pageindex_mcp.client.images.save_figure", return_value="figures/doc1/fig-0.png"
+        ):
             await _enrich_image_blocks(blocks, pic_results, "doc1")
 
         img = blocks[1]
@@ -140,10 +146,11 @@ class TestEnrichImageBlocks:
         from pageindex_mcp.client import _enrich_image_blocks
 
         blocks = [{"role": "prose", "text": "Hello"}]
-        with patch("pageindex_mcp.client.save_figure") as sf:
+        with patch("pageindex_mcp.client.images.save_figure") as sf:
             await _enrich_image_blocks(blocks, [{"png_bytes": b"x"}], "doc1")
         sf.assert_not_called()
         assert "figure_path" not in blocks[0]
+
 
 # ---------------------------------------------------------------------------
 # Audit finding 1: converters return (md, pics) via return value, not a
@@ -204,19 +211,23 @@ class TestPageCoverageFilter:
     def test_page_coverage_filter_skips_large_region(self, monkeypatch):
         """Region at 80% page area → not in crops dict (page HAS text layer)."""
         fake_fitz = _make_fake_fitz(600.0, 800.0)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+        monkeypatch.setattr(converters.pictures, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
         # F1: coverage skip is exempt when page has NO text layer (default);
         # disable exemption so the coverage filter fires on the empty-text-layer
         # fake page, preserving the pre-F1 test intent.
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
-        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
-            coverage_exempt_no_text_layer=False,
-        ))
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
+        monkeypatch.setattr(
+            converters.pictures,
+            "_GATE_CONFIG",
+            PictureGateConfig(
+                coverage_exempt_no_text_layer=False,
+            ),
+        )
 
         region = self._make_region(0, 0, 560, 700)
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         # D5a (RFC-029): page_coverage skip retains png_bytes + skipped_reason,
@@ -229,18 +240,21 @@ class TestPageCoverageFilter:
     def test_page_coverage_filter_keeps_small_region(self, monkeypatch):
         """Region at 30% page area → present in crops dict with valid PNG bytes."""
         fake_fitz = _make_fake_fitz(600.0, 800.0)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+        monkeypatch.setattr(converters.pictures, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
 
         region = self._make_region(0, 0, 300, 400)
         long_text = "Chart text with enough characters to pass the decorative gate"
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: long_text)
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            monkeypatch.setattr(
+                converters.pictures, "_tesseract_ocr_image", lambda path, langs: long_text
+            )
+            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert len(result) == 1
         assert "png_bytes" in result[0]
+
 
 # ---------------------------------------------------------------------------
 # Audit findings 4/7: dense ordinal keying + marker/region count guard
@@ -255,19 +269,19 @@ class TestDenseKeyingAndCountGuard:
         }
 
     def test_sparse_regions_keep_index_alignment(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_collect_picture_regions",
             lambda d: [self._region(), self._region(), self._region()],
         )
-        monkeypatch.setattr(converters, "detect_ocr_langs", lambda s: ["eng"])
-        monkeypatch.setattr(converters, "ensure_tessdata", lambda langs: langs)
+        monkeypatch.setattr(converters.pictures, "detect_ocr_langs", lambda s: ["eng"])
+        monkeypatch.setattr(converters.pictures, "ensure_tessdata", lambda langs: langs)
         pr0 = PictureResult(ocr_text="first chart text here", png_bytes=b"a", page=1, bbox={})
         pr2 = PictureResult(ocr_text="third chart text here", png_bytes=b"c", page=1, bbox={})
         # Region 1's crop failed -> sparse dict; the dense list must NOT collapse.
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_recover_picture_text",
             lambda *a, **k: ({0: pr0, 2: pr2}, {1: "page_coverage"}),
         )
@@ -288,6 +302,7 @@ class TestDenseKeyingAndCountGuard:
         assert "[Figure: fig-2]" in out
         assert "[Figure: fig-1]" not in out
         assert "<!-- image -->" not in out  # skipped marker stripped
+
 
 # ---------------------------------------------------------------------------
 # Audit finding 10: bounded concurrency for OCR and VLM
@@ -321,9 +336,9 @@ class TestDecorativeGate:
         fake_fitz = _make_fake_fitz(600.0, 800.0)
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(
-                converters, "_tesseract_ocr_image", lambda png, langs: "short"
+                converters.pictures, "_tesseract_ocr_image", lambda png, langs: "short"
             )
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
             out, _skip = converters._recover_picture_text("dummy.pdf", [self._region()], ["eng"])
         assert out[0]["ocr_text"] == ""
         assert "png_bytes" not in out[0]
@@ -342,9 +357,9 @@ class TestDecorativeGate:
         fake_fitz = _make_fake_fitz(600.0, 800.0)
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(
-                converters, "_tesseract_ocr_image", lambda png, langs: "short"
+                converters.pictures, "_tesseract_ocr_image", lambda png, langs: "short"
             )
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
             out, _skip = converters._recover_picture_text("dummy.pdf", [self._region()], ["eng"])
         assert out[0]["ocr_text"] == ""
         assert out[0]["png_bytes"]
@@ -368,7 +383,7 @@ class TestVlmRetryAndMetric:
 
     def test_transient_failure_retried_then_succeeds(self, monkeypatch):
         monkeypatch.setattr("pageindex_mcp.config.settings", self._settings())
-        monkeypatch.setattr(converters.time, "sleep", lambda s: None)
+        monkeypatch.setattr(converters.pictures.time, "sleep", lambda s: None)
         calls = {"n": 0}
         fake_resp = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="desc after retry"))]
@@ -393,7 +408,7 @@ class TestVlmRetryAndMetric:
 
     def test_persistent_failure_increments_metric(self, monkeypatch):
         monkeypatch.setattr("pageindex_mcp.config.settings", self._settings())
-        monkeypatch.setattr(converters.time, "sleep", lambda s: None)
+        monkeypatch.setattr(converters.pictures.time, "sleep", lambda s: None)
         pics = [PictureResult(png_bytes=b"p")]
         with (
             patch("litellm.completion", side_effect=RuntimeError("boom")),
@@ -444,36 +459,45 @@ async def _tree_coro():
 
 
 def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False):
+    fake_settings = _fake_client_settings(vlm_describe_images=vlm_describe_images)
+    monkeypatch.setattr(_idx, "settings", fake_settings)
+    monkeypatch.setattr(_img, "settings", fake_settings)
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: (False, "depth<2"))
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(_rec, "_OCR_ESCALATION_GARBLE", False)
+    monkeypatch.setattr(_idx, "_OCR_ESCALATION_PER_PICTURE", False)
     monkeypatch.setattr(
-        client_mod, "settings", _fake_client_settings(vlm_describe_images=vlm_describe_images)
-    )
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (False, "depth<2"))
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
-    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_GARBLE", False)
-    monkeypatch.setattr(client_mod, "_OCR_ESCALATION_PER_PICTURE", False)
-    monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: (chain_md, pics))]
+        _idx, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: (chain_md, pics))]
     )
     monkeypatch.setattr(
-        client_mod, "_generate_flat_doc_description", MagicMock(return_value="a flat doc")
+        _idx, "_generate_flat_doc_description", MagicMock(return_value="a flat doc")
     )
-    mocks = {
+    idx_mocks = {
         "save_flat_doc": MagicMock(),
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+    }
+    for name, m in idx_mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+
+    img_mocks = {
         "save_figure": MagicMock(return_value="figures/x/fig-0.png"),
         "route_and_extract_flat": MagicMock(
             return_value=("flat_prose", [{"role": "image", "index": 0}])
         ),
-        "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in img_mocks.items():
+        monkeypatch.setattr(_img, name, m)
+
+    mocks = dict(idx_mocks)
+    mocks.update(img_mocks)
     return mocks
 
 
@@ -499,6 +523,7 @@ class TestFlatBranchWiring:
         saved_blocks = mocks["save_flat_doc"].call_args.args[1]["blocks"]
         img = next(b for b in saved_blocks if b.get("role") == "image")
         assert img["figure_path"] == "figures/x/fig-0.png"
+
 
 # ---------------------------------------------------------------------------
 # RFC-017 D1: Standalone image enrichment
@@ -542,26 +567,26 @@ class TestStandaloneImageEnrichment:
                 vlm_describe_images=False,
                 pii_corpus=False,
             )
-            monkeypatch.setattr(client_mod, "settings", fake_settings)
-            monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
+            monkeypatch.setattr(_idx, "settings", fake_settings)
+            monkeypatch.setattr(_img, "settings", fake_settings)
+            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
             monkeypatch.setattr(
-                client_mod,
+                _img,
                 "route_and_extract_flat",
                 MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
             )
-            monkeypatch.setattr(client_mod, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(client_mod, "save_doc", MagicMock())
-            monkeypatch.setattr(client_mod, "save_raw", MagicMock())
-            monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
-            monkeypatch.setattr(
-                client_mod, "image_to_markdown", lambda path, langs: "<!-- image -->"
-            )
+            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_raw", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
+            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
 
             captured_pics = []
             orig_splice = splice_figure_markers
@@ -570,7 +595,7 @@ class TestStandaloneImageEnrichment:
                 captured_pics.extend(pics)
                 return orig_splice(md, pics)
 
-            monkeypatch.setattr(client_mod, "splice_figure_markers", spy_splice)
+            monkeypatch.setattr(_idx, "splice_figure_markers", spy_splice)
 
             c = CustomPageIndexClient(api_key="test-key")
 
@@ -619,24 +644,26 @@ class TestStandaloneImageEnrichment:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(source_bytes)
 
-            monkeypatch.setattr(client_mod, "settings", self._fake_settings())
-            monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
+            monkeypatch.setattr(_idx, "settings", self._fake_settings())
+            monkeypatch.setattr(_img, "settings", self._fake_settings())
+            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
             monkeypatch.setattr(
-                client_mod,
+                _img,
                 "route_and_extract_flat",
                 MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
             )
-            monkeypatch.setattr(client_mod, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(client_mod, "save_doc", MagicMock())
-            monkeypatch.setattr(client_mod, "save_raw", MagicMock())
-            monkeypatch.setattr(client_mod, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
-            monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: markdown)
+            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_raw", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
+            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: markdown)
 
             captured_pics = []
             orig_splice = splice_figure_markers
@@ -645,7 +672,7 @@ class TestStandaloneImageEnrichment:
                 captured_pics.extend(pics)
                 return orig_splice(md, pics)
 
-            monkeypatch.setattr(client_mod, "splice_figure_markers", spy_splice)
+            monkeypatch.setattr(_idx, "splice_figure_markers", spy_splice)
 
             c = CustomPageIndexClient(api_key="test-key")
 
@@ -662,6 +689,7 @@ class TestStandaloneImageEnrichment:
         finally:
             if os.path.exists(jpg_path):
                 os.unlink(jpg_path)
+
 
 def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
     """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
@@ -716,12 +744,12 @@ class TestTextLayerProbe:
         export -> region NOT in crops dict (RFC-024 D1 containment guard)."""
         long_clip_text = "This is more than twenty characters of extracted text."
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, long_clip_text)
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+        monkeypatch.setattr(converters.pictures, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
 
         region = self._make_region(0, 0, 100, 100)
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"], md=long_clip_text)
 
         # D5a (RFC-029): clip_text_already_exported retains png_bytes and
@@ -734,20 +762,21 @@ class TestTextLayerProbe:
     def test_no_text_layer_allows_picture_ocr(self, monkeypatch):
         """get_text(clip=rect) returns "" -> region IS in crops dict, OCR proceeds."""
         fake_fitz = _make_fake_fitz_with_text(600.0, 800.0, "")
-        monkeypatch.setattr(converters, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
+        monkeypatch.setattr(converters.pictures, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
 
         region = self._make_region(0, 0, 100, 100)
         long_ocr_text = "Chart text recovered via OCR with enough characters to pass"
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(
-                converters, "_tesseract_ocr_image", lambda path, langs: long_ocr_text
+                converters.pictures, "_tesseract_ocr_image", lambda path, langs: long_ocr_text
             )
-            monkeypatch.setattr(converters, "shutil", types.ModuleType("shutil"))
+            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
             result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
 
         assert 0 in result
         assert len(result) == 1
+
 
 # ---------------------------------------------------------------------------
 # RFC-020 Task 4.1 / F4: independent PictureResult copies (standalone path)

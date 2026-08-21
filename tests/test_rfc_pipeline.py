@@ -7,10 +7,9 @@ properties (1, 2, 3, 4, 5, 7) each group validates.
 """
 
 import base64
-import json
 import sys
 import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -30,13 +29,41 @@ from pageindex_mcp.helpers import (
     classify_verdict,
     split_oversized_leaf_nodes,
 )
-from pageindex_mcp.storage import save_flat_doc
 
-_WORDS = (
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
-    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey "
-    "xray yankee zulu apple banana cherry date fig grape"
-).split()
+_WORDS = [
+    "alpha",
+    "bravo",
+    "charlie",
+    "delta",
+    "echo",
+    "foxtrot",
+    "golf",
+    "hotel",
+    "india",
+    "juliet",
+    "kilo",
+    "lima",
+    "mike",
+    "november",
+    "oscar",
+    "papa",
+    "quebec",
+    "romeo",
+    "sierra",
+    "tango",
+    "uniform",
+    "victor",
+    "whiskey",
+    "xray",
+    "yankee",
+    "zulu",
+    "apple",
+    "banana",
+    "cherry",
+    "date",
+    "fig",
+    "grape",
+]
 
 
 def _text_of_length(n: int) -> str:
@@ -133,6 +160,7 @@ class TestClassifyVerdictPassMaxLeafRatio:
         assert verdict == "MARGINAL"
         assert reason == "leaf_concentration=0.35"
 
+
 # ---------------------------------------------------------------------------
 # _recover_picture_text: clip_text capture with containment guard (D1)
 # ---------------------------------------------------------------------------
@@ -148,7 +176,7 @@ class TestRecoverPictureTextClipCapture:
         def _fail_if_called(path, langs):
             raise AssertionError("tesseract must not run for captured clip_text")
 
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", _fail_if_called)
+        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", _fail_if_called)
 
         with patch.dict(sys.modules, {"fitz": fake_fitz}):
             result, skip_reasons = _recover_picture_text("/fake.pdf", [region], ["eng"], md=md)
@@ -162,7 +190,7 @@ class TestRecoverPictureTextClipCapture:
         fake_fitz = _make_fake_fitz(600.0, 800.0, clip_text)
         region = _region(0, 0, 100, 40)
         monkeypatch.setattr(
-            converters, "_tesseract_ocr_image", lambda path, langs: "should not matter"
+            converters.pictures, "_tesseract_ocr_image", lambda path, langs: "should not matter"
         )
 
         with patch.dict(sys.modules, {"fitz": fake_fitz}):
@@ -302,7 +330,7 @@ class TestRecoverPictureTextCrashIsolation:
         fake_fitz, _page = _make_fake_fitz_with_failures(
             600.0, 800.0, failing_indices={100, 200, 300}
         )
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "")
+        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", lambda path, langs: "")
         regions = [
             _region(100, 0, 130, 30),
             _region(200, 0, 230, 30),
@@ -321,15 +349,17 @@ class TestRecoverPictureTextCrashIsolation:
         opened at all), the outer except in ``_recover_picture_results`` still
         returns an empty list rather than propagating."""
         md = "some heading\n\n<!-- image -->\n\nmore text"
-        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
-            converters, "_collect_picture_regions", lambda document: [_region(0, 0, 30, 30)]
+            converters.pictures,
+            "_collect_picture_regions",
+            lambda document: [_region(0, 0, 30, 30)],
         )
 
         def _boom(pdf_path, regions, langs, md=""):
             raise RuntimeError("pdf could not be opened")
 
-        monkeypatch.setattr(converters, "_recover_picture_text", _boom)
+        monkeypatch.setattr(converters.pictures, "_recover_picture_text", _boom)
 
         result = _recover_picture_results(md, document=object(), pdf_path="/fake.pdf")
 
@@ -354,12 +384,14 @@ class TestTesseractOcrPdfPagesFitzFallback:
             return [_FITZ_PNG]
 
         monkeypatch.setattr(
-            converters,
+            converters.formats,
             "rasterize_pdf_pages",
             lambda pdf_path, dpi=200: [_PDFIUM_PNG],
         )
-        monkeypatch.setattr(converters, "rasterize_pdf_pages_fitz", _fitz_fallback)
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "pdfium text")
+        monkeypatch.setattr(converters.formats, "rasterize_pdf_pages_fitz", _fitz_fallback)
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda path, langs: "pdfium text"
+        )
 
         result = await converters.tesseract_ocr_pdf_pages("/fake.pdf", ["eng"])
 
@@ -367,7 +399,7 @@ class TestTesseractOcrPdfPagesFitzFallback:
         assert fitz_called is False
 
     async def test_fitz_fallback_disabled_preserves_pypdfium2_only_failure(self, monkeypatch):
-        monkeypatch.setattr(converters, "_D7_FITZ_FALLBACK_ENABLED", False)
+        monkeypatch.setattr(converters.formats, "_D7_FITZ_FALLBACK_ENABLED", False)
 
         def _pdfium_boom(pdf_path, dpi=200):
             raise RuntimeError("CMap corruption: pypdfium2 render failed")
@@ -379,8 +411,8 @@ class TestTesseractOcrPdfPagesFitzFallback:
             fitz_called = True
             return [_FITZ_PNG]
 
-        monkeypatch.setattr(converters, "rasterize_pdf_pages", _pdfium_boom)
-        monkeypatch.setattr(converters, "rasterize_pdf_pages_fitz", _fitz_fallback)
+        monkeypatch.setattr(converters.formats, "rasterize_pdf_pages", _pdfium_boom)
+        monkeypatch.setattr(converters.formats, "rasterize_pdf_pages_fitz", _fitz_fallback)
 
         with pytest.raises(RuntimeError, match="CMap corruption"):
             await converters.tesseract_ocr_pdf_pages("/fake.pdf", ["eng"])

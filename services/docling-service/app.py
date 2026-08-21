@@ -16,7 +16,7 @@ import tempfile
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)

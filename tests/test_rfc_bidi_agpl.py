@@ -8,34 +8,27 @@ production function each class exercises.
 import logging
 import unicodedata
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from minio.error import S3Error
 
-from pageindex_mcp import client
-from pageindex_mcp import client as client_module
-from pageindex_mcp import config
 from pageindex_mcp.client import (
     _BIDI_RENORM_LATIN_GUARD,
-    _enrich_image_blocks,
     _latin_fraction,
     _renormalize_bidi_guarded,
 )
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import remote as _remote
 from pageindex_mcp.converters import (
     _repair_docling_tables,
-    pdf_markdown_converters,
     reconstruct_bidi_order,
 )
 from pageindex_mcp.helpers import (
-    _JOINING_TYPE,
     _strip_toc_heading_nodes,
     _strip_toc_heading_nodes_guarded,
     _tree_depth,
     _tree_node_count,
-    _word_has_reversed_morphology,
-    decide_rtl,
-    validate_tree,
 )
 from pageindex_mcp.metrics import (
     DOCLING_VERSION_SKEW,
@@ -103,20 +96,18 @@ def _skew_count(signal: str) -> float:
 
 @pytest.fixture(autouse=True)
 def _reset_version_cache(monkeypatch):
-    monkeypatch.setattr(client, "_remote_docling_version", None)
-    monkeypatch.setattr(client, "_CLIENT_BUILD_SHA", "local-sha")
+    monkeypatch.setattr(_remote, "_remote_docling_version", None)
+    monkeypatch.setattr(_remote, "_CLIENT_BUILD_SHA", "local-sha")
     yield
-    monkeypatch.setattr(client, "_remote_docling_version", None)
+    monkeypatch.setattr(_remote, "_remote_docling_version", None)
 
 
 class TestVersionSkewDetection:
     async def test_commit_sha_mismatch_warns_and_increments_counter(self, caplog):
         before = _skew_count("commit_sha")
-        httpx_client = _make_httpx_client(
-            {"commit_sha": "remote-sha", "pipeline_version": 4}
-        )
+        httpx_client = _make_httpx_client({"commit_sha": "remote-sha", "pipeline_version": 4})
         with caplog.at_level(logging.WARNING, logger="pageindex_mcp.client"):
-            await client._check_remote_docling_version(httpx_client)
+            await _remote._check_remote_docling_version(httpx_client)
         after = _skew_count("commit_sha")
         assert after == before + 1
         assert any("remote-sha" in r.message for r in caplog.records)
@@ -124,14 +115,13 @@ class TestVersionSkewDetection:
 
     async def test_pipeline_version_mismatch_errors_and_increments_counter(self, caplog):
         before = _skew_count("pipeline_version")
-        httpx_client = _make_httpx_client(
-            {"commit_sha": "local-sha", "pipeline_version": 3}
-        )
+        httpx_client = _make_httpx_client({"commit_sha": "local-sha", "pipeline_version": 3})
         with caplog.at_level(logging.WARNING, logger="pageindex_mcp.client"):
-            await client._check_remote_docling_version(httpx_client)
+            await _remote._check_remote_docling_version(httpx_client)
         after = _skew_count("pipeline_version")
         assert after == before + 1
         assert any(r.levelno == logging.ERROR for r in caplog.records)
+
 
 def _resolve_build_sha(env: dict) -> str:
     """Re-runs the exact expression client.py's module-level
@@ -143,12 +133,12 @@ def _resolve_build_sha(env: dict) -> str:
 class TestBuildShaPrecedence:
     def test_prefers_new_env_var_over_legacy(self):
         assert (
-            _resolve_build_sha({"BUILD_SHA": "new-sha", "CLIENT_BUILD_SHA": "old-sha"})
-            == "new-sha"
+            _resolve_build_sha({"BUILD_SHA": "new-sha", "CLIENT_BUILD_SHA": "old-sha"}) == "new-sha"
         )
 
     def test_falls_back_to_legacy_env_var(self):
         assert _resolve_build_sha({"CLIENT_BUILD_SHA": "old-sha"}) == "old-sha"
+
 
 # ===========================================================================
 # helpers._strip_toc_heading_nodes / _strip_toc_heading_nodes_guarded (D11/D16)
@@ -182,6 +172,7 @@ class TestTocHeadingStrip:
 
         assert len(result) == 1
         assert result[0]["title"] == "Article 1"
+
 
 def _skipped_count():
     return TOC_STRIP_SKIPPED._value.get()
@@ -240,6 +231,7 @@ class TestTocHeadingStripGuarded:
         assert [n["title"] for n in result] == [f"Article {i}" for i in range(1, 46)]
         assert _skipped_count() == before
 
+
 # ===========================================================================
 # converters.reconstruct_bidi_order (D3 / D14 idempotence)
 # ===========================================================================
@@ -267,6 +259,7 @@ class TestBidiIdempotenceEdgeCases:
         twice, _ = reconstruct_bidi_order(once)
         assert twice == once
 
+
 _REVERSED_HEADING_MD = "تافيرعت :لوألا لصفلا ##\n\nSome English body text follows."
 _CORRECTED_HEADING_MD = "## الفصل الأول: تعريفات\n\nSome English body text follows."
 
@@ -280,7 +273,7 @@ _ALREADY_CORRECT_MD = (
 
 def _apply_d3_gate(md_content: str, use_remote: bool = True) -> str:
     """Mirrors the D3 gate in `CustomPageIndexClient.index()` (client.py ~972-980)."""
-    if use_remote and client_module.REMOTE_MD_RENORMALIZE:
+    if use_remote and _idx.REMOTE_MD_RENORMALIZE:
         renormalized, _ = reconstruct_bidi_order(md_content)
         if renormalized != md_content:
             REMOTE_MD_RENORMALIZED.inc()
@@ -307,6 +300,7 @@ class TestD3RenormalizationGate:
         result = _apply_d3_gate(_ALREADY_CORRECT_MD)
         assert result == _ALREADY_CORRECT_MD
         assert _renorm_counter_value() == before
+
 
 # ===========================================================================
 # converters._repair_docling_tables / client._renormalize_bidi_guarded (D17)
@@ -355,8 +349,11 @@ class TestBilingualTableMergeGuard:
         )
         out = _repair_docling_tables(md, "test.pdf")
         assert f"| {degenerate_value} |" in out
-        four_col = f"| {degenerate_value} | {degenerate_value} | {degenerate_value} | {degenerate_value} |"
+        four_col = (
+            f"| {degenerate_value} | {degenerate_value} | {degenerate_value} | {degenerate_value} |"
+        )
         assert four_col not in out
+
 
 class TestBilingualRenormalizationSkipGuard:
     """D17 guard 2: the D3 `reconstruct_bidi_order` re-normalization pass
@@ -378,7 +375,7 @@ class TestBilingualRenormalizationSkipGuard:
             calls.append(text)
             return ("REORDERED", None)
 
-        monkeypatch.setattr("pageindex_mcp.client.reconstruct_bidi_order", _spy)
+        monkeypatch.setattr("pageindex_mcp.client.recovery.reconstruct_bidi_order", _spy)
 
         md = "## Memorandum of Understanding MOHRE and Nafis\n\nمذكرة تفاهم\n"
         assert _latin_fraction(md) > _BIDI_RENORM_LATIN_GUARD
@@ -386,6 +383,7 @@ class TestBilingualRenormalizationSkipGuard:
 
         assert calls == [], "reconstruct_bidi_order must be skipped for bilingual docs"
         assert out == md
+
 
 # ===========================================================================
 # storage._confirm_write_visible (D18 write-visibility barrier)
@@ -415,7 +413,7 @@ class TestWriteVisibilityBarrier:
     def test_retries_then_succeeds_when_first_stat_calls_fail(self, monkeypatch):
         """First 2 stat_object calls raise NoSuchKey; 3rd succeeds -- barrier
         retries and returns without raising."""
-        monkeypatch.setattr("pageindex_mcp.storage.time.sleep", lambda _: None)
+        monkeypatch.setattr("pageindex_mcp.storage.minio_ops.time.sleep", lambda _: None)
         mc = MagicMock()
         mc.stat_object.side_effect = [_no_such_key(), _no_such_key(), None]
         before = _retry_count(WRITE_BARRIER_RETRIES)
@@ -429,7 +427,7 @@ class TestWriteVisibilityBarrier:
     def test_exhaustion_raises_persistence_not_visible_error(self, monkeypatch):
         """stat_object fails on every attempt (including the final check) --
         barrier raises PersistenceNotVisibleError, not a swallowed/generic error."""
-        monkeypatch.setattr("pageindex_mcp.storage.time.sleep", lambda _: None)
+        monkeypatch.setattr("pageindex_mcp.storage.minio_ops.time.sleep", lambda _: None)
         mc = MagicMock()
         mc.stat_object.side_effect = _no_such_key()
 
@@ -438,6 +436,7 @@ class TestWriteVisibilityBarrier:
 
         # One call per backoff attempt, plus the final post-loop check.
         assert mc.stat_object.call_count == len(_WRITE_BARRIER_DELAYS) + 1
+
 
 # ===========================================================================
 # client._enrich_image_blocks (D19 enrichment preservation)
@@ -457,4 +456,3 @@ def _chain_names(chain):
 # helpers.decide_rtl / _word_has_reversed_morphology / validate_tree
 # (D6/D7 Joining_Type reversal detection + D9 NFKC detector-chain integration)
 # ===========================================================================
-

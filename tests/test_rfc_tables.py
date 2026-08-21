@@ -18,11 +18,11 @@ Parametrize ranges trimmed from range(10) to range(3) and redundant
 duplicate-path cases collapsed; all distinct edge cases, boundary
 conditions, and error paths are preserved.
 """
+
 from __future__ import annotations
 
 import pytest
 
-from pageindex_mcp import converters as _converters_module
 from pageindex_mcp.converters import (
     PictureResult,
     _pre_inference_normalize,
@@ -30,12 +30,11 @@ from pageindex_mcp.converters import (
     decide_rtl,
     splice_figure_markers,
 )
-from pageindex_mcp.client import MIN_STANDALONE_IMAGE_MD_CHARS
 from pageindex_mcp.helpers import (
-    BULK_PROFILE,
     _RFC029_FLAT_PREFER_MULTIPLIER,
     _RFC029_MIN_CHARS_PER_NODE,
     _RFC029_MIN_SCANNED_DENSITY_FLOOR,
+    BULK_PROFILE,
     _segment_table_nodes,
     check_garble,
     classify_verdict,
@@ -43,7 +42,6 @@ from pageindex_mcp.helpers import (
     validate_tree,
 )
 from tests.conftest import filler_text
-
 
 # ===========================================================================
 # Shared tree-factory helpers (mirrors the pattern used across all D-files)
@@ -127,6 +125,7 @@ class TestNoiseRegression:
     """Genuinely garbled non-bidi noise is not affected by the NFKC/bidi
     additions (existing garble-detection paths still apply upstream)."""
 
+
 # ===========================================================================
 # Group 2: low_content_density / flat-prefer multiplier gates
 #   (pageindex_mcp.helpers.validate_tree)
@@ -154,6 +153,7 @@ class TestLowContentDensityGate:
         assert ok is False
         assert reason.startswith("low_content_density")
 
+
 class TestFlatPreferMultiplier:
     def test_constant_values(self):
         """Multiplier and min-chars-per-node constants must hold their locked values."""
@@ -161,6 +161,7 @@ class TestFlatPreferMultiplier:
         assert _RFC029_MIN_CHARS_PER_NODE == 150.0, (
             "Expected 150.0 (lowered from 500 by RFC-030 D3)"
         )
+
 
 # ===========================================================================
 # Group 3: suspect_density / arabic_low_content_ratio gates
@@ -226,6 +227,7 @@ class TestSuspectDensityGate:
         _ok, reason = validate_tree(tree, page_count=self.PAGE_COUNT)
         assert "suspect_density" not in reason
 
+
 class TestSuspectDensityWithArabicContent:
     """The gate is a pure numeric chars/page check -- it does not inspect script.
 
@@ -236,6 +238,7 @@ class TestSuspectDensityWithArabicContent:
 
     PAGE_COUNT = 42
     TOTAL_CHARS = 54_000
+
 
 class TestArabicLowContentRatioGate:
     """SCOPE REDUCTION: validate_tree's check_garble(TREE_BULK) call and the
@@ -267,6 +270,7 @@ class TestArabicLowContentRatioGate:
         result = check_garble(blob, expected_script=None, profile=BULK_PROFILE)
         assert result is True
 
+
 class TestSuspectDensityRegressionCanonicalPassTrees:
     @pytest.mark.parametrize("index", range(3))
     def test_canonical_pass_tree_does_not_trigger_suspect_density(self, index: int):
@@ -297,6 +301,7 @@ class TestFenceAndHRStripping:
         assert "------" not in combined
         assert "======" not in combined
         assert "Before." in combined and "Middle." in combined and "After." in combined
+
 
 class TestRegressionPlainMarkdown:
     def test_no_spurious_blocks_added_to_plain_markdown(self):
@@ -348,7 +353,9 @@ class TestDegenerateRowCollapsing:
     def test_distinct_column_values_not_collapsed(self):
         """Legit rows with distinct per-column values pass through unchanged
         (modulo whitespace normalisation)."""
-        md = _pipe_table(["Name", "Wert", "Einheit"], [["Alpha", "1.0", "kg"], ["Beta", "2.0", "m"]])
+        md = _pipe_table(
+            ["Name", "Wert", "Einheit"], [["Alpha", "1.0", "kg"], ["Beta", "2.0", "m"]]
+        )
 
         result = _repair_docling_tables(md)
 
@@ -376,6 +383,7 @@ class TestTableDedupFeatureFlagAndNormalisation:
         lines = result.splitlines()
         sep_line = next(ln for ln in lines if "---" in ln)
         assert sep_line == "| --- |"
+
 
 class TestNonTableMarkdownUnaffected:
     def test_mixed_prose_and_table(self):
@@ -432,6 +440,7 @@ class TestRetainedSkipClipTextAlreadyExported:
 
         assert "[Figure: fig-0]" in out
         assert f"> [Chart text]: {ocr}" in out
+
 
 class TestStandaloneJpgPassthrough:
     """Scope-reduced: exercises the semantic of the D5b else-branch in
@@ -635,4 +644,3 @@ class TestClassifyVerdictFailOnContamination:
 
         assert verdict == "FAIL"
         assert reason.startswith("empty_node_contamination")
-

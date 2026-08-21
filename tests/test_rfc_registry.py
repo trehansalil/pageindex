@@ -223,7 +223,7 @@ class TestPageRotationDetection:
         # With /Rotate=0 on a wide page, the aspect heuristic supplies
         # effective_rotation=90 and the transform writes a corrected copy
         # with /Rotate=90 baked in when the gate is enabled.
-        monkeypatch.setattr(converters, "_PAGE_ROTATION_DETECTION_ENABLED", True)
+        monkeypatch.setattr(converters.pictures, "_PAGE_ROTATION_DETECTION_ENABLED", True)
         path = _make_pdf(tmp_path, "wide_no_rotate.pdf", width=800, height=600, rotate=0)
         result_path = _normalize_pdf_page_rotation(path)
         assert result_path != path
@@ -235,7 +235,7 @@ class TestPageRotationDetection:
             os.unlink(result_path)
 
     def test_disabled_gate_skips_transform(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(converters, "_PAGE_ROTATION_DETECTION_ENABLED", False)
+        monkeypatch.setattr(converters.pictures, "_PAGE_ROTATION_DETECTION_ENABLED", False)
         path = _make_pdf(tmp_path, "needs_fix.pdf", width=800, height=600, rotate=0)
         result_path = _normalize_pdf_page_rotation(path)
         assert result_path == path
@@ -259,9 +259,7 @@ class TestScoringHarnessStage2Guard:
     @pytest.fixture(scope="class")
     def guard_predicate(self):
         source = HARNESS_JS.read_text()
-        match = re.search(
-            r"if \(!ingestResult \|\| ingestResult\.status === 'error'\)", source
-        )
+        match = re.search(r"if \(!ingestResult \|\| ingestResult\.status === 'error'\)", source)
         assert match, "Stage 2 guard predicate not found in corpus-ingest-score.js"
         return "!ingestResult || ingestResult.status === 'error'"
 
@@ -271,9 +269,7 @@ class TestScoringHarnessStage2Guard:
         const isError = {guard_predicate};
         console.log(JSON.stringify(isError));
         """
-        result = subprocess.run(
-            ["node", "-e", script], capture_output=True, text=True, check=True
-        )
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
         return json.loads(result.stdout.strip())
 
     def test_success_status_with_unrelated_error_substring_proceeds(self, guard_predicate):

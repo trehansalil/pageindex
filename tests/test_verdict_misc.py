@@ -19,7 +19,7 @@ from pageindex_mcp.helpers import (
     validate_tree,
 )
 
-CLIENT_PATH = pathlib.Path(__file__).parent.parent / "src" / "pageindex_mcp" / "client.py"
+CLIENT_PKG = pathlib.Path(__file__).parent.parent / "src" / "pageindex_mcp" / "client"
 
 
 @pytest.fixture(autouse=True)
@@ -81,10 +81,9 @@ class TestReasonPolicy:
         """HARD_FAIL_DEFECTS should be exactly the union of PERSIST_FAIL entries
         plus GARBLING and REORDERED (per the comment in helpers.py)."""
         expected = frozenset(
-            td for td, policy in REASON_POLICY.items()
-            if policy == _ReasonPolicy.PERSIST_FAIL
+            td for td, policy in REASON_POLICY.items() if policy == _ReasonPolicy.PERSIST_FAIL
         ) | {TreeDefect.GARBLING, TreeDefect.REORDERED}
-        assert HARD_FAIL_DEFECTS == expected, (
+        assert expected == HARD_FAIL_DEFECTS, (
             f"HARD_FAIL_DEFECTS drift: "
             f"extra={HARD_FAIL_DEFECTS - expected}, "
             f"missing={expected - HARD_FAIL_DEFECTS}"
@@ -121,14 +120,16 @@ class TestTreeGateResult:
         ],
     )
     def test_str(self, defect, detail, expected):
-        r = TreeGateResult(ok=False, defect=defect, detail=detail) if detail else TreeGateResult(ok=False, defect=defect)
+        r = (
+            TreeGateResult(ok=False, defect=defect, detail=detail)
+            if detail
+            else TreeGateResult(ok=False, defect=defect)
+        )
         assert str(r) == expected
 
     def test_startswith_compat(self):
         """classify_verdict uses .startswith() for parametric reasons."""
-        r = TreeGateResult(
-            False, TreeDefect.SUSPECT_DENSITY, "chars_per_page=12.3"
-        )
+        r = TreeGateResult(False, TreeDefect.SUSPECT_DENSITY, "chars_per_page=12.3")
         _ok, reason = r
         assert isinstance(reason, str) and reason.startswith("suspect_density")
 
@@ -140,22 +141,32 @@ class TestTreeGateResult:
 
 class TestValidateTree:
     def test_returns_gate_result(self):
-        result = validate_tree([{"title": "root", "body": "x", "nodes": [
-            {"title": "a", "body": "hello " * 50, "nodes": []},
-            {"title": "b", "body": "world " * 50, "nodes": []},
-            {"title": "c", "body": "test " * 50, "nodes": []},
-        ]}])
+        result = validate_tree(
+            [
+                {
+                    "title": "root",
+                    "body": "x",
+                    "nodes": [
+                        {"title": "a", "body": "hello " * 50, "nodes": []},
+                        {"title": "b", "body": "world " * 50, "nodes": []},
+                        {"title": "c", "body": "test " * 50, "nodes": []},
+                    ],
+                }
+            ]
+        )
         assert isinstance(result, TreeGateResult)
         ok, reason = result
         assert isinstance(ok, bool)
         assert isinstance(reason, str)
 
     def test_too_shallow(self):
-        result = validate_tree([
-            {"title": "a", "body": "hello " * 50, "nodes": []},
-            {"title": "b", "body": "world " * 50, "nodes": []},
-            {"title": "c", "body": "test " * 50, "nodes": []},
-        ])
+        result = validate_tree(
+            [
+                {"title": "a", "body": "hello " * 50, "nodes": []},
+                {"title": "b", "body": "world " * 50, "nodes": []},
+                {"title": "c", "body": "test " * 50, "nodes": []},
+            ]
+        )
         ok, reason = result
         assert ok is False
         assert reason == "depth<2"
@@ -175,43 +186,55 @@ class TestValidateTree:
 
 
 class TestClientSourceInvariants:
+    @staticmethod
+    def _client_sources():
+        """Read all .py files in the client package (was single client.py)."""
+        for py in sorted(CLIENT_PKG.glob("*.py")):
+            if py.name == "__init__.py":
+                continue
+            yield py.name, py.read_text()
+
     def test_no_visual_order_garble_in_client(self):
         """visual_order_garble was dead code — verify it's removed from reason tuples."""
-        source = CLIENT_PATH.read_text()
-        for i, line in enumerate(source.splitlines(), 1):
-            stripped = line.lstrip()
-            if stripped.startswith("#") or stripped.startswith("//"):
-                continue
-            if '"visual_order_garble"' in stripped:
-                pytest.fail(
-                    f"client.py:{i} still references 'visual_order_garble' "
-                    f"in non-comment code: {stripped.strip()}"
-                )
+        for fname, source in self._client_sources():
+            for i, line in enumerate(source.splitlines(), 1):
+                stripped = line.lstrip()
+                if stripped.startswith("#") or stripped.startswith("//"):
+                    continue
+                if '"visual_order_garble"' in stripped:
+                    pytest.fail(
+                        f"client/{fname}:{i} still references 'visual_order_garble' "
+                        f"in non-comment code: {stripped.strip()}"
+                    )
 
     def test_all_validate_tree_calls_pass_page_count(self):
-        """All validate_tree call sites in client.py must pass page_count.
+        """All validate_tree call sites in client/ must pass page_count.
 
         Zone-2 consolidation reduced 5 inline calls to 3 (2 direct + 1 in
         _reconvert_and_revalidate shared helper).
         """
-        source = CLIENT_PATH.read_text()
         pattern = re.compile(r"validate_tree\(")
-        lines = source.splitlines()
-        call_sites = []
-        for i, line in enumerate(lines, 1):
-            stripped = line.lstrip()
-            if stripped.startswith("#"):
-                continue
-            if pattern.search(stripped):
-                call_sites.append(i)
+        all_call_sites = []
+        all_lines_map = {}
+        for fname, source in self._client_sources():
+            lines = source.splitlines()
+            for i, line in enumerate(lines, 1):
+                stripped = line.lstrip()
+                if stripped.startswith("#"):
+                    continue
+                if pattern.search(stripped):
+                    all_call_sites.append((fname, i))
+                    all_lines_map[(fname, i)] = lines
 
-        assert len(call_sites) == 3, f"Expected 3 validate_tree calls, found {len(call_sites)}"
+        assert len(all_call_sites) == 3, (
+            f"Expected 3 validate_tree calls, found {len(all_call_sites)}"
+        )
 
-        for site_line in call_sites:
-            chunk = "\n".join(lines[site_line - 1: site_line + 4])
+        for fname, site_line in all_call_sites:
+            lines = all_lines_map[(fname, site_line)]
+            chunk = "\n".join(lines[site_line - 1 : site_line + 4])
             assert "page_count=" in chunk, (
-                f"validate_tree call at client.py:{site_line} "
-                f"does not pass page_count"
+                f"validate_tree call at client/{fname}:{site_line} does not pass page_count"
             )
 
 
@@ -236,6 +259,7 @@ class TestVerdictThresholdsReset:
         reset_pipeline_config()
         reset_pipeline_config()
         from pageindex_mcp.config import pipeline_config as refreshed
+
         th = VerdictThresholds.from_config(refreshed)
         assert isinstance(th, VerdictThresholds)
 
@@ -246,6 +270,7 @@ class TestEnvVarReflection:
         monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.99")
         reset_pipeline_config()
         from pageindex_mcp.config import pipeline_config as refreshed
+
         th2 = VerdictThresholds.from_config(refreshed)
         assert th2.pass_max_leaf_ratio == 0.99
 
@@ -253,6 +278,7 @@ class TestEnvVarReflection:
         monkeypatch.setenv("GARBLE_WINDOW_RATIO_THRESHOLD", "0.15")
         reset_pipeline_config()
         from pageindex_mcp.config import pipeline_config as refreshed
+
         th = VerdictThresholds.from_config(refreshed)
         assert th.garble_threshold == 0.15
 
@@ -260,6 +286,7 @@ class TestEnvVarReflection:
         monkeypatch.setenv("SMALL_DOC_PROMOTION_ENABLED", "false")
         reset_pipeline_config()
         from pageindex_mcp.config import pipeline_config as refreshed
+
         th = VerdictThresholds.from_config(refreshed)
         assert th.small_doc_enabled is False
 
@@ -268,11 +295,13 @@ class TestEnvVarReflection:
         monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.88")
         reset_pipeline_config()
         from pageindex_mcp.config import pipeline_config as refreshed1
+
         th1 = VerdictThresholds.from_config(refreshed1)
         assert th1.pass_max_leaf_ratio == 0.88
 
         monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
         reset_pipeline_config()
         from pageindex_mcp.config import pipeline_config as refreshed2
+
         th2 = VerdictThresholds.from_config(refreshed2)
         assert th2.pass_max_leaf_ratio == 0.30  # default

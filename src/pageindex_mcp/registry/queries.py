@@ -1,163 +1,16 @@
-"""Postgres document registry (RFC-006).
+"""Postgres document registry — query functions (RFC-006).
 
-Provides a queryable catalog that replaces the O(N) MinIO listing path.
-All public coroutines are safe to call when Postgres is unavailable — they
-return ``None`` / empty lists so callers can fall back to MinIO silently (but
-they must emit the REGISTRY_FALLBACK_TOTAL metric and a log warning, which is
-the callers' responsibility as per RFC-006 F4).
-
-Schema (``doc_registry`` table):
-    doc_id          TEXT PRIMARY KEY          — 8-char UUID prefix
-    doc_name        TEXT NOT NULL             — human-readable filename
-    source_url      TEXT NOT NULL DEFAULT ''  — origin URL if known
-    processed_at    TEXT NOT NULL DEFAULT ''  — ISO-8601 string from meta.json
-    content_class   TEXT NOT NULL DEFAULT ''  — '' | 'flat_table' | …
-    sha256          TEXT NOT NULL DEFAULT ''  — file hash from hash-cache
-    product         TEXT NOT NULL DEFAULT ''  — Tier-1 facet (no-op until Tier-1 lands)
-    tier            TEXT NOT NULL DEFAULT ''  — Tier-1 facet
-    doc_family      TEXT NOT NULL DEFAULT ''  — Tier-1 facet
-    effective_date  TEXT NOT NULL DEFAULT ''  — Tier-1 facet
-    search_text     tsvector GENERATED ALWAYS AS (
-                        to_tsvector('simple',
-                            coalesce(doc_name,'') || ' ' ||
-                            coalesce(doc_description,'') || ' ' ||
-                            coalesce(product,'') || ' ' ||
-                            coalesce(tier,'') || ' ' ||
-                            coalesce(doc_family,''))
-                        ) STORED
-    doc_description TEXT NOT NULL DEFAULT ''  — LLM-generated description from meta
-
-GIN index on ``search_text`` enables Stage B ``ts_rank`` queries.
-``processed_at`` index enables ``recent_documents`` ``ORDER BY processed_at DESC``.
-
-Dependency: asyncpg (PostgreSQL-licensed). Added to pyproject.toml under the
-``[project.dependencies]`` section together with this file.
+Write path, delete path, read path, Stage A/B filters, and backfill helpers.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    import asyncpg
+from . import schema as _schema
 
 logger = logging.getLogger(__name__)
-
-# Module-level pool: initialised lazily by init_registry() and reused across
-# requests. ``None`` when Postgres is unavailable or REGISTRY_ENABLED=False.
-_pool: asyncpg.Pool | None = None
-
-# ---------------------------------------------------------------------------
-# DDL
-# ---------------------------------------------------------------------------
-
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS doc_registry (
-    doc_id          TEXT        PRIMARY KEY,
-    doc_name        TEXT        NOT NULL DEFAULT '',
-    source_url      TEXT        NOT NULL DEFAULT '',
-    processed_at    TEXT        NOT NULL DEFAULT '',
-    content_class   TEXT        NOT NULL DEFAULT '',
-    sha256          TEXT        NOT NULL DEFAULT '',
-    product         TEXT        NOT NULL DEFAULT '',
-    tier            TEXT        NOT NULL DEFAULT '',
-    doc_family      TEXT        NOT NULL DEFAULT '',
-    effective_date  TEXT        NOT NULL DEFAULT '',
-    doc_description TEXT        NOT NULL DEFAULT '',
-    node_count      INTEGER,
-    search_text     tsvector    GENERATED ALWAYS AS (
-        to_tsvector('simple',
-            coalesce(doc_name, '') || ' ' ||
-            coalesce(doc_description, '') || ' ' ||
-            coalesce(product, '') || ' ' ||
-            coalesce(tier, '') || ' ' ||
-            coalesce(doc_family, ''))
-    ) STORED
-);
-"""
-
-_CREATE_GIN_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS doc_registry_search_gin
-    ON doc_registry USING GIN (search_text);
-"""
-
-_CREATE_TIME_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS doc_registry_processed_at_idx
-    ON doc_registry (processed_at DESC);
-"""
-
-# D2 (RFC-009 / ISS-05): additive column for node_count. Follows this repo's
-# raw-DDL bootstrap convention (no Alembic) — an idempotent ADD COLUMN IF NOT
-# EXISTS run at init so pre-existing deployments migrate in place. Nullable:
-# rows written before this change stay NULL until the RFC-006 D3 backfill
-# re-generates them.
-_MIGRATE_NODE_COUNT_SQL = """
-ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS node_count INTEGER;
-"""
-
-# RFC-014 D2: verdict columns for corpus promotion pipeline. Same
-# idempotent ADD COLUMN IF NOT EXISTS pattern as node_count above.
-_MIGRATE_VERDICT_SQL = """
-ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT '';
-ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS pipeline_version INTEGER;
-ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS permanent_marginal BOOLEAN NOT NULL DEFAULT false;
-"""
-
-# Zone-8: verdict_computed_at column for temporal CAS guard in upsert.
-_MIGRATE_VERDICT_COMPUTED_AT_SQL = """
-ALTER TABLE doc_registry ADD COLUMN IF NOT EXISTS verdict_computed_at TEXT NOT NULL DEFAULT '';
-"""
-
-_CREATE_VERDICT_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS doc_registry_verdict_idx
-    ON doc_registry (verdict, pipeline_version);
-"""
-
-# ---------------------------------------------------------------------------
-# Pool lifecycle
-# ---------------------------------------------------------------------------
-
-
-async def init_registry(dsn: str) -> None:
-    """Create the asyncpg connection pool and ensure the schema exists.
-
-    Safe to call multiple times — idempotent via ``IF NOT EXISTS`` DDL and a
-    module-level guard.  Raises on connection failure so the caller can decide
-    whether to crash-start or degrade gracefully.
-    """
-    global _pool
-    if _pool is not None:
-        return  # already initialised
-
-    import asyncpg  # deferred: server loads even without asyncpg in the env
-
-    logger.info("registry: connecting to Postgres (DSN omitted for security)")
-    _pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
-    async with _pool.acquire() as conn:
-        await conn.execute(_CREATE_TABLE_SQL)
-        await conn.execute(_MIGRATE_NODE_COUNT_SQL)
-        await conn.execute(_MIGRATE_VERDICT_SQL)
-        await conn.execute(_MIGRATE_VERDICT_COMPUTED_AT_SQL)
-        await conn.execute(_CREATE_GIN_INDEX_SQL)
-        await conn.execute(_CREATE_TIME_INDEX_SQL)
-        await conn.execute(_CREATE_VERDICT_INDEX_SQL)
-    logger.info("registry: schema ready (doc_registry)")
-
-
-async def close_registry() -> None:
-    """Drain and close the pool on shutdown."""
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
-        logger.info("registry: pool closed")
-
-
-def get_pool() -> asyncpg.Pool | None:
-    """Return the module-level pool, or None if not initialised."""
-    return _pool
-
 
 # ---------------------------------------------------------------------------
 # Write path
@@ -235,7 +88,7 @@ async def upsert_doc(meta: dict) -> None:
     with a raw ``.meta.json`` payload.  Returns silently if the pool is not
     initialised.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return
     doc_id = meta.get("doc_id", "")
@@ -322,7 +175,7 @@ async def upsert_verdict(doc_id: str, verdict_fields: dict[str, Any]) -> dict[st
     This is the sole CAS-guarded verdict write entry point for the
     Postgres-authority (``REGISTRY_VERDICT_AUTHORITY=postgres``) path.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     if not doc_id:
@@ -340,7 +193,11 @@ async def upsert_verdict(doc_id: str, verdict_fields: dict[str, Any]) -> dict[st
     if row is None:
         return None
     result = dict(row)
-    logger.debug("registry: upsert_verdict doc_id=%s winning_verdict=%s", doc_id, result.get("verdict"))
+    logger.debug(
+        "registry: upsert_verdict doc_id=%s winning_verdict=%s",
+        doc_id,
+        result.get("verdict"),
+    )
     return result
 
 
@@ -357,7 +214,7 @@ WHERE (pipeline_version IS NULL OR pipeline_version < $1)
 
 async def sweep_candidates(current_version: int) -> list[str]:
     """Return doc_ids eligible for verdict re-check (D3 sweep)."""
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return []
     rows = await pool.fetch(_SWEEP_CANDIDATES_SQL, current_version)
@@ -375,10 +232,10 @@ async def delete_doc(doc_id: str) -> None:
     """Remove a doc_registry row.  Idempotent — no-op if the row is absent.
     Returns silently if the pool is not initialised.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return
-    from .config import settings
+    from ..config import settings
 
     await pool.execute(_DELETE_SQL, doc_id, timeout=settings.registry_delete_timeout_s)
     logger.info("registry: deleted doc_id=%s", doc_id)
@@ -393,7 +250,7 @@ async def list_all_doc_ids() -> set[str] | None:
     queryable subset). Returns ``None`` on any Postgres error so the caller can
     treat "unknown" distinctly from "empty" and skip a destructive sync.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     try:
@@ -419,7 +276,7 @@ async def list_all_doc_ids_with_timestamps() -> dict[str, str] | None:
     Returns ``None`` on any Postgres error so the caller can skip the
     destructive sync safely.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     try:
@@ -459,7 +316,7 @@ async def list_docs(limit: int = 100, offset: int = 0) -> list[dict] | None:
     ``list_processed_docs()`` output so callers require no changes.
     Returns ``None`` on any Postgres error so the caller can fall back.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     try:
@@ -485,7 +342,7 @@ async def list_docs(limit: int = 100, offset: int = 0) -> list[dict] | None:
 
 async def count_docs() -> int | None:
     """Queryable row count (excludes verdict='FAIL' and verdict='' rows).  Returns None on error."""
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     try:
@@ -502,7 +359,7 @@ async def count_docs_all() -> int | None:
     Used only by registry_backfill.py's empty-corpus guard, which needs the
     true row count rather than the queryable-only count (Phase 3 audit Issue B).
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     try:
@@ -547,7 +404,7 @@ async def stage_b_candidates(query: str, topk: int) -> list[dict] | None:
     set for broad/vague queries).  Returns ``None`` on Postgres error so the
     caller can fall back to MinIO listing.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
     try:
@@ -623,7 +480,7 @@ async def stage_a_filter(
     not yet populated (i.e., all ``_KNOWN_FACETS`` sets are empty), making
     this stage a transparent no-op.
     """
-    pool = get_pool()
+    pool = _schema.get_pool()
     if pool is None:
         return None
 
@@ -652,7 +509,9 @@ async def stage_a_filter(
     if not resolved:
         return None  # no facet signal found → fall through to Stage B
 
-    clauses = ["verdict NOT IN ('FAIL', '')"] + [f"{col} = ${i + 1}" for i, col in enumerate(resolved)]
+    clauses = ["verdict NOT IN ('FAIL', '')"] + [
+        f"{col} = ${i + 1}" for i, col in enumerate(resolved)
+    ]
     sql = _STAGE_A_SQL_TEMPLATE.format(where_clause=" AND ".join(clauses))
     params = list(resolved.values())
 

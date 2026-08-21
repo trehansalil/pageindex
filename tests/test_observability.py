@@ -11,9 +11,7 @@ Consolidated from:
 
 from __future__ import annotations
 
-import dataclasses
 import json
-import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,10 +25,10 @@ from pageindex_mcp.converters import (
 )
 from pageindex_mcp.metrics import AGPL_FALLBACK_TOTAL, TESSDATA_LATIN_FALLBACK_TOTAL
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _iso_now_minus(minutes: int) -> str:
     """Return ISO-8601 UTC timestamp *minutes* in the past."""
@@ -40,6 +38,7 @@ def _iso_now_minus(minutes: int) -> str:
 # ---------------------------------------------------------------------------
 # effective_config_snapshot
 # ---------------------------------------------------------------------------
+
 
 class TestEffectiveConfigSnapshot:
     def test_returns_all_keys(self):
@@ -84,8 +83,12 @@ class TestEffectiveConfigSnapshot:
 
         assert isinstance(snap["pipeline_version"], int)
         for fk in (
-            "garble_latin_ratio", "garble_node_ratio_threshold", "pass_max_leaf_ratio",
-            "leaf_split_ratio", "rfc029_flat_prefer_multiplier", "rfc029_min_chars_per_node",
+            "garble_latin_ratio",
+            "garble_node_ratio_threshold",
+            "pass_max_leaf_ratio",
+            "leaf_split_ratio",
+            "rfc029_flat_prefer_multiplier",
+            "rfc029_min_chars_per_node",
         ):
             assert isinstance(snap[fk], float), f"{fk} should be float, got {type(snap[fk])}"
         assert isinstance(snap["pdf_converter"], str)
@@ -113,9 +116,11 @@ class TestEffectiveConfigSnapshot:
         # config.py). To test it, patch the constant directly rather than
         # setting the env var after import.
         import pageindex_mcp.config as cfg_mod
+
         monkeypatch.setattr(cfg_mod, "OCR_ESCALATION_GARBLE", False)
 
         from pageindex_mcp.config import effective_config_snapshot, reset_pipeline_config
+
         reset_pipeline_config()
 
         snap = effective_config_snapshot()
@@ -129,10 +134,11 @@ class TestEffectiveConfigSnapshot:
 # Sidecar meta (SIDECAR_VERSION, build_sha, effective_config)
 # ---------------------------------------------------------------------------
 
+
 class TestSidecarMeta:
-    @patch("pageindex_mcp.storage._confirm_write_visible")
-    @patch("pageindex_mcp.storage.settings")
-    @patch("pageindex_mcp.storage.get_minio")
+    @patch("pageindex_mcp.storage.minio_ops._confirm_write_visible")
+    @patch("pageindex_mcp.storage.verdict.settings")
+    @patch("pageindex_mcp.storage.minio_ops.get_minio")
     def test_includes_build_sha_and_effective_config(
         self, mock_get_minio, mock_settings, mock_confirm
     ):
@@ -164,9 +170,11 @@ class TestSidecarMeta:
             "ocr_escalation": True,
         }
 
+
 # ---------------------------------------------------------------------------
 # Shadow-mode docstring accuracy
 # ---------------------------------------------------------------------------
+
 
 class TestShadowModeDocstring:
     def test_docstring_accuracy(self):
@@ -183,6 +191,7 @@ class TestShadowModeDocstring:
 # into Redis and pulled back into the server process's local objects.
 # ---------------------------------------------------------------------------
 
+
 class TestBridgedMetrics:
     async def test_sync_survives_redis_outage(self):
         from pageindex_mcp import metrics
@@ -193,15 +202,18 @@ class TestBridgedMetrics:
         with patch("pageindex_mcp.cache.get_async_redis", raising_get_async_redis):
             await metrics._sync_bridged_metrics_from_redis()  # must not raise
 
+
 # ---------------------------------------------------------------------------
 # process_document_job stamps job_start_config / job_start_build_sha on
 # every Redis status transition, including error paths that never reach
 # save_doc_meta.
 # ---------------------------------------------------------------------------
 
+
 class TestProcessDocumentJobStamping:
     async def test_stamps_job_start_fields_on_success(self, monkeypatch):
-        from pageindex_mcp import worker
+        from pageindex_mcp.worker import job as worker
+        from pageindex_mcp.worker import registry_mirror as _registry_mirror
 
         hset_calls = []
         _store = {}
@@ -223,7 +235,9 @@ class TestProcessDocumentJobStamping:
         async def fake_wait_for_memory(redis):
             pass
 
-        async def fake_run_converter_subprocess(local_path, *, staging_key=None, job_start_config=None):
+        async def fake_run_converter_subprocess(
+            local_path, *, staging_key=None, job_start_config=None
+        ):
             assert job_start_config is not None
             return {"doc_id": "doc123"}
 
@@ -234,7 +248,7 @@ class TestProcessDocumentJobStamping:
         monkeypatch.setattr(worker, "download_staging", lambda *a: None)
         monkeypatch.setattr(worker, "wait_for_memory", fake_wait_for_memory)
         monkeypatch.setattr(worker, "_run_converter_subprocess", fake_run_converter_subprocess)
-        monkeypatch.setattr(worker, "_upsert_registry_row", fake_upsert_registry_row)
+        monkeypatch.setattr(_registry_mirror, "_upsert_registry_row", fake_upsert_registry_row)
         monkeypatch.setattr(worker, "delete_staging", lambda *a: True)
         monkeypatch.setattr(worker, "asyncio", __import__("asyncio"))
 
@@ -253,10 +267,12 @@ class TestProcessDocumentJobStamping:
             assert "job_start_build_sha" in mapping
             json.loads(mapping["job_start_config"])  # must be valid JSON
 
+
 # ---------------------------------------------------------------------------
 # client._detect_config_drift: compares job_start_config snapshot against
 # the freshly computed live config.
 # ---------------------------------------------------------------------------
+
 
 class TestDetectConfigDrift:
     @pytest.mark.parametrize(
@@ -296,6 +312,7 @@ class TestDetectConfigDrift:
 # 5. Regression: identical results to pre-age-guard behavior when all rows
 #    are older than grace_minutes (steady-state reconciliation unchanged).
 # ---------------------------------------------------------------------------
+
 
 class TestStaleRowGuard:
     async def test_old_row_outside_grace_period_is_deleted(self):
@@ -354,7 +371,7 @@ class TestStaleRowGuard:
     @pytest.mark.parametrize(
         ("grace_minutes", "expect_deleted"),
         [
-            (1, True),   # row is 2 min old, grace=1 => not protected => deleted
+            (1, True),  # row is 2 min old, grace=1 => not protected => deleted
             (5, False),  # row is 2 min old, grace=5 => protected => not deleted
         ],
     )
@@ -382,9 +399,7 @@ class TestStaleRowGuard:
             ),
             patch("pageindex_mcp.registry.delete_doc", side_effect=mock_delete_doc),
         ):
-            await _delete_stale_rows(
-                {"present-1", "present-2"}, grace_minutes=grace_minutes
-            )
+            await _delete_stale_rows({"present-1", "present-2"}, grace_minutes=grace_minutes)
 
         assert ("borderline-doc" in deleted_ids) == expect_deleted
 
@@ -409,9 +424,7 @@ class TestStaleRowGuard:
         still trigger the age guard when young enough."""
         from pageindex_mcp.registry_backfill import _delete_stale_rows
 
-        naive_recent = (datetime.now(UTC) - timedelta(minutes=3)).strftime(
-            "%Y-%m-%dT%H:%M:%S"
-        )
+        naive_recent = (datetime.now(UTC) - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%S")
         registry_rows = {"naive-fresh": naive_recent}
 
         deleted_ids: list[str] = []
@@ -435,6 +448,7 @@ class TestStaleRowGuard:
 # Silent-fallback observability: AGPL_FALLBACK_TOTAL(reason='fired') and
 # TESSDATA_LATIN_FALLBACK_TOTAL counters, plus registry dual-write logging.
 # ---------------------------------------------------------------------------
+
 
 class TestAgplFallbackCounter:
     def test_increments_on_pymupdf4llm_runtime_fallback(self):
@@ -522,4 +536,3 @@ class TestTessdataLatinFallbackCounter:
             "TESSDATA_LATIN_FALLBACK_TOTAL must NOT increment for non-Latin "
             "TessdataUnavailableError paths"
         )
-

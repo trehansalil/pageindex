@@ -15,11 +15,11 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from pageindex_mcp import converters as C  # noqa: E402
-from pageindex_mcp.helpers import (  # noqa: E402
-    validate_tree,
-    _tree_node_count,
+from pageindex_mcp import converters as C
+from pageindex_mcp.helpers import (
     _tree_depth,
+    _tree_node_count,
+    validate_tree,
 )
 
 DATA = os.path.join(os.path.dirname(__file__), "data")

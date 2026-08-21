@@ -39,18 +39,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
 from pageindex_mcp.helpers import (
-    _RFC029_MIN_CHARS_PER_NODE,
-    LowQualityTreeError,
     TreeDefect,
     TreeGateResult,
-    _flatten_tree_text,
     _garble_check_nodes,
     _word_has_reversed_morphology,
-    classify_verdict,
-    route_and_extract_flat,
     validate_tree,
 )
 from tests.conftest import filler_text
@@ -99,23 +95,31 @@ async def _tree_coro(structure):
 def _wire_common(monkeypatch, *, flat_doc_routing, validate_return, flat_return):
     """Patch every collaborator client.index() touches for the zero-block
     escalation tests, where the caller supplies the flat-extraction result."""
-    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing))
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
+    monkeypatch.setattr(_idx, "settings", _fake_settings(flat_doc_routing))
+    monkeypatch.setattr(_img, "settings", _fake_settings(flat_doc_routing))
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: validate_return)
 
-    mocks = {
-        "route_and_extract_flat": MagicMock(return_value=flat_return),
+    idx_mocks = {
         "save_flat_doc": MagicMock(),
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
+    }
+    for name, m in idx_mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+
+    img_mocks = {
+        "route_and_extract_flat": MagicMock(return_value=flat_return),
         "LOW_QUALITY_TREES": MagicMock(),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in img_mocks.items():
+        monkeypatch.setattr(_img, name, m)
+
+    mocks = {**idx_mocks, **img_mocks}
     return mocks
 
 
@@ -123,25 +127,33 @@ def _wire_index(monkeypatch, *, validate_return, flat_doc_routing: bool = True):
     """Patch every collaborator client.index() touches for the
     persist-with-FAIL routing tests, where flat extraction always returns a
     fixed non-empty block."""
-    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing))
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
+    monkeypatch.setattr(_idx, "settings", _fake_settings(flat_doc_routing))
+    monkeypatch.setattr(_img, "settings", _fake_settings(flat_doc_routing))
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: validate_return)
 
-    mocks = {
-        "route_and_extract_flat": MagicMock(
-            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
-        ),
+    idx_mocks = {
         "save_flat_doc": MagicMock(),
         "save_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
+    }
+    for name, m in idx_mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+
+    img_mocks = {
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
         "LOW_QUALITY_TREES": MagicMock(),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in img_mocks.items():
+        monkeypatch.setattr(_img, name, m)
+
+    mocks = {**idx_mocks, **img_mocks}
     return mocks
 
 
@@ -168,6 +180,7 @@ def _pass_shaped_structure() -> list[dict]:
 # (Property 4)
 # ===========================================================================
 
+
 # Mirrors client.py's nested _repeating_token_density (~lines 1083-1098). The
 # real function is a closure defined inside CustomPageIndexClient.index() and
 # is not independently importable -- see test_rfc028_d4.py's _keep_best for
@@ -189,25 +202,28 @@ class TestRepeatingTokenDensityNoneFloor:
         text = " ".join(f"tok{i}" for i in range(19))
         assert _repeating_token_density(text) is None
 
+
 # ===========================================================================
 # retry_wins short-circuit when _pre_density is None (Property 5)
 # ===========================================================================
 
+
 # Mirrors client.py's decision block at ~lines 1131-1153.
 def _retry_wins_when_pre_density_none(
-    post_retry_chars: int, char_floor: int = client_mod.LOW_CONTENT_OCR_CHAR_FLOOR
+    post_retry_chars: int, char_floor: int = _idx.LOW_CONTENT_OCR_CHAR_FLOOR
 ) -> bool:
     return post_retry_chars >= char_floor
 
 
 class TestRetryWinsShortCircuitOnNonePreDensity:
     def test_pre_density_none_post_above_floor_retry_wins(self):
-        floor = client_mod.LOW_CONTENT_OCR_CHAR_FLOOR
+        floor = _idx.LOW_CONTENT_OCR_CHAR_FLOOR
         assert _retry_wins_when_pre_density_none(floor + 1) is True
 
     def test_pre_density_none_post_below_floor_retry_loses(self):
-        floor = client_mod.LOW_CONTENT_OCR_CHAR_FLOOR
+        floor = _idx.LOW_CONTENT_OCR_CHAR_FLOOR
         assert _retry_wins_when_pre_density_none(floor - 1) is False
+
 
 # ===========================================================================
 # Atomic revert of all six retry-derived state variables (Property 6)
@@ -272,6 +288,7 @@ class TestAtomicRevertOfAllSixStateVariables:
         for field in _RETRY_STATE_FIELDS:
             assert final[field] == post[field]
 
+
 # ===========================================================================
 # validate_tree: low_content_density threshold lowered to 150 (Property 7)
 # ===========================================================================
@@ -291,9 +308,7 @@ def _density_tree(n_nodes: int, chars_per_node: int) -> list[dict]:
     test_rfc029_d1.py."""
     leaves = [_make_leaf(f"L{i}", filler_text(chars_per_node, i)) for i in range(n_nodes - 1)]
     branch = _make_branch("Section1", filler_text(chars_per_node, n_nodes), leaves)
-    return [
-        {"title": "Root", "text": filler_text(chars_per_node, n_nodes + 1), "nodes": [branch]}
-    ]
+    return [{"title": "Root", "text": filler_text(chars_per_node, n_nodes + 1), "nodes": [branch]}]
 
 
 class TestDensityThresholdBoundary:
@@ -317,6 +332,7 @@ class TestDensityThresholdBoundary:
         assert ok is False
         assert reason.startswith("low_content_density")
 
+
 # ===========================================================================
 # CustomPageIndexClient.index(): unhandled validate_tree reasons persist as
 # FAIL, not raised as LowQualityTreeError (Property 6/8, client.py::index())
@@ -330,9 +346,17 @@ class TestDensityThresholdBoundary:
 # NOT mocked -- it runs for real against the structure supplied via
 # _run_md_to_tree, so its verdict reflects actual production wiring.
 _UNHANDLED_GATE_RESULTS = [
-    TreeGateResult(ok=False, defect=TreeDefect.LOW_CONTENT_DENSITY, detail="chars_per_node=54.3,threshold=150.0"),
+    TreeGateResult(
+        ok=False,
+        defect=TreeDefect.LOW_CONTENT_DENSITY,
+        detail="chars_per_node=54.3,threshold=150.0",
+    ),
     TreeGateResult(ok=False, defect=TreeDefect.SUSPECT_DENSITY, detail="chars_per_page=1200.0"),
-    TreeGateResult(ok=False, defect=TreeDefect.EMPTY_NODE_CONTAMINATION, detail="fraction=0.62,empty_leaf=5,empty_non_leaf=3,total_non_root=13"),
+    TreeGateResult(
+        ok=False,
+        defect=TreeDefect.EMPTY_NODE_CONTAMINATION,
+        detail="fraction=0.62,empty_leaf=5,empty_non_leaf=3,total_non_root=13",
+    ),
 ]
 
 
@@ -369,6 +393,7 @@ class TestPersistWithFailRouting:
             f"got verdict={meta_dict['verdict']!r} reason={meta_dict.get('verdict_reason')!r}"
         )
 
+
 class TestPassPathTreesUnaffected:
     """Regression: existing PASS-path trees (validate_tree ok=True) must still
     route through the normal tree path, unaffected by the persist-with-FAIL
@@ -376,7 +401,9 @@ class TestPassPathTreesUnaffected:
 
     async def test_pass_tree_persists_via_save_doc(self, monkeypatch, md_file):
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
+        mocks = _wire_index(
+            monkeypatch, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK)
+        )
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -389,7 +416,9 @@ class TestPassPathTreesUnaffected:
 
     async def test_pass_tree_classify_verdict_still_pass(self, monkeypatch, md_file):
         structure = _pass_shaped_structure()
-        mocks = _wire_index(monkeypatch, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK))
+        mocks = _wire_index(
+            monkeypatch, validate_return=TreeGateResult(ok=True, defect=TreeDefect.OK)
+        )
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_coro(structure))
 
@@ -398,6 +427,7 @@ class TestPassPathTreesUnaffected:
         meta_args = mocks["save_doc_meta"].call_args.args
         meta_dict = meta_args[1]
         assert meta_dict["verdict"] == "PASS"
+
 
 # ===========================================================================
 # _garble_check_nodes: title inspection incl. RTL-reversed morphology
@@ -430,6 +460,7 @@ class TestGarbledTitleWithCleanTextDetected:
 
         assert garbled == 0
 
+
 class TestRTLReversedTitleDetected:
     def test_word_has_reversed_morphology_flags_final_form_at_start(self):
         assert _word_has_reversed_morphology(_REVERSED_TITLE_WORD) is True
@@ -440,6 +471,7 @@ class TestRTLReversedTitleDetected:
         garbled = _garble_check_nodes([node])
 
         assert garbled == 1
+
 
 # ===========================================================================
 # _flatten_tree_text: title text included for every node (Property 10)
@@ -498,4 +530,3 @@ def _passing_tree():
             "nodes": [_healthy_leaf(f"Leaf {i}", _varied_text(i)) for i in range(5)],
         }
     ]
-

@@ -92,9 +92,7 @@ async def run_sweep() -> dict:
                 # (preprocess_client.py).  Both offline paths now use the
                 # same current gate logic as the single source of truth.
                 vt_result = validate_tree(structure)
-                verdict, verdict_reason = classify_verdict(
-                    structure, content_class, vt_result
-                )
+                verdict, verdict_reason = classify_verdict(structure, content_class, vt_result)
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
                 verdict_computed_at = datetime.now(UTC).isoformat()

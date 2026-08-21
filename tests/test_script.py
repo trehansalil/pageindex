@@ -13,18 +13,16 @@ from pathlib import Path
 
 import pytest
 
+from pageindex_mcp.helpers import _script_from_filename
 from pageindex_mcp.script import (
+    _AR_COMMON_WORDS,
     AR_CHAR_RE,
-    AR_RUN_RE,
-    is_arabic_char,
     arabic_char_count,
     arabic_ratio,
-    arabic_letter_ratio,
-    infer_script,
     arabic_readability_score,
-    _AR_COMMON_WORDS,
+    infer_script,
+    is_arabic_char,
 )
-from pageindex_mcp.helpers import _script_from_filename
 
 SRC_DIR = Path(__file__).parent.parent / "src" / "pageindex_mcp"
 _HEX_ARABIC_RE = re.compile(r"0x0[6-8][0-9A-Fa-f]{2}|0xF[BEe][0-9A-Fa-f]{2}")
@@ -43,6 +41,7 @@ class TestIsArabicCharRanges:
     )
     def test_is_arabic_char_true_for_arabic_blocks(self, char):
         assert is_arabic_char(char) is True
+
 
 # ---------------------------------------------------------------------------
 # 2. Ratio tests
@@ -67,6 +66,7 @@ class TestInferScript:
         text = "This is a long English text that should be detected as Latin script"
         assert infer_script(text) == "Latn"
 
+
 # ---------------------------------------------------------------------------
 # 4. Readability scoring
 # ---------------------------------------------------------------------------
@@ -77,6 +77,7 @@ class TestReadabilityScoring:
         words = list(_AR_COMMON_WORDS)[:3]
         assert arabic_readability_score(words) > 0
 
+
 # ---------------------------------------------------------------------------
 # 5. Regex tests
 # ---------------------------------------------------------------------------
@@ -85,6 +86,7 @@ class TestReadabilityScoring:
 class TestRegexPatterns:
     def test_ar_char_re_no_match_latin(self):
         assert AR_CHAR_RE.search("Hello World") is None
+
 
 # ---------------------------------------------------------------------------
 # 6. Backward compatibility -- imports still work through old module paths
@@ -107,6 +109,7 @@ class TestBackwardCompat:
         from pageindex_mcp.script import _JOINING_TYPE
 
         assert _JOINING_TYPE[ord("ب")] == "D"
+
 
 # ---------------------------------------------------------------------------
 # 7. garble_prongs tests
@@ -140,9 +143,12 @@ class TestGarbleProngs:
     def test_clean_text_no_prongs(self):
         from pageindex_mcp.helpers import garble_prongs
 
-        blob = "This is a perfectly normal English paragraph with no garbling issues whatsoever. " * 3
+        blob = (
+            "This is a perfectly normal English paragraph with no garbling issues whatsoever. " * 3
+        )
         result = garble_prongs(blob)
         assert result == frozenset()
+
 
 # ---------------------------------------------------------------------------
 # 8. order_verdict tests
@@ -199,6 +205,7 @@ class TestOrderVerdict:
         )
         assert v.sampled == 1
 
+
 # ---------------------------------------------------------------------------
 # 9. _script_from_filename tests (zone-1 regression)
 #
@@ -241,6 +248,7 @@ class TestScriptFromFilenameUnrecognizable:
     ['eng'] for letterless input, so _script_from_filename should return
     'Latn' or None -- never crash."""
 
+
 class TestScriptFromFilenameReturnType:
     def test_return_type_latn(self):
         result = _script_from_filename("Haftpflicht_2024.pdf")
@@ -252,4 +260,3 @@ class TestScriptFromFilenameReturnType:
 # 10. Script drift guard (zone-5): CI guard against hardcoded Arabic
 #     codepoint ranges outside script.py
 # ---------------------------------------------------------------------------
-

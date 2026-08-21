@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 import openai
 import pytest
 
-from pageindex_mcp import client as client_mod
 from pageindex_mcp.client import (
     _IMAGE_EXTS,
     _SUPPORTED,
@@ -27,6 +26,9 @@ from pageindex_mcp.client import (
     resolve_llm_provider,
     validate_llm_config,
 )
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.helpers import _segment_table_nodes
 
 
@@ -60,7 +62,7 @@ def test_is_azure_url_false_for_non_azure_and_none():
 def test_get_openai_client_azure(monkeypatch):
     """LLM-01-C3: An Azure base URL yields an AsyncAzureOpenAI client."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             openai_base_url="https://my-resource.openai.azure.com",
             azure_api_version="2024-08-01-preview",
@@ -74,7 +76,7 @@ def test_get_openai_client_azure(monkeypatch):
 def test_get_openai_client_non_azure(monkeypatch):
     """A non-Azure base URL yields a plain AsyncOpenAI client (not Azure)."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(openai_base_url="https://api.openai.com/v1"),
     )
     client = get_openai_client()
@@ -96,12 +98,12 @@ def test_supported_extensions_present():
 def test_resolve_llm_provider_auto_infers_from_base_url(monkeypatch):
     """LLM-01-C1: auto resolves to azure for an Azure URL, else openai."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(llm_provider="auto", openai_base_url="https://r.openai.azure.com"),
     )
     assert resolve_llm_provider() == "azure"
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(llm_provider="auto", openai_base_url="https://api.openai.com/v1"),
     )
     assert resolve_llm_provider() == "openai"
@@ -111,7 +113,7 @@ def test_resolve_llm_provider_explicit_is_honored(monkeypatch):
     """LLM-01-C1: an explicit provider overrides base-URL inference."""
     # 'compatible' is honored verbatim even though the base URL is not Azure.
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(llm_provider="compatible", openai_base_url="https://openrouter.ai/api/v1"),
     )
     assert resolve_llm_provider() == "compatible"
@@ -124,7 +126,7 @@ def test_resolve_llm_provider_rejects_invalid(monkeypatch):
     traffic to a base-URL-inferred backend.
     """
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(llm_provider="bogus", openai_base_url="https://api.openai.com/v1"),
     )
     with pytest.raises(ValueError, match="Invalid LLM_PROVIDER"):
@@ -134,7 +136,7 @@ def test_resolve_llm_provider_rejects_invalid(monkeypatch):
 def test_get_openai_client_compatible_uses_base_url(monkeypatch):
     """LLM-01-C2: a compatible provider yields AsyncOpenAI carrying the custom base_url."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             llm_provider="compatible",
             openai_base_url="https://openrouter.ai/api/v1",
@@ -152,7 +154,7 @@ def test_configure_litellm_openai_sets_module_base(monkeypatch):
     import litellm
 
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             llm_provider="compatible",
             openai_base_url="http://localhost:8000/v1",
@@ -175,7 +177,7 @@ def test_configure_litellm_azure_sets_env(monkeypatch):
     monkeypatch.delenv("AZURE_API_VERSION", raising=False)
     monkeypatch.setattr(litellm, "api_base", None, raising=False)
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             llm_provider="azure",
             openai_base_url="https://r.openai.azure.com",
@@ -195,7 +197,7 @@ def test_configure_litellm_azure_sets_env(monkeypatch):
 def test_validate_llm_config_requires_key(monkeypatch):
     """LLM-01-C5: an empty API key fails fast."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(openai_api_key=""),
     )
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
@@ -205,7 +207,7 @@ def test_validate_llm_config_requires_key(monkeypatch):
 def test_validate_llm_config_requires_base_url(monkeypatch):
     """LLM-01-C5: an empty base URL fails fast."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(openai_api_key="sk-x", openai_base_url=""),
     )
     with pytest.raises(ValueError, match="OPENAI_BASE_URL"):
@@ -215,7 +217,7 @@ def test_validate_llm_config_requires_base_url(monkeypatch):
 def test_validate_llm_config_passes_for_compatible(monkeypatch):
     """LLM-01-C5: a well-formed compatible config validates without raising."""
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             llm_provider="compatible",
             openai_api_key="sk-x",
@@ -353,20 +355,22 @@ def _wire_flat_route(monkeypatch, *, content_class, blocks):
     """Monkeypatch index()'s collaborators so it runs offline (no Docling,
     Tesseract, MinIO or LLM) and lands on the flat-success branch via a
     `depth<2` tree rejection."""
-    monkeypatch.setattr(client_mod, "settings", _fake_index_settings())
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: (False, "depth<2"))
-    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
-    monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: _OCR_MD)
-    monkeypatch.setattr(client_mod, "_tesseract_ocr_image", lambda path, langs: _OCR_MD)
+    fake_settings = _fake_index_settings()
+    monkeypatch.setattr(_idx, "settings", fake_settings)
+    monkeypatch.setattr(_img, "settings", fake_settings)
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: (False, "depth<2"))
+    monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+    monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: _OCR_MD)
+    monkeypatch.setattr(_idx, "_tesseract_ocr_image", lambda path, langs: _OCR_MD)
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _OCR_MD)]
+        _idx, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _OCR_MD)]
     )
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
-    monkeypatch.setattr(client_mod, "_enrich_image_blocks", AsyncMock(return_value=None))
-    monkeypatch.setattr(client_mod, "_generate_flat_doc_description", lambda *a, **k: "desc")
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(_img, "_enrich_image_blocks", AsyncMock(return_value=None))
+    monkeypatch.setattr(_idx, "_generate_flat_doc_description", lambda *a, **k: "desc")
 
     mocks = {
         "save_doc": MagicMock(),
@@ -380,8 +384,19 @@ def _wire_flat_route(monkeypatch, *, content_class, blocks):
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
     }
+    _mock_targets = {
+        "save_doc": (_idx,),
+        "save_flat_doc": (_idx,),
+        "save_raw": (_idx,),
+        "save_doc_meta": (_idx,),
+        "route_and_extract_flat": (_img,),
+        "FLAT_DOCS_TOTAL": (_idx,),
+        "LOW_QUALITY_TREES": (_idx, _img),
+        "OCR_ESCALATION_TOTAL": (_rec,),
+    }
     for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+        for mod in _mock_targets[name]:
+            monkeypatch.setattr(mod, name, m)
     return mocks
 
 
@@ -412,7 +427,7 @@ async def test_bare_jpg_extension_overrides_flat_mixed_to_image_standalone(monke
     _classify_image_verdict instead of the flat_mixed char-floor promotion
     gate."""
     mocks = _wire_flat_route(monkeypatch, content_class="flat_mixed", blocks=_MIXED_BLOCKS)
-    monkeypatch.setattr(client_mod, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
+    monkeypatch.setattr(_img, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
     c = CustomPageIndexClient(api_key="test-key")
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 
@@ -428,7 +443,7 @@ async def test_bare_jpg_override_respects_pipeline_kill_switch(monkeypatch, jpg_
     _IMAGE_STANDALONE_PIPELINE_ENABLED. With the flag off, the same .jpg keeps
     the flat_mixed content_class route_and_extract_flat assigned it."""
     mocks = _wire_flat_route(monkeypatch, content_class="flat_mixed", blocks=_MIXED_BLOCKS)
-    monkeypatch.setattr(client_mod, "_IMAGE_STANDALONE_PIPELINE_ENABLED", False)
+    monkeypatch.setattr(_img, "_IMAGE_STANDALONE_PIPELINE_ENABLED", False)
     c = CustomPageIndexClient(api_key="test-key")
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 
@@ -444,7 +459,7 @@ async def test_pdf_with_mixed_blocks_is_not_overridden_to_image_standalone(monke
     bare image files, not to PDFs that happen to contain images."""
     assert ".pdf" not in _IMAGE_EXTS
     mocks = _wire_flat_route(monkeypatch, content_class="flat_mixed", blocks=_MIXED_BLOCKS)
-    monkeypatch.setattr(client_mod, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
+    monkeypatch.setattr(_img, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
     c = CustomPageIndexClient(api_key="test-key")
     monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
 

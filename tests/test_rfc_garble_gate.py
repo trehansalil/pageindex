@@ -33,23 +33,18 @@ import pytest
 from pageindex_mcp import converters
 from pageindex_mcp.converters import (
     PictureResult,
-    _PICTURE_OCR_MIN_CHARS,
-    _PICTURE_PAGE_COVERAGE_THRESHOLD,
     _recover_picture_results,
     _recover_picture_text,
     detect_ocr_langs,
-    splice_figure_markers,
     splice_picture_text_for_tree,
 )
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
-    FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
     _garble_check_nodes,
     _infer_script,
     _script_from_filename,
     check_garble,
-    validate_tree,
 )
 from pageindex_mcp.picture_plane import PictureGateConfig
 
@@ -224,9 +219,11 @@ class TestF1CoverageExemption:
     def test_full_page_with_text_layer_skipped(self, monkeypatch):
         """Full-page region + page HAS a text layer -> coverage skip applies
         (the picture is decorative background over real text, not content)."""
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text=_long_text(60))
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -240,12 +237,18 @@ class TestF1CoverageExemption:
     def test_coverage_exempt_env_var_false(self, monkeypatch):
         """With the exemption disabled, a full-page region + no text layer is
         STILL skipped as page_coverage (pre-F1 / legacy behavior)."""
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
-        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
-            coverage_exempt_no_text_layer=False,
-        ))
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
+        monkeypatch.setattr(
+            converters.pictures,
+            "_GATE_CONFIG",
+            PictureGateConfig(
+                coverage_exempt_no_text_layer=False,
+            ),
+        )
         _install_fake_fitz(monkeypatch, page_text="", clip_text="")
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -261,10 +264,12 @@ class TestF1CoverageExemption:
         AND that text is already contained in the Docling markdown export
         (RFC-024 D1 containment guard) is skipped with reason
         "clip_text_already_exported" rather than re-OCR'd."""
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         small_region = _region(l=0, t=0, r=100, b=100)
         _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(30))
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
 
         recovered, skip_reasons = _recover_picture_text(
             "dummy.pdf", [small_region], ["eng"], md=_long_text(30)
@@ -277,22 +282,23 @@ class TestF1CoverageExemption:
         assert recovered[0].get("png_bytes")
         assert recovered[0].get("ocr_text") == _long_text(30)
 
+
 # ===========================================================================
 # F5 -- skip-reason plumbing (_recover_picture_results uses the REAL reason,
 # not a hardcoded "page_coverage" string)
 # ===========================================================================
 class TestF5SkipReason:
     def _setup(self, monkeypatch, *, recovered, skip_reasons, n_regions=1):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_collect_picture_regions",
             lambda d: [_region() for _ in range(n_regions)],
         )
-        monkeypatch.setattr(converters, "detect_ocr_langs", lambda s: ["eng"])
-        monkeypatch.setattr(converters, "ensure_tessdata", lambda langs: langs)
+        monkeypatch.setattr(converters.pictures, "detect_ocr_langs", lambda s: ["eng"])
+        monkeypatch.setattr(converters.pictures, "ensure_tessdata", lambda langs: langs)
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_recover_picture_text",
             lambda *a, **k: (recovered, skip_reasons),
         )
@@ -364,6 +370,7 @@ class TestExpectedScriptThreading:
         assert _infer_script(latin_text) in ("Latn", None)
         count = _garble_check_nodes(nodes, page_script=None, expected_script=None)
         assert isinstance(count, int)
+
 
 # ===========================================================================
 # F3 -- OCR lang override via detect_ocr_langs

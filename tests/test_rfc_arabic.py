@@ -23,7 +23,6 @@ fixtures.
 
 from __future__ import annotations
 
-import multiprocessing
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,37 +30,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pageindex_mcp import converters
+from pageindex_mcp.client import CustomPageIndexClient, _enrich_image_blocks
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.converters import (
-    _AR_MARKER_CAPTURE_RE,
-    _AR_PART_RE,
-    FuturesTimeoutError,
     _inject_arabic_structural_headings,
     _landscape_rasterize_rotate_reextract,
     _outline_norm,
     _recover_picture_results,
-    _run_docling_chunk_with_timeout,
     _splice_landscape_fallback,
     decide_rtl,
 )
 from pageindex_mcp.helpers import (
-    LowQualityTreeError,
     TreeDefect,
     TreeGateResult,
     _segment_table_nodes,
     classify_verdict,
     compute_image_enrichment_ratio,
 )
-from pageindex_mcp.metrics import WRITE_BARRIER_EXHAUSTED
 from pageindex_mcp.storage import (
     _WRITE_BARRIER_DELAYS,
     PersistenceNotVisibleError,
-    save_doc,
     save_doc_meta,
 )
-
-import pageindex_mcp.client as client_mod
-from pageindex_mcp.client import CustomPageIndexClient, _enrich_image_blocks
-
 
 # ===========================================================================
 # D0 -- landscape reextract runaway (Properties 1-4)
@@ -74,17 +65,19 @@ def _wire_fake_docling(monkeypatch, tmp_path, markdown="# Chart\n\nrecovered con
     # hermetic regardless of the host's ALLOW_AGPL_FALLBACK env setting.
     monkeypatch.setattr("pageindex_mcp.config.ALLOW_AGPL_FALLBACK", True)
     monkeypatch.setattr(
-        converters,
+        converters.pictures,
         "_rasterize_rotate_page",
         lambda pdf_path, page_no, dpi=300: str(tmp_path / f"page{page_no}.png"),
     )
-    monkeypatch.setattr(converters, "_repair_docling_tables", lambda md, doc_name=None: md)
+    monkeypatch.setattr(
+        converters.docling_conv, "_repair_docling_tables", lambda md, doc_name=None: md
+    )
     fake_result = MagicMock()
     fake_result.document.export_to_markdown.return_value = markdown
     fake_result.document.pictures = []
     fake_converter = MagicMock()
     fake_converter.convert.return_value = fake_result
-    monkeypatch.setattr(converters, "_docling_converter", lambda **kw: fake_converter)
+    monkeypatch.setattr(converters.docling_conv, "_docling_converter", lambda **kw: fake_converter)
 
 
 def _all_indices(haystack: str, needle: str) -> list[int]:
@@ -105,8 +98,7 @@ class TestMaxLandscapePagesCap:
     def test_cap_bounds_reextraction_to_top_n_pages(self, tmp_path, monkeypatch):
         _wire_fake_docling(monkeypatch, tmp_path)
         pages = [
-            {"page_no": i, "rotate": 90, "is_landscape": True, "char_count": 10}
-            for i in range(15)
+            {"page_no": i, "rotate": 90, "is_landscape": True, "char_count": 10} for i in range(15)
         ]
 
         results = _landscape_rasterize_rotate_reextract("fake.pdf", pages)
@@ -116,10 +108,9 @@ class TestMaxLandscapePagesCap:
 
     def test_deadline_also_bounds_the_loop(self, tmp_path, monkeypatch):
         _wire_fake_docling(monkeypatch, tmp_path)
-        monkeypatch.setattr(converters, "LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", 0.0)
+        monkeypatch.setattr(converters.pictures, "LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", 0.0)
         pages = [
-            {"page_no": i, "rotate": 90, "is_landscape": True, "char_count": 10}
-            for i in range(5)
+            {"page_no": i, "rotate": 90, "is_landscape": True, "char_count": 10} for i in range(5)
         ]
 
         results = _landscape_rasterize_rotate_reextract("fake.pdf", pages)
@@ -129,12 +120,16 @@ class TestMaxLandscapePagesCap:
 
 # Module-level (picklable-by-reference) worker stand-ins for the
 # multiprocessing 'spawn' context Property 2 exercises.
-def _slow_chunk_worker(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None):
+def _slow_chunk_worker(
+    result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None
+):
     time.sleep(5)
     result_queue.put(("ok", ("late content", [])))
 
 
-def _fast_chunk_worker(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None):
+def _fast_chunk_worker(
+    result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None
+):
     result_queue.put(("ok", ("chunk markdown", [])))
 
 
@@ -165,6 +160,7 @@ class TestSpliceLandscapeFallback:
         assert intro_idx < landscape_idx < chapter_two_idx
         assert not result.rstrip().endswith("LANDSCAPE CHART CONTENT")
 
+
 class TestSingletonRatioGuard:
     """Property 4: >60% single-value rows skip segmentation and keep a
     single TABLE node."""
@@ -187,6 +183,7 @@ class TestSingletonRatioGuard:
         assert result[0]["nodes"] == []
         assert result[0]["text"] == text
 
+
 class TestLandscapeRegressionFixtures:
     """Synthetic regression proxies for the two Run-19 audit fixtures named
     in RFC-036 D0's test strategy."""
@@ -207,10 +204,7 @@ class TestLandscapeRegressionFixtures:
         results = _landscape_rasterize_rotate_reextract("fake.pdf", pages)
         assert len(results) == 2
 
-        md = (
-            "# Page 15 Section\n\ntext\n\n"
-            "# Page 18 Section\n\nmore text\n"
-        )
+        md = "# Page 15 Section\n\ntext\n\n# Page 18 Section\n\nmore text\n"
         heading_pages = {
             _outline_norm("Page 15 Section"): [15],
             _outline_norm("Page 18 Section"): [18],
@@ -220,10 +214,9 @@ class TestLandscapeRegressionFixtures:
         assert spliced.count("Recovered chart text") == 2
         first_heading_idx = spliced.index("# Page 15 Section")
         last_heading_idx = spliced.index("# Page 18 Section")
-        for idx in (
-            i for i in _all_indices(spliced, "Recovered chart text")
-        ):
+        for idx in (i for i in _all_indices(spliced, "Recovered chart text")):
             assert first_heading_idx < idx < last_heading_idx
+
 
 # ===========================================================================
 # D1 -- write-barrier delay cap + catch-and-downgrade (Properties 5-6)
@@ -238,7 +231,7 @@ def _counter_value(counter) -> float:
 def mock_minio():
     client = MagicMock()
     client.bucket_exists.return_value = True
-    with patch("pageindex_mcp.storage.get_minio", return_value=client):
+    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=client):
         yield client
 
 
@@ -249,6 +242,7 @@ class TestWriteBarrierBudgetCapped:
     def test_delay_schedule_totals_at_most_0_45s(self):
         assert sum(_WRITE_BARRIER_DELAYS) <= 0.45
 
+
 class TestWriteBarrierExhaustionPropagates:
     """Property 6: PersistenceNotVisibleError raised by
     _confirm_write_visible SHALL propagate out of save_doc/save_doc_meta
@@ -256,7 +250,7 @@ class TestWriteBarrierExhaustionPropagates:
 
     def test_save_doc_meta_raises_on_barrier_exhaustion(self, mock_minio, monkeypatch):
         monkeypatch.setattr(
-            "pageindex_mcp.storage._confirm_write_visible",
+            "pageindex_mcp.storage.minio_ops._confirm_write_visible",
             MagicMock(side_effect=PersistenceNotVisibleError("processed/doc.meta.json")),
         )
 
@@ -270,6 +264,7 @@ class TestWriteBarrierExhaustionPropagates:
                     "processed_at": "2026-08-10T00:00:00Z",
                 },
             )
+
 
 # ===========================================================================
 # D3 -- rtl_reversal flat-routing whitelist (Properties 8-9)
@@ -298,33 +293,40 @@ def _wire_index(monkeypatch, *, validate_tree, flat_md: str):
     forcing validate_tree='rtl_reversal' and the bidi repair to not converge
     (reconstruct_bidi_order is a no-op identity so the re-validate after
     repair still fails with 'rtl_reversal')."""
-    monkeypatch.setattr(client_mod, "settings", _fake_settings())
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", validate_tree)
-    monkeypatch.setattr(client_mod, "reconstruct_bidi_order", lambda s: s)
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(_idx, "settings", _fake_settings())
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", validate_tree)
+    monkeypatch.setattr(_idx, "reconstruct_bidi_order", lambda s: s)
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
     monkeypatch.setattr(
-        client_mod,
+        _idx,
         "pdf_markdown_converters",
         lambda: [("stub", lambda path, **kw: flat_md)],
     )
-    mocks = {
+    idx_mocks = {
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
-        "OCR_ESCALATION_TOTAL": MagicMock(),
         "VLM_FALLBACK_TOTAL": MagicMock(),
         "RAW_UPLOAD_FAILURES": MagicMock(),
         "PDF_PRIMARY_CONVERTER_FAILURES": MagicMock(),
         "PDF_EXTRACT_FALLBACKS": MagicMock(),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in idx_mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+
+    rec_mocks = {
+        "OCR_ESCALATION_TOTAL": MagicMock(),
+    }
+    for name, m in rec_mocks.items():
+        monkeypatch.setattr(_rec, name, m)
+
+    mocks = {**idx_mocks, **rec_mocks}
     return mocks
 
 
@@ -401,10 +403,11 @@ class TestEnrichImageBlocksPropagatesSkipMetadata:
         blocks = [{"role": "image", "index": 0}]
         pic_results = [{"skipped_reason": skip_reason}]
 
-        with patch("pageindex_mcp.client.save_figure"):
+        with patch("pageindex_mcp.client.images.save_figure"):
             await _enrich_image_blocks(blocks, pic_results, "doc1")
 
         assert blocks[0]["skipped_reason"] == skip_reason
+
 
 class TestRecoverPictureTextSkipPathsTagSkippedReason:
     """Every skip branch inside _recover_picture_text's caller
@@ -421,11 +424,13 @@ class TestRecoverPictureTextSkipPathsTagSkippedReason:
         untagged skips to "unknown"."""
         regions = [self._fake_region(), self._fake_region(page=2), self._fake_region(page=3)]
         with (
-            patch("pageindex_mcp.converters._OCR_ESCALATION_PER_PICTURE", True),
-            patch("pageindex_mcp.converters._collect_picture_regions", return_value=regions),
-            patch("pageindex_mcp.converters.ensure_tessdata", return_value=["eng"]),
+            patch("pageindex_mcp.converters.pictures._OCR_ESCALATION_PER_PICTURE", True),
             patch(
-                "pageindex_mcp.converters._recover_picture_text",
+                "pageindex_mcp.converters.pictures._collect_picture_regions", return_value=regions
+            ),
+            patch("pageindex_mcp.converters.pictures.ensure_tessdata", return_value=["eng"]),
+            patch(
+                "pageindex_mcp.converters.pictures._recover_picture_text",
                 return_value=({}, {0: "decorative_icon", 1: "page_coverage"}),
             ),
         ):
@@ -439,6 +444,7 @@ class TestRecoverPictureTextSkipPathsTagSkippedReason:
         # index 2 has neither recovery nor a recorded skip reason
         assert results[2]["skipped_reason"] == "unknown"
 
+
 class TestComputeImageEnrichmentRatioExcludesSkippedBlocks:
     """compute_image_enrichment_ratio (helpers.py) drops decorative/skipped
     blocks from both numerator and denominator."""
@@ -451,6 +457,7 @@ class TestComputeImageEnrichmentRatioExcludesSkippedBlocks:
         ]
 
         assert compute_image_enrichment_ratio(blocks) is None
+
 
 class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
     """When every image block is decorative/skipped,
@@ -521,6 +528,7 @@ class TestInjectArabicStructuralHeadingsNewMarkers:
         result = _inject_arabic_structural_headings(body)
         assert expected_line in result
 
+
 class TestReversedOcrVariantsInjectCorrectly:
     """Property 12(b): mirror-reversed OCR variants of the new markers
     (e.g. رارق for قرار) inject correctly via decide_rtl."""
@@ -542,6 +550,7 @@ class TestReversedOcrVariantsInjectCorrectly:
     def test_reversed_document_is_detected_as_mirror_reversed(self):
         reversed_doc = _mirror_reverse(self._FORWARD_DOC)
         assert decide_rtl(reversed_doc).reversed is True
+
 
 class TestMidParagraphCitationsNotPromoted:
     """Property 12(c): mid-paragraph citations referencing قرار/مرسوم/قانون
@@ -591,6 +600,7 @@ class TestRegressionFixtures:
         assert result.startswith("# مرسوم بقانون اتحادي رقم (13) لسنة 2022\n")
         assert "\n## مادة 1\n" in result
 
+
 # ===========================================================================
 # D6 -- complexity-proportional depth-adequacy scoring in classify_verdict
 # ===========================================================================
@@ -602,10 +612,29 @@ class TestRegressionFixtures:
 # Covers the required test matrix plus the 100/200/400 node boundary
 # thresholds where expected_min_depth steps from 2->3, 3->4, 4->5.
 
-_WORDS = (
-    "the quick brown fox jumps over lazy dog while article clause section "
-    "provides that obligation shall apply notwithstanding any other term"
-).split()
+_WORDS = [
+    "the",
+    "quick",
+    "brown",
+    "fox",
+    "jumps",
+    "over",
+    "lazy",
+    "dog",
+    "while",
+    "article",
+    "clause",
+    "section",
+    "provides",
+    "that",
+    "obligation",
+    "shall",
+    "apply",
+    "notwithstanding",
+    "any",
+    "other",
+    "term",
+]
 
 
 def _leaf_text(i: int) -> str:
@@ -617,9 +646,7 @@ def _make_tree(node_count: int, depth: int) -> list:
     to total `node_count` nodes, so max_leaf_ratio stays low and only the
     depth-adequacy gate is under test."""
     leaves_needed = node_count - (depth - 1)
-    current = [
-        {"title": "", "text": _leaf_text(i), "nodes": []} for i in range(leaves_needed)
-    ]
+    current = [{"title": "", "text": _leaf_text(i), "nodes": []} for i in range(leaves_needed)]
     for _ in range(depth - 1):
         current = [{"title": "", "text": _leaf_text(0), "nodes": current}]
     return current
@@ -656,4 +683,3 @@ def test_boundary_399_nodes_expected_depth_4():
     tree = _make_tree(399, 4)
     verdict, reason = classify_verdict(tree, "hierarchical", None)
     assert verdict == "PASS"
-

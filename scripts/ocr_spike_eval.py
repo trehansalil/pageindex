@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from pageindex_mcp.converters import _tesseract_ocr_image  # noqa: E402
+from pageindex_mcp.converters import _tesseract_ocr_image
 
 PADDLEOCR_URL = os.environ.get("PADDLEOCR_SERVICE_URL", "http://localhost:8202/ocr")
 DOCLING_OCR_URL = os.environ.get("DOCLING_OCR_SERVICE_URL", "http://localhost:8203/ocr")
@@ -40,7 +40,9 @@ _ARABIC_NUMERAL_RE = re.compile(r"[٠-٩]")
 _ASCII_NUMERAL_RE = re.compile(r"[0-9]")
 
 
-def extract_test_images(doc_store: Path, targets: list[str], out_dir: Path, max_pages: int = 3) -> list[Path]:
+def extract_test_images(
+    doc_store: Path, targets: list[str], out_dir: Path, max_pages: int = 3
+) -> list[Path]:
     """Extract PNG page renders (or pass through JPGs) for the given filenames."""
     out_dir.mkdir(parents=True, exist_ok=True)
     images: list[Path] = []
@@ -68,7 +70,12 @@ def run_tesseract(image_path: Path) -> dict:
     langs = ["ara", "eng"] if any(ord(c) > 0x0590 for c in image_path.stem) else ["eng"]
     start = time.monotonic()
     text = _tesseract_ocr_image(str(image_path), langs)
-    return {"engine": "tesseract", "text": text, "confidence": None, "elapsed_s": time.monotonic() - start}
+    return {
+        "engine": "tesseract",
+        "text": text,
+        "confidence": None,
+        "elapsed_s": time.monotonic() - start,
+    }
 
 
 def run_http_ocr(engine: str, url: str, image_path: Path) -> dict:
@@ -85,7 +92,13 @@ def run_http_ocr(engine: str, url: str, image_path: Path) -> dict:
             "elapsed_s": time.monotonic() - start,
         }
     except Exception as exc:  # service may not be running -- spike is best-effort
-        return {"engine": engine, "text": "", "confidence": None, "elapsed_s": None, "error": str(exc)}
+        return {
+            "engine": engine,
+            "text": "",
+            "confidence": None,
+            "elapsed_s": None,
+            "error": str(exc),
+        }
 
 
 def structural_coherence(text: str) -> float:
@@ -93,7 +106,11 @@ def structural_coherence(text: str) -> float:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return 0.0
-    coherent = sum(1 for ln in lines if _ASCII_NUMERAL_RE.search(ln) or _ARABIC_NUMERAL_RE.search(ln) or len(ln.strip()) >= 3)
+    coherent = sum(
+        1
+        for ln in lines
+        if _ASCII_NUMERAL_RE.search(ln) or _ARABIC_NUMERAL_RE.search(ln) or len(ln.strip()) >= 3
+    )
     return coherent / len(lines)
 
 
@@ -136,7 +153,9 @@ def recommend(all_results: list[dict]) -> dict:
             if by_engine[eng].get("error") is None:
                 challengers[eng].append(by_engine[eng]["structural_coherence"])
 
-    baseline_avg = sum(baseline["tesseract"]) / len(baseline["tesseract"]) if baseline["tesseract"] else 0.0
+    baseline_avg = (
+        sum(baseline["tesseract"]) / len(baseline["tesseract"]) if baseline["tesseract"] else 0.0
+    )
     verdict = {"tesseract_baseline_avg_coherence": baseline_avg}
     winner = None
     for eng, scores in challengers.items():
@@ -145,7 +164,8 @@ def recommend(all_results: list[dict]) -> dict:
         if avg is not None and baseline_avg > 0 and avg >= baseline_avg * 1.20:
             winner = eng
     verdict["recommendation"] = (
-        f"{winner} clears the >=20% improvement bar over Tesseract" if winner
+        f"{winner} clears the >=20% improvement bar over Tesseract"
+        if winner
         else "neither PaddleOCR nor Docling OCR clears the >=20% improvement bar -- close spike, keep Tesseract"
     )
     return verdict

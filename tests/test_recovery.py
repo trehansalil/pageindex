@@ -7,30 +7,20 @@ RecoveryOutcome apply/revert semantics, regression guards.
 from __future__ import annotations
 
 import dataclasses
-import os
-import tempfile
 from unittest.mock import MagicMock
 
 import pytest
 
-from pageindex_mcp.client import CustomPageIndexClient
 from pageindex_mcp.helpers import (
     GATES,
-    BULK_PROFILE,
-    ExtractionSnapshot,
     ExtractionState,
     GateSpec,
-    HARD_FAIL_DEFECTS,
-    REASON_POLICY,
     RecoveryOutcome,
     Route,
     TreeDefect,
     TreeGateResult,
     _ReasonPolicy,
-    _UNSET,
     _Unset,
-    _flatten_tree_text,
-    check_garble,
     validate_tree,
 )
 
@@ -50,20 +40,35 @@ def _make_state(
 ) -> ExtractionState:
     return ExtractionState(
         result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 200, "nodes": []}]},
-        ok=ok, reason=reason or first_defect.value, gate_result=gate_result,
-        first_defect=first_defect, route=route, md_content="# test content",
-        tmp_md_path=tmp_md_path, pic_results=[], used_converter="pymupdf4llm",
-        total_chars=200, extraction_stages_captured=[],
+        ok=ok,
+        reason=reason or first_defect.value,
+        gate_result=gate_result,
+        first_defect=first_defect,
+        route=route,
+        md_content="# test content",
+        tmp_md_path=tmp_md_path,
+        pic_results=[],
+        used_converter="pymupdf4llm",
+        total_chars=200,
+        extraction_stages_captured=[],
         bidi_renorm_applied=bidi_renorm_applied,
     )
 
 
 def _make_eligibility_state(defect: TreeDefect, ok: bool = False) -> ExtractionState:
     return ExtractionState(
-        result={}, ok=ok, reason=defect.value, gate_result=None,
-        first_defect=defect, route=MagicMock(), md_content=None,
-        tmp_md_path=None, pic_results=[], used_converter=None,
-        total_chars=0, extraction_stages_captured=[],
+        result={},
+        ok=ok,
+        reason=defect.value,
+        gate_result=None,
+        first_defect=defect,
+        route=MagicMock(),
+        md_content=None,
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter=None,
+        total_chars=0,
+        extraction_stages_captured=[],
     )
 
 
@@ -84,6 +89,7 @@ class TestGateSpecRecoveryWiring:
             if g.recovery_fns:
                 assert g.recovery_eligible is not None
 
+
 # ===========================================================================
 # Eligibility predicates
 # ===========================================================================
@@ -99,6 +105,7 @@ class TestEligibility:
         gate = _GATES_BY_DEFECT[TreeDefect.GARBLING]
         state = _make_eligibility_state(TreeDefect.RTL_REVERSAL, ok=False)
         assert not gate.recovery_eligible(state)
+
 
 # ===========================================================================
 # Regression guards
@@ -128,6 +135,7 @@ class TestSeverityOrdering:
         active = [g for g in GATES if g.gate_fn is not None]
         severities = [g.severity for g in active]
         assert severities == sorted(severities)
+
 
 # ===========================================================================
 # RecoveryOutcome
@@ -161,13 +169,23 @@ class TestRecoveryOutcome:
 
     def test_full_snapshot_revert(self):
         from pageindex_mcp.script import RtlDecision
+
         gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
         pre_retry = RecoveryOutcome(
             result={"structure": [{"node_id": "1", "title": "Pre", "text": "aaa", "nodes": []}]},
-            ok=True, reason="ok", gate_result=gate, total_chars=48000,
-            md_content="# pre", pic_results=[{"page": 1}], used_converter="docling",
-            route=Route.TREE, rtl_decision=RtlDecision(reversed=False, repair_effective=True, sampled=5, method="nfkc"),
-            tmp_md_path="/tmp/pre.md", bidi_renorm_applied=True,
+            ok=True,
+            reason="ok",
+            gate_result=gate,
+            total_chars=48000,
+            md_content="# pre",
+            pic_results=[{"page": 1}],
+            used_converter="docling",
+            route=Route.TREE,
+            rtl_decision=RtlDecision(
+                reversed=False, repair_effective=True, sampled=5, method="nfkc"
+            ),
+            tmp_md_path="/tmp/pre.md",
+            bidi_renorm_applied=True,
         )
         state = _make_state(ok=False, route=Route.REJECT, tmp_md_path="/tmp/post.md")
         pre_retry.apply(state)
@@ -189,6 +207,7 @@ class TestExtractionState:
     def test_bidi_renorm_applied_defaults_false(self):
         assert _make_state().bidi_renorm_applied is False
 
+
 # ===========================================================================
 # Dead-gate regression
 # ===========================================================================
@@ -196,9 +215,15 @@ class TestExtractionState:
 
 class TestDeadGateRegression:
     def test_validate_tree_never_returns_arabic_low_content(self):
-        tree = [{"title": "Root", "body": "", "nodes": [
-            {"title": "A", "body": "hello " * 50, "nodes": []},
-            {"title": "B", "body": "world " * 50, "nodes": []},
-            {"title": "C", "body": "test " * 50, "nodes": []},
-        ]}]
+        tree = [
+            {
+                "title": "Root",
+                "body": "",
+                "nodes": [
+                    {"title": "A", "body": "hello " * 50, "nodes": []},
+                    {"title": "B", "body": "world " * 50, "nodes": []},
+                    {"title": "C", "body": "test " * 50, "nodes": []},
+                ],
+            }
+        ]
         assert validate_tree(tree).defect != TreeDefect.ARABIC_LOW_CONTENT_RATIO

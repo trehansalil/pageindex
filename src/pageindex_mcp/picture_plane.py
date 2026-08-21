@@ -12,7 +12,6 @@ ad-hoc string literals.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -80,14 +79,16 @@ class SkipReason(StrEnum):
         surface as potential quality gaps.
         """
         # Intentional skips excluded from denominator
-        _INTENTIONAL_SKIPS = frozenset({
-            SkipReason.PAGE_COVERAGE,
-            SkipReason.CLIP_TEXT_ALREADY_EXPORTED,
-            SkipReason.DECORATIVE_ICON,
-            SkipReason.LANDSCAPE_FALLBACK,
-            SkipReason.OCR_MIN_CHARS,
-            SkipReason.MAX_FULLPAGE_CAP,
-        })
+        _INTENTIONAL_SKIPS = frozenset(
+            {
+                SkipReason.PAGE_COVERAGE,
+                SkipReason.CLIP_TEXT_ALREADY_EXPORTED,
+                SkipReason.DECORATIVE_ICON,
+                SkipReason.LANDSCAPE_FALLBACK,
+                SkipReason.OCR_MIN_CHARS,
+                SkipReason.MAX_FULLPAGE_CAP,
+            }
+        )
         return self not in _INTENTIONAL_SKIPS
 
     @property
@@ -161,11 +162,11 @@ class RegionDisposition(StrEnum):
     CAPTURE_CLIP_TEXT = "capture_clip_text"
 
     # Skip dispositions
-    SKIP_PAGE_COVERAGE = "skip_page_coverage"        # High-coverage + has text layer
-    SKIP_COVERAGE_CAP = "skip_coverage_cap"           # Coverage-exempt but cap exceeded
-    SKIP_CLIP_EXPORTED = "skip_clip_exported"          # Clip text already in Docling export
-    SKIP_CLIP_TEXT = "skip_clip_text"                  # Clip text capture disabled
-    SKIP_DECORATIVE = "skip_decorative"                # Sub-icon dimensions
+    SKIP_PAGE_COVERAGE = "skip_page_coverage"  # High-coverage + has text layer
+    SKIP_COVERAGE_CAP = "skip_coverage_cap"  # Coverage-exempt but cap exceeded
+    SKIP_CLIP_EXPORTED = "skip_clip_exported"  # Clip text already in Docling export
+    SKIP_CLIP_TEXT = "skip_clip_text"  # Clip text capture disabled
+    SKIP_DECORATIVE = "skip_decorative"  # Sub-icon dimensions
 
     @property
     def is_skip(self) -> bool:
@@ -190,13 +191,15 @@ class RegionDisposition(StrEnum):
 
 
 # Frozen sets defined after the class body so all members exist.
-_RETAINS_CROP = frozenset({
-    RegionDisposition.CROP_AND_OCR,
-    RegionDisposition.CAPTURE_CLIP_TEXT,
-    RegionDisposition.SKIP_PAGE_COVERAGE,
-    RegionDisposition.SKIP_COVERAGE_CAP,
-    RegionDisposition.SKIP_CLIP_EXPORTED,
-})
+_RETAINS_CROP = frozenset(
+    {
+        RegionDisposition.CROP_AND_OCR,
+        RegionDisposition.CAPTURE_CLIP_TEXT,
+        RegionDisposition.SKIP_PAGE_COVERAGE,
+        RegionDisposition.SKIP_COVERAGE_CAP,
+        RegionDisposition.SKIP_CLIP_EXPORTED,
+    }
+)
 
 _DISPOSITION_TO_SKIP_REASON: dict[RegionDisposition, SkipReason] = {
     RegionDisposition.SKIP_PAGE_COVERAGE: SkipReason.PAGE_COVERAGE,
@@ -444,10 +447,7 @@ def bind_markers(
     # Filter out landscape-fallback fabricated entries for alignment.
     # SkipReason is a StrEnum so the ``!=`` comparison covers both the enum
     # member and its string value (e.g. "landscape_fallback_picture").
-    real_pics = [
-        p for p in pics
-        if p.get("skipped_reason") != SkipReason.LANDSCAPE_FALLBACK
-    ]
+    real_pics = [p for p in pics if p.get("skipped_reason") != SkipReason.LANDSCAPE_FALLBACK]
 
     if marker_count != len(real_pics):
         logger.warning(
@@ -468,7 +468,7 @@ def bind_markers(
             parts.append(remaining)
             break
         parts.append(remaining[: idx + len(marker)])
-        remaining = remaining[idx + len(marker):]
+        remaining = remaining[idx + len(marker) :]
         if pic_idx < len(real_pics) and inject_chart_text:
             ocr_text = real_pics[pic_idx].get("ocr_text", "")
             if ocr_text:

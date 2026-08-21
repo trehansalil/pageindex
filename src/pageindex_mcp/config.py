@@ -25,25 +25,31 @@ PDF_INSPECTOR_PRECLASSIFY: bool = os.environ.get(
 
 # RFC-034 D3: local re-normalization safety net for remote-returned markdown —
 # runs reconstruct_bidi_order on remote Docling output before md_to_tree.
-REMOTE_MD_RENORMALIZE: bool = os.environ.get(
-    "REMOTE_MD_RENORMALIZE", "1"
-).strip().lower() in ("1", "true", "yes")
+REMOTE_MD_RENORMALIZE: bool = os.environ.get("REMOTE_MD_RENORMALIZE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # RFC-034 D4: AGPL exposure gate (CLAUDE.md Hard Rule 4). When false, the
 # pymupdf4llm converter chain link and every direct `import fitz` (PyMuPDF,
 # AGPL-3.0) site in converters.py are refused/skipped. Default true preserves
 # current fallback behavior for backward compatibility.
-ALLOW_AGPL_FALLBACK: bool = os.environ.get(
-    "ALLOW_AGPL_FALLBACK", "1"
-).strip().lower() in ("1", "true", "yes")
+ALLOW_AGPL_FALLBACK: bool = os.environ.get("ALLOW_AGPL_FALLBACK", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # Zone-4: independent OCR escalation controls (legacy OCR_ESCALATION shim removed).
 # OCR_ESCALATION_GARBLE gates page-level garble retry (Fix 3 / D1 image-dominant).
 # OCR_ESCALATION_PER_PICTURE gates per-picture crop+OCR enrichment in converters.
 # Each flag is a flat, independent env-var read defaulting to True.
-OCR_ESCALATION_GARBLE: bool = os.environ.get(
-    "OCR_ESCALATION_GARBLE", "1"
-).strip().lower() in ("1", "true", "yes")
+OCR_ESCALATION_GARBLE: bool = os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 OCR_ESCALATION_PER_PICTURE: bool = os.environ.get(
     "OCR_ESCALATION_PER_PICTURE", "1"
 ).strip().lower() in ("1", "true", "yes")
@@ -271,9 +277,9 @@ def _load_settings() -> Settings:
             os.environ.get("MINIO_PRESIGN_PATH_PREFIX", "")
         ),
         minio_region=os.environ.get("MINIO_REGION", ""),
-        registry_verdict_authority=os.environ.get(
-            "REGISTRY_VERDICT_AUTHORITY", "minio"
-        ).strip().lower(),
+        registry_verdict_authority=os.environ.get("REGISTRY_VERDICT_AUTHORITY", "minio")
+        .strip()
+        .lower(),
     )
 
 
@@ -375,74 +381,45 @@ class PipelineConfig:
             ocr_escalation_per_picture=OCR_ESCALATION_PER_PICTURE,
             pre_garble_force_ocr_enabled=os.environ.get(
                 "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
-            ).lower() == "true",
+            ).lower()
+            == "true",
             d7_garble_recovery_enabled=_envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
-            image_standalone_pipeline_enabled=_envbool(
-                "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
-            ),
+            image_standalone_pipeline_enabled=_envbool("IMAGE_STANDALONE_PIPELINE_ENABLED", "true"),
             image_dominant_ocr_escalation_enabled=IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
-            vlm_tesseract_fallback_enabled=_envbool(
-                "VLM_TESSERACT_FALLBACK_ENABLED", "true"
-            ),
-            garble_latin_gibberish_enabled=_envbool(
-                "GARBLE_LATIN_GIBBERISH_ENABLED", "true"
-            ),
-            garble_latin_ratio=float(
-                os.environ.get("GARBLE_LATIN_RATIO", "0.4")
-            ),
-            garble_nonsense_ratio=float(
-                os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")
-            ),
+            vlm_tesseract_fallback_enabled=_envbool("VLM_TESSERACT_FALLBACK_ENABLED", "true"),
+            garble_latin_gibberish_enabled=_envbool("GARBLE_LATIN_GIBBERISH_ENABLED", "true"),
+            garble_latin_ratio=float(os.environ.get("GARBLE_LATIN_RATIO", "0.4")),
+            garble_nonsense_ratio=float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")),
             garble_node_ratio_threshold=_gnrt,
-            pass_max_leaf_ratio=float(
-                os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")
-            ),
+            pass_max_leaf_ratio=float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")),
             bidi_coherence_enforce=_envbool("BIDI_COHERENCE_ENFORCE", "true"),
-            small_doc_promotion_enabled=_envbool(
-                "SMALL_DOC_PROMOTION_ENABLED", "true"
-            ),
+            small_doc_promotion_enabled=_envbool("SMALL_DOC_PROMOTION_ENABLED", "true"),
             leaf_concentration_paragraph_split_enabled=_envbool(
                 "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
             ),
-            leaf_split_ratio=float(
-                os.environ.get("LEAF_SPLIT_RATIO", "0.30")
-            ),
+            leaf_split_ratio=float(os.environ.get("LEAF_SPLIT_RATIO", "0.30")),
             pdf_converter=os.environ.get("PDF_CONVERTER", "docling"),
-            text_layer_garble_check_enabled=_envbool(
-                "TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"
-            ),
-            region_aware_text_check_enabled=_envbool(
-                "REGION_AWARE_TEXT_CHECK_ENABLED", "true"
-            ),
-            tree_path_picture_splice_enabled=_envbool(
-                "TREE_PATH_PICTURE_SPLICE_ENABLED", "true"
-            ),
-            low_content_ocr_char_floor=int(
-                os.environ.get("LOW_CONTENT_OCR_CHAR_FLOOR", "300")
-            ),
+            text_layer_garble_check_enabled=_envbool("TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"),
+            region_aware_text_check_enabled=_envbool("REGION_AWARE_TEXT_CHECK_ENABLED", "true"),
+            tree_path_picture_splice_enabled=_envbool("TREE_PATH_PICTURE_SPLICE_ENABLED", "true"),
+            low_content_ocr_char_floor=int(os.environ.get("LOW_CONTENT_OCR_CHAR_FLOOR", "300")),
             rfc029_flat_prefer_multiplier=float(
                 os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
             ),
-            rfc029_min_chars_per_node=float(
-                os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")
-            ),
+            rfc029_min_chars_per_node=float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")),
             # VerdictThresholds fields
             garble_window_ratio_threshold=float(
                 os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")
             ),
-            min_image_promoted_chars=int(
-                os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")
-            ),
-            min_flat_promotion_chars=int(
-                os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")
-            ),
+            min_image_promoted_chars=int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")),
+            min_flat_promotion_chars=int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")),
             # Module-level frozen constants from helpers.py
-            garble_short_text_default=os.getenv(
-                "GARBLE_SHORT_TEXT_DEFAULT", "true"
-            ).lower() == "true",
+            garble_short_text_default=os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower()
+            == "true",
             garble_flat_markdown_normalize=os.getenv(
                 "GARBLE_FLAT_MARKDOWN_NORMALIZE", "true"
-            ).lower() == "true",
+            ).lower()
+            == "true",
             empty_node_fraction_threshold=float(
                 os.environ.get("EMPTY_NODE_FRACTION_THRESHOLD", "0.30")
             ),
@@ -455,9 +432,7 @@ class PipelineConfig:
             rfc029_table_segment_char_threshold=int(
                 os.environ.get("RFC029_TABLE_SEGMENT_CHAR_THRESHOLD", "2000")
             ),
-            rfc029_table_segment_min_rows=int(
-                os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5")
-            ),
+            rfc029_table_segment_min_rows=int(os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5")),
             rfc036_singleton_row_ratio_threshold=float(
                 os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
             ),
@@ -493,9 +468,21 @@ def reset_pipeline_config() -> None:
     global pipeline_config
     pipeline_config = PipelineConfig.from_env()
     import sys
+
     _helpers = sys.modules.get("pageindex_mcp.helpers")
     if _helpers is not None:
         _helpers.pipeline_config = pipeline_config
+    for _sub in (
+        "pageindex_mcp.helpers.types",
+        "pageindex_mcp.helpers.garble",
+        "pageindex_mcp.helpers.gates",
+        "pageindex_mcp.helpers.verdict",
+        "pageindex_mcp.helpers.tree_validation",
+        "pageindex_mcp.helpers.tree_split",
+    ):
+        _mod = sys.modules.get(_sub)
+        if _mod is not None and hasattr(_mod, "pipeline_config"):
+            _mod.pipeline_config = pipeline_config
 
 
 def effective_config_snapshot() -> dict:
@@ -508,19 +495,38 @@ def effective_config_snapshot() -> dict:
     # The sidecar schema (meta.json version 4) expects exactly these keys.
     # PipelineConfig has additional fields (VerdictThresholds, module-level
     # constants) that were never part of the sidecar — filter them out.
-    _SIDECAR_FIELDS = frozenset(f.name for f in dataclasses.fields(PipelineConfig) if f.name in {
-        "pipeline_version", "pdf_inspector_preclassify", "allow_agpl_fallback",
-        "remote_md_renormalize", "ocr_escalation_garble", "ocr_escalation_per_picture",
-        "pre_garble_force_ocr_enabled", "d7_garble_recovery_enabled",
-        "image_standalone_pipeline_enabled", "image_dominant_ocr_escalation_enabled",
-        "vlm_tesseract_fallback_enabled", "garble_latin_gibberish_enabled",
-        "garble_latin_ratio", "garble_node_ratio_threshold", "pass_max_leaf_ratio",
-        "bidi_coherence_enforce", "small_doc_promotion_enabled",
-        "leaf_concentration_paragraph_split_enabled", "leaf_split_ratio",
-        "pdf_converter", "text_layer_garble_check_enabled",
-        "region_aware_text_check_enabled", "tree_path_picture_splice_enabled",
-        "low_content_ocr_char_floor", "rfc029_flat_prefer_multiplier",
-        "rfc029_min_chars_per_node",
-    })
+    _SIDECAR_FIELDS = frozenset(
+        f.name
+        for f in dataclasses.fields(PipelineConfig)
+        if f.name
+        in {
+            "pipeline_version",
+            "pdf_inspector_preclassify",
+            "allow_agpl_fallback",
+            "remote_md_renormalize",
+            "ocr_escalation_garble",
+            "ocr_escalation_per_picture",
+            "pre_garble_force_ocr_enabled",
+            "d7_garble_recovery_enabled",
+            "image_standalone_pipeline_enabled",
+            "image_dominant_ocr_escalation_enabled",
+            "vlm_tesseract_fallback_enabled",
+            "garble_latin_gibberish_enabled",
+            "garble_latin_ratio",
+            "garble_node_ratio_threshold",
+            "pass_max_leaf_ratio",
+            "bidi_coherence_enforce",
+            "small_doc_promotion_enabled",
+            "leaf_concentration_paragraph_split_enabled",
+            "leaf_split_ratio",
+            "pdf_converter",
+            "text_layer_garble_check_enabled",
+            "region_aware_text_check_enabled",
+            "tree_path_picture_splice_enabled",
+            "low_content_ocr_char_floor",
+            "rfc029_flat_prefer_multiplier",
+            "rfc029_min_chars_per_node",
+        }
+    )
     full = dataclasses.asdict(pipeline_config)
     return {k: v for k, v in full.items() if k in _SIDECAR_FIELDS}

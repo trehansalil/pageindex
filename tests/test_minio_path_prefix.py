@@ -122,7 +122,7 @@ class TestPresignFallsBackToMainPrefix:
         import pageindex_mcp.storage as storage
 
         signed = "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        with patch.object(storage, "settings") as s:
+        with patch.object(storage.minio_ops, "settings") as s:
             s.minio_endpoint = "infra.example.com"
             s.minio_path_prefix = "/minio"
             s.minio_presign_endpoint = None
@@ -137,7 +137,7 @@ class TestPresignFallsBackToMainPrefix:
         import pageindex_mcp.storage as storage
 
         signed = "https://public.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        with patch.object(storage, "settings") as s:
+        with patch.object(storage.minio_ops, "settings") as s:
             s.minio_endpoint = "10.43.0.1:9000"
             s.minio_path_prefix = ""
             s.minio_presign_endpoint = "public.example.com"

@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from pageindex_mcp import converters as C  # noqa: E402
+from pageindex_mcp import converters as C
 
 PDF = os.path.join(
     os.path.dirname(__file__),

@@ -4,12 +4,12 @@ Merged from test_upload_contract.py (UPLOAD-01-C1/C2/C3 behavioral contract)
 and test_upload_size_limit.py (RFC-009 D4 / ISS-15 upload size limit).
 """
 
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from pageindex_mcp.upload_app import (
     create_upload_app,

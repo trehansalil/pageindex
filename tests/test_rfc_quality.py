@@ -7,14 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.config import reset_pipeline_config
-from pageindex_mcp.converters import PictureResult
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
-    TreeDefect,
-    TreeGateResult,
     _classify_image_verdict,
     _flatten_tree_text,
     _garble_ratio,
@@ -69,13 +68,15 @@ def _tree_result():
 _NUMERIC_JUNK = "1651001429" * 60
 
 
-def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None), conv_return="# converted md"):
-    monkeypatch.setattr(client_mod, "settings", _fake_settings(flat_doc_routing=True))
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", lambda structure, **kw: validate_return)
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
+def _wire_garble_probe(
+    monkeypatch, *, page_text, validate_return=(True, None), conv_return="# converted md"
+):
+    monkeypatch.setattr(_idx, "settings", _fake_settings(flat_doc_routing=True))
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: validate_return)
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
 
     mock_page = MagicMock()
     mock_page.get_text.return_value = page_text
@@ -87,21 +88,26 @@ def _wire_garble_probe(monkeypatch, *, page_text, validate_return=(True, None), 
     monkeypatch.setattr("fitz.open", MagicMock(return_value=mock_doc))
 
     conv_mock = MagicMock(return_value=conv_return)
-    monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_mock)])
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_mock)])
 
     mocks = {
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
-        "route_and_extract_flat": MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+        ),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "OCR_ESCALATION_TOTAL": MagicMock(),
         "splice_picture_text_for_tree": MagicMock(side_effect=lambda md, pics: md),
     }
     for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+        if name in ("route_and_extract_flat",) or name in ("OCR_ESCALATION_TOTAL",):
+            monkeypatch.setattr(_rec, name, m)
+        else:
+            monkeypatch.setattr(_idx, name, m)
     return mocks, conv_mock
 
 
@@ -118,16 +124,22 @@ class TestOcrDeferralQF1:
     async def test_fix3_retry_still_fires(self, monkeypatch, pdf_file_with_content):
         monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
         mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
-        monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=[(False, "garbling"), (True, None)]))
-        monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda sample: ["eng"])
-        monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+        vt = MagicMock(side_effect=[(False, "garbling"), (True, None)])
+        monkeypatch.setattr(_idx, "validate_tree", vt)
+        monkeypatch.setattr(_rec, "validate_tree", vt)
+        ocr_langs = lambda sample: ["eng"]
+        tessdata = lambda langs: langs
+        monkeypatch.setattr(_idx, "detect_ocr_langs", ocr_langs)
+        monkeypatch.setattr(_rec, "detect_ocr_langs", ocr_langs)
+        monkeypatch.setattr(_idx, "ensure_tessdata", tessdata)
+        monkeypatch.setattr(_rec, "ensure_tessdata", tessdata)
         escalation_calls = []
 
         def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
             escalation_calls.append({"force_full_page_ocr": force_full_page_ocr})
             return "# ocr-recovered md"
 
-        monkeypatch.setattr(client_mod, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
+        monkeypatch.setattr(_rec, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
         await c.index(pdf_file_with_content)
@@ -214,28 +226,50 @@ class TestClassifyImageVerdict:
 
 class TestImageStandaloneClientRouting:
     async def test_env_enabled_promotes_content_class(self, monkeypatch, pdf_file_with_content):
+        from pageindex_mcp.helpers import GarbleReport
+
         _IMAGE_LIGHT_MD = "\n".join(["<!-- image -->"] * 2 + ["some real text line"] * 5)
         _ALL_IMAGE_BLOCKS = [{"role": "image", "index": 0}, {"role": "image", "index": 1}]
-        monkeypatch.setattr(client_mod, "settings", _fake_settings())
-        monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-        monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-        monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-        monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=[(False, "depth<2")]))
-        monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _IMAGE_LIGHT_MD)])
-        monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
+        fake_settings = _fake_settings()
+        monkeypatch.setattr(_idx, "settings", fake_settings)
+        monkeypatch.setattr(_img, "settings", fake_settings)
+        monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+        monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+        monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+        monkeypatch.setattr(_idx, "validate_tree", MagicMock(side_effect=[(False, "depth<2")]))
+        monkeypatch.setattr(
+            _idx, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _IMAGE_LIGHT_MD)]
+        )
+        monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
+        monkeypatch.setattr(
+            _idx,
+            "detect_garble",
+            MagicMock(
+                return_value=GarbleReport(is_garbled=False, fired_prongs=frozenset()),
+            ),
+        )
+        route_flat_mock = MagicMock(
+            return_value=("flat_prose", [dict(b) for b in _ALL_IMAGE_BLOCKS])
+        )
+        flat_docs_mock = MagicMock()
         mocks = {
-            "save_doc": MagicMock(), "save_flat_doc": MagicMock(), "save_raw": MagicMock(),
+            "save_doc": MagicMock(),
+            "save_flat_doc": MagicMock(),
+            "save_raw": MagicMock(),
             "save_doc_meta": MagicMock(),
-            "route_and_extract_flat": MagicMock(return_value=("flat_prose", [dict(b) for b in _ALL_IMAGE_BLOCKS])),
-            "FLAT_DOCS_TOTAL": MagicMock(), "LOW_QUALITY_TREES": MagicMock(), "OCR_ESCALATION_TOTAL": MagicMock(),
+            "FLAT_DOCS_TOTAL": flat_docs_mock,
+            "LOW_QUALITY_TREES": MagicMock(),
         }
         for name, m in mocks.items():
-            monkeypatch.setattr(client_mod, name, m)
-        monkeypatch.setattr(client_mod, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
+            monkeypatch.setattr(_idx, name, m)
+        monkeypatch.setattr(_rec, "OCR_ESCALATION_TOTAL", MagicMock())
+        monkeypatch.setattr(_img, "route_and_extract_flat", route_flat_mock)
+        monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+        monkeypatch.setattr(_img, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
         await c.index(pdf_file_with_content)
-        mocks["FLAT_DOCS_TOTAL"].labels.assert_called_once_with(content_class="image_standalone")
+        flat_docs_mock.labels.assert_called_once_with(content_class="image_standalone")
 
 
 _BILINGUAL_ARABIC_ENGLISH = (
@@ -258,7 +292,10 @@ _LATIN_GIBBERISH = " ".join(["xkjqz vbwm nfrl qpzx wblk"] * 60)
 
 class TestBilingualNotGarbled:
     def test_is_garbled_blob_bilingual_not_flagged(self):
-        assert check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", profile=BULK_PROFILE) is False
+        assert (
+            check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", profile=BULK_PROFILE)
+            is False
+        )
 
     def test_pure_arabic_unchanged(self):
         assert check_garble(_PURE_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is False
@@ -266,7 +303,10 @@ class TestBilingualNotGarbled:
 
 class TestActualGarbledStillDetected:
     def test_null_bytes_detected(self):
-        assert check_garble("some text\x00 with nulls", expected_script=None, profile=BULK_PROFILE) is True
+        assert (
+            check_garble("some text\x00 with nulls", expected_script=None, profile=BULK_PROFILE)
+            is True
+        )
 
     def test_pua_chars_detected(self):
         pua_text = "normal " + "" * 20 + " text"
@@ -290,19 +330,33 @@ class TestMorphologicalNonsense:
 
 class TestQF3RegressionExistingGarbleCases:
     def test_validate_tree_garble_fails(self):
-        structure = [{"title": "root", "text": "root", "nodes": [
-            {"title": "child", "text": _LATIN_GIBBERISH, "nodes": [
-                {"title": "grandchild", "text": _LATIN_GIBBERISH, "nodes": []}
-            ]},
-            {"title": "child2", "text": _LATIN_GIBBERISH, "nodes": []},
-        ]}]
+        structure = [
+            {
+                "title": "root",
+                "text": "root",
+                "nodes": [
+                    {
+                        "title": "child",
+                        "text": _LATIN_GIBBERISH,
+                        "nodes": [{"title": "grandchild", "text": _LATIN_GIBBERISH, "nodes": []}],
+                    },
+                    {"title": "child2", "text": _LATIN_GIBBERISH, "nodes": []},
+                ],
+            }
+        ]
         ok, reason = validate_tree(structure, expected_script="Arab")
         assert ok is False
         assert reason == "garbling"
 
     def test_tree_bulk_garble_expected_script_threading(self):
-        from pageindex_mcp.helpers import _flatten_tree_text
+
         nodes = [{"text": _LATIN_GIBBERISH}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is True
+        assert (
+            check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE)
+            is True
+        )
         nodes = [{"text": _PURE_ARABIC}]
-        assert check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE) is False
+        assert (
+            check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE)
+            is False
+        )

@@ -26,10 +26,9 @@ PDFS = [
     "AVB-PHV-Premium.pdf.pdf",
 ]
 
-from docling.document_converter import DocumentConverter
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
-from docling.document_converter import PdfFormatOption
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 print("Initializing Docling converter (CPU forced via MPS fallback)...", flush=True)
 t_init = time.time()
@@ -71,7 +70,6 @@ for pdf_name in PDFS:
         elapsed = time.time() - t0
         print(f"  -> ERROR after {elapsed:.2f}s: {e}", flush=True)
         # Print just the last few lines of traceback
-        import sys
 
         tb_lines = traceback.format_exc().strip().split("\n")
         for line in tb_lines[-5:]:

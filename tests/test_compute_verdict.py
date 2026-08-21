@@ -11,8 +11,6 @@ import pytest
 from pageindex_mcp.helpers import (
     FLAT_GATE_SUBSET,
     GATES,
-    GATE_TABLE,
-    HARD_FAIL_DEFECTS,
     TreeDefect,
     TreeGateResult,
     TreeSignals,
@@ -20,7 +18,6 @@ from pageindex_mcp.helpers import (
     classify_verdict,
     compute_verdict,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -64,7 +61,8 @@ class TestVerdictResultDataclass:
 
     def test_tuple_unpack_excludes_defect_signals_all_defects(self):
         vr = VerdictResult(
-            "FAIL", "garbling",
+            "FAIL",
+            "garbling",
             defect=TreeDefect.GARBLING,
             signals=TreeSignals.from_tree(_single_leaf()),
             all_defects=frozenset({TreeDefect.GARBLING, TreeDefect.REORDERED}),
@@ -97,6 +95,7 @@ class TestComputeVerdictSignature:
     def test_none_validate_result_accepted(self):
         result = compute_verdict(_single_leaf(), "flat_prose", None)
         assert isinstance(result, VerdictResult)
+
 
 class TestComputeVerdictFlatMode:
     def test_flat_true_accepted(self):
@@ -137,8 +136,18 @@ class TestClassifyVerdictWrapper:
             (_single_leaf(), "flat_prose", None, {}),
             (_well_formed(), "", None, {}),
             ([], "flat_prose", None, {}),
-            (_single_leaf(), "flat_prose", TreeGateResult(ok=False, defect=TreeDefect.GARBLING), {}),
-            (_single_leaf(), "flat_prose", TreeGateResult(ok=False, defect=TreeDefect.REORDERED), {}),
+            (
+                _single_leaf(),
+                "flat_prose",
+                TreeGateResult(ok=False, defect=TreeDefect.GARBLING),
+                {},
+            ),
+            (
+                _single_leaf(),
+                "flat_prose",
+                TreeGateResult(ok=False, defect=TreeDefect.REORDERED),
+                {},
+            ),
             (_well_formed(), "flat_prose", None, {"expected_script": "Latn"}),
             (_single_leaf(), "flat_prose", None, {"image_enrichment_ratio": 0.9}),
             (_single_leaf(), "image_standalone", None, {"image_enrichment_ratio": 0.5}),
@@ -176,12 +185,13 @@ class TestFlatGateSubset:
 
     def test_auto_sync_with_gates(self):
         from pageindex_mcp.helpers import _FLAT_APPLICABLE_DEFECTS
+
         expected = [
             (g.gate_fn, g.defect)
             for g in GATES
             if g.gate_fn is not None and g.defect in _FLAT_APPLICABLE_DEFECTS
         ]
-        assert FLAT_GATE_SUBSET == expected
+        assert expected == FLAT_GATE_SUBSET
 
 
 # ---------------------------------------------------------------------------
@@ -204,4 +214,3 @@ class TestHardFailTiebreakOrder:
 # ---------------------------------------------------------------------------
 # Legacy None path preserved
 # ---------------------------------------------------------------------------
-

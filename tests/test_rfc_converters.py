@@ -10,20 +10,15 @@ helpers.py: D3A (tree-bulk garble detection), D3B (flat-markdown garble detectio
 D4 (_looks_like_toc_page).
 """
 
-import sys
 import types
 from unittest import mock
 
 from pageindex_mcp import converters
 from pageindex_mcp.converters import (
-    _arabic_readability_score,
     _bbox_to_fitz_rect,
     _fix_fi_hash_substitution,
-    _is_arabic_char,
     _is_numeric_extension,
     _normalize_indented_headings,
-    _recover_picture_text,
-    _split_run_together_headings,
     decide_rtl,
     reconstruct_bidi_order,
     splice_figure_markers,
@@ -32,7 +27,6 @@ from pageindex_mcp.helpers import (
     BULK_PROFILE,
     FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
-    _looks_like_toc_page,
     check_garble,
 )
 
@@ -71,6 +65,7 @@ class TestNormalizeIndentedHeadings:
         result = _normalize_indented_headings("    some code block\n")
         assert result == "    some code block\n"
 
+
 class TestFixFiHashSubstitution:
     """D5 tests: _fix_fi_hash_substitution() replaces inline # with في only in Arabic-dominant text."""
 
@@ -87,6 +82,7 @@ class TestFixFiHashSubstitution:
         result = _fix_fi_hash_substitution(md)
         assert result == md
 
+
 class TestReconstructBidiOrder:
     """RFC-015 D7: reconstruct_bidi_order() reorders Arabic, gated + structure-safe."""
 
@@ -101,6 +97,7 @@ class TestReconstructBidiOrder:
         result, _ = reconstruct_bidi_order(md)
         assert sorted(result) == sorted(md)
 
+
 class TestLogicalOrderDetection:
     """D7 fix: detect logical-vs-visual order to prevent double-reversal."""
 
@@ -112,6 +109,7 @@ class TestLogicalOrderDetection:
         visual = "رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا"
         assert decide_rtl(visual).reversed
 
+
 class TestIsNumericExtension:
     """RFC-015 D5d: _is_numeric_extension() accepts digit + optional letter-suffix subclauses."""
 
@@ -122,6 +120,7 @@ class TestIsNumericExtension:
     def test_bare_list_marker_not_promoted(self):
         # No numeric anchor prefix (the k-loop requires a proper non-empty prefix).
         assert _is_numeric_extension(("a",), set()) is False
+
 
 class TestSpliceFigureMarkers:
     """RFC-015 D6 / audit findings 4+7+12: splice_figure_markers() replaces markers
@@ -150,6 +149,7 @@ class TestSpliceFigureMarkers:
         md = "<!-- image -->"
         assert splice_figure_markers(md, []) == md
 
+
 class TestBboxToFitzRect:
     """RFC-015 D6: _bbox_to_fitz_rect() converts Docling bboxes to top-left fitz.Rect."""
 
@@ -177,6 +177,7 @@ class TestBboxToFitzRect:
         # top = 800-700=100, bottom = 800-600=200 -> sorted y (100,200)
         assert (rect.y0, rect.y1) == (100, 200)
 
+
 class TestRecoverPictureResults:
     """RFC-015 D6 / audit finding 6: _recover_picture_results() gates the
     first-party AGPL ``fitz`` import (via _recover_picture_text) behind the
@@ -184,15 +185,15 @@ class TestRecoverPictureResults:
     the figure splice happens only in client.index()'s flat branch."""
 
     def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", False)
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", False)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
         with (
             mock.patch.object(
-                converters, "_collect_picture_regions", return_value=pictures
+                converters.pictures, "_collect_picture_regions", return_value=pictures
             ) as mock_collect,
-            mock.patch.object(converters, "_recover_picture_text") as mock_recover,
+            mock.patch.object(converters.pictures, "_recover_picture_text") as mock_recover,
         ):
             pics = converters._recover_picture_results(md, object(), "dummy.pdf")
 
@@ -201,7 +202,7 @@ class TestRecoverPictureResults:
         assert pics == []
 
     def test_escalation_enabled_invokes_recovery(self, monkeypatch):
-        monkeypatch.setattr(converters, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]
@@ -212,11 +213,15 @@ class TestRecoverPictureResults:
             "bbox": {},
         }
         with (
-            mock.patch.object(converters, "_collect_picture_regions", return_value=pictures),
-            mock.patch.object(converters, "detect_ocr_langs", return_value=["eng"]),
-            mock.patch.object(converters, "ensure_tessdata", side_effect=lambda langs: langs),
             mock.patch.object(
-                converters,
+                converters.pictures, "_collect_picture_regions", return_value=pictures
+            ),
+            mock.patch.object(converters.pictures, "detect_ocr_langs", return_value=["eng"]),
+            mock.patch.object(
+                converters.pictures, "ensure_tessdata", side_effect=lambda langs: langs
+            ),
+            mock.patch.object(
+                converters.pictures,
                 "_recover_picture_text",
                 return_value=({0: pr}, {}),
             ) as mock_recover,
@@ -225,6 +230,7 @@ class TestRecoverPictureResults:
 
         assert mock_recover.call_count >= 1
         assert pics == [pr]
+
 
 # ── helpers.py: D3A tree-bulk garble detection (was _tree_is_garbled) ──────
 
@@ -258,6 +264,7 @@ class TestTreeGarbleDetection:
             }
         ]
         assert _tree_garble(nodes) is True
+
 
 class TestFlatTextGarbleDetection:
     """D3B: flat-markdown garble detection (was _flat_text_is_garbled)."""

@@ -1,20 +1,12 @@
 """Garble detection tests (trimmed): detect_garble, prongs, presentation forms, node threading."""
+
 from __future__ import annotations
 
-from unittest.mock import patch
-
-import pytest
-
 from pageindex_mcp.helpers import (
-    BlobKind,
-    GarbleProfile,
     BULK_PROFILE,
-    FLAT_MARKDOWN_PROFILE,
+    BlobKind,
     ScriptContext,
-    TreeDefect,
-    _flatten_tree_text,
     _garble_check_nodes,
-    _infer_script,
     check_garble,
     garble_prongs,
     normalize_for_garble,
@@ -22,7 +14,9 @@ from pageindex_mcp.helpers import (
 )
 
 _PUA = "" * 400
-_CLEAN_ARABIC = "في هذا النص العربي الطويل نجد أن القوانين تنظم الحياة العامة وتحدد الحقوق والواجبات"
+_CLEAN_ARABIC = (
+    "في هذا النص العربي الطويل نجد أن القوانين تنظم الحياة العامة وتحدد الحقوق والواجبات"
+)
 _GARBLED_LATIN = "de Bab rel igh foal pred khar teb ghal mun sar dek phal wur"
 
 
@@ -38,11 +32,17 @@ class TestDetectGarbleWard597:
 class TestPresentationForms:
     def test_pf_prong_fires_via_script_context(self):
         ctx = ScriptContext(dominant_script="Arab", had_presentation_forms=True, source="test")
-        prongs = garble_prongs("clean text " * 50, expected_script=ctx.dominant_script, had_presentation_forms=ctx.had_presentation_forms)
+        prongs = garble_prongs(
+            "clean text " * 50,
+            expected_script=ctx.dominant_script,
+            had_presentation_forms=ctx.had_presentation_forms,
+        )
         assert "presentation_forms" in prongs
 
     def test_pf_prong_does_not_fire_without_flag(self):
-        prongs = garble_prongs("clean text " * 50, expected_script="Arab", had_presentation_forms=False)
+        prongs = garble_prongs(
+            "clean text " * 50, expected_script="Arab", had_presentation_forms=False
+        )
         assert "presentation_forms" not in prongs
 
     def test_fires_with_true(self):
@@ -68,30 +68,48 @@ class TestNormalizeForGarble:
 
 class TestGarbleCheckNodes:
     def test_garbled_nodes_detected(self):
-        tree = [{"title": "R", "text": "", "nodes": [
-            {"title": "A", "text": _PUA, "nodes": []},
-            {"title": "B", "text": "clean content " * 30, "nodes": []},
-        ]}]
+        tree = [
+            {
+                "title": "R",
+                "text": "",
+                "nodes": [
+                    {"title": "A", "text": _PUA, "nodes": []},
+                    {"title": "B", "text": "clean content " * 30, "nodes": []},
+                ],
+            }
+        ]
         garbled_count = _garble_check_nodes(tree, expected_script=None)
         assert garbled_count > 0
 
     def test_all_clean_nodes_pass(self):
         clean = "Dieser Text ist sauber und gut lesbar " * 10
-        tree = [{"title": "R", "text": clean, "nodes": [
-            {"title": "A", "text": clean, "nodes": []},
-            {"title": "B", "text": clean, "nodes": []},
-        ]}]
+        tree = [
+            {
+                "title": "R",
+                "text": clean,
+                "nodes": [
+                    {"title": "A", "text": clean, "nodes": []},
+                    {"title": "B", "text": clean, "nodes": []},
+                ],
+            }
+        ]
         garbled_count = _garble_check_nodes(tree, expected_script="Latn")
         assert garbled_count == 0
 
 
 class TestVerdictSplitBrain:
     def test_same_tree_same_result(self):
-        tree = [{"title": "R", "text": "content " * 50, "nodes": [
-            {"title": "A", "text": "content " * 50, "nodes": []},
-            {"title": "B", "text": "content " * 50, "nodes": []},
-            {"title": "C", "text": "content " * 50, "nodes": []},
-        ]}]
+        tree = [
+            {
+                "title": "R",
+                "text": "content " * 50,
+                "nodes": [
+                    {"title": "A", "text": "content " * 50, "nodes": []},
+                    {"title": "B", "text": "content " * 50, "nodes": []},
+                    {"title": "C", "text": "content " * 50, "nodes": []},
+                ],
+            }
+        ]
         r1 = validate_tree(tree)
         r2 = validate_tree(tree)
         assert r1.defect == r2.defect
@@ -101,6 +119,7 @@ class TestVerdictSplitBrain:
 class TestConfigKwarg:
     def test_garble_config_defaults(self):
         from pageindex_mcp.helpers import GarbleConfig
+
         cfg = GarbleConfig()
         assert cfg.garble_latin_gibberish_enabled is True
         assert cfg.garble_latin_ratio > 0

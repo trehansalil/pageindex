@@ -31,7 +31,7 @@ async def test_rag_01_c3_no_documents_raises_tool_error():
     with (
         patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)),
         patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=[])),
-        patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm,
+        patch("pageindex_mcp.helpers.rag._llm", new_callable=AsyncMock) as mock_llm,
         pytest.raises(ToolError, match="verdict_fail"),
     ):
         await find_relevant_documents("any query")
@@ -67,11 +67,11 @@ async def test_rag_01_c1_prefilter_excludes_docs_from_search():
         return None  # no matched text; we only care about WHICH docs are searched
 
     with (
-        patch("pageindex_mcp.helpers.get_doc", side_effect=lambda d: store[d]),
+        patch("pageindex_mcp.helpers.rag.get_doc", side_effect=lambda d: store[d]),
         patch(
-            "pageindex_mcp.helpers._prefilter_docs", new=AsyncMock(return_value=["aaa"])
+            "pageindex_mcp.helpers.rag._prefilter_docs", new=AsyncMock(return_value=["aaa"])
         ) as mock_prefilter,
-        patch("pageindex_mcp.helpers._search_one_doc", side_effect=fake_search_one),
+        patch("pageindex_mcp.helpers.rag._search_one_doc", side_effect=fake_search_one),
     ):
         await helpers._rag("q", ["aaa", "bbb"])
 
@@ -88,8 +88,9 @@ async def test_rag_01_c2_concurrent_search_bounded_by_semaphore():
     bounded by an asyncio.Semaphore of size PAGEINDEX_SEARCH_CONCURRENCY. We force
     a small concurrency limit and assert the max in-flight searches never exceeds
     it while every candidate doc is still searched."""
-    from pageindex_mcp import helpers
     import asyncio
+
+    from pageindex_mcp import helpers
 
     n_docs = 6
     store = {
@@ -117,10 +118,10 @@ async def test_rag_01_c2_concurrent_search_bounded_by_semaphore():
         return None
 
     with (
-        patch("pageindex_mcp.helpers.get_doc", side_effect=lambda d: store[d]),
-        patch("pageindex_mcp.helpers._prefilter_docs", new=AsyncMock(return_value=doc_ids)),
-        patch("pageindex_mcp.helpers._search_one_doc", side_effect=fake_search_one),
-        patch("pageindex_mcp.helpers._SEARCH_CONCURRENCY", 2),
+        patch("pageindex_mcp.helpers.rag.get_doc", side_effect=lambda d: store[d]),
+        patch("pageindex_mcp.helpers.rag._prefilter_docs", new=AsyncMock(return_value=doc_ids)),
+        patch("pageindex_mcp.helpers.rag._search_one_doc", side_effect=fake_search_one),
+        patch("pageindex_mcp.helpers.rag._SEARCH_CONCURRENCY", 2),
     ):
         await helpers._rag("q", doc_ids)
 

@@ -25,12 +25,12 @@ import dataclasses
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import fakeredis.aioredis
 import pytest
 import pytest_asyncio
 
 from pageindex_mcp import registry
 from pageindex_mcp import registry_backfill as rb
+from pageindex_mcp.registry_backfill import backfill as _bf
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -57,7 +57,7 @@ def _restore_module_state():
 @pytest.fixture
 def no_pool():
     """Force the pool to None so the fallback guards are exercised."""
-    with patch.object(registry, "get_pool", return_value=None):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=None):
         yield
 
 
@@ -71,15 +71,13 @@ def _mock_pool() -> AsyncMock:
 
 
 def _wire_backfill_settings(monkeypatch):
-    monkeypatch.setattr(
-        rb,
-        "settings",
-        dataclasses.replace(
-            rb.settings,
-            registry_enabled=True,
-            postgres_dsn="postgresql://user:pass@localhost:5432/pageindex",
-        ),
+    patched = dataclasses.replace(
+        rb.settings,
+        registry_enabled=True,
+        postgres_dsn="postgresql://user:pass@localhost:5432/pageindex",
     )
+    monkeypatch.setattr(rb, "settings", patched)
+    monkeypatch.setattr(_bf, "settings", patched)
 
 
 @pytest.fixture
@@ -104,7 +102,7 @@ async def test_reads_return_none_when_pool_absent(no_pool):
 
 async def test_delete_doc_passes_statement_timeout():
     pool = _mock_pool()
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         await registry.delete_doc("test-doc-id")
     pool.execute.assert_awaited_once()
     call_kwargs = pool.execute.await_args.kwargs
@@ -119,7 +117,7 @@ async def test_delete_doc_passes_statement_timeout():
 
 async def test_upsert_defaults_missing_keys_to_empty_string():
     pool = _mock_pool()
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         await registry.upsert_doc({"doc_id": "abc123", "doc_name": "only-name.pdf"})
 
     args = pool.execute.await_args.args
@@ -152,7 +150,7 @@ async def test_list_docs_maps_rows_to_legacy_shape():
             "node_count": 7,
         },
     ]
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         rows = await registry.list_docs(limit=5, offset=0)
 
     assert rows == [
@@ -171,7 +169,7 @@ async def test_list_docs_maps_rows_to_legacy_shape():
 async def test_count_docs_returns_none_on_error():
     pool = _mock_pool()
     pool.fetchval.side_effect = RuntimeError("connection reset")
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         assert await registry.count_docs() is None
 
 
@@ -193,7 +191,7 @@ async def test_stage_b_falls_back_to_recency_on_no_match():
     ]
     # First fetch (ts_rank) → empty; second fetch (recency fallback) → recent.
     pool.fetch.side_effect = [[], recent]
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         rows = await registry.stage_b_candidates("zzzznomatch", 200)
 
     assert rows is not None
@@ -210,7 +208,7 @@ async def test_stage_b_falls_back_to_recency_on_no_match():
 async def test_stage_a_is_noop_when_facets_unpopulated():
     """Pre-Tier-1: all facet sets empty → transparent pass-through (None)."""
     pool = _mock_pool()
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         assert await registry.stage_a_filter("huk coburg policy") is None
     pool.fetch.assert_not_awaited()
 
@@ -219,7 +217,7 @@ async def test_stage_a_does_not_substring_match():
     """'huককা' inside a longer token must NOT match the 'huk' facet value."""
     registry.refresh_known_facets({"product": {"huk"}})
     pool = _mock_pool()
-    with patch.object(registry, "get_pool", return_value=pool):
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         # 'hukcoburg' is a single token; 'huk' is not a standalone word here.
         assert await registry.stage_a_filter("hukcoburg terms") is None
     pool.fetch.assert_not_awaited()
@@ -253,13 +251,13 @@ async def test_backfill_nonzero_keys_sets_complete(monkeypatch, fake_redis_clien
     still set once every sidecar upserts cleanly."""
     _wire_backfill_settings(monkeypatch)
 
-    monkeypatch.setattr(rb, "init_registry", AsyncMock())
-    monkeypatch.setattr(rb, "close_registry", AsyncMock())
-    monkeypatch.setattr(rb, "is_registry_complete", AsyncMock(return_value=False))
+    monkeypatch.setattr(_bf, "init_registry", AsyncMock())
+    monkeypatch.setattr(_bf, "close_registry", AsyncMock())
+    monkeypatch.setattr(_bf, "is_registry_complete", AsyncMock(return_value=False))
     set_registry_complete = AsyncMock()
-    monkeypatch.setattr(rb, "set_registry_complete", set_registry_complete)
-    monkeypatch.setattr(rb, "_list_meta_keys", lambda: ["processed/abc.meta.json"])
-    monkeypatch.setattr(rb, "_upsert_all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(_bf, "set_registry_complete", set_registry_complete)
+    monkeypatch.setattr(_bf, "_list_meta_keys", lambda: ["processed/abc.meta.json"])
+    monkeypatch.setattr(_bf, "_upsert_all", AsyncMock(return_value=[]))
     monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: fake_redis_client)
 
     await rb._backfill(dry_run=False, force=False)
@@ -364,4 +362,3 @@ def test_migrate_verdict_sql_is_idempotent():
     assert "ADD COLUMN IF NOT EXISTS verdict" in sql
     assert "ADD COLUMN IF NOT EXISTS pipeline_version" in sql
     assert "ADD COLUMN IF NOT EXISTS permanent_marginal" in sql
-

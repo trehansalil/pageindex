@@ -29,8 +29,8 @@ def _make_meta(key: str) -> dict:
 
 
 @pytest.mark.asyncio
-@patch("pageindex_mcp.registry_backfill.upsert_doc", new_callable=AsyncMock)
-@patch("pageindex_mcp.registry_backfill._load_meta", side_effect=lambda k: _make_meta(k))
+@patch("pageindex_mcp.registry_backfill.backfill.upsert_doc", new_callable=AsyncMock)
+@patch("pageindex_mcp.registry_backfill.backfill._load_meta", side_effect=lambda k: _make_meta(k))
 async def test_backfill_upsert_called_per_item(mock_load, mock_upsert):
     from pageindex_mcp.registry_backfill import _upsert_all
 
@@ -43,7 +43,7 @@ async def test_backfill_upsert_called_per_item(mock_load, mock_upsert):
 
 
 @pytest.mark.asyncio
-@patch("pageindex_mcp.registry_backfill._load_meta", side_effect=lambda k: _make_meta(k))
+@patch("pageindex_mcp.registry_backfill.backfill._load_meta", side_effect=lambda k: _make_meta(k))
 async def test_backfill_gather_handles_per_item_failure(mock_load):
     call_count = 0
 
@@ -54,7 +54,7 @@ async def test_backfill_gather_handles_per_item_failure(mock_load):
             raise RuntimeError("simulated upsert failure")
 
     with patch(
-        "pageindex_mcp.registry_backfill.upsert_doc",
+        "pageindex_mcp.registry_backfill.backfill.upsert_doc",
         new_callable=AsyncMock,
         side_effect=_upsert_side_effect,
     ):
@@ -69,7 +69,7 @@ async def test_backfill_gather_handles_per_item_failure(mock_load):
 
 
 @pytest.mark.asyncio
-@patch("pageindex_mcp.registry_backfill._load_meta", side_effect=lambda k: _make_meta(k))
+@patch("pageindex_mcp.registry_backfill.backfill._load_meta", side_effect=lambda k: _make_meta(k))
 async def test_backfill_semaphore_bounds_concurrency(mock_load):
     max_concurrent = 0
     current = 0
@@ -86,7 +86,7 @@ async def test_backfill_semaphore_bounds_concurrency(mock_load):
             current -= 1
 
     with patch(
-        "pageindex_mcp.registry_backfill.upsert_doc",
+        "pageindex_mcp.registry_backfill.backfill.upsert_doc",
         new_callable=AsyncMock,
         side_effect=_upsert_tracking,
     ):

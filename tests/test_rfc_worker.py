@@ -49,7 +49,7 @@ assert len(_SHORT_CLEAN_TEXT) < 200
 @pytest.fixture
 def mock_minio():
     client = MagicMock()
-    with patch("pageindex_mcp.storage.get_minio", return_value=client):
+    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=client):
         yield client
 
 
@@ -178,7 +178,7 @@ class TestReadVerdictLedgerRetrieval:
         assert result is None
 
     def test_minio_unavailable_returns_none(self):
-        with patch("pageindex_mcp.storage.get_minio", side_effect=RuntimeError("down")):
+        with patch("pageindex_mcp.storage.minio_ops.get_minio", side_effect=RuntimeError("down")):
             result = read_verdict_ledger("abc123")
         assert result is None
 
@@ -219,9 +219,11 @@ class TestRegionAwareExemptionIntegration:
         """Page has header/footer text (page-level check would see content
         and skip), but the picture's OWN bbox has none -- region-aware
         exemption fires, OCR proceeds."""
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -233,9 +235,11 @@ class TestRegionAwareExemptionIntegration:
         """Region's own bbox carries real text -- exemption must NOT fire,
         the region-scoped check must not become permissive in the other
         direction (edge case from the design doc)."""
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
         _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(60))
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
 
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
 
@@ -309,14 +313,20 @@ class TestFullPageRegionCap:
         """With the cap set to 2 and 3 qualifying full-page regions, the
         first 2 get the exemption and OCR fires; the 3rd is skipped with
         "page_coverage" and a logged warning, not silently exempted."""
-        monkeypatch.setattr(converters, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
-        monkeypatch.setattr(converters, "_MAX_FULLPAGE_PICTURE_OCR_REGIONS", 2)
-        monkeypatch.setattr(converters, "_GATE_CONFIG", PictureGateConfig(
-            coverage_exempt_no_text_layer=True,
-            max_fullpage_picture_ocr_regions=2,
-        ))
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(converters.pictures, "_MAX_FULLPAGE_PICTURE_OCR_REGIONS", 2)
+        monkeypatch.setattr(
+            converters.pictures,
+            "_GATE_CONFIG",
+            PictureGateConfig(
+                coverage_exempt_no_text_layer=True,
+                max_fullpage_picture_ocr_regions=2,
+            ),
+        )
         _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda png, langs: _long_text())
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
 
         regions = [_region() for _ in range(3)]
         recovered, skip_reasons = _recover_picture_text("dummy.pdf", regions, ["eng"])
@@ -342,25 +352,57 @@ class TestFullPageRegionCap:
 
 class TestGarbleByDefaultShortPostRetryText:
     def test_short_text_with_garbling_reason_is_garbled(self, monkeypatch):
-        monkeypatch.setattr(helpers, "_GARBLE_SHORT_TEXT_DEFAULT", True)
-        assert check_garble(_SHORT_CLEAN_TEXT, expected_script=None, profile=FLAT_MARKDOWN_PROFILE, original_defect=TreeDefect.GARBLING) is True
+        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
+        assert (
+            check_garble(
+                _SHORT_CLEAN_TEXT,
+                expected_script=None,
+                profile=FLAT_MARKDOWN_PROFILE,
+                original_defect=TreeDefect.GARBLING,
+            )
+            is True
+        )
 
     def test_short_text_with_node_garbling_reason_is_garbled(self, monkeypatch):
         """D2/D3 consistency: node_garbling must trigger the same default as
         garbling, since Task 2.4 (D3) legitimizes node_garbling as a
         garbling failure class in the same RFC."""
-        monkeypatch.setattr(helpers, "_GARBLE_SHORT_TEXT_DEFAULT", True)
-        assert check_garble(_SHORT_CLEAN_TEXT, expected_script=None, profile=FLAT_MARKDOWN_PROFILE, original_defect=TreeDefect.NODE_GARBLING) is True
+        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
+        assert (
+            check_garble(
+                _SHORT_CLEAN_TEXT,
+                expected_script=None,
+                profile=FLAT_MARKDOWN_PROFILE,
+                original_defect=TreeDefect.NODE_GARBLING,
+            )
+            is True
+        )
 
     def test_short_text_with_unrelated_reason_gets_normal_evaluation(self, monkeypatch):
-        monkeypatch.setattr(helpers, "_GARBLE_SHORT_TEXT_DEFAULT", True)
-        assert check_garble(_SHORT_CLEAN_TEXT, expected_script=None, profile=FLAT_MARKDOWN_PROFILE, original_defect=TreeDefect.NODE_COUNT_LOW) is False
+        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
+        assert (
+            check_garble(
+                _SHORT_CLEAN_TEXT,
+                expected_script=None,
+                profile=FLAT_MARKDOWN_PROFILE,
+                original_defect=TreeDefect.NODE_COUNT_LOW,
+            )
+            is False
+        )
 
     def test_rollback_env_restores_prior_behavior(self, monkeypatch):
         """GARBLE_SHORT_TEXT_DEFAULT=false disables the default-garbled path,
         even for a garbling-origin short text, restoring pre-D2 behavior."""
-        monkeypatch.setattr(helpers, "_GARBLE_SHORT_TEXT_DEFAULT", False)
-        assert check_garble(_SHORT_CLEAN_TEXT, expected_script=None, profile=FLAT_MARKDOWN_PROFILE, original_defect=TreeDefect.GARBLING) is False
+        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", False)
+        assert (
+            check_garble(
+                _SHORT_CLEAN_TEXT,
+                expected_script=None,
+                profile=FLAT_MARKDOWN_PROFILE,
+                original_defect=TreeDefect.GARBLING,
+            )
+            is False
+        )
 
 
 class TestDecorativeFlagNoRotationGate:
@@ -368,7 +410,7 @@ class TestDecorativeFlagNoRotationGate:
         """The rotation gate is removed: empty OCR sets decorative=True even
         when rotation != 0 (previously only fired at rotation == 0)."""
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=180)
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", lambda path, langs: "")
+        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", lambda path, langs: "")
         region = _region(0, 0, 30, 30)
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
@@ -379,7 +421,7 @@ class TestDecorativeFlagNoRotationGate:
     def test_nonempty_ocr_on_rotated_page_does_not_set_skipped_reason(self, monkeypatch):
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=90)
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_tesseract_ocr_image",
             lambda path, langs: "Recovered chart text with enough characters",
         )

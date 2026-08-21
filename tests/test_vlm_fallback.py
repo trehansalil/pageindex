@@ -14,9 +14,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
-from pageindex_mcp.helpers import LowQualityTreeError, TreeDefect, TreeGateResult
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
+from pageindex_mcp.helpers import GarbleReport, LowQualityTreeError, TreeDefect, TreeGateResult
 
 
 def _fake_settings(*, vlm_fallback: bool = True, vlm_model: str = "gpt-4.1-test"):
@@ -67,19 +68,27 @@ def pdf_file():
 
 def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallback=True):
     """Wire index() so the garble retry always fails and the VLM path fires."""
-    monkeypatch.setattr(client_mod, "settings", _fake_settings(vlm_fallback=vlm_fallback))
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(client_mod, "validate_tree", MagicMock(side_effect=validate_side_effect))
+    fake_settings = _fake_settings(vlm_fallback=vlm_fallback)
+    monkeypatch.setattr(_idx, "settings", fake_settings)
+    monkeypatch.setattr(_rec, "settings", fake_settings)
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    vt_mock = MagicMock(side_effect=validate_side_effect)
+    monkeypatch.setattr(_idx, "validate_tree", vt_mock)
+    monkeypatch.setattr(_rec, "validate_tree", vt_mock)
     monkeypatch.setattr(
-        client_mod, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: "# garbled md")]
+        _idx, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: "# garbled md")]
     )
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
-    monkeypatch.setattr(client_mod, "detect_ocr_langs", lambda s: ["eng"])
-    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
+    ocr_langs = lambda s: ["eng"]
+    tessdata = lambda langs: langs
+    monkeypatch.setattr(_idx, "detect_ocr_langs", ocr_langs)
+    monkeypatch.setattr(_rec, "detect_ocr_langs", ocr_langs)
+    monkeypatch.setattr(_idx, "ensure_tessdata", tessdata)
+    monkeypatch.setattr(_rec, "ensure_tessdata", tessdata)
     monkeypatch.setattr(
-        client_mod, "pdf_to_markdown_docling", lambda path, force, langs, **kw: "# still garbled"
+        _rec, "pdf_to_markdown_docling", lambda path, force, langs, **kw: "# still garbled"
     )
 
     vlm_mock = AsyncMock()
@@ -88,22 +97,34 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
     else:
         vlm_mock.return_value = "# VLM recovered heading\n\nSome real content here."
 
-    mocks = {
+    route_flat = MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}]))
+    low_q = MagicMock()
+    vlm_total = MagicMock()
+    idx_mocks = {
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
-        "route_and_extract_flat": MagicMock(
-            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
-        ),
         "FLAT_DOCS_TOTAL": MagicMock(),
-        "LOW_QUALITY_TREES": MagicMock(),
-        "OCR_ESCALATION_TOTAL": MagicMock(),
-        "VLM_FALLBACK_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": low_q,
+        "VLM_FALLBACK_TOTAL": vlm_total,
+        "detect_garble": MagicMock(
+            return_value=GarbleReport(is_garbled=False, fired_prongs=frozenset())
+        ),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in idx_mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+    rec_mocks = {
+        "OCR_ESCALATION_TOTAL": MagicMock(),
+        "VLM_FALLBACK_TOTAL": vlm_total,
+        "route_and_extract_flat": route_flat,
+        "check_garble": MagicMock(return_value=False),
+    }
+    for name, m in rec_mocks.items():
+        monkeypatch.setattr(_rec, name, m)
+    idx_mocks["route_and_extract_flat"] = route_flat
 
+    mocks = {**idx_mocks, **rec_mocks}
     return mocks, vlm_mock
 
 
@@ -247,12 +268,15 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
     mocks, vlm_mock = _wire_vlm(
         monkeypatch,
         validate_side_effect=[
-            TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),  # initial — routes to flat path
+            TreeGateResult(
+                ok=False, defect=TreeDefect.NODE_COUNT_LOW
+            ),  # initial — routes to flat path
         ],
     )
     # detect_garble returns garbled for the original markdown, not-garbled for VLM output.
     # check_garble (VLM recovery path) follows the same pattern.
     from pageindex_mcp.helpers import GarbleReport
+
     garble_calls = []
 
     def _fake_detect_garble(text, **kw):
@@ -266,8 +290,8 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
     def _fake_flat_garble(text, **kw):
         return "VLM recovered" not in text
 
-    monkeypatch.setattr(client_mod, "detect_garble", _fake_detect_garble)
-    monkeypatch.setattr(client_mod, "check_garble", _fake_flat_garble)
+    monkeypatch.setattr(_idx, "detect_garble", _fake_detect_garble)
+    monkeypatch.setattr(_rec, "check_garble", _fake_flat_garble)
 
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
@@ -295,9 +319,11 @@ async def test_VLM_C7_flat_path_garble_still_garbled(monkeypatch, pdf_file):
     )
     # Zone-3: patch both detect_garble (primary gate) and check_garble (VLM recovery)
     from pageindex_mcp.helpers import GarbleReport
+
     _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
-    monkeypatch.setattr(client_mod, "detect_garble", lambda text, **kw: _garbled)
-    monkeypatch.setattr(client_mod, "check_garble", lambda text, **kw: True)
+    monkeypatch.setattr(_idx, "detect_garble", lambda text, **kw: _garbled)
+    monkeypatch.setattr(_idx, "check_garble", lambda text, **kw: True)
+    monkeypatch.setattr(_rec, "check_garble", lambda text, **kw: True)
 
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))

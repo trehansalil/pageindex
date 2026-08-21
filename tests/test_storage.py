@@ -11,26 +11,18 @@ ERASE-01-C2  delete_doc is idempotent (missing objects tolerated, no-op success)
 ERASE-01-C3  a mid-cascade failure is surfaced and names the unpurged store
 """
 
-import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 from minio.error import S3Error
 
-import pageindex_mcp.storage as storage_mod
-from pageindex_mcp.config import settings
-from pageindex_mcp.helpers import _garble_check_nodes, validate_tree
+from pageindex_mcp.helpers import _garble_check_nodes
 from pageindex_mcp.storage import (
-    HASH_CACHE_KEY,
-    SIDECAR_VERSION,
-    PersistenceNotVisibleError,
     _load_legacy_minio_hash_cache,
     delete_doc,
     delete_staging,
-    download_staging,
     get_flat_doc,
-    get_minio,
     hash_cache_delete,
     hash_cache_get,
     hash_cache_set,
@@ -40,7 +32,6 @@ from pageindex_mcp.storage import (
     save_doc,
     save_doc_meta,
     save_flat_doc,
-    save_raw,
     upload_staging,
     wipe_processed,
 )
@@ -64,7 +55,7 @@ def _other_s3error(code="InternalError") -> S3Error:
 def mock_minio():
     client = MagicMock()
     client.bucket_exists.return_value = True
-    with patch("pageindex_mcp.storage.get_minio", return_value=client):
+    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=client):
         yield client
 
 
@@ -80,13 +71,13 @@ def fake_cache_redis():
 def _wire_registry(monkeypatch, *, registry_delete_doc, get_pool_return=object()):
     import dataclasses
 
-    from pageindex_mcp import storage as st
+    from pageindex_mcp.storage import documents as _docs_mod
 
     monkeypatch.setattr(
-        st,
+        _docs_mod,
         "settings",
         dataclasses.replace(
-            st.settings,
+            _docs_mod.settings,
             registry_enabled=True,
             postgres_dsn="postgresql://user:pass@localhost:5432/pageindex",
             registry_delete_timeout_s=0.05,
@@ -101,7 +92,7 @@ def _wire_registry(monkeypatch, *, registry_delete_doc, get_pool_return=object()
 # prefix untouched. No snapshot step is involved.
 
 
-@patch("pageindex_mcp.storage.get_minio")
+@patch("pageindex_mcp.storage.minio_ops.get_minio")
 def test_wipe_processed_deletes_all_processed_objects(mock_get):
     mc = MagicMock()
     mock_get.return_value = mc
@@ -122,7 +113,7 @@ def test_wipe_processed_deletes_all_processed_objects(mock_get):
     }
 
 
-@patch("pageindex_mcp.storage.get_minio")
+@patch("pageindex_mcp.storage.minio_ops.get_minio")
 def test_wipe_processed_empty_listing_is_noop(mock_get):
     mc = MagicMock()
     mock_get.return_value = mc
@@ -145,7 +136,7 @@ def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
     # save_doc lazily imports doc_cache_delete; patch the source so no Redis
     # is touched while we assert the MinIO write.
     with (
-        patch("pageindex_mcp.storage.doc_cache_delete", create=True),
+        patch("pageindex_mcp.cache.doc_cache_delete", create=True),
         patch("pageindex_mcp.cache.doc_cache_delete"),
     ):
         save_doc("abc12345", tree)
@@ -297,8 +288,8 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.reconcile_etag_delete"),
-        patch("pageindex_mcp.storage.hash_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
     ):
         result = await delete_doc("ghost9999")  # must NOT raise
     assert result == {"errors": []}
@@ -313,7 +304,7 @@ async def test_flat_02_c2_flat_json_nosuchkey_tolerated(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.hash_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
     ):
         await delete_doc("ghostflat")  # must NOT raise
 
@@ -327,7 +318,7 @@ async def test_delete_doc_read_doc_name_generic_exception_recorded(mock_minio):
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.hash_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
     ):
         result = await delete_doc("weird0001")
 
@@ -363,7 +354,7 @@ async def test_delete_doc_non_nosuchkey_remove_errors_recorded(
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.hash_cache_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
     ):
         result = await delete_doc("errkey001")
 
@@ -399,8 +390,8 @@ async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete") as mock_cache_del,
-        patch("pageindex_mcp.storage.reconcile_etag_delete"),
-        patch("pageindex_mcp.storage.hash_cache_delete") as mock_hash_del,
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete") as mock_hash_del,
     ):
         result = await delete_doc("cascade002")
 
@@ -428,8 +419,8 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
 
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.reconcile_etag_delete"),
-        patch("pageindex_mcp.storage.hash_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
         caplog.at_level("WARNING"),
     ):
         result = await delete_doc("nodocname001")
@@ -478,7 +469,7 @@ def test_hash_cache_delete_removes_entry(fake_cache_redis):
     hash_cache_set("d.pdf", "hash-d")
     assert hash_cache_get("d.pdf") == "hash-d"
     hash_cache_delete("d.pdf")
-    with patch("pageindex_mcp.storage.get_minio") as mock_get_minio:
+    with patch("pageindex_mcp.storage.minio_ops.get_minio") as mock_get_minio:
         mock_get_minio.return_value.get_object.side_effect = _nosuchkey()
         assert hash_cache_get("d.pdf") is None
 
@@ -598,4 +589,3 @@ def test_per_node_garble_catches_pua_node():
     tree = [garbled_node] + [_clean_node(i) for i in range(99)]
 
     assert _garble_check_nodes(tree) == 1
-

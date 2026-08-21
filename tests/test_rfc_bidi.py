@@ -14,8 +14,6 @@ production function/class each group exercises:
 - D7: page-count guard + chunked-Docling route for oversized PDFs
 """
 
-import importlib
-import math
 import os
 import re
 import tempfile
@@ -23,25 +21,21 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import fitz
-import pytest
 
 from pageindex_mcp import client as client_mod
-from pageindex_mcp import config, converters
 from pageindex_mcp.client import CustomPageIndexClient
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.converters import (
     _inject_arabic_structural_headings,
     _max_heading_level,
     _recover_heading_depth,
-    decide_rtl,
     reconstruct_bidi_order,
     splice_figure_markers,
 )
 from pageindex_mcp.helpers import (
-    FLAT_MARKDOWN_PROFILE,
-    _dedupe_chart_text_lines,
     _flat_block_primary_text,
-    _flat_block_text,
-    check_garble,
     classify_verdict,
     validate_tree,
 )
@@ -63,6 +57,7 @@ class TestFlatBlockPrimaryTextExcludesEnrichment:
         document content, not enrichment, so they ARE included."""
         block = {"role": "table", "row_records": ["row one", "row two"]}
         assert _flat_block_primary_text(block) == "row one\nrow two"
+
 
 # ---------------------------------------------------------------------------
 # D1: image_enrichment_promoted garble gate + post-splice D3B recheck
@@ -103,6 +98,7 @@ class TestImageEnrichmentPromotedGarbleGate:
         assert verdict == "PASS"
         assert reason == "image_enrichment_promoted"
 
+
 # ---------------------------------------------------------------------------
 # D2: low-content OCR escalation for .pdf documents rejected as node_count<3
 # ---------------------------------------------------------------------------
@@ -116,7 +112,7 @@ def _escalation_fires(ok: bool, reason: str, total_chars: int, ext: str = ".pdf"
         not ok
         and (reason in ("garbling", "node_garbling") or low_content_ocr_eligible)
         and ext == ".pdf"
-        and client_mod._OCR_ESCALATION_GARBLE
+        and _rec._OCR_ESCALATION_GARBLE
     )
 
 
@@ -130,6 +126,7 @@ class TestLowContentOcrEscalationBoundaries:
         the floor -- exclusive-below, so it does NOT escalate."""
         assert _escalation_fires(ok=False, reason="node_count<3", total_chars=299) is True
         assert _escalation_fires(ok=False, reason="node_count<3", total_chars=300) is False
+
 
 # ---------------------------------------------------------------------------
 # D3: RTL-reversal detection (validate_tree) + repair-first flow
@@ -212,6 +209,7 @@ class TestValidateTreeRtlReversal:
         ok, reason = validate_tree(_logical_tree())
         assert (ok, reason) != (False, "rtl_reversal")
 
+
 class TestRepairFirstFlow:
     """RFC-027 D3: `rtl_reversal` must never hard-FAIL before
     `reconstruct_bidi_order` has been attempted."""
@@ -232,6 +230,7 @@ class TestRepairFirstFlow:
         _noop_repair(structure)
         ok, reason = validate_tree(structure)
         assert (ok, reason) == (False, "rtl_reversal")
+
 
 # ---------------------------------------------------------------------------
 # D4: Arabic structural heading injection -> depth-recovery integration
@@ -274,6 +273,7 @@ class TestInjectArabicStructuralHeadingsBlockStart:
         result = _inject_arabic_structural_headings(md)
         assert "\n## مادة 1\n" in result
 
+
 class TestDepthRecoveryOnInjectedHeadings:
     """RFC-027 D4 -> D3-chain integration: injected headings must feed the
     EXISTING `_recover_heading_depth` chain (`_relevel_by_containment` ->
@@ -291,6 +291,7 @@ class TestDepthRecoveryOnInjectedHeadings:
         # confirms the injection step is load-bearing, not incidental.
         recovered = _recover_heading_depth(_SYNTHETIC_DOC, {}, "")
         assert _max_heading_level(recovered) < 2
+
 
 # ---------------------------------------------------------------------------
 # D5: small_doc_promoted leaf-ratio dispensation for very small trees
@@ -324,6 +325,7 @@ class TestSmallDocLeafRatioDispensation:
         verdict, _reason = classify_verdict(structure, "flat_prose", None)
         assert verdict != "PASS"
 
+
 # ---------------------------------------------------------------------------
 # D6: deduplicate identical adjacent <!-- image --> markers
 # ---------------------------------------------------------------------------
@@ -355,24 +357,25 @@ async def _run_index_with_markdown(monkeypatch, markdown: str, source_bytes: byt
         with os.fdopen(fd, "wb") as fh:
             fh.write(source_bytes)
 
-        monkeypatch.setattr(client_mod, "settings", _fake_settings())
-        monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-        monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-        monkeypatch.setattr(client_mod, "hash_cache_set", lambda *a, **kw: None)
-        monkeypatch.setattr(client_mod, "validate_tree", lambda s, **kw: (False, "depth<2"))
+        monkeypatch.setattr(_idx, "settings", _fake_settings())
+        monkeypatch.setattr(_img, "settings", _fake_settings())
+        monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+        monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+        monkeypatch.setattr(_idx, "hash_cache_set", lambda *a, **kw: None)
+        monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
         monkeypatch.setattr(
-            client_mod,
+            _img,
             "route_and_extract_flat",
             lambda md: ("flat_prose", [{"role": "prose", "text": "x"}]),
         )
-        monkeypatch.setattr(client_mod, "save_flat_doc", lambda *a, **kw: None)
-        monkeypatch.setattr(client_mod, "save_doc", lambda *a, **kw: None)
-        monkeypatch.setattr(client_mod, "save_raw", lambda *a, **kw: None)
-        monkeypatch.setattr(client_mod, "save_doc_meta", lambda *a, **kw: None)
-        monkeypatch.setattr(client_mod, "FLAT_DOCS_TOTAL", MagicMock())
-        monkeypatch.setattr(client_mod, "LOW_QUALITY_TREES", MagicMock())
-        monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
-        monkeypatch.setattr(client_mod, "image_to_markdown", lambda path, langs: markdown)
+        monkeypatch.setattr(_idx, "save_flat_doc", lambda *a, **kw: None)
+        monkeypatch.setattr(_idx, "save_doc", lambda *a, **kw: None)
+        monkeypatch.setattr(_idx, "save_raw", lambda *a, **kw: None)
+        monkeypatch.setattr(_idx, "save_doc_meta", lambda *a, **kw: None)
+        monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+        monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
+        monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+        monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: markdown)
 
         captured_pics = []
         orig_splice = splice_figure_markers
@@ -381,7 +384,7 @@ async def _run_index_with_markdown(monkeypatch, markdown: str, source_bytes: byt
             captured_pics.extend(pics)
             return orig_splice(md, pics)
 
-        monkeypatch.setattr(client_mod, "splice_figure_markers", spy_splice)
+        monkeypatch.setattr(_img, "splice_figure_markers", spy_splice)
 
         c = CustomPageIndexClient(api_key="test-key")
 
@@ -411,6 +414,7 @@ class TestMarkerDedupRegex:
     def test_directly_adjacent_markers_collapse(self):
         md = "<!-- image --><!-- image -->"
         assert _DEDUP_RE.sub("", md).count("<!-- image -->") == 1
+
 
 # ---------------------------------------------------------------------------
 # D7: page-count guard + chunked-Docling route for oversized PDFs, with a
@@ -521,4 +525,3 @@ def _patch_fitz(monkeypatch, page_count: int, text: str = "lorem ipsum") -> _Fak
     recorder = _FakeFitz(page_count, text)
     monkeypatch.setattr(fitz, "open", recorder.open)
     return recorder
-

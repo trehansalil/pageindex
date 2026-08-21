@@ -13,25 +13,27 @@ import pytest
 
 def test_no_direct_aioredis_from_url_in_worker():
     """worker.py must have exactly one aioredis.from_url call (the startup site)."""
-    worker_src = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "worker.py"
-    text = worker_src.read_text()
-    matches = list(re.finditer(r"aioredis\.from_url\(", text))
+    worker_dir = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "worker"
+    matches = []
+    for py_file in worker_dir.glob("*.py"):
+        text = py_file.read_text()
+        matches.extend(re.finditer(r"aioredis\.from_url\(", text))
     assert len(matches) == 1, (
         f"Expected exactly 1 aioredis.from_url call (startup), found {len(matches)}"
     )
 
 
 @pytest.mark.asyncio
-@patch("pageindex_mcp.worker.get_async_redis", new_callable=AsyncMock)
+@patch("pageindex_mcp.worker.job.get_async_redis", new_callable=AsyncMock)
 async def test_worker_redis_fallback_uses_singleton(mock_get_redis):
     """When ctx has no 'redis' key, the fallback calls get_async_redis()."""
     mock_redis = AsyncMock()
     mock_get_redis.return_value = mock_redis
 
     with (
-        patch("pageindex_mcp.worker.download_staging"),
+        patch("pageindex_mcp.worker.job.download_staging"),
         patch(
-            "pageindex_mcp.worker._run_converter_subprocess",
+            "pageindex_mcp.worker.job._run_converter_subprocess",
             new_callable=AsyncMock,
             return_value={
                 "ok": True,
@@ -40,8 +42,8 @@ async def test_worker_redis_fallback_uses_singleton(mock_get_redis):
                 "duration_ms": 0,
             },
         ),
-        patch("pageindex_mcp.worker.delete_staging"),
-        patch("pageindex_mcp.worker.shutil"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
     ):
         from pageindex_mcp.worker import process_document_job
 

@@ -111,14 +111,15 @@ fi
 if [[ "$FULL_AUDIT" == "false" ]]; then
   echo "--- Check 3 & 4: Changed source files vs test files ---"
 
-  # Get changed files
+  # Get changed files (--diff-filter=d excludes deleted files — they have no
+  # TEST_INDEX entry and checking them is meaningless after a module→package split)
   if [[ -n "$DIFF_REF" ]]; then
-    changed_files=$(git diff --name-only "$DIFF_REF" 2>/dev/null || true)
+    changed_files=$(git diff --diff-filter=d --name-only "$DIFF_REF" 2>/dev/null || true)
   else
     # Default: staged + unstaged changes
-    changed_files=$(git diff --name-only HEAD 2>/dev/null || git diff --name-only --cached 2>/dev/null || true)
+    changed_files=$(git diff --diff-filter=d --name-only HEAD 2>/dev/null || git diff --diff-filter=d --name-only --cached 2>/dev/null || true)
     if [[ -z "$changed_files" ]]; then
-      changed_files=$(git diff --name-only --cached 2>/dev/null || true)
+      changed_files=$(git diff --diff-filter=d --name-only --cached 2>/dev/null || true)
     fi
   fi
 

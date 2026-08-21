@@ -17,37 +17,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pageindex_mcp.converters as converters
 from pageindex_mcp.converters import (
-    _AR_COMMON_WORDS,
-    _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
-    _IMAGE_MARKER,
-    _arabic_readability_score,
     _inject_arabic_structural_headings,
-    _max_heading_level,
-    _recover_heading_depth,
-    _recover_picture_results,
     chunked_docling_timeout_s,
-    decide_rtl,
     detect_ocr_langs,
     probe_conversion_route,
-    splice_picture_text_for_tree,
 )
 from pageindex_mcp.helpers import (
     _OVERSIZED_ORDINAL_RE,
     BULK_PROFILE,
     _flatten_tree_text,
-    _infer_script,
     _ordinal_value,
     _word_has_reversed_morphology,
     check_garble,
     split_oversized_leaf_nodes,
 )
 from pageindex_mcp.worker import (
-    CHILD_GRACE_SECONDS,
     CHILD_TIMEOUT,
-    JOB_TIMEOUT,
     _run_converter_subprocess,
 )
-
 
 # ---------------------------------------------------------------------------
 # D0 fixtures: dynamic converter-subprocess timeout wiring
@@ -102,9 +89,10 @@ class TestDynamicTimeoutWiring:
         sink: list = []
         with (
             patch(
-                "pageindex_mcp.worker.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+                "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+                AsyncMock(return_value=proc),
             ),
-            patch("pageindex_mcp.worker.asyncio.timeout", _RecordingTimeout(sink)),
+            patch("pageindex_mcp.worker.subprocess_mgr.asyncio.timeout", _RecordingTimeout(sink)),
         ):
             await _run_converter_subprocess("/tmp/bigger.pdf")
         expected = chunked_docling_timeout_s(3)
@@ -118,12 +106,14 @@ class TestDynamicTimeoutWiring:
         sink: list = []
         with (
             patch(
-                "pageindex_mcp.worker.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+                "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+                AsyncMock(return_value=proc),
             ),
-            patch("pageindex_mcp.worker.asyncio.timeout", _RecordingTimeout(sink)),
+            patch("pageindex_mcp.worker.subprocess_mgr.asyncio.timeout", _RecordingTimeout(sink)),
         ):
             await _run_converter_subprocess("/tmp/small.pdf")
         assert CHILD_TIMEOUT - 5 <= sink[1] <= CHILD_TIMEOUT
+
 
 class TestProbeConversionRoute:
     """`probe_conversion_route` is what the converter child calls to build
@@ -138,6 +128,7 @@ class TestProbeConversionRoute:
         # `import fitz`, so `fitz.open` is the patch seam.
         with patch("fitz.open", side_effect=RuntimeError("bad pdf")):
             assert converters.probe_conversion_route("broken.pdf")[:2] == (1, False)
+
 
 # ---------------------------------------------------------------------------
 # D1: Arabic structural heading injection
@@ -170,6 +161,7 @@ class TestCharLimitRaisedTo100:
         md = f"نص سابق.\n\n{title}\nنص لاحق.\n"
         result = _inject_arabic_structural_headings(md)
         assert any(line.startswith("#") and title in line for line in result.splitlines())
+
 
 # ---------------------------------------------------------------------------
 # D2: Arabic Presentation-Forms garble detection
@@ -211,6 +203,7 @@ class TestPresentationFormsGarbleDetection:
     def test_exactly_at_threshold_does_not_trigger(self):
         # RFC-028: ratio must EXCEED 0.50, not merely reach it.
         assert check_garble(_blob(50, 50), expected_script=None, profile=BULK_PROFILE) is False
+
 
 # ---------------------------------------------------------------------------
 # D3: RTL-reversal vocabulary + morphology detection
@@ -260,6 +253,7 @@ class TestMorphologicalReversalCheck:
     def test_plain_logical_word_not_flagged(self):
         assert _word_has_reversed_morphology("قرار") is False
 
+
 # ---------------------------------------------------------------------------
 # D4: OCR retry keep-best-content logic
 # ---------------------------------------------------------------------------
@@ -296,11 +290,15 @@ def _keep_best(
     elif post_retry_chars == pre_retry_chars:
         retry_wins = post_retry_ok or (
             check_garble(
-                _flatten_tree_text(pre_retry_structure), expected_script=expected_script
-            , profile=BULK_PROFILE)
+                _flatten_tree_text(pre_retry_structure),
+                expected_script=expected_script,
+                profile=BULK_PROFILE,
+            )
             and not check_garble(
-                _flatten_tree_text(post_retry_structure), expected_script=expected_script
-            , profile=BULK_PROFILE)
+                _flatten_tree_text(post_retry_structure),
+                expected_script=expected_script,
+                profile=BULK_PROFILE,
+            )
         )
     else:
         retry_wins = True
@@ -328,6 +326,7 @@ class TestNearTieGarbleTieBreak:
         assert retry_won is False
         assert winner == _structure(pre)
 
+
 # ---------------------------------------------------------------------------
 # D5: picture-OCR language derivation + dedup splicing
 # ---------------------------------------------------------------------------
@@ -349,14 +348,36 @@ class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
     def test_filename_alone_detects_arabic(self):
         assert "ara" in detect_ocr_langs(_ARABIC_FILENAME)
 
+
 # ---------------------------------------------------------------------------
 # D7: Roman-numeral oversized-leaf ordinal splitting
 # ---------------------------------------------------------------------------
 
-_WORDS = (
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
-    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey "
-).split()
+_WORDS = [
+    "alpha",
+    "bravo",
+    "charlie",
+    "delta",
+    "echo",
+    "foxtrot",
+    "golf",
+    "hotel",
+    "india",
+    "juliet",
+    "kilo",
+    "lima",
+    "mike",
+    "november",
+    "oscar",
+    "papa",
+    "quebec",
+    "romeo",
+    "sierra",
+    "tango",
+    "uniform",
+    "victor",
+    "whiskey",
+]
 
 
 def _text_of_length(n: int) -> str:
@@ -403,6 +424,7 @@ class TestRomanNumeralMatching:
         assert _ordinal_value(m1) == (1,)
         assert _ordinal_value(m2) == (2,)
         assert _ordinal_value(m3) == (3,)
+
 
 class TestMinimumTwoMatchesGuard:
     def test_single_incidental_roman_marker_is_dropped_no_split(self):

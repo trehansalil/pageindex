@@ -1,9 +1,8 @@
 """Consolidated garble tests (trimmed): check_garble, profiles, prongs, integration."""
+
 from __future__ import annotations
 
 import dataclasses
-import os
-from unittest.mock import patch
 
 import pytest
 
@@ -12,9 +11,6 @@ from pageindex_mcp.helpers import (
     FLAT_MARKDOWN_PROFILE,
     GarbleProfile,
     TreeDefect,
-    TreeSignals,
-    _flatten_tree_text,
-    _garble_check_nodes,
     _infer_script,
     check_garble,
     garble_prongs,
@@ -51,13 +47,37 @@ class TestCheckGarble:
         assert check_garble(_PUA, expected_script=None, profile=BULK_PROFILE) is True
 
     def test_had_presentation_forms_triggers(self):
-        assert check_garble(_CLEAN_GERMAN, expected_script="Latn", profile=BULK_PROFILE, had_presentation_forms=True) is True
+        assert (
+            check_garble(
+                _CLEAN_GERMAN,
+                expected_script="Latn",
+                profile=BULK_PROFILE,
+                had_presentation_forms=True,
+            )
+            is True
+        )
 
     def test_short_circuit_flat_garbling(self):
-        assert check_garble("Kurzer Text", expected_script=None, profile=FLAT_MARKDOWN_PROFILE, original_defect=TreeDefect.GARBLING) is True
+        assert (
+            check_garble(
+                "Kurzer Text",
+                expected_script=None,
+                profile=FLAT_MARKDOWN_PROFILE,
+                original_defect=TreeDefect.GARBLING,
+            )
+            is True
+        )
 
     def test_short_circuit_bulk_no_fire(self):
-        assert check_garble("Kurzer Text", expected_script=None, profile=BULK_PROFILE, original_defect=TreeDefect.GARBLING) is False
+        assert (
+            check_garble(
+                "Kurzer Text",
+                expected_script=None,
+                profile=BULK_PROFILE,
+                original_defect=TreeDefect.GARBLING,
+            )
+            is False
+        )
 
     def test_profile_kwarg_required(self):
         with pytest.raises(TypeError):
@@ -70,12 +90,19 @@ class TestLatinGibberishDetection:
         assert check_garble(garbled, expected_script="Arab", profile=BULK_PROFILE) is True
 
     def test_latin_context_ignores_prong(self):
-        assert check_garble("xkq plm zfg wrt bvn yhs tjk mld qrx", expected_script="Latn", profile=BULK_PROFILE) is False
+        assert (
+            check_garble(
+                "xkq plm zfg wrt bvn yhs tjk mld qrx", expected_script="Latn", profile=BULK_PROFILE
+            )
+            is False
+        )
 
 
 class TestSparseMojibake:
     def test_fires(self):
-        prongs = garble_prongs(_SPARSE_MOJIBAKE, expected_script="Arab", original_text=_SPARSE_MOJIBAKE)
+        prongs = garble_prongs(
+            _SPARSE_MOJIBAKE, expected_script="Arab", original_text=_SPARSE_MOJIBAKE
+        )
         assert "sparse_mojibake" in prongs
 
     def test_short_text_skipped(self):
@@ -106,25 +133,45 @@ class TestInferScript:
 
 class TestIntegration:
     def test_garbled_tree_defect(self):
-        tree = [{"title": "Root", "text": _PUA, "nodes": [
-            {"title": "A", "text": _PUA, "nodes": []},
-            {"title": "B", "text": _PUA, "nodes": []},
-        ]}]
+        tree = [
+            {
+                "title": "Root",
+                "text": _PUA,
+                "nodes": [
+                    {"title": "A", "text": _PUA, "nodes": []},
+                    {"title": "B", "text": _PUA, "nodes": []},
+                ],
+            }
+        ]
         result = validate_tree(tree)
         assert not result.ok
         assert result.defect == TreeDefect.GARBLING
 
     def test_clean_tree_no_garble(self):
         clean = _CLEAN_GERMAN * 3
-        tree = [{"title": "V", "text": clean, "nodes": [
-            {"title": "D", "text": clean, "nodes": [
-                {"title": "P1", "text": clean, "nodes": []},
-                {"title": "P2", "text": clean, "nodes": []},
-                {"title": "P3", "text": clean, "nodes": []},
-            ]},
-            {"title": "M", "text": clean, "nodes": [
-                {"title": "M1", "text": clean, "nodes": []},
-            ]},
-        ]}]
+        tree = [
+            {
+                "title": "V",
+                "text": clean,
+                "nodes": [
+                    {
+                        "title": "D",
+                        "text": clean,
+                        "nodes": [
+                            {"title": "P1", "text": clean, "nodes": []},
+                            {"title": "P2", "text": clean, "nodes": []},
+                            {"title": "P3", "text": clean, "nodes": []},
+                        ],
+                    },
+                    {
+                        "title": "M",
+                        "text": clean,
+                        "nodes": [
+                            {"title": "M1", "text": clean, "nodes": []},
+                        ],
+                    },
+                ],
+            }
+        ]
         result = validate_tree(tree)
         assert result.defect != TreeDefect.GARBLING

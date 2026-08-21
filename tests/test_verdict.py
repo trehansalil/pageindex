@@ -3,27 +3,19 @@ sub-metrics, promotions, caps, regression detection, reordering."""
 
 from __future__ import annotations
 
-import math
-from unittest.mock import patch
-
 import pytest
 
-from pageindex_mcp.config import CATEGORY_BC_PROMOTION_THRESHOLD
 from pageindex_mcp.helpers import (
-    HARD_FAIL_DEFECTS,
     TreeDefect,
     TreeGateResult,
     TreeSignals,
-    VerdictThresholds,
     _tree_is_reordered,
     _tree_max_leaf_ratio,
     classify_verdict,
     detect_regression,
-    hash_pipe_ratio,
     ocr_noise_ratio,
     validate_tree,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,7 +47,9 @@ def _make_tree_with_ratio(target_ratio: float, total_chars: int = 10000) -> list
 def _well_formed() -> list:
     return [
         {
-            "node_id": "1", "title": "Root", "text": "",
+            "node_id": "1",
+            "title": "Root",
+            "text": "",
             "nodes": [
                 {"node_id": "2", "title": "Ch1", "text": "a" * 100, "nodes": []},
                 {"node_id": "3", "title": "Ch2", "text": "b" * 100, "nodes": []},
@@ -73,7 +67,8 @@ def _borderline_ratio_tree() -> list:
     sizes = [40, 20, 20, 20, 20]
     return [
         {
-            "title": "", "text": "",
+            "title": "",
+            "text": "",
             "nodes": [{"title": "", "text": "x" * s, "nodes": []} for s in sizes],
         }
     ]
@@ -99,8 +94,7 @@ def _leaf(idx=None, title="", text="x", key="start_index"):
 
 def _wellformed_ordered(indices):
     return [
-        {"title": "Chapter", "text": "",
-         "nodes": [_leaf(i, text=_varied_text(i)) for i in indices]}
+        {"title": "Chapter", "text": "", "nodes": [_leaf(i, text=_varied_text(i)) for i in indices]}
     ]
 
 
@@ -147,6 +141,7 @@ class TestGateResultAcceptance:
         with pytest.raises(TypeError, match="TreeGateResult"):
             classify_verdict(_well_formed(), "flat_prose", "garbling")
 
+
 # ---------------------------------------------------------------------------
 # Hard fails
 # ---------------------------------------------------------------------------
@@ -159,14 +154,18 @@ class TestHardFails:
 
     def test_garbling(self):
         verdict, reason = classify_verdict(
-            _single_leaf(), "flat_prose",
+            _single_leaf(),
+            "flat_prose",
             TreeGateResult(ok=False, defect=TreeDefect.GARBLING),
         )
         assert (verdict, reason) == ("FAIL", "garbling")
 
     def test_image_enrichment_rescue(self):
         verdict, reason = classify_verdict(
-            _single_leaf(), "flat_prose", None, image_enrichment_ratio=0.9,
+            _single_leaf(),
+            "flat_prose",
+            None,
+            image_enrichment_ratio=0.9,
         )
         assert (verdict, reason) == ("PASS", "image_enrichment_promoted")
 
@@ -212,6 +211,7 @@ class TestThresholdPromotion:
         assert verdict == "PASS"
         assert reason == "cat_b_promoted"
 
+
 # ---------------------------------------------------------------------------
 # Regression detection
 # ---------------------------------------------------------------------------
@@ -225,6 +225,7 @@ class TestRegressionDetection:
     def test_no_regression_stable(self):
         tree = _make_tree([100] * 10, depth=2)
         assert detect_regression(tree, prev_node_count=10, prev_max_leaf_ratio=0.1) is False
+
 
 # ---------------------------------------------------------------------------
 # Reordering detection
@@ -256,7 +257,9 @@ class TestWard597MaskingBug:
         tree = _single_leaf()
         sig = TreeSignals.from_tree(tree)
         gate = TreeGateResult(
-            ok=False, defect=TreeDefect.EMPTY_NODE_CONTAMINATION, signals=sig,
+            ok=False,
+            defect=TreeDefect.EMPTY_NODE_CONTAMINATION,
+            signals=sig,
             all_defects=frozenset({TreeDefect.EMPTY_NODE_CONTAMINATION}),
         )
         verdict, _ = classify_verdict(tree, "flat_prose", gate)
@@ -271,7 +274,7 @@ class TestWard597MaskingBug:
 class TestTreeSignals:
     def test_frozen(self):
         import dataclasses
+
         sig = TreeSignals.from_tree(_well_formed())
         with pytest.raises(dataclasses.FrozenInstanceError):
             sig.node_count = 999
-

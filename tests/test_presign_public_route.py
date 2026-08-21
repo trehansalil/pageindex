@@ -98,9 +98,9 @@ class TestPresignClientConstruction:
         import pageindex_mcp.storage as storage
 
         with (
-            patch.object(storage, "_presign_client", None),
-            patch.object(storage, "make_minio") as mock_cls,
-            patch.object(storage, "settings") as mock_settings,
+            patch.object(storage.minio_ops, "_presign_client", None),
+            patch.object(storage.minio_ops, "make_minio") as mock_cls,
+            patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
             _presign_settings(mock_settings)
             storage._get_presign_minio()
@@ -113,9 +113,9 @@ class TestPresignClientConstruction:
         import pageindex_mcp.storage as storage
 
         with (
-            patch.object(storage, "_presign_client", None),
-            patch.object(storage, "make_minio") as mock_cls,
-            patch.object(storage, "settings") as mock_settings,
+            patch.object(storage.minio_ops, "_presign_client", None),
+            patch.object(storage.minio_ops, "make_minio") as mock_cls,
+            patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
             _presign_settings(mock_settings)
             storage._get_presign_minio()
@@ -133,8 +133,8 @@ class TestPresignPathPrefix:
             "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
         )
         with (
-            patch.object(storage, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage, "settings") as mock_settings,
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
             _presign_settings(mock_settings, minio_presign_path_prefix="/minio")
             url = storage.presigned_get_url("uploads/a.pdf")
@@ -153,8 +153,8 @@ class TestPresignPathPrefix:
             f"https://infra.example.com/pageindex/uploads/a.pdf?{signed_query}"
         )
         with (
-            patch.object(storage, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage, "settings") as mock_settings,
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
             _presign_settings(mock_settings, minio_presign_path_prefix="/minio")
             url = storage.presigned_get_url("uploads/a.pdf")
@@ -168,8 +168,8 @@ class TestPresignPathPrefix:
         mock_client = MagicMock()
         mock_client.presigned_get_object.return_value = signed
         with (
-            patch.object(storage, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage, "settings") as mock_settings,
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
             _presign_settings(mock_settings, minio_presign_path_prefix="")
             url = storage.presigned_get_url("uploads/a.pdf")
@@ -185,8 +185,8 @@ class TestPresignPathPrefix:
         mock_client = MagicMock()
         mock_client.presigned_get_object.return_value = signed
         with (
-            patch.object(storage, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage, "settings") as mock_settings,
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
             _presign_settings(
                 mock_settings,

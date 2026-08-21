@@ -4,19 +4,18 @@ is staged in MinIO, downloadable by the worker, and cleaned up afterward.
 Requires MinIO to be reachable (uses the .env settings).
 """
 
-import asyncio
 import os
 import tempfile
 
 import pytest
 
+from pageindex_mcp.config import settings
 from pageindex_mcp.storage import (
     delete_staging,
     download_staging,
     get_minio,
     upload_staging,
 )
-from pageindex_mcp.config import settings
 
 DOCX_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),

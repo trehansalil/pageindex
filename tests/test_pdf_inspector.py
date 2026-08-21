@@ -18,8 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import pageindex_mcp.client as client_mod
 from pageindex_mcp.client import CustomPageIndexClient
+from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
+from pageindex_mcp.client import recovery as _rec
 
 # ---------------------------------------------------------------------------
 # Fixtures: mock pdf-inspector result objects
@@ -69,14 +71,15 @@ def _make_pdfium_mock(page_count: int):
 
 
 class TestProbeWithPdfInspector:
-
     def test_text_based_classification_returned(self, tmp_path):
         pdf_path = str(tmp_path / "test.pdf")
         (tmp_path / "test.pdf").write_bytes(b"%PDF-1.4 fake")
 
         with (
-            patch("pageindex_mcp.converters._pdf_inspector_available", True),
-            patch("pageindex_mcp.converters._detect_pdf", return_value=FakePdfResult()),
+            patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
+            patch(
+                "pageindex_mcp.converters.docling_conv._detect_pdf", return_value=FakePdfResult()
+            ),
             patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(5)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
@@ -97,8 +100,10 @@ class TestProbeWithPdfInspector:
         (tmp_path / "mixed.pdf").write_bytes(b"%PDF-1.4 fake")
 
         with (
-            patch("pageindex_mcp.converters._pdf_inspector_available", True),
-            patch("pageindex_mcp.converters._detect_pdf", return_value=FakeMixedResult()),
+            patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
+            patch(
+                "pageindex_mcp.converters.docling_conv._detect_pdf", return_value=FakeMixedResult()
+            ),
             patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(20)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
@@ -117,7 +122,6 @@ class TestProbeWithPdfInspector:
 
 
 class TestProbeWithoutPdfInspector:
-
     def test_non_pdf_returns_none_classification(self):
         from pageindex_mcp.converters import probe_conversion_route
 
@@ -126,20 +130,23 @@ class TestProbeWithoutPdfInspector:
         assert is_docling is False
         assert classification is None
 
+
 # ---------------------------------------------------------------------------
 # 3. Shadow mode: routing unchanged regardless of classification
 # ---------------------------------------------------------------------------
 
 
 class TestShadowModeRouting:
-
     def test_scanned_pdf_still_routes_to_docling(self, tmp_path):
         pdf_path = str(tmp_path / "scan.pdf")
         (tmp_path / "scan.pdf").write_bytes(b"%PDF-1.4 fake")
 
         with (
-            patch("pageindex_mcp.converters._pdf_inspector_available", True),
-            patch("pageindex_mcp.converters._detect_pdf", return_value=FakeScannedResult()),
+            patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
+            patch(
+                "pageindex_mcp.converters.docling_conv._detect_pdf",
+                return_value=FakeScannedResult(),
+            ),
             patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(10)}),
             patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
@@ -150,13 +157,13 @@ class TestShadowModeRouting:
         assert chunk_count == 1
         assert is_docling is True
 
+
 # ---------------------------------------------------------------------------
 # 4. Handshake emission includes classification
 # ---------------------------------------------------------------------------
 
 
 class TestHandshakeEmission:
-
     def test_handshake_includes_classification_fields(self):
         classification = {
             "pdf_type": "text_based",
@@ -175,13 +182,13 @@ class TestHandshakeEmission:
         assert handshake["pdf_classification"]["pdf_type"] == "text_based"
         assert handshake["pdf_classification"]["confidence"] == 0.98
 
+
 # ---------------------------------------------------------------------------
 # 5. Worker parses classification from handshake
 # ---------------------------------------------------------------------------
 
 
 class TestWorkerHandshakeParsing:
-
     def test_parses_classification_from_handshake(self):
         handshake = {
             "handshake": True,
@@ -199,13 +206,13 @@ class TestWorkerHandshakeParsing:
         assert pdf_class["pdf_type"] == "scanned"
         assert pdf_class["confidence"] == 0.91
 
+
 # ---------------------------------------------------------------------------
 # 6. Prometheus metrics
 # ---------------------------------------------------------------------------
 
 
 class TestPdfInspectorMetrics:
-
     def test_classification_counter_exists(self):
         from pageindex_mcp.metrics import PDF_INSPECTOR_CLASSIFICATIONS
 
@@ -215,10 +222,7 @@ class TestPdfInspectorMetrics:
         from pageindex_mcp.metrics import PDF_INSPECTOR_CLASSIFICATIONS
 
         PDF_INSPECTOR_CLASSIFICATIONS.labels(pdf_type="text_based").inc()
-        assert (
-            PDF_INSPECTOR_CLASSIFICATIONS.labels(pdf_type="text_based")._value.get()
-            >= 1
-        )
+        assert PDF_INSPECTOR_CLASSIFICATIONS.labels(pdf_type="text_based")._value.get() >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -227,15 +231,14 @@ class TestPdfInspectorMetrics:
 
 
 class TestRunPdfInspector:
-
     def test_returns_dict_on_success(self, tmp_path):
         pdf_path = str(tmp_path / "test.pdf")
         (tmp_path / "test.pdf").write_bytes(b"%PDF-1.4 fake")
 
         with (
-            patch("pageindex_mcp.converters._pdf_inspector_available", True),
+            patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
             patch(
-                "pageindex_mcp.converters._detect_pdf",
+                "pageindex_mcp.converters.docling_conv._detect_pdf",
                 return_value=FakePdfResult(),
             ),
         ):
@@ -247,6 +250,7 @@ class TestRunPdfInspector:
         assert result["pdf_type"] == "text_based"
         assert result["confidence"] == 0.98
         assert isinstance(result["pages_needing_ocr"], list)
+
 
 # ---------------------------------------------------------------------------
 # 8. RFC-032 D1 — inspector_force_ocr decision matrix in client.py::index()
@@ -285,50 +289,69 @@ def _wire_index(monkeypatch, *, preclassify, validate_tree=None):
     """Patch every collaborator client.index() touches on the PDF -> markdown
     route, and capture the args the (single) converter chain entry is called
     with — so we can inspect whether OCR was forced."""
-    monkeypatch.setattr(client_mod, "settings", _fake_settings())
-    monkeypatch.setattr(client_mod, "PDF_INSPECTOR_PRECLASSIFY", preclassify)
-    monkeypatch.setattr(client_mod, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(client_mod, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(client_mod, "hash_cache_set", MagicMock())
+    fake_settings = _fake_settings()
+    monkeypatch.setattr(_idx, "settings", fake_settings)
+    monkeypatch.setattr(_rec, "settings", fake_settings)
+    monkeypatch.setattr(_idx, "PDF_INSPECTOR_PRECLASSIFY", preclassify)
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
     if validate_tree is None:
         validate_tree = lambda structure, **kw: (True, None)  # noqa: E731
-    monkeypatch.setattr(client_mod, "validate_tree", validate_tree)
-    monkeypatch.setattr(client_mod, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(_idx, "validate_tree", validate_tree)
+    monkeypatch.setattr(_rec, "validate_tree", validate_tree)
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
 
     conv_fn = MagicMock(return_value="# Heading\n\nBody text\n")
-    monkeypatch.setattr(client_mod, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
     # Fix-3's OCR-escalation retry calls pdf_to_markdown_docling directly
     # (not the chain entry above) — stub it so a garbling verdict can drive
     # the retry path without touching a real Docling conversion.
     monkeypatch.setattr(
-        client_mod,
+        _rec,
         "pdf_to_markdown_docling",
         MagicMock(return_value="# Heading\n\nRecovered text\n"),
     )
     # The retry path also calls ensure_tessdata() before OCR — stub it so tests
     # never probe the real tessdata dir (or download traineddata when
     # TESSDATA_ALLOW_DOWNLOAD=1 is set in the environment).
-    monkeypatch.setattr(client_mod, "ensure_tessdata", lambda langs: langs)
+    monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+    monkeypatch.setattr(_rec, "ensure_tessdata", lambda langs: langs)
 
     mocks = {
         "save_doc": MagicMock(),
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
-        "route_and_extract_flat": MagicMock(
-            return_value=("flat_prose", [{"role": "prose", "text": "x"}])
-        ),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+
+    route_and_extract_flat = MagicMock(
+        return_value=("flat_prose", [{"role": "prose", "text": "x"}])
+    )
+    monkeypatch.setattr(_img, "route_and_extract_flat", route_and_extract_flat)
+    mocks["route_and_extract_flat"] = route_and_extract_flat
+
+    idx_metrics = {
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
-        "OCR_ESCALATION_TOTAL": MagicMock(),
         "VLM_FALLBACK_TOTAL": MagicMock(),
         "RAW_UPLOAD_FAILURES": MagicMock(),
         "PDF_PRIMARY_CONVERTER_FAILURES": MagicMock(),
         "PDF_EXTRACT_FALLBACKS": MagicMock(),
         "PDF_INSPECTOR_FORCED_OCR": MagicMock(),
     }
-    for name, m in mocks.items():
-        monkeypatch.setattr(client_mod, name, m)
+    for name, m in idx_metrics.items():
+        monkeypatch.setattr(_idx, name, m)
+    mocks.update(idx_metrics)
+
+    ocr_escalation_total = MagicMock()
+    monkeypatch.setattr(_rec, "OCR_ESCALATION_TOTAL", ocr_escalation_total)
+    monkeypatch.setattr(_rec, "VLM_FALLBACK_TOTAL", mocks["VLM_FALLBACK_TOTAL"])
+    monkeypatch.setattr(_img, "LOW_QUALITY_TREES", mocks["LOW_QUALITY_TREES"])
+    mocks["OCR_ESCALATION_TOTAL"] = ocr_escalation_total
+
     mocks["conv_fn"] = conv_fn
     return mocks
 
@@ -400,6 +423,7 @@ class TestInspectorForceOcrDecisionMatrix:
         mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
 
+
 class TestSafetyNetsIntactAfterInspectorForcedOcr:
     """Task 5.2 (RFC-032 D4): validate_tree() and the Fix-3 OCR-retry escalation
     are unconditional safety nets — they must still run/fire exactly as before
@@ -423,6 +447,7 @@ class TestSafetyNetsIntactAfterInspectorForcedOcr:
         mocks["save_doc"].assert_called_once()
         mocks["save_flat_doc"].assert_not_called()
 
+
 class TestInspectorForcedOcrOnRemoteDoclingRoute:
     """Task 5.3 (RFC-032 D4 / Design AD3) — remote-path counterpart of the
     decision matrix above.
@@ -436,13 +461,11 @@ class TestInspectorForcedOcrOnRemoteDoclingRoute:
     @staticmethod
     def _wire_remote(monkeypatch, *, preclassify=True):
         mocks = _wire_index(monkeypatch, preclassify=preclassify)
-        monkeypatch.setattr(
-            client_mod,
-            "settings",
-            _fake_settings(docling_service_url="http://docling.test"),
-        )
+        remote_settings = _fake_settings(docling_service_url="http://docling.test")
+        monkeypatch.setattr(_idx, "settings", remote_settings)
+        monkeypatch.setattr(_rec, "settings", remote_settings)
         remote = AsyncMock(return_value=("# Heading\n\nBody text\n", []))
-        monkeypatch.setattr(client_mod, "_remote_pdf_to_markdown", remote)
+        monkeypatch.setattr(_idx, "_remote_pdf_to_markdown", remote)
         mocks["remote"] = remote
         return mocks
 

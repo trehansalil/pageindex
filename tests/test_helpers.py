@@ -224,7 +224,7 @@ async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
     }
     sem = asyncio.Semaphore(1)
 
-    with patch.object(helpers, "_llm", new_callable=AsyncMock) as mock_llm:
+    with patch.object(helpers.rag, "_llm", new_callable=AsyncMock) as mock_llm:
         result = await helpers._search_one_doc("beitrag", "doc1", data, sem)
 
     assert result is not None
@@ -244,7 +244,10 @@ async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
     sem = asyncio.Semaphore(1)
 
     with patch.object(
-        helpers, "_llm", new_callable=AsyncMock, return_value='{"thinking":"t","node_list":["n1"]}'
+        helpers.rag,
+        "_llm",
+        new_callable=AsyncMock,
+        return_value='{"thinking":"t","node_list":["n1"]}',
     ) as mock_llm:
         result = await helpers._search_one_doc("q", "doc2", data, sem)
 
@@ -398,9 +401,13 @@ async def test_d6_prefilter_malformed_json_falls_back_to_all_docs_with_warning(c
     returned as a candidate and the failure logs at WARNING, not ERROR."""
     summaries = _two_doc_summaries()
 
-    with patch.object(helpers, "_llm", new_callable=AsyncMock, return_value="no json here at all"):
-        with caplog.at_level("WARNING"):
-            result = await helpers._prefilter_docs("q", summaries)
+    with (
+        patch.object(
+            helpers.rag, "_llm", new_callable=AsyncMock, return_value="no json here at all"
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        result = await helpers._prefilter_docs("q", summaries)
 
     assert result == ["a", "b"]
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]

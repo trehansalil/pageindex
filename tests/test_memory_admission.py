@@ -1,5 +1,4 @@
 import fakeredis.aioredis
-import pytest
 
 from pageindex_mcp import memory_admission as ma
 

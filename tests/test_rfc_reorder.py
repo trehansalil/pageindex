@@ -21,9 +21,9 @@ previously-rejected tree to a silent PASS.
 """
 
 from pageindex_mcp.helpers import (
+    _OVERSIZED_ORDINAL_RE,
     BULK_PROFILE,
     FLAT_MARKDOWN_PROFILE,
-    _OVERSIZED_ORDINAL_RE,
     _flat_parse_table,
     _flatten_tree_text,
     _forward_fill_leading_column,
@@ -144,10 +144,24 @@ class TestSparseMojibakeDetection:
         paths, while clean text stays not-garbled (existing bulk checks
         unweakened)."""
         moji = "كtابcجديدxمادةyنص عربي سليم شروط التأمين " * 5
-        assert check_garble(_flatten_tree_text([{"node_id": "1", "title": "", "text": moji}]), expected_script=None, profile=BULK_PROFILE) is True
+        assert (
+            check_garble(
+                _flatten_tree_text([{"node_id": "1", "title": "", "text": moji}]),
+                expected_script=None,
+                profile=BULK_PROFILE,
+            )
+            is True
+        )
         assert check_garble(moji, expected_script=None, profile=FLAT_MARKDOWN_PROFILE) is True
         clean = "This is a perfectly normal paragraph about insurance terms."
-        assert check_garble(_flatten_tree_text([{"node_id": "1", "title": "S", "text": clean}]), expected_script=None, profile=BULK_PROFILE) is False
+        assert (
+            check_garble(
+                _flatten_tree_text([{"node_id": "1", "title": "S", "text": clean}]),
+                expected_script=None,
+                profile=BULK_PROFILE,
+            )
+            is False
+        )
         assert check_garble(clean, expected_script=None, profile=FLAT_MARKDOWN_PROFILE) is False
 
     def test_reordered_tree_still_fails_validate(self):
@@ -226,7 +240,11 @@ class TestPreambleNodeSynthesis:
 
     def test_preamble_over_threshold_synthesizes_node_at_index_0(self):
         md_text = f"{_LONG_PREAMBLE}\n\n## Section 1 - Scope of Cover\n\nBody text here.\n"
-        original_node = {"title": "Section 1 - Scope of Cover", "text": "Body text here.", "nodes": []}
+        original_node = {
+            "title": "Section 1 - Scope of Cover",
+            "text": "Body text here.",
+            "nodes": [],
+        }
         tree = _tree([original_node])
 
         result = _synthesize_preamble_node(md_text, tree)
@@ -255,13 +273,19 @@ class TestPreambleNodeSynthesis:
         (no preamble), or that has no heading at all, gets no new node and an
         unchanged tree."""
         md_text_no_preamble = "## Section 1 - Scope of Cover\n\nBody text here.\n"
-        original_node = {"title": "Section 1 - Scope of Cover", "text": "Body text here.", "nodes": []}
+        original_node = {
+            "title": "Section 1 - Scope of Cover",
+            "text": "Body text here.",
+            "nodes": [],
+        }
         tree = _tree([original_node])
         result = _synthesize_preamble_node(md_text_no_preamble, tree)
         assert result["structure"] == [original_node]
         assert len(result["structure"]) == 1
 
-        md_text_no_heading = f"{_LONG_PREAMBLE}\n\nMore plain prose with no markdown heading at all.\n"
+        md_text_no_heading = (
+            f"{_LONG_PREAMBLE}\n\nMore plain prose with no markdown heading at all.\n"
+        )
         flat_node = {"title": "flat", "text": md_text_no_heading, "nodes": []}
         flat_tree = _tree([flat_node])
         result2 = _synthesize_preamble_node(md_text_no_heading, flat_tree)

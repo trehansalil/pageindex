@@ -1,4 +1,5 @@
 """OCR decision tests: decide_ocr_strategy, bind_markers, SkipReason, decide_route."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -95,6 +96,7 @@ class TestBindMarkers:
 class TestImageEnrichmentRatio:
     def test_intentional_skip_excluded_from_denominator(self):
         from pageindex_mcp.helpers import compute_image_enrichment_ratio
+
         blocks = [
             {"role": "image", "ocr_text": "enriched content"},
             {"role": "image", "skipped_reason": "page_coverage"},
@@ -103,6 +105,7 @@ class TestImageEnrichmentRatio:
 
     def test_error_skip_counts_in_denominator(self):
         from pageindex_mcp.helpers import compute_image_enrichment_ratio
+
         blocks = [
             {"role": "image", "ocr_text": "enriched content"},
             {"role": "image", "skipped_reason": "crop_error"},
@@ -113,8 +116,11 @@ class TestImageEnrichmentRatio:
 class TestReentryGuard:
     def test_recover_returns_empty_when_already_applied(self):
         from pageindex_mcp.converters import _recover_picture_results
+
         result = _recover_picture_results(
-            "", None, "/tmp/nonexistent.pdf",
+            "",
+            None,
+            "/tmp/nonexistent.pdf",
             force_full_page_ocr_applied=True,
         )
         assert result == []
@@ -132,11 +138,14 @@ class TestDecideRouteExhaustive:
             reached.add(decide_route(defect, flat_routing_enabled=False))
         assert reached == set(Route)
 
-    @pytest.mark.parametrize("defect", [
-        TreeDefect.EMPTY_NODE_CONTAMINATION,
-        TreeDefect.LOW_CONTENT_DENSITY,
-        TreeDefect.SUSPECT_DENSITY,
-    ])
+    @pytest.mark.parametrize(
+        "defect",
+        [
+            TreeDefect.EMPTY_NODE_CONTAMINATION,
+            TreeDefect.LOW_CONTENT_DENSITY,
+            TreeDefect.SUSPECT_DENSITY,
+        ],
+    )
     def test_persist_fail_defects_route_correctly(self, defect):
         assert REASON_POLICY[defect] == _ReasonPolicy.PERSIST_FAIL
         assert decide_route(defect) == Route.PERSIST_FAIL

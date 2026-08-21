@@ -1,26 +1,20 @@
 """Route decision + config + verdict tiebreak tests (trimmed)."""
+
 from __future__ import annotations
 
 import dataclasses
-import re
 from pathlib import Path
-from unittest.mock import patch
-import os
 
 import pytest
 
 from pageindex_mcp.converters import reconstruct_bidi_order
 from pageindex_mcp.helpers import (
+    _GATE_PRIORITY,
     GATE_TABLE,
-    GATES,
-    HARD_FAIL_DEFECTS,
     Route,
     TreeDefect,
     TreeGateResult,
-    TreeSignals,
-    _GATE_PRIORITY,
     _flat_block_primary_text,
-    classify_verdict,
     compute_verdict,
     decide_route,
 )
@@ -33,6 +27,7 @@ CLIENT_PATH = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" /
 def _restore_pipeline_config():
     yield
     from pageindex_mcp.config import reset_pipeline_config
+
     reset_pipeline_config()
 
 
@@ -51,6 +46,7 @@ def _single_leaf(size: int = 1000) -> list:
 class TestPipelineConfig:
     def test_frozen_dataclass(self):
         from pageindex_mcp.config import PipelineConfig
+
         cfg = PipelineConfig.from_env()
         assert dataclasses.is_dataclass(cfg)
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -59,6 +55,7 @@ class TestPipelineConfig:
     def test_reads_env_vars(self, monkeypatch):
         monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.25")
         from pageindex_mcp.config import PipelineConfig
+
         cfg = PipelineConfig.from_env()
         assert cfg.pass_max_leaf_ratio == 0.25
 
@@ -128,7 +125,9 @@ class TestHardFailTiebreak:
         gate = TreeGateResult(
             ok=False,
             defect=TreeDefect.BIDI_DEGRADED,
-            all_defects=frozenset({TreeDefect.BIDI_DEGRADED, TreeDefect.GARBLING, TreeDefect.LOW_CONTENT_DENSITY}),
+            all_defects=frozenset(
+                {TreeDefect.BIDI_DEGRADED, TreeDefect.GARBLING, TreeDefect.LOW_CONTENT_DENSITY}
+            ),
         )
         result = compute_verdict(_single_leaf(), "flat_prose", gate)
         assert result.verdict == "FAIL"
@@ -136,4 +135,4 @@ class TestHardFailTiebreak:
 
     def test_severity_order_matches_enumerate(self):
         enumerate_based = {defect: idx for idx, (_fn, defect) in enumerate(GATE_TABLE)}
-        assert _GATE_PRIORITY == enumerate_based
+        assert enumerate_based == _GATE_PRIORITY

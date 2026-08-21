@@ -7,36 +7,25 @@ memory footprint (CONV-02), and the html_to_markdown_with_images image-describe
 resilience path (RFC-008 D2 / ISS-08).
 """
 
-import importlib
-import socket
-import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import openai
 import openpyxl
 import pytest
 from bidi.algorithm import get_display
-from docling.datamodel.accelerator_options import AcceleratorDevice
-from docling.datamodel.pipeline_options import TableFormerMode
 
 from pageindex_mcp import converters as converters_mod
 from pageindex_mcp.converters import (
-    _AR_ARTICLE_RE,
     _AR_PART_RE,
-    _AR_WORD_RE,
-    TessdataUnavailableError,
-    _build_pdf_pipeline_options,
     _containment_depths,
     _inject_arabic_structural_headings,
     _inject_english_article_headings,
     _inject_german_clause_headings,
-    _relevel_headings,
     _segment_label,
     _try_download_tessdata,
     decide_rtl,
-    detect_ocr_langs,
     docx_to_markdown,
     ensure_tessdata,
     html_to_markdown_with_images,
@@ -47,9 +36,7 @@ from pageindex_mcp.converters import (
     reconstruct_bidi_order,
     xlsx_to_markdown,
 )
-from pageindex_mcp.helpers import route_and_extract_flat
 from pageindex_mcp.metrics import IMAGE_DESCRIBE_FAILURES
-
 
 # ═════════════════════════════════════════════════════════════════════════
 # _segment_label / _containment_depths (RFC-033 D4)
@@ -242,6 +229,7 @@ class TestArabicReversalDetection:
         مرسوم 13 / مرسوم 33 corpus fixtures must not trigger the detector."""
         assert decide_rtl(_FORWARD_DOC).reversed is False
 
+
 class TestArabicReversalRepairCorrectness:
     def test_reversed_document_recovers_corrected_heading_structure(self):
         """When reversal is detected, structural lines (الباب/المادة) are
@@ -254,6 +242,7 @@ class TestArabicReversalRepairCorrectness:
         reversed_article_line = "المادة (1)"[::-1]
         assert f"# {reversed_part_line}" in result_lines
         assert f"## {reversed_article_line}" in result_lines
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # normalize_dashes (CONV-01-C2)
@@ -387,7 +376,7 @@ def test_tessdata_timeout(monkeypatch, tmp_path):
     returns False, and leaves no partial file behind."""
 
     def fake_urlopen(url, timeout=None):
-        raise socket.timeout("timed out")
+        raise TimeoutError("timed out")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
@@ -511,10 +500,9 @@ async def test_rate_limit_error_retries_then_succeeds(tmp_path, monkeypatch):
     rate_limit_exc = openai.RateLimitError("rate limited", response=_fake_response(429), body=None)
     create_mock = AsyncMock(side_effect=[rate_limit_exc, _success_response("a cat photo")])
     fake_client = _make_client(create_mock)
-    monkeypatch.setattr(converters_mod, "asyncio", converters_mod.asyncio)
     monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
     sleep_mock = AsyncMock()
-    monkeypatch.setattr(converters_mod.asyncio, "sleep", sleep_mock)
+    monkeypatch.setattr(converters_mod.formats.asyncio, "sleep", sleep_mock)
 
     before = _counter_value("RateLimitError")
     html_path = _write_html(tmp_path)
@@ -534,7 +522,7 @@ async def test_api_connection_error_retries_then_succeeds(tmp_path, monkeypatch)
     fake_client = _make_client(create_mock)
     monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
     sleep_mock = AsyncMock()
-    monkeypatch.setattr(converters_mod.asyncio, "sleep", sleep_mock)
+    monkeypatch.setattr(converters_mod.formats.asyncio, "sleep", sleep_mock)
 
     html_path = _write_html(tmp_path)
     result = await converters_mod.html_to_markdown_with_images(html_path, model="gpt-4.1")
@@ -553,4 +541,3 @@ async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
     html_path = _write_html(tmp_path)
     with pytest.raises(TypeError, match="boom"):
         await converters_mod.html_to_markdown_with_images(html_path, model="gpt-4.1")
-

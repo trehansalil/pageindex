@@ -13,20 +13,11 @@ and non-destructive picture-text splicing.
 
 from __future__ import annotations
 
-import dataclasses
-import unicodedata
-from unittest.mock import MagicMock
-
-import pytest
-
 from pageindex_mcp.converters import (
-    splice_figure_markers,
     splice_picture_text_for_tree,
 )
 from pageindex_mcp.script import (
     BlobKind,
-    GARBLE_DIGIT_FLOOR,
-    PRESENTATION_RANGES,
     RtlDecision,
     ScriptContext,
     apply_rtl,
@@ -50,6 +41,7 @@ _REVERSED_ARABIC = " ".join(w[::-1] for w in _LOGICAL_ARABIC.split())
 # apply_rtl
 # ===========================================================================
 
+
 class TestApplyRtlReversedFlagFalse:
     """reversed_flag=False must return input unchanged."""
 
@@ -59,9 +51,11 @@ class TestApplyRtlReversedFlagFalse:
     def test_english_text_unchanged(self):
         assert apply_rtl(_ENGLISH_LINE, reversed_flag=False) == _ENGLISH_LINE
 
+
 # ===========================================================================
 # BlobKind / normalize_for_garble
 # ===========================================================================
+
 
 class TestNormalizeRawMarkdown:
     """RAW_MARKDOWN strips markdown scaffolding."""
@@ -76,6 +70,7 @@ class TestNormalizeRawMarkdown:
         assert "|" not in result
         assert "col1" in result and "col2" in result
 
+
 # ===========================================================================
 # RTL consolidation contract: decide_rtl is the sole decision point
 # ===========================================================================
@@ -83,6 +78,7 @@ class TestNormalizeRawMarkdown:
 # ===========================================================================
 # decide_rtl: single-threshold (0.15) decider
 # ===========================================================================
+
 
 class TestNonArabicNotReversed:
     def test_pure_latin(self):
@@ -124,6 +120,7 @@ class TestSingleThreshold:
         decision = decide_rtl(text)
         assert decision.sampled == 0, "At exactly 0.15 ratio, should bail out (<=)"
 
+
 class TestConsistentHeadingBodyDecision:
     """reconstruct_bidi_order must apply the same decide_rtl threshold to
     headings and body text -- no threshold divergence."""
@@ -159,6 +156,7 @@ class TestConsistentHeadingBodyDecision:
 # ScriptContext.from_document
 # ===========================================================================
 
+
 class TestScriptContextFromDocumentFilename:
     """Filename-based script inference. detect_ocr_langs scans actual Unicode
     codepoints in the filename (not ISO-639 codes), so Latin-character
@@ -173,6 +171,7 @@ class TestScriptContextFromDocumentFilename:
         ctx = ScriptContext.from_document("musterbedingungen_deu.pdf", "")
         assert ctx.dominant_script == "Latn"
         assert ctx.source in ("filename", "combined")
+
 
 class TestScriptContextPresentationForms:
     """had_presentation_forms is detected on raw text BEFORE NFKC
@@ -194,6 +193,7 @@ class TestScriptContextPresentationForms:
         ctx = ScriptContext.from_document("doc.pdf", raw)
         assert ctx.had_presentation_forms is False
 
+
 class TestScriptContextSourceProvenance:
     def test_source_filename_only(self):
         ctx = ScriptContext.from_document("doc_ara.pdf", "")
@@ -204,9 +204,11 @@ class TestScriptContextSourceProvenance:
         ctx = ScriptContext.from_document("doc_deu.pdf", german)
         assert ctx.source == "combined"
 
+
 # ===========================================================================
 # Picture alignment: non-destructive splice, landscape exclusion
 # ===========================================================================
+
 
 class TestPictureAlignment:
     def test_tree_splice_does_not_pop_ocr_text(self):

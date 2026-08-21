@@ -222,6 +222,7 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     """Recompute verdict for one or all docs without re-ingestion (RFC-014 D3)."""
     import json
     from datetime import UTC, datetime
+
     from pageindex_mcp.config import CURRENT_PIPELINE_VERSION, _load_settings
     from pageindex_mcp.helpers import (
         HARD_FAIL_DEFECTS,

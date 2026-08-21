@@ -5,7 +5,6 @@ and internal helpers (DLQ push, process-group kill, registry dual-write,
 startup/shutdown, cron wiring).
 """
 
-import asyncio
 import dataclasses
 import json
 import signal
@@ -18,24 +17,18 @@ import pytest
 import pageindex_mcp.worker as worker
 from pageindex_mcp.worker import (
     DLQ_KEY,
-    JOB_TIMEOUT,
     MAX_JOBS,
     MAX_JOBS_CEILING,
     MAX_TRIES,
-    REAP_GRACE,
     ConverterChildError,
-    ConverterOOMError,
     WorkerSettings,
-    _dlq_push_on_final_attempt,
     _kill_group,
     _mirror_registry_metric_to_redis,
     _mirror_registry_write_failure_to_redis,
-    _reconcile_registry_drift_cron,
     _run_converter_subprocess,
     _upsert_registry_row,
     process_document_job,
     reap_stale_jobs,
-    resolve_max_jobs,
     shutdown,
     startup,
 )
@@ -54,7 +47,9 @@ def fake_redis():
 def _settings(**overrides):
     """Settings is a frozen dataclass; patch the whole ``settings`` binding
     with a replaced copy rather than mutating an attribute in place."""
-    return dataclasses.replace(worker.settings, **overrides)
+    from pageindex_mcp.config import settings as _base_settings
+
+    return dataclasses.replace(_base_settings, **overrides)
 
 
 # ── process_document_job: happy path & error propagation ────────────────────
@@ -62,14 +57,16 @@ async def test_process_document_job_calls_index(mock_redis):
     staging_key = "uploads/staging/job-1/report.pdf"
     ctx = {"redis": mock_redis}
     child_result = {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(return_value=child_result),
-    ) as mock_sub:
-        with patch("pageindex_mcp.worker.download_staging") as mock_dl:
-            with patch("pageindex_mcp.worker.delete_staging"):
-                with patch("pageindex_mcp.worker.shutil"):
-                    result = await process_document_job(ctx, staging_key, "job-1")
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ) as mock_sub,
+        patch("pageindex_mcp.worker.job.download_staging") as mock_dl,
+    ):
+        with patch("pageindex_mcp.worker.job.delete_staging"):
+            with patch("pageindex_mcp.worker.job.shutil"):
+                result = await process_document_job(ctx, staging_key, "job-1")
 
     assert result == "abc12345"
     mock_dl.assert_called_once_with(staging_key, ANY)
@@ -79,15 +76,17 @@ async def test_process_document_job_calls_index(mock_redis):
 async def test_process_document_job_propagates_errors(mock_redis):
     staging_key = "uploads/staging/job-1/report.pdf"
     ctx = {"redis": mock_redis}
-    with patch(
-        "pageindex_mcp.worker._run_converter_subprocess",
-        AsyncMock(side_effect=ConverterChildError(1, "boom")),
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(side_effect=ConverterChildError(1, "boom")),
+        ),
+        patch("pageindex_mcp.worker.job.download_staging"),
     ):
-        with patch("pageindex_mcp.worker.download_staging"):
-            with patch("pageindex_mcp.worker.delete_staging"):
-                with patch("pageindex_mcp.worker.shutil"):
-                    with pytest.raises(ConverterChildError):
-                        await process_document_job(ctx, staging_key, "job-1")
+        with patch("pageindex_mcp.worker.job.delete_staging"):
+            with patch("pageindex_mcp.worker.job.shutil"):
+                with pytest.raises(ConverterChildError):
+                    await process_document_job(ctx, staging_key, "job-1")
 
 
 # ── process_document_job: DLQ / retry semantics ──────────────────────────────
@@ -101,15 +100,15 @@ async def test_worker_01_c3_final_failure_pushed_to_dlq(fake_redis):
 
     with (
         patch(
-            "pageindex_mcp.worker._run_converter_subprocess",
+            "pageindex_mcp.worker.job._run_converter_subprocess",
             AsyncMock(side_effect=err),
         ),
-        patch("pageindex_mcp.worker.download_staging"),
-        patch("pageindex_mcp.worker.delete_staging"),
-        patch("pageindex_mcp.worker.shutil"),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+        pytest.raises(ConverterChildError),
     ):
-        with pytest.raises(ConverterChildError):
-            await process_document_job(ctx, staging_key, "job-dlq")
+        await process_document_job(ctx, staging_key, "job-dlq")
 
     state = await fake_redis.hgetall("pageindex:job:job-dlq")
     assert state["status"] == "error"
@@ -124,12 +123,12 @@ async def test_process_document_job_generic_exception_not_dlq_on_non_final_try(f
     staging_key = "uploads/staging/job-g2/report.pdf"
     ctx = {"redis": fake_redis, "job_try": 1}
     with (
-        patch("pageindex_mcp.worker.download_staging", side_effect=ValueError("disk full")),
-        patch("pageindex_mcp.worker.delete_staging"),
-        patch("pageindex_mcp.worker.shutil"),
+        patch("pageindex_mcp.worker.job.download_staging", side_effect=ValueError("disk full")),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+        pytest.raises(ValueError),
     ):
-        with pytest.raises(ValueError):
-            await process_document_job(ctx, staging_key, "job-g2")
+        await process_document_job(ctx, staging_key, "job-g2")
 
     assert await fake_redis.llen(worker.DLQ_KEY) == 0
 
@@ -145,12 +144,12 @@ async def test_flat_04_c1_normal_result_writes_no_content_class(fake_redis):
 
     with (
         patch(
-            "pageindex_mcp.worker._run_converter_subprocess",
+            "pageindex_mcp.worker.job._run_converter_subprocess",
             AsyncMock(return_value=child_result),
         ),
-        patch("pageindex_mcp.worker.download_staging"),
-        patch("pageindex_mcp.worker.delete_staging"),
-        patch("pageindex_mcp.worker.shutil"),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
     ):
         result = await process_document_job(ctx, staging_key, "job-tree")
 
@@ -168,15 +167,15 @@ async def test_child_failure_writes_converter_child_failed_and_reraises(fake_red
     err = ConverterChildError(2, "boom")
     with (
         patch(
-            "pageindex_mcp.worker._run_converter_subprocess",
+            "pageindex_mcp.worker.job._run_converter_subprocess",
             AsyncMock(side_effect=err),
         ),
-        patch("pageindex_mcp.worker.download_staging"),
-        patch("pageindex_mcp.worker.delete_staging"),
-        patch("pageindex_mcp.worker.shutil"),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+        pytest.raises(ConverterChildError),
     ):
-        with pytest.raises(ConverterChildError):
-            await process_document_job(ctx, staging_key, "job-fail")
+        await process_document_job(ctx, staging_key, "job-fail")
 
     state = await fake_redis.hgetall("pageindex:job:job-fail")
     assert state["status"] == "error"
@@ -195,7 +194,7 @@ def _fake_proc(returncode=None, pid=999):
 
 async def test_kill_group_noop_when_already_exited():
     proc = _fake_proc(returncode=0)
-    with patch("pageindex_mcp.worker.os.getpgid") as mock_getpgid:
+    with patch("pageindex_mcp.worker.subprocess_mgr.os.getpgid") as mock_getpgid:
         await _kill_group(proc)
     mock_getpgid.assert_not_called()
 
@@ -203,11 +202,11 @@ async def test_kill_group_noop_when_already_exited():
 async def test_kill_group_sigkill_after_sigterm_timeout():
     proc = _fake_proc(returncode=None)
     with (
-        patch("pageindex_mcp.worker.os.getpgid", return_value=111),
-        patch("pageindex_mcp.worker.os.killpg") as mock_killpg,
+        patch("pageindex_mcp.worker.subprocess_mgr.os.getpgid", return_value=111),
+        patch("pageindex_mcp.worker.subprocess_mgr.os.killpg") as mock_killpg,
         patch(
-            "pageindex_mcp.worker.asyncio.wait_for",
-            AsyncMock(side_effect=[asyncio.TimeoutError(), None]),
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.wait_for",
+            AsyncMock(side_effect=[TimeoutError(), None]),
         ),
     ):
         await _kill_group(proc, grace=0.01)
@@ -232,8 +231,11 @@ async def test_run_converter_subprocess_success():
     stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 12345}).encode()
     proc = _fake_subprocess(0, stdout=stdout)
     with (
-        patch("pageindex_mcp.worker.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
-        patch("pageindex_mcp.worker.CONVERTER_PEAK_RSS_KIB") as mock_gauge,
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB") as mock_gauge,
     ):
         result = await _run_converter_subprocess("/tmp/x.pdf")
     assert result["doc_id"] == "d1"
@@ -242,16 +244,26 @@ async def test_run_converter_subprocess_success():
 
 async def test_run_converter_subprocess_invalid_json_raises():
     proc = _fake_subprocess(0, stdout=b"not json")
-    with patch("pageindex_mcp.worker.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
-        with pytest.raises(ConverterChildError, match="invalid JSON"):
-            await _run_converter_subprocess("/tmp/x.pdf")
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        pytest.raises(ConverterChildError, match="invalid JSON"),
+    ):
+        await _run_converter_subprocess("/tmp/x.pdf")
 
 
 async def test_run_converter_subprocess_generic_nonzero_no_stdout():
     proc = _fake_subprocess(1, stdout=b"", stderr=b"traceback")
-    with patch("pageindex_mcp.worker.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
-        with pytest.raises(ConverterChildError) as excinfo:
-            await _run_converter_subprocess("/tmp/x.pdf")
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        pytest.raises(ConverterChildError) as excinfo,
+    ):
+        await _run_converter_subprocess("/tmp/x.pdf")
     assert excinfo.value.error_class is None
 
 
@@ -320,13 +332,18 @@ async def test_real_subprocess_returns_doc_id():
 async def test_upsert_registry_row_success_mirrors_metric():
     with (
         patch(
-            "pageindex_mcp.worker.settings",
+            "pageindex_mcp.worker.registry_mirror.settings",
             _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
         ),
         patch("pageindex_mcp.registry.get_pool", return_value=object()),
         patch("pageindex_mcp.registry.upsert_doc", AsyncMock()) as mock_upsert,
-        patch("pageindex_mcp.worker.read_registry_fields", return_value={"doc_id": "doc-1"}),
-        patch("pageindex_mcp.worker._mirror_registry_metric_to_redis", AsyncMock()) as mock_mirror,
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"doc_id": "doc-1"},
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()
+        ) as mock_mirror,
     ):
         await _upsert_registry_row("doc-1", "flat_table")
     mock_upsert.assert_awaited_once_with({"doc_id": "doc-1"})
@@ -336,13 +353,18 @@ async def test_upsert_registry_row_success_mirrors_metric():
 # ── registry metric-mirroring helpers ────────────────────────────────────────
 async def test_mirror_registry_metric_to_redis_success():
     fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    with patch("pageindex_mcp.worker.get_async_redis", AsyncMock(return_value=fake)):
+    with patch(
+        "pageindex_mcp.worker.registry_mirror.get_async_redis", AsyncMock(return_value=fake)
+    ):
         await _mirror_registry_metric_to_redis("some:key", "42")
     assert await fake.get("some:key") == "42"
 
 
 async def test_mirror_registry_write_failure_to_redis_swallows_errors():
-    with patch("pageindex_mcp.worker.get_async_redis", AsyncMock(side_effect=RuntimeError("down"))):
+    with patch(
+        "pageindex_mcp.worker.registry_mirror.get_async_redis",
+        AsyncMock(side_effect=RuntimeError("down")),
+    ):
         await _mirror_registry_write_failure_to_redis()  # must not raise
 
 
@@ -350,10 +372,10 @@ async def test_mirror_registry_write_failure_to_redis_swallows_errors():
 async def test_startup_registry_init_failure_skips_backfill():
     with (
         patch(
-            "pageindex_mcp.worker.settings",
+            "pageindex_mcp.worker.lifecycle.settings",
             _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
         ),
-        patch("pageindex_mcp.worker.aioredis.from_url", return_value=AsyncMock()),
+        patch("pageindex_mcp.worker.lifecycle.aioredis.from_url", return_value=AsyncMock()),
         patch("pageindex_mcp.registry.init_registry", AsyncMock(side_effect=RuntimeError("boom"))),
         patch("pageindex_mcp.registry_backfill.run_auto_backfill", AsyncMock()) as mock_backfill,
     ):
@@ -363,7 +385,7 @@ async def test_startup_registry_init_failure_skips_backfill():
 
 
 async def test_shutdown_noop_when_no_redis_and_registry_disabled():
-    with patch("pageindex_mcp.worker.settings", _settings(registry_enabled=False)):
+    with patch("pageindex_mcp.worker.lifecycle.settings", _settings(registry_enabled=False)):
         await shutdown({})  # must not raise
 
 

@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from .cache import job_status_get, job_status_set
 from .client import _SUPPORTED
 from .config import settings
-from .job_status import JobStatus, _set_job_status
+from .job_status import JobStatus
 from .storage import upload_staging
 
 logger = logging.getLogger(__name__)

@@ -14,17 +14,14 @@ from bidi.algorithm import get_display
 import pageindex_mcp.client as client_mod
 from pageindex_mcp import converters
 from pageindex_mcp.client import (
-    MIN_STANDALONE_IMAGE_MD_CHARS,
     _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
-    _VLM_TESSERACT_FALLBACK_ENABLED,
+    MIN_STANDALONE_IMAGE_MD_CHARS,
 )
 from pageindex_mcp.config import OCR_ESCALATION_GARBLE, reset_pipeline_config
 from pageindex_mcp.converters import (
     PictureResult,
     _recover_picture_text,
     _text_layer_has_content,
-    reconstruct_bidi_order,
-    splice_figure_markers,
 )
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
@@ -32,9 +29,7 @@ from pageindex_mcp.helpers import (
     _flat_block_text,
     check_garble,
     classify_verdict,
-    route_and_extract_flat,
 )
-from pageindex_mcp.picture_plane import PictureGateConfig
 from pageindex_mcp.worker import _classify_llm_failure
 
 _MARKER = "<!-- image -->"
@@ -68,6 +63,7 @@ class TestTextLayerHasContent:
 
     def test_clean_text_layer_returns_true(self):
         assert _text_layer_has_content(_page(_CLEAN_TEXT)) is True
+
 
 # ---------------------------------------------------------------------------
 # D1: graceful marker-count mismatch splicing + raw marker recognition
@@ -144,12 +140,12 @@ class TestDecorativeIconSizeFilter:
 
     def test_sub_icon_region_skips_ocr_tags_decorative_icon(self, monkeypatch):
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0)
-        monkeypatch.setattr(converters, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
+        monkeypatch.setattr(converters.pictures, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
 
         def _fail_if_called(*_a, **_k):
             raise AssertionError("tesseract must not run for sub-icon regions")
 
-        monkeypatch.setattr(converters, "_tesseract_ocr_image", _fail_if_called)
+        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", _fail_if_called)
         region = _region(0, 0, 15, 12)
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
@@ -160,9 +156,9 @@ class TestDecorativeIconSizeFilter:
 
     def test_region_above_threshold_proceeds_to_ocr(self, monkeypatch):
         fake_fitz, _page = _make_fake_fitz(600.0, 800.0)
-        monkeypatch.setattr(converters, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
+        monkeypatch.setattr(converters.pictures, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
         monkeypatch.setattr(
-            converters,
+            converters.pictures,
             "_tesseract_ocr_image",
             lambda path, langs: "Chart text with enough characters to pass the gate",
         )
@@ -173,6 +169,7 @@ class TestDecorativeIconSizeFilter:
 
         assert 0 not in skip_reasons
         assert result[0]["ocr_text"]
+
 
 # ---------------------------------------------------------------------------
 # D3: HTML-comment-marker exemption from garble detection
@@ -194,6 +191,7 @@ class TestImageMarkerGarbleExemption:
     def test_genuine_repeated_tokens_still_garbled(self):
         blob = " ".join(["xkjqz"] * 40)
         assert check_garble(blob, expected_script=None, profile=BULK_PROFILE) is True
+
 
 # ---------------------------------------------------------------------------
 # D4: content-quality guard on the cat_b_promoted gate
@@ -237,6 +235,7 @@ class TestCatBPromotedContentQualityGuard:
         verdict, reason = classify_verdict(structure, "flat_prose", None)
         assert (verdict, reason) == ("PASS", "cat_b_promoted")
 
+
 # ---------------------------------------------------------------------------
 # D5: prefer synthetic structure over a rejected tree for flat-routed docs
 # ---------------------------------------------------------------------------
@@ -279,6 +278,7 @@ class TestSyntheticStructurePreference:
         structure = _synthesize_flat_structure([], blocks)
         assert len(structure) == len(blocks)
 
+
 # ---------------------------------------------------------------------------
 # D7: Tesseract-on-raster fallback when the VLM crashes on garbled PDFs
 # ---------------------------------------------------------------------------
@@ -313,6 +313,7 @@ class TestVlmTesseractFallback:
         document still raises LowQualityTreeError('garbling') per HR5."""
         assert _vlm_tesseract_fallback(_GARBLED_TEXT) == "garbling"
 
+
 # ---------------------------------------------------------------------------
 # D8: standalone-image OCR enrichment + terminal-vs-transient LLM failures
 # ---------------------------------------------------------------------------
@@ -337,6 +338,7 @@ class TestClassifyLlmFailure:
             _classify_llm_failure("429 rate_limit exceeded, throttled") == "llm_failure_transient"
         )
 
+
 # ---------------------------------------------------------------------------
 # D9: heading-marker BiDi preservation in reconstruct_bidi_order
 # ---------------------------------------------------------------------------
@@ -353,11 +355,40 @@ _LOGICAL_BODY_LINE = (
 # D10: PASS_MAX_LEAF_RATIO env-var-tunable threshold
 # ---------------------------------------------------------------------------
 
-_WORDS = (
-    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima "
-    "mike november oscar papa quebec romeo sierra tango uniform victor whiskey "
-    "xray yankee zulu apple banana cherry date fig grape"
-).split()
+_WORDS = [
+    "alpha",
+    "bravo",
+    "charlie",
+    "delta",
+    "echo",
+    "foxtrot",
+    "golf",
+    "hotel",
+    "india",
+    "juliet",
+    "kilo",
+    "lima",
+    "mike",
+    "november",
+    "oscar",
+    "papa",
+    "quebec",
+    "romeo",
+    "sierra",
+    "tango",
+    "uniform",
+    "victor",
+    "whiskey",
+    "xray",
+    "yankee",
+    "zulu",
+    "apple",
+    "banana",
+    "cherry",
+    "date",
+    "fig",
+    "grape",
+]
 
 
 def _text_of_length(n: int) -> str:
