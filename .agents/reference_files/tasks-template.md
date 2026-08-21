@@ -1,24 +1,62 @@
-# Implementation Plan: {{PROJECT_NAME}}
-
 <!--
-TEMPLATE INSTRUCTIONS (delete this block before use):
-- Replace all {{PLACEHOLDER}} tokens with project-specific content.
-- This file is the companion to design-{{PROJECT_SLUG}}.md — every task must trace
-  back to a requirement or design property.
-- Link to the governing RFC(s) — every task exists because an RFC decision requires it.
-- Tasks marked with `*` are property-based tests (optional for faster MVP).
-- Checkpoints are mandatory gates — never skip them.
-- The Task Dependency Graph at the bottom drives parallel execution ordering.
-- Keep task granularity at ~1-4 hours of implementation work.
+TEMPLATE INSTRUCTIONS (delete this block before committing):
+
+File naming:  .agents/tasks/tasks-rfc{{NNN}}-{{slug}}.md
+Companion:    .agents/rfcs/{{NNN}}-{{slug}}.md (governing RFC)
+              .agents/designs/design-rfc{{NNN}}-{{slug}}.md (design doc)
+
+Frontmatter contract:
+  id           (required)  tasks-rfc{{NNN}}-{{slug}}
+  title        (required)  human-readable, prefixed "Tasks: "
+  type         (required)  always "tasks"
+  status       (required)  draft | review | accepted | superseded | withdrawn
+  date         (required)  ISO 8601 YYYY-MM-DD
+  tags         (required)  must include "tasks" + at least one domain tag
+  aliases      (recommended) short names for Obsidian graph linking
+  governs      (optional)  [[wikilink]] to governing RFC
+  space        (optional)  Confluence space key, for mark sync (--features=frontmatter)
+  folders      (optional)  Confluence folder path, for mark sync
+  parents      (optional)  Confluence parent page(s), for mark sync
+
+Linking:
+  - Cross-references use [[wikilinks]] for Obsidian graph connectivity
+  - Every task must trace back to a requirement or design property
+  - Tasks marked with `*` are property-based tests (optional for faster MVP)
+  - Checkpoints are mandatory gates — never skip them
+  - The Task Dependency Graph at the bottom drives parallel execution ordering
+  - Keep task granularity at ~1-4 hours of implementation work
+
+Replace ALL {{placeholders}}. No template tokens may survive into committed artifacts.
 -->
+---
+id: "tasks-rfc{{NNN}}-{{slug}}"
+title: "Tasks: {{PROJECT_NAME}}"
+type: tasks
+status: draft
+date: "{{YYYY-MM-DD}}"
+tags:
+  - tasks
+  - "{{domain-tag}}"
+aliases:
+  - "tasks-rfc{{NNN}}-{{slug}}"
+governs:
+  - "[[RFC-{{NNN}}]]"
+# mark confluence-sync fields (flat, not nested — mark reads these with --features=frontmatter)
+# space: CITRA
+# folders:
+#   - Tasks
+# parents: []
+---
+
+# Implementation Plan: {{PROJECT_NAME}}
 
 ## Traceability
 
 | Artifact | Reference |
-|---|---|
-| Governing RFC(s) | `rfcs/{{RFC_ID}}.md` |
-| Design Document | `reference_files/design-{{PROJECT_SLUG}}.md` |
-| PRD / Requirements | `{{PRD_PATH}}` |
+|----------|-----------|
+| Governing RFC(s) | [[RFC-{{NNN}}]] |
+| Design Document | [[design-rfc{{NNN}}-{{slug}}]] |
+| PRD / Requirements | [[PRD]] |
 
 ## Overview
 

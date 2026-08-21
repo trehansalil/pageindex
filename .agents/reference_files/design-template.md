@@ -1,26 +1,61 @@
-# Design Document: {{PROJECT_NAME}}
-
 <!--
-TEMPLATE INSTRUCTIONS (delete this block before use):
-- Replace all {{PLACEHOLDER}} tokens with project-specific content.
-- Every section is required unless marked [OPTIONAL]. Delete [OPTIONAL] sections you don't need.
-- Link to the governing RFC(s) in the Traceability section — every design decision
-  must trace back to an RFC decision (D-number).
-- Properties are formal correctness invariants, not prose descriptions.
-  Write them as "For any X, system SHALL Y" universally quantified statements.
-- Keep API endpoint listings exhaustive — if a service exposes it, it belongs here.
-- Data models use Python-style class declarations for readability;
-  actual implementation may differ.
+TEMPLATE INSTRUCTIONS (delete this block before committing):
+
+File naming:  .agents/designs/design-rfc{{NNN}}-{{slug}}.md
+Companion:    .agents/rfcs/{{NNN}}-{{slug}}.md (governing RFC)
+              .agents/tasks/tasks-rfc{{NNN}}-{{slug}}.md (implementation plan)
+
+Frontmatter contract:
+  id           (required)  design-rfc{{NNN}}-{{slug}}
+  title        (required)  human-readable, prefixed "Design: "
+  type         (required)  always "design"
+  status       (required)  draft | review | accepted | superseded | withdrawn
+  date         (required)  ISO 8601 YYYY-MM-DD
+  tags         (required)  must include "design" + at least one domain tag
+  aliases      (recommended) short names for Obsidian graph linking
+  governs      (optional)  [[wikilink]] to governing RFC
+  space        (optional)  Confluence space key, for mark sync (--features=frontmatter)
+  folders      (optional)  Confluence folder path, for mark sync
+  parents      (optional)  Confluence parent page(s), for mark sync
+
+Linking:
+  - Cross-references use [[wikilinks]] for Obsidian graph connectivity
+  - Every design decision must trace back to an RFC decision (D-number)
+  - Properties are formal correctness invariants, not prose descriptions
+  - Keep API endpoint listings exhaustive
+
+Replace ALL {{placeholders}}. No template tokens may survive into committed artifacts.
 -->
+---
+id: "design-rfc{{NNN}}-{{slug}}"
+title: "Design: {{PROJECT_NAME}}"
+type: design
+status: draft
+date: "{{YYYY-MM-DD}}"
+tags:
+  - design
+  - "{{domain-tag}}"
+aliases:
+  - "design-rfc{{NNN}}-{{slug}}"
+governs:
+  - "[[RFC-{{NNN}}]]"
+# mark confluence-sync fields (flat, not nested — mark reads these with --features=frontmatter)
+# space: CITRA
+# folders:
+#   - Designs
+# parents: []
+---
+
+# Design Document: {{PROJECT_NAME}}
 
 ## Traceability
 
 | Artifact | Reference |
-|---|---|
-| Governing RFC(s) | `rfcs/{{RFC_ID}}.md` |
-| PRD / Requirements | `{{PRD_PATH}}` |
-| Architecture Doc | `{{ARCH_PATH}}` |
-| Implementation Plan | `tasks-{{PROJECT_SLUG}}.md` |
+|----------|-----------|
+| Governing RFC(s) | [[RFC-{{NNN}}]] |
+| PRD / Requirements | [[PRD]] |
+| Architecture Doc | [[ARCHITECTURE]] |
+| Implementation Plan | [[tasks-rfc{{NNN}}-{{slug}}]] |
 
 ## Overview
 
