@@ -43,6 +43,8 @@ from pageindex_mcp.client import CustomPageIndexClient
 from pageindex_mcp.client import images as _img
 from pageindex_mcp.client import indexer as _idx
 from pageindex_mcp.helpers import (
+    GarbleConfig,
+    ScriptContext,
     TreeDefect,
     TreeGateResult,
     _garble_check_nodes,
@@ -449,14 +451,22 @@ class TestGarbledTitleWithCleanTextDetected:
     def test_garbled_title_clean_text_counts_as_garbled_node(self):
         node = _title_leaf(title="��� corrupted title", text="This is clean prose.")
 
-        garbled = _garble_check_nodes([node])
+        garbled = _garble_check_nodes(
+            [node],
+            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
 
         assert garbled == 1
 
     def test_clean_title_clean_text_not_garbled(self):
         node = _title_leaf(title="Section One", text="This is clean prose.")
 
-        garbled = _garble_check_nodes([node])
+        garbled = _garble_check_nodes(
+            [node],
+            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
 
         assert garbled == 0
 
@@ -468,7 +478,11 @@ class TestRTLReversedTitleDetected:
     def test_reversed_arabic_title_detected_via_garble_check_nodes(self):
         node = _title_leaf(title=_REVERSED_TITLE_WORD, text="clean body text")
 
-        garbled = _garble_check_nodes([node])
+        garbled = _garble_check_nodes(
+            [node],
+            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
 
         assert garbled == 1
 

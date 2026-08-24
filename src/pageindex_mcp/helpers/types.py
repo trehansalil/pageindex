@@ -11,7 +11,7 @@ from ..config import pipeline_config
 
 if TYPE_CHECKING:
     from ..config import PipelineConfig
-    from ..script import RtlDecision
+    from ..script import RtlDecision, ScriptContext
     from .tree_validation import TreeSignals
 
 
@@ -202,7 +202,7 @@ class _ReasonPolicy(StrEnum):
 
 # Type alias for gate function signature.
 _GateFn = Callable[
-    ["TreeSignals", list, "str | None", "int | None", "RtlDecision | None"],
+    ["TreeSignals", list, "ScriptContext", "int | None", "RtlDecision | None"],
     tuple[bool, str],
 ]
 

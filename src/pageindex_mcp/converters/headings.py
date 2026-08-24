@@ -8,6 +8,7 @@ import re
 from typing import cast
 
 from ..helpers import compute_verdict
+from ..helpers.tree_split import compute_table_spans, line_in_table_span
 from ..script import (
     decide_rtl,
     normalize_dashes,
@@ -139,9 +140,13 @@ def _inject_arabic_structural_headings(md: str) -> str:
     The threshold is configurable via env var."""
     reversed_ocr = decide_rtl(md).reversed
     lines = md.split("\n")
+    table_spans = compute_table_spans(lines)
     out: list[str] = []
     _injected_count = 0
-    for line in lines:
+    for i, line in enumerate(lines):
+        if line_in_table_span(i, table_spans):
+            out.append(line)
+            continue
         t = line.strip()
         if t and not _HEADING_RE.match(t):
             match_t = t[::-1] if reversed_ocr else t
@@ -222,8 +227,12 @@ def _inject_german_clause_headings(md: str) -> str:
     ``_CLAUSE_HEADING_CHAR_LIMIT`` prevents a paragraph that merely opens with a
     clause reference from becoming a heading."""
     lines = md.split("\n")
+    table_spans = compute_table_spans(lines)
     out = []
-    for line in lines:
+    for i, line in enumerate(lines):
+        if line_in_table_span(i, table_spans):
+            out.append(line)
+            continue
         t = line.strip()
         if (
             t
@@ -250,8 +259,12 @@ def _inject_english_article_headings(md: str) -> str:
     prevents a paragraph that merely opens with an article reference from
     becoming a heading."""
     lines = md.split("\n")
+    table_spans = compute_table_spans(lines)
     out = []
-    for line in lines:
+    for i, line in enumerate(lines):
+        if line_in_table_span(i, table_spans):
+            out.append(line)
+            continue
         t = line.strip()
         if (
             t

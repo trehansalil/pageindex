@@ -594,25 +594,19 @@ infer_script = _infer_script
 
 def _garble_check_nodes(
     nodes: list[dict],
-    page_script: str | None = None,
-    expected_script: str | None = None,
     *,
-    script_context: ScriptContext | None = None,
-    config: GarbleConfig | None = None,
+    script_context: ScriptContext,
+    config: GarbleConfig,
 ) -> int:
     """Recursively count nodes whose text or title is individually garbled.
 
-    Zone-3: accepts ``script_context`` + ``config`` for consolidated
-    garble detection.  When ``script_context`` is provided, the
-    document-level script comes from it; per-node override (QF3/RFC-021)
-    is still computed for nodes >= 50 chars whose text-inferred script
-    disagrees with the document-level script.
-
-    Falls back to bare ``expected_script``/``page_script`` when
-    ``script_context`` is not provided (backward compat).
+    Zone-3: ``script_context`` and ``config`` are required.  The
+    document-level script comes from ``script_context.dominant_script``;
+    per-node override (QF3/RFC-021) is still computed for nodes >= 50
+    chars whose text-inferred script disagrees with the document-level
+    script.
     """
-    _cfg = config if config is not None else _garble_config
-    _doc_script = script_context.dominant_script if script_context is not None else expected_script
+    _doc_script = script_context.dominant_script
 
     garbled = 0
     for node in nodes:
@@ -632,15 +626,13 @@ def _garble_check_nodes(
                 else:
                     node_script = _doc_script
             else:
-                node_script = _infer_script(text) if len(text) >= 50 else page_script
+                node_script = _infer_script(text) if len(text) >= 50 else None
             _node_ctx = ScriptContext(
                 dominant_script=node_script,
-                had_presentation_forms=(
-                    script_context.had_presentation_forms if script_context is not None else False
-                ),
+                had_presentation_forms=script_context.had_presentation_forms,
                 source="per_node",
             )
-            if detect_garble(text, script_context=_node_ctx, config=_cfg):
+            if detect_garble(text, script_context=_node_ctx, config=config):
                 node_garbled = True
         title = node.get("title") or ""
         if title.strip() and (
@@ -648,15 +640,11 @@ def _garble_check_nodes(
             or detect_garble(
                 title,
                 script_context=ScriptContext(
-                    dominant_script=_doc_script or page_script,
-                    had_presentation_forms=(
-                        script_context.had_presentation_forms
-                        if script_context is not None
-                        else False
-                    ),
+                    dominant_script=_doc_script,
+                    had_presentation_forms=script_context.had_presentation_forms,
                     source="per_node_title",
                 ),
-                config=_cfg,
+                config=config,
             )
         ):
             node_garbled = True
@@ -665,12 +653,55 @@ def _garble_check_nodes(
         children = node.get("nodes") or []
         garbled += _garble_check_nodes(
             children,
-            page_script=page_script,
-            expected_script=expected_script,
             script_context=script_context,
             config=config,
         )
     return garbled
+
+
+def _garble_check_flat_blocks(
+    blocks: list[dict],
+    *,
+    script_context: ScriptContext,
+    config: GarbleConfig,
+) -> GarbleReport | None:
+    """Zone-1: per-block garble check for flat-routed documents.
+
+    Runs detect_garble on each block individually (using
+    _flat_block_primary_text), eliminating the dilution problem where a
+    single garbled table amid clean prose would pass the whole-blob check.
+
+    Returns a synthetic GarbleReport if any block is garbled, None otherwise.
+    """
+    from .flat import _flat_block_primary_text
+
+    all_fired: set[str] = set()
+    garbled_count = 0
+    checked_count = 0
+
+    for block in blocks:
+        text = _flat_block_primary_text(block)
+        if not text or not text.strip():
+            continue
+        checked_count += 1
+        report = detect_garble(
+            text,
+            script_context=script_context,
+            config=config,
+            blob_kind=BlobKind.RAW_MARKDOWN,
+        )
+        if report:
+            garbled_count += 1
+            all_fired.update(report.fired_prongs)
+
+    if not garbled_count:
+        return None
+
+    return GarbleReport(
+        is_garbled=True,
+        fired_prongs=frozenset(all_fired),
+        garble_ratio=garbled_count / checked_count if checked_count else 0.0,
+    )
 
 
 def ocr_noise_ratio(text: str) -> float:

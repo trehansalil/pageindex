@@ -477,6 +477,43 @@ def split_oversized_leaf_nodes(
     return structure
 
 
+_TABLE_SPAN_SEP_RE = re.compile(r"^\|[\s|:-]+\|$")
+
+
+def _is_table_pipe_row(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|") and len(s) > 1
+
+
+def compute_table_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """Scan lines for contiguous pipe-table spans (start, end exclusive).
+
+    A span is a contiguous block of pipe rows containing at least one
+    separator row — mirrors _segment_table_nodes's detection heuristic.
+    """
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        if _is_table_pipe_row(lines[i]):
+            start = i
+            has_sep = bool(_TABLE_SPAN_SEP_RE.match(lines[i].strip()))
+            i += 1
+            while i < n and _is_table_pipe_row(lines[i]):
+                if _TABLE_SPAN_SEP_RE.match(lines[i].strip()):
+                    has_sep = True
+                i += 1
+            if has_sep:
+                spans.append((start, i))
+        else:
+            i += 1
+    return spans
+
+
+def line_in_table_span(idx: int, spans: list[tuple[int, int]]) -> bool:
+    return any(lo <= idx < hi for lo, hi in spans)
+
+
 def _segment_table_nodes(structure: list, *, orientation: str | None = None) -> list:  # noqa: C901, PLR0915
     """RFC-029 D7 (Task 5.3, Property 9) — table-aware node segmentation."""
     _SEP_RE = re.compile(r"^\|[\s|:-]+\|$")

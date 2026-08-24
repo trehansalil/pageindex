@@ -22,8 +22,10 @@ from .types import (
     ExtractionState,
     FeatureWiring,
     GateSpec,
+    Route,
     TreeDefect,
     _ReasonPolicy,
+    decide_route,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 def _gate_garbling(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -48,7 +50,7 @@ def _gate_garbling(
 def _gate_node_count_low(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -59,7 +61,7 @@ def _gate_node_count_low(
 def _gate_depth_low(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -70,32 +72,22 @@ def _gate_depth_low(
 def _gate_node_garbling(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
     """Gate 4: per-node garble ratio (RFC-018 D3b).
 
-    Zone-3: uses ScriptContext + GarbleConfig instead of re-inferring
-    script from sig.flat_text.  The document-level script is resolved
-    from expected_script (filename-derived) or inferred from flat_text
-    as a fallback, then wrapped into a ScriptContext for threaded
-    garble detection.
+    Zone-3: receives the document-level ScriptContext directly from
+    validate_tree — no throwaway reconstruction needed.  The real
+    had_presentation_forms flag threads through to _garble_check_nodes.
     """
     if sig.node_count <= 0:
         return (False, "")
-    doc_script = expected_script if expected_script is not None else _infer_script(sig.flat_text)
-    _ctx = ScriptContext(
-        dominant_script=doc_script,
-        had_presentation_forms=False,
-        source="gate_node_garbling",
-    )
     ratio = (
         _garble_check_nodes(
             structure,
-            page_script=doc_script,
-            expected_script=expected_script,
-            script_context=_ctx,
+            script_context=expected_script,
             config=_garble_config,
         )
         / sig.node_count
@@ -107,7 +99,7 @@ def _gate_node_garbling(
 def _gate_reordered(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -118,7 +110,7 @@ def _gate_reordered(
 def _gate_rtl_reversal(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -134,7 +126,7 @@ def _gate_rtl_reversal(
 def _gate_bidi_degraded(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -168,7 +160,7 @@ def _gate_bidi_degraded(
 def _gate_empty_node_contamination(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -191,7 +183,7 @@ def _gate_empty_node_contamination(
 def _gate_low_content_density(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -210,7 +202,7 @@ def _gate_low_content_density(
         return (False, "")
 
     is_deep = sig.depth >= _RFC029_DEEP_TREE_DEPTH_THRESHOLD
-    is_arabic = expected_script == "Arab"
+    is_arabic = expected_script.dominant_script == "Arab"
     if is_deep or is_arabic:
         threshold = _RFC029_MIN_CHARS_PER_NODE_DEEP
     else:
@@ -230,7 +222,7 @@ def _gate_low_content_density(
 def _gate_suspect_density(
     sig: TreeSignals,
     structure: list,
-    expected_script: str | None,
+    expected_script: ScriptContext,
     page_count: int | None,
     rtl_decision: RtlDecision | None,
 ) -> tuple[bool, str]:
@@ -248,7 +240,7 @@ def _gate_suspect_density(
 
 # Type alias for gate function signature.
 _GateFn = Callable[
-    [TreeSignals, list, str | None, int | None, RtlDecision | None],
+    [TreeSignals, list, ScriptContext, int | None, RtlDecision | None],
     tuple[bool, str],
 ]
 
@@ -466,6 +458,27 @@ _GATE_PRIORITY: dict[TreeDefect, int] = {
 _active_severities = [g.severity for g in GATES if g.gate_fn is not None]
 assert len(_active_severities) == len(set(_active_severities)), (
     f"Active-gate severity values are not unique: {_active_severities}"
+)
+
+# Zone-1: FLAT_GATE_COVERAGE — maps each TreeDefect that can route to FLAT
+# to the name of its flat-path quality-check callable.  Import-time assertion
+# ensures every FLAT-routing active gate has an entry.
+FLAT_GATE_COVERAGE: dict[TreeDefect, str] = {
+    TreeDefect.GARBLING: "_garble_check_flat_blocks",
+    TreeDefect.NODE_GARBLING: "_garble_check_flat_blocks",
+    TreeDefect.NODE_COUNT_LOW: "_garble_check_flat_blocks",
+    TreeDefect.DEPTH_LOW: "_garble_check_flat_blocks",
+    TreeDefect.RTL_REVERSAL: "_garble_check_flat_blocks",
+}
+
+_flat_routing_defects = {
+    g.defect
+    for g in GATES
+    if g.gate_fn is not None and decide_route(g.defect) == Route.FLAT
+}
+assert _flat_routing_defects <= set(FLAT_GATE_COVERAGE), (
+    f"FLAT_GATE_COVERAGE missing entries for FLAT-routing defects: "
+    f"{_flat_routing_defects - set(FLAT_GATE_COVERAGE)}"
 )
 
 # ---------------------------------------------------------------------------

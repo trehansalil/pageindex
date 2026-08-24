@@ -5,6 +5,7 @@ from __future__ import annotations
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
     BlobKind,
+    GarbleConfig,
     ScriptContext,
     _garble_check_nodes,
     garble_prongs,
@@ -79,7 +80,11 @@ class TestGarbleCheckNodes:
                 ],
             }
         ]
-        garbled_count = _garble_check_nodes(tree, expected_script=None)
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
         assert garbled_count > 0
 
     def test_all_clean_nodes_pass(self):
@@ -94,7 +99,11 @@ class TestGarbleCheckNodes:
                 ],
             }
         ]
-        garbled_count = _garble_check_nodes(tree, expected_script="Latn")
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
         assert garbled_count == 0
 
 

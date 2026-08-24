@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from minio.error import S3Error
 
-from pageindex_mcp.helpers import _garble_check_nodes
+from pageindex_mcp.helpers import GarbleConfig, ScriptContext, _garble_check_nodes
 from pageindex_mcp.storage import (
     _load_legacy_minio_hash_cache,
     delete_doc,
@@ -594,7 +594,11 @@ def test_per_node_garble_catches_pua_node():
     garbled_node = {"title": "Bad", "text": _pua_heavy_text()}
     tree = [garbled_node] + [_clean_node(i) for i in range(99)]
 
-    assert _garble_check_nodes(tree) == 1
+    assert _garble_check_nodes(
+        tree,
+        script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+        config=GarbleConfig(),
+    ) == 1
 
 
 # ---------------------------------------------------------------------------

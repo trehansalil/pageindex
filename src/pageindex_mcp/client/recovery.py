@@ -583,6 +583,8 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None = None,
+        *,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 6: content-density flat-prefer guard. Mutates state.
 

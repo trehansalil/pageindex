@@ -40,6 +40,8 @@ from pageindex_mcp.converters import (
 )
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
+    GarbleConfig,
+    ScriptContext,
     _flatten_tree_text,
     _garble_check_nodes,
     _infer_script,
@@ -359,7 +361,11 @@ class TestExpectedScriptThreading:
         latin_text = "The quick brown fox jumps over the lazy dog " * 5
         nodes = [{"text": latin_text, "nodes": []}]
         with caplog.at_level(logging.WARNING):
-            count = _garble_check_nodes(nodes, page_script=None, expected_script="Arab")
+            count = _garble_check_nodes(
+            nodes,
+            script_context=ScriptContext(dominant_script="Arab", had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
         assert isinstance(count, int)
         assert any("mismatch" in rec.message.lower() for rec in caplog.records)
 
@@ -369,7 +375,11 @@ class TestExpectedScriptThreading:
         latin_text = "The quick brown fox jumps over the lazy dog " * 5
         nodes = [{"text": latin_text, "nodes": []}]
         assert _infer_script(latin_text) in ("Latn", None)
-        count = _garble_check_nodes(nodes, page_script=None, expected_script=None)
+        count = _garble_check_nodes(
+            nodes,
+            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            config=GarbleConfig(),
+        )
         assert isinstance(count, int)
 
 
