@@ -60,14 +60,10 @@ from .staging import (
 
 # verdict ──────────────────────────────────────────────────────────────────────
 from .verdict import (
-    _VERDICT_CAS_FIELDS,
     SIDECAR_VERSION,
     _read_existing_sidecar,
-    _verdict_cas_guard,
     list_processed_docs,
-    persist_verdict_ledger,
     read_registry_fields,
-    read_verdict_ledger,
     save_doc_meta,
     write_verdict,
 )
@@ -78,7 +74,6 @@ __all__ = [
     "HASH_OBJECT",
     "RECONCILE_ETAG_KEY",
     "SIDECAR_VERSION",
-    "_VERDICT_CAS_FIELDS",
     "_WRITE_BARRIER_DELAYS",
     "PersistenceNotVisibleError",
     "_apply_route_prefix",
@@ -86,7 +81,6 @@ __all__ = [
     "_get_presign_minio",
     "_load_legacy_minio_hash_cache",
     "_read_existing_sidecar",
-    "_verdict_cas_guard",
     "delete_doc",
     "delete_staging",
     "download_staging",
@@ -97,10 +91,8 @@ __all__ = [
     "hash_cache_set",
     "list_processed_docs",
     "load_doc",
-    "persist_verdict_ledger",
     "presigned_get_url",
     "read_registry_fields",
-    "read_verdict_ledger",
     "reconcile_etag_delete",
     "reconcile_etag_get_all",
     "reconcile_etag_prune",

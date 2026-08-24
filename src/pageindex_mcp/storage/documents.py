@@ -140,7 +140,8 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
 # Complexity grandfathered (HR2 erasure cascade); see pyproject [tool.ruff].
 async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
     """HR2 right-to-erasure cascade (ERASE-01). Observable/logged order:
-       1. uploads/<doc_id>/*  2. processed/<doc_id>.json  3. processed/<doc_id>.meta.json
+       1. uploads/<doc_id>/*  2. processed/<doc_id>.json  2d. verdicts/<sha256>.json
+          (RFC-037 D2: HR2 ledger cascade)  3. processed/<doc_id>.meta.json
        4. Redis pageindex:doc:<doc_id>  4b. reconcile-etag map entry (C-3 derived store)
        5. hash-cache entry for the doc filename
        6. Postgres registry row (D2: awaited with a timeout, never fire-and-forget).
@@ -216,6 +217,34 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                 logger.info("ERASE %s step2c: removed %d figure(s)", doc_id, fig_removed)
         except S3Error as e:
             errors.append(f"figures/: {e}")
+
+        # 2d. verdicts/<sha256>.json (RFC-037 D2 / HR2: verdict ledger cascade)
+        try:
+            response = mc.get_object(
+                settings.minio_bucket, f"processed/{doc_id}.meta.json"
+            )
+            try:
+                sha256 = json.loads(response.read()).get("sha256")
+            finally:
+                response.close()
+                response.release_conn()
+        except S3Error:
+            sha256 = None
+        except Exception as e:
+            sha256 = None
+            errors.append(f"verdicts-lookup: {e}")
+
+        if sha256:
+            try:
+                mc.remove_object(settings.minio_bucket, f"verdicts/{sha256}.json")
+                logger.info("ERASE %s step2d: removed verdicts/%s.json", doc_id, sha256)
+            except S3Error as e:
+                if getattr(e, "code", "") != "NoSuchKey":
+                    errors.append(f"verdicts/: {e}")
+        else:
+            logger.warning(
+                "ERASE %s step2d: sha256 unavailable; cannot purge verdicts/ ledger", doc_id
+            )
 
         # 3. processed/<doc_id>.meta.json
         try:

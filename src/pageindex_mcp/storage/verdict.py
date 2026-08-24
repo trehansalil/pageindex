@@ -1,4 +1,4 @@
-"""Verdict persistence, sidecar read-merge-write, and verdict ledger."""
+"""Verdict persistence and sidecar read-merge-write."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -76,48 +75,6 @@ def _read_existing_sidecar(mc: Minio, doc_id: str) -> dict:
         return {}
 
 
-# Zone-8: verdict fields guarded by temporal CAS in save_doc_meta.
-_VERDICT_CAS_FIELDS = frozenset(
-    {
-        "verdict",
-        "verdict_reason",
-        "pipeline_version",
-        "verdict_computed_at",
-        "max_leaf_ratio",
-    }
-)
-
-
-def _verdict_cas_guard(existing: dict, incoming: dict) -> bool:
-    """Soft CAS guard: return True when existing verdict is newer than incoming.
-
-    Compares ``existing.get('verdict_computed_at')`` vs
-    ``incoming.get('verdict_computed_at')``; if existing is strictly newer
-    (lexicographic ISO-8601 comparison), the caller should skip verdict
-    fields in the merge.  Only verdict/verdict_reason/pipeline_version/
-    verdict_computed_at/max_leaf_ratio get the temporal guard -- all
-    other fields are merged unconditionally.
-
-    Returns False (allow the write) when either timestamp is absent so
-    existing rows with NULL/missing verdict_computed_at always accept any
-    incoming verdict.
-    """
-    existing_ts = existing.get("verdict_computed_at", "")
-    incoming_ts = incoming.get("verdict_computed_at", "")
-    if not existing_ts or not incoming_ts:
-        return False  # no timestamp to compare -- allow the write
-    if existing_ts > incoming_ts:
-        logger.warning(
-            "_verdict_cas_guard: existing verdict_computed_at=%s > incoming=%s; "
-            "skipping verdict field merge for doc_id=%s",
-            existing_ts,
-            incoming_ts,
-            incoming.get("doc_id", "?"),
-        )
-        return True
-    return False
-
-
 def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
     """Read-merge-write sidecar: reads the existing sidecar (if any), merges
     new fields from *meta* on top, and writes the result.  This prevents
@@ -129,10 +86,11 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
     (``_persist_tree_result``) and the flat path (``_persist_flat_result``)
     write verdict fields (verdict, verdict_reason, pipeline_version,
     verdict_computed_at, max_leaf_ratio) exclusively through this function.
-    The ``_verdict_cas_guard`` protects against out-of-order / lost-update
-    verdict writes.  New processed artifacts intentionally omit verdict
-    fields from their body; ``read_registry_fields`` falls back to the
-    sidecar to source them.
+    RFC-037 D5: the sidecar is a passive archive — Postgres ``_UPSERT_SQL``
+    is the single max-priority-wins arbiter; callers pass the arbitrated
+    ``RETURNING`` row, so the sidecar always reflects the Postgres value.
+    New processed artifacts intentionally omit verdict fields from their
+    body; ``read_registry_fields`` falls back to the sidecar to source them.
 
     Legacy callers (``promotion_sweep``, ``preprocess_client``) may still
     route through the deprecated ``write_verdict()`` wrapper, which
@@ -196,14 +154,7 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
             "effective_config_at_job_start",
             "extraction_stages",
         )
-        # Zone-8: soft CAS guard -- skip verdict fields when existing is newer
-        _skip_verdict = _verdict_cas_guard(existing, meta)
         for f in _MERGE_FIELDS:
-            if _skip_verdict and f in _VERDICT_CAS_FIELDS:
-                # CAS guard fired -- preserve existing verdict fields
-                if f in existing:
-                    sidecar[f] = existing[f]
-                continue
             if f in meta:
                 sidecar[f] = meta[f]
             elif f in existing:
@@ -230,24 +181,6 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
         # read-after-write confirmation is needed.  The barrier in save_doc /
         # save_flat_doc (primary processed artifacts) is intentionally retained.
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
-
-        # Zone-4: persist verdict ledger entry (fire-and-forget).
-        # Only write when the CAS guard did not skip verdict fields and
-        # both verdict and sha256 are present in the merged sidecar.
-        if not _skip_verdict and sidecar.get("verdict") and sidecar.get("sha256"):
-            try:
-                persist_verdict_ledger(
-                    sidecar["sha256"],
-                    sidecar["verdict"],
-                    sidecar.get("verdict_reason", ""),
-                )
-            except Exception:
-                logger.warning(
-                    "save_doc_meta: verdict ledger write failed for doc %s, "
-                    "continuing (fire-and-forget)",
-                    doc_id,
-                    exc_info=True,
-                )
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
@@ -452,145 +385,3 @@ def list_processed_docs() -> list[dict]:
         return docs
     finally:
         MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
-
-
-# ---------------------------------------------------------------------------
-# Zone-4: deterministic verdict ledger (replaces dead hysteresis mechanism)
-# ---------------------------------------------------------------------------
-# Persisted at verdicts/{sha256}.json in MinIO -- a prefix outside processed/
-# so it survives wipe_processed() and anchors verdict stability across
-# reingestion cycles.  Max-priority-wins guard: an existing PASS is never
-# downgraded to MARGINAL by a re-ingestion that computes a worse verdict.
-#
-# Replaces: find_prior_verdict, snapshot_prior_verdicts, _PRIOR_VERDICTS_KEY,
-# _VERDICT_PRIORITY (RFC-025 D0 / RFC-026 D3 / RFC-033 D0 -- all dead code
-# with zero production callers).
-
-_LEDGER_VERDICT_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
-
-
-def persist_verdict_ledger(sha256: str, verdict: str, reason: str) -> None:
-    """Write or upgrade the per-content verdict ledger entry.
-
-    Max-priority-wins guard: if ``verdicts/{sha256}.json`` already exists
-    and records a higher-priority verdict (PASS > MARGINAL > FAIL > ERROR),
-    the write is skipped.  This prevents a noisy re-ingestion from
-    downgrading a previously stable verdict.
-
-    Fire-and-forget: logs a warning on MinIO unavailability but never
-    raises -- the ledger is a quality-of-life anchor, never a blocker.
-    """
-    key = f"verdicts/{sha256}.json"
-    try:
-        mc = _minio_ops.get_minio()
-    except Exception:
-        logger.warning("persist_verdict_ledger: MinIO unavailable, skipping")
-        return
-    try:
-        # Read existing ledger entry for max-priority-wins guard
-        response = None
-        try:
-            response = mc.get_object(settings.minio_bucket, key)
-            existing = json.loads(response.read())
-        except S3Error as exc:
-            if exc.code == "NoSuchKey":
-                existing = None
-            else:
-                raise
-        except Exception:
-            existing = None
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                    response.release_conn()
-                except Exception:
-                    pass
-
-        # Max-priority-wins guard
-        if existing is not None:
-            existing_verdict = existing.get("verdict", "")
-            existing_priority = _LEDGER_VERDICT_PRIORITY.get(existing_verdict, -1)
-            incoming_priority = _LEDGER_VERDICT_PRIORITY.get(verdict, -1)
-            if existing_priority >= incoming_priority:
-                logger.debug(
-                    "persist_verdict_ledger: existing verdict %s (priority %d) >= "
-                    "incoming %s (priority %d) for sha256=%s; skipping write",
-                    existing_verdict,
-                    existing_priority,
-                    verdict,
-                    incoming_priority,
-                    sha256[:12],
-                )
-                return
-
-        payload = json.dumps(
-            {
-                "sha256": sha256,
-                "verdict": verdict,
-                "verdict_reason": reason,
-                "written_at": datetime.now(UTC).isoformat(),
-            }
-        ).encode("utf-8")
-        mc.put_object(
-            settings.minio_bucket,
-            key,
-            BytesIO(payload),
-            length=len(payload),
-            content_type="application/json",
-        )
-        logger.debug(
-            "persist_verdict_ledger: wrote %s=%s for sha256=%s",
-            verdict,
-            reason,
-            sha256[:12],
-        )
-    except Exception:
-        logger.warning(
-            "persist_verdict_ledger: failed for sha256=%s, skipping",
-            sha256[:12],
-            exc_info=True,
-        )
-
-
-def read_verdict_ledger(sha256: str) -> str | None:
-    """Read the best-ever verdict from the per-content ledger.
-
-    Returns the verdict string (PASS/MARGINAL/FAIL/ERROR) or None if no
-    ledger entry exists or MinIO is unavailable.  Graceful degradation:
-    hysteresis is a quality improvement, never a blocker.
-    """
-    key = f"verdicts/{sha256}.json"
-    try:
-        mc = _minio_ops.get_minio()
-    except Exception:
-        logger.warning("read_verdict_ledger: MinIO unavailable, skipping")
-        return None
-    response = None
-    try:
-        response = mc.get_object(settings.minio_bucket, key)
-        entry = json.loads(response.read())
-        return entry.get("verdict")
-    except S3Error as exc:
-        if exc.code == "NoSuchKey":
-            return None
-        logger.warning(
-            "read_verdict_ledger: S3 error for sha256=%s (%s)",
-            sha256[:12],
-            exc,
-        )
-        return None
-    except Exception:
-        logger.warning(
-            "read_verdict_ledger: failed for sha256=%s, skipping",
-            sha256[:12],
-            exc_info=True,
-        )
-        return None
-    finally:
-        if response is not None:
-            try:
-                response.close()
-                response.release_conn()
-            except Exception:
-                pass

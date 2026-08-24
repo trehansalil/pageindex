@@ -31,6 +31,12 @@ class TreeDefect(StrEnum):
     ARABIC_LOW_CONTENT_RATIO = "arabic_low_content_ratio"
 
 
+# RFC-037 D6: single source of truth for verdict priority ordering
+# (PASS > MARGINAL > FAIL > ERROR). Replaces _LEDGER_VERDICT_PRIORITY
+# (storage/verdict.py) and _LEDGER_PRIORITY (helpers/verdict.py).
+VERDICT_PRIORITY: dict[str, int] = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+
+
 @dataclass(frozen=True)
 class TreeGateResult:
     ok: bool

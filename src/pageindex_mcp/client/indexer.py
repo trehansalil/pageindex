@@ -88,7 +88,6 @@ from ..storage import (
     hash_cache_get,
     hash_cache_set,
     list_processed_docs,
-    read_verdict_ledger,
     save_doc,
     save_doc_meta,
     save_flat_doc,
@@ -849,19 +848,6 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         )
         f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
 
-        # Zone-4: hysteresis anchoring via verdict ledger.
-        from ..helpers.verdict import apply_verdict_hysteresis
-
-        f_verdict, f_verdict_reason = await asyncio.to_thread(
-            apply_verdict_hysteresis,
-            f_verdict,
-            f_verdict_reason,
-            sha256,
-            filename,
-            "flat",
-            read_verdict_ledger,
-        )
-
         _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
         flat_desc = await asyncio.to_thread(
@@ -981,19 +967,6 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             expected_script=expected_script,
         )
         verdict, verdict_reason = _vr.verdict, _vr.reason
-
-        # Zone-4: hysteresis anchoring via verdict ledger.
-        from ..helpers.verdict import apply_verdict_hysteresis
-
-        verdict, verdict_reason = await asyncio.to_thread(
-            apply_verdict_hysteresis,
-            verdict,
-            verdict_reason,
-            sha256,
-            filename,
-            "tree",
-            read_verdict_ledger,
-        )
 
         _, _, mlr = _tree_max_leaf_ratio(structure)
         _verdict_computed_at = datetime.now(UTC).isoformat()

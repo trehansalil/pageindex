@@ -55,28 +55,35 @@ ON CONFLICT (doc_id) DO UPDATE SET
         THEN EXCLUDED.node_count
         ELSE doc_registry.node_count
     END,
-    -- Zone-8: temporal CAS guard — prefer newer verdict_computed_at.
-    -- Existing rows with NULL/empty verdict_computed_at always accept any
-    -- incoming verdict (COALESCE to '' ensures '' < any ISO timestamp).
-    -- When the incoming payload carries no verdict (empty string), preserve
-    -- the existing verdict regardless of timestamps.
+    -- RFC-037 D1: max-priority-wins guard — replaces the old timestamp-only
+    -- CAS with a verdict-PRIORITY comparison (PASS=3 > MARGINAL=2 > FAIL=1 >
+    -- ERROR=0; unrecognised/empty verdict = -1).  An existing row's verdict
+    -- is preserved whenever its priority is higher than the incoming one, so
+    -- a verdict can only be upgraded, never downgraded, across re-ingestion
+    -- cycles.  This is the single SQL arbiter all three registry writers
+    -- (_upsert_registry_row, reconcile_registry_drift,
+    -- _drain_verdict_retry_queue) inherit automatically.
     verdict         = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
         THEN COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict)
         ELSE doc_registry.verdict
     END,
     pipeline_version = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
         THEN EXCLUDED.pipeline_version
         ELSE doc_registry.pipeline_version
     END,
     permanent_marginal = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
         THEN EXCLUDED.permanent_marginal
         ELSE doc_registry.permanent_marginal
     END,
     verdict_computed_at = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
+        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
         THEN EXCLUDED.verdict_computed_at
         ELSE doc_registry.verdict_computed_at
     END
