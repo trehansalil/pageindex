@@ -75,6 +75,7 @@ mappings:
       - test_llm_retry.py
       - test_tracing.py
       - test_metrics.py
+      - test_zdr_egress.py
 
   # ── Data-integrity critical (coverage: 90%) ─────────────────────────────────
   storage/minio_ops.py:
@@ -189,6 +190,7 @@ mappings:
     tests:
       - test_worker.py            # primary
       - test_density_gate.py
+      - test_registry_mirror.py
 
   worker/subprocess_mgr.py:
     coverage_threshold: 85
@@ -220,6 +222,8 @@ mappings:
       - test_observability.py
       - test_verdict.py
       - test_verdict_misc.py
+      - test_zdr_egress.py
+      - test_zone1_verdict_unification.py
 
   converters/types.py:
     tests:
@@ -237,6 +241,8 @@ mappings:
   converters/ocr_langs.py:
     tests:
       - test_converters.py
+      - test_arabic_rtl_pipeline.py
+      - test_converter_chain_ocr.py
       - test_observability.py
       - test_rfc013_structural_hardening.py
       - test_rfc_arabic.py
@@ -246,6 +252,7 @@ mappings:
   converters/headings.py:
     tests:
       - test_converters.py            # primary
+      - test_arabic_rtl_pipeline.py
       - test_density_gate.py
       - test_depth_inference.py
       - test_outline_inference.py
@@ -297,6 +304,7 @@ mappings:
 
   converters/pipeline.py:
     tests:
+      - test_converter_chain_ocr.py
       - test_density_gate.py
       - test_observability.py
       - test_pipeline.py
@@ -306,6 +314,7 @@ mappings:
     tests:
       - test_converters.py
       - test_rfc_pipeline.py
+      - test_zdr_egress.py
 
   converters_cli.py:
     tests:
@@ -314,6 +323,8 @@ mappings:
   helpers/types.py:
     tests:
       - test_compute_verdict.py
+      - test_converter_chain_ocr.py
+      - test_finalize_gate_route.py
       - test_garble.py
       - test_garble_detection.py
       - test_gate_table.py
@@ -392,6 +403,7 @@ mappings:
       - test_gate_table.py            # primary
       - test_compute_verdict.py
       - test_density_gate.py
+      - test_finalize_gate_route.py
       - test_helpers.py
       - test_ocr_decision.py
       - test_pipeline.py
@@ -440,6 +452,9 @@ mappings:
       - test_rfc_worker.py
       - test_route_decision.py
       - test_vlm_fallback.py
+      - test_zone1_flat_split_wiring.py
+      - test_zone1_hysteresis.py
+      - test_zone1_verdict_unification.py
 
   helpers/tree_split.py:
     tests:
@@ -454,6 +469,7 @@ mappings:
       - test_rfc_converters.py
       - test_rfc_reorder.py
       - test_rfc_tables.py
+      - test_zone1_flat_split_wiring.py
 
   helpers/tables.py:
     tests:
@@ -463,6 +479,7 @@ mappings:
   helpers/table_stitch.py:
     tests:
       - test_helpers.py               # primary
+      - test_arabic_rtl_pipeline.py
       - test_density_gate.py
       - test_rfc_bidi_agpl.py
       - test_rfc_converters.py
@@ -473,6 +490,8 @@ mappings:
       - test_client.py
       - test_converters.py
       - test_density_gate.py
+      - test_flat_block_text_consolidation.py
+      - test_flat_doc_view.py
       - test_image_blocks.py
       - test_rfc_bidi.py
       - test_rfc_blocks.py
@@ -493,6 +512,7 @@ mappings:
       - test_rag_contract.py
       - test_rag_dedup.py
       - test_rfc013_structural_hardening.py
+      - test_zdr_egress.py
 
   job_status.py:
     tests:
@@ -587,6 +607,7 @@ mappings:
     tests:
       - test_queue_metrics.py
       - test_presign_public_route.py
+      - test_zdr_egress.py
 
   tools/documents.py:
     tests:
