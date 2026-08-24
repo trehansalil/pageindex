@@ -1,64 +1,62 @@
 # Remediation Scorecard — POST (2026-08-12)
 
-**Pre-fix audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-11_RUN-2.md
-**Post-fix audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12.md
+**Pre-fix audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-19_POST-FIX-10.md  
+**Post-fix audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST.md  
 **Delta report:** audit/ZONE_DELTA_2026-08-12_POST.md
 
-## Verdict: NEEDS ANOTHER CYCLE
+## Verdict: REGRESSED
 
-All 7 defect zones from the prior audit remain open with zero net bug movement (64 bugs pre, 64 bugs post; 0 improved, 0 regressed, 0 closed, 0 new). Wiring status is still partial: the Zone 5 type infrastructure (`REASON_POLICY`, `TreeDefect`, `HARD_FAIL_DEFECTS`) exists in `helpers.py` with passing tests but remains unimported by `client.py`, and several proposed symbols (`decide_route()`, `Route` StrEnum, `ExtractionSnapshot`, `first_defect`) were never created. This cycle produced no closures; the recommended path forward prioritizes wiring the already-built Zone 5 infrastructure as a low-effort win before tackling the larger Zone 1 gate-table and Zone 3 RTL-unification efforts.
+Despite closing one critical 12-bug zone (Picture/OCR Enrichment and Page-Level Escalation Conflation), the remediation cycle has regressed overall. Three previously stable or improved zones have degraded to regressed status (Tree/Flat Verdict Split, Converter-Gate-Route Ordering Chain, Arabic/RTL Pipeline Blindness), and two new high-severity zones surfaced after monolith decomposition exposed infrastructure boundaries and compliance gaps. The net bug count increased by 3 (50 → 53 bugs total). The pattern across 16 consecutive remediation cycles shows gate-hardening regressions and verdict fabrication outpacing genuine convergence; the next cycle must pause broadening mechanisms and focus on unifying fragmented logic paths and resolving Hard Rule compliance violations.
 
-## Zones Closed (0)
+## Zones Closed (1)
 
-| Zone | Was Severity | Bugs Eliminated |
+| Name | Was Severity | Bugs Eliminated |
 |---|---|---|
-| — | — | — |
+| Picture/OCR Enrichment and Page-Level Escalation Conflation | Critical | 12 |
 
-_No zones closed this cycle._
+## Zones Remaining (6)
 
-## Zones Remaining (7)
-
-| Zone | Severity | Bug Count | Status |
+| Name | Severity | Bug Count | Status |
 |---|---|---|---|
-| Zone 1: Verdict engine (11-gate first-match cascade + dual signal derivation) | critical | 12 | stalled |
-| Zone 2: OCR escalation vs per-picture enrichment (marker-count contract) | critical | 11 | stalled |
-| Zone 3: Six Arabic/RTL order deciders + 10-prong garble gate | critical | 9 | stalled |
-| Zone 4: pdf_to_markdown_docling dual candidate pipelines | high | 9 | stalled |
-| Zone 5: reason as diagnosis + routing command in index() | critical | 8 | stalled |
-| Zone 6: Verdict persistence (five writers, lost-update sidecar merge) | high | 8 | stalled |
-| Zone 7: Flag and threshold sprawl (~35 kill-switches) | high | 7 | stalled |
+| Tree/Flat Verdict Split | Critical | 11 | Regressed |
+| Garble Detection Fragmentation | Critical | 12 | Stalled |
+| Converter-Gate-Route Ordering Chain | Critical | 12 | Regressed |
+| Worker-Child Process Boundary | High | 5 | Improved |
+| Arabic/RTL Pipeline Blindness | High | 9 | Regressed |
+| Duplicated Convergent Logic | Medium | 4 | Improved |
 
-## New Zones (0)
+## New Zones (2)
 
-| Zone | Severity | Introduced By |
+| Name | Severity | Introduced By |
 |---|---|---|
-| — | — | — |
-
-_No new zones introduced this cycle._
+| Registry Dual-Write Consistency | High | Extracted from prior Cross-Process Error Classification Boundary zone; dual-write topology between MinIO sidecar and Postgres registry surfaced as independent defect zone with 7 bugs after monolith decomposition clarified the boundary |
+| ZDR/PII Egress Gap | High | Newly identified: Hard Rule 3 ZDR enforcement is per-call-site opt-in; the two highest-volume LLM egress paths (_run_md_to_tree, _run_page_index_retrying) and LLM_FALLBACK_BASE_URL bypass zdr_egress_gate entirely. Conflict between RFC-004 VLM lock and RFC-016 VLM enablement unresolved. |
 
 ## Metrics
 
-- Net bug delta: 0
-- Total bugs (current / prior): 64 / 64
-- Improved: 0 · Regressed: 0 · Stalled: 7 · New: 0 · Closed: 0
-- Wiring status: some_unwired
-- Unwired symbols:
-  - `REASON_POLICY` (helpers.py:109-121 — not imported by client.py)
-  - `TreeDefect` StrEnum (helpers.py:63 — not referenced in client.py routing)
-  - `HARD_FAIL_DEFECTS` (helpers.py:132-138 — derived from REASON_POLICY, also unwired)
-  - `decide_route()` — proposed but never created
-  - `Route` StrEnum — proposed but never created
-  - `ExtractionSnapshot` dataclass — proposed but never created
-  - `first_defect` field — proposed but never created
+- **Net bug delta:** +3 (50 → 53 bugs)
+- **Improved zones:** 2
+- **Regressed zones:** 3
+- **Stalled zones:** 1
+- **New zones:** 2
+- **Closed zones:** 1
+- **Wiring status:** some_unwired
+- **Unwired symbols:**
+  - `scripts/gates/test-index-guard.sh` (commit 9e85650, not registered in scripts/eval.sh GATE_SCRIPTS table, not called by any .github/workflows/*.yml, not in any Makefile target)
+  - `tests/TEST_INDEX.yaml` (only consumer is the unwired test-index-guard.sh script, so inert for enforcement)
 
 ## Recommended Next Steps
 
-All 7 zones stalled at 64 total bugs with zero net improvement. Three actions for next cycle, in priority order:
+**STOP broadening gate/verdict logic and focus on convergence.** Three critical zones regressed, two new high-severity zones appeared, and the net bug count rose by 3 despite closing one 12-bug zone. Specific next steps:
 
-1. **WIRE ZONE 5** (quick win, ~1-2d): `TreeDefect`/`REASON_POLICY`/`HARD_FAIL_DEFECTS` already exist in `helpers.py` with exhaustiveness assertions and passing tests. Import them into `client.py:index()`, replace the literal string comparisons with `REASON_POLICY` lookups, create `decide_route()`. This is the lowest-effort highest-certainty improvement — the type infrastructure is built and tested, it just needs to be plugged in.
+1. **GARBLE DETECTION (stalled 6+ cycles, longest-stalled zone in project history):** Stop adding per-document heuristics; fix the three generative causes — move NFKC normalization AFTER morphology detection, eliminate expected_script self-corruption from corrupted text, replace per-call-site wiring with single choke-point dispatch.
 
-2. **ZONE 1 DECLARATIVE GATE TABLE** (highest bug count, ~3.5-4.5d): Convert `validate_tree`'s 11 early-return gates into an exhaustive rule table. `TreeSignals` dataclass already exists (helpers.py:203). The gate-11 dead code (`arabic_low_content_ratio` unreachable behind gate 1) should be removed as part of this. This directly addresses 12 bugs and unblocks Zone 5 wiring (`TreeGateResult` feeds `classify_verdict`).
+2. **TREE/FLAT VERDICT SPLIT (regressed +2, escalated high→critical):** Unify the tree and flat gate evaluation into a single code path with a shared validation contract; the 7-gate vs 3-gate asymmetry is the root cause of oscillation.
 
-3. **ZONE 3 RTL UNIFICATION** (persistent regression source, ~3.5-4.5d): Consolidate the six independent RTL deciders into one `decide_rtl()`. This zone has resisted 5+ remediation RFCs; architectural simplification is the only path forward. Sequence after Zone 1 since the garble gate table feeds RTL decisions.
+3. **CONVERTER-GATE-ROUTE ORDERING CHAIN (regressed +1):** Wire decide_route re-evaluation after recovery mixins fix a defect; stale routing after recovery is the new dominant failure mode.
 
-Zones 6 and 7 have no simplification proposals yet — draft proposals before attempting fixes. Zone 2 proposal (picture_plane.py) is fully specified but not started; sequence after Zones 1/5 since OCR escalation interacts with the verdict engine.
+4. **Wire test-index-guard.sh into scripts/eval.sh GATE_SCRIPTS and CI before it rots further.**
+
+5. **ZDR/PII EGRESS GAP is a Hard Rule 3 compliance violation** — add zdr_egress_gate to _run_md_to_tree and _run_page_index_retrying before any further LLM-calling changes.
+
+6. **PAST CYCLE WARNING:** 16 remediation cycles have shown a pattern of gate-hardening regressions, verdict fabrication, and chronic document failures (cabinet_resolution_no_96: 8+ failed attempts, world-stats-pocketbook: unexplained 67% char drops). Each cycle broadens mechanisms faster than it closes them. The next cycle must be convergent, not expansive.

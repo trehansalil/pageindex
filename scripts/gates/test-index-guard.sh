@@ -167,7 +167,7 @@ if [[ "$FULL_AUDIT" == "false" ]]; then
       if [[ "$any_test_changed" == "true" ]]; then
         pass "source '$src' changed — mapped test(s) also updated"
       else
-        warn "source '$src' changed but none of its ${#mapped_tests[@]} mapped test(s) were updated"
+        warn "source '$src' changed but none of its mapped test(s) were updated"
       fi
     done
   fi

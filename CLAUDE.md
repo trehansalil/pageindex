@@ -12,21 +12,6 @@ PageIndex MCP Server is a vectorless / tree-reasoning RAG document-ingestion pla
 4. **AGPL-3.0 awareness.** pymupdf4llm/PyMuPDF are AGPL-3.0 (transitive dep). Serving them over a network is a legal decision to clear, not a settled safe-harbor. The MIT escape is Docling.
 5. **Never silently persist a low-quality tree.** `validate_tree()` must run before `save_doc`; a failing tree must surface as an arq `low_quality_tree` error, not a stored artifact.
 
-## Artifact Templates (enforced)
-
-Before creating any RFC, design document, or task file under `.agents/`, **read the corresponding template** from `.agents/reference_files/` and follow its structure exactly:
-
-| Template | Use when creating |
-|----------|-------------------|
-| `rfc-template.md` | Any file in `.agents/rfcs/` |
-| `design-template.md` | Any file in `.agents/designs/` |
-| `tasks-template.md` | Any file in `.agents/tasks/` |
-
-Rules:
-1. **Frontmatter is mandatory.** Every artifact must include YAML frontmatter with at minimum: `id`, `title`, `status`, `date`, `tags`.
-2. **Cross-references use `[[wikilinks]]`.** Link RFCs, designs, and tasks to each other via `[[RFC-NNN]]`, `[[design-rfcNNN-slug]]`, `[[tasks-rfcNNN-slug]]`.
-3. **Traceability section is mandatory.** Every design and task file must link back to its governing RFC; every RFC must link forward to its design/tasks if they exist.
-4. **Replace all `{{placeholders}}`** — no template tokens may survive into committed artifacts.
 
 ## Document Map
 
@@ -74,6 +59,3 @@ uv run python preprocess_client.py --bg         # background, logs to preprocess
 uv run pytest
 ```
 
-## Current Phase
-
-Bootstrap planning artifacts complete (PRD.md, ARCHITECTURE.md, DESIGN.md written). Now executing **Tier-0 remediation**: markdown-first PDF extraction route + tree quality gate, per `PRD.md` § Functional Requirements and `ARCHITECTURE.md` § Ingestion Pipeline & Data Flow / Tree Quality Gate.
