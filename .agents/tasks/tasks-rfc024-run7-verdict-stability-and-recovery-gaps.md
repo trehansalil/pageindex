@@ -1,7 +1,5 @@
 <!-- Space: CITRA -->
-
 <!-- Title: Implementation Plan: RFC-024 Run 7 Verdict Stability & Recovery Gaps -->
-
 <!-- Folder: Tasks -->
 
 # Implementation Plan: RFC-024 Run 7 Verdict Stability & Recovery Gaps

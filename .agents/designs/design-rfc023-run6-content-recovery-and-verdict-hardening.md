@@ -140,18 +140,18 @@ sequenceDiagram
   Conv->>Conv: _text_layer_has_content(page_text)
   Conv->>H: _is_garbled_blob(page_text)
   H-->>Conv: True (garbled) or False (clean)
-  alt garbled or <20 chars
+  alt garbled or below 20 chars
     Conv->>Conv: coverage exemption fires
     Conv->>Conv: _recover_picture_text() per-region loop
     Conv->>Conv: bbox pre-filter (D2): skip sub-20pt regions
     Conv->>Conv: Tesseract OCR on remaining regions
     Conv->>Conv: splice_figure_markers() ordinal-matched (D1)
   end
-  Conv-->>C: markdown (may contain unresolved <!-- image --> markers)
+  Conv-->>C: markdown (may contain unresolved image-comment markers)
   C->>H: build_tree(markdown) -> validate_tree()
-  H->>H: _is_garbled_blob(blob) with <!--...--> stripped (D3)
+  H->>H: _is_garbled_blob(blob) with HTML comments stripped (D3)
   H-->>C: (ok, reason)
-  alt reason in ('node_count<3','depth<2') AND image-dominant (D11)
+  alt reason in (node_count_below_3, depth_below_2) AND image-dominant (D11)
     C->>Conv: page-level OCR retry (Fix-3 escalation)
     Conv-->>C: recovered markdown
   end
@@ -175,7 +175,7 @@ sequenceDiagram
   Conv-->>C: ocr_text
   C->>H: _is_garbled_blob(ocr_text)
   alt not garbled
-    C->>C: flat_md = ocr_text; reason = 'node_count<3'
+    C->>C: flat_md = ocr_text, reason = node_count_below_3
     C->>C: enter existing flat success path (line 954)
   else garbled or empty
     C->>C: raise LowQualityTreeError('garbling')
@@ -199,7 +199,7 @@ sequenceDiagram
   C->>H: classify_verdict(synthetic_structure, flat_text)
   H->>H: cat_b_promoted gate
   H->>H: len(flat_text.strip()) >= MIN_FLAT_PROMOTION_CHARS (D4)
-  H->>H: image-placeholder ratio <= 0.5 (D4)
+  H->>H: image-placeholder ratio at most 0.5 (D4)
   H-->>C: verdict (PASS / MARGINAL / FAIL)
 ```
 

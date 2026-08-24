@@ -172,7 +172,7 @@ sequenceDiagram
   Conv->>Page: get bbox for full-page picture region
   Conv->>Page: get_text(text, clip=region_rect)
   Page-->>Conv: region_clip_len (D1: region-scoped, not page-level)
-  alt region_clip_len < _PICTURE_OCR_MIN_CHARS
+  alt region_clip_len below _PICTURE_OCR_MIN_CHARS
     Conv->>Cap: check MAX_FULLPAGE_PICTURE_OCR_REGIONS not exceeded
     alt cap not exceeded
       Cap-->>Conv: proceed
@@ -184,7 +184,7 @@ sequenceDiagram
   else region_clip_len >= _PICTURE_OCR_MIN_CHARS
     Conv->>Conv: region has its own text — no exemption, skip as before
   end
-  Conv->>Conv: chars_per_heading < 50? (secondary document-level fallback trigger)
+  Conv->>Conv: chars_per_heading below 50? (secondary document-level fallback trigger)
   alt below floor
     Conv->>Conv: fire _document_level_text_fallback (pdfium whole-doc read)
   end
@@ -206,7 +206,7 @@ sequenceDiagram
     C->>Rec: recovery attempt fires (previously: only "garbling")
     Rec-->>C: recovered flat_md
     C->>Gate: _flat_text_is_garbled(flat_md, original_reason)
-    alt len(flat_md) < 200 AND original_reason in ("garbling", "node_garbling")
+    alt len(flat_md) below 200 AND original_reason in garbling set
       Gate-->>C: True (garbled-by-default, D2)
       C->>C: raise LowQualityTreeError (Hard Rule 5 preserved)
     else recovered text passes heuristics or is >= 200 chars

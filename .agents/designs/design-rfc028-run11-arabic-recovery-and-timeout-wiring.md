@@ -1,7 +1,5 @@
 <!-- Space: CITRA -->
-
 <!-- Title: Design Document: RFC-028 Run 11 Arabic Recovery, Garble Detection, and Timeout Wiring -->
-
 <!-- Folder: Designs -->
 
 # Design Document: RFC-028 Run 11 Arabic Recovery, Garble Detection, and Timeout Wiring

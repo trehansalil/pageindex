@@ -137,10 +137,10 @@ sequenceDiagram
     Note over VT: D5 — garble check runs FIRST
     alt tree is garbled
         VT-->>C: (False, "garbling")
-    else node_count < 3
-        VT-->>C: (False, "node_count<3")
-    else depth < 2
-        VT-->>C: (False, "depth<2")
+    else node_count below 3
+        VT-->>C: (False, "node_count below 3")
+    else depth below 2
+        VT-->>C: (False, "depth below 2")
     else node_garbling ratio exceeded
         VT-->>C: (False, "node_garbling")
     else reordered
@@ -161,7 +161,7 @@ sequenceDiagram
         CV-->>C: _classify_image_verdict(...)
     else image_enrichment_ratio >= 0.8
         Note over CV: D1 — volume floor check
-        alt total_chars < MIN_IMAGE_PROMOTED_CHARS
+        alt total_chars below MIN_IMAGE_PROMOTED_CHARS
             CV-->>C: ("MARGINAL", "image_enrichment_promoted_below_floor")
         else
             CV-->>C: ("PASS", "image_enrichment_promoted")

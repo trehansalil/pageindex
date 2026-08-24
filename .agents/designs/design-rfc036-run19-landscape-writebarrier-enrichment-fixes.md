@@ -170,7 +170,7 @@ sequenceDiagram
     P->>P: _landscape_pages_below_threshold flags N pages
     P->>L: Start per-page reextraction loop
     loop For each flagged page
-        L->>L: Check page_index < MAX_LANDSCAPE_PAGES AND now < deadline
+        L->>L: Check page_index within MAX_LANDSCAPE_PAGES AND now within deadline
         alt Cap or deadline reached
             L->>L: Bail early, stop loop
         else Within budget
@@ -189,8 +189,8 @@ sequenceDiagram
     P->>P: Splice fallback markdown at original page position (not appended at end)
     P->>S: Pass spliced markdown to table segmentation
     S->>S: Compute singleton-ratio for candidate table block
-    alt >60% single-value rows
-        S->>S: Skip segmentation; keep single TABLE node
+    alt Over 60% single-value rows
+        S->>S: Skip segmentation, keep single TABLE node
     else Normal table
         S->>S: Segment as before
     end
@@ -272,7 +272,7 @@ sequenceDiagram
 
     RP->>RP: Evaluate skip paths (decorative_icon / OCR min-chars / page_coverage / clip_text_already_exported)
     alt Region correctly skipped
-        RP->>PR: Set skipped_reason=<reason>, decorative=True (as applicable)
+        RP->>PR: Set skipped_reason=reason, decorative=True (as applicable)
     else Region enriched
         RP->>PR: Populate ocr_text, description, bbox, page
     end

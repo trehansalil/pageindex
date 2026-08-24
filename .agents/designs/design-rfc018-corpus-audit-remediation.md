@@ -1,7 +1,5 @@
 <!-- Space: CITRA -->
-
 <!-- Title: Design: RFC-018 Corpus Audit Remediation -->
-
 <!-- Folder: Designs -->
 
 # Design Document: Corpus Audit Remediation

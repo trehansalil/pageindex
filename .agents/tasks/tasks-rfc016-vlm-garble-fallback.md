@@ -1,7 +1,5 @@
 <!-- Space: CITRA -->
-
 <!-- Title: Implementation Plan: Vlm Garble Fallback -->
-
 <!-- Folder: Tasks -->
 
 # Implementation Plan: Vlm Garble Fallback

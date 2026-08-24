@@ -93,7 +93,6 @@ graph TB
     D12 --> D13
     D10 --> D13
     D11 --> D13
-</mermaid>
 ```
 
 ---

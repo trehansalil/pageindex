@@ -1,7 +1,5 @@
 <!-- Space: CITRA -->
-
 <!-- Title: Design: Vlm Garble Fallback -->
-
 <!-- Folder: Designs -->
 
 # Design: Vlm Garble Fallback
