@@ -386,11 +386,12 @@ def test_upsert_sql_has_returning_clause():
 
 
 def test_upsert_sql_has_verdict_cas_guard():
-    """Zone-8: verdict columns are guarded by verdict_computed_at temporal CAS."""
+    """RFC-037 D1: verdict columns are guarded by a max-priority-wins CASE."""
     from pageindex_mcp.registry.queries import _UPSERT_SQL
 
     sql = _UPSERT_SQL
-    assert "EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at" in sql
+    assert "CASE EXCLUDED.verdict WHEN 'PASS' THEN 3" in sql
+    assert "CASE doc_registry.verdict WHEN 'PASS' THEN 3" in sql
 
 
 def test_upsert_sql_has_processed_at_cas_guard():

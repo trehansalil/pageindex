@@ -51,7 +51,6 @@ from pageindex_mcp.metrics import (
     TOC_STRIP_SKIPPED,
 )
 from pageindex_mcp.storage import (
-    _verdict_cas_guard,
     save_doc_meta,
     write_verdict,
 )
@@ -663,14 +662,6 @@ def _written_sidecar(mock_mc: MagicMock) -> dict:
     call_args = mock_mc.put_object.call_args
     stream = call_args[0][2]
     return json.loads(stream.read())
-
-
-class TestVerdictCasGuard:
-    """_verdict_cas_guard: temporal CAS by verdict_computed_at."""
-
-    def test_allows_write_when_timestamps_equal(self):
-        ts = "2026-08-05T00:00:00+00:00"
-        assert _verdict_cas_guard({"verdict_computed_at": ts}, {"verdict_computed_at": ts}) is False
 
 
 class TestSaveDocMetaCasIntegration:

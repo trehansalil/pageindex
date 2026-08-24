@@ -2,7 +2,7 @@
 
 Merges (formerly separate) test files covering RFC-025 design properties:
 
-- D0: best-ever verdict retrieval via ``read_verdict_ledger`` (per-content
+- D0: best-ever verdict retrieval via ``read_verdict_ledger`` [RFC-037 D3: REMOVED] (per-content
   MinIO key at ``verdicts/{sha256}.json``).
 - D1 (Task 2.6): region-scoped text-layer check for the picture-coverage
   exemption in ``pageindex_mcp.converters`` (Design Property 2), plus the
@@ -35,7 +35,6 @@ from pageindex_mcp.converters import (
 )
 from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE, TreeDefect
 from pageindex_mcp.picture_plane import PictureGateConfig
-from pageindex_mcp.storage import read_verdict_ledger
 
 from tests._garble_compat import check_garble
 
@@ -157,32 +156,18 @@ def _make_fake_fitz(page_width: float, page_height: float, initial_rotation: int
 
 
 # --------------------------------------------------------------------------
-# D0: best-ever verdict retrieval (read_verdict_ledger)
+# RFC-037 D3: read_verdict_ledger REMOVED (TestReadVerdictLedgerRetrieval deleted)
 # --------------------------------------------------------------------------
 
 
-class TestReadVerdictLedgerRetrieval:
-    def test_sha256_match_returns_verdict(self, mock_minio):
-        mock_minio.get_object.return_value = _ledger_response("PASS")
-        result = read_verdict_ledger("abc123")
-        assert result == "PASS"
+class TestReadVerdictLedgerRemoval:
+    """RFC-037 D3: read_verdict_ledger must no longer be importable."""
 
-    def test_no_ledger_entry_returns_none(self, mock_minio):
-        from minio.error import S3Error
+    def test_not_importable_from_storage(self):
+        import pageindex_mcp.storage as storage_mod
 
-        resp = MagicMock()
-        resp.status = 404
-        resp.headers = {}
-        resp.data = b""
-        exc = S3Error(resp, "NoSuchKey", "not found", None, None, None)
-        mock_minio.get_object.side_effect = exc
-        result = read_verdict_ledger("abc123")
-        assert result is None
-
-    def test_minio_unavailable_returns_none(self):
-        with patch("pageindex_mcp.storage.minio_ops.get_minio", side_effect=RuntimeError("down")):
-            result = read_verdict_ledger("abc123")
-        assert result is None
+        assert not hasattr(storage_mod, "read_verdict_ledger")
+        assert "read_verdict_ledger" not in storage_mod.__all__
 
 
 # --------------------------------------------------------------------------

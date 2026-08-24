@@ -1,8 +1,8 @@
 """Zone-1 Tree/Flat Verdict Split: wiring and contract tests.
 
 Verifies the structural wiring of the zone-1 remediation:
-- apply_verdict_hysteresis is exported from helpers and wired into indexer.py
-- _LEDGER_PRIORITY exists at module level in verdict.py
+- RFC-037 D4: apply_verdict_hysteresis is REMOVED (no longer in helpers or indexer)
+- VERDICT_PRIORITY exists in helpers.types (RFC-037 D6 consolidation)
 - evaluate_gates and apply_promotions signatures have no flat-path params
 - state.gate_result is threaded through both flat and tree persist paths
 - Dead code _decomposed_verdict in test_pipeline.py uses removed signatures
@@ -10,26 +10,18 @@ Verifies the structural wiring of the zone-1 remediation:
 
 from __future__ import annotations
 
-import ast
 import inspect
-import textwrap
 
 import pytest
 
+from pageindex_mcp.helpers.types import VERDICT_PRIORITY
 from pageindex_mcp.helpers.verdict import (
-    _LEDGER_PRIORITY,
     apply_promotions,
-    apply_verdict_hysteresis,
     evaluate_gates,
     compute_verdict,
 )
 from pageindex_mcp.helpers import (
     GATES,
-    HARD_FAIL_DEFECTS,
-    TreeDefect,
-    TreeGateResult,
-    TreeSignals,
-    VerdictResult,
 )
 from pageindex_mcp.helpers.types import (
     GateOutcome,
@@ -39,80 +31,65 @@ from pageindex_mcp.helpers.types import (
 
 
 # ---------------------------------------------------------------------------
-# Wiring: apply_verdict_hysteresis export chain
+# RFC-037 D4: apply_verdict_hysteresis REMOVED
 # ---------------------------------------------------------------------------
 
 
-class TestApplyVerdictHysteresisWiring:
-    """Wiring: apply_verdict_hysteresis must be importable from the
-    helpers package and referenced in both persist paths of indexer.py."""
+class TestApplyVerdictHysteresisRemoved:
+    """RFC-037 D4: apply_verdict_hysteresis must no longer be importable
+    or referenced in indexer.py persist paths."""
 
-    def test_exported_from_helpers_init(self):
-        """helpers.__init__.__all__ must include apply_verdict_hysteresis."""
+    def test_not_exported_from_helpers_init(self):
+        """helpers.__init__.__all__ must NOT include apply_verdict_hysteresis."""
         import pageindex_mcp.helpers as helpers_mod
-        assert hasattr(helpers_mod, "apply_verdict_hysteresis")
-        assert "apply_verdict_hysteresis" in helpers_mod.__all__
+        assert not hasattr(helpers_mod, "apply_verdict_hysteresis")
+        assert "apply_verdict_hysteresis" not in helpers_mod.__all__
 
-    def test_importable_from_verdict_module(self):
-        """Direct import from helpers.verdict must work."""
-        from pageindex_mcp.helpers.verdict import apply_verdict_hysteresis as fn
-        assert callable(fn)
+    def test_not_importable_from_verdict_module(self):
+        """Direct import from helpers.verdict must fail."""
+        with pytest.raises(ImportError):
+            from pageindex_mcp.helpers.verdict import apply_verdict_hysteresis  # noqa: F401
 
-    def test_callable_signature_has_six_params(self):
-        """apply_verdict_hysteresis(verdict, verdict_reason, sha256,
-        filename, path_label, read_ledger_fn) -> tuple[str, str]."""
-        sig = inspect.signature(apply_verdict_hysteresis)
-        param_names = list(sig.parameters.keys())
-        assert param_names == [
-            "verdict", "verdict_reason", "sha256",
-            "filename", "path_label", "read_ledger_fn",
-        ]
-
-    def test_indexer_flat_path_imports_hysteresis(self):
-        """indexer.py _persist_flat_result must reference
-        apply_verdict_hysteresis (verified via source inspection)."""
-        import pageindex_mcp.client.indexer as indexer_mod
-        source = inspect.getsource(indexer_mod)
-        assert "apply_verdict_hysteresis" in source
-
-    def test_indexer_tree_path_imports_hysteresis(self):
-        """indexer.py _persist_tree_result must reference
-        apply_verdict_hysteresis (verified via source inspection)."""
-        import pageindex_mcp.client.indexer as indexer_mod
-        src = inspect.getsource(
-            indexer_mod.CustomPageIndexClient._persist_tree_result
-        )
-        assert "apply_verdict_hysteresis" in src
-
-    def test_indexer_flat_path_passes_flat_label(self):
-        """The flat persist path must pass path_label='flat'."""
+    def test_indexer_flat_path_no_hysteresis(self):
+        """indexer.py _persist_flat_result must NOT reference
+        apply_verdict_hysteresis."""
         import pageindex_mcp.client.indexer as indexer_mod
         src = inspect.getsource(
             indexer_mod.CustomPageIndexClient._persist_flat_result
         )
-        assert '"flat"' in src or "'flat'" in src
+        assert "apply_verdict_hysteresis" not in src
+
+    def test_indexer_tree_path_no_hysteresis(self):
+        """indexer.py _persist_tree_result must NOT reference
+        apply_verdict_hysteresis."""
+        import pageindex_mcp.client.indexer as indexer_mod
+        src = inspect.getsource(
+            indexer_mod.CustomPageIndexClient._persist_tree_result
+        )
+        assert "apply_verdict_hysteresis" not in src
 
 
 # ---------------------------------------------------------------------------
-# Wiring: _LEDGER_PRIORITY
+# Wiring: VERDICT_PRIORITY
 # ---------------------------------------------------------------------------
 
 
 class TestLedgerPriorityWiring:
-    """_LEDGER_PRIORITY must exist at module level in verdict.py with the
-    correct priority ordering: PASS > MARGINAL > FAIL > ERROR."""
+    """VERDICT_PRIORITY must exist in helpers.types (RFC-037 D6 single
+    source of truth) with the correct priority ordering:
+    PASS > MARGINAL > FAIL > ERROR."""
 
-    def test_exists_in_verdict_module(self):
-        assert isinstance(_LEDGER_PRIORITY, dict)
+    def test_exists_in_types_module(self):
+        assert isinstance(VERDICT_PRIORITY, dict)
 
     def test_priority_ordering(self):
         """PASS has highest priority (3), ERROR has lowest (0)."""
-        assert _LEDGER_PRIORITY["PASS"] > _LEDGER_PRIORITY["MARGINAL"]
-        assert _LEDGER_PRIORITY["MARGINAL"] > _LEDGER_PRIORITY["FAIL"]
-        assert _LEDGER_PRIORITY["FAIL"] > _LEDGER_PRIORITY["ERROR"]
+        assert VERDICT_PRIORITY["PASS"] > VERDICT_PRIORITY["MARGINAL"]
+        assert VERDICT_PRIORITY["MARGINAL"] > VERDICT_PRIORITY["FAIL"]
+        assert VERDICT_PRIORITY["FAIL"] > VERDICT_PRIORITY["ERROR"]
 
     def test_all_four_verdict_strings_present(self):
-        assert set(_LEDGER_PRIORITY.keys()) == {"PASS", "MARGINAL", "FAIL", "ERROR"}
+        assert set(VERDICT_PRIORITY.keys()) == {"PASS", "MARGINAL", "FAIL", "ERROR"}
 
 
 # ---------------------------------------------------------------------------

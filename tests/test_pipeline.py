@@ -271,30 +271,18 @@ def _mock_minio():
     return mc
 
 
-class TestLedger:
-    def test_persist_and_read(self):
-        from pageindex_mcp.storage import persist_verdict_ledger, read_verdict_ledger
+class TestLedgerRemoval:
+    """RFC-037 D3: persist_verdict_ledger and read_verdict_ledger removed."""
 
-        mc = _mock_minio()
-        with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mc):
-            persist_verdict_ledger("abc123", "PASS", "clean")
-            assert read_verdict_ledger("abc123") == "PASS"
+    def test_persist_verdict_ledger_not_importable(self):
+        import pageindex_mcp.storage as storage_mod
 
-    def test_pass_not_downgraded(self):
-        from pageindex_mcp.storage import persist_verdict_ledger, read_verdict_ledger
+        assert not hasattr(storage_mod, "persist_verdict_ledger")
 
-        mc = _mock_minio()
-        with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mc):
-            persist_verdict_ledger("h1", "PASS", "clean")
-            persist_verdict_ledger("h1", "FAIL", "garbling")
-            assert read_verdict_ledger("h1") == "PASS"
+    def test_read_verdict_ledger_not_importable(self):
+        import pageindex_mcp.storage as storage_mod
 
-    def test_graceful_on_minio_unavailable(self):
-        from pageindex_mcp.storage import persist_verdict_ledger, read_verdict_ledger
-
-        with patch("pageindex_mcp.storage.minio_ops.get_minio", side_effect=Exception("down")):
-            persist_verdict_ledger("h1", "PASS", "clean")
-            assert read_verdict_ledger("h1") is None
+        assert not hasattr(storage_mod, "read_verdict_ledger")
 
 
 # =============================================================================
