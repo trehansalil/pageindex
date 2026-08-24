@@ -33,9 +33,11 @@ from pageindex_mcp.converters import (
     _recover_picture_text,
     _text_layer_has_content,
 )
-from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE, TreeDefect, check_garble
+from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE, TreeDefect
 from pageindex_mcp.picture_plane import PictureGateConfig
 from pageindex_mcp.storage import read_verdict_ledger
+
+from tests._garble_compat import check_garble
 
 _SHORT_CLEAN_TEXT = "Section 3.2 applies to all policyholders under this contract."
 assert len(_SHORT_CLEAN_TEXT) < 200

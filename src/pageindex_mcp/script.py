@@ -942,7 +942,7 @@ class ScriptContext:
     def from_script_str(cls, expected_script: str | None) -> ScriptContext:
         """Backward-compat factory: wrap a bare ``expected_script`` string.
 
-        Used by :func:`check_garble` (thin wrapper) and test code that
+        Used by :func:`detect_garble` and test code that
         passes ``expected_script`` as a plain string.  ``had_presentation_forms``
         defaults to ``False`` (callers that have this info should use
         ``from_document`` or construct directly).

@@ -38,10 +38,11 @@ from pageindex_mcp.helpers import (
     BULK_PROFILE,
     _flatten_tree_text,
     _garble_ratio,
-    check_garble,
     flat_doc_view,
     route_and_extract_flat,
 )
+
+from tests._garble_compat import check_garble
 
 _ARABIC_TITLE = "الفصل الأول عن أحكام العقد"
 _LATIN_TEXT = "Section One on Contract Terms and Conditions"

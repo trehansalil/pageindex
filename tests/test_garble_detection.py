@@ -7,11 +7,12 @@ from pageindex_mcp.helpers import (
     BlobKind,
     ScriptContext,
     _garble_check_nodes,
-    check_garble,
     garble_prongs,
     normalize_for_garble,
     validate_tree,
 )
+
+from tests._garble_compat import check_garble
 
 _PUA = "" * 400
 _CLEAN_ARABIC = (

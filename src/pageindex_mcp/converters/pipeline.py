@@ -570,9 +570,9 @@ def _pdf_to_markdown_no_pics(
 
 
 def pdf_markdown_converters() -> list[
-    tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]]]
+    tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]], bool]
 ]:
-    """Ordered ``(name, fn)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
+    """Ordered ``(name, fn, supports_ocr)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
 
     Every chain callable accepts ``(pdf_path: str, **kwargs)`` at minimum —
     ``expected_script: str | None`` may be passed as a keyword argument by the
@@ -582,6 +582,11 @@ def pdf_markdown_converters() -> list[
     keyword via ``**kwargs`` and ignore it.
 
     Every chain callable returns ``(markdown, pic_results, extraction_stages)``.
+
+    The third element ``supports_ocr`` is ``True`` when the converter
+    accepts ``force_full_page_ocr`` / ``ocr_lang_override`` kwargs and
+    can perform OCR escalation.  Currently only ``docling`` supports OCR;
+    ``pymupdf4llm`` does not.
 
     INDEX-01: ``pymupdf4llm`` (AGPL, fast, default) and ``docling`` (MIT,
     layout-aware, German-ligature-correct — the RFC-003 D3 / HR4 residency escape).
@@ -611,14 +616,16 @@ def pdf_markdown_converters() -> list[
             "ALLOW_AGPL_FALLBACK=true"
         )
 
-    chain: list[tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]]]] = []
+    chain: list[
+        tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]], bool]
+    ] = []
     if ALLOW_AGPL_FALLBACK:
-        chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics))
+        chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics, False))
     if have_docling:
         if primary == "docling":
-            chain.insert(0, ("docling", pdf_to_markdown_docling))
+            chain.insert(0, ("docling", pdf_to_markdown_docling, True))
         else:
-            chain.append(("docling", pdf_to_markdown_docling))
+            chain.append(("docling", pdf_to_markdown_docling, True))
             if ALLOW_AGPL_FALLBACK:
                 from ..metrics import AGPL_FALLBACK_TOTAL
 

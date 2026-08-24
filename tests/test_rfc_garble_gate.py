@@ -44,9 +44,10 @@ from pageindex_mcp.helpers import (
     _garble_check_nodes,
     _infer_script,
     _script_from_filename,
-    check_garble,
 )
 from pageindex_mcp.picture_plane import PictureGateConfig
+
+from tests._garble_compat import check_garble
 
 _MARKER = "<!-- image -->"
 

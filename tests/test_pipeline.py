@@ -144,7 +144,6 @@ class TestApplyPromotions:
             inspector_class=None,
             th=_th(),
             expected_script=None,
-            validate_result=_make_ok_gate_result(structure),
         )
         assert vr.verdict == "PASS"
 
@@ -157,7 +156,6 @@ class TestApplyPromotions:
             inspector_class=None,
             th=_th(),
             expected_script=None,
-            validate_result=None,
         )
         assert vr.verdict == "PASS"
 
@@ -170,7 +168,6 @@ class TestApplyPromotions:
             inspector_class=None,
             th=_th(),
             expected_script=None,
-            validate_result=None,
         )
         assert isinstance(vr, VerdictResult)
         verdict, reason = vr

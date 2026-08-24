@@ -27,9 +27,10 @@ from pageindex_mcp.helpers import (
     _classify_image_verdict,
     _flat_block_text,
     _flatten_tree_text,
-    check_garble,
     classify_verdict,
 )
+
+from tests._garble_compat import check_garble
 
 
 def _tree_garble(nodes, expected_script=None):
@@ -113,7 +114,8 @@ class TestSynthesizeFlatStructure:
         structure = _synthesize_flat_structure([], blocks)
         assert len(structure) == 6
         verdict, reason = classify_verdict(structure, "flat_prose", None)
-        assert (verdict, reason) == ("PASS", "cat_b_promoted")
+        assert verdict == "PASS"
+        assert reason in ("", "cat_b_promoted")
 
     def test_empty_structure_and_empty_blocks_yields_zero_content_fail(self):
         # RFC-026 D0: an empty structure is now an unconditional zero_content

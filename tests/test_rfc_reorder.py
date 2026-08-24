@@ -30,11 +30,12 @@ from pageindex_mcp.helpers import (
     _has_heading_markers,
     _ordinal_value,
     _synthesize_preamble_node,
-    check_garble,
     garble_prongs,
     split_oversized_leaf_nodes,
     validate_tree,
 )
+
+from tests._garble_compat import check_garble
 
 _LONG_PREAMBLE = (
     "This policy covers the named rider while mounted on any horse owned, "

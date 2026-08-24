@@ -124,7 +124,8 @@ def test_tessdata_available_no_raise(monkeypatch, tmp_path):
 
 def test_garble_agreement_clean_text():
     """check_garble must agree across contexts on clean text = not garbled."""
-    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE, check_garble
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     clean = "This is a perfectly normal paragraph about insurance terms."
 
@@ -134,7 +135,8 @@ def test_garble_agreement_clean_text():
 
 def test_garble_agreement_numeric_junk():
     """check_garble must agree across contexts on numeric junk = garbled."""
-    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE, check_garble
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     junk = "1651001429 " * 100
 
@@ -144,7 +146,8 @@ def test_garble_agreement_numeric_junk():
 
 def test_garble_agreement_null_bytes():
     """check_garble must flag null-byte content."""
-    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE, check_garble
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     bad = "hello\x00world"
 
@@ -154,7 +157,8 @@ def test_garble_agreement_null_bytes():
 
 def test_garble_agreement_replacement_char():
     """check_garble must flag U+FFFD replacement characters."""
-    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE, check_garble
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     bad = "hello�world"
 

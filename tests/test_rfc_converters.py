@@ -27,8 +27,9 @@ from pageindex_mcp.helpers import (
     BULK_PROFILE,
     FLAT_MARKDOWN_PROFILE,
     _flatten_tree_text,
-    check_garble,
 )
+
+from tests._garble_compat import check_garble
 
 
 def _tree_garble(nodes, expected_script=None):

@@ -12,10 +12,11 @@ from pageindex_mcp.helpers import (
     GarbleProfile,
     TreeDefect,
     _infer_script,
-    check_garble,
     garble_prongs,
     validate_tree,
 )
+
+from tests._garble_compat import check_garble
 
 _PUA = "" * 400
 _CLEAN_GERMAN = (

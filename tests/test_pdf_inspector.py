@@ -303,7 +303,7 @@ def _wire_index(monkeypatch, *, preclassify, validate_tree=None):
     monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
 
     conv_fn = MagicMock(return_value="# Heading\n\nBody text\n")
-    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_fn, True)])
     # Fix-3's OCR-escalation retry calls pdf_to_markdown_docling directly
     # (not the chain entry above) — stub it so a garbling verdict can drive
     # the retry path without touching a real Docling conversion.

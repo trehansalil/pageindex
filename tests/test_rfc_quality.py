@@ -18,12 +18,13 @@ from pageindex_mcp.helpers import (
     _flatten_tree_text,
     _garble_ratio,
     _is_morphologically_nonsense,
-    check_garble,
     classify_verdict,
     garble_prongs,
     validate_tree,
 )
 from tests.conftest import filler_text
+
+from tests._garble_compat import check_garble
 
 
 def _fake_settings(flat_doc_routing: bool = True):
@@ -88,7 +89,7 @@ def _wire_garble_probe(
     monkeypatch.setattr("fitz.open", MagicMock(return_value=mock_doc))
 
     conv_mock = MagicMock(return_value=conv_return)
-    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_mock)])
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_mock, True)])
 
     mocks = {
         "save_doc": MagicMock(),
@@ -238,7 +239,9 @@ class TestImageStandaloneClientRouting:
         monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
         monkeypatch.setattr(_idx, "validate_tree", MagicMock(side_effect=[(False, "depth<2")]))
         monkeypatch.setattr(
-            _idx, "pdf_markdown_converters", lambda: [("docling", lambda p, **kw: _IMAGE_LIGHT_MD)]
+            _idx,
+            "pdf_markdown_converters",
+            lambda: [("docling", lambda p, **kw: _IMAGE_LIGHT_MD, True)],
         )
         monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
         monkeypatch.setattr(

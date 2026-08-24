@@ -338,7 +338,7 @@ def garble_prongs(
 
     ``had_presentation_forms``: pre-computed boolean indicating that
     Arabic Presentation-Forms ratio > 50% of Arabic-range chars was
-    detected (typically from RtlDecision or computed by check_garble
+    detected (typically from RtlDecision or computed by detect_garble
     before NFKC normalization destroys the codepoints).
 
     ``config``: Zone-3 consolidated garble config.  When ``None``
@@ -568,72 +568,10 @@ def detect_garble(
     )
 
 
-def _rebuild_garble_config_compat() -> GarbleConfig:
-    """Rebuild GarbleConfig for backward-compat at call time.
 
-    Reads from **module-level names** where they exist (these are what
-    tests monkeypatch via ``patch("pageindex_mcp.helpers._GARBLE_SHORT_TEXT_DEFAULT", ...)``)
-    and from **os.environ** for the 3 env vars that ``garble_prongs``
-    used to read directly (these are what tests ``patch.dict(os.environ, ...)``).
-
-    New code should use ``detect_garble`` with an explicit ``config``
-    parameter (typically ``_garble_config``) instead of relying on this
-    per-call rebuild.
-    """
-    return GarbleConfig(
-        garble_latin_gibberish_enabled=(
-            os.environ.get("GARBLE_LATIN_GIBBERISH_ENABLED", "true").lower()
-            not in ("false", "0", "no")
-        ),
-        garble_latin_ratio=float(os.environ.get("GARBLE_LATIN_RATIO", "0.4")),
-        garble_nonsense_ratio=float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")),
-        garble_short_text_default=_GARBLE_SHORT_TEXT_DEFAULT,
-        garble_flat_markdown_normalize=_GARBLE_FLAT_MARKDOWN_NORMALIZE,
-        garble_node_ratio_threshold=_GARBLE_NODE_RATIO_THRESHOLD,
-        garble_digit_floor=500,
-    )
-
-
-def check_garble(
-    text: str,
-    *,
-    expected_script: str | None,
-    profile: GarbleProfile,
-    original_defect: TreeDefect | None = None,
-    had_presentation_forms: bool = False,
-) -> bool:
-    """Backward-compat wrapper around :func:`detect_garble` (Zone-3).
-
-    Translates the legacy ``expected_script`` + ``GarbleProfile`` interface
-    into a :class:`ScriptContext` + :class:`GarbleConfig` + ``BlobKind``
-    call to :func:`detect_garble`, which runs garble_prongs internally.
-
-    Rebuilds ``GarbleConfig`` from current ``os.environ`` at call time so
-    tests that ``patch.dict(os.environ, ...)`` keep working.  New code
-    should use ``detect_garble`` with an explicit frozen ``config``.
-
-    Kept callable with the current signature for one release cycle so
-    existing call sites and tests do not need to change atomically.
-    """
-    _blob_kind = BlobKind.RAW_MARKDOWN if profile.normalize_markdown else BlobKind.TREE_TEXT
-
-    _ctx = ScriptContext(
-        dominant_script=expected_script,
-        had_presentation_forms=had_presentation_forms,
-        source="legacy",
-    )
-
-    _compat_cfg = _rebuild_garble_config_compat()
-
-    return bool(
-        detect_garble(
-            text,
-            script_context=_ctx,
-            config=_compat_cfg,
-            blob_kind=_blob_kind,
-            original_defect=original_defect,
-        )
-    )
+# Zone-4: _rebuild_garble_config_compat and check_garble deleted — detect_garble
+# is now the sole public entry point.  GarbleReport.__bool__ is the drop-in
+# replacement for check_garble's bool return value.
 
 
 _MIXED_SCRIPT_RE = re.compile(
@@ -753,21 +691,39 @@ def hash_pipe_ratio(text: str) -> float:
     return count / len(text)
 
 
-def _garble_ratio(text, expected_script=None):
+def _garble_ratio(text, expected_script=None, *, script_context=None):
     """Windowed garble ratio: fraction of fixed-size windows that individually
     trigger garble detection. RFC-033 D1: no longer re-checks the full text
-    (check_garble already gates in classify_verdict).
-    Uses check_garble with BULK_PROFILE."""
+    (detect_garble already gates in classify_verdict).
+    Uses detect_garble with TREE_TEXT blob kind and frozen _garble_config.
+
+    Zone-4: accepts optional ``script_context`` for proper
+    had_presentation_forms threading; falls back to building one from
+    ``expected_script`` when not provided (backward compat).
+    """
+    _ctx = script_context if script_context is not None else ScriptContext(
+        dominant_script=expected_script,
+        had_presentation_forms=False,
+        source="garble_ratio",
+    )
     window = 2000
     if len(text) <= window:
         return (
             1.0
-            if check_garble(text, expected_script=expected_script, profile=BULK_PROFILE)
+            if detect_garble(
+                text, script_context=_ctx, config=_garble_config,
+                blob_kind=BlobKind.TREE_TEXT,
+            )
             else 0.0
         )
     chunks = [text[i : i + window] for i in range(0, len(text), window)]
     garbled_chunks = sum(
-        1 for c in chunks if check_garble(c, expected_script=expected_script, profile=BULK_PROFILE)
+        1
+        for c in chunks
+        if detect_garble(
+            c, script_context=_ctx, config=_garble_config,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
     )
     return garbled_chunks / len(chunks)
 

@@ -36,12 +36,12 @@ from pageindex_mcp.helpers import (
     _RFC029_MIN_SCANNED_DENSITY_FLOOR,
     BULK_PROFILE,
     _segment_table_nodes,
-    check_garble,
     classify_verdict,
     route_and_extract_flat,
     validate_tree,
 )
 from tests.conftest import filler_text
+from tests._garble_compat import check_garble
 
 # ===========================================================================
 # Shared tree-factory helpers (mirrors the pattern used across all D-files)

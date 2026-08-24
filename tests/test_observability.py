@@ -503,7 +503,7 @@ class TestAgplFallbackCounter:
         with patch.object(importlib.util, "find_spec", return_value=True):
             chain = pdf_markdown_converters()
 
-        names = [n for n, _ in chain]
+        names = [n for n, _, _ in chain]
         assert names[0] == "pymupdf4llm", "pymupdf4llm should be primary"
 
         primary_name = chain[0][0]

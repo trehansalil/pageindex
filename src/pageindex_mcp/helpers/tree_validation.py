@@ -142,47 +142,13 @@ def _tree_is_reordered(structure: list) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Noise ratios (used by verdict promotions)
+# Noise ratios — canonical copies live in garble.py; imported for local use.
+# Zone-4: deleted byte-identical duplicates (ocr_noise_ratio, hash_pipe_ratio,
+# _garble_ratio) that lived here after the monolith decomposition (06b2bae).
+# Redirected to the canonical garble.py copies to eliminate
+# fix-one-miss-the-other drift (RFC-013 D7).
 # ---------------------------------------------------------------------------
-
-
-def ocr_noise_ratio(text: str) -> float:
-    if not text:
-        return 0.0
-    noise = sum(
-        1
-        for c in text
-        if c == "�" or 0xE000 <= ord(c) <= 0xF8FF or (ord(c) < 32 and c not in "\n\r\t")
-    )
-    return noise / len(text)
-
-
-def hash_pipe_ratio(text: str) -> float:
-    if not text:
-        return 0.0
-    count = sum(1 for c in text if c in "#|")
-    return count / len(text)
-
-
-def _garble_ratio(text, expected_script=None):
-    """Windowed garble ratio: fraction of fixed-size windows that individually
-    trigger garble detection. RFC-033 D1: no longer re-checks the full text
-    (check_garble already gates in classify_verdict).
-    Uses check_garble with BULK_PROFILE."""
-    from .garble import BULK_PROFILE, check_garble
-
-    window = 2000
-    if len(text) <= window:
-        return (
-            1.0
-            if check_garble(text, expected_script=expected_script, profile=BULK_PROFILE)
-            else 0.0
-        )
-    chunks = [text[i : i + window] for i in range(0, len(text), window)]
-    garbled_chunks = sum(
-        1 for c in chunks if check_garble(c, expected_script=expected_script, profile=BULK_PROFILE)
-    )
-    return garbled_chunks / len(chunks)
+from .garble import _garble_ratio  # noqa: F401  (used by from_tree below)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +176,8 @@ class TreeSignals:
         expected_script: str | None | ScriptContext = None,
         garble_threshold: float = 0.05,
     ) -> TreeSignals:
-        from .garble import BULK_PROFILE, check_garble
+        from .garble import _garble_config, detect_garble
+        from ..script import BlobKind
 
         node_count = _tree_node_count(structure)
         depth = _tree_depth(structure)
@@ -226,14 +193,20 @@ class TreeSignals:
             )
             _had_pf = False
 
-        garbled = bool(structure) and check_garble(
-            flat_text,
-            expected_script=_eff_script,
-            profile=BULK_PROFILE,
+        # Zone-4: unified detect_garble entry point replaces check_garble.
+        _ctx = ScriptContext(
+            dominant_script=_eff_script,
             had_presentation_forms=_had_pf,
+            source="tree_signals",
         )
+        garbled = bool(structure) and bool(detect_garble(
+            flat_text,
+            script_context=_ctx,
+            config=_garble_config,
+            blob_kind=BlobKind.TREE_TEXT,
+        ))
         if garbled:
-            gr = _garble_ratio(flat_text, expected_script=_eff_script)
+            gr = _garble_ratio(flat_text, expected_script=_eff_script, script_context=_ctx)
             effectively_garbled = gr >= garble_threshold
         else:
             gr = 0.0
@@ -280,7 +253,7 @@ def validate_tree(
     ``all_defects`` is the frozenset of every firing gate's defect.
 
     Gate 11 (arabic_low_content_ratio) was removed: it is a strict subset
-    of gate 1 (check_garble already tests _is_garbled_blob on the
+    of gate 1 (detect_garble already tests _is_garbled_blob on the
     flattened text) and was unreachable.
 
     Zone-6: accepts an optional pre-computed ``rtl_decision`` so callers
@@ -292,10 +265,15 @@ def validate_tree(
 
     th = VerdictThresholds.from_config(pipeline_config)
 
+    # Zone-4: build/preserve ScriptContext for gate dispatch.
     if isinstance(expected_script, ScriptContext):
-        _bare_script: str | None = expected_script.dominant_script
+        _script_ctx = expected_script
     else:
-        _bare_script = expected_script
+        _script_ctx = ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=False,
+            source="validate_tree",
+        )
 
     sig = TreeSignals.from_tree(
         structure,
@@ -309,7 +287,7 @@ def validate_tree(
 
     fired: list[tuple[TreeDefect, str]] = []
     for gate_fn, defect in GATE_TABLE:
-        fires, detail = gate_fn(sig, structure, _bare_script, page_count, _rtl_decision)
+        fires, detail = gate_fn(sig, structure, _script_ctx, page_count, _rtl_decision)
         if fires:
             fired.append((defect, detail))
 

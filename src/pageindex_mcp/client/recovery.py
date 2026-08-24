@@ -26,7 +26,6 @@ from ..converters import (
     splice_picture_text_for_tree,
 )
 from ..helpers import (
-    BULK_PROFILE,
     ExtractionState,
     RecoveryOutcome,
     Route,
@@ -34,7 +33,9 @@ from ..helpers import (
     TreeGateResult,
     _flat_block_primary_text,
     _flatten_tree_text,
-    check_garble,
+    _garble_config,
+    detect_garble,
+    finalize_gate_and_route,
     route_and_extract_flat,
     validate_tree,
 )
@@ -43,7 +44,7 @@ from ..metrics import (
     VLM_FALLBACK_TOTAL,
 )
 from ..picture_plane import SkipReason, skip_reason_from_str
-from ..script import decide_rtl
+from ..script import BlobKind, ScriptContext, decide_rtl
 
 if TYPE_CHECKING:
     pass
@@ -83,6 +84,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
         *,
         reason_label: str,
         splice_label: str,
@@ -213,29 +215,38 @@ class RecoveryMixin:
                         return 1.0
                     return Counter(tokens).most_common(1)[0][1] / len(tokens)
 
+                # Zone-4: unified detect_garble replaces legacy check_garble.
+                _kb_ctx = script_context if script_context is not None else ScriptContext(
+                    dominant_script=expected_script,
+                    had_presentation_forms=False,
+                    source="ocr_retry_keep_best",
+                )
                 if post_retry_chars < pre_retry.total_chars:
                     retry_wins = False
                 elif post_retry_chars == pre_retry.total_chars:
                     _pre_text = _flatten_tree_text(pre_retry.result.get("structure", []))
                     _post_text = _flatten_tree_text(state.result.get("structure", []))
                     retry_wins = state.ok or (
-                        check_garble(
+                        detect_garble(
                             _pre_text,
-                            expected_script=expected_script,
-                            profile=BULK_PROFILE,
+                            script_context=_kb_ctx,
+                            config=_garble_config,
+                            blob_kind=BlobKind.TREE_TEXT,
                         )
-                        and not check_garble(
+                        and not detect_garble(
                             _post_text,
-                            expected_script=expected_script,
-                            profile=BULK_PROFILE,
+                            script_context=_kb_ctx,
+                            config=_garble_config,
+                            blob_kind=BlobKind.TREE_TEXT,
                         )
                     )
                 else:
                     _pre_text_cmp = _flatten_tree_text(pre_retry.result.get("structure", []))
-                    _pre_garble_flag = check_garble(
+                    _pre_garble_flag = detect_garble(
                         _pre_text_cmp,
-                        expected_script=expected_script,
-                        profile=BULK_PROFILE,
+                        script_context=_kb_ctx,
+                        config=_garble_config,
+                        blob_kind=BlobKind.TREE_TEXT,
                     )
                     if _pre_garble_flag:
                         _pre_density = _repeating_token_density(
@@ -298,6 +309,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 1: garble OCR escalation. Mutates state.
 
@@ -315,6 +327,7 @@ class RecoveryMixin:
             filename,
             ext,
             expected_script,
+            script_context,
             reason_label="Garbling",
             splice_label="garble_escalation",
             use_keep_best=True,
@@ -328,6 +341,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 1b: low-content OCR escalation. Mutates state.
 
@@ -347,6 +361,7 @@ class RecoveryMixin:
             filename,
             ext,
             expected_script,
+            script_context,
             reason_label="Low content",
             splice_label="garble_escalation",
             use_keep_best=True,
@@ -360,6 +375,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 5: image-dominant OCR escalation. Mutates state.
 
@@ -385,6 +401,7 @@ class RecoveryMixin:
             filename,
             ext,
             expected_script,
+            script_context,
             reason_label=f"Image-dominant ({image_lines}/{len(non_empty_lines)} non-empty lines)",
             splice_label="image_dominant_escalation",
             use_keep_best=False,
@@ -398,6 +415,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 2: RTL bidi repair in-place. Mutates state."""
         if not (not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf"):
@@ -436,8 +454,7 @@ class RecoveryMixin:
                 expected_script=expected_script,
                 page_count=state.pdf_page_count if ext == ".pdf" else None,
             )
-            state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-            state.ok, state.reason = _vt_raw
+            finalize_gate_and_route(state, _vt_raw, settings.flat_doc_routing)
             logger.warning(
                 "RTL reversal on %s; reconstruct_bidi_order repair %s",
                 filename,
@@ -453,6 +470,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 3: RTL flat-vs-tree reversal comparison. Mutates state."""
         if not (
@@ -491,6 +509,7 @@ class RecoveryMixin:
         filename: str,
         ext: str,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Recovery 4: VLM last-resort fallback for garble-rejected PDFs. Mutates state.
 

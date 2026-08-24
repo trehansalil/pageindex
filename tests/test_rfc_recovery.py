@@ -28,13 +28,14 @@ from pageindex_mcp.helpers import (
     _flatten_tree_text,
     _ordinal_value,
     _word_has_reversed_morphology,
-    check_garble,
     split_oversized_leaf_nodes,
 )
 from pageindex_mcp.worker import (
     CHILD_TIMEOUT,
     _run_converter_subprocess,
 )
+
+from tests._garble_compat import check_garble
 
 # ---------------------------------------------------------------------------
 # D0 fixtures: dynamic converter-subprocess timeout wiring
