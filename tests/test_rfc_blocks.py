@@ -7,7 +7,7 @@ ordering), and test_rfc022_b3.py (table-block OCR splice into synthetic
 structure).
 
 `_synthesize_flat_structure` below mirrors the inline synthesis in
-client.py's `index()` (client.py:1102-1107) verbatim, using `_flat_block_text`
+client.py's `index()` (client.py:1102-1107) verbatim, using `_flat_block_primary_text`
 (the current, post-B3 measurement) since that function already falls back to
 the raw `"text"` key for plain prose blocks — it is a strict superset of the
 pre-B3 `b.get("text", "")` measurement used only by the regression guard in
@@ -25,7 +25,7 @@ from pageindex_mcp.client import images as _img
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
     _classify_image_verdict,
-    _flat_block_text,
+    _flat_block_primary_text,
     _flatten_tree_text,
     classify_verdict,
 )
@@ -48,9 +48,9 @@ def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
     # B1+B3 (RFC-022): mirrors client.py:1102-1107.
     if not flat_structure and blocks:
         flat_structure = [
-            {"title": "", "text": _flat_block_text(b)}
+            {"title": "", "text": _flat_block_primary_text(b)}
             for b in blocks
-            if _flat_block_text(b).strip()
+            if _flat_block_primary_text(b).strip()
         ]
     return flat_structure
 
@@ -160,13 +160,13 @@ class TestSynthesizeFlatStructure:
 
 
 class TestFlatBlockText:
-    """Property 5 (B3): _flat_block_text falls back to verbalized
+    """Property 5 (B3): _flat_block_primary_text falls back to verbalized
     row_records for role="table" blocks that carry no "text" key."""
 
     def test_table_block_without_text_key_falls_back_to_row_records(self):
         block = {"role": "table", "row_records": ["a | b | c", "d | e | f"]}
         assert "text" not in block
-        text = _flat_block_text(block)
+        text = _flat_block_primary_text(block)
         assert text == "a | b | c\nd | e | f"
 
     def test_pre_fix_text_only_measurement_would_starve_table_blocks(self):
@@ -176,7 +176,7 @@ class TestFlatBlockText:
         blocks = _table_heavy_doc_blocks()
         pre_fix_chars = sum(len(b.get("text", "")) for b in blocks)
         assert pre_fix_chars == 0
-        post_fix_chars = sum(len(_flat_block_text(b)) for b in blocks)
+        post_fix_chars = sum(len(_flat_block_primary_text(b)) for b in blocks)
         assert post_fix_chars > 375
 
 

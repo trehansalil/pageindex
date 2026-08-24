@@ -26,7 +26,7 @@ from pageindex_mcp.converters import (
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
     FLAT_MARKDOWN_PROFILE,
-    _flat_block_text,
+    _flat_block_primary_text,
     classify_verdict,
 )
 from pageindex_mcp.worker import _classify_llm_failure
@@ -251,9 +251,9 @@ def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
     # flat_structure (the rejected tree) is empty or non-empty.
     if blocks:
         flat_structure = [
-            {"title": "", "text": _flat_block_text(b)}
+            {"title": "", "text": _flat_block_primary_text(b)}
             for b in blocks
-            if _flat_block_text(b).strip()
+            if _flat_block_primary_text(b).strip()
         ]
     return flat_structure
 

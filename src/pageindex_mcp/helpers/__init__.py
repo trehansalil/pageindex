@@ -64,7 +64,6 @@ ExtractionSnapshot = RecoveryOutcome
 # ── flat ─────────────────────────────────────────────────────────────────────
 from .flat import (
     _flat_block_primary_text,
-    _flat_block_text,
     _flat_search_text,
     flat_doc_view,
     route_and_extract_flat,
@@ -251,7 +250,6 @@ __all__ = [
     "_Unset",
     "_count_empty_body_nodes",
     "_extract_page_hits",
-    "_flat_block_text",
     "_flat_is_pipe_row",
     "_flat_is_separator_row",
     # tables

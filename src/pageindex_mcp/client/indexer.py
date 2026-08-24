@@ -865,6 +865,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         )
 
         flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+
+        # Zone-4.7: pre-aggregate row_records from table blocks so
+        # flat_doc_view can read them directly instead of re-deriving
+        # on every get_document / get_document_structure call.
+        _row_records: list[str] = []
+        for _blk in blocks:
+            if _blk.get("role") == "table":
+                _row_records.extend(_blk.get("row_records", []) or [])
+
         _flat_verdict_computed_at = datetime.now(UTC).isoformat()
 
         # Zone-5: verdict fields stripped from flat artifact body; sidecar
@@ -880,6 +889,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "sha256": sha256,
             "content_class": content_class,
             "blocks": blocks,
+            "row_records": _row_records,
             "doc_description": flat_desc,
             "flat_char_count": flat_char_count,
             "build_sha": _CLIENT_BUILD_SHA,
@@ -1156,6 +1166,19 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 state, file_path, filename, ext, expected_script, pdf_classification
             )
 
+            # Zone-3: enrich ScriptContext with post-conversion content text.
+            # _convert_to_tree populates state.md_content from the fitz probe /
+            # Docling output.  Re-derive ScriptContext using actual content so
+            # Arabic PDFs with Latin filenames get correct expected_script for
+            # the recovery loop and flat-prefer guard.  Only re-derive when
+            # md_content is available; preserve existing expected_script when
+            # content inference returns None (no change for Latin docs).
+            if state.md_content:
+                script_context = ScriptContext.from_document(
+                    filename, raw_text=state.md_content
+                )
+                expected_script = script_context.dominant_script
+
             # Zone-1: GateSpec-driven recovery loop (single source of truth).
             # Each GateSpec with non-empty recovery_fns declares its own
             # recovery_eligible predicate and recovery method names.
@@ -1183,7 +1206,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
             # Quality checks (may override route intentionally — no
             # re-derivation afterwards).
-            await self._recover_flat_prefer(state, filename, ext)
+            await self._recover_flat_prefer(state, filename, ext, expected_script)
             await self._recover_landscape_reroute(state, filename)
 
             # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered

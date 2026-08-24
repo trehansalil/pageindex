@@ -23,7 +23,7 @@ from pageindex_mcp.converters import (
 )
 from pageindex_mcp.helpers import (
     _OVERSIZED_ORDINAL_RE,
-    _flat_block_text,
+    _flat_block_primary_text,
     _has_heading_markers,
     _ordinal_value,
     classify_verdict,
@@ -495,7 +495,7 @@ class TestSplitOversizedLeafNodes:
 
 
 # ---------------------------------------------------------------------------
-# _flat_block_text / save_flat_doc: flat-doc char-count measurement (D6)
+# _flat_block_primary_text / save_flat_doc: flat-doc char-count measurement (D6)
 # ---------------------------------------------------------------------------
 
 
@@ -523,6 +523,6 @@ class TestFlatDocCharCount:
     def test_text_only_doc_char_count_unchanged_from_prior_behavior(self):
         blocks = _text_only_blocks()
         pre_fix_chars = sum(len(b.get("text", "")) for b in blocks)
-        flat_char_count = sum(len(_flat_block_text(b)) for b in blocks)
+        flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
         assert flat_char_count == pre_fix_chars
         assert flat_char_count == sum(len(b["text"]) for b in blocks)

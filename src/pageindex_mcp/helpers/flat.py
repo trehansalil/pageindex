@@ -184,21 +184,6 @@ def _flat_block_primary_text(block: dict) -> str:
     return text
 
 
-def _flat_block_text(block: dict) -> str:
-    """B3 (RFC-022): a single flat block's scoreable text, table-aware.
-    **Search-index only** — includes ``ocr_text``/``description`` from image blocks."""
-    text = block.get("text", "")
-    if text:
-        return text
-    role = block.get("role")
-    if role == "table":
-        return "\n".join(block.get("row_records", []) or [])
-    if role == "image":
-        parts = [block.get("ocr_text") or "", block.get("description") or ""]
-        return "\n".join(p for p in parts if p)
-    return text
-
-
 def _flat_search_text(data: dict) -> str:
     """FLAT-05-C1 helper: render a flat doc's verbalized content as a single
     retrieval string."""
@@ -232,13 +217,17 @@ def flat_doc_view(data: dict) -> dict | None:
         return None
 
     blocks = data.get("blocks", []) or []
-    row_records: list[str] = []
-    for block in blocks:
-        if block.get("role") == "table":
-            row_records.extend(block.get("row_records", []) or [])
-    for rec in data.get("row_records", []) or []:
-        if rec not in row_records:
-            row_records.append(rec)
+    # Pre-aggregated row_records (written at ingestion by _persist_flat_result)
+    # takes precedence; fall back to block-iteration derivation for documents
+    # persisted before the pre-aggregation change.
+    pre_agg = data.get("row_records")
+    if pre_agg is not None:
+        row_records: list[str] = list(pre_agg)
+    else:
+        row_records = []
+        for block in blocks:
+            if block.get("role") == "table":
+                row_records.extend(block.get("row_records", []) or [])
 
     return {
         "doc_name": data.get("doc_name", data.get("filename", "")),
