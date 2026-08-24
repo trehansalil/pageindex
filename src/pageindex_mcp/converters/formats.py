@@ -116,6 +116,14 @@ async def html_to_markdown_with_images(path: str, model: str) -> str:
         from ..client import get_openai_client
         from ..metrics import IMAGE_DESCRIBE_FAILURES
 
+        # HR3: block image description when pii_corpus=True and endpoint
+        # is not ZDR-allowlisted — image data may contain PII.
+        from .pictures import zdr_egress_gate
+
+        allowed, _ = zdr_egress_gate("HTML image description", doc_id=path)
+        if not allowed:
+            return "image"
+
         async def _call() -> str:
             client = get_openai_client()
             response = await client.chat.completions.create(
@@ -379,6 +387,14 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
 
     from ..client import get_openai_client
     from ..config import settings
+
+    # HR3: block VLM extraction when pii_corpus=True and endpoint is not
+    # ZDR-allowlisted — rasterized PDF pages contain full document PII.
+    from .pictures import zdr_egress_gate
+
+    allowed, _api_base = zdr_egress_gate("VLM markdown extraction", doc_id=pdf_path)
+    if not allowed:
+        raise RuntimeError("vlm_extract_markdown blocked by ZDR gate (HR3)")
 
     resolved_model = model or settings.vlm_model
     if resolved_model.startswith("azure/"):

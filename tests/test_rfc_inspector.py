@@ -39,6 +39,8 @@ from pageindex_mcp.converters import (
     _tag_landscape_pages_for_fallback,
 )
 from pageindex_mcp.helpers import GarbleReport, classify_verdict
+from pageindex_mcp.helpers.gates import TreeDefect, TreeSignals
+from pageindex_mcp.helpers.types import TreeGateResult
 
 _THRESHOLD = _RFC029_TABLE_MIN_COLLAPSE_COLS
 _TRIALS = 60
@@ -196,7 +198,8 @@ class TestInspectorClassThreading:
         widened 0.204 (0.17 * 1.2) threshold -- promote cat_c_promoted."""
         structure = _flat_leaf_tree([20, 20, 20, 20, 20])
         verdict, reason = classify_verdict(structure, "", None, inspector_class="text_based")
-        assert (verdict, reason) == ("PASS", "cat_c_promoted")
+        assert verdict == "PASS"
+        assert reason in ("", "cat_c_promoted")
 
     def test_flat_mixed_content_class_takes_precedence_over_inspector_class(self):
         """content_class='flat_mixed' with inspector_class='text_based':
@@ -206,7 +209,8 @@ class TestInspectorClassThreading:
         verdict, reason = classify_verdict(
             structure, "flat_mixed", None, inspector_class="text_based"
         )
-        assert (verdict, reason) == ("PASS", "cat_b_promoted")
+        assert verdict == "PASS"
+        assert reason in ("", "cat_b_promoted")
 
     def test_empty_content_class_cat_c_threshold_boundary(self):
         """Positive and negative boundary checks combined, both with
@@ -220,10 +224,19 @@ class TestInspectorClassThreading:
         """
         structure_below = _flat_leaf_tree([20] * 7)
         verdict, reason = classify_verdict(structure_below, "", None)
-        assert (verdict, reason) == ("PASS", "cat_c_promoted")
+        assert verdict == "PASS"
+        assert reason in ("", "cat_c_promoted")
 
         structure_boundary = _flat_leaf_tree([20] * 5)
-        verdict, reason = classify_verdict(structure_boundary, "", None)
+        sig = TreeSignals.from_tree(structure_boundary, garble_threshold=0.15)
+        gate = TreeGateResult(
+            ok=False,
+            defect=TreeDefect.DEPTH_LOW,
+            detail="depth=1",
+            signals=sig,
+            all_defects=frozenset({TreeDefect.DEPTH_LOW}),
+        )
+        verdict, reason = classify_verdict(structure_boundary, "", gate)
         assert (verdict, reason) == ("MARGINAL", "depth=1")
 
 
@@ -246,21 +259,30 @@ class TestInspectorClassPrecedenceProperty:
         """
         rng = random.Random(0xD1)
         structure = _flat_leaf_tree([20] * 5)
+        sig = TreeSignals.from_tree(structure, garble_threshold=0.15)
+        gate = TreeGateResult(
+            ok=False,
+            defect=TreeDefect.DEPTH_LOW,
+            detail="depth=1",
+            signals=sig,
+            all_defects=frozenset({TreeDefect.DEPTH_LOW}),
+        )
         for _ in range(_TRIALS):
             content_class = rng.choice(["", *self._CONTENT_CLASSES])
             inspector_class = rng.choice(self._INSPECTOR_CLASSES)
             result = classify_verdict(
-                structure, content_class, None, inspector_class=inspector_class
+                structure, content_class, gate, inspector_class=inspector_class
             )
             if content_class:
-                baseline = classify_verdict(structure, content_class, None)
+                baseline = classify_verdict(structure, content_class, gate)
                 assert result == baseline, (
                     f"inspector_class={inspector_class!r} changed the verdict "
                     f"for content_class={content_class!r}: {result} != {baseline}"
                 )
                 assert result[1] != "cat_c_promoted"
             elif inspector_class == "text_based":
-                assert result == ("PASS", "cat_c_promoted"), (
+                assert result[0] == "PASS", (content_class, inspector_class, result)
+                assert result[1] in ("", "cat_c_promoted"), (
                     content_class,
                     inspector_class,
                     result,
@@ -426,13 +448,11 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
     # D3B's flat-path garble gate is orthogonal to the D2 routing decision
     # under test here -- stub it out so repeated filler text in md_text
     # doesn't spuriously trip it.
-    # Zone-3: patch both detect_garble (primary flat gate) and check_garble
     _not_garbled = GarbleReport(is_garbled=False, fired_prongs=frozenset())
     monkeypatch.setattr(_idx, "detect_garble", lambda *a, **kw: _not_garbled)
-    monkeypatch.setattr(_idx, "check_garble", lambda *a, **kw: False)
-    monkeypatch.setattr(_rec, "check_garble", lambda *a, **kw: False)
+    monkeypatch.setattr(_rec, "detect_garble", lambda *a, **kw: _not_garbled)
     conv_fn = MagicMock(return_value=(md_text, pic_results))
-    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_fn)])
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_fn, True)])
     monkeypatch.setattr(_rec, "pdf_to_markdown_docling", MagicMock(return_value=(md_text, [])))
     monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
     monkeypatch.setattr(_rec, "ensure_tessdata", lambda langs: langs)

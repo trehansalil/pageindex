@@ -30,6 +30,13 @@ _SEARCH_CONCURRENCY = settings.llm_search_concurrency
 
 async def _llm(prompt: str, model: str | None = None) -> str:
     """Call the configured OpenAI-compatible model."""
+    # HR3: block query-path LLM calls when pii_corpus=True and the endpoint
+    # is not ZDR-allowlisted — query responses may contain PII.
+    if settings.pii_corpus:
+        from ..config import require_zdr_compliance
+
+        require_zdr_compliance(settings.openai_base_url, "RAG query")
+
     LLM_CALLS.inc()
     start = time.monotonic()
     try:

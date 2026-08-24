@@ -83,6 +83,16 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
                 "is not on the ZDR allow-list (HR3)"
             )
 
+        # Also validate LLM_FALLBACK_BASE_URL when set — the fallback path
+        # in _llm_with_retry must not silently egress PII to a non-ZDR endpoint.
+        from .client.llm import _LLM_FALLBACK_BASE_URL
+
+        if _LLM_FALLBACK_BASE_URL and not _is_zdr_allowlisted(_LLM_FALLBACK_BASE_URL):
+            raise RuntimeError(
+                f"PII_CORPUS=true but LLM_FALLBACK_BASE_URL={_LLM_FALLBACK_BASE_URL!r} "
+                "is not on the ZDR allow-list (HR3)"
+            )
+
     # Zone-5: validate cross-module feature wiring contracts at startup.
     # Failures raise AssertionError, refusing to start the server.
     from .helpers import validate_feature_wirings

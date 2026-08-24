@@ -179,11 +179,17 @@ def zdr_egress_gate(purpose: str, doc_id: str = "") -> tuple[bool, str | None]:
     MUST pass to ``litellm.completion(api_base=...)`` so the gate inspects exactly
     what egresses — litellm resolving a different endpoint from its own env would
     otherwise silently diverge from the inspected one (finding 3). Blocks when
-    ``pii_corpus`` is set and the endpoint is not on the ZDR allow-list."""
-    from ..config import _is_zdr_allowlisted, settings
+    ``pii_corpus`` is set and the endpoint is not on the ZDR allow-list.
+
+    Internally delegates to :func:`~pageindex_mcp.config.require_zdr_compliance`,
+    catching its ``RuntimeError`` and converting to the ``(False, api_base)``
+    tuple so existing callers retain their graceful skip-and-log contract."""
+    from ..config import require_zdr_compliance, settings
 
     api_base = settings.openai_base_url
-    if settings.pii_corpus and not _is_zdr_allowlisted(api_base):
+    try:
+        require_zdr_compliance(api_base, purpose)
+    except RuntimeError:
         logger.info(
             "%s skipped for %s: pii_corpus=True, endpoint not ZDR-allowlisted (HR3)",
             purpose,

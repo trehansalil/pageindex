@@ -109,6 +109,14 @@ async def _llm_with_retry(
 
     # All retries exhausted — try fallback if configured
     if fallback_base_url:
+        # HR3: block fallback egress when pii_corpus=True and fallback URL
+        # is not ZDR-allowlisted.  Check BEFORE the call to avoid sending
+        # PII to a non-ZDR endpoint.  RuntimeError propagates as
+        # LLMTransientFailure below, giving the caller a clear signal.
+        from ..config import require_zdr_compliance
+
+        require_zdr_compliance(fallback_base_url, "LLM fallback retry")
+
         logger.warning(
             "Primary LLM exhausted %d retries; trying fallback at %s",
             max_retries,
