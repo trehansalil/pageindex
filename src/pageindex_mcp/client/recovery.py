@@ -68,6 +68,13 @@ _D7_GARBLE_RECOVERY_ENABLED = os.getenv("D7_GARBLE_RECOVERY_ENABLED", "true").st
 
 _RFC029_FLAT_PREFER_MULTIPLIER = float(os.getenv("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
 
+# Zone-3: Arabic documents use a lower flat-prefer multiplier because
+# heading injection can inflate tree structure, making a content-poor tree
+# appear competitive with a content-rich flat extraction.  The 1.5x default
+# lets flat win when it carries meaningfully more content (e.g. marsoom-13:
+# flat=5972 vs tree=1225 chars).
+_ARABIC_FLAT_PREFER_MULTIPLIER = float(os.getenv("ARABIC_FLAT_PREFER_MULTIPLIER", "1.5"))
+
 
 class RecoveryMixin:
     """Mixin providing recovery methods for CustomPageIndexClient.
@@ -575,26 +582,39 @@ class RecoveryMixin:
         state: ExtractionState,
         filename: str,
         ext: str,
+        expected_script: str | None = None,
     ) -> None:
-        """Recovery 6: content-density flat-prefer guard. Mutates state."""
+        """Recovery 6: content-density flat-prefer guard. Mutates state.
+
+        Zone-3: when *expected_script* is ``"Arab"``, a lower multiplier
+        (``ARABIC_FLAT_PREFER_MULTIPLIER``, default 1.5) is used to
+        compensate for heading-injection inflation in Arabic trees.
+        """
         if not (state.ok and state.md_content and settings.flat_doc_routing):
             return
         _tree_char_count = len(_flatten_tree_text(state.result.get("structure", [])))
         if _tree_char_count <= 0:
             return
+        # Zone-3: select script-aware multiplier
+        _multiplier = (
+            _ARABIC_FLAT_PREFER_MULTIPLIER
+            if expected_script == "Arab"
+            else _RFC029_FLAT_PREFER_MULTIPLIER
+        )
         try:
             _flat_cc, _flat_blocks = await asyncio.to_thread(
                 route_and_extract_flat, state.md_content
             )
             _flat_char_count = sum(len(_flat_block_primary_text(b)) for b in _flat_blocks)
-            if _flat_char_count > _RFC029_FLAT_PREFER_MULTIPLIER * _tree_char_count:
+            if _flat_char_count > _multiplier * _tree_char_count:
                 logger.warning(
                     "RFC-029 D1: flat char count (%d) > %.1f× tree char count"
-                    " (%d) for %s — preferring flat result",
+                    " (%d) for %s (script=%s) — preferring flat result",
                     _flat_char_count,
-                    _RFC029_FLAT_PREFER_MULTIPLIER,
+                    _multiplier,
                     _tree_char_count,
                     filename,
+                    expected_script,
                 )
                 state.ok = False
                 state.route = Route.FLAT

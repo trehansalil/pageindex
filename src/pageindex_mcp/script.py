@@ -921,10 +921,24 @@ class ScriptContext:
         # 3. Text-based script inference
         text_script = _infer_script(raw_text) if raw_text else None
 
-        # 4. Combine: filename takes precedence, text inference as fallback
+        # 4. Combine: filename takes precedence, text inference as fallback.
+        #    Zone-3 enrichment: when raw_text detects Arabic (>=15% Arabic
+        #    chars) but filename infers Latn or None, content overrides —
+        #    this closes the gap where Arabic PDFs with Latin filenames
+        #    were mis-routed through the Latin pipeline.
         if fn_script is not None:
-            dominant = fn_script
-            source = "combined" if text_script is not None else "filename"
+            if (
+                raw_text
+                and text_script == "Arab"
+                and fn_script != "Arab"
+            ):
+                # Content-aware override: Arabic content trumps Latin/None
+                # filename inference.
+                dominant = "Arab"
+                source = "content_override"
+            else:
+                dominant = fn_script
+                source = "combined" if text_script is not None else "filename"
         elif text_script is not None:
             dominant = text_script
             source = "text_inference"

@@ -516,6 +516,11 @@ class TestInjectArabicStructuralHeadingsNewMarkers:
     verifies heading injection at correct depth ('#' for part-level,
     matching existing باب/فصل/قسم/جزء handling; '##' for مادة)."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
+
     @pytest.mark.parametrize(
         ("body", "expected_line"),
         [
@@ -598,6 +603,11 @@ class TestRegressionFixtures:
     RFC-036 D5's Affected Documents list. These reproduce each fixture's
     defining structural-marker shape against the fixed code paths and
     assert the depth improvement."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_marsoom_biqanoon_13_2022_recovers_part_level_heading(self):
         """مرسوم بقانون اتحادي رقم (13) لسنة 2022 -- MARGINAL at depth 1, 0

@@ -36,15 +36,21 @@ def _is_continuation_table(anchor: dict, cont: dict) -> bool:
     return all(_is_numeric_or_date(h) for h in c_headers)
 
 
-def _merge_continuation_table(anchor: dict, cont: dict) -> dict:
+def _merge_continuation_table(anchor: dict, cont: dict, *, is_rtl: bool | None = None) -> dict:
     """Left-key on the anchor's row-label column and concatenate the
-    continuation's data columns onto each row. RTL-aware."""
+    continuation's data columns onto each row. RTL-aware.
+
+    Zone-3: when *is_rtl* is provided it overrides the per-call
+    ``table_is_rtl(anchor)`` heuristic, stabilising the RTL/LTR
+    decision across multi-page merge chains (the growing merged anchor
+    can drift in script-ratio, flipping the decision mid-stitch).
+    """
     a_headers = list(anchor.get("headers") or [])
     c_headers = list(cont.get("headers") or [])
     a_data = (anchor.get("rows") or [])[1:]
     c_data = (cont.get("rows") or [])[1:]
 
-    if table_is_rtl(anchor):
+    if is_rtl if is_rtl is not None else table_is_rtl(anchor):
         label_idx = [k for k, h in enumerate(a_headers) if not _is_numeric_or_date(h)]
         date_idx = [k for k, h in enumerate(a_headers) if _is_numeric_or_date(h)]
         merged_headers = (
@@ -68,7 +74,14 @@ def _merge_continuation_table(anchor: dict, cont: dict) -> dict:
 
 
 def stitch_continuation_tables(blocks: list[dict]) -> list[dict]:
-    """Fix 2a: merge wide tables paginated across pages back together."""
+    """Fix 2a: merge wide tables paginated across pages back together.
+
+    Zone-3: ``table_is_rtl`` is computed once on the *original* anchor
+    block (before any merges mutate it) and threaded through every
+    ``_merge_continuation_table`` call in the chain, preventing the
+    RTL/LTR decision from drifting as merged content changes the
+    script-ratio heuristic.
+    """
     result: list[dict] = []
     i = 0
     n = len(blocks)
@@ -79,11 +92,13 @@ def stitch_continuation_tables(blocks: list[dict]) -> list[dict]:
             i += 1
             continue
         anchor = block
+        # Zone-3: stabilise RTL decision for the entire merge chain
+        anchor_is_rtl = table_is_rtl(anchor)
         j = i + 1
         while (
             j < n and blocks[j].get("role") == "table" and _is_continuation_table(anchor, blocks[j])
         ):
-            anchor = _merge_continuation_table(anchor, blocks[j])
+            anchor = _merge_continuation_table(anchor, blocks[j], is_rtl=anchor_is_rtl)
             j += 1
         result.append(anchor)
         i = j

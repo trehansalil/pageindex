@@ -13,6 +13,8 @@ grouped by the production function/behavior it exercises:
 """
 
 import json
+
+import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pageindex_mcp.converters as converters
@@ -150,6 +152,11 @@ _CONTINUOUS_OCR_DOC = (
 
 
 class TestCharLimitRaisedTo100:
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
+
     def test_75_char_marker_title_line_is_promoted(self):
         title = "المادة (3) نطاق التطبيق والأحكام الاستثنائية الخاصة بهذا القانون كاملة"
         assert 60 < len(title) <= 100

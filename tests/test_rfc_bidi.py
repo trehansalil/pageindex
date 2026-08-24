@@ -17,6 +17,8 @@ production function/class each group exercises:
 import os
 import re
 import tempfile
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -263,6 +265,11 @@ _SYNTHETIC_DOC = """# مرسوم بقانون
 
 
 class TestInjectArabicStructuralHeadingsBlockStart:
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
+
     def test_bab_at_block_start_promoted_to_h1(self):
         md = "مقدمة النص.\n\nالباب الأول\nأحكام عامة\n"
         result = _inject_arabic_structural_headings(md)
@@ -279,6 +286,11 @@ class TestDepthRecoveryOnInjectedHeadings:
     EXISTING `_recover_heading_depth` chain (`_relevel_by_containment` ->
     `_relevel_by_numbering` -> outline) and produce a tree with depth >= 2,
     matching an Arabic legal doc's English twin structure."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_synthetic_marsoom_biqanoon_reaches_depth_two(self):
         injected = _inject_arabic_structural_headings(_SYNTHETIC_DOC)

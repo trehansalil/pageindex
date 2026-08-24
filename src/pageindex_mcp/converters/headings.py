@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import cast
 
@@ -74,6 +75,11 @@ _AR_ARTICLE_RE = re.compile(r"^(?:ال)?مادة\b|^ةدام(?:لا)?\b")
 # RFC-028 D1: char limit for wholesale heading promotion, raised from 60 to
 # accommodate Arabic legal headings/titles (66-76+ chars observed).
 _AR_HEADING_CHAR_LIMIT = 100
+# Zone-3: content-density guard — if injected headings exceed this ratio of
+# non-empty lines AND total non-heading content is below the char floor, revert
+# the injection to let the flat-prefer path win on content density.
+_AR_HEADING_DENSITY_RATIO = 0.30
+_AR_HEADING_MIN_CONTENT_CHARS = int(os.getenv("ARABIC_HEADING_MIN_CONTENT_CHARS", "2000"))
 # RFC-028 D1: captures the structural marker word plus an immediately
 # following PARENTHESIZED numeral (e.g. "مادة (3)") so a fused marker+title
 # line exceeding the char limit can be split into a standalone heading (this
@@ -123,10 +129,18 @@ def _inject_arabic_structural_headings(md: str) -> str:
     mirror-reversed, each line is character-reversed before pattern
     matching (the regexes are forward-oriented) but the ORIGINAL line text —
     whatever Tesseract actually produced — is what gets promoted to a
-    heading; only the matching step operates on the flipped text."""
+    heading; only the matching step operates on the flipped text.
+
+    Zone-3 content-density guard: after injection, if injected headings
+    exceed 30% of non-empty lines AND total non-heading content is below
+    ``ARABIC_HEADING_MIN_CONTENT_CHARS`` (default 2000), the injection is
+    reverted — the sparse injected headings would create a false
+    structural-depth signal that blocks the flat-prefer recovery path.
+    The threshold is configurable via env var."""
     reversed_ocr = decide_rtl(md).reversed
     lines = md.split("\n")
-    out = []
+    out: list[str] = []
+    _injected_count = 0
     for line in lines:
         t = line.strip()
         if t and not _HEADING_RE.match(t):
@@ -137,6 +151,7 @@ def _inject_arabic_structural_headings(md: str) -> str:
                 level = "#" if is_part else "##"
                 if len(t) <= _AR_HEADING_CHAR_LIMIT:
                     out.append(f"{level} {t}")
+                    _injected_count += 1
                     continue
                 marker_match = _AR_MARKER_CAPTURE_RE.match(match_t)
                 if marker_match:
@@ -148,10 +163,39 @@ def _inject_arabic_structural_headings(md: str) -> str:
                         marker = marker_match.group(0).strip()
                         remainder = t[marker_match.end() :].strip()
                     out.append(f"{level} {marker}")
+                    _injected_count += 1
                     if remainder:
                         out.append(remainder)
                     continue
         out.append(line)
+
+    # Zone-3: content-density guard — revert injection when headings
+    # dominate sparse content, preventing false structural-depth signals.
+    if _injected_count > 0:
+        _non_empty = sum(1 for ln in out if ln.strip())
+        if _non_empty > 0 and (_injected_count / _non_empty) > _AR_HEADING_DENSITY_RATIO:
+            # Check content chars excluding injected heading lines
+            _content_chars = sum(
+                len(ln.strip())
+                for ln in out
+                if ln.strip() and not _HEADING_RE.match(ln.strip())
+            )
+            if _content_chars < _AR_HEADING_MIN_CONTENT_CHARS:
+                logger.info(
+                    "Zone-3: reverting Arabic heading injection — "
+                    "injected %d headings in %d non-empty lines "
+                    "(ratio=%.2f), content chars=%d < %d",
+                    _injected_count,
+                    _non_empty,
+                    _injected_count / _non_empty,
+                    _content_chars,
+                    _AR_HEADING_MIN_CONTENT_CHARS,
+                )
+                # lazy import to avoid circular dependency
+                from ..metrics import ARABIC_HEADING_INJECTION_REVERTED
+                ARABIC_HEADING_INJECTION_REVERTED.inc()
+                return md  # revert: return original unmodified markdown
+
     return "\n".join(out)
 
 

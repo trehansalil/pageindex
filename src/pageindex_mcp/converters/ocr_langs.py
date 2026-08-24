@@ -4,11 +4,17 @@ import contextlib
 import logging
 import os
 import re
+import shutil
+import subprocess
 
 from ..script import AR_CHAR_RE as _AR_SCRIPT_RE
 from .types import TessdataUnavailableError
 
 logger = logging.getLogger(__name__)
+
+# Zone-3: cache per-language system tessdata availability checks so the
+# subprocess probe runs at most once per lang per process lifetime.
+_system_tessdata_cache: dict[str, bool] = {}
 
 _LATIN_LANGS = frozenset(
     {
@@ -101,8 +107,61 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
     available: list[str] = []
     for lang in langs:
         if not prefix:
-            # No prefix configured -> trust the system tesseract install; assume present.
-            available.append(lang)
+            # No prefix configured -> trust the system tesseract install for
+            # Latin languages.  For non-Latin languages, verify the traineddata
+            # actually exists via a cached subprocess check — silently trusting
+            # the system install for non-Latin scripts risks gibberish/empty
+            # OCR output (Zone-3: closes the silent Latin fallback gap).
+            if lang in _LATIN_LANGS:
+                available.append(lang)
+                continue
+            # Non-Latin: verify system tessdata is actually present
+            if lang in _system_tessdata_cache:
+                if _system_tessdata_cache[lang]:
+                    available.append(lang)
+                else:
+                    raise TessdataUnavailableError(
+                        f"non-Latin tessdata missing: {lang} "
+                        f"(no TESSDATA_PREFIX, system check failed)"
+                    )
+                continue
+            # Probe: ask tesseract for its tessdata-prefix and check the file
+            _found = False
+            tess_bin = shutil.which("tesseract")
+            if tess_bin:
+                try:
+                    result = subprocess.run(
+                        [tess_bin, "--print-parameters"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    for _line in result.stdout.splitlines():
+                        if _line.strip().startswith("tessdata_prefix"):
+                            _sys_prefix = _line.split(maxsplit=1)[-1].strip()
+                            if os.path.exists(
+                                os.path.join(_sys_prefix, f"{lang}.traineddata")
+                            ):
+                                _found = True
+                            break
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            _system_tessdata_cache[lang] = _found
+            # lazy import to avoid circular dependency
+            from ..metrics import TESSDATA_SYSTEM_CHECK_TOTAL
+            TESSDATA_SYSTEM_CHECK_TOTAL.labels(
+                lang=lang, result="found" if _found else "missing"
+            ).inc()
+            if _found:
+                available.append(lang)
+            else:
+                logger.warning(
+                    "non-Latin tessdata '%s' not found via system tesseract "
+                    "(no TESSDATA_PREFIX configured); raising",
+                    lang,
+                )
+                raise TessdataUnavailableError(
+                    f"non-Latin tessdata missing: {lang} "
+                    f"(no TESSDATA_PREFIX, system check failed)"
+                )
             continue
         path = os.path.join(prefix, f"{lang}.traineddata")
         if os.path.exists(path):

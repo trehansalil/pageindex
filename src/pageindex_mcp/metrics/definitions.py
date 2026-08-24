@@ -200,6 +200,16 @@ TESSDATA_LATIN_FALLBACK_TOTAL = Counter(
     "ensure_tessdata fell back to ['deu','eng'] because all requested "
     "Latin-script languages were unavailable (Zone-7 observability).",
 )
+ARABIC_HEADING_INJECTION_REVERTED = Counter(
+    "pageindex_arabic_heading_injection_reverted_total",
+    "Arabic heading injection reverted due to content-density guard "
+    "(Zone-3: injected headings dominated sparse content).",
+)
+TESSDATA_SYSTEM_CHECK_TOTAL = Counter(
+    "pageindex_tessdata_system_check_total",
+    "System tessdata availability probes (Zone-3: non-Latin without TESSDATA_PREFIX).",
+    ["lang", "result"],
+)
 DOCLING_VERSION_SKEW = Counter(
     "pageindex_docling_version_skew_total",
     "Remote Docling version skew detections",

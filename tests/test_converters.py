@@ -231,6 +231,11 @@ class TestArabicReversalDetection:
 
 
 class TestArabicReversalRepairCorrectness:
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
+
     def test_reversed_document_recovers_corrected_heading_structure(self):
         """When reversal is detected, structural lines (الباب/المادة) are
         promoted to the same heading levels a clean, forward-oriented OCR
@@ -335,10 +340,14 @@ def test_index_01_c3_non_pdf_uses_own_converter_not_pdf_route():
 
 
 def test_ensure_tessdata_no_prefix_returns_input_unchanged(monkeypatch):
-    """Without TESSDATA_PREFIX, ensure_tessdata trusts system install and
-    returns the requested langs as-is (no filesystem access, no network)."""
+    """Without TESSDATA_PREFIX, ensure_tessdata trusts system install for Latin
+    langs and verifies non-Latin via system check. Mock the system check to
+    succeed so the full list is returned."""
     monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
     monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
+    # Zone-7: non-Latin langs now verified via subprocess; mock the cache
+    from pageindex_mcp.converters import ocr_langs
+    monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {"ara": True})
     result = ensure_tessdata(["ara", "eng"])
     assert result == ["ara", "eng"]
 
