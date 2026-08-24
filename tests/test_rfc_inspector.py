@@ -468,6 +468,8 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
 
     route_and_extract_flat = MagicMock(return_value=flat_return)
     monkeypatch.setattr(_img, "route_and_extract_flat", route_and_extract_flat)
+    monkeypatch.setattr(_idx, "route_and_extract_flat", route_and_extract_flat)
+    monkeypatch.setattr(_idx, "_garble_check_flat_blocks", lambda *a, **kw: None)
     mocks["route_and_extract_flat"] = route_and_extract_flat
 
     idx_metrics = {

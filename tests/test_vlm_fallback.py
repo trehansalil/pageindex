@@ -113,6 +113,7 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
         "detect_garble": MagicMock(
             return_value=GarbleReport(is_garbled=False, fired_prongs=frozenset())
         ),
+        "_garble_check_flat_blocks": MagicMock(return_value=None),
     }
     for name, m in idx_mocks.items():
         monkeypatch.setattr(_idx, name, m)
@@ -296,6 +297,16 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
     monkeypatch.setattr(_idx, "detect_garble", _fake_detect_garble)
     monkeypatch.setattr(_rec, "detect_garble", _fake_flat_garble)
 
+    flat_garble_calls = []
+    def _fake_flat_block_garble(blocks, **kw):
+        flat_garble_calls.append(len(blocks))
+        is_first = len(flat_garble_calls) == 1
+        if is_first:
+            return GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
+        return None
+
+    monkeypatch.setattr(_idx, "_garble_check_flat_blocks", _fake_flat_block_garble)
+
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
 
@@ -325,6 +336,7 @@ async def test_VLM_C7_flat_path_garble_still_garbled(monkeypatch, pdf_file):
     _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
     monkeypatch.setattr(_idx, "detect_garble", lambda text, **kw: _garbled)
     monkeypatch.setattr(_rec, "detect_garble", lambda text, **kw: _garbled)
+    monkeypatch.setattr(_idx, "_garble_check_flat_blocks", lambda blocks, **kw: _garbled)
 
     c = _make_client()
     monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))

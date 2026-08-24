@@ -32,6 +32,7 @@ from pageindex_mcp.converters import (
 )
 from pageindex_mcp.helpers import (
     _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD,
+    ScriptContext,
     TreeSignals,
     _gate_low_content_density,
     _segment_table_nodes,
@@ -90,7 +91,7 @@ class TestDensityGate:
 
     def test_below_150_fires(self):
         sig = _make_sig(node_count=200, depth=2, chars=200 * 100)
-        fired, detail = _gate_low_content_density(sig, [], None, 10, None)
+        fired, detail = _gate_low_content_density(sig, [], ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"), 10, None)
         assert fired, "Should fire: 100 chars/node < 150 threshold"
         assert "threshold=150.0" in detail
 
@@ -98,13 +99,13 @@ class TestDensityGate:
         """200 nodes, depth=5, 80 chars/node -> passes deep threshold even
         though it is below the standard 150 threshold."""
         sig = _make_sig(node_count=200, depth=5, chars=200 * 80)
-        fired, _ = _gate_low_content_density(sig, [], None, 10, None)
+        fired, _ = _gate_low_content_density(sig, [], ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"), 10, None)
         assert not fired, "Deep tree 80 chars/node should pass (> 50)"
 
     def test_node_count_bypass_below_200(self):
         """node_count < 200 must never fire, regardless of density."""
         sig = _make_sig(node_count=199, depth=2, chars=199)
-        fired, _ = _gate_low_content_density(sig, [], None, 10, None)
+        fired, _ = _gate_low_content_density(sig, [], ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"), 10, None)
         assert not fired, "node_count < 200 must gate entirely"
 
 

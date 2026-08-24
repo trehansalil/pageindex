@@ -55,7 +55,9 @@ from ..helpers import (
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,
+    _garble_check_flat_blocks,
     _garble_config,
+    route_and_extract_flat,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
@@ -724,6 +726,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         pdf_classification: dict | None,
         _effective_cfg: dict,
         _effective_config_at_job_start: dict | None,
+        *,
+        script_context: ScriptContext | None = None,
     ) -> str | None:
         """Persist a flat-routed document.
 
@@ -749,24 +753,26 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         flat_md = splice_figure_markers(flat_md, state.pic_results)
 
         state.flat_garble_unrecovered = False
-        # Zone-3: detect_garble with ScriptContext + GarbleConfig (unified API)
-        _flat_garble_ctx = ScriptContext(
+        # Zone-1: decompose into blocks BEFORE garble gate so the check
+        # runs per-block, eliminating dilution where a single garbled
+        # table amid clean prose passes the whole-blob threshold.
+        _garble_blocks: list[dict]
+        _, _garble_blocks = await asyncio.to_thread(route_and_extract_flat, flat_md)
+        _flat_garble_ctx = script_context if script_context is not None else ScriptContext(
             dominant_script=expected_script,
             had_presentation_forms=False,
             source="flat_garble_gate",
         )
-        _flat_garble_report: GarbleReport = detect_garble(
-            flat_md,
+        _flat_garble_report = _garble_check_flat_blocks(
+            _garble_blocks,
             script_context=_flat_garble_ctx,
             config=_garble_config,
-            blob_kind=BlobKind.RAW_MARKDOWN,
-            original_defect=state.first_defect,
         )
         if _flat_garble_report:
             state.flat_garble_unrecovered = True
             state.reason = "garbling"
             logger.warning(
-                "Flat-path garble gate triggered for %s; overriding reason to garbling (prongs=%s)",
+                "Flat-path per-block garble gate triggered for %s; overriding reason to garbling (prongs=%s)",
                 filename,
                 _flat_garble_report.fired_prongs,
             )
@@ -780,12 +786,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         settings.vlm_model,
                     )
                     vlm_md = await vlm_extract_markdown(file_path, settings.vlm_model)
-                    _vlm_ctx = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="vlm_fallback_garble")
-                    if not detect_garble(
-                        vlm_md,
+                    _vlm_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="vlm_fallback_garble")
+                    _, _vlm_blocks = await asyncio.to_thread(route_and_extract_flat, vlm_md)
+                    if not _garble_check_flat_blocks(
+                        _vlm_blocks,
                         script_context=_vlm_ctx,
                         config=_garble_config,
-                        blob_kind=BlobKind.RAW_MARKDOWN,
                     ):
                         flat_md = vlm_md
                         state.pic_results = []
@@ -1194,7 +1200,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     continue
                 _fired_recovery.add(_gate.recovery_fns)
                 for _fn_name in _gate.recovery_fns:
-                    await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script)
+                    await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script, script_context=script_context)
                 # Zone-3: finalize_gate_and_route() is now called inside
                 # each recovery method (_reconvert_and_revalidate,
                 # _recover_rtl_repair) so gate_result/ok/reason/first_defect/
@@ -1242,6 +1248,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         pdf_classification,
                         _effective_cfg,
                         _effective_config_at_job_start,
+                        script_context=script_context,
                     )
                     if doc_id is not None:
                         return doc_id

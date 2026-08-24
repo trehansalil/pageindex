@@ -89,6 +89,7 @@ from .garble import (
     GarbleConfig,
     GarbleProfile,
     GarbleReport,
+    _garble_check_flat_blocks,
     _garble_check_nodes,
     _garble_config,
     _garble_ratio,
