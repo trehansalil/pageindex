@@ -333,7 +333,6 @@ GATES: list[GateSpec] = [
         hard_fail=True,
         gate_fn=_gate_garbling,
         severity=0,
-        flat_applicable=True,
         recovery_eligible=_eligible_garble,
         recovery_fns=("_recover_garble_ocr", "_recover_vlm_fallback"),
     ),
@@ -358,7 +357,6 @@ GATES: list[GateSpec] = [
         _ReasonPolicy.RETRY_OCR,
         gate_fn=_gate_node_garbling,
         severity=3,
-        flat_applicable=True,
         recovery_eligible=_eligible_garble,
         recovery_fns=("_recover_garble_ocr", "_recover_vlm_fallback"),
     ),
@@ -368,7 +366,6 @@ GATES: list[GateSpec] = [
         hard_fail=True,
         gate_fn=_gate_reordered,
         severity=4,
-        flat_applicable=True,
     ),
     GateSpec(
         TreeDefect.RTL_REVERSAL,
@@ -470,38 +467,6 @@ _active_severities = [g.severity for g in GATES if g.gate_fn is not None]
 assert len(_active_severities) == len(set(_active_severities)), (
     f"Active-gate severity values are not unique: {_active_severities}"
 )
-
-# Zone-2: defects applicable to flat-path documents (no heading hierarchy),
-# derived from GateSpec.flat_applicable field.
-# NODE_COUNT_LOW / DEPTH_LOW are excluded — flat docs by definition have no
-# node-count / depth structure worth gating on.
-_FLAT_APPLICABLE_DEFECTS: frozenset[TreeDefect] = frozenset(
-    g.defect for g in GATES if g.flat_applicable
-)
-
-# Import-time assertion: flat-applicable set matches expected defects.
-assert (
-    frozenset(
-        {
-            TreeDefect.GARBLING,
-            TreeDefect.NODE_GARBLING,
-            TreeDefect.REORDERED,
-        }
-    )
-    == _FLAT_APPLICABLE_DEFECTS
-), (
-    f"_FLAT_APPLICABLE_DEFECTS derived from GateSpec.flat_applicable does not "
-    f"match expected set: got {_FLAT_APPLICABLE_DEFECTS}"
-)
-
-# FLAT_GATE_SUBSET: active gates for flat-path documents, derived from GATES
-# so new gates auto-sync.  Only gates whose defect is in
-# _FLAT_APPLICABLE_DEFECTS are included.
-FLAT_GATE_SUBSET: list[tuple[_GateFn, TreeDefect]] = [
-    (g.gate_fn, g.defect)  # type: ignore[misc]
-    for g in GATES
-    if g.gate_fn is not None and g.defect in _FLAT_APPLICABLE_DEFECTS
-]
 
 # ---------------------------------------------------------------------------
 # Cross-module feature wiring registry

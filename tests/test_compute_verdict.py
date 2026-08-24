@@ -1,6 +1,6 @@
 """Consolidated compute_verdict tests: VerdictResult dataclass, compute_verdict
-function signature and modes, classify_verdict backward compat, FLAT_GATE_SUBSET
-derivation, hard-fail tiebreak order, and legacy None path."""
+function signature and modes, classify_verdict backward compat, unified gate
+evaluation, hard-fail tiebreak order, and legacy None path."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import dataclasses
 import pytest
 
 from pageindex_mcp.helpers import (
-    FLAT_GATE_SUBSET,
     GATES,
+    HARD_FAIL_DEFECTS,
     TreeDefect,
     TreeGateResult,
     TreeSignals,
@@ -97,16 +97,60 @@ class TestComputeVerdictSignature:
         assert isinstance(result, VerdictResult)
 
 
-class TestComputeVerdictFlatMode:
-    def test_flat_true_accepted(self):
-        result = compute_verdict(_single_leaf(), "flat_prose", flat=True)
-        assert isinstance(result, VerdictResult)
+class TestUnifiedGateEvaluation:
+    """After flat/tree verdict unification, compute_verdict no longer accepts
+    a ``flat`` kwarg.  All gate evaluation goes through the same path:
+    when a TreeGateResult is passed, all 10 gates apply uniformly."""
 
-    def test_flat_true_with_treegateresult_uses_gate_result(self):
-        gate = TreeGateResult(ok=False, defect=TreeDefect.GARBLING)
-        result = compute_verdict(_single_leaf(), "flat_prose", gate, flat=True)
+    def test_flat_kwarg_removed(self):
+        """compute_verdict must not accept flat= after unification."""
+        with pytest.raises(TypeError):
+            compute_verdict(_single_leaf(), "flat_prose", flat=True)  # type: ignore[call-arg]
+
+    def test_treegateresult_with_empty_node_contamination_produces_fail(self):
+        """Contract: EMPTY_NODE_CONTAMINATION (a hard-fail defect formerly
+        invisible to the flat path) must produce FAIL when threaded through
+        compute_verdict via TreeGateResult."""
+        gate = TreeGateResult(
+            ok=False,
+            defect=TreeDefect.EMPTY_NODE_CONTAMINATION,
+            all_defects=frozenset({TreeDefect.EMPTY_NODE_CONTAMINATION}),
+        )
+        result = compute_verdict(_single_leaf(), "flat_prose", gate)
         assert result.verdict == "FAIL"
-        assert result.defect == TreeDefect.GARBLING
+        assert result.defect == TreeDefect.EMPTY_NODE_CONTAMINATION
+
+    def test_treegateresult_with_low_content_density_produces_fail(self):
+        """LOW_CONTENT_DENSITY is another hard-fail gate formerly skipped on flat."""
+        gate = TreeGateResult(
+            ok=False,
+            defect=TreeDefect.LOW_CONTENT_DENSITY,
+            all_defects=frozenset({TreeDefect.LOW_CONTENT_DENSITY}),
+        )
+        result = compute_verdict(_single_leaf(), "flat_prose", gate)
+        assert result.verdict == "FAIL"
+
+    def test_validate_result_none_still_produces_valid_result(self):
+        """Non-PDF callers that pass validate_result=None must still get
+        a valid VerdictResult (signals derived fresh from structure)."""
+        result = compute_verdict(_well_formed(), "flat_prose", None)
+        assert isinstance(result, VerdictResult)
+        assert result.verdict in ("PASS", "MARGINAL", "FAIL")
+        assert result.signals is not None
+
+    def test_all_hard_fail_defects_produce_fail_via_gate_result(self):
+        """Every defect in HARD_FAIL_DEFECTS must produce FAIL when carried
+        in a TreeGateResult, regardless of path."""
+        for hf_defect in HARD_FAIL_DEFECTS:
+            gate = TreeGateResult(
+                ok=False,
+                defect=hf_defect,
+                all_defects=frozenset({hf_defect}),
+            )
+            result = compute_verdict(_single_leaf(), "flat_prose", gate)
+            assert result.verdict == "FAIL", (
+                f"{hf_defect.name} should produce FAIL but got {result.verdict}"
+            )
 
 
 class TestComputeVerdictSourceSelection:
@@ -159,39 +203,35 @@ class TestClassifyVerdictWrapper:
 
 
 # ---------------------------------------------------------------------------
-# FLAT_GATE_SUBSET derivation contracts
+# Regression: FLAT_GATE_SUBSET / flat_applicable removal confirmed
 # ---------------------------------------------------------------------------
 
 
-class TestFlatGateSubset:
-    def test_all_entries_are_gate_fn_defect_tuples(self):
-        for entry in FLAT_GATE_SUBSET:
-            assert isinstance(entry, tuple) and len(entry) == 2
-            gate_fn, defect = entry
-            assert callable(gate_fn)
-            assert isinstance(defect, TreeDefect)
+class TestFlatPathRemoval:
+    """After tree/flat verdict unification, FLAT_GATE_SUBSET,
+    _FLAT_APPLICABLE_DEFECTS, and the flat_applicable GateSpec field
+    no longer exist.  These tests confirm their removal."""
 
-    def test_includes_node_garbling(self):
-        defects = {d for _, d in FLAT_GATE_SUBSET}
-        assert TreeDefect.NODE_GARBLING in defects
+    def test_flat_gate_subset_not_exported(self):
+        import pageindex_mcp.helpers as helpers_mod
+        assert not hasattr(helpers_mod, "FLAT_GATE_SUBSET")
 
-    def test_includes_reordered(self):
-        defects = {d for _, d in FLAT_GATE_SUBSET}
-        assert TreeDefect.REORDERED in defects
+    def test_flat_applicable_defects_not_exported(self):
+        import pageindex_mcp.helpers as helpers_mod
+        assert not hasattr(helpers_mod, "_FLAT_APPLICABLE_DEFECTS")
 
-    def test_excludes_depth_low(self):
-        defects = {d for _, d in FLAT_GATE_SUBSET}
-        assert TreeDefect.DEPTH_LOW not in defects
+    def test_gatespec_has_no_flat_applicable_field(self):
+        from pageindex_mcp.helpers import GateSpec
+        import dataclasses
+        field_names = {f.name for f in dataclasses.fields(GateSpec)}
+        assert "flat_applicable" not in field_names
 
-    def test_auto_sync_with_gates(self):
-        from pageindex_mcp.helpers import _FLAT_APPLICABLE_DEFECTS
-
-        expected = [
-            (g.gate_fn, g.defect)
-            for g in GATES
-            if g.gate_fn is not None and g.defect in _FLAT_APPLICABLE_DEFECTS
-        ]
-        assert expected == FLAT_GATE_SUBSET
+    def test_all_gates_apply_uniformly(self):
+        """Every active gate must apply to all paths (no subset filtering)."""
+        active_gates = [g for g in GATES if g.gate_fn is not None]
+        assert len(active_gates) == 10, (
+            f"Expected 10 active gates, got {len(active_gates)}"
+        )
 
 
 # ---------------------------------------------------------------------------

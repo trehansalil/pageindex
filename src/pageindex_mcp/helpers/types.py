@@ -188,6 +188,7 @@ class ExtractionState:
     rtl_decision: RtlDecision | None = None
     landscape_pages: list | None = None
     full_page_already_applied: bool = False
+    supports_ocr: bool = False
 
 
 class _ReasonPolicy(StrEnum):
@@ -211,9 +212,9 @@ class GateSpec:
     """Unified per-defect gate metadata (single source of truth).
 
     Consolidates GATE_TABLE, REASON_POLICY, HARD_FAIL_DEFECTS,
-    ``_GATE_PRIORITY``, ``_FLAT_APPLICABLE_DEFECTS``, and recovery dispatch
-    into one declarative list (:data:`GATES`).  Legacy dicts are derived
-    from GATES at import time for backward-compat consumers.
+    ``_GATE_PRIORITY``, and recovery dispatch into one declarative list
+    (:data:`GATES`).  Legacy dicts are derived from GATES at import time
+    for backward-compat consumers.
 
     ``gate_fn`` is ``None`` for deprecated / dead gates (e.g.
     ARABIC_LOW_CONTENT_RATIO) and for TreeDefect.OK (which is not a gate).
@@ -230,10 +231,6 @@ class GateSpec:
     Active gates (``gate_fn is not None``) must have unique severity values;
     dead/placeholder gates use the default 99.  ``_GATE_PRIORITY`` is derived
     from this field rather than from GATE_TABLE list position.
-
-    ``flat_applicable`` marks defects that apply to flat-path documents
-    (no heading hierarchy).  ``_FLAT_APPLICABLE_DEFECTS`` is derived from
-    this field rather than a hardcoded set.
     """
 
     defect: TreeDefect
@@ -241,7 +238,6 @@ class GateSpec:
     hard_fail: bool = False
     gate_fn: _GateFn | None = None
     severity: int = 99
-    flat_applicable: bool = False
     recovery_eligible: Callable[[ExtractionState], bool] | None = None
     recovery_fns: tuple[str, ...] = ()
 
@@ -318,6 +314,54 @@ def decide_route(defect: TreeDefect, flat_routing_enabled: bool = True) -> Route
             return Route.FLAT
         return Route.REJECT
     raise AssertionError(f"unhandled policy {policy!r} for defect {defect!r}")
+
+
+def _defect_from_reason_str(reason: str | None) -> TreeDefect:
+    """Parse a validate_reason string back into a :class:`TreeDefect`.
+
+    Handles both exact matches (``"garbling"``) and prefix matches with
+    parenthesised detail (``"empty_node_contamination(fraction=0.35,...)"``)
+    by matching against each ``TreeDefect.value``.
+    """
+    if not reason:
+        return TreeDefect.OK
+    for td in TreeDefect:
+        if td.value and (reason == td.value or reason.startswith(td.value + "(")):
+            return td
+    return TreeDefect.OK
+
+
+def finalize_gate_and_route(
+    state: ExtractionState,
+    vt_raw: TreeGateResult | tuple[bool, str],
+    flat_routing_enabled: bool = True,
+) -> None:
+    """Single writer of gate_result/ok/reason/first_defect/route on *state*.
+
+    Zone-3: eliminates the stale-routing window by atomically deriving
+    all five fields from a ``validate_tree`` result.  Every call site
+    that previously set a subset of these fields (``_convert_to_tree``,
+    ``_reconvert_and_revalidate``, ``_recover_rtl_repair``) must call
+    this instead.
+
+    Accepts both :class:`TreeGateResult` (preferred) and a legacy
+    ``(ok, reason)`` tuple for backward compatibility.
+    """
+    if isinstance(vt_raw, TreeGateResult):
+        state.gate_result = vt_raw
+        state.ok = vt_raw.ok
+        state.reason = str(vt_raw)
+    else:
+        state.gate_result = None
+        state.ok = vt_raw[0]
+        state.reason = vt_raw[1]
+
+    state.first_defect = (
+        state.gate_result.defect
+        if state.gate_result is not None
+        else _defect_from_reason_str(state.reason)
+    )
+    state.route = decide_route(state.first_defect, flat_routing_enabled)
 
 
 @dataclass(frozen=True)

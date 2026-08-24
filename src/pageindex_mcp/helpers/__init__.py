@@ -49,10 +49,12 @@ from .types import (
     VerdictResult,
     VerdictThresholds,
     _GateFn,
+    _defect_from_reason_str,
     _get_verdict_thresholds,
     _ReasonPolicy,
     _Unset,
     decide_route,
+    finalize_gate_and_route,
     reset_verdict_thresholds,
 )
 
@@ -93,8 +95,6 @@ from .garble import (
     _garble_ratio,
     _is_morphologically_nonsense,
     _latin_token_ratio,
-    _rebuild_garble_config_compat,
-    check_garble,
     detect_garble,
     garble_prongs,
     hash_pipe_ratio,
@@ -104,10 +104,8 @@ from .garble import (
 
 # ── gates ────────────────────────────────────────────────────────────────────
 from .gates import (
-    _FLAT_APPLICABLE_DEFECTS,
     _GATE_PRIORITY,
     FEATURE_WIRINGS,
-    FLAT_GATE_SUBSET,
     GATE_TABLE,
     GATES,
     HARD_FAIL_DEFECTS,
@@ -205,8 +203,8 @@ from .verdict import (
     _clamp_pass,
     _classify_image_verdict,
     _dedupe_chart_text_lines,
-    _defect_from_reason_str,
     apply_promotions,
+    apply_verdict_hysteresis,
     classify_verdict,
     compute_image_enrichment_ratio,
     compute_verdict,
@@ -217,14 +215,12 @@ from .verdict import (
 __all__ = [
     "BULK_PROFILE",
     "FEATURE_WIRINGS",
-    "FLAT_GATE_SUBSET",
     "FLAT_MARKDOWN_PROFILE",
     # gates
     "GATES",
     "GATE_TABLE",
     "HARD_FAIL_DEFECTS",
     "REASON_POLICY",
-    "_FLAT_APPLICABLE_DEFECTS",
     "_GATE_PRIORITY",
     # script re-exports
     "_JOINING_TYPE",
@@ -286,7 +282,7 @@ __all__ = [
     "_tree_node_count",
     "_walk_leaves",
     "apply_promotions",
-    "check_garble",
+    "apply_verdict_hysteresis",
     "classify_verdict",
     "compute_image_enrichment_ratio",
     "compute_verdict",
@@ -296,6 +292,7 @@ __all__ = [
     "detect_regression",
     # verdict
     "evaluate_gates",
+    "finalize_gate_and_route",
     "flag_empty_cells",
     "flat_doc_view",
     "garble_prongs",

@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from ..config import pipeline_config
 from ..script import ScriptContext, decide_rtl
 from .garble import (
     BULK_PROFILE,
-    check_garble,
+    BlobKind,
+    GarbleConfig,
+    _garble_config,
+    detect_garble,
     hash_pipe_ratio,
     ocr_noise_ratio,
 )
 from .gates import (
     _GATE_PRIORITY,
-    FLAT_GATE_SUBSET,
     GATE_TABLE,
     HARD_FAIL_DEFECTS,
 )
@@ -85,19 +88,9 @@ def _dedupe_chart_text_lines(text: str) -> str:
     return "".join(kept)
 
 
-def _defect_from_reason_str(reason: str | None) -> TreeDefect:
-    """Parse a validate_reason string back into a :class:`TreeDefect`.
-
-    Handles both exact matches (``"garbling"``) and prefix matches with
-    parenthesised detail (``"empty_node_contamination(fraction=0.35,...)"``)
-    by matching against each ``TreeDefect.value``.
-    """
-    if not reason:
-        return TreeDefect.OK
-    for td in TreeDefect:
-        if td.value and (reason == td.value or reason.startswith(td.value + "(")):
-            return td
-    return TreeDefect.OK
+# Zone-3: _defect_from_reason_str moved to types.py next to finalize_gate_and_route.
+# Re-exported here for backward compat with any callers importing from verdict.
+from .types import _defect_from_reason_str as _defect_from_reason_str  # noqa: F811
 
 
 def _clamp_pass(
@@ -127,8 +120,6 @@ def evaluate_gates(
     validate_result: TreeGateResult | None,
     expected_script: str | None | ScriptContext,
     th: VerdictThresholds,
-    *,
-    flat: bool = False,
 ) -> GateOutcome:
     """Zone-4 Phase 1: gate evaluation + hard-fail checks.
 
@@ -181,18 +172,7 @@ def evaluate_gates(
             ),
         )
 
-    if validate_result is None and flat:
-        _flat_fired: list[tuple[TreeDefect, str]] = []
-        _rtl_decision_flat = decide_rtl(sig.flat_text) if sig.flat_text else None
-        for gate_fn, gate_defect in FLAT_GATE_SUBSET:
-            fires, detail = gate_fn(sig, structure, _bare_script, None, _rtl_decision_flat)
-            if fires:
-                _flat_fired.append((gate_defect, detail))
-        if _flat_fired:
-            defect = _flat_fired[0][0]
-            _all_defects = frozenset(d for d, _ in _flat_fired)
-
-    if validate_result is None and not flat and sig.is_reordered:
+    if validate_result is None and sig.is_reordered:
         defect = TreeDefect.REORDERED
         _all_defects = frozenset({TreeDefect.REORDERED})
 
@@ -243,7 +223,6 @@ def apply_promotions(
     inspector_class: str | None,
     th: VerdictThresholds,
     expected_script: str | None,
-    validate_result: TreeGateResult | None,
     *,
     source_selection: bool = False,
 ) -> VerdictResult:
@@ -277,11 +256,7 @@ def apply_promotions(
         _v, _r = _clamp_pass(reason, defect=defect, sig=sig)
         return VerdictResult(_v, _r, defect=defect, signals=sig, all_defects=_all_defects)
 
-    _structural_ok = (
-        {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(_all_defects)
-        if validate_result is not None
-        else (sig.node_count >= 3 and sig.depth >= 2)
-    )
+    _structural_ok = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(_all_defects)
 
     if (
         content_class in ("flat_prose", "flat_mixed")
@@ -298,7 +273,8 @@ def apply_promotions(
                 signals=sig,
                 all_defects=_all_defects,
             )
-        if not check_garble(_promoted_text, expected_script=expected_script, profile=BULK_PROFILE):
+        _sc = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="apply_promotions")
+        if not detect_garble(_promoted_text, script_context=_sc, config=_garble_config, blob_kind=BlobKind.TREE_TEXT):
             return _apply_clamp("image_enrichment_promoted")
 
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
@@ -379,7 +355,6 @@ def compute_verdict(
     inspector_class: str | None = None,
     expected_script: str | None | ScriptContext = None,
     *,
-    flat: bool = False,
     source_selection: bool = False,
 ) -> VerdictResult:
     """Zone-4 thin dispatcher: evaluate_gates -> apply_promotions.
@@ -396,15 +371,13 @@ def compute_verdict(
       - Hard-fail tiebreak delegates to evaluate_gates which uses
         ``_GATE_PRIORITY.get(d, len(GATE_TABLE))`` for masked co-firing
         defect resolution via ``_GATE_PRIORITY`` dict lookups.
-      - FLAT_GATE_SUBSET: when ``validate_result is None and flat``
-        is true, evaluate_gates runs the flat-applicable gate subset.
     """
     th = VerdictThresholds.from_config(pipeline_config)
     if isinstance(expected_script, ScriptContext):
         _bare_script: str | None = expected_script.dominant_script
     else:
         _bare_script = expected_script
-    outcome = evaluate_gates(structure, validate_result, expected_script, th, flat=flat)
+    outcome = evaluate_gates(structure, validate_result, expected_script, th)
     if outcome.hard_fail_verdict is not None:
         return outcome.hard_fail_verdict
     return apply_promotions(
@@ -414,7 +387,6 @@ def compute_verdict(
         inspector_class,
         th,
         _bare_script,
-        validate_result,
         source_selection=source_selection,
     )
 
@@ -463,3 +435,62 @@ def detect_regression(
     count_dropped = cur_count < prev_node_count * 0.7
     ratio_grew = prev_max_leaf_ratio > 0 and cur_ratio > prev_max_leaf_ratio * 2
     return count_dropped and ratio_grew
+
+
+# ---------------------------------------------------------------------------
+# Zone-4: verdict-ledger hysteresis (shared helper)
+# ---------------------------------------------------------------------------
+
+_LEDGER_PRIORITY: dict[str, int] = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
+
+_hysteresis_logger = logging.getLogger(__name__)
+
+
+def apply_verdict_hysteresis(
+    verdict: str,
+    verdict_reason: str,
+    sha256: str,
+    filename: str,
+    path_label: str,
+    read_ledger_fn: object,
+) -> tuple[str, str]:
+    """Apply verdict-ledger hysteresis anchoring (sync helper).
+
+    If the ledger records a higher-priority verdict for this content
+    (keyed by *sha256*), override the just-computed verdict to prevent
+    oscillation across re-ingestions.  Non-blocking, graceful degradation:
+    any exception during ledger read is logged and the computed verdict
+    is returned unchanged.
+
+    *read_ledger_fn* is the ``read_verdict_ledger`` callable (injected
+    to avoid a circular import from storage into helpers).
+
+    *path_label* is ``"flat"`` or ``"tree"`` and appears only in log
+    messages for differentiation.
+
+    Returns ``(verdict, verdict_reason)`` -- possibly overridden.
+    """
+    try:
+        _prior_verdict = read_ledger_fn(sha256)  # type: ignore[operator]
+        if _prior_verdict is not None and _LEDGER_PRIORITY.get(
+            _prior_verdict, -1
+        ) > _LEDGER_PRIORITY.get(verdict, -1):
+            _hysteresis_logger.info(
+                "Zone-4 hysteresis anchor: overriding %s verdict %s -> %s "
+                "for %s (sha256=%s, anchored_by_ledger)",
+                path_label,
+                verdict,
+                _prior_verdict,
+                filename,
+                sha256[:12],
+            )
+            verdict_reason = f"anchored_by_ledger(was={verdict}:{verdict_reason})"
+            verdict = _prior_verdict
+    except Exception:
+        _hysteresis_logger.warning(
+            "Zone-4 hysteresis: ledger read failed for %s, continuing "
+            "with computed verdict (graceful degradation)",
+            filename,
+            exc_info=True,
+        )
+    return verdict, verdict_reason

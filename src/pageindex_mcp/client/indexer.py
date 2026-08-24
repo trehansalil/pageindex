@@ -52,7 +52,6 @@ from ..helpers import (
     Route,
     TreeDefect,
     TreeGateResult,
-    _defect_from_reason_str,
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,
@@ -61,10 +60,9 @@ from ..helpers import (
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
-    check_garble,
     compute_verdict,
-    decide_route,
     detect_garble,
+    finalize_gate_and_route,
     prepare_tree,
     validate_tree,
 )
@@ -83,7 +81,7 @@ from ..metrics import (
 from ..picture_plane import (
     decide_ocr_strategy,
 )
-from ..script import RtlDecision, ScriptContext
+from ..script import BlobKind, RtlDecision, ScriptContext
 from ..storage import (
     hash_cache_get,
     hash_cache_set,
@@ -349,8 +347,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             page_count=state.pdf_page_count,
             rtl_decision=state.rtl_decision,
         )
-        state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-        state.ok, state.reason = _vt_raw
+        finalize_gate_and_route(state, _vt_raw, settings.flat_doc_routing)
 
     async def _convert_to_tree(
         self,
@@ -420,10 +417,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
-                            if raw_text.strip() and check_garble(
+                            _probe_ctx = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="pre_garble_probe")
+                            if raw_text.strip() and detect_garble(
                                 raw_text,
-                                expected_script=expected_script,
-                                profile=FLAT_MARKDOWN_PROFILE,
+                                script_context=_probe_ctx,
+                                config=_garble_config,
+                                blob_kind=BlobKind.RAW_MARKDOWN,
                             ):
                                 state.pre_garbled = True
                                 logger.info(
@@ -455,10 +454,10 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             state.use_remote = bool(
                 getattr(settings, "docling_service_url", None) and self._staging_key
             )
-            for idx, (conv_name, conv_fn) in enumerate(chain):
+            for idx, (conv_name, conv_fn, _conv_supports_ocr) in enumerate(chain):
                 try:
                     logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
-                    if state.use_remote and "docling" in conv_name:
+                    if state.use_remote and _conv_supports_ocr:
                         # NOTE (Zone-1 known gap): _remote_pdf_to_markdown does
                         # NOT forward expected_script to the external Docling
                         # microservice — the /convert/pdf payload has no script
@@ -489,7 +488,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
                                 self._staging_key,
                             )
-                    elif force_full_page and "docling" in conv_name:
+                    elif force_full_page and _conv_supports_ocr:
                         md_content, state.pic_results, stages_out = _split_converter_output(
                             await asyncio.to_thread(
                                 conv_fn,
@@ -502,7 +501,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         if stages_out:
                             state.extraction_stages_captured = stages_out
                     else:
-                        if state.pre_garbled and "docling" in conv_name:
+                        if state.pre_garbled and _conv_supports_ocr:
                             logger.info(
                                 "D3a pre-garble probe fired for %s but OCR deferral "
                                 "active; deferring to Fix-3 retry path",
@@ -518,6 +517,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         if stages_out:
                             state.extraction_stages_captured = stages_out
                     state.used_converter = conv_name
+                    state.supports_ocr = _conv_supports_ocr
                     break
                 except Exception as conv_exc:
                     md_content = None
@@ -702,8 +702,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             page_count=state.pdf_page_count if ext == ".pdf" else None,
             rtl_decision=state.rtl_decision,
         )
-        state.gate_result = _vt_raw if isinstance(_vt_raw, TreeGateResult) else None
-        state.ok, state.reason = _vt_raw
+        finalize_gate_and_route(state, _vt_raw, settings.flat_doc_routing)
         if state.gate_result and state.gate_result.all_defects:
             logger.info(
                 "validate_tree %s: primary=%s, all_defects=%s",
@@ -711,10 +710,6 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 state.gate_result.defect.value,
                 sorted(d.value for d in state.gate_result.all_defects),
             )
-        state.first_defect = (
-            state.gate_result.defect if state.gate_result else _defect_from_reason_str(state.reason)
-        )
-        state.route = decide_route(state.first_defect, settings.flat_doc_routing)
         state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
     async def _persist_flat_result(
@@ -760,13 +755,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             had_presentation_forms=False,
             source="flat_garble_gate",
         )
-        from ..script import BlobKind as _BlobKind
-
         _flat_garble_report: GarbleReport = detect_garble(
             flat_md,
             script_context=_flat_garble_ctx,
             config=_garble_config,
-            blob_kind=_BlobKind.RAW_MARKDOWN,
+            blob_kind=BlobKind.RAW_MARKDOWN,
             original_defect=state.first_defect,
         )
         if _flat_garble_report:
@@ -787,10 +780,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         settings.vlm_model,
                     )
                     vlm_md = await vlm_extract_markdown(file_path, settings.vlm_model)
-                    if not check_garble(
+                    _vlm_ctx = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="vlm_fallback_garble")
+                    if not detect_garble(
                         vlm_md,
-                        expected_script=expected_script,
-                        profile=FLAT_MARKDOWN_PROFILE,
+                        script_context=_vlm_ctx,
+                        config=_garble_config,
+                        blob_kind=BlobKind.RAW_MARKDOWN,
                     ):
                         flat_md = vlm_md
                         state.pic_results = []
@@ -842,39 +837,24 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         _vr = compute_verdict(
             flat_structure,
             content_class,
+            state.gate_result,
             image_enrichment_ratio=image_enrichment_ratio,
             expected_script=expected_script,
-            flat=True,
         )
         f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
 
         # Zone-4: hysteresis anchoring via verdict ledger.
-        # If the ledger records a higher-priority verdict for this content
-        # (keyed by sha256), override the just-computed verdict to prevent
-        # oscillation across re-ingestions.  Non-blocking, graceful degradation.
-        _LEDGER_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
-        try:
-            _prior_verdict = await asyncio.to_thread(read_verdict_ledger, sha256)
-            if _prior_verdict is not None and _LEDGER_PRIORITY.get(
-                _prior_verdict, -1
-            ) > _LEDGER_PRIORITY.get(f_verdict, -1):
-                logger.info(
-                    "Zone-4 hysteresis anchor: overriding flat verdict %s -> %s "
-                    "for %s (sha256=%s, anchored_by_ledger)",
-                    f_verdict,
-                    _prior_verdict,
-                    filename,
-                    sha256[:12],
-                )
-                f_verdict_reason = f"anchored_by_ledger(was={f_verdict}:{f_verdict_reason})"
-                f_verdict = _prior_verdict
-        except Exception:
-            logger.warning(
-                "Zone-4 hysteresis: ledger read failed for %s, continuing "
-                "with computed verdict (graceful degradation)",
-                filename,
-                exc_info=True,
-            )
+        from ..helpers.verdict import apply_verdict_hysteresis
+
+        f_verdict, f_verdict_reason = await asyncio.to_thread(
+            apply_verdict_hysteresis,
+            f_verdict,
+            f_verdict_reason,
+            sha256,
+            filename,
+            "flat",
+            read_verdict_ledger,
+        )
 
         _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
@@ -987,31 +967,17 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         verdict, verdict_reason = _vr.verdict, _vr.reason
 
         # Zone-4: hysteresis anchoring via verdict ledger.
-        # Same logic as flat path -- if the ledger records a higher-priority
-        # verdict for this content, override to prevent oscillation.
-        _LEDGER_PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
-        try:
-            _prior_verdict = await asyncio.to_thread(read_verdict_ledger, sha256)
-            if _prior_verdict is not None and _LEDGER_PRIORITY.get(
-                _prior_verdict, -1
-            ) > _LEDGER_PRIORITY.get(verdict, -1):
-                logger.info(
-                    "Zone-4 hysteresis anchor: overriding tree verdict %s -> %s "
-                    "for %s (sha256=%s, anchored_by_ledger)",
-                    verdict,
-                    _prior_verdict,
-                    filename,
-                    sha256[:12],
-                )
-                verdict_reason = f"anchored_by_ledger(was={verdict}:{verdict_reason})"
-                verdict = _prior_verdict
-        except Exception:
-            logger.warning(
-                "Zone-4 hysteresis: ledger read failed for %s, continuing "
-                "with computed verdict (graceful degradation)",
-                filename,
-                exc_info=True,
-            )
+        from ..helpers.verdict import apply_verdict_hysteresis
+
+        verdict, verdict_reason = await asyncio.to_thread(
+            apply_verdict_hysteresis,
+            verdict,
+            verdict_reason,
+            sha256,
+            filename,
+            "tree",
+            read_verdict_ledger,
+        )
 
         _, _, mlr = _tree_max_leaf_ratio(structure)
         _verdict_computed_at = datetime.now(UTC).isoformat()
@@ -1060,7 +1026,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             meta["effective_config_at_job_start"] = _effective_config_at_job_start
         if ext == ".pdf":
             _route_remote = bool(
-                state.use_remote and state.used_converter and "docling" in state.used_converter
+                state.use_remote and state.used_converter and state.supports_ocr
             )
             meta["extraction_route"] = "remote" if _route_remote else "local"
             if state.used_converter:
@@ -1204,18 +1170,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 if _gate.recovery_eligible is None or not _gate.recovery_eligible(state):
                     continue
                 _fired_recovery.add(_gate.recovery_fns)
-                _pre_route = state.route
                 for _fn_name in _gate.recovery_fns:
                     await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script)
-                # Re-derive first_defect/route after each gate's recovery
-                # block.  Skip when ok=True (tree valid, no rerouting needed)
-                # or when a recovery method explicitly overrode state.route.
-                if not state.ok and state.route == _pre_route:
-                    if state.gate_result is not None:
-                        state.first_defect = state.gate_result.defect
-                    else:
-                        state.first_defect = _defect_from_reason_str(state.reason)
-                    state.route = decide_route(state.first_defect, settings.flat_doc_routing)
+                # Zone-3: finalize_gate_and_route() is now called inside
+                # each recovery method (_reconvert_and_revalidate,
+                # _recover_rtl_repair) so gate_result/ok/reason/first_defect/
+                # route are always consistent after every recovery step.
+                # Recovery methods that intentionally override state.route
+                # (e.g. _recover_rtl_flat_compare, _recover_vlm_fallback)
+                # do so AFTER finalize_gate_and_route, which is correct.
                 state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
             # Quality checks (may override route intentionally — no
@@ -1243,21 +1206,6 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             match (state.ok, state.route):
                 case (True, Route.TREE):
                     pass  # success — persist tree below
-
-                case (True, Route.REJECT) | (True, Route.PERSIST_FAIL):
-                    # Recovery fixed the tree (ok=True) but route is stale
-                    # from pre-recovery state; the recovery loop skips
-                    # re-derivation when ok=True since the tree is valid.
-                    pass  # persist tree below
-
-                case (True, Route.FLAT):
-                    # Reachable when decide_route initially returned FLAT
-                    # (e.g. NODE_COUNT_LOW/DEPTH_LOW with flat routing) and a
-                    # recovery method fixed the tree (ok=True) without
-                    # overriding state.route.  The recovery loop skips
-                    # re-derivation when ok=True, leaving the stale FLAT
-                    # route.  The tree is valid — persist it.
-                    pass  # persist tree below
 
                 case (False, Route.FLAT):
                     doc_id = await self._persist_flat_result(
@@ -1303,6 +1251,18 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         state.reason,
                     )
                     # fall through to _persist_tree_result below
+
+                case _:
+                    # Zone-3 exhaustiveness guard: finalize_gate_and_route()
+                    # keeps route consistent with ok, so (True, !TREE) should
+                    # be unreachable.  Log and persist tree as a safe fallback.
+                    logger.error(
+                        "Unexpected (ok=%s, route=%s) for %s — persisting tree "
+                        "as fallback (Zone-3 exhaustiveness guard)",
+                        state.ok,
+                        state.route,
+                        filename,
+                    )
 
             return await self._persist_tree_result(
                 state,

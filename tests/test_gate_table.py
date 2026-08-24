@@ -8,7 +8,6 @@ import dataclasses
 import pytest
 
 from pageindex_mcp.helpers import (
-    _FLAT_APPLICABLE_DEFECTS,
     _GATE_PRIORITY,
     _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD,
     _RFC029_TABLE_SEGMENT_MIN_ROWS,
@@ -170,15 +169,16 @@ class TestGateSpecFields:
 
     def test_recovery_fields_exist(self):
         fields = {f.name for f in dataclasses.fields(GateSpec)}
-        assert {"recovery_eligible", "recovery_fns", "severity", "flat_applicable"} <= fields
+        assert {"recovery_eligible", "recovery_fns", "severity"} <= fields
+
+    def test_flat_applicable_field_removed(self):
+        """flat_applicable was removed during tree/flat verdict unification."""
+        fields = {f.name for f in dataclasses.fields(GateSpec)}
+        assert "flat_applicable" not in fields
 
     def test_priority_equals_severity(self):
         expected = {g.defect: g.severity for g in GATES if g.gate_fn is not None}
         assert expected == _GATE_PRIORITY
-
-    def test_flat_applicable_derivation(self):
-        expected = frozenset(g.defect for g in GATES if g.flat_applicable)
-        assert expected == _FLAT_APPLICABLE_DEFECTS
 
 
 def _pipe_table(n_data_rows, n_cols=3):
