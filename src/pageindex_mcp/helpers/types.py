@@ -240,6 +240,7 @@ class GateSpec:
     severity: int = 99
     recovery_eligible: Callable[[ExtractionState], bool] | None = None
     recovery_fns: tuple[str, ...] = ()
+    recovery_waived: bool = False
 
 
 @dataclass(frozen=True)

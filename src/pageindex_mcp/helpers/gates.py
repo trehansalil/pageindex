@@ -358,6 +358,7 @@ GATES: list[GateSpec] = [
         hard_fail=True,
         gate_fn=_gate_reordered,
         severity=4,
+        recovery_waived=True,
     ),
     GateSpec(
         TreeDefect.RTL_REVERSAL,
@@ -372,6 +373,7 @@ GATES: list[GateSpec] = [
         _ReasonPolicy.CAP_MARGINAL,
         gate_fn=_gate_bidi_degraded,
         severity=6,
+        recovery_waived=True,
     ),
     GateSpec(
         TreeDefect.EMPTY_NODE_CONTAMINATION,
@@ -379,6 +381,7 @@ GATES: list[GateSpec] = [
         hard_fail=True,
         gate_fn=_gate_empty_node_contamination,
         severity=7,
+        recovery_waived=True,
     ),
     GateSpec(
         TreeDefect.LOW_CONTENT_DENSITY,
@@ -386,6 +389,7 @@ GATES: list[GateSpec] = [
         hard_fail=True,
         gate_fn=_gate_low_content_density,
         severity=8,
+        recovery_waived=True,
     ),
     GateSpec(
         TreeDefect.SUSPECT_DENSITY,
@@ -393,6 +397,7 @@ GATES: list[GateSpec] = [
         hard_fail=True,
         gate_fn=_gate_suspect_density,
         severity=9,
+        recovery_waived=True,
     ),
     # Dead gate: strict subset of GARBLING; kept for persisted verdict_reason
     # compat and REASON_POLICY completeness.  severity=99 (default/dead).
@@ -438,6 +443,16 @@ for _g in GATES:
         assert _g.recovery_eligible is not None, (
             f"GateSpec for {_g.defect.name} has recovery_fns={_g.recovery_fns} "
             f"but no recovery_eligible predicate"
+        )
+
+# Zone-6: every active gate with a non-OK/CAP_MARGINAL policy must either
+# declare recovery_fns+recovery_eligible OR explicitly waive recovery.
+for _g in GATES:
+    if _g.gate_fn is not None and _g.policy not in (_ReasonPolicy.OK, _ReasonPolicy.CAP_MARGINAL):
+        has_recovery = bool(_g.recovery_fns) and _g.recovery_eligible is not None
+        assert has_recovery or _g.recovery_waived, (
+            f"GateSpec for {_g.defect.name} has {_g.policy.value} policy "
+            f"but neither recovery_fns+recovery_eligible nor recovery_waived=True"
         )
 
 # HARD_FAIL_DEFECTS: any of these in all_defects -> classify_verdict returns FAIL.
@@ -525,6 +540,34 @@ FEATURE_WIRINGS: list[FeatureWiring] = [
         consumers=("pageindex_mcp.client",),
     ),
 ]
+
+
+def validate_recovery_method_names() -> None:
+    """Assert every ``recovery_fns`` string in :data:`GATES` resolves to a real
+    method on :class:`~pageindex_mcp.client.recovery.RecoveryMixin`.
+
+    Skips dead gates (``gate_fn is None``).
+
+    Uses ``importlib.import_module`` to avoid a top-level import from
+    ``pageindex_mcp.client`` into helpers (circular-import hazard).
+
+    Raises :class:`AssertionError` naming the missing method and defect.
+    """
+    import importlib
+
+    recovery_mod = importlib.import_module("pageindex_mcp.client.recovery")
+    RecoveryMixin = getattr(recovery_mod, "RecoveryMixin")
+
+    for gate in GATES:
+        if gate.gate_fn is None:
+            continue
+        if not gate.recovery_fns:
+            continue
+        for fn_name in gate.recovery_fns:
+            assert hasattr(RecoveryMixin, fn_name), (
+                f"GateSpec {gate.defect.name} lists recovery_fn "
+                f"'{fn_name}' but RecoveryMixin has no such method"
+            )
 
 
 def validate_feature_wirings() -> None:
@@ -636,3 +679,5 @@ def validate_feature_wirings() -> None:
                     _logger.warning("shadow wiring: %s", msg)
                 else:
                     raise AssertionError(msg)
+
+    validate_recovery_method_names()
