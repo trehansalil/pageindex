@@ -222,6 +222,47 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ─── RFC-036 D7 OCR spike services (evaluation only, NOT production) ───────
+  # Behind their own `ocr-spike` profile: heavy images (PaddlePaddle / EasyOCR
+  # model weights) that only scripts/ocr_spike_eval.py talks to. Start with
+  # `docker compose --profile ocr-spike up`.
+  paddleocr-service:
+    build:
+      context: services/paddleocr-service
+      dockerfile: Dockerfile
+    container_name: pageindex-paddleocr-service
+    profiles: ["ocr-spike"]
+    environment:
+      PADDLEOCR_LANG: ${PADDLEOCR_LANG:-ar}
+      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-false}
+    ports:
+      - "8202:8202"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8202/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  docling-ocr-service:
+    build:
+      context: services/docling-ocr-service
+      dockerfile: Dockerfile
+    container_name: pageindex-docling-ocr-service
+    profiles: ["ocr-spike"]
+    environment:
+      DOCLING_OCR_LANG: ${DOCLING_OCR_LANG:-ar,en}
+    ports:
+      - "8203:8203"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8203/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
 volumes:
   redis_data:
   minio_data:

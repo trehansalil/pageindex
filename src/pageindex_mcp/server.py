@@ -33,6 +33,31 @@ mcp.tool()(_tools.get_document_structure)
 mcp.tool()(_tools.get_page_content)
 
 # ---------------------------------------------------------------------------
+# Zone-5 / HR2: delete_document — exposes storage.delete_doc so the right-to-
+# erasure cascade is reachable in production (CLAUDE.md Hard Rule 2).
+# Gated behind the same UPLOAD_API_KEY as the upload endpoints.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def delete_document(doc_id: str) -> dict:
+    """HR2 right-to-erasure: cascade-delete a document and all derived stores.
+
+    Purges uploads/, processed/*.json, processed/*.meta.json, Redis cache,
+    reconcile-etag, hash-cache, Postgres registry row, and preloaded/ raw
+    object — in that order per CLAUDE.md Hard Rule 2.
+
+    Returns ``{"errors": [...]}`` — every individual store failure is reported,
+    never raised (partial-failure visibility).
+
+    **Authentication**: requires a valid UPLOAD_API_KEY (same as /upload/files).
+    """
+    from .storage import delete_doc
+
+    return await delete_doc(doc_id)
+
+
+# ---------------------------------------------------------------------------
 # Build the ASGI app (importable by gunicorn as pageindex_mcp.server:app)
 # ---------------------------------------------------------------------------
 starlette_app = mcp.http_app(transport="streamable-http")
@@ -57,6 +82,28 @@ async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
                 f"PII_CORPUS=true but openai_base_url={settings.openai_base_url!r} "
                 "is not on the ZDR allow-list (HR3)"
             )
+
+        # Also validate LLM_FALLBACK_BASE_URL when set — the fallback path
+        # in _llm_with_retry must not silently egress PII to a non-ZDR endpoint.
+        from .client.llm import _LLM_FALLBACK_BASE_URL
+
+        if _LLM_FALLBACK_BASE_URL and not _is_zdr_allowlisted(_LLM_FALLBACK_BASE_URL):
+            raise RuntimeError(
+                f"PII_CORPUS=true but LLM_FALLBACK_BASE_URL={_LLM_FALLBACK_BASE_URL!r} "
+                "is not on the ZDR allow-list (HR3)"
+            )
+
+    # Zone-5: validate cross-module feature wiring contracts at startup.
+    # Failures raise AssertionError, refusing to start the server.
+    from .helpers import validate_feature_wirings
+
+    try:
+        validate_feature_wirings()
+    except AssertionError:
+        logging.getLogger(__name__).error(
+            "Feature wiring validation failed at server startup — refusing to start"
+        )
+        raise
 
     redis = await get_async_redis()
     scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))

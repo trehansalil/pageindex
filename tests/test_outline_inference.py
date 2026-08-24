@@ -26,7 +26,6 @@ from pageindex_mcp.converters import (
     _title_matches,
 )
 
-
 _HEAD = re.compile(r"^(#{1,6})[ \t]+(.*\S)[ \t]*$", re.MULTILINE)
 
 

@@ -1,0 +1,279 @@
+[
+  {
+    "doc": "uae_numbers_english_page_16_17_landscape - Copy.pdf, uae_numbers_english_page_16_17_portrait - Copy.pdf",
+    "symptom": "RFC-035 D2 landscape rasterize-rotate-reextract path appends OCR-fragmented markdown (chart axis labels/values from 300 DPI rasterized pages) that _segment_table_nodes shatters into 71+ singleton kv blocks. The _repair_docling_tables changes (RFC-035 D0 prev_was_separator guard + RFC-034 D17 bilingual guard) also prevent previously-collapsed degenerate chart-data rows from being collapsed, so they survive as individual rows and each becomes a separate block. Additionally, landscape_fallback_picture PictureResults with skipped_reason trigger image_enrichment_promoted verdict without actual enrichment content.",
+    "root_cause": "RFC-035 D2 landscape rasterize-rotate-reextract path appends OCR-fragmented markdown (chart axis labels/values from 300 DPI rasterized pages) that _segment_table_nodes shatters into 71+ singleton kv blocks. The _repair_docling_tables changes (RFC-035 D0 prev_was_separator guard + RFC-034 D17 bilingual guard) also prevent previously-collapsed degenerate chart-data rows from being collapsed, so they survive as individual rows and each becomes a separate block. Additionally, landscape_fallback_picture PictureResults with skipped_reason trigger image_enrichment_promoted verdict without actual enrichment content.",
+    "code_path": "converters.py::_landscape_rasterize_rotate_reextract -> pdf_to_markdown_docling (md append at line ~3250) -> _repair_docling_tables (D0/D17 guards) -> helpers.py::_segment_table_nodes -> classify_verdict (image_enrichment_promoted)",
+    "fix_category": "bug",
+    "estimated_complexity": "medium",
+    "suggested_fix": "1) Do not blindly append landscape fallback markdown; instead splice it into the correct page position in the document. 2) Add a chart-content-aware guard to _segment_table_nodes that skips segmentation when table rows are predominantly single-value axis labels (high singleton ratio). 3) Do not emit landscape_fallback_picture PictureResults with skipped_reason as they trigger false image_enrichment_promoted verdicts without actual enrichment.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "035-run18-run18-table-meta-landscape-fixes.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE - Copy.pdf, Haftpflicht-Allgemeine-Bedingungen.pdf.pdf, cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf, قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf, مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf, Federal Decree-Law No. (47) of 2021 - Copy.pdf",
+    "symptom": "extract_nodes_from_markdown in the pageindex library (page_index_md.py:32-59) only detects #-prefixed markdown headings via regex r'^(#{1,6})\\s+(.+)$'. Docling's markdown export for legal documents produces either all headings at the same level (all ## -> depth 2) or no # headings at all for Arabic documents (Arabic structural patterns like Article/Chapter/Section are emitted as body text, not # headings). build_tree_from_nodes then creates a flat/shallow tree. split_oversized_leaf_nodes provides partial mitigation for ordinal-pattern tail blobs but cannot synthesize deeper hierarchy from article/chapter patterns in body text. This is a persistent architectural limitation, not a recent regression.",
+    "root_cause": "extract_nodes_from_markdown in the pageindex library (page_index_md.py:32-59) only detects #-prefixed markdown headings via regex r'^(#{1,6})\\s+(.+)$'. Docling's markdown export for legal documents produces either all headings at the same level (all ## -> depth 2) or no # headings at all for Arabic documents (Arabic structural patterns like Article/Chapter/Section are emitted as body text, not # headings). build_tree_from_nodes then creates a flat/shallow tree. split_oversized_leaf_nodes provides partial mitigation for ordinal-pattern tail blobs but cannot synthesize deeper hierarchy from article/chapter patterns in body text. This is a persistent architectural limitation, not a recent regression.",
+    "code_path": "pageindex.page_index_md::extract_nodes_from_markdown (heading regex) -> build_tree_from_nodes (level-based stack) -> client.py::_run_md_to_tree -> index() -> split_oversized_leaf_nodes (partial mitigation only)",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "Add a post-tree-build hierarchy synthesis pass that detects legal document patterns (Article N, Chapter N, Section N, and Arabic equivalents) in node body text and promotes them to child nodes at appropriate depth levels. Alternatively, enhance split_oversized_leaf_nodes to recognize multi-level legal numbering (Book > Chapter > Section > Article) and create nested children rather than flat siblings.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py",
+      ".venv/lib/python3.12/site-packages/pageindex/page_index_md.py"
+    ],
+    "related_rfcs": [
+      "005-hard-corpus-ingestion-fixes.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+    "symptom": "RFC-034 D18 write-barrier _confirm_write_visible() in storage.py adds up to 4.4s blocking delay per save call via time.sleep() with _WRITE_BARRIER_DELAYS=(0.1,0.3,1.0,3.0). Called after both save_doc (.json) and save_doc_meta (.meta.json), worst-case is 8.8s for tree path or 4.4s for flat path. On exhaustion, raises PersistenceNotVisibleError(RuntimeError) which crashes the converter child; since RuntimeError maps to converter_child_failed (not in _TERMINAL_CHILD_REASONS), arq retries the entire job (MAX_TRIES=2), doubling total processing time. For the Arabic SLA doc (slow processor due to bilingual/scanned content), this extra latency or forced retry pushed completion to 06:31:28Z -- 3-5 minutes past the scorer's 06:26-06:28 polling cohort -- producing a false ERROR verdict despite eventual success.",
+    "root_cause": "RFC-034 D18 write-barrier _confirm_write_visible() in storage.py adds up to 4.4s blocking delay per save call via time.sleep() with _WRITE_BARRIER_DELAYS=(0.1,0.3,1.0,3.0). Called after both save_doc (.json) and save_doc_meta (.meta.json), worst-case is 8.8s for tree path or 4.4s for flat path. On exhaustion, raises PersistenceNotVisibleError(RuntimeError) which crashes the converter child; since RuntimeError maps to converter_child_failed (not in _TERMINAL_CHILD_REASONS), arq retries the entire job (MAX_TRIES=2), doubling total processing time. For the Arabic SLA doc (slow processor due to bilingual/scanned content), this extra latency or forced retry pushed completion to 06:31:28Z -- 3-5 minutes past the scorer's 06:26-06:28 polling cohort -- producing a false ERROR verdict despite eventual success.",
+    "code_path": "src/pageindex_mcp/storage.py::_confirm_write_visible -> _WRITE_BARRIER_DELAYS -> PersistenceNotVisibleError; called from save_doc (line 212) and save_doc_meta (line 575)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Two complementary fixes: (1) Reduce _WRITE_BARRIER_DELAYS to a less aggressive schedule (e.g., (0.05, 0.1, 0.3) = 0.45s total) since MinIO's read-after-write consistency is typically sub-100ms. (2) Catch PersistenceNotVisibleError in save_doc/save_doc_meta and downgrade to a warning log + metric rather than crashing the child -- the put_object already succeeded, so stat_object flakiness is an observability gap, not data loss. This prevents the costly full-job retry that doubles processing time.",
+    "affected_files": [
+      "src/pageindex_mcp/storage.py",
+      "src/pageindex_mcp/worker.py",
+      "tests/test_rfc034_d18_write_barrier.py"
+    ],
+    "related_rfcs": [
+      "034-run15-reconciliation-remediation"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "world-stats-pocketbook-2023.pdf",
+    "symptom": "world-stats-pocketbook-2023.pdf is a pre-existing converter timeout (ERRORed 3+ consecutive runs per worker.py:54 code comment). The document exceeds CHILD_TIMEOUT (3600s) / JOB_TIMEOUT (3630s) consistently. This is unrelated to the D18 write barrier -- the job never reaches the persistence path. The write barrier's 4.4-8.8s is negligible relative to the 3630s timeout ceiling.",
+    "root_cause": "world-stats-pocketbook-2023.pdf is a pre-existing converter timeout (ERRORed 3+ consecutive runs per worker.py:54 code comment). The document exceeds CHILD_TIMEOUT (3600s) / JOB_TIMEOUT (3630s) consistently. This is unrelated to the D18 write barrier -- the job never reaches the persistence path. The write barrier's 4.4-8.8s is negligible relative to the 3630s timeout ceiling.",
+    "code_path": "src/pageindex_mcp/worker.py::_run_converter_subprocess -> asyncio.timeout(remaining_budget) -> TimeoutError -> converter_timeout Redis status",
+    "fix_category": "bug",
+    "estimated_complexity": "medium",
+    "suggested_fix": "Investigate why this document exceeds the 3630s timeout. Likely candidates: (1) large page count hitting chunked Docling per-chunk overhead, (2) pdf-inspector classifying it as scanned/image_based triggering the 16.5x timeout multiplier (line 329) which exceeds JOB_TIMEOUT causing arq to kill the job before the inner asyncio.timeout fires. If 16.5x * CHILD_TIMEOUT > JOB_TIMEOUT, the inner timeout never triggers and arq's outer kill leaves no clean error status. Cap effective_timeout to JOB_TIMEOUT - CHILD_GRACE_SECONDS.",
+    "affected_files": [
+      "src/pageindex_mcp/worker.py"
+    ],
+    "related_rfcs": [
+      "034-run15-reconciliation-remediation",
+      "035-run18-run18-table-meta-landscape-fixes"
+    ],
+    "source": "cluster",
+    "confidence": "medium"
+  },
+  {
+    "doc": "image pie chart about labor distribution in january 2025 - Copy.jpg, قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf, وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+    "symptom": "No OCR quality escalation path when Tesseract produces garbled/thin output from degraded source material (zero text layer, chart images, numeric-junk text layers). The pipeline correctly detects degraded text layers via garble gate, RTL reversal gate, and char-density checks, but the only OCR engine available (Tesseract via Docling) produces insufficient quality output for these document types, and no secondary recovery mechanism exists. Affects all 4 documents in this cluster.",
+    "root_cause": "No OCR quality escalation path when Tesseract produces garbled/thin output from degraded source material (zero text layer, chart images, numeric-junk text layers). The pipeline correctly detects degraded text layers via garble gate, RTL reversal gate, and char-density checks, but the only OCR engine available (Tesseract via Docling) produces insufficient quality output for these document types, and no secondary recovery mechanism exists. Affects all 4 documents in this cluster.",
+    "code_path": "converters.py::image_to_markdown / pdf_to_markdown_docling -> _docling_converter(force_full_page_ocr) -> Tesseract OCR -> _is_garbled_blob / validate_tree",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "Implement a tiered OCR escalation: when Tesseract OCR output fails garble/density checks, attempt a higher-quality OCR path (e.g., cloud OCR API with Arabic/chart specialization, or a second-pass with different Tesseract PSM modes). For chart images specifically, consider a chart-data extraction model rather than generic OCR. This is a known architectural gap tracked across RFC-028 D5, RFC-029 D4, RFC-035.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/client.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "028",
+      "029",
+      "034",
+      "035"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+    "symptom": "RTL reversal gate terminally rejects وارد 597 with no flat fallback path. validate_tree returns reason='rtl_reversal' (line 1375 helpers.py). The reconstruct_bidi_order repair at client.py:1418-1441 does not converge. The RFC-033 D8 flat-comparison reroute (client.py:1451-1475) only changes reason to 'node_count<3' when flat text is NOT reversed while tree IS -- but both paths produce reversed/garbled text from the numeric-junk source layer. Then 'rtl_reversal' hits the terminal-raise list at client.py:1992 and LowQualityTreeError is raised, preventing any artifact persistence. The flat routing whitelist at line 1709 only accepts 'node_count<3' and 'depth<2', not 'rtl_reversal'. No code change caused this -- it has been stable across runs 12-19.",
+    "root_cause": "RTL reversal gate terminally rejects وارد 597 with no flat fallback path. validate_tree returns reason='rtl_reversal' (line 1375 helpers.py). The reconstruct_bidi_order repair at client.py:1418-1441 does not converge. The RFC-033 D8 flat-comparison reroute (client.py:1451-1475) only changes reason to 'node_count<3' when flat text is NOT reversed while tree IS -- but both paths produce reversed/garbled text from the numeric-junk source layer. Then 'rtl_reversal' hits the terminal-raise list at client.py:1992 and LowQualityTreeError is raised, preventing any artifact persistence. The flat routing whitelist at line 1709 only accepts 'node_count<3' and 'depth<2', not 'rtl_reversal'. No code change caused this -- it has been stable across runs 12-19.",
+    "code_path": "client.py::index() -> validate_tree(rtl_reversal) -> reconstruct_bidi_order(fails) -> RFC-033 D8 flat comparison(fails) -> LowQualityTreeError(rtl_reversal) at line 1997",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "medium",
+    "suggested_fix": "Add 'rtl_reversal' to the flat-routing whitelist at client.py:1709 (alongside 'node_count<3' and 'depth<2') so that when RTL repair fails, the document can still be persisted via flat extraction. The flat-path garble gate at line 1747 already catches garbled flat text, so this would not silently persist garbage. For وارد 597 specifically, the underlying numeric-junk text layer also needs the TL-1 OCR escalation fix to produce usable output on either path.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "027",
+      "028",
+      "029",
+      "033",
+      "035"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "GHV-TKV-Tarif.pdf, Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+    "symptom": "_enrich_image_blocks in client.py does not propagate skipped_reason or decorative flags from PictureResult to image blocks. When _recover_picture_text correctly skips a region (decorative_icon filter for sub-20pt elements, OCR min-chars gate yielding decorative=True, page_coverage, clip_text_already_exported), the resulting PictureResult carries the skip metadata but _enrich_image_blocks only writes page/bbox/ocr_text/description/figure_path -- never the skip reason. Image blocks end up with page=0, bbox={} and no explanation of why they lack enrichment. Audit scoring then counts these as unenriched gaps even though the skip was correct and no content was lost. This affects both GHV-TKV-Tarif (3/4 decorative animal silhouettes/logo) and Unfallversicherung (60/63 small table-cell icons/checkmarks correctly filtered by decorative_icon or empty-OCR gate).",
+    "root_cause": "_enrich_image_blocks in client.py does not propagate skipped_reason or decorative flags from PictureResult to image blocks. When _recover_picture_text correctly skips a region (decorative_icon filter for sub-20pt elements, OCR min-chars gate yielding decorative=True, page_coverage, clip_text_already_exported), the resulting PictureResult carries the skip metadata but _enrich_image_blocks only writes page/bbox/ocr_text/description/figure_path -- never the skip reason. Image blocks end up with page=0, bbox={} and no explanation of why they lack enrichment. Audit scoring then counts these as unenriched gaps even though the skip was correct and no content was lost. This affects both GHV-TKV-Tarif (3/4 decorative animal silhouettes/logo) and Unfallversicherung (60/63 small table-cell icons/checkmarks correctly filtered by decorative_icon or empty-OCR gate).",
+    "code_path": "src/pageindex_mcp/client.py::_enrich_image_blocks -> converters.py::_recover_picture_text -> decorative_icon filter / OCR min-chars gate",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "small",
+    "suggested_fix": "In _enrich_image_blocks (client.py line ~737), after matching a PictureResult to a block, propagate pr.get('skipped_reason') and pr.get('decorative') onto the block dict. E.g.: if pr.get('skipped_reason'): block['skipped_reason'] = pr['skipped_reason']; if pr.get('decorative'): block['decorative'] = True. Then update classify_verdict's image_enrichment_promoted path in helpers.py to exclude blocks tagged decorative/skipped from the unenriched count, so correctly-skipped decorative icons no longer degrade the verdict.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+    "symptom": "Source PDF text layer has Arabic character reordering artifacts: PyMuPDF extracts 'املادة' (alef-meem-lam order) instead of 'المادة' (alef-lam-meem). NFKC normalization cannot fix character reordering. The _OVERSIZED_ORDINAL_RE regex in helpers.py:1949 matches '(?:ال)?مادة' which requires alef-lam prefix, but the reordered 'املادة' form has meem-lam, so zero article markers match (confirmed: 0 regex matches vs 137 lines containing مادة). This prevents split_oversized_leaf_nodes from further splitting tail-blobs at article boundaries, producing a flatter tree (234 nodes) than the English version of the same law (505 nodes). The chars/page metric (~1062) is NOT converter content-loss: the raw text layer itself has only 1140 chars/page (93% preserved through Docling). The document actually improved massively from ~6K chars (Run 18) to 106K chars (Run 19). 85/100 pages contain C1 control characters (0x80-0x9F) embedded in Arabic words, further confirming a degraded text layer.",
+    "root_cause": "Source PDF text layer has Arabic character reordering artifacts: PyMuPDF extracts 'املادة' (alef-meem-lam order) instead of 'المادة' (alef-lam-meem). NFKC normalization cannot fix character reordering. The _OVERSIZED_ORDINAL_RE regex in helpers.py:1949 matches '(?:ال)?مادة' which requires alef-lam prefix, but the reordered 'املادة' form has meem-lam, so zero article markers match (confirmed: 0 regex matches vs 137 lines containing مادة). This prevents split_oversized_leaf_nodes from further splitting tail-blobs at article boundaries, producing a flatter tree (234 nodes) than the English version of the same law (505 nodes). The chars/page metric (~1062) is NOT converter content-loss: the raw text layer itself has only 1140 chars/page (93% preserved through Docling). The document actually improved massively from ~6K chars (Run 18) to 106K chars (Run 19). 85/100 pages contain C1 control characters (0x80-0x9F) embedded in Arabic words, further confirming a degraded text layer.",
+    "code_path": "src/pageindex_mcp/helpers.py::_OVERSIZED_ORDINAL_RE (line 1949) -> split_oversized_leaf_nodes -> _fold_with_index_map",
+    "fix_category": "data_quality",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add an alternative 'املادة' pattern (reordered alef-meem-lam form) to _OVERSIZED_ORDINAL_RE as a secondary Arabic article marker variant. This handles the specific char-reorder artifact this PDF class produces without affecting other Arabic documents. Pattern addition: r\"|(?:ا)?مل(?:ا)?دة\\s*\\(?\\s*(?P<mada2>[\\d٠-٩]+)\" alongside the existing مادة branch. Alternatively, add a pre-fold normalization step that detects and corrects the ملا->الم swap before NFKC folding.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "035-run18-run18-table-meta-landscape-fixes.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+    "doc_class": "flat_mixed",
+    "verdict": "MARGINAL",
+    "run_18_metrics": {
+      "nodes": 158,
+      "chars": 25195,
+      "depth": 1,
+      "markers": 0
+    },
+    "run_19_metrics": {
+      "chars_per_page": 1690,
+      "total_chars_estimated": 25350,
+      "depth": 0,
+      "tree_status": "flat"
+    },
+    "symptom": "Document 106 does NOT have a persistence/write-barrier issue (contradicting the task description's misreading of line 103). Artifacts successfully persist and are scoreable with measurable char counts in both Run 18 and Run 19. The MARGINAL verdict is driven by two stable issues: (1) structural collapse (depth 0/1 flat tree, 0 structural markers detected), and (2) low OCR char density (~1690 chars/page, just above the 1500 floor but well below expected 2000-4000 for a 15-page legal regulation). This differs from وارد 597 (ERROR, truly absent artifacts) and world-stats-pocketbook-2023.pdf (ERROR, truly absent artifacts).",
+    "root_cause": "OCR quality limitation, not persistence/write-barrier failure. Document 106 is a 15-page scanned Arabic legal regulation (zero text layer, fully image-based). Tesseract/Docling OCR produces marginal-quality markdown with thin text extraction (~1690 chars/page) and critically, missing structural heading markers (المادة, الباب, etc.) that the LLM-based md_to_tree needs to build hierarchical structure. The pipeline correctly detects this as marginal via (a) suspect_density gate check (1690/1690 chars/page marginally passes the 1500-floor but indicates suboptimal extraction), and (b) tree quality measure of depth=0/1 for a document that should have depth 3-4 article/chapter hierarchy. The RFC-029 D4 retry-arbitration bug (client.py:1083-1147) that caused Run 13 FAIL (2022 chars) was fixed before Run 18 (25k chars recovered), but no secondary OCR recovery mechanism exists beyond Tesseract. Docling's force_full_page_ocr=True is the only escalation path, and it produces insufficient quality for this document type.",
+    "code_path": "src/pageindex_mcp/helpers.py:1126-1127 (MIN_SCANNED_DENSITY_FLOOR constant), 1432-1433 (suspect_density gate), 874-919 (_is_garbled_blob), 1308-1443 (validate_tree); src/pageindex_mcp/converters.py:74-87 (Arabic structural marker detection), lines 45-53 (_relevel_headings); src/pageindex_mcp/client.py:2202-2255 (_run_md_to_tree, tree-building via LLM). The structural collapse is NOT a code defect but an architectural limitation: the LLM's markdown-to-tree conversion depends on input markdown quality, and OCR from scanned PDFs produces insufficient heading structure markers.",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "This document cannot be fixed with targeted code changes to the current pipeline. It requires one of: (A) SECONDARY OCR RECOVERY: implement a fallback mechanism beyond Tesseract (e.g. EasyOCR, PaddleOCR with Arabic support, or a higher-confidence/higher-quality commercial OCR tier) when Tesseract output is thin/marginal; (B) HEADING RECONSTRUCTION: inject synthetic structural markers (مادة, الباب patterns) into the markdown before tree-building when detected as missing, based on document layout analysis; or (C) DOCUMENT TYPE ROUTING: pre-classify Arabic legal documents and apply specialized heading-extraction logic (e.g. docling-hierarchical-pdf equivalent for Arabic legal gazette numbering, per the converters.py:80-100 comment showing Arabic legal structures are recognized but never promoted to headings). The current Tesseract route (Docling with force_full_page_ocr=True) is the only escalation and is insufficient. Between Runs 13-19 this document remained MARGINAL across all runs once the RFC-029 D4 bug was fixed; no further improvement has occurred, confirming the issue is structural/architectural, not a transient regression.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py",
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/client.py"
+    ],
+    "source": "drilldown",
+    "related_rfcs": []
+  },
+  {
+    "investigation_id": "drilldown-rc2-arabic-flat-hierarchy-e33a5fa5",
+    "document": "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+    "doc_id": "e33a5fa5",
+    "audit_row": 20,
+    "verdict": "MARGINAL",
+    "symptoms": {
+      "depth": 1,
+      "flat_nodes": 308,
+      "structural_markers": 0,
+      "total_chars": 294,
+      "tree_quality": "completely flat, all nodes direct children of root"
+    },
+    "root_cause": "The document is a SCANNED Arabic Cabinet Resolution (zero native text layer). Docling must OCR the page images to extract text, which produces only 294 chars total of thin/noisy output. The _inject_arabic_structural_headings() function (converters.py:135) has no meaningful Arabic text to scan for structural markers (باب/فصل/مادة/قسم/جزء). Without detected structural markers, no headings are promoted, and md_to_tree() receives a markdown with zero # headings. The pageindex library's md_to_tree then creates a flat tree with all 308 content blocks as direct children of the root node (depth=1), each block being a single line of thin OCR text.",
+    "distinguishing_factor": "Unlike other RC-2 docs (e.g. cabinet_resolution_no_21_of_2020, Haftpflicht-Allgemeine-Bedingungen) which have native text layers with actual Arabic/German structural markers, this document's OCR-only path starves the heading-promotion pipeline. The E2E_CORPUS_REPORT explicitly flags this as 'Scanned Arabic Cabinet Resolution. Zero text.' with 21 image blocks and 294 total chars (vs 20k-100k chars in documents with native text). Runs 16-19 all show depth=1/308 nodes, confirming the OCR limitation is consistent, not a regression.",
+    "code_path_chain": [
+      {
+        "step": 1,
+        "function": "pdf_to_markdown_docling (converters.py:3007)",
+        "action": "Calls Docling converter to extract markdown from PDF",
+        "finding": "Detects zero native text layer, routes to OCR path"
+      },
+      {
+        "step": 2,
+        "function": "_docling_converter (converters.py:1159)",
+        "action": "Builds DocumentConverter with OCR enabled (DOCLING_DO_OCR env)",
+        "finding": "Tesseract OCR produces ~294 chars total output (thin/garbled)"
+      },
+      {
+        "step": 3,
+        "function": "_inject_arabic_structural_headings (converters.py:135)",
+        "action": "Scans markdown for lines starting with _AR_PART_RE | _AR_ARTICLE_RE patterns",
+        "code": "regex: r\"^(?:ال)?(?:باب|فصل|قسم|جزء)\\b|^(?:باب|لصف|مسق|ءزج)(?:لا)?\\b\" (line 86) and r\"^(?:ال)?مادة\\b|^ةدام(?:لا)?\\b\" (line 87)",
+        "finding": "Zero matches: OCR text does not start lines with these markers, only thin scattered words"
+      },
+      {
+        "step": 4,
+        "function": "_recover_heading_depth (converters.py:798)",
+        "action": "Tries containment (PRIMARY), numbering regex (FALLBACK), PDF outline (LAST RESORT)",
+        "finding": "_HEADING_RE.findall(md) returns 0: no # headings to relevel, all chains short-circuit"
+      },
+      {
+        "step": 5,
+        "function": "md_to_tree (pageindex.page_index_md via client.py:2214)",
+        "action": "Builds tree from markdown by detecting # headings and nesting by level",
+        "finding": "Zero # headings found -> creates flat tree with all content blocks as root children (depth=1)"
+      }
+    ],
+    "comparison_with_rc2_siblings": {
+      "document_1": {
+        "name": "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+        "text_layer": "native (German insurance T&C)",
+        "chars": 77024,
+        "nodes": 136,
+        "depth": 2,
+        "reason_for_depth_2": "Has native text layer with German clause numbering (A.1, A.1.1, etc); _relevel_by_numbering detects these patterns"
+      },
+      "document_2": {
+        "name": "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE - Copy.pdf",
+        "text_layer": "native (English legal statute)",
+        "chars": 246000,
+        "nodes": 595,
+        "depth": 2,
+        "reason_for_depth_2": "Has native text layer with numbered articles; _relevel_by_numbering promotes some headings"
+      },
+      "problem_doc": {
+        "name": "قرار مجلس الوزراء رقم (1) لسنة 2022 ... .pdf",
+        "text_layer": "NONE (scanned)",
+        "chars": 294,
+        "nodes": 308,
+        "depth": 1,
+        "reason_for_depth_1": "OCR produces thin output with no structural markers at line starts; all 308 nodes are root children"
+      }
+    },
+    "architectural_gap": {
+      "description": "The heading-depth recovery chain assumes sufficient text content exists in the extracted markdown to contain recognizable numbering/structural patterns. For scanned documents with thin OCR output, this assumption fails.",
+      "affected_step": "All three depth-recovery steps (_relevel_by_containment, _relevel_by_numbering, _relevel_by_outline) require EITHER native headings from Docling OR enough body text to infer structure from numbering/outlines. Thin OCR provides neither.",
+      "why_this_is_rc2_not_new_regression": "RC-2 root cause states: 'Docling produces either all headings at same level OR no headings at all for Arabic docs'. This doc exemplifies the 'no headings' case, but specifically because OCR-only extraction produces insufficient text content, not because of a logic bug in _inject_arabic_structural_headings itself."
+    },
+    "verification_evidence": {
+      "e2e_corpus_report_line": "6 | `قرار مجلس الوزراء رقم (1) لسنة 2022...pdf` | `e33a5fa5` | ... | flat | `processed/e33a5fa5.flat.json` | flat_prose, 21 blocks ALL images, 294 chars | **Scanned Arabic Cabinet Resolution. Zero text.**",
+      "run_16_to_19_persistence": "Stalls section (line 102 of audit) confirms depth=1/308 flat blocks stable across Run 16, 18, 19 — no regression, stable limitation",
+      "char_density": "294 chars / 21 image blocks ≈ 14 chars/block average, vs 1000-5000 chars/block in native-text docs, confirming sparse OCR output"
+    },
+    "suggested_fix": {
+      "immediate": "Acknowledge this document's OCR limitation and mark it as expected MARGINAL. The flat tree is not a code bug but a consequence of thin OCR input.",
+      "medium_term": "Implement TL-1 (cluster-level root cause) OCR escalation for scanned documents: detect when OCR output falls below a char-density floor (e.g. <500 chars total for a 5+ page doc) and attempt a higher-fidelity OCR path (cloud API with Arabic specialization, or multi-pass Tesseract PSM modes).",
+      "validation": "Before committing any heading-detection fix, measure the actual Docling markdown output for this doc by enabling debug logging of post_md/raw_md at line 3217-3218 in pdf_to_markdown_docling, confirming zero headings are actually produced."
+    },
+    "confidence": "high",
+    "estimated_investigation_effort": "trivial",
+    "related_cluster_findings": [
+      "RC-2: extract_nodes_from_markdown heading-detection architecture (RC-2 is ROOT, this drilldown confirms the mechanism)",
+      "TL-1: OCR quality escalation gap (explains WHY thin output occurs for scanned docs)"
+    ],
+    "source": "drilldown",
+    "related_rfcs": []
+  }
+]

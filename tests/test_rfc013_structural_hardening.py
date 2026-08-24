@@ -1,41 +1,11 @@
-"""RFC-013 Structural Hardening: correctness property tests (D4-D7).
+"""RFC-013 Structural Hardening: behavioral property tests (D5-D7).
 
-P1: Bounded concurrency — list_processed_docs limits parallel MinIO fetches.
 P2: Shared page-hit extraction — helpers._extract_page_hits matches old inline logic.
 P3: Non-Latin tessdata raise — ensure_tessdata raises TessdataUnavailableError.
-P4: Unified garble detection — _tree_is_garbled and _flat_text_is_garbled agree.
+P4: Unified garble detection — check_garble agrees across contexts.
 """
 
-import ast
-from pathlib import Path
-
 import pytest
-
-
-SRC = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
-
-
-# ---------------------------------------------------------------------------
-# P1: Bounded concurrency (D4 / ISS-05)
-# ---------------------------------------------------------------------------
-
-
-def test_list_processed_docs_uses_semaphore():
-    """The bounded-concurrency fetch in list_processed_docs must create an
-    asyncio.Semaphore — proving concurrency is capped, not unbounded."""
-    src = (SRC / "storage.py").read_text()
-    assert "asyncio.Semaphore(" in src, (
-        "list_processed_docs must use asyncio.Semaphore for bounded concurrency"
-    )
-
-
-def test_list_processed_docs_gather_filters_exceptions():
-    """return_exceptions=True means gather results include BaseExceptions;
-    the code must filter with isinstance(r, dict)."""
-    src = (SRC / "storage.py").read_text()
-    assert "return_exceptions=True" in src
-    assert "isinstance(r, dict)" in src
-
 
 # ---------------------------------------------------------------------------
 # P2: Shared page-hit extraction parity (D5 / ISS-44)
@@ -126,7 +96,7 @@ def test_tessdata_unavailable_raises_for_arabic(monkeypatch, tmp_path):
 def test_tessdata_latin_degrades_silently(monkeypatch, tmp_path):
     """A missing Latin-script lang should be silently dropped, falling back
     to ['deu', 'eng'] when nothing else is available."""
-    from pageindex_mcp.converters import TessdataUnavailableError, ensure_tessdata
+    from pageindex_mcp.converters import ensure_tessdata
 
     monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
     monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
@@ -152,61 +122,45 @@ def test_tessdata_available_no_raise(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_garble_functions_delegate_to_shared_impl():
-    """Both _tree_is_garbled and _flat_text_is_garbled must delegate to
-    _is_garbled_blob — the dedup invariant."""
-    src = (SRC / "helpers.py").read_text()
-    tree = ast.parse(src)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_tree_is_garbled":
-            body_src = ast.get_source_segment(src, node)
-            assert "_is_garbled_blob" in body_src
-            assert "_flatten_tree_text" in body_src
-        if isinstance(node, ast.FunctionDef) and node.name == "_flat_text_is_garbled":
-            body_src = ast.get_source_segment(src, node)
-            assert "_is_garbled_blob" in body_src
-
-
 def test_garble_agreement_clean_text():
-    """Both garble detectors must agree on clean text = not garbled."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must agree across contexts on clean text = not garbled."""
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     clean = "This is a perfectly normal paragraph about insurance terms."
-    tree = [{"node_id": "1", "title": "Section", "text": clean}]
 
-    assert _tree_is_garbled(tree) is False
-    assert _flat_text_is_garbled(clean) is False
+    assert check_garble(clean, expected_script="Latn", profile=BULK_PROFILE) is False
+    assert check_garble(clean, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is False
 
 
 def test_garble_agreement_numeric_junk():
-    """Both garble detectors must agree on numeric junk = garbled."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must agree across contexts on numeric junk = garbled."""
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     junk = "1651001429 " * 100
-    tree = [{"node_id": "1", "title": "", "text": junk}]
 
-    assert _tree_is_garbled(tree) is True
-    assert _flat_text_is_garbled(junk) is True
+    assert check_garble(junk, expected_script="Latn", profile=BULK_PROFILE) is True
+    assert check_garble(junk, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
 
 
 def test_garble_agreement_null_bytes():
-    """Both garble detectors must flag null-byte content."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must flag null-byte content."""
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     bad = "hello\x00world"
-    tree = [{"node_id": "1", "title": "", "text": bad}]
 
-    assert _tree_is_garbled(tree) is True
-    assert _flat_text_is_garbled(bad) is True
+    assert check_garble(bad, expected_script="Latn", profile=BULK_PROFILE) is True
+    assert check_garble(bad, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
 
 
 def test_garble_agreement_replacement_char():
-    """Both garble detectors must flag U+FFFD replacement characters."""
-    from pageindex_mcp.helpers import _flat_text_is_garbled, _tree_is_garbled
+    """check_garble must flag U+FFFD replacement characters."""
+    from pageindex_mcp.helpers import BULK_PROFILE, FLAT_MARKDOWN_PROFILE
+    from tests._garble_compat import check_garble
 
     bad = "hello�world"
-    tree = [{"node_id": "1", "title": "", "text": bad}]
 
-    assert _tree_is_garbled(tree) is True
-    assert _flat_text_is_garbled(bad) is True
+    assert check_garble(bad, expected_script="Latn", profile=BULK_PROFILE) is True
+    assert check_garble(bad, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True

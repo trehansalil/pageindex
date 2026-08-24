@@ -1,0 +1,28 @@
+{
+    "domain": "text_layer",
+    "root_causes": [
+        {
+            "id": "RC1",
+            "root_cause": "RFC-034 D7 replaced the non-functional _word_has_reversed_morphology (presentation-form check with 0% TPR after NFKC normalization) with a functional joining-type-based check (_arabic_word_joins). This makes the morphological_reversal prong in _tree_is_rtl_reversed actually fire on NFKC-normalized Arabic text. For ward-597 — a document with a known corrupt numeric-junk text layer where Docling emits no full-page Picture region for Arabic body pages (RFC-028 D5 residual gap) — the newly functional detector correctly identifies RTL reversal. The repair path (reconstruct_bidi_order) fails to converge because the underlying text is too damaged (near-zero Arabic chars, all numeric junk), and the RFC-033 D8 flat-path fallback also cannot recover non-reversed content. The gate correctly rejects the document as ERROR. This is a TRUE POSITIVE — the document was always corrupt; the gate was previously blind to it (0% TPR). The comparison doc سياسة حوكمة is NOT caught by _tree_is_rtl_reversed because its corruption pattern (single-letter Arabic fragments) is different from ward-597's (numeric-junk with reversed morphology); سياسة حوكمة's gate blind spot persists as a separate known issue (RFC-034 D21/RFC-033 D2 Part B).",
+            "code_path": "src/pageindex_mcp/helpers.py:_word_has_reversed_morphology -> _tree_is_rtl_reversed -> validate_tree -> client.py:process_document (rtl_reversal branch)",
+            "fix_category": "bug",
+            "estimated_complexity": "medium",
+            "suggested_fix": "No code fix needed for the gate itself — the D7 change is correct and the rejection is a true positive. The underlying issue is that ward-597 needs a full-page OCR fallback for scanned Arabic pages where Docling detects no Picture region (RFC-028 D5 out-of-scope residual). Until that is implemented, this document will remain at ERROR. If the goal is to recover it: implement a page-level OCR escalation path that rasterizes and OCR's full pages when no Picture region covers the Arabic body text (medium-large effort, tracked as a known gap since RFC-028).",
+            "affected_files": [
+                "src/pageindex_mcp/helpers.py",
+                "src/pageindex_mcp/client.py",
+                "src/pageindex_mcp/converters.py"
+            ],
+            "affected_docs": [
+                "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf"
+            ],
+            "confidence": "high",
+            "related_rfcs": [
+                "034-run15-reconciliation-remediation (D7: joining-type reversal detector)",
+                "028-run11-arabic-recovery-and-timeout-wiring (D5: ward-597 OCR residual gap)",
+                "033-run15-reingestion-quality-fixes (D8: flat-path fallback)"
+            ]
+        }
+    ],
+    "needs_doc_drilldown": []
+}

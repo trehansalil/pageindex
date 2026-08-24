@@ -1,0 +1,639 @@
+# tests/TEST_INDEX.yaml — Source-to-test mapping index
+#
+# Every src/pageindex_mcp/*.py file MUST have an entry here.
+# The gate script (scripts/gates/test-index-guard.sh) enforces:
+#   1. Every source file in src/pageindex_mcp/ has a mapping entry
+#   2. Every test file listed here actually exists
+#   3. On commit: warns if a source file changed but none of its mapped tests did
+#
+# coverage_threshold: per-file override (falls back to governance default of 70%)
+# primary: true marks the "main" test file; others are cross-cutting/integration
+
+mappings:
+
+  # ── Core indexing / RAG path (coverage: 90%) ────────────────────────────────
+  client/indexer.py:
+    coverage_threshold: 90
+    tests:
+      - test_client.py            # primary
+      - test_gate_table.py
+      - test_image_blocks.py
+      - test_preprocess_client_supported.py
+      - test_pdf_inspector.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_blocks.py
+      - test_rfc_inspector.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+      - test_vlm_fallback.py
+      - test_density_gate.py
+      - test_observability.py
+      - test_recovery.py
+
+  client/images.py:
+    coverage_threshold: 90
+    tests:
+      - test_client.py
+      - test_image_blocks.py
+      - test_pdf_inspector.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_blocks.py
+      - test_rfc_inspector.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+
+  client/recovery.py:
+    coverage_threshold: 90
+    tests:
+      - test_client.py
+      - test_image_blocks.py
+      - test_pdf_inspector.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_inspector.py
+      - test_rfc_quality.py
+      - test_vlm_fallback.py
+      - test_recovery.py
+
+  client/remote.py:
+    coverage_threshold: 90
+    tests:
+      - test_remote_conversion.py     # primary
+      - test_rfc_bidi_agpl.py
+
+  client/llm.py:
+    coverage_threshold: 90
+    tests:
+      - test_client.py
+      - test_converters_cli.py
+      - test_llm_retry.py
+      - test_tracing.py
+      - test_metrics.py
+      - test_zdr_egress.py
+
+  # ── Data-integrity critical (coverage: 90%) ─────────────────────────────────
+  storage/minio_ops.py:
+    coverage_threshold: 90
+    tests:
+      - test_storage.py           # primary
+      - test_minio_path_prefix.py
+      - test_density_gate.py
+      - test_metrics.py
+      - test_observability.py
+      - test_pipeline.py
+      - test_presign_public_route.py
+      - test_remote_conversion.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_worker.py
+      - test_staging_e2e.py
+
+  storage/documents.py:
+    coverage_threshold: 90
+    tests:
+      - test_storage.py           # primary
+      - test_client.py
+      - test_density_gate.py
+      - test_image_blocks.py
+      - test_metrics.py
+      - test_observability.py
+      - test_pdf_inspector.py
+      - test_rag_dedup.py
+      - test_reconcile_incremental.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_inspector.py
+      - test_rfc_pipeline.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_vlm_fallback.py
+
+  storage/verdict.py:
+    coverage_threshold: 90
+    tests:
+      - test_storage.py           # primary
+      - test_client.py
+      - test_density_gate.py
+      - test_image_blocks.py
+      - test_metrics.py
+      - test_observability.py
+      - test_pdf_inspector.py
+      - test_pipeline.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_inspector.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_storage.py
+      - test_rfc_worker.py
+      - test_rfc012_backfill_gather.py
+      - test_vlm_fallback.py
+      - test_worker.py
+
+  storage/hash_cache.py:
+    coverage_threshold: 90
+    tests:
+      - test_storage.py           # primary
+      - test_client.py
+      - test_image_blocks.py
+      - test_pdf_inspector.py
+      - test_reconcile_incremental.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_inspector.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_vlm_fallback.py
+
+  storage/staging.py:
+    coverage_threshold: 90
+    tests:
+      - test_staging_e2e.py
+      - test_observability.py
+      - test_rfc_worker.py
+      - test_density_gate.py
+
+  storage/reconcile_etag.py:
+    coverage_threshold: 90
+    tests:
+      - test_storage.py
+      - test_reconcile_incremental.py
+
+  # ── Job lifecycle (coverage: 85%) ───────────────────────────────────────────
+  worker/errors.py:
+    coverage_threshold: 85
+    tests:
+      - test_worker.py            # primary
+
+  worker/job.py:
+    coverage_threshold: 85
+    tests:
+      - test_worker.py            # primary
+      - test_density_gate.py
+      - test_rfc012_redis_singleton.py
+
+  worker/lifecycle.py:
+    coverage_threshold: 85
+    tests:
+      - test_worker.py            # primary
+      - test_rfc_recovery.py
+      - test_rfc012_redis_singleton.py
+
+  worker/registry_mirror.py:
+    coverage_threshold: 85
+    tests:
+      - test_worker.py            # primary
+      - test_density_gate.py
+      - test_registry_mirror.py
+
+  worker/subprocess_mgr.py:
+    coverage_threshold: 85
+    tests:
+      - test_worker.py            # primary
+      - test_density_gate.py
+      - test_rfc_recovery.py
+      - test_rfc012_redis_singleton.py
+
+  # ── Standard modules (coverage: governance default 70%) ─────────────────────
+  auth.py:
+    tests:
+      - test_auth.py
+
+  cache.py:
+    tests:
+      - test_cache.py
+
+  config.py:
+    tests:
+      - test_config.py            # primary
+      - test_rfc_quality.py
+      - test_rfc_registry.py
+      - test_rfc_storage.py
+      - test_route_decision.py
+      - test_staging_e2e.py
+      - test_storage.py
+      - test_pipeline.py
+      - test_observability.py
+      - test_verdict.py
+      - test_verdict_misc.py
+      - test_zdr_egress.py
+      - test_zone1_verdict_unification.py
+
+  converters/types.py:
+    tests:
+      - test_converters.py
+      - test_density_gate.py
+      - test_image_blocks.py
+      - test_observability.py
+      - test_pipeline.py
+      - test_rfc013_structural_hardening.py
+      - test_rfc_garble_gate.py
+      - test_rfc_quality.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+
+  converters/ocr_langs.py:
+    tests:
+      - test_converters.py
+      - test_arabic_rtl_pipeline.py
+      - test_converter_chain_ocr.py
+      - test_observability.py
+      - test_rfc013_structural_hardening.py
+      - test_rfc_arabic.py
+      - test_rfc_garble_gate.py
+      - test_rfc_recovery.py
+
+  converters/headings.py:
+    tests:
+      - test_converters.py            # primary
+      - test_arabic_rtl_pipeline.py
+      - test_density_gate.py
+      - test_depth_inference.py
+      - test_outline_inference.py
+      - test_pipeline.py
+      - test_read_pdf_outline.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_converters.py
+      - test_rfc_recovery.py
+
+  converters/normalize.py:
+    tests:
+      - test_converters.py
+      - test_rfc_bidi.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_converters.py
+      - test_rfc_storage.py
+      - test_route_decision.py
+      - test_rtl.py
+
+  converters/pictures.py:
+    tests:
+      - test_image_blocks.py
+      - test_ocr_decision.py
+      - test_pipeline.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_converters.py
+      - test_rfc_garble_gate.py
+      - test_rfc_inspector.py
+      - test_rfc_pipeline.py
+      - test_rfc_recovery.py
+      - test_rfc_registry.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+      - test_rfc_worker.py
+      - test_rtl.py
+
+  converters/docling_conv.py:
+    tests:
+      - test_converters.py
+      - test_observability.py
+      - test_pdf_inspector.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_inspector.py
+      - test_rfc_recovery.py
+      - test_rfc_tables.py
+
+  converters/pipeline.py:
+    tests:
+      - test_converter_chain_ocr.py
+      - test_density_gate.py
+      - test_observability.py
+      - test_pipeline.py
+      - test_rfc_bidi_agpl.py
+
+  converters/formats.py:
+    tests:
+      - test_converters.py
+      - test_rfc_pipeline.py
+      - test_zdr_egress.py
+
+  converters_cli.py:
+    tests:
+      - test_converters_cli.py
+
+  helpers/types.py:
+    tests:
+      - test_compute_verdict.py
+      - test_converter_chain_ocr.py
+      - test_finalize_gate_route.py
+      - test_garble.py
+      - test_garble_detection.py
+      - test_gate_table.py
+      - test_ocr_decision.py
+      - test_pipeline.py
+      - test_recovery.py
+      - test_rfc_arabic.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_storage.py
+      - test_rfc_worker.py
+      - test_route_decision.py
+      - test_validate_tree_contract.py
+      - test_verdict.py
+      - test_verdict_misc.py
+      - test_vlm_fallback.py
+      - test_zone1_flat_gate_asymmetry.py
+      - test_zone6_recovery_wiring.py
+
+  helpers/tree_validation.py:
+    tests:
+      - test_helpers.py               # primary
+      - test_client.py
+      - test_compute_verdict.py
+      - test_converters.py
+      - test_density_gate.py
+      - test_garble.py
+      - test_garble_detection.py
+      - test_gate_table.py
+      - test_image_blocks.py
+      - test_pipeline.py
+      - test_recovery.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_blocks.py
+      - test_rfc_converters.py
+      - test_rfc_garble_gate.py
+      - test_rfc_inspector.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_recovery.py
+      - test_rfc_registry.py
+      - test_rfc_reorder.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+      - test_route_decision.py
+      - test_storage.py
+      - test_validate_tree_contract.py
+      - test_verdict.py
+      - test_verdict_misc.py
+      - test_vlm_fallback.py
+
+  helpers/garble.py:
+    tests:
+      - test_garble.py                # primary
+      - test_garble_detection.py
+      - test_helpers.py
+      - test_pipeline.py
+      - test_recovery.py
+      - test_rfc013_structural_hardening.py
+      - test_rfc_bidi.py
+      - test_rfc_blocks.py
+      - test_rfc_converters.py
+      - test_rfc_garble_gate.py
+      - test_rfc_inspector.py
+      - test_rfc_pipeline.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_recovery.py
+      - test_rfc_storage.py
+      - test_rfc_worker.py
+      - test_script.py
+      - test_vlm_fallback.py
+
+  helpers/gates.py:
+    tests:
+      - test_gate_table.py            # primary
+      - test_compute_verdict.py
+      - test_density_gate.py
+      - test_finalize_gate_route.py
+      - test_helpers.py
+      - test_ocr_decision.py
+      - test_pipeline.py
+      - test_recovery.py
+      - test_rfc_blocks.py
+      - test_rfc_converters.py
+      - test_rfc_garble_gate.py
+      - test_rfc_inspector.py
+      - test_rfc_pipeline.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_recovery.py
+      - test_rfc_registry.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+      - test_rfc_worker.py
+      - test_route_decision.py
+      - test_validate_tree_contract.py
+      - test_verdict.py
+      - test_verdict_misc.py
+      - test_vlm_fallback.py
+      - test_zone1_flat_gate_asymmetry.py
+      - test_zone6_recovery_wiring.py
+
+  helpers/verdict.py:
+    tests:
+      - test_compute_verdict.py       # primary
+      - test_verdict.py
+      - test_verdict_misc.py
+      - test_client.py
+      - test_converters.py
+      - test_density_gate.py
+      - test_helpers.py
+      - test_ocr_decision.py
+      - test_pipeline.py
+      - test_recovery.py
+      - test_rfc_blocks.py
+      - test_rfc_converters.py
+      - test_rfc_garble_gate.py
+      - test_rfc_inspector.py
+      - test_rfc_pipeline.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_recovery.py
+      - test_rfc_registry.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+      - test_rfc_worker.py
+      - test_route_decision.py
+      - test_vlm_fallback.py
+      - test_zone1_flat_split_wiring.py
+      - test_zone1_hysteresis.py
+      - test_zone1_verdict_unification.py
+
+  helpers/tree_split.py:
+    tests:
+      - test_helpers.py               # primary
+      - test_converters.py
+      - test_depth_inference.py
+      - test_density_gate.py
+      - test_pipeline.py
+      - test_rfc_bidi.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_blocks.py
+      - test_rfc_converters.py
+      - test_rfc_reorder.py
+      - test_rfc_tables.py
+      - test_zone1_flat_split_wiring.py
+
+  helpers/tables.py:
+    tests:
+      - test_helpers.py               # primary
+      - test_rfc_reorder.py
+
+  helpers/table_stitch.py:
+    tests:
+      - test_helpers.py               # primary
+      - test_arabic_rtl_pipeline.py
+      - test_density_gate.py
+      - test_rfc_bidi_agpl.py
+      - test_rfc_converters.py
+
+  helpers/flat.py:
+    tests:
+      - test_helpers.py               # primary
+      - test_client.py
+      - test_converters.py
+      - test_density_gate.py
+      - test_flat_block_text_consolidation.py
+      - test_flat_doc_view.py
+      - test_image_blocks.py
+      - test_rfc_bidi.py
+      - test_rfc_blocks.py
+      - test_rfc_inspector.py
+      - test_rfc_pipeline.py
+      - test_rfc_promotions.py
+      - test_rfc_quality.py
+      - test_rfc_storage.py
+      - test_rfc_tables.py
+      - test_route_decision.py
+      - test_vlm_fallback.py
+
+  helpers/rag.py:
+    tests:
+      - test_helpers.py               # primary
+      - test_client.py
+      - test_metrics.py
+      - test_rag_contract.py
+      - test_rag_dedup.py
+      - test_rfc013_structural_hardening.py
+      - test_zdr_egress.py
+
+  job_status.py:
+    tests:
+      - test_density_gate.py
+
+  memory_admission.py:
+    tests:
+      - test_memory_admission.py
+      - test_rfc012_admission_lock.py
+
+  metrics/definitions.py:
+    tests:
+      - test_metrics.py           # primary
+      - test_auth.py
+      - test_cache.py
+      - test_converters.py
+      - test_observability.py
+      - test_pdf_inspector.py
+      - test_queue_metrics.py
+      - test_rfc_arabic.py
+      - test_rfc_bidi_agpl.py
+      - test_density_gate.py
+
+  metrics/sync.py:
+    tests:
+      - test_metrics.py           # primary
+      - test_observability.py
+
+  minio_client.py:
+    tests:
+      - test_minio_path_prefix.py
+
+  picture_plane.py:
+    tests:
+      - test_image_blocks.py
+      - test_ocr_decision.py
+      - test_rfc_garble_gate.py
+      - test_rfc_storage.py
+      - test_rfc_worker.py
+
+  queue_metrics.py:
+    tests:
+      - test_queue_metrics.py
+
+  registry/schema.py:
+    tests:
+      - test_registry.py          # primary
+      - test_rfc_registry.py
+      - test_pipeline.py
+      - test_reconcile_incremental.py
+      - test_density_gate.py
+      - test_worker.py
+
+  registry/queries.py:
+    tests:
+      - test_registry.py          # primary
+      - test_rfc_registry.py
+      - test_pipeline.py
+      - test_reconcile_incremental.py
+      - test_rfc012_backfill_gather.py
+      - test_storage.py
+      - test_worker.py
+
+  registry_backfill/backfill.py:
+    tests:
+      - test_rfc012_backfill_gather.py # primary
+      - test_density_gate.py
+      - test_worker.py
+
+  registry_backfill/reconcile.py:
+    tests:
+      - test_reconcile_incremental.py  # primary
+      - test_worker.py
+
+  registry_backfill/cleanup.py:
+    tests:
+      - test_reconcile_incremental.py
+
+  registry_backfill/__main__.py:
+    tests:
+      - test_rfc012_backfill_gather.py
+
+  script.py:
+    tests:
+      - test_script.py            # primary
+      - test_route_decision.py
+      - test_rtl.py
+      - test_pipeline.py
+      - test_recovery.py
+
+  server.py:
+    tests:
+      - test_queue_metrics.py
+      - test_presign_public_route.py
+      - test_zdr_egress.py
+
+  tools/documents.py:
+    tests:
+      - test_documents_tools.py   # primary
+      - test_rag_contract.py
+      - test_rag_dedup.py
+      - test_pagination.py
+      - test_metrics.py
+
+  tracing.py:
+    tests:
+      - test_tracing.py
+
+  upload_app.py:
+    tests:
+      - test_upload.py
+
+  # ── Modules with no dedicated test file yet ─────────────────────────────────
+  hash_cache_migrate.py:
+    tests: []
+    note: "utility migration script — low-change-frequency, test gap accepted"
+
+  # ── Standalone top-level files ──────────────────────────────────────────────
+  # These are not under src/pageindex_mcp/ but are tracked for completeness.
+  # The gate script only enforces src/pageindex_mcp/ mappings.

@@ -1,19 +1,18 @@
 """Tests for the /metrics Prometheus endpoint."""
 
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
-from unittest.mock import patch, MagicMock, AsyncMock
 
 from pageindex_mcp.metrics import (
-    metrics_response,
+    DOCUMENTS_TOTAL,
     TOOL_CALLS,
     TOOL_ERRORS,
-    TOOL_DURATION,
-    DOCUMENTS_TOTAL,
+    metrics_response,
 )
 
 
@@ -112,7 +111,7 @@ class TestToolInstrumentation:
         assert after == before + 1
 
 
-from pageindex_mcp.metrics import UPLOADS, UPLOAD_DURATION, ACTIVE_UPLOADS
+from pageindex_mcp.metrics import ACTIVE_UPLOADS, UPLOADS
 
 
 class TestUploadInstrumentation:
@@ -128,7 +127,8 @@ class TestUploadInstrumentation:
 
 
 import asyncio
-from pageindex_mcp.metrics import LLM_CALLS, LLM_DURATION, RAG_SEARCHES, RAG_DURATION
+
+from pageindex_mcp.metrics import LLM_CALLS
 
 
 class TestLLMInstrumentation:
@@ -138,7 +138,7 @@ class TestLLMInstrumentation:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "test answer"
 
-        with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
+        with patch("pageindex_mcp.client.llm.get_openai_client") as MockFactory:
             MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
             from pageindex_mcp.helpers import _llm
 
@@ -148,7 +148,7 @@ class TestLLMInstrumentation:
         assert after == before + 1
 
 
-from pageindex_mcp.metrics import MINIO_OPS, MINIO_DURATION
+from pageindex_mcp.metrics import MINIO_OPS
 
 
 class TestStorageInstrumentation:
@@ -156,7 +156,7 @@ class TestStorageInstrumentation:
         before = _counter_value(MINIO_OPS, {"operation": "list"})
         mock_minio = MagicMock()
         mock_minio.list_objects.return_value = []
-        with patch("pageindex_mcp.storage.get_minio", return_value=mock_minio):
+        with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mock_minio):
             from pageindex_mcp.storage import list_processed_docs
 
             list_processed_docs()
@@ -170,8 +170,8 @@ class TestStorageInstrumentation:
         mock_minio = MagicMock()
         mock_minio.get_object.return_value = mock_response
         with (
-            patch("pageindex_mcp.storage.get_minio", return_value=mock_minio),
-            patch("pageindex_mcp.storage.settings") as mock_settings,
+            patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mock_minio),
+            patch("pageindex_mcp.storage.documents.settings") as mock_settings,
         ):
             mock_settings.minio_bucket = "test"
             from pageindex_mcp.storage import load_doc
@@ -183,8 +183,9 @@ class TestStorageInstrumentation:
 
 def test_arq_queue_depth_gauge_exposed():
     # Arrange
-    from pageindex_mcp.metrics import ARQ_QUEUE_DEPTH, REGISTRY
     from prometheus_client import generate_latest
+
+    from pageindex_mcp.metrics import ARQ_QUEUE_DEPTH, REGISTRY
 
     # Act
     ARQ_QUEUE_DEPTH.set(3)

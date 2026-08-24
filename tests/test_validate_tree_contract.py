@@ -7,8 +7,6 @@ bytes), and passing a well-formed nested tree. The gate's verdict is what makes
 the worker raise LowQualityTreeError instead of silently storing a bad tree.
 """
 
-import pytest
-
 from pageindex_mcp.helpers import validate_tree
 
 

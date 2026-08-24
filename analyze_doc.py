@@ -1,5 +1,4 @@
 import json
-import sys
 import re
 
 doc_id = "150adddf-6fd2-479d-930b-d4919556977f"
@@ -18,7 +17,7 @@ def count_nodes(structure):
     for item in structure:
         if "title" in item or "text" in item:
             count += 1
-        if "nodes" in item and item["nodes"]:
+        if item.get("nodes"):
             count += count_nodes(item["nodes"])
     return count
 
@@ -30,7 +29,7 @@ def get_max_depth(structure, current_depth=0):
 
     max_d = current_depth
     for item in structure:
-        if "nodes" in item and item["nodes"]:
+        if item.get("nodes"):
             max_d = max(max_d, get_max_depth(item["nodes"], current_depth + 1))
 
     return max_d
@@ -63,7 +62,7 @@ def count_chars(structure):
     total_chars = 0
     for item in structure:
         total_chars += len(get_text_content(item))
-        if "nodes" in item and item["nodes"]:
+        if item.get("nodes"):
             total_chars += count_chars(item["nodes"])
     return total_chars
 
@@ -74,7 +73,7 @@ def count_image_markers(structure):
     for item in structure:
         text = get_text_content(item)
         count += text.count("<!-- image -->")
-        if "nodes" in item and item["nodes"]:
+        if item.get("nodes"):
             count += count_image_markers(item["nodes"])
     return count
 
@@ -85,7 +84,7 @@ def count_picture_results(structure):
     for item in structure:
         text = get_text_content(item)
         count += len(re.findall(r">\s+\[Chart", text, re.IGNORECASE))
-        if "nodes" in item and item["nodes"]:
+        if item.get("nodes"):
             count += count_picture_results(item["nodes"])
     return count
 

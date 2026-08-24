@@ -92,6 +92,11 @@ COPY --from=builder /app/src/ ./src/
 # Pre-baked docling weights (from the builder) -> offline, no runtime download.
 COPY --from=builder /opt/docling-models /opt/docling-models
 
+# Zone-7: mirrors services/docling-service/Dockerfile's convention so client.py's
+# build_sha (and worker.py's job_start_build_sha) stop reading "unknown" forever.
+ARG BUILD_SHA="unknown"
+ENV BUILD_SHA=$BUILD_SHA
+
 # Put the venv's Python on PATH
 ENV PATH="/app/.venv/bin:$PATH"
 # Point docling at the baked-in artifacts so workers never need network egress.

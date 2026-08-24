@@ -1,10 +1,7 @@
 # tests/test_rag_dedup.py
 """Verify that find_relevant_documents does not double-load documents."""
 
-import json
-from unittest.mock import patch, MagicMock, AsyncMock
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from pageindex_mcp.tools.documents import find_relevant_documents
 
@@ -35,8 +32,8 @@ async def test_find_relevant_documents_loads_each_doc_once():
     with (
         patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)),
         patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=fake_meta)),
-        patch("pageindex_mcp.helpers.get_doc", return_value=fake_doc) as mock_load,
-        patch("pageindex_mcp.helpers._llm", new_callable=AsyncMock) as mock_llm,
+        patch("pageindex_mcp.helpers.rag.get_doc", return_value=fake_doc) as mock_load,
+        patch("pageindex_mcp.helpers.rag._llm", new_callable=AsyncMock) as mock_llm,
     ):
         mock_llm.side_effect = [
             '{"thinking": "relevant", "node_list": ["n1"]}',

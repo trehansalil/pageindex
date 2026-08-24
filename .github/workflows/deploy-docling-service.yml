@@ -1,0 +1,99 @@
+name: Deploy Docling Service to Scaleway
+
+on:
+  push:
+    # branches: [master]
+    paths:
+      - 'services/docling-service/**'
+      - 'src/pageindex_mcp/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/deploy-docling-service.yml'
+  workflow_dispatch:
+
+env:
+  SCW_DEFAULT_REGION: nl-ams
+  SCW_REGISTRY: rg.nl-ams.scw.cloud/wise-demo
+  IMAGE_NAME: docling-service
+  CONTAINER_ID: 5b6bb7db-66d4-4a72-886a-2102461a3a26
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Expose GitHub Actions runtime for buildx gha cache
+        uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Log in to Scaleway Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: rg.nl-ams.scw.cloud
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
+
+      - name: Build and push
+        uses: nick-fields/retry@v3
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        with:
+          timeout_minutes: 45
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: error
+          command: |
+            docker buildx build \
+              --push \
+              --provenance=false \
+              --sbom=false \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max,ignore-error=true \
+              --secret id=hf_token,env=HF_TOKEN \
+              --build-arg BUILD_SHA=${{ github.sha }} \
+              --build-arg BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+              -f services/docling-service/Dockerfile \
+              -t ${{ env.SCW_REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
+              -t ${{ env.SCW_REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+              .
+
+      - name: Install Scaleway CLI
+        env:
+          SCW_CLI_VERSION: "2.54.0"
+        run: |
+          curl -sSL -o /usr/local/bin/scw "https://github.com/scaleway/scaleway-cli/releases/download/v${SCW_CLI_VERSION}/scaleway-cli_${SCW_CLI_VERSION}_linux_amd64"
+          chmod +x /usr/local/bin/scw
+          scw version
+
+      - name: Deploy and wait for ready
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+        run: |
+          scw container container deploy ${{ env.CONTAINER_ID }} region=${{ env.SCW_DEFAULT_REGION }} --wait
+          echo "✓ Docling service deployed successfully"
+
+      - name: Verify /version endpoint
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+        run: |
+          sleep 30
+          ENDPOINT=$(scw container container get ${{ env.CONTAINER_ID }} region=${{ env.SCW_DEFAULT_REGION }} -o json | jq -r '.domain_name')
+          DEPLOYED_SHA=$(curl -sf "https://${ENDPOINT}/version" | jq -r '.commit_sha')
+          echo "Deployed commit_sha: $DEPLOYED_SHA"
+          if [ "$DEPLOYED_SHA" != "${{ github.sha }}" ]; then
+            echo "::error::Deployed commit_sha ($DEPLOYED_SHA) does not match expected (${{ github.sha }})"
+            exit 1
+          fi

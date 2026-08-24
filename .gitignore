@@ -11,15 +11,7 @@ coverage.xml
 # TESSDATA_PREFIX at this dir. Model blobs (~30 MB), not source; never committed.
 .tessdata/
 # Local agent/tool dirs and throwaway probe logs (RFC-004 Phase 0).
-# Exception: .claude/workflows/corpus-ingest-score.js is a versioned project
-# artifact — RFC-026 D4 (tests/test_rfc026_d3.py::TestScoringHarnessStage2Guard)
-# asserts its live Stage 2 guard predicate, so it must exist on a CI checkout.
-# Git never descends into an excluded directory, so every parent level has to be
-# un-ignored explicitly for the final negation to take effect.
-.claude/*
-!.claude/workflows/
-.claude/workflows/*
-!.claude/workflows/corpus-ingest-score.js
+.claude/
 .kiro/
 issue/phase0_*.log
 # make confluence-sync change-detection stamp (local only, not shared state)

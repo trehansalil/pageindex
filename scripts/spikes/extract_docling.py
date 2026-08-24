@@ -23,10 +23,9 @@ PDFS = [
     "AVB-PHV-Premium.pdf.pdf",
 ]
 
-from docling.document_converter import DocumentConverter
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import PdfFormatOption
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 print("Initializing Docling converter...", flush=True)
 t_init = time.time()

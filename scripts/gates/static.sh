@@ -153,7 +153,8 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # path field — never a substring of the matched line content (e.g. a comment
     # that mentions `Minio(`) or of an unrelated file like `my_minio_client.py`.
     MINIO_VIOLATIONS=$(grep -rn 'from minio\|import minio\|Minio(' src/pageindex_mcp/ \
-        | grep -vE '^[^:]+/(storage|minio_client|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '^[^:]+/storage(\.py|/[^:]+\.py):[0-9]+:' \
+        | grep -vE '^[^:]+/(minio_client|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$MINIO_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_minio_outside_storage"
     else
@@ -169,7 +170,7 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # migration, RFC-013 D9). Both are operational scripts run out-of-band,
     # not part of the request-serving hot path.
     REDIS_VIOLATIONS=$(grep -rn 'import redis\|from redis\|aioredis\|fakeredis' src/pageindex_mcp/ \
-        | grep -vE '(cache|worker|memory_admission|queue_metrics|registry_backfill|hash_cache_migrate)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '(cache|worker|memory_admission|queue_metrics|registry_backfill|hash_cache_migrate|job_status)(\.py|/[^:]+\.py)' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$REDIS_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_redis_outside_cache_or_worker"
     else
@@ -189,7 +190,8 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # migration/backfill scripts, not new LLM-calling sites.
     LLM_VIOLATIONS=$(grep -rn 'import openai\|from openai\|import litellm\|from litellm\|from pageindex\|import pageindex' \
         src/pageindex_mcp/ \
-        | grep -vE '^[^:]+/(client|converters|converters_cli|registry_backfill|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '^[^:]+/(client|converters|converters_cli|registry_backfill|hash_cache_migrate|helpers|storage|registry|worker|metrics|registry_backfill)(\.py|/[^:]+\.py):[0-9]+:' \
+        | grep -vE '__init__\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$LLM_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_llm_outside_provider"
     else

@@ -1,0 +1,285 @@
+AUDIT RUNS 11-15: REGRESSION CHAIN ANALYSIS
+=============================================
+
+## DOCUMENTED REGRESSIONS BY RUN
+
+### RUN 11 → 12 Regressions:
+
+1. cabinet_resolution_no_21_of_2020 (PASS → MARGINAL)
+   Source: Run 12 audit, section "Regressions"
+   Metrics: 43 nodes / 53k chars unchanged (live-verified)
+   Root Cause: Newly-flagged malformed multi-row table headers + tab-delimited word spacing
+   Classification: Judge-side scrutiny change (metrics unmoved)
+   RFC Attribution: None implicit; measurement-methodology change
+
+2. uae_numbers_english_page_16_17_landscape (MARGINAL → FAIL)
+   Source: Run 12 audit, section "Regressions"
+   Metrics: 748 chars byte-identical (no extraction change)
+   Root Cause: Judge applies stricter bar for chart-content loss (zero image markers/enrichments)
+   Classification: Judge-severity threshold change, not pipeline
+   RFC Attribution: None
+
+3. مرسوم بقانون اتحادي رقم (13) (MARGINAL → FAIL)
+   Source: Run 12 audit, section "Regressions"
+   Metrics: 75 nodes / 5,972 chars → 6 nodes / 1,225 chars (~80% loss)
+   Root Cause: "Content was lost specifically during tree building, not extraction"
+   Evidence: Flat extraction recovered 75 blocks / 5,972 chars; tree-construction step collapsed it
+   RFC Attribution: Regression in tree-construction/cat_b_promoted flat-Arabic path (no RFC cited)
+   Causality: Prior RFC fix to cat_b_promoted promotion logic now breaking content retention
+
+4. ﺣﻘﻮق اﻹﻧﺴﺎن (FAIL → ERROR)
+   Source: Run 12 audit, section "Regressions"
+   Metrics: Artifact persistence loss (328 nodes / 498,928 chars existed in Run 11, gone in Run 12)
+   Root Cause: Artifact-persistence regression; possible erasure or failed re-ingest
+   RFC Attribution: None cited; could be Hard Rule 2 (DSR cascade) or timeout before save_doc
+   Causality: Pipeline change breaking artifact write-path or persistence ordering
+
+5. وارد 597 (stored verdict MARGINAL → PASS, garble gate regression)
+   Source: Run 11 verification note (line 19): "garble gate now fires on this doc's junk output"
+   → Run 12 pre-publish verification (line 7): "garble gate no longer fires"
+   Root Cause: Gate stopped detecting known junk OCR (repeating '1651001429' pattern)
+   RFC Attribution: None cited; gate-logic regression
+   Causality: Code change between runs disabled garble detection on this doc's known failure mode
+
+---
+
+### RUN 12 → 13 REGRESSIONS (SYSTEMIC CLUSTER):
+
+6. FEDERAL LAW (Penal Code) (PASS → ERROR)
+   Source: Run 13 audit, section "Regressions"
+   Metrics: 606 nodes / 220k chars → ERROR low_content_density(chars_per_node=408.2, threshold=500)
+   Root Cause: "Systemic cause: tree-builder over-segmentation or gate threshold/computation change"
+   Evidence: Same 606 nodes in Run 12 but implying ~361 chars/node; Run 13 computes 408.2
+   RFC Attribution: Suggests tree-builder fragmentation or gate re-tuning
+   Causality: Shared failure pattern across 3 docs (also federal_decree_law_no_33 + مرسوم 33)
+
+7. federal_decree_law_no_33 (English) (PASS → ERROR)
+   Source: Run 13 audit, section "Regressions"
+   Metrics: 502 nodes / 110,938 chars → ERROR low_content_density(chars_per_node=54.3, threshold=500)
+   Root Cause: "Severe over-fragmentation: either node count exploded or content collapsed"
+   Evidence: Computed 54.3 chars/node vs ~221 in Run 12, same node count (502) implied
+   RFC Attribution: "Same systemic density-gate failure pattern as Penal Code and مرسوم 33"
+   Causality: Shared root cause across 3-doc cluster; likely a single code change
+
+8. مرسوم بقانون اتحادي رقم (33) Arabic (PASS → ERROR)
+   Source: Run 13 audit, section "Regressions"
+   Metrics: 231 nodes / 102,145 chars → ERROR low_content_density(chars_per_node=459.4, threshold=500)
+   Root Cause: "Under-density condition was never actually fixed; gate now correctly rejecting it"
+   Evidence: chars_per_node already 442 in Run 12 (borderline); Run 13 gate enforces strictly
+   RFC Attribution: "Third doc in the same low_content_density failure cluster"
+   Causality: Gate threshold or computation changed between Run 12→13; all 3 docs below threshold
+
+9. MOU MOHRE & Nafis (MARGINAL → FAIL)
+   Source: Run 13 audit, section "Regressions"
+   Metrics: 166 nodes / 13,564 chars → 20 nodes / 1,487 chars (~89% content loss)
+   Root Cause: "Arabic/mixed-language block-handling regression truncating extraction to preamble"
+   Evidence: Node count fell 166→20, chars 13,564→1,487; garble gate misfires (ratio=1.00, 0 actual garbled)
+   RFC Attribution: "Same code path also misfires the garble gate; likely from RFC-029/030 Arabic-handling changes"
+   Causality: Single upstream code path change breaking Arabic extraction + confusing garble gate
+
+10. Reitlehrer (PASS → MARGINAL, content regression masked by judge)
+    Source: Run 13 audit, section "Regressions"
+    Metrics: 10 nodes / 4,082 chars → 10 nodes / 2,768 chars (~32% char loss)
+    Root Cause: "Picture-enrichment step regressed for this doc, removing text derived from/alongside image"
+    RFC Attribution: "RFC-029 D3 fence/HR stripping regression"
+    Causality: Picture enrichment step over-strips content on short flat documents
+
+11. اتفاقية مستوى الخدمة (SLA) (MARGINAL → FAIL)
+    Source: Run 13 audit, section "Regressions"
+    Metrics: 264 nodes / 27,882 chars → 0 nodes / 0 chars (complete extraction failure)
+    Root Cause: "Body-extraction step silently returning empty and persisting anyway"
+    Evidence: "Violates Hard Rule 5 (never silently persist a low-quality tree); density gate does not catch 0-node trees"
+    RFC Attribution: None cited; generic body-extraction code path
+    Causality: Extraction pipeline change broke Arabic SLA body handling; gate doesn't catch it
+
+12. قرار مجلس الوزراء رقم (106) (MARGINAL → FAIL)
+    Source: Run 13 audit, section "Regressions"
+    Metrics: 179 nodes / 26,027 chars → 11 nodes / 2,022 chars (~92% loss, truncated at Article 4)
+    Root Cause: "New mid-document truncation bug in extraction/chunking"
+    Evidence: "Starts at Article 4, ends abruptly; drastic metric movement rules out scoring change"
+    RFC Attribution: Likely same Arabic-extraction family as MOU/قرار regressing
+    Causality: Arabic legal document handling regression introduces truncation
+
+13. مرسوم بقانون اتحادي رقم (13) (FAIL → FAIL, total loss)
+    Source: Run 13 audit, section "Stalls" (progression)
+    Metrics: 6 nodes / 1,225 chars (Run 12) → 0 nodes / 0 chars (Run 13)
+    Root Cause: "Extraction failure mirroring the same total-collapse pattern seen in SLA"
+    Evidence: "Flat.json with 0 blocks in Run 13, same as SLA doc"
+    RFC Attribution: Same body-extraction regression class as SLA
+    Causality: Generic Arabic flat-document extraction broken
+
+14. سياسة حوكمة (MARGINAL → FAIL)
+    Source: Run 13 audit, section "Regressions"
+    Metrics: 24 nodes / 20,330 chars → 24 nodes / 17,575 chars (node count unchanged; 13.5% char loss)
+    Root Cause: "Judge correctly re-detected RTL title-reversal defect that Run 12's judge missed"
+    Evidence: "23/24 node titles now flagged as fully character-reversed RTL bug"
+    RFC Attribution: Not a new regression but "judge-scoring correction" for persistent bug; however, Run 14 finds corruption spread to bodies
+    Causality: Gate blind to RTL reversal; judge catches it; RFC-029/030 may spread corruption
+
+15. وارد 597 (FAIL → ERROR)
+    Source: Run 13 audit, section "Regressions"
+    Metrics: 111 nodes / 54,728 chars (Run 12) → ERROR never persisted (NoSuchKey)
+    Root Cause: "Timeout/hang regression on 42-page scanned Arabic OCR path"
+    Evidence: "Job dies before save_doc; possibly introduced by garble-gate or OCR-escalation changes"
+    RFC Attribution: Likely a side effect of garble-gate logic changes or Arabic OCR path (no RFC cited)
+    Causality: Fix to Arabic OCR or garble gate introduced performance regression causing timeout
+
+---
+
+### RUN 13 → 14 (RECOVERY RUN - BUT INTRODUCES NEW ISSUES):
+
+Recovery improvements from Run 13's errors (9 docs go ERROR→PASS or FAIL→better).
+But also new regressions:
+
+16. cabinet_resolution_no_96 (PASS → MARGINAL)
+    Source: Run 14 audit, section "Regressions"
+    Metrics: 108 nodes / 26,111 chars; **claimed depth drop 3→2 refuted** — live tree reads depth 3 unchanged from Run 13
+    Root Cause: "Judge-severity/scoring threshold change...not a structural change"
+    Evidence: Live tree shape "identical to Run 13"; flatness (85/108 nodes top-level) was already known and scored PASS in Run 13
+    RFC Attribution: None; judge-side only
+    Causality: Judge re-scores same tree more harshly (no pipeline change)
+
+17. سياسة حوكمة (MARGINAL → FAIL)
+    Source: Run 14 audit, section "Regressions"
+    Metrics: 24 nodes / 17,575 chars; body text corruption spreads from titles to 87.5% of nodes
+    Root Cause: "Either a regression in RTL/bidi handling for this large Arabic doc...or a garble-gate/judge sensitivity change"
+    Evidence: "Stored gate verdict remains PASS — the blind spot persists"
+    RFC Attribution: "RFC-029/030 RTL changes prime suspect"
+    Causality: Recent Arabic/RTL handling changes cause or expose widespread bidi corruption
+
+18. ﺣﻘﻮق اﻹﻧﺴﺎن (PASS → MARGINAL)
+    Source: Run 14 audit, section "Regressions"
+    Metrics: 347 nodes / depth 6 / 394,717 chars (shape unchanged); newly-detected 42% garble + reversed headings
+    Root Cause: "Either a regression in RTL/bidi handling...or a detection-only change"
+    Evidence: "Tree shape essentially unchanged from Run 13"
+    RFC Attribution: "RFC-029/030 RTL changes prime suspect"
+    Causality: Garble either newly introduced by RTL changes, or newly detected by updated judge
+
+---
+
+### RUN 14 → 15 (BRANCH SWITCH to feat/pdf-inspector-shadow-pilot):
+
+19. federal_decree_law_no_33 (English) (PASS → MARGINAL)
+    Source: Run 15 audit, section "Regressions"
+    Metrics: 502 nodes / depth 4 / 103,081 body chars / 286 top-level — **live tree identical to Run 14's PASS state**
+    Root Cause: "Judge-side severity shift...no pipeline change implicated"
+    Evidence: "Claimed depth 3→2 drop refuted — live tree reads depth 3, shape-identical to Run 13-14"
+    RFC Attribution: None; judge-only
+    Causality: Run 15 judge re-scores flatness more harshly than Run 14
+
+20. اتفاقية مستوى الخدمة (SLA) (PASS → MARGINAL)
+    Source: Run 15 audit, section "Regressions"
+    Metrics: 217 blocks / 27,740 meta chars; stored verdict_reason `garbling(ratio=1.00)` live
+    Root Cause: "Garble-gate false-positive (ratio=1.00) reappeared...after Run 14 had corrected it to 0.067"
+    Evidence: "Suggests either non-determinism in garble-gate scoring or a regression that reintroduced the false trigger"
+    RFC Attribution: None cited; gate regression
+    Causality: Garble-gate false positive non-deterministic across runs; Round 14's correction lost in Run 15
+
+21. القرار التنظيمي (PASS → ERROR)
+    Source: Run 15 audit, section "Regressions"
+    Metrics: Artifacts unretreivable at scoring time; **publish-time verification shows artifacts exist** (83 nodes / depth 5 / 48,586 chars, processed 2026-08-06T11:05:56Z)
+    Root Cause: "Transient persistence-timing race: scoring read raced the worker write"
+    Evidence: "Hypothesis (revised by publish-time verification): the artifacts do exist live now"
+    RFC Attribution: None; pipeline ordering issue
+    Causality: Incremental ingest+score pipeline has a race between worker write and scorer read
+
+---
+
+## CAUSAL CHAIN SUMMARY (Fixes disabling/fighting other fixes):
+
+### CHAIN 1: Low_content_density Gate Systemic Failure (Run 13)
+Mechanism: Tree-builder oversegmentation or gate threshold change
+Affected Docs: Penal Code, federal_decree_law_no_33 (English), مرسوم 33 (Arabic)
+Evidence:
+  - Run 12 PASS (chars_per_node ~361-442, borderline but passing)
+  - Run 13 ERROR (chars_per_node 408-459, below 500 threshold)
+  - Run 14 PASS (gate no longer trips — gate logic reverted)
+What it broke: 3 previously-passing large legal documents rejected
+What was fixed: Low_content_density gate was too strict or node-counting changed
+Gate mechanism reversal needed: Either tree-builder de-fragmentation or gate threshold raised
+
+### CHAIN 2: Arabic/Mixed-Language Block-Handling Regression (Run 13)
+Mechanism: Single upstream code path change to Arabic block processing
+Affected Docs: MOU (89% loss), SLA (total loss), قرار 106 (92% loss, truncation)
+Also: Garble-gate misfires on affected docs (ratio=1.00 false positive)
+Evidence:
+  - Run 12: All three docs extract successfully (166 nodes / 13.5k, 264 nodes / 27.9k, 179 nodes / 26k)
+  - Run 13: Catastrophic failures (20 nodes / 1.5k, 0 nodes / 0 chars, 11 nodes / 2k)
+  - Run 14: Partial recovery (SLA 219 nodes / 27.8k, قرار 106 160 blocks / 26.1k, MOU 134 blocks / 13.5k)
+What it broke: Arabic/mixed-language extraction + gate's Arabic-text detection
+Root cause suspicion: "RFC-029/030 Arabic-handling changes" (cited in Run 13 audit)
+What was fixed: Some recovery by Run 14; Run 15 shows further improvements but with identity issues
+
+### CHAIN 3: RTL/Bidi Reversal Blind Spot + Corruption Spread (Run 13-14)
+Mechanism: Gate cannot detect RTL reversal; RFC-029/030 changes may introduce or spread corruption
+Affected Docs: سياسة حوكمة (persistent), ﺣﻘﻮق اﻹﻧﺴﺎن (persistent)
+Evidence:
+  - Run 11: سياسة حوكمة 100% RTL title reversal (FAIL), ﺣﻘﻮق detected 93.6% presentation-forms garble (FAIL)
+  - Run 12: سياسة حوكمة judge flip to PASS (bug still present); ﺣﻘﻮق ERROR (artifact lost)
+  - Run 13: سياسة حوكمة MARGINAL (RTL titles re-detected); ﺣﻘﻮق recovered PASS
+  - Run 14: سياسة حوكمة FAIL (corruption spreads from titles to 87.5% of node bodies); ﺣﻘﻮق MARGINAL (42% garble detected)
+  - Run 15: Both still FAIL/PASS with same defect (live tree contradicts PASS claim for ﺣﻘﻮق)
+What it broke: Gate blind spot allows RTL/bidi defects to persist; RFC-029/030 changes amplify corruption
+Gate defect: Stores title field not inspected by garble-gate quality checks
+What needs fixing: Gate must inspect node titles + detect RTL reversal; RFC-029/030 changes need review for bidi handling
+
+### CHAIN 4: Picture/Image Enrichment Regression (Run 13)
+Mechanism: Enrichment step over-strips content on short flat documents
+Affected Docs: Reitlehrer (32% char loss)
+Evidence:
+  - Run 12 PASS: 4,082 chars
+  - Run 13 MARGINAL: 2,768 chars (32% loss)
+  - Run 14 MARGINAL: same 2,768 (RFC-029 D3 fence/HR stripping regression)
+  - Run 15 PASS: same 2,768 (judge reclassifies image as non-substantive)
+What it broke: Text derived from/alongside images lost on short flat documents
+RFC attribution: "RFC-029 D3 fence/HR stripping" cited explicitly
+What was fixed: Picture enrichment step regression introduced by fence/HR stripping logic
+
+### CHAIN 5: Garble Gate False Positive on Clean Mixed-Script Arabic (Run 14-15)
+Mechanism: Gate gives ratio=1.00 on clean Arabic text; Run 14 judge overrides to 0.067; Run 15 gate fires again
+Affected Docs: SLA (اتفاقية مستوى الخدمة)
+Evidence:
+  - Run 14 PASS: Stored verdict_reason `garbling(ratio=1.00)` (false positive); judge overrides to recomputed 0.067
+  - Run 15 MARGINAL: Stored verdict_reason `garbling(ratio=1.00)` reappeared; judge doesn't override
+What it broke: Clean bilingual Arabic/English documents wrongly penalized
+Gate defect: Full-text tautology or missing separator in `_garble_ratio` calculation (cited in Run 15 reconciliation as finding A33-C4a)
+Non-determinism: Gate produces ratio=1.00 inconsistently (might depend on artifact order or scoring timing)
+
+### CHAIN 6: Persistence Timing Race (Run 15)
+Mechanism: Scorer reads MinIO before worker write completes
+Affected Docs: القرار التنظيمي
+Evidence:
+  - Run 15 scoring: NoSuchKey, ERROR verdict
+  - Run 15 publish-time verification: Artifacts exist (83 nodes / 48k chars, processed 2026-08-06T11:05:56Z)
+What it broke: Incremental ingest+score pipeline has race between worker write and scorer read
+RFC attribution: None; ordering bug in pipeline orchestration
+What needs fixing: Read-after-write guarantee needed (polling, event-driven, or linearized timestamps)
+
+---
+
+## VERDICT FLIP-FLOP PATTERN SUMMARY:
+
+Document 24 (وارد 597): PASS → FAIL → PASS(stored)/FAIL(judge) → ERROR → FAIL → MARGINAL
+  Root: Image enrichment promotion path defeated by garble gate → gate regresses → timeout → content restored but still junk → document identity issue
+
+Document 25 (ﺣﻘﻮق اﻹﻧﺴﺎن): FAIL → ERROR → PASS → MARGINAL → PASS(suspect)
+  Root: Gate blind to presentation-forms garble → artifact lost → recovered → detector improves → recovery contradicted by live tree
+
+Document 22 (مرسوم 13): MARGINAL → FAIL → FAIL(total) → MARGINAL → PASS
+  Root: Tree construction regression → total loss → recovery → proper structuring achieved
+
+Document 19 (سياسة حوكمة): FAIL → PASS → MARGINAL → FAIL → FAIL
+  Root: Gate blind to RTL reversal; judge flip in Run 12 → judge re-detects in Run 13 → corruption spreads in Run 14
+
+---
+
+## MASTER SUMMARY TABLE:
+
+| Chain | Affected Docs | Root Cause | RFC Attribution | Fix Status |
+|-------|---------------|-----------|-----------------|-----------|
+| 1 | Penal Code, FDL-33(EN), مرسوم 33(AR) | Gate threshold too strict OR tree over-segmentation | None | Run 14: gate logic reverted |
+| 2 | MOU, SLA, قرار 106 | Arabic block-handling regression | RFC-029/030 suspected | Partial (Run 14-15) |
+| 3 | سياسة حوكمة, ﺣﻘﻮق | Gate blind to RTL + corruption spread | RFC-029/030 Arabic changes | Open: D2 Part A |
+| 4 | Reitlehrer | Picture enrichment over-stripping | RFC-029 D3 fence/HR | Masked by judge reclassification |
+| 5 | SLA | Garble gate false positive ratio=1.00 | Gate calculation bug | Open: D1 (A33-C4a) |
+| 6 | القرار التنظيمي | Persistence timing race | Pipeline orchestration | Open: requires read-after-write fix |

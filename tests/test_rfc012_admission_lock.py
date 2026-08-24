@@ -6,7 +6,6 @@ headroom and both proceeding.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest

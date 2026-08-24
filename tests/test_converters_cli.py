@@ -15,12 +15,9 @@ Test strategy:
     - Integration test (real Docling) is guarded by DOCLING_INTEGRATION=1.
 """
 
-import asyncio
 import json
-import logging
 import os
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -145,6 +142,7 @@ def test_missing_input_file_exits_1_with_json_error(tmp_path: Path):
 async def test_runtime_error_from_index_exits_1_in_process(tmp_pdf: Path, monkeypatch):
     """RuntimeError raised by client.index → JSON {ok: false, error: RuntimeError}."""
     import io
+
     import pageindex_mcp.converters_cli as cli_module
     from pageindex_mcp.converters_cli import main
 
@@ -156,8 +154,8 @@ async def test_runtime_error_from_index_exits_1_in_process(tmp_pdf: Path, monkey
     # The CLI now validates/configures the LLM provider (LLM-01) before indexing.
     # This test exercises index() error handling, not provider config, so neutralize
     # the gate to stay independent of ambient OPENAI_API_KEY in the runner env.
-    monkeypatch.setattr("pageindex_mcp.client.validate_llm_config", lambda: None)
-    monkeypatch.setattr("pageindex_mcp.client.configure_litellm", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.configure_litellm", lambda: None)
 
     with patch(
         "pageindex_mcp.client.CustomPageIndexClient.index",
@@ -183,6 +181,7 @@ async def test_runtime_error_from_index_exits_1_in_process(tmp_pdf: Path, monkey
 async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
     """Success JSON has exactly the required keys with correct types."""
     import io
+
     import pageindex_mcp.converters_cli as cli_module
     from pageindex_mcp.converters_cli import main
 
@@ -194,8 +193,8 @@ async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
     # See note in test_runtime_error_from_index_exits_1_in_process: this is a
     # JSON-shape test, so neutralize the LLM-01 provider gate to stay independent
     # of whether the runner has OPENAI_API_KEY set.
-    monkeypatch.setattr("pageindex_mcp.client.validate_llm_config", lambda: None)
-    monkeypatch.setattr("pageindex_mcp.client.configure_litellm", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.configure_litellm", lambda: None)
 
     with patch(
         "pageindex_mcp.client.CustomPageIndexClient.index",

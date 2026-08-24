@@ -1,0 +1,212 @@
+[
+  {
+    "doc": "federal_decree_law_no_33_of_2021_regarding_the_regulation_of_employment_relationship_and_its_amendments - Copy.pdf",
+    "symptom": "snapshot_prior_verdicts() (RFC-026 D3) is implemented in storage.py but never called by the corpus reingestion pipeline before the MinIO processed/* wipe. find_prior_verdict() therefore always returns None during full re-ingestion, disabling hysteresis. Documents with max_leaf_ratio between 0.30 and 0.40 lose the +0.10 hysteresis band (PASS_HYSTERESIS_BAND) and regress from PASS to MARGINAL on byte-identical trees.",
+    "root_cause": "snapshot_prior_verdicts() (RFC-026 D3) is implemented in storage.py but never called by the corpus reingestion pipeline before the MinIO processed/* wipe. find_prior_verdict() therefore always returns None during full re-ingestion, disabling hysteresis. Documents with max_leaf_ratio between 0.30 and 0.40 lose the +0.10 hysteresis band (PASS_HYSTERESIS_BAND) and regress from PASS to MARGINAL on byte-identical trees.",
+    "code_path": "src/pageindex_mcp/storage.py:snapshot_prior_verdicts (line 747) -> find_prior_verdict (line 675) -> helpers.py:classify_verdict (line 1578-1589, hysteresis band)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Wire snapshot_prior_verdicts() into the corpus reingestion pipeline's wipe step. The corpus-ingest and corpus-ingest-score skills both define a 'Wipe MinIO processed/' step — add a pre-wipe call to snapshot_prior_verdicts() so that find_prior_verdict() can fall back to _prior_verdicts.json. Concretely: (1) export snapshot_prior_verdicts in storage.py __all__; (2) add a call in the pipeline orchestration (either as a skill instruction for the agent to run before wipe, or as a programmatic step in any wipe utility function); (3) verify the existing find_prior_verdict fallback path (line 726-743) correctly reads the snapshot.",
+    "affected_files": [
+      "src/pageindex_mcp/storage.py",
+      ".claude/skills/corpus-ingest-score/SKILL.md",
+      ".claude/skills/corpus-ingest/SKILL.md"
+    ],
+    "related_rfcs": [
+      "026-verdict-gate-hardening-rotation-detection.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+    "symptom": "_garble_ratio full-text check mirrors _tree_is_garbled — windowed ratio is dead code, always returns 1.0. In classify_verdict, _tree_is_garbled(structure) (line 1559) calls _is_garbled_blob+_has_sparse_mojibake on _flatten_tree_text(structure). When True, _garble_ratio(flat_text) (line 1572) evaluates the SAME checks on the SAME text, so full_garbled=1.0 and max(1.0, window_ratio)=1.0 always. The windowed ratio (designed for fine-grained measurement) never influences the result. For the SLA doc, _has_sparse_mojibake fires on the full concatenated text because _flatten_tree_text joins titles+text with NO separator (line 555-565), creating artificial Arabic-Latin-Arabic glued patterns at node boundaries. The doc is at the 2% threshold boundary — minor extraction differences between runs push it over/under, flipping full_garbled between 0.0 and 1.0 (PASS vs MARGINAL with ratio=1.00).",
+    "root_cause": "_garble_ratio full-text check mirrors _tree_is_garbled — windowed ratio is dead code, always returns 1.0. In classify_verdict, _tree_is_garbled(structure) (line 1559) calls _is_garbled_blob+_has_sparse_mojibake on _flatten_tree_text(structure). When True, _garble_ratio(flat_text) (line 1572) evaluates the SAME checks on the SAME text, so full_garbled=1.0 and max(1.0, window_ratio)=1.0 always. The windowed ratio (designed for fine-grained measurement) never influences the result. For the SLA doc, _has_sparse_mojibake fires on the full concatenated text because _flatten_tree_text joins titles+text with NO separator (line 555-565), creating artificial Arabic-Latin-Arabic glued patterns at node boundaries. The doc is at the 2% threshold boundary — minor extraction differences between runs push it over/under, flipping full_garbled between 0.0 and 1.0 (PASS vs MARGINAL with ratio=1.00).",
+    "code_path": "src/pageindex_mcp/helpers.py::_garble_ratio (line 1439) + _flatten_tree_text (line 554) + classify_verdict (lines 1559,1572)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Remove the full-text binary check from _garble_ratio. The function should ONLY compute the windowed ratio (chunks approach). _tree_is_garbled already gates entry into the garble-ratio path in classify_verdict, so the full-text check in _garble_ratio is redundant and harmful. Additionally, _flatten_tree_text should insert a space or newline separator between concatenated parts to prevent artificial glued-script patterns.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "015-corpus-audit-remediation.md",
+      "021-run4-verdict-quickfixes.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "سياسة حوكمة و إدارة البيانات - Copy.pdf",
+    "symptom": "Garble gate blind to non-PUA Arabic single-letter fragment decomposition; bidi coherence enforcement disabled. _is_garbled_blob has no heuristic for single-letter Arabic fragment patterns (letters separated by spaces, e.g. Arabic word decomposed into individual letters with spaces between them). This is a common PDF text-layer extraction failure. _check_bidi_coherence was wired into validate_tree by RFC-030 D5 but runs in audit-only mode (BIDI_COHERENCE_ENFORCE defaults to false, line 1288). It logs warnings but does not affect the stored verdict. Combined: سياسة حوكمة passes the gate with stored verdict PASS despite 79% of nodes containing garbled single-letter fragments and RTL word-order reversal, because neither pattern is detected by the enforced checks.",
+    "root_cause": "Garble gate blind to non-PUA Arabic single-letter fragment decomposition; bidi coherence enforcement disabled. _is_garbled_blob has no heuristic for single-letter Arabic fragment patterns (letters separated by spaces, e.g. Arabic word decomposed into individual letters with spaces between them). This is a common PDF text-layer extraction failure. _check_bidi_coherence was wired into validate_tree by RFC-030 D5 but runs in audit-only mode (BIDI_COHERENCE_ENFORCE defaults to false, line 1288). It logs warnings but does not affect the stored verdict. Combined: سياسة حوكمة passes the gate with stored verdict PASS despite 79% of nodes containing garbled single-letter fragments and RTL word-order reversal, because neither pattern is detected by the enforced checks.",
+    "code_path": "src/pageindex_mcp/helpers.py::_is_garbled_blob (line 863) + validate_tree (line 1288, BIDI_COHERENCE_ENFORCE) + classify_verdict (line 1559)",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "medium",
+    "suggested_fix": "(a) Add a single-letter Arabic fragment detection heuristic to _is_garbled_blob: when >50% of Arabic words in a blob are single characters (excluding particles like و), flag as garbled. (b) Promote BIDI_COHERENCE_ENFORCE from audit-only to enforced (default true) after reviewing the accumulated audit logs for false-positive rate. (c) Add the single-letter-fragment check to _garble_check_nodes per-node inspection as well.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "030-run13-rfc029-regression-fixes.md",
+      "029-run12-arabic-garble-gates-and-extraction-quality.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+    "symptom": "The incremental ingest+score pipeline (corpus-ingest-score.js) lacks retry logic in its Stage 2 (fetch metrics) when reading MinIO artifacts. The minio_helper.py script has zero retry on S3 NoSuchKey or transient network errors. When a transient MinIO read failure occurs between Stage 1 (process) completing and Stage 2 (fetch) reading, the document gets a permanent ERROR verdict despite the artifacts existing in MinIO. The converter child writes synchronously (save_doc then save_doc_meta via put_object) before emitting its success JSON, so the write IS committed before Stage 1 reports success. The gap is in the read path: minio_helper.py cmd_meta and cmd_tree make single-attempt reads with no retry-with-backoff, and the Stage 2 agent prompt contains no instruction to retry on failure.",
+    "root_cause": "The incremental ingest+score pipeline (corpus-ingest-score.js) lacks retry logic in its Stage 2 (fetch metrics) when reading MinIO artifacts. The minio_helper.py script has zero retry on S3 NoSuchKey or transient network errors. When a transient MinIO read failure occurs between Stage 1 (process) completing and Stage 2 (fetch) reading, the document gets a permanent ERROR verdict despite the artifacts existing in MinIO. The converter child writes synchronously (save_doc then save_doc_meta via put_object) before emitting its success JSON, so the write IS committed before Stage 1 reports success. The gap is in the read path: minio_helper.py cmd_meta and cmd_tree make single-attempt reads with no retry-with-backoff, and the Stage 2 agent prompt contains no instruction to retry on failure.",
+    "code_path": "scripts/minio_helper.py:cmd_meta (line 36) and cmd_tree (line 41) -> .claude/workflows/corpus-ingest-score.js Stage 2 (line 242-271)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add retry-with-backoff (3 attempts, 2s/4s/8s delays) to minio_helper.py cmd_meta and cmd_tree for transient S3 errors (NoSuchKey, ConnectionError, network timeouts). Additionally, add a retry instruction to the Stage 2 agent prompt in corpus-ingest-score.js: 'If minio_helper.py returns NoSuchKey, wait 5 seconds and retry up to 3 times before concluding the artifacts are missing.'",
+    "affected_files": [
+      "scripts/minio_helper.py",
+      ".claude/workflows/corpus-ingest-score.js"
+    ],
+    "related_rfcs": [],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "Federal Decree-Law No. (47) of 2021 - Copy.pdf, cabinet_resolution_no_96_of_2023_regarding_an_alternative_end_of_service_benefits_system - Copy.pdf",
+    "symptom": "_ARTICLE_RE regex in converters.py:226 requires 'Article \\d+' (digits immediately after space) but UAE/English legal docs use parenthesized form 'Article (N)'. _segment_label returns [] for these headings, so _containment_depths returns None, and _relevel_by_containment leaves all Article headings at their original flat level. The _OVERSIZED_ORDINAL_RE in helpers.py:1798 correctly handles parens ('Art(?:icle|\\.)?\\s+\\(?\\s*') but this only fires in split_oversized_leaf_nodes for already-built nodes >50k chars - it cannot help when md_to_tree already produced many small flat nodes.",
+    "root_cause": "_ARTICLE_RE regex in converters.py:226 requires 'Article \\d+' (digits immediately after space) but UAE/English legal docs use parenthesized form 'Article (N)'. _segment_label returns [] for these headings, so _containment_depths returns None, and _relevel_by_containment leaves all Article headings at their original flat level. The _OVERSIZED_ORDINAL_RE in helpers.py:1798 correctly handles parens ('Art(?:icle|\\.)?\\s+\\(?\\s*') but this only fires in split_oversized_leaf_nodes for already-built nodes >50k chars - it cannot help when md_to_tree already produced many small flat nodes.",
+    "code_path": "src/pageindex_mcp/converters.py:226 (_ARTICLE_RE) -> converters.py:298 (_segment_label) -> converters.py:360 (_containment_depths) -> converters.py:384 (_relevel_by_containment)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Widen _ARTICLE_RE to accept optional parentheses: r'^(?:Art(?:icle|\\.)\\s+\\(?\\s*\\d+|§\\s*\\(?\\s*\\d+)'. This makes _segment_label extract the number from 'Article (47)' as label ['47'], enabling containment-based depth assignment.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py"
+    ],
+    "related_rfcs": [
+      "015-corpus-audit-remediation.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+    "symptom": "German AHB documents use clause-level numbering (e.g. 'Ziffer 1', numbered paragraphs) that Docling does not detect as section headers - they stay as plain prose text. Unlike Arabic structural markers which have _inject_arabic_structural_headings to promote plain-text markers to headings, there is no equivalent injection for German clause patterns ('Ziffer N', 'Ziff. N') or for English 'Article (N)' patterns when Docling misses them entirely. The heading-depth recovery chain (_relevel_by_containment/_relevel_by_numbering/_relevel_by_outline) can only re-level EXISTING headings, not create new ones from prose.",
+    "root_cause": "German AHB documents use clause-level numbering (e.g. 'Ziffer 1', numbered paragraphs) that Docling does not detect as section headers - they stay as plain prose text. Unlike Arabic structural markers which have _inject_arabic_structural_headings to promote plain-text markers to headings, there is no equivalent injection for German clause patterns ('Ziffer N', 'Ziff. N') or for English 'Article (N)' patterns when Docling misses them entirely. The heading-depth recovery chain (_relevel_by_containment/_relevel_by_numbering/_relevel_by_outline) can only re-level EXISTING headings, not create new ones from prose.",
+    "code_path": "src/pageindex_mcp/converters.py:98 (_inject_arabic_structural_headings) -> converters.py:2759 (call site in pdf_to_markdown_docling) - missing analogous function for German/English legal patterns",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "medium",
+    "suggested_fix": "Add _inject_german_clause_headings (for 'Ziffer N' / 'Ziff. N' patterns) and _inject_english_article_headings (for 'Article (N)' at line start) analogous to _inject_arabic_structural_headings. Call them alongside the Arabic injection at converters.py:2759-2760.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py"
+    ],
+    "related_rfcs": [
+      "027-run10-extraction-gate-and-arabic-recovery.md"
+    ],
+    "source": "cluster",
+    "confidence": "medium"
+  },
+  {
+    "doc": "GHV-TKV-Tarif.pdf",
+    "symptom": "_segment_table_nodes is called ONLY on garble-recovery paths (client.py:1126, 1312) but NOT on the primary tree-build path (client.py:1031). GHV-TKV-Tarif is a pricing table document that traverses the primary path without garble issues, so _segment_table_nodes never fires, leaving the multi-column table as a single flat leaf. RFC-030 explicitly identified and DEFERRED this fix.",
+    "root_cause": "_segment_table_nodes is called ONLY on garble-recovery paths (client.py:1126, 1312) but NOT on the primary tree-build path (client.py:1031). GHV-TKV-Tarif is a pricing table document that traverses the primary path without garble issues, so _segment_table_nodes never fires, leaving the multi-column table as a single flat leaf. RFC-030 explicitly identified and DEFERRED this fix.",
+    "code_path": "src/pageindex_mcp/client.py:1031 (primary path - split_oversized_leaf_nodes called without _segment_table_nodes) vs client.py:1126 (garble path - both called)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add result['structure'] = _segment_table_nodes(result.get('structure', [])) after line 1031 in client.py (and line 1428 in the image-escalation path). Resolve validate_tree ordering: run _segment_table_nodes BEFORE validate_tree so the segmented structure is what gets validated.",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "030-run13-rfc029-regression-fixes.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+    "symptom": "Docling TableFormer renders checkmark/symbol-only PDF cells as empty strings because rasterized glyphs have no text layer and tiny icons defeat OCR. RFC-010 Gap 6b documents this as an upstream limitation with mitigation via empty_cell_ratio/suspected_miss flagging already shipped in flag_empty_cells().",
+    "root_cause": "Docling TableFormer renders checkmark/symbol-only PDF cells as empty strings because rasterized glyphs have no text layer and tiny icons defeat OCR. RFC-010 Gap 6b documents this as an upstream limitation with mitigation via empty_cell_ratio/suspected_miss flagging already shipped in flag_empty_cells().",
+    "code_path": "src/pageindex_mcp/helpers.py:flag_empty_cells (line 2570) + src/pageindex_mcp/converters.py:pdf_to_markdown_docling (line 2603) -> Docling TableFormer upstream",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "Symbol-cell recovery requires either (a) per-cell OCR fallback on empty cells that neighbor non-empty cells in the same table, or (b) a VLM-based table re-extraction pass for tables with empty_cell_ratio > threshold. Both are outside the current Docling pipeline. RFC-010 Gap 6b already documents this as unfixable at the pageindex layer.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "010-corpus-gap-remediation.md",
+      "005-hard-corpus-ingestion-fixes.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "uae_numbers_english_page_16_17_landscape - Copy.pdf",
+    "symptom": "Chart-image OCR produces fragmented single-token numeric labels that the flat block parser (route_and_extract_flat) classifies as individual kv/prose blocks instead of structured table/series data. The splice_picture_text_for_tree function appends raw OCR text after image markers but has no chart-data structuring logic. No code change caused this -- it is a persistent limitation of OCR-to-flat-block conversion for chart images.",
+    "root_cause": "Chart-image OCR produces fragmented single-token numeric labels that the flat block parser (route_and_extract_flat) classifies as individual kv/prose blocks instead of structured table/series data. The splice_picture_text_for_tree function appends raw OCR text after image markers but has no chart-data structuring logic. No code change caused this -- it is a persistent limitation of OCR-to-flat-block conversion for chart images.",
+    "code_path": "src/pageindex_mcp/converters.py:splice_picture_text_for_tree (line 2084) -> src/pageindex_mcp/helpers.py:route_and_extract_flat (line 2650)",
+    "fix_category": "missing_feature",
+    "estimated_complexity": "large",
+    "suggested_fix": "Chart-aware post-processing: after OCR extraction, detect chart-like numeric token sequences and group them into structured table blocks with inferred series/axis labels. Alternatively, VLM-based chart data extraction (structured JSON output from a vision model) would bypass OCR entirely.",
+    "affected_files": [
+      "src/pageindex_mcp/converters.py",
+      "src/pageindex_mcp/helpers.py"
+    ],
+    "related_rfcs": [
+      "017-ocr-image-block-decoupling.md",
+      "023-run6-content-recovery-and-verdict-hardening.md"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+    "symptom": "The 48% char-count accounting gap between meta flat_char_count (39,671) and audit-reported block text sum (20,634) is an audit measurement methodology error, NOT a code bug. flat_char_count is computed via _flat_block_primary_text() which correctly includes table row_records for role=table blocks. The audit's block text sum uses block.get('text','') which returns empty string for table blocks (they carry content in row_records, not text). The depth-1 flatness is a separate issue: Arabic legal documents without markdown-detectable heading markers produce flat trees because Docling's hierarchical postprocessor cannot recover structure from them.",
+    "root_cause": "The 48% char-count accounting gap between meta flat_char_count (39,671) and audit-reported block text sum (20,634) is an audit measurement methodology error, NOT a code bug. flat_char_count is computed via _flat_block_primary_text() which correctly includes table row_records for role=table blocks. The audit's block text sum uses block.get('text','') which returns empty string for table blocks (they carry content in row_records, not text). The depth-1 flatness is a separate issue: Arabic legal documents without markdown-detectable heading markers produce flat trees because Docling's hierarchical postprocessor cannot recover structure from them.",
+    "code_path": "src/pageindex_mcp/helpers.py:_flat_block_primary_text (line 2812) computes flat_char_count correctly; src/pageindex_mcp/client.py:1694 persists it",
+    "fix_category": "data_quality",
+    "estimated_complexity": "trivial",
+    "suggested_fix": "No code fix needed for the char-count gap -- the meta flat_char_count is correct. The audit methodology should use _flat_block_primary_text() (or sum row_records for table blocks) instead of block.get('text',''). The depth-1 Arabic legal doc flatness is the same Arabic heading recovery limitation seen across multiple Arabic documents.",
+    "affected_files": [
+      "src/pageindex_mcp/helpers.py",
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+    "symptom": "Content-filename mismatch for ward 597 is a source-file-level data quality issue. The PDF file itself contains Decree-Law 42/2023 anti-commercial-fraud text despite being named about craftwork skills program. The pipeline correctly extracts what is IN the file -- doc_id is generated via uuid.uuid4() per file, filename is taken from os.path.basename(staging_key), and file_bytes are read from the staged MinIO object. No cross-assignment or file-swap occurs in the code path.",
+    "root_cause": "Content-filename mismatch for ward 597 is a source-file-level data quality issue. The PDF file itself contains Decree-Law 42/2023 anti-commercial-fraud text despite being named about craftwork skills program. The pipeline correctly extracts what is IN the file -- doc_id is generated via uuid.uuid4() per file, filename is taken from os.path.basename(staging_key), and file_bytes are read from the staged MinIO object. No cross-assignment or file-swap occurs in the code path.",
+    "code_path": "src/pageindex_mcp/worker.py:process_document_job (line 395-404) binds filename; src/pageindex_mcp/converters_cli.py:main (line 129) passes to client.index",
+    "fix_category": "data_quality",
+    "estimated_complexity": "trivial",
+    "suggested_fix": "This is a corpus data quality issue: the source PDF was likely mislabeled or swapped before ingestion. A content-vs-filename consistency check (e.g. comparing extracted text keywords against filename tokens) could flag such mismatches post-ingestion, but the pipeline itself is working correctly.",
+    "affected_files": [
+      "src/pageindex_mcp/worker.py",
+      "src/pageindex_mcp/converters_cli.py"
+    ],
+    "related_rfcs": [],
+    "source": "cluster",
+    "confidence": "high"
+  },
+  {
+    "doc": "image pie chart about labor distribution in january 2025 - Copy.jpg",
+    "symptom": "RFC-022 B2 Part A (extension-based content_class='image_standalone' override for _IMAGE_EXTS files after route_and_extract_flat) was marked complete in task tracker but never implemented in client.py. Bare .jpg files go through route_and_extract_flat which classifies them as flat_prose/flat_mixed (OCR text creates prose blocks, not all role='image'), so the all(b.get('role')=='image') check at line 1606 fails. Without image_standalone content_class, classify_verdict hits the flat_prose promotion gate where 489 chars < 500 MIN_IMAGE_PROMOTED_CHARS char floor, yielding MARGINAL/image_enrichment_promoted_below_char_floor instead of routing through _classify_image_verdict (which has no char floor).",
+    "root_cause": "RFC-022 B2 Part A (extension-based content_class='image_standalone' override for _IMAGE_EXTS files after route_and_extract_flat) was marked complete in task tracker but never implemented in client.py. Bare .jpg files go through route_and_extract_flat which classifies them as flat_prose/flat_mixed (OCR text creates prose blocks, not all role='image'), so the all(b.get('role')=='image') check at line 1606 fails. Without image_standalone content_class, classify_verdict hits the flat_prose promotion gate where 489 chars < 500 MIN_IMAGE_PROMOTED_CHARS char floor, yielding MARGINAL/image_enrichment_promoted_below_char_floor instead of routing through _classify_image_verdict (which has no char floor).",
+    "code_path": "src/pageindex_mcp/client.py -> route_and_extract_flat (helpers.py:2650) -> classify_verdict (helpers.py:1484) -> promotion gate (helpers.py:1530-1544)",
+    "fix_category": "bug",
+    "estimated_complexity": "small",
+    "suggested_fix": "Add extension-based content_class override in client.py after line 1608 (the existing image_standalone detection block): when ext in _IMAGE_EXTS and _IMAGE_STANDALONE_PIPELINE_ENABLED, force content_class='image_standalone' regardless of what route_and_extract_flat returned. This is exactly the fix specified in RFC-022 B2 Part A that was never landed. With this fix, classify_verdict routes through _classify_image_verdict(image_enrichment_ratio) at helpers.py:1522 which returns PASS when ratio>=0.8 (the pie chart has ratio=1.0).",
+    "affected_files": [
+      "src/pageindex_mcp/client.py"
+    ],
+    "related_rfcs": [
+      "022-run5-verdict-bugfixes.md (B2 Part A)",
+      "021-run4-verdict-quickfixes.md (QF2a-LT Phase 6)"
+    ],
+    "source": "cluster",
+    "confidence": "high"
+  }
+]

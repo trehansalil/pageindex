@@ -178,3 +178,11 @@ confluence-local-sync: scripts/confluence_sync.sh scripts/confluence_scaffold.py
 confluence-force-sync: scripts/confluence_sync.sh scripts/confluence_scaffold.py
 	scripts/confluence_sync.sh
 	@touch $(STAMP)
+
+# ─── Sync .claude skills/workflows to server ────────────────────────────────
+SERVER ?= hetzner_server
+REMOTE_CLAUDE_DIR ?= pageindex_deployment/.claude/
+
+.PHONY: sync-claude
+sync-claude:
+	rsync -avz .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)

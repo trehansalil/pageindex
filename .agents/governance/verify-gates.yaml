@@ -44,6 +44,7 @@ gates:
       worker: 85                # rationale: job lifecycle / DLQ
     assertion_density: 2.0      # rationale: mean assert()/test below 2.0 correlates with shallow tests
     layer_file_existence: true  # client.py => test_client.py, storage.py => integration coverage
+    test_index_guard: true      # rationale: tests/TEST_INDEX.yaml enforces source↔test mapping; prevents drift
 
   # ── 3. CONTRACTS ─────────────────────────────────────────────────────────────
   # Every contract ID grep-found in tests/; feature completeness

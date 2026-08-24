@@ -197,6 +197,8 @@ Additionally, `classify_verdict` (line 1204) calls `_tree_is_garbled(structure)`
 
 **Fix:** Split the early-return into two paths: (1) always apply `_BIDI_HEADING_PREFIX_RE` to extract and preserve heading markers, even when the bulk text is detected as logical; (2) conditionally apply full-document BiDi reordering based on the existing checks. This preserves the performance optimization while fixing heading-marker loss for bilingual documents.
 
+**Superseded (narrowed) by RFC-033 D2 (Part A):** Path (1) above applied `get_display()` to every heading matching `_BIDI_HEADING_PREFIX_RE` unconditionally, which reverses already-correct (logical-order) Arabic headings — reproduced byte-for-byte against حقوق الإنسان's `المحتويات`/`الخلاصة` titles. RFC-033 D2 Part A gates that branch on a per-heading logical-vs-visual probe (`_heading_is_logical_order`), so this decision's heading-marker preservation still holds but no longer double-reverses correct headings. Treat this as a design defect in D9's original scope, not an accidental regression.
+
 **Files:** `src/pageindex_mcp/converters.py`
 
 **Rollback:** Git revert -- BiDi is non-destructive on already-correct text.

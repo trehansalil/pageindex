@@ -1,0 +1,291 @@
+{
+  "images_evaluated": 7,
+  "per_image": [
+    {
+      "image": "doc_store/image pie chart about labor distribution in january 2025 - Copy.jpg",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "2025 salts — Al galls Jarll gj gus ob AlLeall eajgi\n\nRL gill Uy yale gill g Ay pall al gall 5) ge Alena Leal) ay igh ily = ge Lainy! g gill iby Al pally Gold! g Ubi lance eal ait\n2025 se 2025\n\nCee 93\n\n8,432,51\n87%\n\n6,364,003\n86%\n\n2025 piss qiassacLall De Jats Y5 « cuba sSy 4p pall a slyall Sylyy cake sacs, Mull aly oh Lally Geatall, 4 . r\nScola Dall Jats Y aks ghisAlly Gall peal 5 Weal Jas Call\n4 (2583 %86 (3) %14 ) 53: 1S 8 Med aig a 5",
+          "confidence": null,
+          "elapsed_s": 0.2821436660015024,
+          "structural_coherence": 1.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 55
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    },
+    {
+      "image": ".agents/spikes/ocr_eval/images/قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة_p0.png",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "MO\\2022\\0695 ‏وارد‎\n‎11\\12\\2022\n\nالآهارات ‎Aes pat!‏ المتحدة\n\nUNITED ARAB EMIRATES\nTHE CABINET\n\nقرارمجلس الوزراء رقم (06/ ) لسنة 2022\nبشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022\nبشأن عمال الخدمة المساعدة\n\nمجلس الوزراء:\n- بعد الاطلاع على الدستور.\n‎leg -‏ القانون الاتحادي رقم )1( لسنة 1972 بشأن اختصاصات الوزارات وصلاحيات الوزراء. وتعديلاته.\n‎leg -‏ المرسوم بقانون اتحادي رقم )33( لسنة 2021 بشأن تنظيم علاقات ‎foal!‏ ولائحته التنفيذية,\n- وعلى المرسوم بقانون اتحادي رقم )9( لسنة 2022 بشأن عمال الخدمة المساعدة.\n- وعلى قرار مجلس الوزراء رقم (22) لسنة 2019 في شأن اللائحة التنفيذية للقانون الاتحادي رقم (10)\nلسنة 2017 بشأن عمال الخدمة المساعدة.\n‎sling -‏ على ما عرضه وزير الموارد البشرية والتوطين. وموافقة مجلس الوزراء.\nالمادة (1)\nالتعريفات\nتُطبق التعريفات الواردة في المرسوم بقانون اتحادي رقم (9) لسنة 2022 المشار إليه على هذا القرارء وفيما عدا\nذلكء يُقصد بالكلمات والعبارات التالية المعاني المبينة قرين كل منهاء ما لم ‎ads‏ سياق النص بغير ذلك:\n\nالقانون : المرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.\nالاتفاق المبدئي : الاتفاق المكتوب بين مكتب استقدام العمالة المساعدة ووكالة التوظيف في الخارج.\n\nوالذي ‎suey‏ الشروط والمؤهلات اللازم توافرها في العامل المساعد. بناءًٌ على الاتفاق\nالذي تم بين صاحب العمل ومكتب استقدام العمالة المساعدة.\nتعليق ملف : هو إجراء يتم اتخاذه من الوزارة يقتضي عدم منح تصريح استقدام عامل مساعد\nصاحب العمل لصاحب عملء لمخالفته أحكام القانون أو هذا القرار أو القرارات المنظمة ‎clog)‏ ووفق\nما تحدده الوزارة من مدد واجراءات.\n\nقرار مجلس الوزراء بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة",
+          "confidence": null,
+          "elapsed_s": 1.5013926250030636,
+          "structural_coherence": 1.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 4,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 71
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    },
+    {
+      "image": ".agents/spikes/ocr_eval/images/قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة_p1.png",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "UNITED ARAB EMIRATES\nTHE CABINET\n\nالآاماراتالعربية المتحدة\nمجلس الوزراء\n\nالمادة (2)\nمهن العمالة المساعدة\nتكون مهن العمالة المساعدة التي يسري عليها أحكام القانون وهذا القرارء وفقا للجدول رقم )1( المرفق بهذا القرار.\n\nالمادة (3)\nشروط ترخيص مكاتب استقدام العمالة المساعدة\n1. يتعين توافر الشروط التالية للحصول على ترخيص مكتب استقدام عمالة مساعدة:\n\nأ. ألا ‎Og‏ الشخص في المؤسسة الفردية أو أي من الشركاء في الشخص الاعتباري. قد حكم عليه/علهم ني\nجريمة مخلة بالشرف والأمانة, أو في جريمة من جرائم الاتجار بالبشرء أو الجرائم المنصوص علها في\nالقانون. ما لم يكن قد رد ‎dull‏ اعتباره, إذا كان الحكم عليه بعقوبة مقيدة للحرية. أو بعد مضي سنة من\nتاريخ الحكم إذا كان الحكم صادراً بالغرامة.\n\nب. أن تقدم المؤسسة الفردية أو الشخص الاعتباري للوزارة ضماناً بنكياً لا تقل قيمته في جميع أوقات سريان\nالترخيص عن )500,000( خمسمائة ألف درهم . ويجب أن يُجدد تلقائياً أو أن يقدم تأميناً كبديل\nللضمان وفق الآليات التي تحددها الوزارة. ويجوز للوزارة وفق تقدير عامل الخطورة طلب زيادة قيمة\nالضمان ‎Sil‏ وللوزارة القيام بتخصيص كل أو بعض الضضمان أو التأمين. لسداد أية مبالغ تكون\nمستحقة على مكتب استقدام العمالة المساعدة. اتجاه العامل المساعد أو صاحب العمل أو الوزارة.\nوذلك لعدم قيامه بتنفيذ الالتزامات المترتبة عليه, أو لعدم التقيد بالتعليمات والقرارات الصادرة ‎(Adz,‏\n‏أو عدم سداده أي غرامة قد تفرض ‎dele‏ ويجب في جميع الأحوال على المكتب استكمال ما نقص من\nقيمة الضمان خلال (30) ثلاثين يوماً من تاريخ النقص.\n\nج. تقديم تقرير ائتماني لطالب الترخيص يعكس وضعه المالي» سواءً كان شخصاً أو مؤسسة فردية أو الشركاء\nفي الشخص الاعتباريء على أن يكون هذا التقرير صادر من الجبة المختصة.\n\nد. في حال الجمع بين نشاط التوسط لاستقدام العمالة المساعدة ونشاط التشغيل المؤقت للعمالة\nالمساعدة. يتوجب الحصول على ترخيص مستقل لكل نشاط وفق الشروط والمتطلبات والرسوم اللازمة\nلكل نشاط.\n\nه. أية شروط أخرى يصدر بها قرار من الوزير.\n\n2. يُجدد الترخيص الصادر من الوزارة لمكتب استقدام العمالة المساعدة سنوياً بشرط التأكد من استمرار توافر\nكافة الشروط المطلوبة للترخيص\n3 للوزارة أن تمتنع عن منح ترخيص مكتب استقدام العمالة المساعدة في الحالات الآتية:\n\nقرار مجلس الوزراء بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة",
+          "confidence": null,
+          "elapsed_s": 1.9991933329947642,
+          "structural_coherence": 1.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 11,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 19
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    },
+    {
+      "image": ".agents/spikes/ocr_eval/images/قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة_p2.png",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "UNITED ARAB EMIRATES\nTHE CABINET\n\nالإماراتالعربية المتحدة\n\nأ. إذا سبق الحصول على ترخيص وتم إلغاء الترخيص أو إنهاؤه من الوزارة لأي سبب من الأسباب.\nب. تكرار مخالفة طالب الترخيص للتشريعات ‎Fists!‏ والنظم المعمول بها في الوزارة.\nج. أية حالات أخرى تقررها الوزارة.\n\n4. يصدر الوزير نظاماً لآليات ترخيص ممارسة نشاط مكتب استقدام العمالة المساعدة. في حال كان يقدم\nالمكتب خدماته عبر القنوات الرقمية.\n\n5. لا يجوز لصاحب الترخيص أن ‎dic HLL‏ أو يؤجره للغير. أو يجري أي تغيير على الشركاء بالإضافة أو\nالاستبدال. إلا بعد الحصول على موافقة الوزارة حسب الأنظمة المتيعة لديها.\n\nالمادة (4)\nالتزامات مكاتب استقدام العمالة المساعدة\nبالإضافة للالتزامات المقررة على مكاتب استقدام العمالة المساعدة الواردة في المواد أرقام (4 و5) من القانون,\nوالقرارات الصادرة عن الوزارةء فإن ‎Lple‏ الالتزام بما يأتي:\n1. يلتزم مكتب استقدام العمالة المساعدة قبل استقدام العامل المساعد إلى الدولة بما يأتي:\n\nأ. إجراء الفحص الطبي اللازم للعامل ‎relink!‏ للتأكد من لياقته الصحية للعمل الذي سيقوم به. وذلك من\nحيث قدرته البدنية والذهنية والنفسيةء وأنه لا ‎Gla‏ من أي مرض مزمنء أو ‎ted‏ وفق الحالات التي\nتحددها ‎alo!‏ الطبية المعتمدة بالدولةء أو من أية ظروف صحية تقلل من قدرته على إنجاز العمل.\n\nب. إحاطة العامل المساعد بجميع الشروط التي يطلب صاحب العمل توافرها فيه من خبرة ومؤهلات دراسية.\n\nج. التأكد من توفر شهادة خبرة في إجادة المهنة المطلوبة إن كانت من المهن التي تشترط ‎bed‏ الدولة شهادات\nمعينة كالتمريض وقيادة السيارات.\n\nد. تمكين العامل المساعد من الاطلاع على عرض العمل الذي يطابق نموذج العقد الذي سيبرم بينه وبين\nصاحب ‎eal!‏ والحصول على توقيعه بالموافقة عليه.\n\nه. توفير شهادة من الجهات المعنية في بلد العامل المساعد تفيد خلو صحيفته الجنائية من أي سوابق وأنه\nحسن السيرة والسلوكء وذلك في الحالات التي تحددها الوزارة.\n\nو. تقديم ما يفيد تعامل المكتب مع جهات معتمدة رسمياً في الدولة المستقدم منها العامل المساعد.\n\nز. تقديم ما يفيد مسؤوليته المباشرة عن سداد أية مبالغ على سبيل العمولة. لتسهيل قدوم العامل المساعد\nللدولة وإتمام التعاقد وعدم تحمل العامل المساعد لتلك المبالغ.\n\nح. أية التزامات أخرى يصدر بها قرار من الوزير.\n\nقرار مجلس الوزراء بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة",
+          "confidence": null,
+          "elapsed_s": 1.8533190000016475,
+          "structural_coherence": 1.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 2,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 11
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    },
+    {
+      "image": ".agents/spikes/ocr_eval/images/وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy_p0.png",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "mo/2025/597\n5/8/2025\n\nADEO-BOK-2025-0222\n\nABU DHABI EXECUTIVE OFFICE\n\nسعادة / شيماء يوسف العوضي المخترمة\nوكيسل الوزارة لتطوير وتنظيم سوق العمل بالإناية\nوكيل الوزارة المساعد للاتصال والعلاقات الدولية\nوزارة المسوارد ‎ol protic)‏ والتوطيٍسن\n\nالسلام عليكم ورحمة الله وبركاته ‎Gee‏\n\nالموضوع: التعقيب على مرئيات حكومة أبو ظبي حول برنامج مهارات المعن الحرفية\nيهديكم مكتب أبوظي التنفيذي فائق التحية والاحترام, متمنين لكم دوام التوفيق والنجاح.\nبالإشارة إلى الموضوع ‎corel‏ وإلى كتابكم رقم ‎(MOHRE/SEN/OUE/2025/0157)‏ نرفق لكم جدول\nالملاحظات على مرئيات الوزارة بشأن الملاحظات المرسلة مسبقاً من قبلنا بشأن مقترح برنامج مهارات المهن الحرفية.\nللاستفسار والتنسسيق» يرجى التكرم بالإيعاز لمن يلزم لديكم التواصل مع إدارة التشريع الاتحادي ب الشؤون القانونية\nوالتشريعات في مكتب أبوظبي التنفيذي عبر البريد الإلكترونى: ‎federallegislation2@ecouncil.ae‏\n\nوتفضلوا بقبول فائق التقدير والاحترام,.,\n\nعبدالله خلفان الشامسي\nمدير عام الشؤون القانونية والتشريعات\nمرفق نسخة من الملاحظات المشار إليها أعلاه\n\nصادر بتاريخ : 2025/08/04\n\nهذا المستند وجميع مرفقاته (إن وجدت) من الوثائق السرية التي لا يجوز تداولها بأي شكل من الأشكال لغير المعنيين جما\nمكتب أبوظبي التنفيذي - رقم ‎ith‏ : 026688888 - ص.ب: 19 أبوظيء الإمارات العربية المتحدة ‎www.ecouncil. ae‏",
+          "confidence": null,
+          "elapsed_s": 1.2573534170005587,
+          "structural_coherence": 1.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 2,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 49
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    },
+    {
+      "image": ".agents/spikes/ocr_eval/images/وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy_p1.png",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "ABU DHABI EXECUTIVE OFFICE\n\nجدول مُلإحظات بشأن الرد على تعقيب الوزارة بخصوص مرئيات حكومة أبوظي على برنامج مهارات المبن الحرفية في دولة الإمارات العربية المتحدة\nمرئيات مكتب أبوظبي التنفيذي تعقيب وزارة الموارد البشربة والتوطين الرد على تعقيب الوزارة\nالبرنامج المقترح أشار إلى وجود مهام متشابهة ‎US‏ من مجلس ‎gil‏ ظبي صحيح ستقوم كلاً الجبتين بنفس ‎aL‏ المتعلقة بعملية التقييم\nللجودة والمطابقة. وكليات الققنية العليا في عملية التقييم والتدريبء والكدريب حيث إن بب اختلاف\"التكلفة يعود )| ‎BGS‏ المهن ‎BN‏\n‏مع اختلاف الرسوم المقترحة لكل منهماء وعليه يجب بيان الدور المنوط يتم التقيي والتدريب علها بين , 5.1 كك لكك والمطابقة\nبكلا الجبتين على وجه الدقة. : 0\nوبالتالي تؤثر ذلك على التكلفة النهائية.\n\nمن ‎sol ee‏ جميع الشهادات الممنوحة سواء من مجلس أبو ظبي\nللجودة والمطابقة أو مركز سيرت التابع لكليات التقنية العليا ستكون '\nمعتمدة من الجهات المانحة ‎Guhl lol a)‏ الحرفية وهذه الجبات حب ابو\nمعتمدة من المركز الوطني للمؤهلات. وتم تحديث وتحديد أدوار \\\n‎culpa‏ على وجه الدقة في نسخة المذكرة المحدثة.\n\n122 80-معمم\nحم",
+          "confidence": null,
+          "elapsed_s": 1.0421246250043623,
+          "structural_coherence": 0.9333333333333333,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 2,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 8
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    },
+    {
+      "image": ".agents/spikes/ocr_eval/images/وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy_p2.png",
+      "results": [
+        {
+          "engine": "tesseract",
+          "text": "خلت الدراسة من بيان الرسوم أو مقابل الخدمات التي تؤول لمجلس\nأبو ظبي للجودة والمطابقة وكليات التقنية العليا تتيجة الخدمات التي\n\nيُقترح دراسة إمكانية ربط شهادة مهارات المهن الحرفية برخص مزاولة\nالممنةء مما يعزز قيمتها وبدعم الاعتراف بها رسمياً.\n\nكما إن وجود أكثر من مزود خدمة لا يشكل ازدواجية. ‎cys‏ إنه سيتم\nتقديم برنامج متنوعة حسب متطلبات سوق العمل مما يضمن وجود\nتنوع في البرامج المقدمة لتغطية جميع ‎oll‏ المستهدفة في المرحلة\nالتجريبية للمشروع وضمان التنوع الجغرافي في الأماكن التي توفر هذا\nالنوع من البرامج. كما إن ذلك يعزز من جودة وتنافسية الخدمات\nالمقدمة.\n\nالرسوم الموضحة في العرض (للتدريبء التقييم, تشمل تكلفة\nالخدمات التي تؤول إلى الجهات المقدمة للخدمة. ولا توجد رتوم\nإضافية أو غير معلنة يتم تحصيلها ‎ols‏ هذه الأطرء ‎ao‏ الالتزام\nبالشفافية في الإعلان عن التكاليف ضمن النطاق المعتمد.\n\nتختلف معايير ومتطلبات وآليات التقييم والتدريب لكل من شهادة\nلمن الحرفية ورخص مزاولة ‎egal‏ حيث إن الشهادة المهنية الحرفية\nتستهدف تقييم المهارة العملية ورفع الكفاءة ولا تمثل ترخيصًا قانونيًا\nلمزاولها وفق اشتراطات الجهات الماتحة لرخص المزاولة. حيث تؤدي\nالجهات المعنية والمختصة بالدولة الدور التشريعي والتنظيمي في وضع\nالمعايير وإعطاء رخص مزاولة مهن في قطاعات اقتصادية مختلفة.\n\n-يُقترح إضافة معبد أبو ظبي للتعليم والتدريب المي\nكمركز تقييم للحرف. المبنية في إمارة أبو ظبيء لما\nيمتلكه من بنية تحتية متخصصة وكوادر مؤهلة ‎Lag‏\n‏يُنسجم مع المعَايير الوطنية ‎usd‏ المي.\n\n-كما يتم التأكيد على تضمين تفصيل دقيق في\nالنسخة المحدثة يوضح النسبة التي تؤول إلى مجلس\n‎gil‏ ظبي للجودة والمطابقة وذلك تعزيرًا للشفافية\nوضمانًا لوضوح التكاليف أمام الجهات المعنية.\n\n-نرى إمكانية ربط تصريح مزاولة المهنة بحضصول\nالعامل على شهادة مطابقة صادرة عن مجلس أبو\nظبي للجودة والمطابقة. لما لذلك من دور في رفع كقاءة\nالقوى العاملة وتعزيز جودة الخدمات المقدمة. كما\nنرى أن هذا الربط يسهم في ضبط سوق العمل والحد\nمن الممارسات غير المهنية» شريطة أن يتم التنسيق\nمع الجبات التنظيميةبيلختصة لضمان توافق هذا\n\n/\n\nADEO-BOK-2025-02",
+          "confidence": null,
+          "elapsed_s": 1.7027385830006097,
+          "structural_coherence": 0.972972972972973,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 9,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 6
+        },
+        {
+          "engine": "paddleocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        },
+        {
+          "engine": "docling_ocr",
+          "text": "",
+          "confidence": null,
+          "elapsed_s": null,
+          "error": "[Errno 61] Connection refused",
+          "structural_coherence": 0.0,
+          "char_accuracy": null,
+          "arabic_diacritics_count": 0,
+          "arabic_arabic_numeral_count": 0,
+          "arabic_ascii_numeral_count": 0
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "tesseract_baseline_avg_coherence": 0.9866151866151867,
+    "paddleocr_avg_coherence": null,
+    "docling_ocr_avg_coherence": null,
+    "recommendation": "neither PaddleOCR nor Docling OCR clears the >=20% improvement bar -- close spike, keep Tesseract"
+  }
+}

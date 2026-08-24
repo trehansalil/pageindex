@@ -1,7 +1,5 @@
 """Tests for D4 Azure LLM retry/backoff (RFC-019)."""
 
-import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -89,7 +87,7 @@ class TestLlmWithRetry:
         exc = Exception("rate limited")
         exc.status_code = 429
         call_fn = AsyncMock(side_effect=[exc, "recovered"])
-        with patch("pageindex_mcp.client.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock):
             result = await _llm_with_retry(call_fn, max_retries=3, fallback_base_url="")
         assert result == "recovered"
         assert call_fn.call_count == 2
@@ -98,7 +96,7 @@ class TestLlmWithRetry:
     async def test_exhaustion_raises_llm_transient_failure(self):
         exc = ConnectionError("refused")
         call_fn = AsyncMock(side_effect=exc)
-        with patch("pageindex_mcp.client.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(LLMTransientFailure) as exc_info:
                 await _llm_with_retry(call_fn, max_retries=2, fallback_base_url="")
         assert exc_info.value.attempts == 2
@@ -120,12 +118,12 @@ class TestLlmWithRetry:
         results = []
 
         async def tracked_fn(**kwargs):
-            results.append(kwargs.get("base_url", None))
+            results.append(kwargs.get("base_url"))
             if len(results) <= 3:
                 raise exc
             return "fallback_ok"
 
-        with patch("pageindex_mcp.client.asyncio.sleep", new_callable=AsyncMock):
+        with patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock):
             result = await _llm_with_retry(
                 tracked_fn, max_retries=3, fallback_base_url="https://fallback.example.com"
             )

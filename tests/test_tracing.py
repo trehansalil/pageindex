@@ -90,7 +90,7 @@ def test_llm_02_c2_traced_client_when_enabled(monkeypatch):
 
     # openai/compatible provider
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(llm_provider="compatible", openai_base_url="https://openrouter.ai/api/v1"),
     )
     c = client_mod.get_openai_client()
@@ -101,7 +101,7 @@ def test_llm_02_c2_traced_client_when_enabled(monkeypatch):
 
     # azure provider still yields an AzureOpenAI client
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(llm_provider="azure", openai_base_url="https://r.openai.azure.com"),
     )
     assert isinstance(client_mod.get_openai_client(), openai.AsyncAzureOpenAI)
@@ -115,7 +115,7 @@ def test_llm_02_c2_get_openai_client_falls_back_when_disabled(monkeypatch):
     monkeypatch.setattr(tracing, "settings", _fake_settings())
     monkeypatch.setattr(tracing, "init_langfuse", lambda: called.__setitem__("init", 1))
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(openai_base_url="https://api.openai.com/v1"),
     )
     c = client_mod.get_openai_client()
@@ -141,7 +141,7 @@ def test_llm_02_c3_registers_litellm_callback(monkeypatch):
     )
     tracing._initialized = True  # skip real singleton
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             llm_provider="compatible",
             openai_base_url="http://localhost:8000/v1",
@@ -167,7 +167,7 @@ def test_llm_02_c3_no_callback_when_disabled(monkeypatch):
     monkeypatch.setattr(litellm, "callbacks", [], raising=False)
     monkeypatch.setattr(tracing, "settings", _fake_settings())
     monkeypatch.setattr(
-        "pageindex_mcp.client.settings",
+        "pageindex_mcp.client.llm.settings",
         _fake_settings(
             llm_provider="compatible",
             openai_base_url="http://localhost:8000/v1",

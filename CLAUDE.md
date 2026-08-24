@@ -12,6 +12,7 @@ PageIndex MCP Server is a vectorless / tree-reasoning RAG document-ingestion pla
 4. **AGPL-3.0 awareness.** pymupdf4llm/PyMuPDF are AGPL-3.0 (transitive dep). Serving them over a network is a legal decision to clear, not a settled safe-harbor. The MIT escape is Docling.
 5. **Never silently persist a low-quality tree.** `validate_tree()` must run before `save_doc`; a failing tree must surface as an arq `low_quality_tree` error, not a stored artifact.
 
+
 ## Document Map
 
 | Artifact | Look there for |
@@ -58,6 +59,3 @@ uv run python preprocess_client.py --bg         # background, logs to preprocess
 uv run pytest
 ```
 
-## Current Phase
-
-Bootstrap planning artifacts complete (PRD.md, ARCHITECTURE.md, DESIGN.md written). Now executing **Tier-0 remediation**: markdown-first PDF extraction route + tree quality gate, per `PRD.md` § Functional Requirements and `ARCHITECTURE.md` § Ingestion Pipeline & Data Flow / Tree Quality Gate.

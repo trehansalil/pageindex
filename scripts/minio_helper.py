@@ -11,8 +11,13 @@ Usage:
 import json
 import os
 import sys
+import time
 
 from minio import Minio
+from minio.error import S3Error
+from urllib3.exceptions import HTTPError
+
+RETRY_DELAYS = (2, 4, 8)
 
 
 def client():
@@ -22,6 +27,36 @@ def client():
         secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
         secure=False,
     )
+
+
+def get_object_with_retry(c, bucket, *keys):
+    """Fetch the first available key, retrying transient read failures.
+
+    Each attempt tries every key in order before backing off, so a document
+    that only has the flat artifact does not pay the full backoff budget on
+    the primary key before the fallback is considered. Non-transient S3
+    errors propagate immediately; exhausted retries re-raise the last error
+    after logging the attempt count (never silently swallowed).
+    """
+    attempts = (0, *RETRY_DELAYS)
+    last_error = None
+    for delay in attempts:
+        if delay:
+            time.sleep(delay)
+        for key in keys:
+            try:
+                return c.get_object(bucket, key)
+            except S3Error as e:
+                if e.code != "NoSuchKey":
+                    raise
+                last_error = e
+            except (HTTPError, OSError) as e:
+                last_error = e
+    print(
+        f"MinIO read failed for {bucket}/{keys} after {len(attempts)} attempts: {last_error}",
+        file=sys.stderr,
+    )
+    raise last_error
 
 
 def cmd_list():
@@ -34,23 +69,24 @@ def cmd_list():
 
 def cmd_meta(doc_id):
     c = client()
-    data = c.get_object("pageindex", f"processed/{doc_id}.meta.json")
+    data = get_object_with_retry(c, "pageindex", f"processed/{doc_id}.meta.json")
     print(data.read().decode())
 
 
 def cmd_tree(doc_id, max_lines=500):
     c = client()
     try:
-        data = c.get_object("pageindex", f"processed/{doc_id}.json")
-        lines = data.read().decode().split("\n")[:max_lines]
-        print("\n".join(lines))
-    except Exception:
-        try:
-            data = c.get_object("pageindex", f"processed/{doc_id}.flat.json")
-            lines = data.read().decode().split("\n")[:max_lines]
-            print("\n".join(lines))
-        except Exception as e:
-            print(f"No tree or flat file found for {doc_id}: {e}", file=sys.stderr)
+        data = get_object_with_retry(
+            c,
+            "pageindex",
+            f"processed/{doc_id}.json",
+            f"processed/{doc_id}.flat.json",
+        )
+    except Exception as e:
+        print(f"No tree or flat file found for {doc_id}: {e}", file=sys.stderr)
+        return
+    lines = data.read().decode().split("\n")[:max_lines]
+    print("\n".join(lines))
 
 
 def cmd_inventory():

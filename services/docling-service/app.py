@@ -16,7 +16,7 @@ import tempfile
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -137,6 +137,17 @@ def _serialize_picture_result(pr: dict) -> dict:
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/version")
+async def version():
+    from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
+
+    return {
+        "commit_sha": os.environ.get("BUILD_SHA", "unknown"),
+        "pipeline_version": CURRENT_PIPELINE_VERSION,
+        "build_date": os.environ.get("BUILD_TIMESTAMP", "unknown"),
+    }
 
 
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])

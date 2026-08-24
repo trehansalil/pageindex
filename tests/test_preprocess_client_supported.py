@@ -18,6 +18,7 @@ def test_supported_is_canonical_client_set():
     """preprocess_client.SUPPORTED is the same object/value as
     pageindex_mcp.client._SUPPORTED — no local duplicate definition."""
     import preprocess_client
+
     from pageindex_mcp.client import _SUPPORTED
 
     assert preprocess_client.SUPPORTED is _SUPPORTED

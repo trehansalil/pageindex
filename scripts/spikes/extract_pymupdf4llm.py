@@ -5,9 +5,9 @@ Outputs markdown to /tmp/docling_spike/pymupdf/
 This is a throwaway investigation script — do NOT import from src/.
 """
 
-import sys
 import os
 import time
+
 import pymupdf4llm
 
 DATA_DIR = "/Users/saliltrehan/Documents/Python_n_R/Personal/pageindex/issue/data"

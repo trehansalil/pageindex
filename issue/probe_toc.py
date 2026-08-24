@@ -59,6 +59,7 @@ def main():
 
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import DocumentConverter, PdfFormatOption
+
     from pageindex_mcp import converters as C
 
     opts = C._build_pdf_pipeline_options()

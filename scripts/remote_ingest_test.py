@@ -57,10 +57,10 @@ import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from html import escape
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any
 
 import httpx
 
@@ -78,11 +78,19 @@ def _default_env_file() -> Path:
     active = REPO_ROOT / ".env.active"
     return active if active.exists() else REPO_ROOT / ".env"
 
+
 # Mirrors client._SUPPORTED (src/pageindex_mcp/client.py:271-272). Duplicated
 # deliberately: this script must stay importable without the ingestion stack.
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
 SUPPORTED_EXTS = {
-    ".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx",
+    ".pdf",
+    ".md",
+    ".markdown",
+    ".txt",
+    ".docx",
+    ".pptx",
+    ".html",
+    ".xlsx",
 } | IMAGE_EXTS
 
 # Extensions that actually exercise the remote Docling service. Anything else
@@ -101,9 +109,14 @@ POLL_TRANSIENT_TOLERANCE = 10
 PRESIGN_PROBE_KEY_PREFIX = "staging/_preflight_probe"
 
 _C = {
-    "reset": "\033[0m", "dim": "\033[2m", "bold": "\033[1m",
-    "red": "\033[31m", "green": "\033[32m", "yellow": "\033[33m",
-    "blue": "\033[34m", "cyan": "\033[36m",
+    "reset": "\033[0m",
+    "dim": "\033[2m",
+    "bold": "\033[1m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "cyan": "\033[36m",
 }
 if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
     _C = dict.fromkeys(_C, "")
@@ -114,7 +127,7 @@ def _c(text: str, colour: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def log(msg: str, *, level: str = "info") -> None:
@@ -185,8 +198,14 @@ class RemoteConfig:
     def redacted(self) -> dict[str, Any]:
         """Config snapshot safe to embed in a report artifact."""
         d = asdict(self)
-        for k in ("upload_api_key", "minio_access_key", "minio_secret_key",
-                  "docling_token", "redis_url", "postgres_dsn"):
+        for k in (
+            "upload_api_key",
+            "minio_access_key",
+            "minio_secret_key",
+            "docling_token",
+            "redis_url",
+            "postgres_dsn",
+        ):
             v = d.get(k)
             d[k] = f"<set:{len(v)} chars>" if v else "<unset>"
         return d
@@ -214,8 +233,11 @@ def load_env_file(path: Path) -> None:
 
 
 def build_config(args: argparse.Namespace) -> RemoteConfig:
-    base_url = (args.base_url or os.environ.get("INGEST_BASE_URL")
-                or f"http://localhost:{os.environ.get('MCP_PORT', '8201')}")
+    base_url = (
+        args.base_url
+        or os.environ.get("INGEST_BASE_URL")
+        or f"http://localhost:{os.environ.get('MCP_PORT', '8201')}"
+    )
 
     cfg = RemoteConfig(
         base_url=base_url.rstrip("/"),
@@ -235,16 +257,21 @@ def build_config(args: argparse.Namespace) -> RemoteConfig:
         postgres_dsn=os.environ.get("POSTGRES_DSN") or None,
     )
 
-    missing = [n for n, v in (
-        ("UPLOAD_API_KEY", cfg.upload_api_key),
-        ("MINIO_ENDPOINT", cfg.minio_endpoint),
-        ("MINIO_ACCESS_KEY", cfg.minio_access_key),
-        ("MINIO_SECRET_KEY", cfg.minio_secret_key),
-        ("REDIS_URL", cfg.redis_url),
-    ) if not v]
+    missing = [
+        n
+        for n, v in (
+            ("UPLOAD_API_KEY", cfg.upload_api_key),
+            ("MINIO_ENDPOINT", cfg.minio_endpoint),
+            ("MINIO_ACCESS_KEY", cfg.minio_access_key),
+            ("MINIO_SECRET_KEY", cfg.minio_secret_key),
+            ("REDIS_URL", cfg.redis_url),
+        )
+        if not v
+    ]
     if missing:
         raise ConfigError(
-            "Missing required environment variables: " + ", ".join(missing)
+            "Missing required environment variables: "
+            + ", ".join(missing)
             + f"\nLoad them with --env-file (currently: {args.env_file})."
         )
 
@@ -252,10 +279,15 @@ def build_config(args: argparse.Namespace) -> RemoteConfig:
         cfg = replace(cfg, require_remote=True)
         # DOCLING_SERVICE_URL included: a localhost Docling is exactly the
         # silent in-process degradation --require-remote exists to catch.
-        local = [n for n, v in (
-            ("MINIO_ENDPOINT", cfg.minio_endpoint), ("REDIS_URL", cfg.redis_url),
-            ("DOCLING_SERVICE_URL", cfg.docling_url or ""),
-        ) if "localhost" in v or "127.0.0.1" in v]
+        local = [
+            n
+            for n, v in (
+                ("MINIO_ENDPOINT", cfg.minio_endpoint),
+                ("REDIS_URL", cfg.redis_url),
+                ("DOCLING_SERVICE_URL", cfg.docling_url or ""),
+            )
+            if "localhost" in v or "127.0.0.1" in v
+        ]
         if local:
             raise ConfigError(
                 "--require-remote is set but these still point at this machine: "
@@ -341,26 +373,41 @@ def _minio_client(endpoint: str, cfg: RemoteConfig, *, secure: bool, path_prefix
         from pageindex_mcp.minio_client import PrefixedPoolManager
 
         kwargs["http_client"] = PrefixedPoolManager(path_prefix)
-    return Minio(endpoint, access_key=cfg.minio_access_key,
-                 secret_key=cfg.minio_secret_key, secure=secure,
-                 region=os.environ.get("MINIO_REGION", "us-east-1"), **kwargs)
+    return Minio(
+        endpoint,
+        access_key=cfg.minio_access_key,
+        secret_key=cfg.minio_secret_key,
+        secure=secure,
+        region=os.environ.get("MINIO_REGION", "us-east-1"),
+        **kwargs,
+    )
 
 
 def check_minio(cfg: RemoteConfig) -> list[PreflightCheck]:
     out: list[PreflightCheck] = []
     try:
-        mc = _minio_client(cfg.minio_endpoint, cfg, secure=cfg.minio_secure,
-                      path_prefix=cfg.minio_path_prefix)
+        mc = _minio_client(
+            cfg.minio_endpoint, cfg, secure=cfg.minio_secure, path_prefix=cfg.minio_path_prefix
+        )
         exists = mc.bucket_exists(cfg.minio_bucket)
-        out.append(PreflightCheck(
-            "minio.reachable", True,
-            f"{cfg.minio_endpoint} (secure={cfg.minio_secure})"))
-        out.append(PreflightCheck(
-            "minio.bucket", exists,
-            f"bucket '{cfg.minio_bucket}'" + ("" if exists else " does not exist")))
-    except Exception as exc:  # noqa: BLE001 — surface any client/network failure
-        out.append(PreflightCheck(
-            "minio.reachable", False, f"{cfg.minio_endpoint}: {type(exc).__name__}: {exc}"))
+        out.append(
+            PreflightCheck(
+                "minio.reachable", True, f"{cfg.minio_endpoint} (secure={cfg.minio_secure})"
+            )
+        )
+        out.append(
+            PreflightCheck(
+                "minio.bucket",
+                exists,
+                f"bucket '{cfg.minio_bucket}'" + ("" if exists else " does not exist"),
+            )
+        )
+    except Exception as exc:
+        out.append(
+            PreflightCheck(
+                "minio.reachable", False, f"{cfg.minio_endpoint}: {type(exc).__name__}: {exc}"
+            )
+        )
     return out
 
 
@@ -380,83 +427,111 @@ def check_presign_roundtrip(cfg: RemoteConfig) -> list[PreflightCheck]:
     payload = b"pageindex-preflight"
     internal = None
     try:
-        internal = _minio_client(cfg.minio_endpoint, cfg, secure=cfg.minio_secure,
-                      path_prefix=cfg.minio_path_prefix)
+        internal = _minio_client(
+            cfg.minio_endpoint, cfg, secure=cfg.minio_secure, path_prefix=cfg.minio_path_prefix
+        )
         internal.put_object(cfg.minio_bucket, probe_key, io.BytesIO(payload), len(payload))
-    except Exception as exc:  # noqa: BLE001
-        checks.append(PreflightCheck(
-            "minio.write", False, f"cannot stage probe object: {type(exc).__name__}: {exc}"))
+    except Exception as exc:
+        checks.append(
+            PreflightCheck(
+                "minio.write", False, f"cannot stage probe object: {type(exc).__name__}: {exc}"
+            )
+        )
         return checks
     checks.append(PreflightCheck("minio.write", True, f"staged {probe_key}"))
 
     try:
         signer = _minio_client(
-            cfg.presign_host, cfg,
+            cfg.presign_host,
+            cfg,
             secure=cfg.minio_presign_secure if cfg.minio_presign_endpoint else cfg.minio_secure,
         )
-        url = cfg.apply_presign_prefix(signer.presigned_get_object(
-            cfg.minio_bucket, probe_key, expires=timedelta(minutes=5)))
+        url = cfg.apply_presign_prefix(
+            signer.presigned_get_object(cfg.minio_bucket, probe_key, expires=timedelta(minutes=5))
+        )
         resp = httpx.get(url, timeout=30.0, follow_redirects=True)
         good = resp.status_code == 200 and resp.content == payload
-        checks.append(PreflightCheck(
-            "minio.presign_fetch", good,
-            f"{cfg.presign_host}{cfg.minio_presign_path_prefix} -> HTTP {resp.status_code}"
-            + ("" if good else f" — body: {resp.text[:160]!r}"),
-            fatal=bool(cfg.docling_url),
-        ))
-    except Exception as exc:  # noqa: BLE001
-        checks.append(PreflightCheck(
-            "minio.presign_fetch", False,
-            f"{cfg.presign_host}: {type(exc).__name__}: {exc}",
-            fatal=bool(cfg.docling_url)))
+        checks.append(
+            PreflightCheck(
+                "minio.presign_fetch",
+                good,
+                f"{cfg.presign_host}{cfg.minio_presign_path_prefix} -> HTTP {resp.status_code}"
+                + ("" if good else f" — body: {resp.text[:160]!r}"),
+                fatal=bool(cfg.docling_url),
+            )
+        )
+    except Exception as exc:
+        checks.append(
+            PreflightCheck(
+                "minio.presign_fetch",
+                False,
+                f"{cfg.presign_host}: {type(exc).__name__}: {exc}",
+                fatal=bool(cfg.docling_url),
+            )
+        )
     finally:
         try:
             if internal is not None:
                 internal.remove_object(cfg.minio_bucket, probe_key)
-        except Exception:  # noqa: BLE001 — cleanup is best-effort
+        except Exception:
             pass
 
     if not cfg.minio_presign_endpoint and cfg.docling_url:
-        checks.append(PreflightCheck(
-            "minio.presign_endpoint_set", False,
-            "MINIO_PRESIGN_ENDPOINT is unset, so presigned URLs embed "
-            f"'{cfg.minio_endpoint}' — the remote Docling service cannot resolve that. "
-            "Set it to a publicly reachable MinIO host.",
-            fatal=False))
+        checks.append(
+            PreflightCheck(
+                "minio.presign_endpoint_set",
+                False,
+                "MINIO_PRESIGN_ENDPOINT is unset, so presigned URLs embed "
+                f"'{cfg.minio_endpoint}' — the remote Docling service cannot resolve that. "
+                "Set it to a publicly reachable MinIO host.",
+                fatal=False,
+            )
+        )
     return checks
 
 
 def check_docling(cfg: RemoteConfig) -> list[PreflightCheck]:
     if not cfg.docling_url:
-        return [PreflightCheck(
-            "docling.configured", False,
-            "DOCLING_SERVICE_URL unset — PDFs/images would convert in-process "
-            "on this machine instead of on the remote service.",
-            # Fatal under --require-remote: the run would still pass, having
-            # proved nothing about the remote Docling service it claims to
-            # exercise. Advisory otherwise, since non-PDF formats are fine.
-            fatal=cfg.require_remote)]
+        return [
+            PreflightCheck(
+                "docling.configured",
+                False,
+                "DOCLING_SERVICE_URL unset — PDFs/images would convert in-process "
+                "on this machine instead of on the remote service.",
+                # Fatal under --require-remote: the run would still pass, having
+                # proved nothing about the remote Docling service it claims to
+                # exercise. Advisory otherwise, since non-PDF formats are fine.
+                fatal=cfg.require_remote,
+            )
+        ]
     headers = {"Authorization": f"Bearer {cfg.docling_token}"} if cfg.docling_token else {}
     try:
         resp = httpx.get(f"{cfg.docling_url}/health", headers=headers, timeout=30.0)
         ok = resp.status_code == 200
-        return [PreflightCheck(
-            "docling.health", ok, f"{cfg.docling_url} -> HTTP {resp.status_code} {resp.text[:80]}")]
-    except Exception as exc:  # noqa: BLE001
-        return [PreflightCheck(
-            "docling.health", False, f"{cfg.docling_url}: {type(exc).__name__}: {exc}")]
+        return [
+            PreflightCheck(
+                "docling.health",
+                ok,
+                f"{cfg.docling_url} -> HTTP {resp.status_code} {resp.text[:80]}",
+            )
+        ]
+    except Exception as exc:
+        return [
+            PreflightCheck(
+                "docling.health", False, f"{cfg.docling_url}: {type(exc).__name__}: {exc}"
+            )
+        ]
 
 
 def check_redis(cfg: RemoteConfig) -> list[PreflightCheck]:
     try:
-        import redis  # noqa: PLC0415 — optional dep, imported lazily
+        import redis
 
         client = redis.Redis.from_url(cfg.redis_url, socket_timeout=10)
         client.ping()
         return [PreflightCheck("redis.ping", True, cfg.redis_url.split("@")[-1])]
-    except Exception as exc:  # noqa: BLE001
-        return [PreflightCheck(
-            "redis.ping", False, f"{type(exc).__name__}: {exc}")]
+    except Exception as exc:
+        return [PreflightCheck("redis.ping", False, f"{type(exc).__name__}: {exc}")]
 
 
 def check_upload_api(cfg: RemoteConfig) -> list[PreflightCheck]:
@@ -468,31 +543,49 @@ def check_upload_api(cfg: RemoteConfig) -> list[PreflightCheck]:
     url = f"{cfg.base_url}/upload/status/{uuid.uuid4()}"
     try:
         resp = httpx.get(url, headers={"X-API-Key": cfg.upload_api_key}, timeout=20.0)
-    except Exception as exc:  # noqa: BLE001
-        return [PreflightCheck(
-            "upload_api.reachable", False,
-            f"{cfg.base_url}: {type(exc).__name__}: {exc} — is the server running "
-            "(`uv run gunicorn -c gunicorn.conf.py pageindex_mcp.server:app`)?")]
+    except Exception as exc:
+        return [
+            PreflightCheck(
+                "upload_api.reachable",
+                False,
+                f"{cfg.base_url}: {type(exc).__name__}: {exc} — is the server running "
+                "(`uv run gunicorn -c gunicorn.conf.py pageindex_mcp.server:app`)?",
+            )
+        ]
 
     if resp.status_code == 404:
         return [PreflightCheck("upload_api.auth", True, f"{cfg.base_url} — key accepted")]
     if resp.status_code == 401:
-        return [PreflightCheck(
-            "upload_api.auth", False, "401 — UPLOAD_API_KEY does not match the server's")]
+        return [
+            PreflightCheck(
+                "upload_api.auth", False, "401 — UPLOAD_API_KEY does not match the server's"
+            )
+        ]
     if resp.status_code == 503:
-        return [PreflightCheck(
-            "upload_api.auth", False, "503 — server has no UPLOAD_API_KEY configured")]
-    return [PreflightCheck(
-        "upload_api.auth", False, f"unexpected HTTP {resp.status_code}: {resp.text[:160]}")]
+        return [
+            PreflightCheck(
+                "upload_api.auth", False, "503 — server has no UPLOAD_API_KEY configured"
+            )
+        ]
+    return [
+        PreflightCheck(
+            "upload_api.auth", False, f"unexpected HTTP {resp.status_code}: {resp.text[:160]}"
+        )
+    ]
 
 
 def check_postgres(cfg: RemoteConfig) -> list[PreflightCheck]:
     if not cfg.postgres_dsn:
-        return [PreflightCheck(
-            "postgres.configured", False,
-            "POSTGRES_DSN unset — document registry dual-write is disabled.", fatal=False)]
+        return [
+            PreflightCheck(
+                "postgres.configured",
+                False,
+                "POSTGRES_DSN unset — document registry dual-write is disabled.",
+                fatal=False,
+            )
+        ]
     try:
-        import asyncpg  # noqa: PLC0415 — optional dep
+        import asyncpg
 
         async def _probe() -> str:
             conn = await asyncpg.connect(cfg.postgres_dsn, timeout=10)
@@ -503,9 +596,10 @@ def check_postgres(cfg: RemoteConfig) -> list[PreflightCheck]:
 
         version = asyncio.run(_probe())
         return [PreflightCheck("postgres.connect", True, version.split(",")[0], fatal=False)]
-    except Exception as exc:  # noqa: BLE001
-        return [PreflightCheck(
-            "postgres.connect", False, f"{type(exc).__name__}: {exc}", fatal=False)]
+    except Exception as exc:
+        return [
+            PreflightCheck("postgres.connect", False, f"{type(exc).__name__}: {exc}", fatal=False)
+        ]
 
 
 def run_preflight(cfg: RemoteConfig, *, skip: set[str]) -> list[PreflightCheck]:
@@ -526,8 +620,10 @@ def run_preflight(cfg: RemoteConfig, *, skip: set[str]) -> list[PreflightCheck]:
         checks.extend(probe())
 
     for chk in checks:
-        print(f"    {_c('PASS', 'green') if chk.passed else (_c('FAIL', 'red') if chk.fatal else _c('WARN', 'yellow'))}"
-              f"  {chk.name:<30} {chk.detail}")
+        print(
+            f"    {_c('PASS', 'green') if chk.passed else (_c('FAIL', 'red') if chk.fatal else _c('WARN', 'yellow'))}"
+            f"  {chk.name:<30} {chk.detail}"
+        )
     return checks
 
 
@@ -557,9 +653,14 @@ def discover_files(paths: list[Path]) -> list[SourceDoc]:
             raise ConfigError(f"--files {path} is not a file")
         if path.suffix.lower() not in SUPPORTED_EXTS:
             raise ConfigError(f"--files {path.name}: unsupported extension {path.suffix}")
-        docs.append(SourceDoc(
-            name=path.name, origin=str(path), size_bytes=path.stat().st_size,
-            read=lambda p=path: p.read_bytes()))
+        docs.append(
+            SourceDoc(
+                name=path.name,
+                origin=str(path),
+                size_bytes=path.stat().st_size,
+                read=lambda p=path: p.read_bytes(),
+            )
+        )
     return docs
 
 
@@ -575,21 +676,28 @@ def discover_local(directory: Path, include: list[str], exclude: list[str]) -> l
             continue
         if not _matches(path.name, include, exclude):
             continue
-        docs.append(SourceDoc(
-            name=path.name, origin=str(path), size_bytes=path.stat().st_size,
-            read=lambda p=path: p.read_bytes()))
+        docs.append(
+            SourceDoc(
+                name=path.name,
+                origin=str(path),
+                size_bytes=path.stat().st_size,
+                read=lambda p=path: p.read_bytes(),
+            )
+        )
     return docs
 
 
-def discover_minio(cfg: RemoteConfig, prefix: str,
-                   include: list[str], exclude: list[str]) -> list[SourceDoc]:
+def discover_minio(
+    cfg: RemoteConfig, prefix: str, include: list[str], exclude: list[str]
+) -> list[SourceDoc]:
     """Enumerate a folder inside the MinIO bucket as the ingestion source.
 
     Objects are downloaded and re-submitted through the same upload API as local
     files, so both sources exercise an identical code path server-side.
     """
-    mc = _minio_client(cfg.minio_endpoint, cfg, secure=cfg.minio_secure,
-                      path_prefix=cfg.minio_path_prefix)
+    mc = _minio_client(
+        cfg.minio_endpoint, cfg, secure=cfg.minio_secure, path_prefix=cfg.minio_path_prefix
+    )
     docs: list[SourceDoc] = []
     for obj in mc.list_objects(cfg.minio_bucket, prefix=prefix, recursive=True):
         if obj.object_name.endswith("/"):
@@ -609,9 +717,14 @@ def discover_minio(cfg: RemoteConfig, prefix: str,
                 resp.close()
                 resp.release_conn()
 
-        docs.append(SourceDoc(
-            name=name, origin=f"minio://{cfg.minio_bucket}/{obj.object_name}",
-            size_bytes=obj.size or 0, read=_read))
+        docs.append(
+            SourceDoc(
+                name=name,
+                origin=f"minio://{cfg.minio_bucket}/{obj.object_name}",
+                size_bytes=obj.size or 0,
+                read=_read,
+            )
+        )
     return docs
 
 
@@ -620,8 +733,9 @@ def discover_minio(cfg: RemoteConfig, prefix: str,
 # ---------------------------------------------------------------------------
 
 
-async def submit_one(client: httpx.AsyncClient, cfg: RemoteConfig,
-                     doc: SourceDoc, result: DocResult) -> None:
+async def submit_one(
+    client: httpx.AsyncClient, cfg: RemoteConfig, doc: SourceDoc, result: DocResult
+) -> None:
     payload = await asyncio.to_thread(doc.read)
     last_error = ""
     for attempt in range(1, SUBMIT_RETRIES + 1):
@@ -631,7 +745,7 @@ async def submit_one(client: httpx.AsyncClient, cfg: RemoteConfig,
                 headers={"X-API-Key": cfg.upload_api_key},
                 files=[("files", (doc.name, payload, "application/octet-stream"))],
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
         else:
             if resp.status_code == 202:
@@ -645,7 +759,7 @@ async def submit_one(client: httpx.AsyncClient, cfg: RemoteConfig,
             if resp.status_code in (400, 401, 403, 413, 503):
                 break  # deterministic rejection — retrying cannot help
         if attempt < SUBMIT_RETRIES:
-            await asyncio.sleep(2 ** attempt + random.random())
+            await asyncio.sleep(2**attempt + random.random())
 
     result.status = "error"
     result.reason = "submit_failed"
@@ -654,9 +768,15 @@ async def submit_one(client: httpx.AsyncClient, cfg: RemoteConfig,
     log(f"submit failed {doc.name}: {last_error}", level="fail")
 
 
-async def poll_one(client: httpx.AsyncClient, cfg: RemoteConfig,
-                   result: DocResult, *, job_timeout_s: float,
-                   poll_interval_s: float, deadline: float) -> None:
+async def poll_one(
+    client: httpx.AsyncClient,
+    cfg: RemoteConfig,
+    result: DocResult,
+    *,
+    job_timeout_s: float,
+    poll_interval_s: float,
+    deadline: float,
+) -> None:
     if not result.job_id:
         return
     interval = poll_interval_s
@@ -679,8 +799,9 @@ async def poll_one(client: httpx.AsyncClient, cfg: RemoteConfig,
         try:
             resp = await client.get(
                 f"{cfg.base_url}/upload/status/{result.job_id}",
-                headers={"X-API-Key": cfg.upload_api_key})
-        except Exception as exc:  # noqa: BLE001
+                headers={"X-API-Key": cfg.upload_api_key},
+            )
+        except Exception as exc:
             transient += 1
             if transient > POLL_TRANSIENT_TOLERANCE:
                 result.status, result.reason = "error", "status_unreachable"
@@ -714,29 +835,49 @@ async def poll_one(client: httpx.AsyncClient, cfg: RemoteConfig,
 
     result.finished_at = time.monotonic()
     level = "ok" if result.ok else "fail"
-    log(f"{result.name}: {result.status}"
+    log(
+        f"{result.name}: {result.status}"
         + (f" ({result.reason})" if result.reason else "")
-        + (f" in {result.duration_s}s" if result.duration_s else ""), level=level)
+        + (f" in {result.duration_s}s" if result.duration_s else ""),
+        level=level,
+    )
 
 
-async def run_pipeline(cfg: RemoteConfig, docs: list[SourceDoc], *,
-                       concurrency: int, job_timeout_s: float,
-                       poll_interval_s: float, global_timeout_s: float) -> list[DocResult]:
+async def run_pipeline(
+    cfg: RemoteConfig,
+    docs: list[SourceDoc],
+    *,
+    concurrency: int,
+    job_timeout_s: float,
+    poll_interval_s: float,
+    global_timeout_s: float,
+) -> list[DocResult]:
     results = [
-        DocResult(name=d.name, source=d.origin, size_bytes=d.size_bytes,
-                  uses_docling=Path(d.name).suffix.lower() in DOCLING_EXTS)
+        DocResult(
+            name=d.name,
+            source=d.origin,
+            size_bytes=d.size_bytes,
+            uses_docling=Path(d.name).suffix.lower() in DOCLING_EXTS,
+        )
         for d in docs
     ]
     sem = asyncio.Semaphore(concurrency)
     deadline = time.monotonic() + global_timeout_s
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+
         async def _one(doc: SourceDoc, res: DocResult) -> None:
             async with sem:
                 await submit_one(client, cfg, doc, res)
                 if res.job_id:
-                    await poll_one(client, cfg, res, job_timeout_s=job_timeout_s,
-                                   poll_interval_s=poll_interval_s, deadline=deadline)
+                    await poll_one(
+                        client,
+                        cfg,
+                        res,
+                        job_timeout_s=job_timeout_s,
+                        poll_interval_s=poll_interval_s,
+                        deadline=deadline,
+                    )
 
         await asyncio.gather(*(_one(d, r) for d, r in zip(docs, results)))
     return results
@@ -753,18 +894,22 @@ def verify_artifacts(cfg: RemoteConfig, results: list[DocResult]) -> None:
     if not done:
         return
     log(f"Verifying MinIO artifacts for {len(done)} document(s)", level="step")
-    mc = _minio_client(cfg.minio_endpoint, cfg, secure=cfg.minio_secure,
-                      path_prefix=cfg.minio_path_prefix)
+    mc = _minio_client(
+        cfg.minio_endpoint, cfg, secure=cfg.minio_secure, path_prefix=cfg.minio_path_prefix
+    )
 
     for res in done:
-        tree_key = (f"processed/{res.doc_id}.flat.json" if res.content_class
-                    else f"processed/{res.doc_id}.json")
+        tree_key = (
+            f"processed/{res.doc_id}.flat.json"
+            if res.content_class
+            else f"processed/{res.doc_id}.json"
+        )
         found: dict[str, Any] = {}
         for label, key in (("tree", tree_key), ("meta", f"processed/{res.doc_id}.meta.json")):
             try:
                 stat = mc.stat_object(cfg.minio_bucket, key)
                 found[label] = {"key": key, "size_bytes": stat.size}
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 found[label] = {"key": key, "error": f"{type(exc).__name__}: {exc}"}
         res.artifacts = found
 
@@ -775,8 +920,11 @@ def verify_artifacts(cfg: RemoteConfig, results: list[DocResult]) -> None:
             res.error = f"worker reported done but MinIO is missing: {', '.join(missing)}"
             log(f"{res.name}: {res.error}", level="fail")
         else:
-            log(f"{res.name}: tree {found['tree']['size_bytes']}B, "
-                f"meta {found['meta']['size_bytes']}B", level="ok")
+            log(
+                f"{res.name}: tree {found['tree']['size_bytes']}B, "
+                f"meta {found['meta']['size_bytes']}B",
+                level="ok",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -815,35 +963,45 @@ def print_report(results: list[DocResult], summary: dict[str, Any]) -> None:
         status = _c(r.status, "green") if r.ok else _c(r.status, "red")
         note = r.reason or r.content_class or ""
         pad = len(status) - len(r.status)
-        print(f"{r.name[:39]:<40}{status:<{10 + pad}}{(r.doc_id or '—')[:25]:<26}"
-              f"{(r.duration_s or 0):>7.1f}  {note}")
+        print(
+            f"{r.name[:39]:<40}{status:<{10 + pad}}{(r.doc_id or '—')[:25]:<26}"
+            f"{(r.duration_s or 0):>7.1f}  {note}"
+        )
     print(_c("─" * 96, "dim"))
 
-    verdict = (_c("ALL PASSED", "green") if summary["failed"] == 0
-               else _c(f"{summary['failed']} FAILED", "red"))
+    verdict = (
+        _c("ALL PASSED", "green")
+        if summary["failed"] == 0
+        else _c(f"{summary['failed']} FAILED", "red")
+    )
     print(f"{summary['succeeded']}/{summary['total']} succeeded — {verdict}")
     if summary["duration_s"]["median"] is not None:
         d = summary["duration_s"]
         print(f"per-doc seconds: min {d['min']} · median {d['median']} · max {d['max']}")
     if summary["failure_reasons"]:
-        print("failure reasons: " + ", ".join(
-            f"{k}×{v}" for k, v in sorted(summary["failure_reasons"].items())))
+        print(
+            "failure reasons: "
+            + ", ".join(f"{k}×{v}" for k, v in sorted(summary["failure_reasons"].items()))
+        )
     print()
 
 
-def write_reports(out_dir: Path, cfg: RemoteConfig, results: list[DocResult],
-                  checks: list[PreflightCheck], summary: dict[str, Any],
-                  formats: set[str]) -> list[Path]:
+def write_reports(
+    out_dir: Path,
+    cfg: RemoteConfig,
+    results: list[DocResult],
+    checks: list[PreflightCheck],
+    summary: dict[str, Any],
+    formats: set[str],
+) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     payload = {
         "generated_at": _now(),
         "config": cfg.redacted(),
         "preflight": [asdict(c) for c in checks],
         "summary": summary,
-        "documents": [
-            {**asdict(r), "duration_s": r.duration_s} for r in results
-        ],
+        "documents": [{**asdict(r), "duration_s": r.duration_s} for r in results],
     }
     written: list[Path] = []
 
@@ -854,17 +1012,28 @@ def write_reports(out_dir: Path, cfg: RemoteConfig, results: list[DocResult],
 
     if "md" in formats:
         lines = [
-            f"# Remote ingestion run — {payload['generated_at']}", "",
+            f"# Remote ingestion run — {payload['generated_at']}",
+            "",
             f"**{summary['succeeded']}/{summary['total']} succeeded** · "
-            f"{summary['docling_routed']} routed to the remote Docling service", "",
-            "## Preflight", "", "| Check | Result | Detail |", "|---|---|---|",
+            f"{summary['docling_routed']} routed to the remote Docling service",
+            "",
+            "## Preflight",
+            "",
+            "| Check | Result | Detail |",
+            "|---|---|---|",
         ]
         lines += [
             f"| `{c.name}` | {'PASS' if c.passed else ('FAIL' if c.fatal else 'WARN')} "
-            f"| {c.detail} |" for c in checks
+            f"| {c.detail} |"
+            for c in checks
         ]
-        lines += ["", "## Documents", "",
-                  "| Document | Status | doc_id | Seconds | Note |", "|---|---|---|---|---|"]
+        lines += [
+            "",
+            "## Documents",
+            "",
+            "| Document | Status | doc_id | Seconds | Note |",
+            "|---|---|---|---|---|",
+        ]
         lines += [
             f"| {r.name} | {r.status} | `{r.doc_id or '—'}` | {r.duration_s or '—'} "
             f"| {r.reason or r.content_class or ''} |"
@@ -874,9 +1043,13 @@ def write_reports(out_dir: Path, cfg: RemoteConfig, results: list[DocResult],
         if failures:
             lines += ["", "## Failures", ""]
             for r in failures:
-                lines += [f"### {r.name}", "",
-                          f"- reason: `{r.reason or 'unknown'}`",
-                          f"- error: `{(r.error or '').strip()[:500]}`", ""]
+                lines += [
+                    f"### {r.name}",
+                    "",
+                    f"- reason: `{r.reason or 'unknown'}`",
+                    f"- error: `{(r.error or '').strip()[:500]}`",
+                    "",
+                ]
         p = out_dir / f"ingest-run-{stamp}.md"
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
         written.append(p)
@@ -886,12 +1059,15 @@ def write_reports(out_dir: Path, cfg: RemoteConfig, results: list[DocResult],
             f"<tr class='{'ok' if r.ok else 'bad'}'><td>{escape(r.name)}</td>"
             f"<td>{escape(r.status)}</td><td><code>{escape(r.doc_id or '—')}</code></td>"
             f"<td>{r.duration_s or '—'}</td><td>{escape(r.reason or r.content_class or '')}</td></tr>"
-            for r in sorted(results, key=lambda x: (x.ok, x.name)))
+            for r in sorted(results, key=lambda x: (x.ok, x.name))
+        )
         pre = "\n".join(
             f"<tr class='{'ok' if c.passed else ('bad' if c.fatal else 'warn')}'>"
             f"<td><code>{escape(c.name)}</code></td>"
             f"<td>{'PASS' if c.passed else ('FAIL' if c.fatal else 'WARN')}</td>"
-            f"<td>{escape(c.detail)}</td></tr>" for c in checks)
+            f"<td>{escape(c.detail)}</td></tr>"
+            for c in checks
+        )
         p = out_dir / f"ingest-run-{stamp}.html"
         p.write_text(
             "<!doctype html><meta charset='utf-8'>"
@@ -911,7 +1087,8 @@ def write_reports(out_dir: Path, cfg: RemoteConfig, results: list[DocResult],
             f"<h2>Preflight</h2><table><tr><th>Check</th><th>Result</th><th>Detail</th></tr>{pre}</table>"
             f"<h2>Documents</h2><table><tr><th>Document</th><th>Status</th><th>doc_id</th>"
             f"<th>Seconds</th><th>Note</th></tr>{rows}</table>",
-            encoding="utf-8")
+            encoding="utf-8",
+        )
         written.append(p)
 
     return written
@@ -927,64 +1104,133 @@ def build_parser() -> argparse.ArgumentParser:
         prog="remote_ingest_test.py",
         description="End-to-end ingestion test against remote MinIO + remote Docling.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__.split("Usage\n-----\n", 1)[-1])
+        epilog=__doc__.split("Usage\n-----\n", 1)[-1],
+    )
 
     src = p.add_argument_group("source")
-    src.add_argument("--source", choices=("local", "minio"), default="local",
-                     help="where documents come from (default: local)")
-    src.add_argument("--dir", type=Path, default=REPO_ROOT / "doc_store",
-                     help="local source directory (default: ./doc_store)")
-    src.add_argument("--files", type=Path, nargs="+", default=None, metavar="PATH",
-                     help="explicit file paths to ingest; bypasses --dir/--include/--exclude "
-                          "(for --source local)")
-    src.add_argument("--prefix", default="",
-                     help="object-key prefix inside the MinIO bucket, for --source minio")
-    src.add_argument("--include", action="append", default=[], metavar="GLOB",
-                     help="only files matching this glob (repeatable)")
-    src.add_argument("--exclude", action="append", default=[], metavar="GLOB",
-                     help="skip files matching this glob (repeatable)")
-    src.add_argument("--limit", type=int, default=0,
-                     help="ingest at most N documents (0 = no limit)")
+    src.add_argument(
+        "--source",
+        choices=("local", "minio"),
+        default="local",
+        help="where documents come from (default: local)",
+    )
+    src.add_argument(
+        "--dir",
+        type=Path,
+        default=REPO_ROOT / "doc_store",
+        help="local source directory (default: ./doc_store)",
+    )
+    src.add_argument(
+        "--files",
+        type=Path,
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help="explicit file paths to ingest; bypasses --dir/--include/--exclude "
+        "(for --source local)",
+    )
+    src.add_argument(
+        "--prefix", default="", help="object-key prefix inside the MinIO bucket, for --source minio"
+    )
+    src.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="only files matching this glob (repeatable)",
+    )
+    src.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="skip files matching this glob (repeatable)",
+    )
+    src.add_argument(
+        "--limit", type=int, default=0, help="ingest at most N documents (0 = no limit)"
+    )
 
     tgt = p.add_argument_group("target")
-    tgt.add_argument("--env-file", type=Path, default=_default_env_file(),
-                     help="dotenv file to load (default: ./.env.active if 'make env' "
-                          "has been run, else ./.env)")
-    tgt.add_argument("--base-url", default=None,
-                     help="upload API base URL (default: $INGEST_BASE_URL or localhost:$MCP_PORT)")
-    tgt.add_argument("--require-remote", action="store_true",
-                     help="abort if MinIO/Redis/Docling still point at localhost, "
-                          "and treat an unset or unhealthy Docling service as a "
-                          "preflight failure rather than a warning")
+    tgt.add_argument(
+        "--env-file",
+        type=Path,
+        default=_default_env_file(),
+        help="dotenv file to load (default: ./.env.active if 'make env' has been run, else ./.env)",
+    )
+    tgt.add_argument(
+        "--base-url",
+        default=None,
+        help="upload API base URL (default: $INGEST_BASE_URL or localhost:$MCP_PORT)",
+    )
+    tgt.add_argument(
+        "--require-remote",
+        action="store_true",
+        help="abort if MinIO/Redis/Docling still point at localhost, "
+        "and treat an unset or unhealthy Docling service as a "
+        "preflight failure rather than a warning",
+    )
 
     run = p.add_argument_group("run")
-    run.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
-                     help=f"documents in flight at once (default: {DEFAULT_CONCURRENCY}); "
-                          "the worker defaults to max_jobs=1, so raising this only deepens "
-                          "the queue unless PAGEINDEX_WORKER_MAX_JOBS is also raised")
-    run.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL_S,
-                     help=f"seconds between status polls (default: {DEFAULT_POLL_INTERVAL_S})")
-    run.add_argument("--job-timeout", type=float, default=DEFAULT_JOB_TIMEOUT_S,
-                     help=f"per-document timeout (default: {DEFAULT_JOB_TIMEOUT_S}s)")
-    run.add_argument("--global-timeout", type=float, default=DEFAULT_GLOBAL_TIMEOUT_S,
-                     help=f"whole-run timeout (default: {DEFAULT_GLOBAL_TIMEOUT_S}s)")
-    run.add_argument("--preflight-only", action="store_true",
-                     help="run the connectivity checks and stop (no ingestion, no spend)")
-    run.add_argument("--dry-run", action="store_true",
-                     help="preflight + list what would be ingested, then stop")
-    run.add_argument("--skip-check", action="append", default=[],
-                     choices=("minio", "presign", "docling", "redis", "upload_api", "postgres"),
-                     help="skip a preflight probe (repeatable)")
-    run.add_argument("--force", action="store_true",
-                     help="ingest even if a fatal preflight check failed")
-    run.add_argument("--no-verify", action="store_true",
-                     help="skip the post-run MinIO artifact verification")
+    run.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"documents in flight at once (default: {DEFAULT_CONCURRENCY}); "
+        "the worker defaults to max_jobs=1, so raising this only deepens "
+        "the queue unless PAGEINDEX_WORKER_MAX_JOBS is also raised",
+    )
+    run.add_argument(
+        "--poll-interval",
+        type=float,
+        default=DEFAULT_POLL_INTERVAL_S,
+        help=f"seconds between status polls (default: {DEFAULT_POLL_INTERVAL_S})",
+    )
+    run.add_argument(
+        "--job-timeout",
+        type=float,
+        default=DEFAULT_JOB_TIMEOUT_S,
+        help=f"per-document timeout (default: {DEFAULT_JOB_TIMEOUT_S}s)",
+    )
+    run.add_argument(
+        "--global-timeout",
+        type=float,
+        default=DEFAULT_GLOBAL_TIMEOUT_S,
+        help=f"whole-run timeout (default: {DEFAULT_GLOBAL_TIMEOUT_S}s)",
+    )
+    run.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="run the connectivity checks and stop (no ingestion, no spend)",
+    )
+    run.add_argument(
+        "--dry-run", action="store_true", help="preflight + list what would be ingested, then stop"
+    )
+    run.add_argument(
+        "--skip-check",
+        action="append",
+        default=[],
+        choices=("minio", "presign", "docling", "redis", "upload_api", "postgres"),
+        help="skip a preflight probe (repeatable)",
+    )
+    run.add_argument(
+        "--force", action="store_true", help="ingest even if a fatal preflight check failed"
+    )
+    run.add_argument(
+        "--no-verify", action="store_true", help="skip the post-run MinIO artifact verification"
+    )
 
     out = p.add_argument_group("output")
-    out.add_argument("--report-dir", type=Path, default=REPO_ROOT / "audit" / "ingest-runs",
-                     help="where local report artifacts are written")
-    out.add_argument("--format", default="json,md",
-                     help="comma-separated report formats: json,md,html (default: json,md)")
+    out.add_argument(
+        "--report-dir",
+        type=Path,
+        default=REPO_ROOT / "audit" / "ingest-runs",
+        help="where local report artifacts are written",
+    )
+    out.add_argument(
+        "--format",
+        default="json,md",
+        help="comma-separated report formats: json,md,html (default: json,md)",
+    )
     out.add_argument("--no-report", action="store_true", help="do not write report files")
     return p
 
@@ -1007,12 +1253,14 @@ def main(argv: list[str] | None = None) -> int:
     checks = run_preflight(cfg, skip=set(args.skip_check))
     blocking = [c for c in checks if c.blocking]
     if blocking and not args.force:
-        log(f"{len(blocking)} blocking preflight failure(s): "
-            + ", ".join(c.name for c in blocking), level="fail")
+        log(
+            f"{len(blocking)} blocking preflight failure(s): "
+            + ", ".join(c.name for c in blocking),
+            level="fail",
+        )
         log("Fix the above, or re-run with --force to ingest anyway.", level="info")
         if not args.no_report:
-            for p in write_reports(args.report_dir, cfg, [], checks,
-                                   _summary([]), {"json", "md"}):
+            for p in write_reports(args.report_dir, cfg, [], checks, _summary([]), {"json", "md"}):
                 log(f"report: {p}")
         return 3
     if args.preflight_only:
@@ -1047,23 +1295,32 @@ def main(argv: list[str] | None = None) -> int:
         route = "docling" if Path(d.name).suffix.lower() in DOCLING_EXTS else "in-process"
         print(f"    {d.name:<48} {d.size_bytes / 1024:>9.1f} KB  {_c(route, 'dim')}")
     if docling_count == 0 and cfg.docling_url:
-        log("None of these are PDFs or images, so the remote Docling service "
-            "will not be exercised by this run.", level="warn")
+        log(
+            "None of these are PDFs or images, so the remote Docling service "
+            "will not be exercised by this run.",
+            level="warn",
+        )
 
     if args.dry_run:
         log("Dry run — nothing submitted.", level="ok")
         return 0
 
     started = time.monotonic()
-    results = asyncio.run(run_pipeline(
-        cfg, docs, concurrency=max(1, args.concurrency),
-        job_timeout_s=args.job_timeout, poll_interval_s=args.poll_interval,
-        global_timeout_s=args.global_timeout))
+    results = asyncio.run(
+        run_pipeline(
+            cfg,
+            docs,
+            concurrency=max(1, args.concurrency),
+            job_timeout_s=args.job_timeout,
+            poll_interval_s=args.poll_interval,
+            global_timeout_s=args.global_timeout,
+        )
+    )
 
     if not args.no_verify:
         try:
             verify_artifacts(cfg, results)
-        except Exception as exc:  # noqa: BLE001 — verification must not mask run results
+        except Exception as exc:
             log(f"artifact verification failed: {type(exc).__name__}: {exc}", level="warn")
 
     summary = _summary(results)

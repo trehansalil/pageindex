@@ -60,6 +60,11 @@ COPY --from=builder /opt/docling-models /opt/docling-models
 # Copy the service application.
 COPY services/docling-service/app.py ./app.py
 
+ARG BUILD_SHA="unknown"
+ARG BUILD_TIMESTAMP="unknown"
+ENV BUILD_SHA=$BUILD_SHA
+ENV BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+
 ENV PATH="/app/.venv/bin:$PATH"
 ENV DOCLING_ARTIFACTS_PATH=/opt/docling-models
 ENV TESSDATA_PREFIX=/opt/tessdata
