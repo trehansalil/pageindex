@@ -25,15 +25,17 @@ INSERT INTO doc_registry (
     verdict_computed_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT (doc_id) DO UPDATE SET
-    -- Facet / descriptor columns: unconditional last-writer-wins.
-    doc_name        = EXCLUDED.doc_name,
-    source_url      = EXCLUDED.source_url,
-    content_class   = EXCLUDED.content_class,
-    product         = EXCLUDED.product,
-    tier            = EXCLUDED.tier,
-    doc_family      = EXCLUDED.doc_family,
-    effective_date  = EXCLUDED.effective_date,
-    doc_description = EXCLUDED.doc_description,
+    -- Facet / descriptor columns: COALESCE(NULLIF()) guard prevents empty
+    -- incoming values from clobbering existing data (safe for partial-payload
+    -- callers like the deprecated upsert_verdict wrapper).
+    doc_name        = COALESCE(NULLIF(EXCLUDED.doc_name, ''), doc_registry.doc_name),
+    source_url      = COALESCE(NULLIF(EXCLUDED.source_url, ''), doc_registry.source_url),
+    content_class   = COALESCE(NULLIF(EXCLUDED.content_class, ''), doc_registry.content_class),
+    product         = COALESCE(NULLIF(EXCLUDED.product, ''), doc_registry.product),
+    tier            = COALESCE(NULLIF(EXCLUDED.tier, ''), doc_registry.tier),
+    doc_family      = COALESCE(NULLIF(EXCLUDED.doc_family, ''), doc_registry.doc_family),
+    effective_date  = COALESCE(NULLIF(EXCLUDED.effective_date, ''), doc_registry.effective_date),
+    doc_description = COALESCE(NULLIF(EXCLUDED.doc_description, ''), doc_registry.doc_description),
     -- Zone-4: processed_at CAS guard — prevent stale reconcile data from
     -- regressing sha256, node_count, processed_at.  COALESCE-to-empty-string
     -- mirrors the verdict CAS pattern so a row with NULL/empty processed_at
@@ -77,25 +79,27 @@ ON CONFLICT (doc_id) DO UPDATE SET
         WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
         THEN EXCLUDED.verdict_computed_at
         ELSE doc_registry.verdict_computed_at
-    END;
+    END
+RETURNING doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at;
 """
 
 
-async def upsert_doc(meta: dict) -> None:
+async def upsert_doc(meta: dict) -> dict[str, Any] | None:
     """Insert or update a registry row from a metadata dict.
 
     Tolerates missing keys with safe defaults so it can be called directly
-    with a raw ``.meta.json`` payload.  Returns silently if the pool is not
-    initialised.
+    with a raw ``.meta.json`` payload.  Returns the winning row's verdict
+    columns as a dict (via RETURNING), or ``None`` when the pool is
+    unavailable or ``doc_id`` is empty.
     """
     pool = _schema.get_pool()
     if pool is None:
-        return
+        return None
     doc_id = meta.get("doc_id", "")
     if not doc_id:
         logger.warning("registry.upsert_doc: skipping row with empty doc_id")
-        return
-    await pool.execute(
+        return None
+    row = await pool.fetchrow(
         _UPSERT_SQL,
         doc_id,
         meta.get("doc_name", ""),
@@ -120,85 +124,40 @@ async def upsert_doc(meta: dict) -> None:
         meta.get("verdict_computed_at", ""),
     )
     logger.debug("registry: upserted doc_id=%s", doc_id)
+    return dict(row) if row is not None else None
 
 
 # ---------------------------------------------------------------------------
-# Zone-4: verdict-only upsert with RETURNING (sole CAS-guarded verdict write)
+# Zone-4: verdict-only upsert — DEPRECATED thin wrapper
 # ---------------------------------------------------------------------------
-
-_UPSERT_VERDICT_SQL = """
-INSERT INTO doc_registry (
-    doc_id, doc_name, source_url, processed_at,
-    content_class, sha256, product, tier, doc_family,
-    effective_date, doc_description, node_count,
-    verdict, pipeline_version, permanent_marginal,
-    verdict_computed_at
-) VALUES ($1, '', '', '', '', '', '', '', '', '', '', NULL, $2, $3, $4, $5)
-ON CONFLICT (doc_id) DO UPDATE SET
-    -- Zone-8: temporal guard — same CAS logic as _UPSERT_SQL.
-    verdict = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
-        THEN COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict)
-        ELSE doc_registry.verdict
-    END,
-    pipeline_version = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
-        THEN EXCLUDED.pipeline_version
-        ELSE doc_registry.pipeline_version
-    END,
-    permanent_marginal = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
-        THEN EXCLUDED.permanent_marginal
-        ELSE doc_registry.permanent_marginal
-    END,
-    verdict_computed_at = CASE
-        WHEN EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at, '')
-        THEN EXCLUDED.verdict_computed_at
-        ELSE doc_registry.verdict_computed_at
-    END
-RETURNING doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at;
-"""
+# The standalone _UPSERT_VERDICT_SQL is removed; upsert_doc's _UPSERT_SQL now
+# carries RETURNING and the same CAS guards.  This wrapper is retained for one
+# release cycle so callers (reconcile._drain_verdict_retry_queue) keep working.
 
 
 async def upsert_verdict(doc_id: str, verdict_fields: dict[str, Any]) -> dict[str, Any] | None:
-    """CAS-guarded verdict-only upsert with RETURNING.
+    """**Deprecated (Zone-4 Phase 3):** thin wrapper delegating to ``upsert_doc``.
 
-    Writes *only* the four verdict columns (verdict, pipeline_version,
-    permanent_marginal, verdict_computed_at) using the same temporal CAS guard
-    as ``_UPSERT_SQL``.  Returns the winning row's verdict columns as a dict
-    so the caller knows exactly which values landed in Postgres, regardless of
-    whether the incoming write won or the existing row's values were preserved.
+    Retained for one release cycle to avoid breaking
+    ``reconcile._drain_verdict_retry_queue``.  New code should call
+    ``upsert_doc`` directly with verdict columns merged into the meta dict.
 
-    Returns ``None`` when the pool is unavailable or ``doc_id`` is empty.
-    Never raises — callers must handle ``None`` as "Postgres unavailable".
-
-    This is the sole CAS-guarded verdict write entry point for the
-    Postgres-authority (``REGISTRY_VERDICT_AUTHORITY=postgres``) path.
+    Builds a minimal meta dict from *doc_id* + *verdict_fields* and forwards
+    to ``upsert_doc``, which now carries RETURNING and the identical CAS
+    guards.  Descriptor columns default to empty strings, which the
+    COALESCE(NULLIF()) guards in ``_UPSERT_SQL`` preserve as-is when the row
+    already exists.
     """
-    pool = _schema.get_pool()
-    if pool is None:
-        return None
-    if not doc_id:
-        logger.warning("registry.upsert_verdict: skipping empty doc_id")
-        return None
+    import warnings
 
-    row = await pool.fetchrow(
-        _UPSERT_VERDICT_SQL,
-        doc_id,
-        verdict_fields.get("verdict", ""),
-        verdict_fields.get("pipeline_version"),
-        verdict_fields.get("permanent_marginal", False),
-        verdict_fields.get("verdict_computed_at", ""),
+    warnings.warn(
+        "upsert_verdict is deprecated; call upsert_doc with verdict columns merged",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    if row is None:
-        return None
-    result = dict(row)
-    logger.debug(
-        "registry: upsert_verdict doc_id=%s winning_verdict=%s",
-        doc_id,
-        result.get("verdict"),
-    )
-    return result
+    meta: dict[str, Any] = {"doc_id": doc_id}
+    meta.update(verdict_fields)
+    return await upsert_doc(meta)
 
 
 # ---------------------------------------------------------------------------

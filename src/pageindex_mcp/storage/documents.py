@@ -281,7 +281,16 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                 except Exception as e:
                     errors.append(f"registry: {e}")
             else:
+                # Zone-4 Phase 3 / HR2: surface skip as observable error.
+                errors.append("registry: pool not ready, skipped Postgres row deletion")
                 logger.info("ERASE %s step6: registry pool not ready, skipping (non-fatal)", doc_id)
+        else:
+            # Zone-4 Phase 3 / HR2: surface skip as observable error so the
+            # caller knows the erasure cascade did not reach the Postgres
+            # registry store.
+            errors.append(
+                "registry: skipped (registry_enabled=False or postgres_dsn missing)"
+            )
 
         # 7. preloaded/<doc_name> raw object (RFC-011 D2 / ISS-41 / HR2)
         if doc_name:

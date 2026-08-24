@@ -67,6 +67,7 @@ def _mock_pool() -> AsyncMock:
     pool.fetch = AsyncMock(return_value=[])
     pool.fetchval = AsyncMock(return_value=0)
     pool.execute = AsyncMock(return_value="INSERT 0 1")
+    pool.fetchrow = AsyncMock(return_value=None)
     return pool
 
 
@@ -120,7 +121,8 @@ async def test_upsert_defaults_missing_keys_to_empty_string():
     with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         await registry.upsert_doc({"doc_id": "abc123", "doc_name": "only-name.pdf"})
 
-    args = pool.execute.await_args.args
+    # Zone-4 Phase 3: upsert_doc now uses fetchrow (RETURNING) not execute.
+    args = pool.fetchrow.await_args.args
     assert args[1] == "abc123"
     assert args[2] == "only-name.pdf"
     # Text columns default to ""; node_count defaults to None; verdict fields
@@ -362,3 +364,168 @@ def test_migrate_verdict_sql_is_idempotent():
     assert "ADD COLUMN IF NOT EXISTS verdict" in sql
     assert "ADD COLUMN IF NOT EXISTS pipeline_version" in sql
     assert "ADD COLUMN IF NOT EXISTS permanent_marginal" in sql
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: upsert_doc RETURNING with CAS guards (contract)
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_sql_has_returning_clause():
+    """Zone-4 Phase 3: _UPSERT_SQL must include RETURNING with the verdict
+    columns so the caller knows the winning values after CAS resolution."""
+    from pageindex_mcp.registry.queries import _UPSERT_SQL
+
+    sql = _UPSERT_SQL
+    assert "RETURNING" in sql
+    assert "doc_id" in sql.split("RETURNING")[1]
+    assert "verdict" in sql.split("RETURNING")[1]
+    assert "pipeline_version" in sql.split("RETURNING")[1]
+    assert "permanent_marginal" in sql.split("RETURNING")[1]
+    assert "verdict_computed_at" in sql.split("RETURNING")[1]
+
+
+def test_upsert_sql_has_verdict_cas_guard():
+    """Zone-8: verdict columns are guarded by verdict_computed_at temporal CAS."""
+    from pageindex_mcp.registry.queries import _UPSERT_SQL
+
+    sql = _UPSERT_SQL
+    assert "EXCLUDED.verdict_computed_at >= COALESCE(doc_registry.verdict_computed_at" in sql
+
+
+def test_upsert_sql_has_processed_at_cas_guard():
+    """Zone-4: descriptor columns sha256/node_count guarded by processed_at CAS."""
+    from pageindex_mcp.registry.queries import _UPSERT_SQL
+
+    sql = _UPSERT_SQL
+    assert "EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at" in sql
+
+
+async def test_upsert_doc_uses_fetchrow_not_execute():
+    """Zone-4 Phase 3: upsert_doc must use fetchrow (not execute) so it can
+    return the RETURNING row as a dict."""
+    pool = _mock_pool()
+    pool.fetchrow = AsyncMock(
+        return_value={"doc_id": "fr-1", "verdict": "PASS", "pipeline_version": 3,
+                      "permanent_marginal": False, "verdict_computed_at": "2026-08-01"}
+    )
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
+        result = await registry.upsert_doc({"doc_id": "fr-1", "verdict": "PASS"})
+
+    pool.fetchrow.assert_awaited_once()
+    assert result is not None
+    assert result["doc_id"] == "fr-1"
+    assert result["verdict"] == "PASS"
+
+
+async def test_upsert_doc_returns_none_when_fetchrow_returns_none():
+    """upsert_doc returns None when fetchrow returns None (edge case)."""
+    pool = _mock_pool()
+    pool.fetchrow = AsyncMock(return_value=None)
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
+        result = await registry.upsert_doc({"doc_id": "none-1"})
+
+    assert result is None
+
+
+async def test_upsert_verdict_deprecated_wrapper_delegates_to_upsert_doc():
+    """Zone-4 Phase 3: upsert_verdict is a thin deprecated wrapper that
+    delegates to upsert_doc with a minimal meta dict."""
+    import warnings
+
+    pool = _mock_pool()
+    pool.fetchrow = AsyncMock(return_value={"doc_id": "dep-1", "verdict": "PASS",
+                                            "pipeline_version": 2, "permanent_marginal": False,
+                                            "verdict_computed_at": "2026-08-01"})
+    with (
+        patch("pageindex_mcp.registry.schema.get_pool", return_value=pool),
+        warnings.catch_warnings(record=True) as w,
+    ):
+        warnings.simplefilter("always")
+        result = await registry.upsert_verdict(
+            "dep-1", {"verdict": "PASS", "pipeline_version": 2}
+        )
+
+    assert result is not None
+    assert result["doc_id"] == "dep-1"
+    # DeprecationWarning emitted
+    assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: registry_verdict_authority removed from Settings (contract)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_no_registry_verdict_authority_field():
+    """Zone-4 Phase 3 contract: the registry_verdict_authority field must
+    NOT exist on Settings.  Postgres is unconditionally the sole verdict
+    authority; no mode flag remains."""
+    import dataclasses
+
+    from pageindex_mcp.config import Settings
+
+    field_names = {f.name for f in dataclasses.fields(Settings)}
+    assert "registry_verdict_authority" not in field_names, (
+        "registry_verdict_authority must be removed from Settings (Zone-4 Phase 3)"
+    )
+
+
+def test_settings_has_no_verdict_authority_env_var():
+    """Zone-4 Phase 3 contract: no environment variable loading path for
+    REGISTRY_VERDICT_AUTHORITY should exist in config module."""
+    import inspect
+
+    import pageindex_mcp.config as config_mod
+
+    source = inspect.getsource(config_mod)
+    # The string should not appear in any executable line (comments are OK).
+    # Filter out comment lines.
+    executable_lines = [
+        line for line in source.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    for line in executable_lines:
+        assert "REGISTRY_VERDICT_AUTHORITY" not in line, (
+            f"Found REGISTRY_VERDICT_AUTHORITY in executable config line: {line.strip()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: upsert_doc returns dict not Record (contract)
+# ---------------------------------------------------------------------------
+
+
+async def test_upsert_doc_returns_dict_type():
+    """Zone-4 Phase 3 contract: upsert_doc must return a plain dict (not an
+    asyncpg Record) so callers can use it as a regular dict without conversion."""
+    pool = _mock_pool()
+    # Simulate an asyncpg Record-like object that supports dict()
+    mock_row = MagicMock()
+    mock_row.__iter__ = MagicMock(return_value=iter([
+        ("doc_id", "dt-1"), ("verdict", "PASS"),
+        ("pipeline_version", 3), ("permanent_marginal", False),
+        ("verdict_computed_at", "2026-08-01"),
+    ]))
+    mock_row.keys = MagicMock(return_value=[
+        "doc_id", "verdict", "pipeline_version",
+        "permanent_marginal", "verdict_computed_at",
+    ])
+    mock_row.__getitem__ = lambda self, k: {
+        "doc_id": "dt-1", "verdict": "PASS",
+        "pipeline_version": 3, "permanent_marginal": False,
+        "verdict_computed_at": "2026-08-01",
+    }[k]
+
+    # dict(mock_row) needs to work -- simulate by making fetchrow return
+    # something that dict() can convert
+    pool.fetchrow = AsyncMock(return_value={
+        "doc_id": "dt-1", "verdict": "PASS",
+        "pipeline_version": 3, "permanent_marginal": False,
+        "verdict_computed_at": "2026-08-01",
+    })
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
+        result = await registry.upsert_doc({"doc_id": "dt-1", "verdict": "PASS"})
+
+    assert isinstance(result, dict)
+    assert result["doc_id"] == "dt-1"

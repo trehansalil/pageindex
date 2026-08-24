@@ -39,7 +39,7 @@ async def _drain_verdict_retry_queue(redis_client: Any) -> None:
     """
     import json as _json
 
-    from ..registry import upsert_verdict
+    from ..registry import upsert_doc
     from ..storage import save_doc_meta
 
     drained = 0
@@ -65,7 +65,11 @@ async def _drain_verdict_retry_queue(redis_client: Any) -> None:
                     verdict_fields = _json.loads(raw.decode() if isinstance(raw, bytes) else raw)
 
                     # Replay: Postgres first, then MinIO sidecar backfill.
-                    winning = await upsert_verdict(doc_id, verdict_fields)
+                    # Build a full meta dict with doc_id merged in so we can
+                    # call upsert_doc directly (upsert_verdict is deprecated).
+                    meta: dict[str, Any] = {"doc_id": doc_id}
+                    meta.update(verdict_fields)
+                    winning = await upsert_doc(meta)
                     if winning:
                         await asyncio.to_thread(save_doc_meta, doc_id, winning)
 
@@ -137,13 +141,12 @@ async def reconcile_registry_drift() -> None:
         )
         return
 
-    # Zone-4: drain Redis verdict retry queue before the MinIO scan so that
-    # verdicts lost during a Postgres outage under Postgres-authority mode
-    # are healed before the incremental reconcile overwrites them with stale
-    # MinIO data.  Best-effort — a failure here must NOT block the existing
-    # MinIO reconcile path.
-    if settings.registry_verdict_authority == "postgres":
-        await _drain_verdict_retry_queue(redis_client)
+    # Zone-4 Phase 3: unconditionally drain Redis verdict retry queue before
+    # the MinIO scan so that verdicts lost during a Postgres outage are healed
+    # before the incremental reconcile overwrites them with stale MinIO data.
+    # Best-effort — a failure here must NOT block the existing MinIO reconcile
+    # path.
+    await _drain_verdict_retry_queue(redis_client)
 
     # C-3 (audit Finding 9): incremental O(Δ) reconcile. The listing carries
     # each sidecar's etag for free (no per-object GET); we only touch docs

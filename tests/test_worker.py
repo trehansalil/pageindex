@@ -390,3 +390,53 @@ async def test_shutdown_noop_when_no_redis_and_registry_disabled():
 
 
 # ── cron wrapper / module-level cron interval math ───────────────────────────
+
+
+# ── Zone-4: process_document_job ordering contract (wiring) ──────────────────
+
+
+async def test_process_document_job_calls_upsert_registry_row_after_child(fake_redis):
+    """Wiring: process_document_job imports and calls _upsert_registry_row
+    from worker.registry_mirror after the converter child succeeds. This
+    verifies the import exists and the call is reachable on the happy path."""
+    staging_key = "uploads/staging/job-wire/report.pdf"
+    ctx = {"redis": fake_redis}
+    child_result = {
+        "ok": True,
+        "doc_id": "wire-1",
+        "peak_rss_kib": 0,
+        "duration_ms": 0,
+        "verdict_fields": {"verdict": "PASS"},
+    }
+    upsert_mock = AsyncMock()
+
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
+            upsert_mock,
+        ),
+    ):
+        result = await process_document_job(ctx, staging_key, "job-wire")
+
+    assert result == "wire-1"
+    upsert_mock.assert_awaited_once()
+    call_kwargs = upsert_mock.await_args
+    # Positional args: (doc_id, content_class)
+    assert call_kwargs[0][0] == "wire-1"
+    # verdict_fields kwarg passed through from child result
+    assert call_kwargs[1]["verdict_fields"] == {"verdict": "PASS"}
+
+
+def test_upsert_registry_row_importable_from_worker():
+    """Wiring: _upsert_registry_row must be importable from
+    pageindex_mcp.worker (re-exported in __init__.py or directly)."""
+    from pageindex_mcp.worker import _upsert_registry_row as fn
+
+    assert callable(fn)

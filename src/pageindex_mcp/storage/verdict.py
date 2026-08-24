@@ -225,12 +225,10 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
             len(content),
             content_type="application/json",
         )
-        # Zone-4: under Postgres-authority mode the sidecar is a best-effort
-        # backfill, not the primary read path, so the RFC-034 D18 barrier is
-        # unnecessary and its latency cost is avoided.  Under MinIO-authority
-        # (default) the barrier remains to preserve the existing contract.
-        if settings.registry_verdict_authority != "postgres":
-            _minio_ops._confirm_write_visible(mc, settings.minio_bucket, key)
+        # Zone-4 Phase 3: write-visibility barrier removed.  Postgres is the
+        # sole verdict authority; the sidecar is archival-only, so no
+        # read-after-write confirmation is needed.  The barrier in save_doc /
+        # save_flat_doc (primary processed artifacts) is intentionally retained.
         logger.debug("Saved meta for doc %s (%d bytes)", doc_id, len(content))
 
         # Zone-4: persist verdict ledger entry (fire-and-forget).

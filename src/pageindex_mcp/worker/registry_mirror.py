@@ -57,57 +57,54 @@ async def _upsert_registry_row(
     content_class: str | None,
     verdict_fields: dict[str, Any] | None = None,
 ) -> None:
-    """Parent-side RFC-006 dual-write.
+    """Postgres-authoritative registry write (Zone-4 Phase 3).
 
-    Reads the registry-relevant fields from the just-persisted processed doc and
-    upserts them into the Postgres registry. Runs in the long-lived worker
-    parent (where startup() opened the pool), awaited so it cannot be lost the
-    way a fire-and-forget task would be. Best-effort: any failure logs a warning
-    but never fails the job — the MinIO artifacts remain the source of truth.
+    Single linear path: reads registry-relevant fields from the just-persisted
+    MinIO artifact, overlays *verdict_fields* (if supplied), CAS-upserts the
+    merged row to Postgres via ``upsert_doc`` (with RETURNING), then
+    best-effort backfills the MinIO sidecar with the winning values.
 
-    Zone-3: when *verdict_fields* is supplied (a dict carrying any subset of
+    Runs in the long-lived worker parent (where ``startup()`` opened the pool),
+    awaited so it cannot be lost the way a fire-and-forget task would be.
+    Best-effort: any failure logs a warning but never fails the job.
+
+    When *verdict_fields* is supplied (a dict carrying any subset of
     verdict / verdict_reason / pipeline_version / max_leaf_ratio /
     verdict_computed_at / node_count), those values are merged into the
     registry row **after** the MinIO read, so they take precedence over
-    whatever the artifact carries — closing the race window where the
-    MinIO artifact might not yet reflect the just-completed job's verdict.
-    Callers that lack job-context verdict data (e.g. preprocess_client.py
-    batch CLI) simply omit the kwarg and fall back to the existing MinIO
-    read path.
+    whatever the artifact carries.  Callers that lack job-context verdict
+    data (e.g. ``preprocess_client.py`` batch CLI) simply omit the kwarg
+    and fall back to the MinIO-only field read.
     """
     if not (settings.registry_enabled and settings.postgres_dsn):
         return
-    from ..registry import get_pool, upsert_doc, upsert_verdict
+    from ..registry import get_pool, upsert_doc
 
     if get_pool() is None:
         logger.debug("registry: pool not ready, skipping dual-write for %s", doc_id)
-        # Zone-4: when Postgres-first is active and the pool is unavailable,
-        # queue the verdict for retry so reconcile_registry_drift can pick it
-        # up later.
-        if settings.registry_verdict_authority == "postgres" and verdict_fields:
+        # Zone-4 Phase 3: unconditionally queue verdict for retry when pool
+        # is unavailable so reconcile_registry_drift can heal later.
+        if verdict_fields:
             await _enqueue_verdict_retry(doc_id, verdict_fields)
         return
     try:
-        if settings.registry_verdict_authority == "postgres":
-            # Zone-4 Phase 2: Postgres-first path.
-            # 1. Write verdict columns via CAS-guarded upsert_verdict() first.
-            winning = None
-            if verdict_fields:
-                try:
-                    winning = await upsert_verdict(doc_id, verdict_fields)
-                except Exception as vexc:
-                    logger.warning(
-                        "registry: upsert_verdict failed for %s (non-fatal, "
-                        "falling back to full upsert): %s",
-                        doc_id,
-                        vexc,
-                    )
-                    # Queue for retry and continue with full upsert below.
-                    await _enqueue_verdict_retry(doc_id, verdict_fields)
-
-            # 2. Backfill MinIO sidecar with the winning verdict so both
-            #    stores converge.  Uses asyncio.to_thread because
-            #    save_doc_meta is synchronous MinIO I/O.
+        # Zone-4 Phase 3: single linear path (Postgres-authoritative).
+        # 1. Read full fields from MinIO artifact.
+        fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+        if not fields and verdict_fields:
+            # MinIO artifact unreadable but we have verdict data from the
+            # job — write a minimal row so verdict columns are not lost.
+            fields = {"doc_id": doc_id}
+        if verdict_fields and fields:
+            # Overlay job-context verdict fields so they take precedence
+            # over any stale or not-yet-visible artifact data.
+            fields.update(verdict_fields)
+        if fields:
+            # 2. Single CAS upsert to Postgres (with RETURNING).
+            winning = await upsert_doc(fields)
+            # 3. Best-effort sidecar backfill with the winning Postgres
+            #    values so both stores converge.  Uses asyncio.to_thread
+            #    because save_doc_meta is synchronous MinIO I/O.
             if winning:
                 from ..storage import save_doc_meta
 
@@ -121,26 +118,6 @@ async def _upsert_registry_row(
                         doc_id,
                         smc_exc,
                     )
-
-            # 3. Full upsert for non-verdict columns (doc_name, sha256, etc.).
-            fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
-            if fields:
-                # Overlay verdict_fields so the verdict columns in the full
-                # upsert match what just won in Postgres, avoiding a
-                # stale-MinIO-read regression.
-                if verdict_fields:
-                    fields.update(verdict_fields)
-                await upsert_doc(fields)
-        else:
-            # Zone-4 default (minio): existing RFC-006 flow unchanged.
-            fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
-            if fields and verdict_fields:
-                # Zone-3: overlay job-context verdict fields onto the MinIO-read
-                # base, so the caller's authoritative values win over any stale
-                # or not-yet-visible artifact data.
-                fields.update(verdict_fields)
-            if fields:
-                await upsert_doc(fields)
 
         REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP.set_to_current_time()
         logger.info("registry: dual-write upserted doc_id=%s", doc_id)

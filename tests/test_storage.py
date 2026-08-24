@@ -12,7 +12,7 @@ ERASE-01-C3  a mid-cascade failure is surfaced and names the unpurged store
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from minio.error import S3Error
@@ -292,7 +292,10 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
         patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
     ):
         result = await delete_doc("ghost9999")  # must NOT raise
-    assert result == {"errors": []}
+    # Zone-4 Phase 3 / HR2: registry pool is never initialized in this test
+    # process, so the cascade surfaces the skip as an observable error
+    # instead of silently dropping the Postgres row deletion.
+    assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
 
 
 async def test_flat_02_c2_flat_json_nosuchkey_tolerated(mock_minio):
@@ -433,7 +436,10 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
         c for c in mock_minio.remove_object.call_args_list if c.args[1].startswith("preloaded/")
     ]
     assert preloaded_calls == []
-    assert result["errors"] == []
+    # Zone-4 Phase 3 / HR2: registry pool is never initialized in this test
+    # process, so the cascade surfaces the skip as an observable error
+    # instead of silently dropping the Postgres row deletion.
+    assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
 
 
 # ── save_raw ───────────────────────────────────────────────────────────────
@@ -589,3 +595,138 @@ def test_per_node_garble_catches_pua_node():
     tree = [garbled_node] + [_clean_node(i) for i in range(99)]
 
     assert _garble_check_nodes(tree) == 1
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: delete_doc errors[] observable for registry skip (contract)
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_doc_errors_registry_disabled(mock_minio):
+    """When registry_enabled=False, delete_doc appends an observable
+    errors[] entry so the caller knows erasure did not reach Postgres."""
+    import dataclasses
+
+    from pageindex_mcp.storage import documents as _docs_mod
+
+    mock_minio.get_object.side_effect = _nosuchkey()
+    mock_minio.list_objects.return_value = []
+    mock_minio.remove_object.side_effect = _nosuchkey()
+
+    original = _docs_mod.settings
+    patched = dataclasses.replace(original, registry_enabled=False, postgres_dsn="")
+    with (
+        patch.object(_docs_mod, "settings", patched),
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
+    ):
+        result = await delete_doc("reg-off-1")
+
+    registry_errors = [e for e in result["errors"] if "registry" in e.lower()]
+    assert len(registry_errors) >= 1
+    assert any("skipped" in e.lower() or "registry_enabled" in e.lower() for e in registry_errors)
+
+
+async def test_delete_doc_errors_pool_not_ready(monkeypatch, mock_minio):
+    """When pool is not ready, delete_doc appends an observable errors[] entry."""
+    mock_minio.get_object.side_effect = _nosuchkey()
+    mock_minio.list_objects.return_value = []
+    mock_minio.remove_object.side_effect = _nosuchkey()
+
+    _wire_registry(monkeypatch, registry_delete_doc=AsyncMock(), get_pool_return=None)
+
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
+    ):
+        result = await delete_doc("pool-down-1")
+
+    registry_errors = [e for e in result["errors"] if "registry" in e.lower()]
+    assert len(registry_errors) >= 1
+    assert any("pool not ready" in e.lower() for e in registry_errors)
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: save_doc_meta no longer calls _confirm_write_visible
+# (regression test)
+# ---------------------------------------------------------------------------
+
+
+def test_save_doc_meta_does_not_call_confirm_write_visible(mock_minio):
+    """Zone-4 Phase 3: save_doc_meta must NOT call _confirm_write_visible.
+    The sidecar is archival-only; the barrier was removed."""
+    meta = {
+        "doc_id": "barrier-1",
+        "doc_name": "test.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-21T00:00:00+00:00",
+    }
+    with patch(
+        "pageindex_mcp.storage.minio_ops._confirm_write_visible"
+    ) as mock_barrier:
+        save_doc_meta("barrier-1", meta)
+
+    mock_barrier.assert_not_called()
+    # But put_object IS called (the sidecar is still written)
+    mock_minio.put_object.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: delete_doc surfaces registry timeout in errors[] (contract)
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_doc_errors_registry_timeout(monkeypatch, mock_minio):
+    """Zone-4 Phase 3 / HR2: when the registry delete times out, the timeout
+    is surfaced as an observable errors[] entry (not silently swallowed)."""
+    import asyncio as _asyncio
+
+    load_resp = MagicMock()
+    load_resp.read.return_value = json.dumps(
+        {"doc_id": "timeout-1", "doc_name": "report.pdf"}
+    ).encode()
+    mock_minio.get_object.return_value = load_resp
+    mock_minio.list_objects.return_value = []
+
+    async def _slow_delete(doc_id):
+        await _asyncio.sleep(10)  # longer than the timeout
+
+    _wire_registry(monkeypatch, registry_delete_doc=_slow_delete)
+
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
+    ):
+        result = await delete_doc("timeout-1")
+
+    registry_errors = [e for e in result["errors"] if "registry" in e.lower()]
+    assert len(registry_errors) >= 1
+    assert any("timed out" in e.lower() or "timeout" in e.lower() for e in registry_errors)
+
+
+# ---------------------------------------------------------------------------
+# Zone-4 Phase 3: save_doc retains write-visibility barrier (contract)
+# ---------------------------------------------------------------------------
+
+
+def test_save_doc_still_calls_confirm_write_visible(mock_minio):
+    """Zone-4 Phase 3 contract: save_doc (primary processed artifact) must
+    STILL call _confirm_write_visible -- the barrier removal is scoped
+    exclusively to save_doc_meta (sidecar), not save_doc."""
+    tree = {
+        "doc_id": "barrier-keep-1",
+        "doc_name": "t.pdf",
+        "structure": [{"title": "Root", "nodes": []}],
+    }
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch(
+            "pageindex_mcp.storage.minio_ops._confirm_write_visible"
+        ) as mock_barrier,
+    ):
+        save_doc("barrier-keep-1", tree)
+
+    mock_barrier.assert_called_once()
