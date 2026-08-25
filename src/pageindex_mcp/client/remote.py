@@ -8,10 +8,13 @@ import os
 
 from ..config import (
     CURRENT_PIPELINE_VERSION,
+    ZDRComplianceError,
+    require_zdr_compliance,
     settings,
 )
 from ..metrics import (
     DOCLING_VERSION_SKEW,
+    HR3_EGRESS_BLOCKED_TOTAL,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,6 +85,13 @@ async def _remote_pdf_to_markdown(
 
     from ..storage import presigned_get_url
 
+    if settings.pii_corpus:
+        try:
+            require_zdr_compliance(settings.docling_service_url, "Docling remote PDF conversion")
+        except ZDRComplianceError:
+            HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_pdf").inc()
+            raise
+
     url = presigned_get_url(staging_key)
     payload = {
         "presigned_url": url,
@@ -120,6 +130,13 @@ async def _remote_image_to_markdown(
     import httpx
 
     from ..storage import presigned_get_url
+
+    if settings.pii_corpus:
+        try:
+            require_zdr_compliance(settings.docling_service_url, "Docling remote image conversion")
+        except ZDRComplianceError:
+            HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_image").inc()
+            raise
 
     url = presigned_get_url(staging_key)
     payload = {

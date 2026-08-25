@@ -9,7 +9,8 @@ import random
 
 import openai
 
-from ..config import settings
+from ..config import ZDRComplianceError, settings
+from ..metrics import HR3_EGRESS_BLOCKED_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,12 @@ class LLMTransientFailure(Exception):
 _LLM_TREE_MAX_RETRIES = int(os.environ.get("LLM_TREE_MAX_RETRIES", "3"))
 _LLM_FALLBACK_BASE_URL = os.environ.get("LLM_FALLBACK_BASE_URL", "")
 _RETRY_AFTER_CAP = 60  # seconds
+
+# D3: per-process cache so the primary-LLM ZDR gate isn't re-checked on every
+# call in non-PII deployments. openai_base_url is stable within process
+# lifetime; if settings are rebound after startup this cache goes stale (see
+# RFC-039 Consequences).
+_primary_zdr_verified: bool = False
 
 
 def _is_retryable_llm_error(exc: Exception) -> tuple[bool, int | None]:
@@ -62,6 +69,17 @@ async def _llm_with_retry(
     Raises ``LLMTransientFailure`` on exhaustion; non-transient errors
     propagate immediately.
     """
+    global _primary_zdr_verified
+    if settings.pii_corpus and not _primary_zdr_verified:
+        from ..config import require_zdr_compliance
+
+        try:
+            require_zdr_compliance(settings.openai_base_url, "primary LLM tree generation")
+        except ZDRComplianceError:
+            HR3_EGRESS_BLOCKED_TOTAL.labels(path="llm_primary").inc()
+            raise
+        _primary_zdr_verified = True
+
     last_exc: Exception | None = None
     last_status: int | None = None
 
@@ -115,7 +133,11 @@ async def _llm_with_retry(
         # LLMTransientFailure below, giving the caller a clear signal.
         from ..config import require_zdr_compliance
 
-        require_zdr_compliance(fallback_base_url, "LLM fallback retry")
+        try:
+            require_zdr_compliance(fallback_base_url, "LLM fallback retry")
+        except ZDRComplianceError:
+            HR3_EGRESS_BLOCKED_TOTAL.labels(path="llm_fallback").inc()
+            raise
 
         logger.warning(
             "Primary LLM exhausted %d retries; trying fallback at %s",
