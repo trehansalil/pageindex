@@ -220,6 +220,166 @@ class TestFlatBlockPrimaryTextTable:
 
 # ── Post-Zone-1 wiring: production call ordering ─────────────────
 
+# ── Zone "Garble Detection Fragmentation" wiring tests ─────────────────────
+
+
+class TestScriptContextThreadsThroughValidateTree:
+    """Wiring: ScriptContext.had_presentation_forms threads through
+    validate_tree to _gate_garbling and _gate_node_garbling."""
+
+    def test_had_presentation_forms_threads_to_garble_gate(self):
+        from unittest.mock import patch
+        from pageindex_mcp.helpers.tree_validation import validate_tree
+
+        # Build a tree with enough content to pass basic gates
+        text = "clean text content here " * 30
+        tree = [
+            {
+                "title": "Root",
+                "text": text,
+                "nodes": [
+                    {"title": "A", "text": text, "nodes": []},
+                    {"title": "B", "text": text, "nodes": []},
+                    {"title": "C", "text": text, "nodes": []},
+                ],
+            }
+        ]
+
+        ctx = ScriptContext(dominant_script="Arab", had_presentation_forms=True, source="test")
+
+        # Spy on detect_garble calls to verify had_presentation_forms threading
+        calls = []
+        from pageindex_mcp.helpers.garble import detect_garble as _orig_detect
+
+        def spy_detect(text, **kwargs):
+            sc = kwargs.get("script_context")
+            if sc is not None:
+                calls.append(sc.had_presentation_forms)
+            return _orig_detect(text, **kwargs)
+
+        with patch("pageindex_mcp.helpers.garble.detect_garble", side_effect=spy_detect):
+            validate_tree(tree, expected_script=ctx)
+
+        # At least one call should have had_presentation_forms=True
+        assert any(c is True for c in calls), (
+            f"No detect_garble call received had_presentation_forms=True; "
+            f"values seen: {calls}"
+        )
+
+
+class TestApplyPromotionsScriptContextWiring:
+    """Wiring: apply_promotions receives and uses ScriptContext instead of
+    constructing throwaway ScriptContext(had_presentation_forms=False)."""
+
+    def test_script_context_threaded_to_detect_garble(self):
+        from unittest.mock import patch, MagicMock
+        from pageindex_mcp.helpers.verdict import apply_promotions
+        from pageindex_mcp.helpers.types import GateOutcome, TreeDefect, VerdictThresholds
+        from pageindex_mcp.helpers.tree_validation import TreeSignals
+        from pageindex_mcp.config import pipeline_config
+
+        text = "clean content " * 50
+        tree = [
+            {
+                "title": "Root",
+                "text": text,
+                "nodes": [
+                    {"title": "A", "text": text, "nodes": []},
+                ],
+            }
+        ]
+        sig = TreeSignals.from_tree(tree)
+        th = VerdictThresholds.from_config(pipeline_config)
+
+        outcome = GateOutcome(
+            defect=TreeDefect.OK,
+            validate_reason=None,
+            signals=sig,
+            all_defects=frozenset(),
+            hard_fail_verdict=None,
+        )
+
+        sc = ScriptContext(dominant_script="Arab", had_presentation_forms=True, source="test")
+        calls = []
+        from pageindex_mcp.helpers.garble import detect_garble as _orig
+
+        def spy(text, **kwargs):
+            ctx = kwargs.get("script_context")
+            if ctx is not None:
+                calls.append(ctx.had_presentation_forms)
+            return _orig(text, **kwargs)
+
+        with patch("pageindex_mcp.helpers.verdict.detect_garble", side_effect=spy):
+            apply_promotions(
+                outcome,
+                content_class="flat_prose",
+                image_enrichment_ratio=0.9,
+                inspector_class=None,
+                th=th,
+                expected_script="Arab",
+                script_context=sc,
+            )
+
+        # If detect_garble was called in apply_promotions (image_enrichment path),
+        # it should have received had_presentation_forms=True
+        if calls:
+            assert any(c is True for c in calls), (
+                f"apply_promotions called detect_garble without threading "
+                f"had_presentation_forms=True; values: {calls}"
+            )
+
+
+class TestEndToEndScriptContextNoThrowaway:
+    """Integration: ScriptContext.from_document flows through validate_tree
+    and compute_verdict without any had_presentation_forms=False reconstruction
+    at key call sites."""
+
+    def test_no_throwaway_script_context_in_tree_signals(self):
+        """TreeSignals.from_tree, when given a ScriptContext with
+        had_presentation_forms=True, does NOT construct a new ScriptContext
+        with had_presentation_forms=False."""
+        from unittest.mock import patch
+        from pageindex_mcp.helpers.tree_validation import TreeSignals
+
+        text = "clean text " * 50
+        tree = [
+            {
+                "title": "Root",
+                "text": text,
+                "nodes": [
+                    {"title": "A", "text": text, "nodes": []},
+                    {"title": "B", "text": text, "nodes": []},
+                    {"title": "C", "text": text, "nodes": []},
+                ],
+            }
+        ]
+
+        ctx = ScriptContext(dominant_script="Arab", had_presentation_forms=True, source="test")
+
+        # Track all ScriptContext constructions
+        constructed = []
+        _orig_init = ScriptContext.__init__
+
+        def spy_init(self, *args, **kwargs):
+            _orig_init(self, *args, **kwargs)
+            constructed.append(self)
+
+        with patch.object(ScriptContext, "__init__", spy_init):
+            TreeSignals.from_tree(tree, expected_script=ctx)
+
+        # Verify that any ScriptContext constructed inside from_tree with
+        # source="tree_signals" carries the had_presentation_forms from the
+        # original context (True), not a hardcoded False.
+        tree_signals_ctxs = [c for c in constructed if c.source == "tree_signals"]
+        for c in tree_signals_ctxs:
+            assert c.had_presentation_forms is True, (
+                f"TreeSignals.from_tree constructed ScriptContext with "
+                f"had_presentation_forms=False (source={c.source})"
+            )
+
+
+# ── Post-Zone-1 wiring: production call ordering ─────────────────
+
 class TestPersistFlatResultOrdering:
     """Wiring (blocker #2 resolution): _persist_flat_result call ordering
     after Zone-1 restructuring is:

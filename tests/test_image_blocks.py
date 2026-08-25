@@ -808,3 +808,273 @@ class TestIndependentPictureResults:
         assert "png_bytes" not in pic_results[0]
         assert "png_bytes" in pic_results[1]
         assert "png_bytes" in pic_results[2]
+
+
+# ---------------------------------------------------------------------------
+# Zone-8: Standalone image splice_picture_text_for_tree regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneImageSplice:
+    """Zone-8: standalone image path calls splice_picture_text_for_tree before
+    md_to_tree so OCR-recovered text appears in the tree, not just in
+    pic_results metadata."""
+
+    @pytest.mark.asyncio
+    async def test_standalone_image_splices_ocr_text_into_tree_markers(self, monkeypatch):
+        """Given a .jpg with OCR text in pic_results, the splice inserts
+        [Chart text] blocks after <!-- image --> markers so md_to_tree sees
+        the recovered text."""
+        from pageindex_mcp.converters import splice_picture_text_for_tree
+
+        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
+        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(source_bytes)
+
+            fake_settings = SimpleNamespace(
+                openai_api_key="k",
+                openai_base_url="https://api.openai.com/v1",
+                azure_api_version=None,
+                llm_model="gpt-test",
+                minio_secure=False,
+                minio_endpoint="localhost:9000",
+                minio_bucket="pageindex",
+                flat_doc_routing=True,
+                vlm_fallback=False,
+                vlm_model="gpt-4.1",
+                vlm_describe_images=False,
+                pii_corpus=False,
+            )
+            monkeypatch.setattr(_idx, "settings", fake_settings)
+            monkeypatch.setattr(_img, "settings", fake_settings)
+            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
+            monkeypatch.setattr(_idx, "prepare_tree", lambda s, **kw: s)
+            monkeypatch.setattr(
+                _img,
+                "route_and_extract_flat",
+                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+            )
+            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_raw", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
+            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+            # Return markdown with an image marker and some OCR text
+            monkeypatch.setattr(
+                _idx, "image_to_markdown", lambda path, langs: "<!-- image -->"
+            )
+            # _tesseract_ocr_image returns substantial OCR text
+            monkeypatch.setattr(
+                _idx, "_tesseract_ocr_image",
+                lambda path, langs: "OCR recovered text from standalone image",
+            )
+
+            # Enable the splice
+            monkeypatch.setattr(_img, "TREE_PATH_PICTURE_SPLICE_ENABLED", True)
+
+            # Capture the md content passed to _run_md_to_tree
+            captured_md = []
+
+            async def _fake_tree(md_path):
+                import pathlib
+                content = pathlib.Path(md_path).read_text(encoding="utf-8")
+                captured_md.append(content)
+                return {
+                    "structure": [{"node_id": "n1", "text": content, "nodes": []}],
+                    "doc_description": "",
+                }
+
+            c = CustomPageIndexClient(api_key="test-key")
+            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
+
+            await c.index(jpg_path)
+
+            # The markdown passed to md_to_tree must contain the spliced OCR text
+            assert len(captured_md) >= 1
+            assert "[Chart text]:" in captured_md[0]
+            assert "OCR recovered text from standalone image" in captured_md[0]
+        finally:
+            if os.path.exists(jpg_path):
+                os.unlink(jpg_path)
+
+    @pytest.mark.asyncio
+    async def test_standalone_image_splice_disabled_skips_splice(self, monkeypatch):
+        """When TREE_PATH_PICTURE_SPLICE_ENABLED=false, the splice is skipped
+        and md_to_tree sees raw markers without [Chart text] blocks."""
+        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
+        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(source_bytes)
+
+            fake_settings = SimpleNamespace(
+                openai_api_key="k",
+                openai_base_url="https://api.openai.com/v1",
+                azure_api_version=None,
+                llm_model="gpt-test",
+                minio_secure=False,
+                minio_endpoint="localhost:9000",
+                minio_bucket="pageindex",
+                flat_doc_routing=True,
+                vlm_fallback=False,
+                vlm_model="gpt-4.1",
+                vlm_describe_images=False,
+                pii_corpus=False,
+            )
+            monkeypatch.setattr(_idx, "settings", fake_settings)
+            monkeypatch.setattr(_img, "settings", fake_settings)
+            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
+            monkeypatch.setattr(_idx, "prepare_tree", lambda s, **kw: s)
+            monkeypatch.setattr(
+                _img,
+                "route_and_extract_flat",
+                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+            )
+            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_raw", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
+            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+            monkeypatch.setattr(
+                _idx, "image_to_markdown", lambda path, langs: "<!-- image -->"
+            )
+            monkeypatch.setattr(
+                _idx, "_tesseract_ocr_image",
+                lambda path, langs: "OCR recovered text from standalone image",
+            )
+
+            # Disable the splice -- must patch BOTH the images module (canonical
+            # source) AND the indexer module (which imported the name at module
+            # load time, creating a separate binding).
+            monkeypatch.setattr(_img, "TREE_PATH_PICTURE_SPLICE_ENABLED", False)
+            monkeypatch.setattr(_idx, "TREE_PATH_PICTURE_SPLICE_ENABLED", False)
+
+            captured_md = []
+
+            async def _fake_tree(md_path):
+                import pathlib
+                content = pathlib.Path(md_path).read_text(encoding="utf-8")
+                captured_md.append(content)
+                return {
+                    "structure": [{"node_id": "n1", "text": content, "nodes": []}],
+                    "doc_description": "",
+                }
+
+            c = CustomPageIndexClient(api_key="test-key")
+            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
+
+            await c.index(jpg_path)
+
+            assert len(captured_md) >= 1
+            assert "[Chart text]:" not in captured_md[0]
+        finally:
+            if os.path.exists(jpg_path):
+                os.unlink(jpg_path)
+
+
+# ---------------------------------------------------------------------------
+# Zone-8: detect_ocr_langs(filename) regression test for standalone images
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneImageDetectOcrLangs:
+    """Zone-8: standalone image path calls detect_ocr_langs(filename) instead
+    of hardcoded list. Arabic filenames must include 'ara' in the langs."""
+
+    @pytest.mark.asyncio
+    async def test_arabic_filename_includes_ara_lang(self, monkeypatch):
+        """Given a filename containing Arabic characters, ensure the langs
+        passed to ensure_tessdata include 'ara'."""
+        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
+        # Create a temp file with Arabic characters in the name
+        import tempfile as _tf
+        tmp_dir = _tf.mkdtemp()
+        arabic_path = os.path.join(tmp_dir, "قرار_وزاري.jpg")
+        try:
+            with open(arabic_path, "wb") as fh:
+                fh.write(source_bytes)
+
+            fake_settings = SimpleNamespace(
+                openai_api_key="k",
+                openai_base_url="https://api.openai.com/v1",
+                azure_api_version=None,
+                llm_model="gpt-test",
+                minio_secure=False,
+                minio_endpoint="localhost:9000",
+                minio_bucket="pageindex",
+                flat_doc_routing=True,
+                vlm_fallback=False,
+                vlm_model="gpt-4.1",
+                vlm_describe_images=False,
+                pii_corpus=False,
+            )
+            monkeypatch.setattr(_idx, "settings", fake_settings)
+            monkeypatch.setattr(_img, "settings", fake_settings)
+            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
+            monkeypatch.setattr(_idx, "prepare_tree", lambda s, **kw: s)
+            monkeypatch.setattr(
+                _img,
+                "route_and_extract_flat",
+                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+            )
+            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc", MagicMock())
+            monkeypatch.setattr(_idx, "save_raw", MagicMock())
+            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
+            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
+            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+
+            # Capture what langs are passed to ensure_tessdata
+            captured_langs = []
+            orig_ensure = lambda langs: langs
+
+            def spy_ensure(langs):
+                captured_langs.append(list(langs))
+                return langs
+
+            monkeypatch.setattr(_idx, "ensure_tessdata", spy_ensure)
+            monkeypatch.setattr(
+                _idx, "image_to_markdown", lambda path, langs: "<!-- image -->"
+            )
+            monkeypatch.setattr(
+                _idx, "_tesseract_ocr_image", lambda path, langs: ""
+            )
+
+            c = CustomPageIndexClient(api_key="test-key")
+
+            async def _fake_tree(md_path):
+                return {
+                    "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
+                    "doc_description": "",
+                }
+
+            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
+
+            await c.index(arabic_path)
+
+            # ensure_tessdata was called with langs that include 'ara'
+            assert len(captured_langs) >= 1
+            assert "ara" in captured_langs[0], (
+                f"Expected 'ara' in langs for Arabic filename, got {captured_langs[0]}"
+            )
+        finally:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)

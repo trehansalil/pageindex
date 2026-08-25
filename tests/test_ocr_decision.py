@@ -150,3 +150,92 @@ class TestDecideRouteExhaustive:
         assert REASON_POLICY[defect] == _ReasonPolicy.PERSIST_FAIL
         assert decide_route(defect) == Route.PERSIST_FAIL
         assert decide_route(defect) != Route.REJECT
+
+
+# ---------------------------------------------------------------------------
+# Zone-8: decide_ocr_strategy with document_type parameter (exhaustiveness)
+# ---------------------------------------------------------------------------
+
+
+class TestDecideOcrStrategyDocumentType:
+    """Exhaustive tests for decide_ocr_strategy with document_type parameter."""
+
+    def test_image_document_type_returns_full_page_with_splice_when_unified_enabled(self, monkeypatch):
+        """document_type='image' with UNIFIED_OCR_PLAN_ENABLED=true returns
+        FULL_PAGE mode with splice_required=True."""
+        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", True)
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=False,
+            has_image_markers=False,
+            document_type="image",
+        )
+        assert result.mode == OcrMode.FULL_PAGE
+        assert result.splice_required is True
+
+    def test_image_document_type_ignored_when_unified_disabled(self, monkeypatch):
+        """document_type='image' with UNIFIED_OCR_PLAN_ENABLED=false falls through
+        to the standard PDF truth table (backward compat)."""
+        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", False)
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=False,
+            has_image_markers=False,
+            document_type="image",
+        )
+        assert result.mode == OcrMode.NONE
+        assert result.splice_required is False
+
+    @pytest.mark.parametrize(
+        "escalation, markers, force, garble, already_applied, expected_mode",
+        [
+            (True, True, True, True, True, OcrMode.NONE),
+            (True, True, True, False, False, OcrMode.FULL_PAGE),
+            (True, True, False, False, False, OcrMode.PER_PICTURE),
+            (True, False, False, False, False, OcrMode.NONE),
+            (False, False, False, False, False, OcrMode.NONE),
+        ],
+    )
+    def test_pdf_document_type_preserves_existing_truth_table(
+        self, monkeypatch, escalation, markers, force, garble, already_applied, expected_mode
+    ):
+        """document_type='pdf' (default) preserves the existing truth table
+        regardless of UNIFIED_OCR_PLAN_ENABLED."""
+        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", True)
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=escalation,
+            has_image_markers=markers,
+            force_full_page=force,
+            garble_status=garble,
+            full_page_already_applied=already_applied,
+            document_type="pdf",
+        )
+        assert result.mode == expected_mode
+
+    def test_ocr_langs_defaults_to_deu_eng(self):
+        """OcrDecision.ocr_langs defaults to ['deu', 'eng'] when not overridden."""
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=False,
+            has_image_markers=False,
+        )
+        assert result.ocr_langs == ["deu", "eng"]
+
+    def test_ocr_langs_accepts_custom_list(self):
+        """OcrDecision.ocr_langs uses the caller-supplied list when provided."""
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=False,
+            has_image_markers=False,
+            ocr_langs=["ara", "eng"],
+        )
+        assert result.ocr_langs == ["ara", "eng"]
+
+    def test_image_type_carries_custom_ocr_langs(self, monkeypatch):
+        """document_type='image' with ocr_langs override threads the langs
+        through to the OcrDecision."""
+        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", True)
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=False,
+            has_image_markers=False,
+            document_type="image",
+            ocr_langs=["ara"],
+        )
+        assert result.ocr_langs == ["ara"]
+        assert result.splice_required is True

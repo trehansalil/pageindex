@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.conftest import filler_text
+
 pytest.importorskip("fitz")
 import fitz
 
@@ -183,10 +185,10 @@ class TestTableRepairSeparatorGuard:
 
 def _flat_leaf_tree(chars_per_leaf: list[int]) -> list[dict]:
     """A flat (depth == 1) sibling tree with one leaf per entry in
-    ``chars_per_leaf``, each leaf's text a repeated single-token char run (so
-    it never trips the token-repetition garble check)."""
+    ``chars_per_leaf``, using prose-shaped filler so improved garble
+    detection does not flag test fixtures."""
     return [
-        {"node_id": str(i), "title": "", "text": "x" * n, "nodes": []}
+        {"node_id": str(i), "title": "", "text": filler_text(n, i), "nodes": []}
         for i, n in enumerate(chars_per_leaf)
     ]
 

@@ -279,3 +279,94 @@ class TestFlatTextGarbleDetection:
         """Flat-path mirror of the digit-ratio heuristic on a raw markdown string."""
         md = "1651001429 " * 80  # ~880 chars, >60% digits
         assert _flat_garble(md) is True
+
+
+# ---------------------------------------------------------------------------
+# Zone-8: _tesseract_ocr_image exception handling contract
+# ---------------------------------------------------------------------------
+
+
+class TestTesseractOcrFailureContract:
+    """Zone-8: _tesseract_ocr_image increments TESSERACT_OCR_FAILURE_TOTAL
+    on specific exceptions and returns '' -- does NOT catch arbitrary
+    exceptions like KeyboardInterrupt."""
+
+    def test_timeout_expired_increments_metric_and_returns_empty(self, monkeypatch):
+        import subprocess
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+        from unittest.mock import patch
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        with (
+            patch("pageindex_mcp.converters.pictures.subprocess.run",
+                  side_effect=subprocess.TimeoutExpired(cmd="tesseract", timeout=60)),
+            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
+        ):
+            result = _tesseract_ocr_image("/fake.png", ["eng"])
+
+        assert result == ""
+        metric.labels.assert_called_once_with(reason="TimeoutExpired")
+        metric.labels.return_value.inc.assert_called_once()
+
+    def test_subprocess_error_increments_metric_and_returns_empty(self, monkeypatch):
+        import subprocess
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+        from unittest.mock import patch
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        with (
+            patch("pageindex_mcp.converters.pictures.subprocess.run",
+                  side_effect=subprocess.SubprocessError("boom")),
+            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
+        ):
+            result = _tesseract_ocr_image("/fake.png", ["eng"])
+
+        assert result == ""
+        metric.labels.assert_called_once_with(reason="SubprocessError")
+        metric.labels.return_value.inc.assert_called_once()
+
+    def test_file_not_found_increments_metric_and_returns_empty(self, monkeypatch):
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+        from unittest.mock import patch
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        with (
+            patch("pageindex_mcp.converters.pictures.subprocess.run",
+                  side_effect=FileNotFoundError("tesseract not found")),
+            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
+        ):
+            result = _tesseract_ocr_image("/fake.png", ["eng"])
+
+        assert result == ""
+        metric.labels.assert_called_once_with(reason="FileNotFoundError")
+        metric.labels.return_value.inc.assert_called_once()
+
+    def test_os_error_increments_metric_and_returns_empty(self, monkeypatch):
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+        from unittest.mock import patch
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        with (
+            patch("pageindex_mcp.converters.pictures.subprocess.run",
+                  side_effect=OSError("disk error")),
+            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
+        ):
+            result = _tesseract_ocr_image("/fake.png", ["eng"])
+
+        assert result == ""
+        metric.labels.assert_called_once_with(reason="OSError")
+        metric.labels.return_value.inc.assert_called_once()
+
+    def test_keyboard_interrupt_not_caught(self, monkeypatch):
+        """KeyboardInterrupt must NOT be caught -- it must propagate."""
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+        from unittest.mock import patch
+        import pytest
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        with (
+            patch("pageindex_mcp.converters.pictures.subprocess.run",
+                  side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _tesseract_ocr_image("/fake.png", ["eng"])

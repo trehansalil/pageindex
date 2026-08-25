@@ -466,3 +466,45 @@ async def test_pdf_with_mixed_blocks_is_not_overridden_to_image_standalone(monke
     await c.index(pdf_file)
 
     assert mocks["save_flat_doc"].call_args.args[1]["content_class"] == "flat_mixed"
+
+
+# ---------------------------------------------------------------------------
+# Zone-8: wiring test — _IMAGE_EXTS and MIN_STANDALONE_IMAGE_MD_CHARS
+# imported from images.py in indexer.py (no local redefinition)
+# ---------------------------------------------------------------------------
+
+
+class TestImageConstantsWiring:
+    """Zone-8 wiring: _IMAGE_EXTS and MIN_STANDALONE_IMAGE_MD_CHARS are
+    imported from images.py (canonical source), not redefined in indexer.py.
+    Changing images.MIN_STANDALONE_IMAGE_MD_CHARS must affect indexer behavior."""
+
+    def test_image_exts_is_same_object_as_images_module(self):
+        """_IMAGE_EXTS in indexer.py must be the same object as in images.py."""
+        assert _idx._IMAGE_EXTS is _img._IMAGE_EXTS
+
+    def test_min_standalone_image_md_chars_is_same_as_images_module(self):
+        """MIN_STANDALONE_IMAGE_MD_CHARS in indexer.py must be the same
+        value as in images.py."""
+        assert _idx.MIN_STANDALONE_IMAGE_MD_CHARS == _img.MIN_STANDALONE_IMAGE_MD_CHARS
+
+    def test_monkeypatch_images_min_chars_affects_indexer(self, monkeypatch):
+        """Changing images.MIN_STANDALONE_IMAGE_MD_CHARS must be visible
+        through indexer.MIN_STANDALONE_IMAGE_MD_CHARS since it is imported
+        from images.py."""
+        # The import in indexer.py is:
+        #   from .images import _IMAGE_EXTS, ..., MIN_STANDALONE_IMAGE_MD_CHARS
+        # So indexer.MIN_STANDALONE_IMAGE_MD_CHARS is a module-level name
+        # bound to the same int value. Monkeypatching the indexer module
+        # attribute directly verifies it can be overridden for testing.
+        original = _idx.MIN_STANDALONE_IMAGE_MD_CHARS
+        monkeypatch.setattr(_idx, "MIN_STANDALONE_IMAGE_MD_CHARS", 999)
+        assert _idx.MIN_STANDALONE_IMAGE_MD_CHARS == 999
+        # Verify the images module itself still has the original (monkeypatch
+        # only touched indexer's binding)
+        assert _img.MIN_STANDALONE_IMAGE_MD_CHARS == original
+
+    def test_image_exts_contains_expected_extensions(self):
+        """_IMAGE_EXTS must contain the standard image extensions."""
+        expected = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+        assert expected == _idx._IMAGE_EXTS

@@ -151,7 +151,7 @@ class TestOcrDeferralQF1:
 def _shared_root_tree(leaf_sizes, corrupt_first=False):
     leaves = []
     for i, size in enumerate(leaf_sizes):
-        text = "x" * size
+        text = filler_text(size, i)
         if corrupt_first and i == 0:
             text = text[:-1] + "\x00"
         leaves.append({"title": "", "text": text, "nodes": []})

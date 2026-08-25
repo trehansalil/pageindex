@@ -544,3 +544,66 @@ def _passing_tree():
             "nodes": [_healthy_leaf(f"Leaf {i}", _varied_text(i)) for i in range(5)],
         }
     ]
+
+
+# ===========================================================================
+# Zone-8: _recover_image_dominant_ocr uses keep-best heuristic (regression)
+# ===========================================================================
+
+
+class TestRecoverImageDominantOcrKeepBest:
+    """Zone-8: _recover_image_dominant_ocr passes use_keep_best=True to
+    _execute_ocr_retry.  When the OCR retry produces fewer chars than
+    pre-retry, the pre-retry content is preserved."""
+
+    @pytest.mark.asyncio
+    async def test_keep_best_reverts_when_retry_loses_chars(self, monkeypatch):
+        """When OCR retry produces fewer chars than pre-retry, state.md_content
+        should revert to the pre-retry value."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+        from pageindex_mcp.helpers import ExtractionState, Route, TreeDefect, TreeGateResult
+
+        pre_retry_md = "This is the original content with many characters " * 10
+        post_retry_md = "short"  # fewer chars
+
+        state = ExtractionState(
+            result={"structure": [{"title": "Root", "text": pre_retry_md, "nodes": []}]},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="<!-- image -->\n<!-- image -->\n<!-- image -->\n" + pre_retry_md,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=len(pre_retry_md),
+            extraction_stages_captured=[],
+        )
+
+        # Override _execute_ocr_retry to simulate a retry that produces less content
+        async def _fake_execute(self_mixin, state, file_path, filename, ext,
+                                expected_script, script_context=None, *,
+                                reason_label, splice_label, use_keep_best,
+                                metric_fail_label):
+            # Verify use_keep_best is True for image-dominant
+            assert use_keep_best is True, (
+                "_recover_image_dominant_ocr must pass use_keep_best=True"
+            )
+
+        mixin = RecoveryMixin()
+        # Set the attributes that the mixin method checks
+        monkeypatch.setattr(
+            "pageindex_mcp.client.recovery._IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", True
+        )
+        monkeypatch.setattr(
+            "pageindex_mcp.client.recovery.settings",
+            SimpleNamespace(flat_doc_routing=True, vlm_fallback=False),
+        )
+
+        # Patch _execute_ocr_retry to verify the keep-best parameter
+        monkeypatch.setattr(RecoveryMixin, "_execute_ocr_retry", _fake_execute)
+
+        await mixin._recover_image_dominant_ocr(
+            state, "/fake.pdf", "test.pdf", ".pdf", None
+        )

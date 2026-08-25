@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import filler_text
+
 from pageindex_mcp.helpers import (
     TreeDefect,
     TreeGateResult,
@@ -25,7 +27,7 @@ from pageindex_mcp.helpers import (
 def _make_tree(leaf_sizes: list[int], depth: int = 2) -> list:
     trees = []
     for i, size in enumerate(leaf_sizes):
-        leaf = {"title": "", "text": "x" * size, "nodes": []}
+        leaf = {"title": "", "text": filler_text(size, i), "nodes": []}
         node = leaf
         for _ in range(depth - 1):
             node = {"title": "", "text": "", "nodes": [node]}
@@ -34,7 +36,7 @@ def _make_tree(leaf_sizes: list[int], depth: int = 2) -> list:
 
 
 def _make_tree_flat(leaf_sizes: list[int]) -> list:
-    return [{"title": "", "text": "x" * n, "nodes": []} for n in leaf_sizes]
+    return [{"title": "", "text": filler_text(n, i), "nodes": []} for i, n in enumerate(leaf_sizes)]
 
 
 def _make_tree_with_ratio(target_ratio: float, total_chars: int = 10000) -> list:
@@ -75,9 +77,9 @@ def _borderline_ratio_tree() -> list:
 
 
 def _shallow_many_nodes() -> list:
-    nodes = [{"node_id": "1", "title": "Big", "text": "x" * 6000, "nodes": []}]
+    nodes = [{"node_id": "1", "title": "Big", "text": filler_text(6000, 0), "nodes": []}]
     for i in range(2, 12):
-        nodes.append({"node_id": str(i), "title": f"N{i}", "text": "y" * 400, "nodes": []})
+        nodes.append({"node_id": str(i), "title": f"N{i}", "text": filler_text(400, i), "nodes": []})
     return nodes
 
 

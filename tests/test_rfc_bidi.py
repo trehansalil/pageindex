@@ -22,6 +22,8 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from tests.conftest import filler_text
+
 import fitz
 
 from pageindex_mcp import client as client_mod
@@ -310,11 +312,10 @@ class TestDepthRecoveryOnInjectedHeadings:
 # ---------------------------------------------------------------------------
 def _flat_leaf_tree(chars_per_leaf: list[int]) -> list:
     """A flat sibling tree (depth == 1) with one leaf per entry in
-    ``chars_per_leaf``, each leaf's text being that many repeated
-    non-whitespace chars (single-token, so it never trips the
-    token-repetition garble check)."""
+    ``chars_per_leaf``, using prose-shaped filler so improved garble
+    detection does not flag test fixtures."""
     return [
-        {"node_id": str(i), "title": "", "text": "x" * n, "nodes": []}
+        {"node_id": str(i), "title": "", "text": filler_text(n, i), "nodes": []}
         for i, n in enumerate(chars_per_leaf)
     ]
 

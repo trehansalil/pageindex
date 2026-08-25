@@ -90,12 +90,14 @@ class TestLatinGibberishDetection:
         garbled = "de Bab rel igh foal pred khar teb ghal mun sar dek phal wur"
         assert check_garble(garbled, expected_script="Arab", profile=BULK_PROFILE) is True
 
-    def test_latin_context_ignores_prong(self):
+    def test_latin_nonsense_detected_after_zone1_fix(self):
+        # Zone-1 fix removed the Latin-script filter from latin_gibberish prong,
+        # so nonsense Latin tokens are now correctly detected as garbled.
         assert (
             check_garble(
                 "xkq plm zfg wrt bvn yhs tjk mld qrx", expected_script="Latn", profile=BULK_PROFILE
             )
-            is False
+            is True
         )
 
 
