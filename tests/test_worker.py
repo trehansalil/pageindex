@@ -5,6 +5,7 @@ and internal helpers (DLQ push, process-group kill, registry dual-write,
 startup/shutdown, cron wiring).
 """
 
+import asyncio
 import dataclasses
 import json
 import signal
@@ -13,6 +14,8 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 import pageindex_mcp.worker as worker
 from pageindex_mcp.worker import (
@@ -31,6 +34,13 @@ from pageindex_mcp.worker import (
     reap_stale_jobs,
     shutdown,
     startup,
+)
+from pageindex_mcp.worker.constants import (
+    CHILD_TIMEOUT,
+    INSPECTOR_CONFIDENCE_THRESHOLD,
+    JOB_TIMEOUT,
+    MAX_EFFECTIVE_TIMEOUT,
+    REAP_GRACE,
 )
 
 
@@ -267,6 +277,370 @@ async def test_run_converter_subprocess_generic_nonzero_no_stdout():
     assert excinfo.value.error_class is None
 
 
+# ── RFC-038 D1: confidence gate alignment ────────────────────────────────────
+def _fake_subprocess_with_handshake(handshake: dict, stdout=b""):
+    proc = MagicMock()
+    proc.stdout = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=(json.dumps(handshake) + "\n").encode())
+    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    proc.returncode = 0
+    return proc
+
+
+@pytest.mark.parametrize(
+    ("confidence", "expect_multiplier"),
+    [
+        (0.50, False),
+        (INSPECTOR_CONFIDENCE_THRESHOLD, True),
+        (0.89, False),
+    ],
+)
+async def test_timeout_multiplier_requires_confidence_threshold(confidence, expect_multiplier):
+    """RFC-038 D1: the 16.5x timeout multiplier only applies when the
+    pdf-inspector classification confidence meets INSPECTOR_CONFIDENCE_THRESHOLD,
+    matching the forced-OCR gate in client/indexer.py."""
+    handshake = {
+        "handshake": True,
+        "is_docling_route": False,
+        "pdf_classification": {"pdf_type": "scanned", "confidence": confidence},
+    }
+    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
+    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+    ):
+        result = await _run_converter_subprocess("/tmp/x.pdf")
+    if expect_multiplier:
+        assert result["_effective_timeout"] == min(CHILD_TIMEOUT * 16.5, MAX_EFFECTIVE_TIMEOUT)
+    else:
+        assert result["_effective_timeout"] == CHILD_TIMEOUT
+
+
+def test_indexer_uses_same_threshold():
+    """RFC-038 D1: indexer.py's forced-OCR gate imports the same
+    INSPECTOR_CONFIDENCE_THRESHOLD constant used by subprocess_mgr.py's
+    timeout multiplier, rather than a locally hardcoded value."""
+    from pageindex_mcp.client import indexer as _indexer_mod
+    from pageindex_mcp.worker.constants import (
+        INSPECTOR_CONFIDENCE_THRESHOLD as _constants_threshold,
+    )
+
+    assert _indexer_mod.INSPECTOR_CONFIDENCE_THRESHOLD is _constants_threshold
+
+
+# ── RFC-038 D4: effective timeout cap ────────────────────────────────────────
+async def test_effective_timeout_capped_at_max():
+    """RFC-038 D4: the chunked Docling timeout and the 16.5x inspector
+    multiplier can compound to an absurd value; the effective_timeout applied
+    to the child must be capped at MAX_EFFECTIVE_TIMEOUT."""
+    handshake = {
+        "handshake": True,
+        "is_docling_route": True,
+        "chunk_count": 100,
+        "pdf_classification": {"pdf_type": "scanned", "confidence": 0.95},
+    }
+    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
+    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+    ):
+        result = await _run_converter_subprocess("/tmp/x.pdf")
+    assert result["_effective_timeout"] == MAX_EFFECTIVE_TIMEOUT
+
+
+async def test_timeout_cap_configurable_via_env(monkeypatch):
+    """RFC-038 D4: MAX_EFFECTIVE_TIMEOUT can be overridden via environment
+    variable for deployments with exceptionally large documents."""
+    monkeypatch.setenv("MAX_EFFECTIVE_TIMEOUT", "100")
+    handshake = {
+        "handshake": True,
+        "is_docling_route": True,
+        "chunk_count": 100,
+        "pdf_classification": {"pdf_type": "scanned", "confidence": 0.95},
+    }
+    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
+    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+        patch("pageindex_mcp.worker.subprocess_mgr.MAX_EFFECTIVE_TIMEOUT", 100),
+    ):
+        result = await _run_converter_subprocess("/tmp/x.pdf")
+    assert result["_effective_timeout"] == 100
+
+
+# ── RFC-038 D2: early deadline persistence ───────────────────────────────────
+async def test_early_deadline_persisted_before_subprocess_completes(mock_redis):
+    """RFC-038 D2 / Design Property 2: effective_timeout_at must be persisted
+    to Redis as soon as the handshake reveals the real effective_timeout --
+    not after the converter child finishes. A child that emits its handshake
+    and then keeps running for 2s must not delay the Redis update past 1s."""
+    staging_key = "uploads/staging/job-early/report.pdf"
+    ctx = {"redis": mock_redis}
+    hset_calls = []
+
+    async def fake_hset(key, *args, **kwargs):
+        hset_calls.append((time.monotonic(), key, args, kwargs))
+        return 1
+
+    mock_redis.hset = AsyncMock(side_effect=fake_hset)
+
+    async def fake_run_converter_subprocess(
+        pdf_path, *, staging_key=None, job_start_config=None, on_effective_timeout=None
+    ):
+        if on_effective_timeout is not None:
+            await on_effective_timeout(20_000.0)
+        await asyncio.sleep(2)
+        return {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
+
+    start = time.monotonic()
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            fake_run_converter_subprocess,
+        ),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        result = await process_document_job(ctx, staging_key, "job-early")
+
+    assert result == "abc12345"
+    timeout_updates = [c for c in hset_calls if c[2] and c[2][0] == "effective_timeout_at"]
+    assert len(timeout_updates) == 1
+    elapsed, _key, args, _kwargs = timeout_updates[0]
+    value = args[1]
+    assert (elapsed - start) < 1.0
+    assert int(value) > int(time.time()) + 19_000  # reflects the extended deadline
+
+
+async def test_handshake_parse_failure_preserves_conservative_deadline():
+    """RFC-038 D2 AC3: if the handshake line fails to parse (garbage bytes),
+    effective_timeout falls back to the conservative CHILD_TIMEOUT default --
+    no multiplier is applied -- so the value surfaced for Redis persistence
+    stays conservative rather than regressing to an inflated one."""
+    proc = MagicMock()
+    proc.stdout = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=b"not valid json garbage\n")
+    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
+    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    proc.returncode = 0
+
+    surfaced = []
+
+    async def capture(effective_timeout):
+        surfaced.append(effective_timeout)
+
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+    ):
+        result = await _run_converter_subprocess("/tmp/x.pdf", on_effective_timeout=capture)
+
+    assert surfaced == [CHILD_TIMEOUT]
+    assert result["_effective_timeout"] == CHILD_TIMEOUT
+
+
+# ── RFC-038 Task 3.1: integration tests (D1+D2+D4) ───────────────────────────
+def _fake_subprocess_e2e(handshake: dict, stdout: bytes, *, communicate_delay: float = 0):
+    """A subprocess double for full process_document_job() runs: the handshake
+    line is delivered via proc.stdout.readline() and the terminal result via
+    proc.communicate(), exactly as the real converter child behaves."""
+    proc = MagicMock()
+    proc.stdout = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=(json.dumps(handshake) + "\n").encode())
+
+    async def _communicate():
+        if communicate_delay:
+            await asyncio.sleep(communicate_delay)
+        return (stdout, b"")
+
+    proc.communicate = AsyncMock(side_effect=_communicate)
+    proc.returncode = 0
+    return proc
+
+
+async def test_scanned_pdf_below_threshold_no_extended_timeout(fake_redis):
+    """RFC-038 D1 (Property 1): a scanned PDF classified below
+    INSPECTOR_CONFIDENCE_THRESHOLD must NOT receive the 16.5x timeout budget --
+    end-to-end through process_document_job, effective_timeout_at in Redis
+    stays at the conservative default deadline."""
+    staging_key = "uploads/staging/job-below/report.pdf"
+    ctx = {"redis": fake_redis}
+    handshake = {
+        "handshake": True,
+        "is_docling_route": False,
+        "pdf_classification": {"pdf_type": "scanned", "confidence": 0.50},
+    }
+    stdout = json.dumps({"ok": True, "doc_id": "below1", "peak_rss_kib": 1}).encode()
+    proc = _fake_subprocess_e2e(handshake, stdout)
+
+    before = int(time.time())
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        result = await process_document_job(ctx, staging_key, "job-below")
+
+    assert result == "below1"
+    state = await fake_redis.hgetall("pageindex:job:job-below")
+    deadline = int(state["effective_timeout_at"])
+    # No multiplier applied -- deadline stays within the conservative
+    # JOB_TIMEOUT + REAP_GRACE budget stamped at processing start, not the
+    # inflated CHILD_TIMEOUT * 16.5 + REAP_GRACE budget.
+    assert deadline <= before + JOB_TIMEOUT + REAP_GRACE + 5
+    assert deadline < before + CHILD_TIMEOUT * 16.5
+
+
+async def test_scanned_pdf_above_threshold_extended_timeout(fake_redis):
+    """RFC-038 D1+D2 (Properties 1+2): a scanned PDF classified at/above
+    INSPECTOR_CONFIDENCE_THRESHOLD gets the 16.5x timeout budget, and Redis'
+    effective_timeout_at reflects that extended deadline -- persisted before
+    the converter child finishes running."""
+    staging_key = "uploads/staging/job-above/report.pdf"
+    ctx = {"redis": fake_redis}
+    handshake = {
+        "handshake": True,
+        "is_docling_route": False,
+        "pdf_classification": {"pdf_type": "scanned", "confidence": 0.92},
+    }
+    stdout = json.dumps({"ok": True, "doc_id": "above1", "peak_rss_kib": 1}).encode()
+    proc = _fake_subprocess_e2e(handshake, stdout, communicate_delay=0.3)
+
+    seen_mid_flight = {}
+
+    async def _watch_hgetall():
+        # Poll Redis while the (delayed) subprocess is still "running" to
+        # prove the deadline lands before completion, not after.
+        for _ in range(50):
+            state = await fake_redis.hgetall("pageindex:job:job-above")
+            # The conservative deadline is stamped from job.py's own
+            # int(time.time()), which can differ from ``before`` by a second --
+            # detect the extension by a strict margin, not exact inequality.
+            if "effective_timeout_at" in state and int(state["effective_timeout_at"]) > int(
+                before + JOB_TIMEOUT + REAP_GRACE + 60
+            ):
+                seen_mid_flight.update(state)
+                return
+            await asyncio.sleep(0.01)
+        seen_mid_flight.update(state)
+
+    before = int(time.time())
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ),
+        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        job_result, _watch_result = await asyncio.gather(
+            process_document_job(ctx, staging_key, "job-above"),
+            _watch_hgetall(),
+        )
+
+    assert job_result == "above1"
+    expected_extended = int(min(CHILD_TIMEOUT * 16.5, MAX_EFFECTIVE_TIMEOUT))
+    mid_deadline = int(seen_mid_flight["effective_timeout_at"])
+    assert mid_deadline >= before + expected_extended
+    final_state = await fake_redis.hgetall("pageindex:job:job-above")
+    assert int(final_state["effective_timeout_at"]) == mid_deadline
+    assert final_state["status"] == "done"
+
+
+async def test_reaper_respects_early_persisted_deadline(fake_redis):
+    """RFC-038 D2 (Property 2): reap_stale_jobs must respect an
+    effective_timeout_at persisted early (before the job's real deadline
+    passed the conservative JOB_TIMEOUT + REAP_GRACE cutoff). Under the old
+    (post-completion-only) persistence, a job this old with only the
+    conservative deadline visible would have been false-reaped."""
+    now = int(time.time())
+    started = now - (JOB_TIMEOUT + REAP_GRACE + 30)  # past the conservative cutoff
+    extended_deadline = started + int(CHILD_TIMEOUT * 16.5) + REAP_GRACE  # far in the future
+    await _seed(
+        fake_redis,
+        "long-running",
+        {
+            "status": "processing",
+            "processing_started_at": str(started),
+            "effective_timeout_at": str(extended_deadline),
+        },
+    )
+
+    with patch("pageindex_mcp.worker.job.time.time", return_value=float(now)):
+        await reap_stale_jobs({"redis": fake_redis})
+
+    state = await fake_redis.hgetall("pageindex:job:long-running")
+    assert state["status"] == "processing"
+    assert "reaped_at" not in state
+
+
+@settings(
+    max_examples=200,
+    deadline=500,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(
+    is_docling_route=st.booleans(),
+    chunk_count=st.integers(min_value=1, max_value=500),
+    pdf_type=st.sampled_from(["scanned", "image_based", "text", "unknown"]),
+    confidence=st.floats(min_value=0.0, max_value=1.0),
+)
+def test_property_timeout_always_bounded(is_docling_route, chunk_count, pdf_type, confidence):
+    """RFC-038 D4 (Property 4): for any handshake combination -- chunked
+    Docling route, inspector classification, confidence -- the effective
+    timeout surfaced to the caller never exceeds MAX_EFFECTIVE_TIMEOUT."""
+    handshake = {
+        "handshake": True,
+        "is_docling_route": is_docling_route,
+        "chunk_count": chunk_count,
+        "pdf_classification": {"pdf_type": pdf_type, "confidence": confidence},
+    }
+    stdout = json.dumps({"ok": True, "doc_id": "pbt1", "peak_rss_kib": 1}).encode()
+    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+
+    async def _run():
+        with (
+            patch(
+                "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+                AsyncMock(return_value=proc),
+            ),
+            patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+            patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+        ):
+            return await _run_converter_subprocess("/tmp/x.pdf")
+
+    result = asyncio.run(_run())
+    assert result["_effective_timeout"] <= MAX_EFFECTIVE_TIMEOUT
+
+
 # ── worker concurrency: max_jobs / clamping (WORKER-02-C1, C5) ──────────────
 def test_worker_02_c1_max_jobs_is_one():
     """WORKER-02-C1: the worker caps concurrency at one job so a single heavy
@@ -440,3 +814,30 @@ def test_upsert_registry_row_importable_from_worker():
     from pageindex_mcp.worker import _upsert_registry_row as fn
 
     assert callable(fn)
+
+
+def test_no_duplicate_timeout_definitions():
+    """RFC-038 D3 / Design Property 3: JOB_TIMEOUT, CHILD_TIMEOUT,
+    CHILD_GRACE_SECONDS, and REAP_GRACE must be defined exactly once, in
+    worker/constants.py -- no other module may hold its own module-level
+    assignment of these names."""
+    import pathlib
+    import re
+
+    worker_dir = pathlib.Path(__file__).resolve().parents[1] / "src" / "pageindex_mcp" / "worker"
+    constants_path = worker_dir / "constants.py"
+    names = ("JOB_TIMEOUT", "CHILD_TIMEOUT", "CHILD_GRACE_SECONDS", "REAP_GRACE")
+    assignment_re = re.compile(r"^_?(" + "|".join(names) + r")\s*(?::[^=]+)?=", re.MULTILINE)
+
+    for path in worker_dir.glob("*.py"):
+        if path == constants_path:
+            continue
+        text = path.read_text()
+        matches = assignment_re.findall(text)
+        assert not matches, f"{path} defines duplicate timing constant(s): {matches}"
+
+    constants_text = constants_path.read_text()
+    for name in names:
+        assert re.search(rf"^{name}\s*:", constants_text, re.MULTILINE), (
+            f"{name} missing from worker/constants.py"
+        )

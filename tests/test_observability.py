@@ -236,7 +236,7 @@ class TestProcessDocumentJobStamping:
             pass
 
         async def fake_run_converter_subprocess(
-            local_path, *, staging_key=None, job_start_config=None
+            local_path, *, staging_key=None, job_start_config=None, on_effective_timeout=None
         ):
             assert job_start_config is not None
             return {"doc_id": "doc123"}
