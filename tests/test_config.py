@@ -1,6 +1,31 @@
 # tests/test_config.py
 import importlib
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_config_module_identity():
+    """Undo the identity damage of importlib.reload(pageindex_mcp.config).
+
+    Reloading a module re-executes its class statements, producing NEW class
+    objects (e.g. ``ZDRComplianceError``) distinct from the ones every other
+    already-imported module (client/indexer.py, client/remote.py,
+    client/llm.py, ...) bound via ``from ..config import ZDRComplianceError``
+    at collection time. Left unreverted, this breaks `except
+    ZDRComplianceError` / `isinstance` checks in every test that runs after
+    this file — the reload is process-global and outlives monkeypatch's env
+    rollback. Snapshot the module namespace before each test and restore it
+    afterward so downstream tests see the original, collection-time class
+    and settings objects again.
+    """
+    import pageindex_mcp.config as cfg
+
+    snapshot = dict(vars(cfg))
+    yield
+    cfg.__dict__.clear()
+    cfg.__dict__.update(snapshot)
+
 
 def test_settings_has_redis_url(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://myredis:6379/1")

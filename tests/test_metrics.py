@@ -138,7 +138,14 @@ class TestLLMInstrumentation:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "test answer"
 
-        with patch("pageindex_mcp.client.llm.get_openai_client") as MockFactory:
+        # `helpers.rag._llm` does `from ..client import get_openai_client` at
+        # call time, which resolves the name off the `pageindex_mcp.client`
+        # package (__init__.py's re-export), not off `pageindex_mcp.client.llm`.
+        # Patching the `llm` submodule attribute leaves that re-export
+        # untouched (mock-where-defined instead of mock-where-used), so the
+        # real client was constructed and a live LLM call went out. Patch the
+        # name actually consulted by the call site instead.
+        with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
             MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
             from pageindex_mcp.helpers import _llm
 
