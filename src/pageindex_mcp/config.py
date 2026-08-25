@@ -189,6 +189,14 @@ _ZDR_ALLOW_PATTERNS: tuple[str, ...] = (
 )
 
 
+class ZDRComplianceError(RuntimeError):
+    """Raised when an egress path is blocked by HR3 ZDR compliance checks.
+
+    Subclasses ``RuntimeError`` for backward compatibility but lets callers
+    distinguish compliance blocks from generic errors (RFC-039 D4).
+    """
+
+
 def _is_zdr_allowlisted(base_url: str | None) -> bool:
     """Return True if base_url matches any ZDR allow-list pattern."""
     if not base_url:
@@ -198,7 +206,7 @@ def _is_zdr_allowlisted(base_url: str | None) -> bool:
 
 
 def require_zdr_compliance(base_url: str | None, purpose: str) -> None:
-    """Raise ``RuntimeError`` when *pii_corpus* is True and *base_url* is not ZDR-allowlisted.
+    """Raise ``ZDRComplianceError`` when *pii_corpus* is True and *base_url* is not ZDR-allowlisted.
 
     This is the **single enforcement primitive** for CLAUDE.md Hard Rule 3.
     Every LLM egress site must call this before sending PII-bearing content.
@@ -214,10 +222,49 @@ def require_zdr_compliance(base_url: str | None, purpose: str) -> None:
     if not settings.pii_corpus:
         return
     if not _is_zdr_allowlisted(base_url):
-        raise RuntimeError(
+        raise ZDRComplianceError(
             f"{purpose}: pii_corpus=True but endpoint {base_url!r} "
             "is not on the ZDR allow-list (HR3)"
         )
+
+
+def validate_hr3_compliance(settings_obj: "Settings | None" = None) -> None:
+    """Boot-gate validation for CLAUDE.md Hard Rule 3 (RFC-039 D1).
+
+    Shared by both ``server.py`` (``_lifespan_with_scrape``) and
+    ``worker/lifecycle.py`` startup. When ``pii_corpus`` is True, validates
+    ``openai_base_url``, ``LLM_FALLBACK_BASE_URL`` (if set), and
+    ``docling_service_url`` (if set) against ``_ZDR_ALLOW_PATTERNS``. No-op
+    when ``pii_corpus`` is False.
+
+    Parameters
+    ----------
+    settings_obj:
+        Settings instance to validate against. Defaults to the module-level
+        ``settings`` singleton; callers may pass their own reference (e.g.
+        a caller-local import binding used in tests).
+    """
+    _settings = settings_obj if settings_obj is not None else settings
+    if not _settings.pii_corpus:
+        return
+
+    def _check(base_url: str | None, purpose: str) -> None:
+        if not _is_zdr_allowlisted(base_url):
+            raise ZDRComplianceError(
+                f"{purpose}: pii_corpus=True but endpoint {base_url!r} "
+                "is not on the ZDR allow-list (HR3)"
+            )
+
+    _check(_settings.openai_base_url, "PII_CORPUS=true boot gate: openai_base_url")
+
+    from .client.llm import _LLM_FALLBACK_BASE_URL
+
+    if _LLM_FALLBACK_BASE_URL:
+        _check(_LLM_FALLBACK_BASE_URL, "PII_CORPUS=true boot gate: LLM_FALLBACK_BASE_URL")
+
+    docling_service_url = getattr(_settings, "docling_service_url", None)
+    if docling_service_url:
+        _check(docling_service_url, "PII_CORPUS=true boot gate: docling_service_url")
 
 
 def _load_settings() -> Settings:

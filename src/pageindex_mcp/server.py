@@ -72,26 +72,11 @@ _inner_lifespan = starlette_app.router.lifespan_context
 
 @contextlib.asynccontextmanager
 async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
-    # RFC-011 D6 / ISS-33: refuse to start if PII corpus is routed through
-    # a non-ZDR endpoint (HR3 enforcement).
-    if settings.pii_corpus:
-        from .config import _is_zdr_allowlisted
+    # RFC-011 D6 / ISS-33, extended by RFC-039 D1: refuse to start if PII
+    # corpus is routed through a non-ZDR endpoint (HR3 enforcement).
+    from .config import validate_hr3_compliance
 
-        if not _is_zdr_allowlisted(settings.openai_base_url):
-            raise RuntimeError(
-                f"PII_CORPUS=true but openai_base_url={settings.openai_base_url!r} "
-                "is not on the ZDR allow-list (HR3)"
-            )
-
-        # Also validate LLM_FALLBACK_BASE_URL when set — the fallback path
-        # in _llm_with_retry must not silently egress PII to a non-ZDR endpoint.
-        from .client.llm import _LLM_FALLBACK_BASE_URL
-
-        if _LLM_FALLBACK_BASE_URL and not _is_zdr_allowlisted(_LLM_FALLBACK_BASE_URL):
-            raise RuntimeError(
-                f"PII_CORPUS=true but LLM_FALLBACK_BASE_URL={_LLM_FALLBACK_BASE_URL!r} "
-                "is not on the ZDR allow-list (HR3)"
-            )
+    validate_hr3_compliance(settings)
 
     # Zone-5: validate cross-module feature wiring contracts at startup.
     # Failures raise AssertionError, refusing to start the server.

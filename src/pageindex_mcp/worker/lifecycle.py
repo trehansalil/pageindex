@@ -8,7 +8,7 @@ import redis.asyncio as aioredis
 from arq import cron
 from arq.connections import RedisSettings
 
-from ..config import settings
+from ..config import settings, validate_hr3_compliance
 from .job import JOB_TIMEOUT, MAX_TRIES, process_document_job, reap_stale_jobs
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,12 @@ MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
 
 
 async def startup(ctx: dict) -> None:
+    # RFC-039 D1: HR3 boot gate — refuse to start when pii_corpus=True and any
+    # egress endpoint (openai_base_url, LLM_FALLBACK_BASE_URL, docling_service_url)
+    # is not ZDR-allowlisted. Must run before Redis connection and registry init
+    # so no document processing can begin under a non-compliant configuration.
+    validate_hr3_compliance()
+
     # Zone-5: validate cross-module feature wiring contracts at worker startup.
     # Failures raise AssertionError, refusing to start the worker.
     from ..helpers import validate_feature_wirings
