@@ -195,6 +195,11 @@ AGPL_FALLBACK_TOTAL = Counter(
     "PDF conversions that used the AGPL pymupdf4llm path",
     ["reason"],
 )
+TESSERACT_OCR_FAILURE_TOTAL = Counter(
+    "pageindex_tesseract_ocr_failure_total",
+    "Tesseract per-picture OCR failures by exception class (Zone-8 observability).",
+    ["reason"],
+)
 TESSDATA_LATIN_FALLBACK_TOTAL = Counter(
     "pageindex_tessdata_latin_fallback_total",
     "ensure_tessdata fell back to ['deu','eng'] because all requested "

@@ -413,7 +413,7 @@ class RecoveryMixin:
             script_context,
             reason_label=f"Image-dominant ({image_lines}/{len(non_empty_lines)} non-empty lines)",
             splice_label="image_dominant_escalation",
-            use_keep_best=False,
+            use_keep_best=True,
             metric_fail_label="still_image_only",
         )
 

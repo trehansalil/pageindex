@@ -109,6 +109,7 @@ async def _attempt_tesseract_raster_recovery(
     filename: str,
     *,
     profile: GarbleProfile = FLAT_MARKDOWN_PROFILE,
+    script_context: ScriptContext | None = None,
 ) -> str | None:
     """RFC-023 D7 / RFC-024 D5: last-resort local Tesseract-on-raster OCR pass.
 
@@ -130,7 +131,7 @@ async def _attempt_tesseract_raster_recovery(
     try:
         tess_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
         ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-        _sc = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="tesseract_raster_recovery")
+        _sc = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="tesseract_raster_recovery")
         _blob = BlobKind.RAW_MARKDOWN if profile.normalize_markdown else BlobKind.TREE_TEXT
         garbled = bool(detect_garble(ocr_text, script_context=_sc, config=_garble_config, blob_kind=_blob))
         if ocr_text and not garbled:

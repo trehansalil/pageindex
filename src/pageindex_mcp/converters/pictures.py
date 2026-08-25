@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..config import OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE
 from ..helpers import _garble_config, detect_garble
+from ..metrics import TESSERACT_OCR_FAILURE_TOTAL
 from ..picture_plane import (
     OcrMode,
     PictureGateConfig,
@@ -254,8 +255,9 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
             timeout=60,
         )
         return proc.stdout.strip()
-    except Exception as exc:
-        logger.warning("per-picture tesseract OCR failed (%s)", exc)
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+        TESSERACT_OCR_FAILURE_TOTAL.labels(reason=type(exc).__name__).inc()
+        logger.warning("per-picture tesseract OCR failed (%s: %s)", type(exc).__name__, exc)
         return ""
 
 
@@ -263,6 +265,8 @@ def _text_layer_has_content(
     page,
     region_rect=None,
     expected_script: str | None = None,
+    *,
+    script_context: ScriptContext | None = None,
 ) -> bool:
     """Return True when the text layer has meaningful, non-garbled content.
 
@@ -284,7 +288,7 @@ def _text_layer_has_content(
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
     # Zone-3: use detect_garble with ScriptContext + GarbleConfig (unified API)
-    _ctx = ScriptContext(
+    _ctx = script_context if script_context is not None else ScriptContext(
         dominant_script=expected_script,
         had_presentation_forms=False,
         source="picture_text_probe",
@@ -352,6 +356,8 @@ def _document_level_text_fallback(
     md: str,
     pdf_path: str,
     expected_script: str | None = None,
+    *,
+    script_context: ScriptContext | None = None,
 ) -> str:
     """Full-page text-layer fallback for image-dominant documents (RFC-024 D1).
 
@@ -402,7 +408,7 @@ def _document_level_text_fallback(
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
     # Zone-3: detect_garble with ScriptContext + GarbleConfig (unified API)
-    _ctx = ScriptContext(
+    _ctx = script_context if script_context is not None else ScriptContext(
         dominant_script=expected_script,
         had_presentation_forms=False,
         source="doc_text_fallback",
@@ -708,6 +714,8 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     langs: list[str],
     md: str = "",
     expected_script: str | None = None,
+    *,
+    script_context: ScriptContext | None = None,
 ) -> tuple[dict[int, PictureResult], dict[int, str]]:
     """Crop each picture bbox from the PDF, OCR it, and retain the PNG bytes.
 
@@ -794,6 +802,7 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         page,
                         region_rect=rect,
                         expected_script=expected_script,
+                        script_context=script_context,
                     )
 
                 clip_text = page.get_text("text", clip=rect).strip()

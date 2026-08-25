@@ -12,8 +12,10 @@ ad-hoc string literals.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,9 @@ class OcrDecision:
     full_page_already_applied: bool = False
     has_image_markers: bool = False
     garble_status: bool = False
+    # Zone-8: OCR language list and splice requirement for unified decision.
+    ocr_langs: list[str] = field(default_factory=lambda: ["deu", "eng"])
+    splice_required: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +346,14 @@ def _classify_region(
 # ---------------------------------------------------------------------------
 
 
+# Zone-8: feature flag gating unified OCR plan (default off for shadow validation).
+UNIFIED_OCR_PLAN_ENABLED = os.getenv(
+    "UNIFIED_OCR_PLAN_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes")
+
+DocumentType = Literal["pdf", "image", "html", "text", "xlsx"]
+
+
 def decide_ocr_strategy(
     *,
     ocr_escalation_enabled: bool,
@@ -348,6 +361,8 @@ def decide_ocr_strategy(
     force_full_page: bool = False,
     garble_status: bool = False,
     full_page_already_applied: bool = False,
+    document_type: DocumentType = "pdf",
+    ocr_langs: list[str] | None = None,
 ) -> OcrDecision:
     """Unified OCR-mode decision producing a sealed ``OcrDecision``.
 
@@ -358,31 +373,53 @@ def decide_ocr_strategy(
     ``full_page_already_applied`` short-circuits to NONE when a prior
     full-page OCR pass has already run (cross-call re-entry guard).
 
+    Zone-8: ``document_type`` discriminant and ``ocr_langs`` output allow
+    all file types to route through one decision point.  Gated behind
+    ``UNIFIED_OCR_PLAN_ENABLED`` -- when disabled, the new parameters are
+    accepted but ignored (backward-compatible default ``pdf`` behavior).
+
     Pure function, no side effects.
     """
+    _langs = ocr_langs if ocr_langs is not None else ["deu", "eng"]
+
+    # Zone-8: when unified plan is enabled and document_type is 'image',
+    # images always need full-page OCR with splice.
+    if UNIFIED_OCR_PLAN_ENABLED and document_type == "image":
+        return OcrDecision(
+            mode=OcrMode.FULL_PAGE,
+            has_image_markers=has_image_markers,
+            garble_status=garble_status,
+            ocr_langs=_langs,
+            splice_required=True,
+        )
+
     if full_page_already_applied:
         return OcrDecision(
             mode=OcrMode.NONE,
             full_page_already_applied=True,
             has_image_markers=has_image_markers,
             garble_status=garble_status,
+            ocr_langs=_langs,
         )
     if force_full_page:
         return OcrDecision(
             mode=OcrMode.FULL_PAGE,
             has_image_markers=has_image_markers,
             garble_status=garble_status,
+            ocr_langs=_langs,
         )
     if ocr_escalation_enabled and has_image_markers:
         return OcrDecision(
             mode=OcrMode.PER_PICTURE,
             has_image_markers=has_image_markers,
             garble_status=garble_status,
+            ocr_langs=_langs,
         )
     return OcrDecision(
         mode=OcrMode.NONE,
         has_image_markers=has_image_markers,
         garble_status=garble_status,
+        ocr_langs=_langs,
     )
 
 

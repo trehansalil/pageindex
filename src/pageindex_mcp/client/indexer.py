@@ -205,8 +205,10 @@ def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_i
         return ""
 
 
-# Image inputs route through OCR (Fix 4); .xlsx routes through openpyxl -> flat tables.
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+# Zone-8: _IMAGE_EXTS, _IMAGE_STANDALONE_PIPELINE_ENABLED, and
+# MIN_STANDALONE_IMAGE_MD_CHARS are now imported from images.py (canonical source)
+# to eliminate constant duplication across two files.
+from .images import _IMAGE_EXTS, _IMAGE_STANDALONE_PIPELINE_ENABLED, MIN_STANDALONE_IMAGE_MD_CHARS  # noqa: E402
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Zone-4: legacy _OCR_ESCALATION removed; split flags _OCR_ESCALATION_GARBLE /
 # _OCR_ESCALATION_PER_PICTURE imported from config.py (canonical source).
@@ -215,16 +217,6 @@ _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".x
 # the garbling reasons above -- calibrated to the Run-10 corpus (highest affected doc
 # القرار التنظيمي at 230 garbled chars; legitimate sparse docs all exceed 400 chars).
 LOW_CONTENT_OCR_CHAR_FLOOR = int(os.getenv("LOW_CONTENT_OCR_CHAR_FLOOR", "300"))
-# Task 6.1: dedicated image-standalone pipeline for PDFs whose content is all images.
-# When disabled, falls back to the existing QF2a image-enrichment promotion path.
-_IMAGE_STANDALONE_PIPELINE_ENABLED = os.getenv(
-    "IMAGE_STANDALONE_PIPELINE_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
-
-
-# RFC-023 D8a: skip the standalone-image Tesseract recovery below when Docling's
-# md_content already carries this many non-whitespace chars (avoids double-counting).
-MIN_STANDALONE_IMAGE_MD_CHARS = int(os.getenv("MIN_STANDALONE_IMAGE_MD_CHARS", "100"))
 # RFC-023 D11: _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED now imported from config.py
 # (Zone-2 flag decoupling — eliminates local env-var read duplication).
 # RFC-023 D7 kill-switch (default on): Tesseract-on-raster last resort when the
@@ -361,6 +353,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         ext: str,
         expected_script: str | None,
         pdf_classification: dict | None,
+        *,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Conversion front-end: dispatch by extension, run initial validate_tree. Mutates state."""
         if ext == ".pdf":
@@ -421,7 +415,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
-                            _probe_ctx = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="pre_garble_probe")
+                            _probe_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="pre_garble_probe")
                             if raw_text.strip() and detect_garble(
                                 raw_text,
                                 script_context=_probe_ctx,
@@ -655,7 +649,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
         elif ext in _IMAGE_EXTS:
             logger.info("OCR image to markdown: %s", filename)
-            img_langs = await asyncio.to_thread(ensure_tessdata, ["ara", "deu", "eng"])
+            img_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
             md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
             img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
             standalone_ocr_text = ""
@@ -677,6 +671,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 for _ in range(max(1, marker_count))
             ]
             state.md_content = md_content
+            # Zone-8: splice picture OCR text into tree markers for standalone
+            # images, mirroring the PDF path (lines 589-591).
+            if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
+                _log_pic_splice_trace(filename, "standalone_image", state.pic_results)
+                md_content = splice_picture_text_for_tree(md_content, state.pic_results)
+                state.md_content = md_content
             with tempfile.NamedTemporaryFile(
                 suffix=".md", delete=False, mode="w", encoding="utf-8"
             ) as md_tmp:
@@ -1153,7 +1153,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
         try:
             await self._convert_to_tree(
-                state, file_path, filename, ext, expected_script, pdf_classification
+                state, file_path, filename, ext, expected_script, pdf_classification,
+                script_context=script_context,
             )
 
             # Zone-3: enrich ScriptContext with post-conversion content text.
