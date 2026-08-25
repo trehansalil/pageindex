@@ -192,6 +192,12 @@ class TreeSignals:
                 expected_script if expected_script is not None else _infer_script(flat_text)
             )
             _had_pf = False
+            logger.debug(
+                "TreeSignals.from_tree received bare expected_script=%r; "
+                "had_presentation_forms defaults to False (upstream should "
+                "pass ScriptContext for accurate PF detection)",
+                expected_script,
+            )
 
         # Zone-4: unified detect_garble entry point replaces check_garble.
         _ctx = ScriptContext(
@@ -269,11 +275,7 @@ def validate_tree(
     if isinstance(expected_script, ScriptContext):
         _script_ctx = expected_script
     else:
-        _script_ctx = ScriptContext(
-            dominant_script=expected_script,
-            had_presentation_forms=False,
-            source="validate_tree",
-        )
+        _script_ctx = ScriptContext.from_script_str(expected_script)
 
     sig = TreeSignals.from_tree(
         structure,
@@ -300,9 +302,17 @@ def validate_tree(
             signals=sig,
             all_defects=frozenset(d for d, _ in fired),
         )
+    # Advisory warnings for sub-threshold garble signals (no behavioral
+    # change: ok=True verdict is preserved).
+    _warnings: list[str] = []
+    if sig.garble_ratio > 0.0:
+        _warnings.append(
+            f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}"
+        )
     return TreeGateResult(
         ok=True,
         defect=TreeDefect.OK,
         signals=sig,
         all_defects=frozenset(),
+        warnings=tuple(_warnings),
     )

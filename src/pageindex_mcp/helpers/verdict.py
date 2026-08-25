@@ -225,6 +225,7 @@ def apply_promotions(
     expected_script: str | None,
     *,
     source_selection: bool = False,
+    script_context: ScriptContext | None = None,
 ) -> VerdictResult:
     """Zone-4 Phase 2: promotion/cap logic (tried only when no HARD_FAIL fired).
 
@@ -273,7 +274,7 @@ def apply_promotions(
                 signals=sig,
                 all_defects=_all_defects,
             )
-        _sc = ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="apply_promotions")
+        _sc = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="apply_promotions")
         if not detect_garble(_promoted_text, script_context=_sc, config=_garble_config, blob_kind=BlobKind.TREE_TEXT):
             return _apply_clamp("image_enrichment_promoted")
 
@@ -380,6 +381,7 @@ def compute_verdict(
     outcome = evaluate_gates(structure, validate_result, expected_script, th)
     if outcome.hard_fail_verdict is not None:
         return outcome.hard_fail_verdict
+    _sc = expected_script if isinstance(expected_script, ScriptContext) else None
     return apply_promotions(
         outcome,
         content_class,
@@ -388,6 +390,7 @@ def compute_verdict(
         th,
         _bare_script,
         source_selection=source_selection,
+        script_context=_sc,
     )
 
 

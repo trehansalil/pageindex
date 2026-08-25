@@ -393,6 +393,7 @@ class PipelineConfig:
     garble_latin_ratio: float
     garble_nonsense_ratio: float
     garble_node_ratio_threshold: float
+    garble_digit_floor: int
     pass_max_leaf_ratio: float
     bidi_coherence_enforce: bool
     small_doc_promotion_enabled: bool
@@ -447,6 +448,7 @@ class PipelineConfig:
             garble_latin_ratio=float(os.environ.get("GARBLE_LATIN_RATIO", "0.4")),
             garble_nonsense_ratio=float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")),
             garble_node_ratio_threshold=_gnrt,
+            garble_digit_floor=int(os.environ.get("GARBLE_DIGIT_FLOOR", "500")),
             pass_max_leaf_ratio=float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")),
             bidi_coherence_enforce=_envbool("BIDI_COHERENCE_ENFORCE", "true"),
             small_doc_promotion_enabled=_envbool("SMALL_DOC_PROMOTION_ENABLED", "true"),
@@ -527,7 +529,7 @@ def reset_pipeline_config() -> None:
 
     _helpers = sys.modules.get("pageindex_mcp.helpers")
     if _helpers is not None:
-        _helpers.pipeline_config = pipeline_config
+        setattr(_helpers, "pipeline_config", pipeline_config)
     for _sub in (
         "pageindex_mcp.helpers.types",
         "pageindex_mcp.helpers.garble",
@@ -538,7 +540,7 @@ def reset_pipeline_config() -> None:
     ):
         _mod = sys.modules.get(_sub)
         if _mod is not None and hasattr(_mod, "pipeline_config"):
-            _mod.pipeline_config = pipeline_config
+            setattr(_mod, "pipeline_config", pipeline_config)
 
 
 def effective_config_snapshot() -> dict:

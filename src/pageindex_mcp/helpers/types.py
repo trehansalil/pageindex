@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -44,6 +44,7 @@ class TreeGateResult:
     detail: str = ""
     signals: TreeSignals | None = None
     all_defects: frozenset[TreeDefect] = frozenset()
+    warnings: tuple[str, ...] = ()
 
     def __str__(self) -> str:
         if self.detail:
@@ -53,9 +54,9 @@ class TreeGateResult:
     def __iter__(self) -> Iterator[bool | str]:
         """Yield (ok, reason_str) for backward-compat tuple unpacking.
 
-        ``signals`` and ``all_defects`` are intentionally excluded from
-        iteration so that ``ok, reason = validate_tree(...)`` keeps
-        working at all call sites.
+        ``signals``, ``all_defects``, and ``warnings`` are intentionally
+        excluded from iteration so that ``ok, reason = validate_tree(...)``
+        keeps working at all call sites.
         """
         yield self.ok
         yield str(self)

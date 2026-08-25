@@ -22,7 +22,7 @@ from ..script import (
 from .types import TreeDefect
 
 if TYPE_CHECKING:
-    pass
+    from ..config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
@@ -387,11 +387,7 @@ def garble_prongs(
             prongs.add("token_repetition")
 
     _effective_script = expected_script
-    if (
-        _effective_script is not None
-        and _effective_script != "Latn"
-        and cfg.garble_latin_gibberish_enabled
-    ):
+    if cfg.garble_latin_gibberish_enabled:
         latin_ratio_threshold = cfg.garble_latin_ratio
         nonsense_threshold = cfg.garble_nonsense_ratio
         ratio, latin_tokens = _latin_token_ratio(norm)
@@ -451,7 +447,7 @@ class GarbleConfig:
     garble_digit_floor: int = 500
 
     @classmethod
-    def from_config(cls, cfg) -> GarbleConfig:
+    def from_config(cls, cfg: PipelineConfig) -> GarbleConfig:
         """Build GarbleConfig from a frozen PipelineConfig."""
         return cls(
             garble_latin_gibberish_enabled=cfg.garble_latin_gibberish_enabled,
@@ -460,7 +456,7 @@ class GarbleConfig:
             garble_short_text_default=cfg.garble_short_text_default,
             garble_flat_markdown_normalize=cfg.garble_flat_markdown_normalize,
             garble_node_ratio_threshold=cfg.garble_node_ratio_threshold,
-            garble_digit_floor=500,
+            garble_digit_floor=cfg.garble_digit_floor,
         )
 
 
@@ -592,11 +588,30 @@ _RFC029_MIN_SCANNED_DENSITY_FLOOR = pipeline_config.rfc029_min_scanned_density_f
 infer_script = _infer_script
 
 
+def _collect_all_node_text(nodes: list[dict]) -> str:
+    """Recursively collect all node text into a single concatenated string."""
+    parts: list[str] = []
+    for node in nodes:
+        text = node.get("text") or ""
+        if text.strip():
+            parts.append(text)
+        title = node.get("title") or ""
+        if title.strip():
+            parts.append(title)
+        children = node.get("nodes") or []
+        if children:
+            child_text = _collect_all_node_text(children)
+            if child_text:
+                parts.append(child_text)
+    return "\n".join(parts)
+
+
 def _garble_check_nodes(
     nodes: list[dict],
     *,
     script_context: ScriptContext,
     config: GarbleConfig,
+    _is_toplevel: bool = True,
 ) -> int:
     """Recursively count nodes whose text or title is individually garbled.
 
@@ -605,6 +620,12 @@ def _garble_check_nodes(
     per-node override (QF3/RFC-021) is still computed for nodes >= 50
     chars whose text-inferred script disagrees with the document-level
     script.
+
+    When ``_is_toplevel`` is True (default, top-level call) and per-node
+    detection returned 0 garbled nodes, a concatenated whole-tree fallback
+    runs garble_prongs on the joined text of all nodes.  This catches
+    garble patterns that fall below garble_digit_floor per node but surface
+    in aggregate.
     """
     _doc_script = script_context.dominant_script
 
@@ -655,7 +676,28 @@ def _garble_check_nodes(
             children,
             script_context=script_context,
             config=config,
+            _is_toplevel=False,
         )
+    # Concatenated whole-tree fallback: when per-node detection found nothing
+    # garbled, run garble_prongs on the joined text to catch patterns that
+    # fall below garble_digit_floor per node but surface in aggregate.
+    if _is_toplevel and garbled == 0:
+        _concat = _collect_all_node_text(nodes)
+        if len(_concat) >= config.garble_digit_floor:
+            _norm = normalize_for_garble(_concat, BlobKind.TREE_TEXT)
+            _fallback_prongs = garble_prongs(
+                _norm,
+                expected_script=_doc_script,
+                original_text=_concat,
+                had_presentation_forms=script_context.had_presentation_forms,
+                config=config,
+            )
+            if _fallback_prongs:
+                logger.info(
+                    "Whole-tree concatenated fallback detected garble: prongs=%s",
+                    _fallback_prongs,
+                )
+                garbled = 1
     return garbled
 
 
