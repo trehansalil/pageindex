@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..config import PDF_INSPECTOR_PRECLASSIFY, settings
@@ -15,29 +16,9 @@ from ..metrics import (
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
 )
+from .constants import CHILD_TIMEOUT, INSPECTOR_CONFIDENCE_THRESHOLD, MAX_EFFECTIVE_TIMEOUT
 
 logger = logging.getLogger(__name__)
-
-# The inner timeout we apply around the converter child must be strictly
-# *shorter* than arq's outer ``job_timeout`` (JOB_TIMEOUT). Otherwise the two
-# can race: arq cancels the task before our ``asyncio.timeout()`` fires and we
-# skip the ``converter_timeout`` Redis status + metric increment. ``CHILD_GRACE``
-# is the margin reserved for "child timed out → SIGTERM → SIGKILL → reap" plus
-# clock skew between the asyncio loop and arq's wall-clock timer.
-CHILD_GRACE_SECONDS = 30
-
-# RFC-028 D0: 1800 -> 3630 (max_dynamic_child_timeout 3300 + 300 buffer +
-# CHILD_GRACE_SECONDS 30). arq's job_timeout is worker-level, not per-job, so
-# raising it to cover the dynamic-timeout worst case (chunked_docling_timeout_s
-# for large chunked PDFs) statically doubles worst-case slot occupancy for
-# every job, not just large chunked PDFs. Accepted trade-off (see RFC-028
-# Risks) -- world-stats-pocketbook-2023.pdf has ERRORed 3 consecutive runs.
-#
-# NOTE: JOB_TIMEOUT is the canonical value from job.py; we import it at
-# function level to avoid circular imports, but CHILD_TIMEOUT needs it at
-# module level so we replicate the value here.  Both this and job.py use 3630.
-_JOB_TIMEOUT = 3630
-CHILD_TIMEOUT = _JOB_TIMEOUT - CHILD_GRACE_SECONDS
 
 # How long to wait between SIGTERM and SIGKILL when reaping a child process group.
 KILL_GRACE_SECONDS = 10.0
@@ -100,6 +81,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     *,
     staging_key: str | None = None,
     job_start_config: dict | None = None,
+    on_effective_timeout: Callable[[float], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
 
@@ -108,6 +90,14 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     "peak_rss_kib": int, "duration_ms": int}``. On handled failure it emits
     ``{"ok": false, "error": ..., "message": ...}`` and exits 1; on OOM the
     kernel sends SIGKILL and returncode is -9.
+
+    ``on_effective_timeout``, if given, is awaited with the computed
+    effective_timeout immediately after the handshake is parsed (and any
+    inspector/chunked-Docling multipliers and the RFC-038 D4 cap are
+    applied) -- well before the child process itself finishes. This lets
+    the caller (job.py) persist the real deadline to Redis early, so
+    ``reap_stale_jobs`` never sees only the conservative initial deadline
+    for a legitimately long-running job.
 
     Raises:
         ConverterOOMError: child died from SIGKILL (presumed OOM).
@@ -176,9 +166,10 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 pdf_class.get("pages_needing_ocr", []),
                 pdf_class.get("has_encoding_issues", False),
             )
-            if PDF_INSPECTOR_PRECLASSIFY and pdf_class.get("pdf_type") in (
-                "scanned",
-                "image_based",
+            if (
+                PDF_INSPECTOR_PRECLASSIFY
+                and pdf_class.get("pdf_type") in ("scanned", "image_based")
+                and pdf_class.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD
             ):
                 # RFC-032 D9: 3x was the unmeasured lower-end estimate. Wall-clock
                 # calibration on 4 scanned corpus docs (2026-08-06) measured OCR-pass
@@ -191,6 +182,20 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                     pdf_class.get("pdf_type"),
                     effective_timeout,
                 )
+
+    if effective_timeout > MAX_EFFECTIVE_TIMEOUT:
+        logger.warning(
+            "effective_timeout %ss exceeds MAX_EFFECTIVE_TIMEOUT %ss; capping",
+            effective_timeout,
+            MAX_EFFECTIVE_TIMEOUT,
+        )
+        effective_timeout = min(effective_timeout, MAX_EFFECTIVE_TIMEOUT)
+
+    # RFC-038 D2: surface effective_timeout to the caller immediately after the
+    # handshake parse, before awaiting subprocess completion, so job.py can
+    # persist effective_timeout_at to Redis before the reaper's next sweep.
+    if on_effective_timeout is not None:
+        await on_effective_timeout(effective_timeout)
 
     remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
     stdout_bytes = b""

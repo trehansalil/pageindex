@@ -93,6 +93,7 @@ from ..storage import (
     save_flat_doc,
     save_raw,
 )
+from ..worker.constants import INSPECTOR_CONFIDENCE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 PDF_INSPECTOR_PRECLASSIFY
                 and pdf_classification is not None
                 and pdf_classification.get("pdf_type") in ("scanned", "image_based")
-                and pdf_classification.get("confidence", 0) >= 0.90
+                and pdf_classification.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD
             ):
                 inspector_force_ocr = True
                 PDF_INSPECTOR_FORCED_OCR.inc()

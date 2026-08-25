@@ -23,6 +23,7 @@ from ..metrics import (
     UPLOADS,
 )
 from ..storage import delete_staging, download_staging
+from .constants import JOB_TIMEOUT, REAP_GRACE
 from .errors import (
     _CHILD_ERROR_REGISTRY,
     _DEFAULT_CHILD_CLASSIFICATION,
@@ -30,7 +31,6 @@ from .errors import (
     _classify_llm_failure,
 )
 from .subprocess_mgr import (
-    CHILD_TIMEOUT,
     ConverterChildError,
     ConverterOOMError,
     _run_converter_subprocess,
@@ -46,19 +46,7 @@ _WORKER_BUILD_SHA = os.environ.get("BUILD_SHA", "unknown")
 
 JOB_TTL = 86_400
 MAX_TRIES = 2
-# RFC-028 D0: 1800 -> 3630 (max_dynamic_child_timeout 3300 + 300 buffer +
-# CHILD_GRACE_SECONDS 30). arq's job_timeout is worker-level, not per-job, so
-# raising it to cover the dynamic-timeout worst case (chunked_docling_timeout_s
-# for large chunked PDFs) statically doubles worst-case slot occupancy for
-# every job, not just large chunked PDFs. Accepted trade-off (see RFC-028
-# Risks) -- world-stats-pocketbook-2023.pdf has ERRORed 3 consecutive runs.
-JOB_TIMEOUT = 3630
 DLQ_KEY = "pageindex:dlq"
-# A job legitimately runs up to JOB_TIMEOUT (arq's job_timeout). Past that plus a
-# grace margin (clock skew + the gap before arq itself gives up) a hash still in
-# status=processing means the worker died mid-job (e.g. OOMKill/SIGKILL ran no
-# except/finally), so the reaper may safely mark it failed.
-REAP_GRACE = 120
 
 
 async def _dlq_push_on_final_attempt(
@@ -145,11 +133,14 @@ async def process_document_job(  # noqa: C901, PLR0915
         # process-relative and meaningless across the worker restart a crash causes)
         # so reap_stale_jobs can later detect a job orphaned mid-processing.
         #
-        # Zone 6 (Part B): also record effective_timeout_at — the absolute wall-clock
-        # deadline after which the reaper may declare this job stale.  We write a
-        # conservative initial value based on JOB_TIMEOUT; if the child's handshake
-        # reveals a longer effective_timeout (e.g. 16.5x for scanned PDFs), we
-        # update effective_timeout_at via a direct hset after the subprocess returns.
+        # Also record effective_timeout_at — the absolute wall-clock deadline
+        # after which the reaper may declare this job stale.  We write a
+        # conservative initial value based on JOB_TIMEOUT here; RFC-038 D2:
+        # once the child's handshake reveals a longer effective_timeout (e.g.
+        # 16.5x for scanned PDFs), _persist_effective_timeout below updates
+        # effective_timeout_at immediately — before the subprocess completes,
+        # not after — so reap_stale_jobs never sees only this conservative
+        # default for a legitimately long-running job.
         processing_now = int(time.time())
         await _set_job_status(
             redis,
@@ -168,9 +159,44 @@ async def process_document_job(  # noqa: C901, PLR0915
         # has headroom for one ~1.9Gi conversion before spawning the child.
         # Fails open (proceeds) on any error or after the wait cap.
         await wait_for_memory(redis)
+
+        # RFC-038 D2: persist the real effective_timeout_at to Redis as soon as
+        # the child's handshake reveals it — before the subprocess completes —
+        # so reap_stale_jobs never sees only the conservative default deadline
+        # written above for a legitimately long-running job.
+        async def _persist_effective_timeout(effective_timeout: float) -> None:
+            new_deadline = processing_now + int(effective_timeout) + REAP_GRACE
+            # RFC-038 D2 AC3: never tighten the deadline below the conservative
+            # default written at PROCESSING (handshake-parse failure surfaces
+            # CHILD_TIMEOUT < JOB_TIMEOUT here) — only extensions are persisted.
+            if new_deadline <= processing_now + JOB_TIMEOUT + REAP_GRACE:
+                return
+            # Best-effort: a Redis hiccup here must not raise mid-handshake —
+            # that would propagate out of _run_converter_subprocess on a path
+            # with no _kill_group, orphaning the running converter child. On
+            # failure the conservative default simply remains in Redis.
+            try:
+                await redis.hset(_job_key(job_id), "effective_timeout_at", str(new_deadline))
+                logger.info(
+                    "Updated effective_timeout_at for job=%s: %ss (effective_timeout=%ss)",
+                    job_id,
+                    new_deadline,
+                    effective_timeout,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist early effective_timeout_at for job=%s; "
+                    "conservative default deadline remains",
+                    job_id,
+                    exc_info=True,
+                )
+
         try:
             result = await _run_converter_subprocess(
-                local_path, staging_key=staging_key, job_start_config=job_start_config
+                local_path,
+                staging_key=staging_key,
+                job_start_config=job_start_config,
+                on_effective_timeout=_persist_effective_timeout,
             )
         except ConverterOOMError as exc:
             await _set_job_status(
@@ -243,23 +269,6 @@ async def process_document_job(  # noqa: C901, PLR0915
                 )
                 return ""
             raise
-
-        # Zone 6 (Part B): if the child's handshake negotiated a longer
-        # effective_timeout (scanned/image PDF 16.5x, chunked Docling), update
-        # the Redis hash so reap_stale_jobs respects the actual deadline.  This
-        # is a field-only write (no status transition), bypassing _set_job_status
-        # to avoid needing a PROCESSING->PROCESSING self-transition.
-        child_effective_timeout = result.get("_effective_timeout", CHILD_TIMEOUT)
-        if child_effective_timeout > CHILD_TIMEOUT:
-            new_deadline = processing_now + int(child_effective_timeout) + REAP_GRACE
-            job_key = _job_key(job_id)
-            await redis.hset(job_key, "effective_timeout_at", str(new_deadline))
-            logger.info(
-                "Updated effective_timeout_at for job=%s: %ss (child_effective_timeout=%ss)",
-                job_id,
-                new_deadline,
-                child_effective_timeout,
-            )
 
         doc_id = result["doc_id"]
         # A flat-document result (RFC-004 Amendment 1) carries a content_class:
