@@ -66,7 +66,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf-inspection = ["pdf-inspector>=0.2.6"]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx", "fakeredis[aioredis]", "langchain-mcp-adapters", "langchain[openai]", "ruff>=0.15.17", "pdf-inspector>=0.2.6"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx", "fakeredis[aioredis]", "hypothesis", "langchain-mcp-adapters", "langchain[openai]", "ruff>=0.15.17", "pdf-inspector>=0.2.6"]
 # AGPL-3.0 (HR4). pymupdf4llm is the secondary/fallback PDF->markdown route behind
 # Docling; it transitively pulls PyMuPDF (AGPL). Moved OUT of core deps (RFC-004 Q2
 # follow-up, Amendment 4) so the DEFAULT install carries no first-party AGPL converter.

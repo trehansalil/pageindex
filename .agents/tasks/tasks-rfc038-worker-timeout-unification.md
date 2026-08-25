@@ -39,11 +39,11 @@ This implementation plan proceeds in three phases: Phase 1 extracts timing const
 
 ## Tasks
 
-- [ ] <a id="1-phase-1--constants-and-confidence-gate-d1-d3"></a>1. Phase 1 — Constants and Confidence Gate (D1+D3)
+- [x] <a id="1-phase-1--constants-and-confidence-gate-d1-d3"></a>1. Phase 1 — Constants and Confidence Gate (D1+D3)
 
   *[RFC-038 D3](../rfcs/038-worker-timeout-unification.md#d3--constants-extraction) + [RFC-038 D1](../rfcs/038-worker-timeout-unification.md#d1--confidence-gate-alignment)*
 
-  - [ ] <a id="11-extract-worker-timing-constants-d3"></a>1.1 Extract worker timing constants ([D3](../rfcs/038-worker-timeout-unification.md#d3--constants-extraction))
+  - [x] <a id="11-extract-worker-timing-constants-d3"></a>1.1 Extract worker timing constants ([D3](../rfcs/038-worker-timeout-unification.md#d3--constants-extraction))
 
     - Create `worker/constants.py` with `JOB_TIMEOUT`, `CHILD_GRACE_SECONDS`, `CHILD_TIMEOUT`, `REAP_GRACE`, `INSPECTOR_CONFIDENCE_THRESHOLD`, `MAX_EFFECTIVE_TIMEOUT` (env-configurable)
     - Update `worker/subprocess_mgr.py`: remove `_JOB_TIMEOUT = 3630`, `CHILD_TIMEOUT`, `CHILD_GRACE_SECONDS` definitions and the duplication-admission comment at line 38. Import from `worker/constants.py`
@@ -52,7 +52,7 @@ This implementation plan proceeds in three phases: Phase 1 extracts timing const
     - Write `test_no_duplicate_timeout_definitions`: grep-based test asserting no module outside `constants.py` defines `JOB_TIMEOUT`, `CHILD_TIMEOUT`, `CHILD_GRACE_SECONDS`, or `REAP_GRACE` as a module-level assignment
     - _Requirements:_ [RFC-038 D3](../rfcs/038-worker-timeout-unification.md#d3--constants-extraction) | [Design Property 3](../designs/design-rfc038-worker-timeout-unification.md#property-3-constant-single-source) | [Design Service: constants.py](../designs/design-rfc038-worker-timeout-unification.md#4-workerconstantspy)
 
-  - [ ] <a id="12-confidence-gate-alignment-d1"></a>1.2 Confidence gate alignment ([D1](../rfcs/038-worker-timeout-unification.md#d1--confidence-gate-alignment))
+  - [x] <a id="12-confidence-gate-alignment-d1"></a>1.2 Confidence gate alignment ([D1](../rfcs/038-worker-timeout-unification.md#d1--confidence-gate-alignment))
 
     - In `worker/subprocess_mgr.py`, add `and pdf_class.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD` to the 16.5× multiplier condition at line 179. Import `INSPECTOR_CONFIDENCE_THRESHOLD` from `worker/constants.py`
     - In `client/indexer.py`, replace the hardcoded `0.90` at line 372 with `INSPECTOR_CONFIDENCE_THRESHOLD` imported from `worker/constants.py`
@@ -64,18 +64,18 @@ This implementation plan proceeds in three phases: Phase 1 extracts timing const
     - **Validates:** [Design Property 1](../designs/design-rfc038-worker-timeout-unification.md#property-1-confidence-gate-consistency) | [RFC-038 Requirement 1](../rfcs/038-worker-timeout-unification.md#requirement-1-threshold-consistency) | [Design §Testing Strategy](../designs/design-rfc038-worker-timeout-unification.md#testing-strategy)
     - _Requirements:_ [RFC-038 D1](../rfcs/038-worker-timeout-unification.md#d1--confidence-gate-alignment) | [Design Property 1](../designs/design-rfc038-worker-timeout-unification.md#property-1-confidence-gate-consistency) | [Design Service: subprocess_mgr.py](../designs/design-rfc038-worker-timeout-unification.md#1-workersubprocess_mgrpy) | [Design Service: indexer.py](../designs/design-rfc038-worker-timeout-unification.md#3-clientindexerpy) | [Design Sequence: Timeout Computation Flow](../designs/design-rfc038-worker-timeout-unification.md#timeout-computation-flow--d1--d4)
 
-  - [ ] <a id="13-checkpoint--phase-1"></a>1.3 Checkpoint — Phase 1
+  - [x] <a id="13-checkpoint--phase-1"></a>1.3 Checkpoint — Phase 1
 
     - Run `uv run pytest` and verify all existing tests pass with the refactored imports
     - Verify [Property 1](../designs/design-rfc038-worker-timeout-unification.md#property-1-confidence-gate-consistency) and [Property 3](../designs/design-rfc038-worker-timeout-unification.md#property-3-constant-single-source) tests pass
     - Verify no circular import errors: `uv run python -c "from pageindex_mcp.worker.constants import JOB_TIMEOUT; print(JOB_TIMEOUT)"`
     - Ask the user if questions arise before proceeding
 
-- [ ] <a id="2-phase-2--deadline-and-timeout-cap-d2-d4"></a>2. Phase 2 — Deadline and Timeout Cap (D2+D4)
+- [x] <a id="2-phase-2--deadline-and-timeout-cap-d2-d4"></a>2. Phase 2 — Deadline and Timeout Cap (D2+D4)
 
   *[RFC-038 D2](../rfcs/038-worker-timeout-unification.md#d2--early-deadline-persistence) + [RFC-038 D4](../rfcs/038-worker-timeout-unification.md#d4--effective-timeout-cap)*
 
-  - [ ] <a id="21-early-deadline-persistence-d2"></a>2.1 Early deadline persistence ([D2](../rfcs/038-worker-timeout-unification.md#d2--early-deadline-persistence))
+  - [x] <a id="21-early-deadline-persistence-d2"></a>2.1 Early deadline persistence ([D2](../rfcs/038-worker-timeout-unification.md#d2--early-deadline-persistence))
 
     - Refactor `_run_converter_subprocess` to surface `effective_timeout` to the caller immediately after the handshake parse:
       - Option A (preferred): Return `effective_timeout` as part of the result dict (already partially done via `_effective_timeout` key at line 234). Move the computation to before `proc.communicate()` and surface the timeout early by splitting the function into handshake-parse (returns timeout) + await-completion (returns result)
@@ -91,7 +91,7 @@ This implementation plan proceeds in three phases: Phase 1 extracts timing const
     - **Validates:** [Design Property 2](../designs/design-rfc038-worker-timeout-unification.md#property-2-early-deadline-persistence) | [RFC-038 Requirement 2](../rfcs/038-worker-timeout-unification.md#requirement-2-early-deadline-persistence) | [Design §Testing Strategy](../designs/design-rfc038-worker-timeout-unification.md#testing-strategy)
     - _Requirements:_ [RFC-038 D2](../rfcs/038-worker-timeout-unification.md#d2--early-deadline-persistence) | [Design Property 2](../designs/design-rfc038-worker-timeout-unification.md#property-2-early-deadline-persistence) | [Design Service: job.py](../designs/design-rfc038-worker-timeout-unification.md#2-workerjobpy) | [Design Service: subprocess_mgr.py](../designs/design-rfc038-worker-timeout-unification.md#1-workersubprocess_mgrpy) | [Design Sequence: Early Deadline Persistence Flow](../designs/design-rfc038-worker-timeout-unification.md#early-deadline-persistence-flow--d2)
 
-  - [ ] <a id="22-timeout-multiplication-cap-d4"></a>2.2 Timeout multiplication cap ([D4](../rfcs/038-worker-timeout-unification.md#d4--effective-timeout-cap))
+  - [x] <a id="22-timeout-multiplication-cap-d4"></a>2.2 Timeout multiplication cap ([D4](../rfcs/038-worker-timeout-unification.md#d4--effective-timeout-cap))
 
     - In `subprocess_mgr.py`, after all timeout multipliers have been applied (after line 193), add:
       ```python
@@ -111,16 +111,16 @@ This implementation plan proceeds in three phases: Phase 1 extracts timing const
     - **Validates:** [Design Property 4](../designs/design-rfc038-worker-timeout-unification.md#property-4-timeout-cap-enforcement) | [RFC-038 Requirement 4](../rfcs/038-worker-timeout-unification.md#requirement-4-timeout-multiplication-cap) | [Design §Testing Strategy](../designs/design-rfc038-worker-timeout-unification.md#testing-strategy)
     - _Requirements:_ [RFC-038 D4](../rfcs/038-worker-timeout-unification.md#d4--effective-timeout-cap) | [Design Property 4](../designs/design-rfc038-worker-timeout-unification.md#property-4-timeout-cap-enforcement) | [Design Service: subprocess_mgr.py](../designs/design-rfc038-worker-timeout-unification.md#1-workersubprocess_mgrpy) | [Design Sequence: Timeout Computation Flow](../designs/design-rfc038-worker-timeout-unification.md#timeout-computation-flow--d1--d4)
 
-  - [ ] <a id="23-checkpoint--phase-2"></a>2.3 Checkpoint — Phase 2
+  - [x] <a id="23-checkpoint--phase-2"></a>2.3 Checkpoint — Phase 2
 
     - Run `uv run pytest` and verify all existing + new tests pass
     - Verify [Property 2](../designs/design-rfc038-worker-timeout-unification.md#property-2-early-deadline-persistence) and [Property 4](../designs/design-rfc038-worker-timeout-unification.md#property-4-timeout-cap-enforcement) tests pass
     - Verify the `late_success` recovery path still works (regression check)
     - Ask the user if questions arise before proceeding
 
-- [ ] <a id="3-phase-3--integration-and-validation"></a>3. Phase 3 — Integration and Validation
+- [x] <a id="3-phase-3--integration-and-validation"></a>3. Phase 3 — Integration and Validation
 
-  - [ ] <a id="31-integration-tests"></a>3.1 Integration tests
+  - [x] <a id="31-integration-tests"></a>3.1 Integration tests
 
     - Write `test_scanned_pdf_below_threshold_no_extended_timeout`: end-to-end with mocked child process emitting a handshake with `pdf_type="scanned"`, `confidence=0.50` → assert Redis `effective_timeout_at` uses conservative deadline, assert no 16.5× multiplier
     - Write `test_scanned_pdf_above_threshold_extended_timeout`: `confidence=0.92` → assert Redis `effective_timeout_at` reflects 16.5× deadline, assert deadline persisted before subprocess completes
@@ -128,7 +128,7 @@ This implementation plan proceeds in three phases: Phase 1 extracts timing const
     - Write PBT: `test_property_timeout_always_bounded` (Hypothesis) — generate random handshake payloads with arbitrary chunk_count, pdf_type, and confidence values, assert effective_timeout <= MAX_EFFECTIVE_TIMEOUT
     - _Requirements:_ [RFC-038 D1](../rfcs/038-worker-timeout-unification.md#d1--confidence-gate-alignment) | [RFC-038 D2](../rfcs/038-worker-timeout-unification.md#d2--early-deadline-persistence) | [RFC-038 D4](../rfcs/038-worker-timeout-unification.md#d4--effective-timeout-cap) | All [Design Properties](../designs/design-rfc038-worker-timeout-unification.md#correctness-properties)
 
-  - [ ] <a id="32-final-checkpoint"></a>3.2 Final checkpoint
+  - [x] <a id="32-final-checkpoint"></a>3.2 Final checkpoint
 
     - Run `uv run pytest` — full suite, zero failures
     - Verify all 4 correctness properties ([Property 1](../designs/design-rfc038-worker-timeout-unification.md#property-1-confidence-gate-consistency), [Property 2](../designs/design-rfc038-worker-timeout-unification.md#property-2-early-deadline-persistence), [Property 3](../designs/design-rfc038-worker-timeout-unification.md#property-3-constant-single-source), [Property 4](../designs/design-rfc038-worker-timeout-unification.md#property-4-timeout-cap-enforcement)) pass
