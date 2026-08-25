@@ -21,6 +21,7 @@ from ..config import (
     CURRENT_PIPELINE_VERSION,
     PDF_INSPECTOR_PRECLASSIFY,
     REMOTE_MD_RENORMALIZE,
+    ZDRComplianceError,
     settings,
 )
 from ..config import (
@@ -72,6 +73,7 @@ from ..metrics import (
     AGPL_FALLBACK_TOTAL,
     BIDI_RENORM_SKIPPED,
     FLAT_DOCS_TOTAL,
+    HR3_EGRESS_BLOCKED_TOTAL,
     LOW_QUALITY_TREES,
     PDF_EXTRACT_FALLBACKS,
     PDF_INSPECTOR_FORCED_OCR,
@@ -799,6 +801,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
                     else:
                         VLM_FALLBACK_TOTAL.labels(result="still_garbled").inc()
+                except ZDRComplianceError as vlm_zdr_exc:
+                    VLM_FALLBACK_TOTAL.labels(result="compliance_blocked").inc()
+                    HR3_EGRESS_BLOCKED_TOTAL.labels(path="vlm").inc()
+                    logger.info(
+                        "VLM fallback skipped for %s: HR3 compliance block (%s)",
+                        filename,
+                        vlm_zdr_exc,
+                    )
                 except Exception as vlm_exc:
                     VLM_FALLBACK_TOTAL.labels(result="error").inc()
                     logger.error(

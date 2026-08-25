@@ -390,11 +390,12 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
 
     # HR3: block VLM extraction when pii_corpus=True and endpoint is not
     # ZDR-allowlisted — rasterized PDF pages contain full document PII.
+    from ..config import ZDRComplianceError
     from .pictures import zdr_egress_gate
 
     allowed, _api_base = zdr_egress_gate("VLM markdown extraction", doc_id=pdf_path)
     if not allowed:
-        raise RuntimeError("vlm_extract_markdown blocked by ZDR gate (HR3)")
+        raise ZDRComplianceError("vlm_extract_markdown blocked by ZDR gate (HR3)")
 
     resolved_model = model or settings.vlm_model
     if resolved_model.startswith("azure/"):

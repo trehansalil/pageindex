@@ -215,6 +215,12 @@ DOCLING_VERSION_SKEW = Counter(
     "Remote Docling version skew detections",
     ["signal"],
 )
+HR3_EGRESS_BLOCKED_TOTAL = Counter(
+    "pageindex_hr3_egress_blocked_total",
+    "HR3 compliance-gated egress paths blocked because pii_corpus=True and the "
+    "target endpoint is not ZDR-allowlisted (RFC-039).",
+    ["path"],
+)
 WRITE_BARRIER_RETRIES = Counter(
     "pageindex_write_barrier_retries_total",
     "_confirm_write_visible stat_object retries after a put_object to "

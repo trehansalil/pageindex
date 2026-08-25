@@ -16,6 +16,7 @@ from ..config import (
 )
 from ..config import (
     REMOTE_MD_RENORMALIZE,
+    ZDRComplianceError,
     settings,
 )
 from ..converters import (
@@ -40,6 +41,7 @@ from ..helpers import (
     validate_tree,
 )
 from ..metrics import (
+    HR3_EGRESS_BLOCKED_TOTAL,
     OCR_ESCALATION_TOTAL,
     VLM_FALLBACK_TOTAL,
 )
@@ -549,6 +551,24 @@ class RecoveryMixin:
                 and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
                 and _D7_GARBLE_RECOVERY_ENABLED
             ):
+                from .images import _attempt_tesseract_raster_recovery
+
+                recovered_md = await _attempt_tesseract_raster_recovery(
+                    file_path, expected_script, filename
+                )
+                if recovered_md:
+                    state.md_content = recovered_md
+                    state.pic_results = []
+                    state.route = Route.FLAT
+        except ZDRComplianceError as vlm_zdr_exc:
+            VLM_FALLBACK_TOTAL.labels(result="compliance_blocked").inc()
+            HR3_EGRESS_BLOCKED_TOTAL.labels(path="vlm").inc()
+            logger.info(
+                "VLM fallback skipped for %s: HR3 compliance block (%s)",
+                filename,
+                vlm_zdr_exc,
+            )
+            if _VLM_TESSERACT_FALLBACK_ENABLED:
                 from .images import _attempt_tesseract_raster_recovery
 
                 recovered_md = await _attempt_tesseract_raster_recovery(
