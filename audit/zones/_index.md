@@ -15,7 +15,7 @@ All zone specifications from the audit date 2026-08-25, organized by priority an
 | 1 | Multi-Store Dual-Write Consistency | high | 3 | triaged | [[multi-store-dual-write-consistency]] |
 | 2 | Garble Detection Fragmentation | critical | 1 | triaged | [[garble-detection-fragmentation]] |
 | 3 | OCR Strategy Bifurcation | critical | 1 | triaged | [[ocr-strategy-bifurcation]] |
-| 4 | Verdict Promotion / Quality Gate Stack | critical | 2 | triaged | [[verdict-promotion-quality-gate-stack]] |
+| 4 | Verdict Promotion / Quality Gate Stack | critical | 2 | implemented | [[verdict-promotion-quality-gate-stack]] |
 | 5 | Config Layering Split and Dead-Code Accumulation | medium | 3 | triaged | [[config-layering-split-and-dead-code-accumulation]] |
 
 ## Wave Assignment

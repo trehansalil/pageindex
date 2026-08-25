@@ -126,8 +126,8 @@ class TestMaxPriorityWinsSQL:
 
         for v in VERDICTS:
             assert f"'{v}'" in _UPSERT_SQL, f"verdict {v!r} missing from _UPSERT_SQL"
-        assert "CASE EXCLUDED.verdict" in _UPSERT_SQL
-        assert "CASE doc_registry.verdict" in _UPSERT_SQL
+        assert "EXCLUDED.verdict" in _UPSERT_SQL
+        assert "doc_registry.verdict" in _UPSERT_SQL
 
     def test_sql_returning_includes_verdict(self):
         """RETURNING clause must emit verdict so callers get the arbitrated value."""
@@ -334,3 +334,161 @@ class TestSidecarPassivity:
         written = json.loads(data_arg.read())
         assert written["verdict"] == "MARGINAL", \
             "Sidecar should passively accept the Postgres-arbitrated verdict"
+
+
+# ===========================================================================
+# force_verdict_override bypass behavior (D1 extension)
+# ===========================================================================
+
+
+class TestForceVerdictOverride:
+    """force_verdict_override=True must bypass the verdict-priority CAS guard,
+    allowing a verdict downgrade.  Default (False) preserves max-priority-wins."""
+
+    @pytest.mark.asyncio
+    async def test_override_uses_override_sql(self):
+        """When force_verdict_override=True, the OVERRIDE SQL (no CAS) is used."""
+        from pageindex_mcp.registry.queries import (
+            _UPSERT_OVERRIDE_SQL,
+            _UPSERT_SQL,
+            upsert_doc,
+        )
+
+        mock_pool = AsyncMock()
+        winning = {
+            "doc_id": "d1",
+            "verdict": "FAIL",
+            "pipeline_version": 5,
+            "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-25T00:00:00Z",
+        }
+        mock_pool.fetchrow = AsyncMock(return_value=winning)
+        with patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool):
+            result = await upsert_doc(
+                {"doc_id": "d1", "verdict": "FAIL"},
+                force_verdict_override=True,
+            )
+        # The SQL passed to fetchrow must be the OVERRIDE variant.
+        call_args = mock_pool.fetchrow.await_args
+        sql_used = call_args.args[0]
+        assert "bypass verdict-priority CAS guard" in sql_used
+        assert result["verdict"] == "FAIL"
+
+    @pytest.mark.asyncio
+    async def test_default_uses_cas_sql(self):
+        """Default force_verdict_override=False uses the CAS SQL."""
+        from pageindex_mcp.registry.queries import upsert_doc
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value={
+            "doc_id": "d1", "verdict": "PASS",
+            "pipeline_version": 4, "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-20T00:00:00Z",
+        })
+        with patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool):
+            await upsert_doc({"doc_id": "d1", "verdict": "FAIL"})
+        sql_used = mock_pool.fetchrow.await_args.args[0]
+        assert "max-priority-wins" in sql_used
+        assert "bypass verdict-priority CAS guard" not in sql_used
+
+    @pytest.mark.asyncio
+    async def test_override_logs_info(self, caplog):
+        """force_verdict_override=True logs at INFO level."""
+        import logging
+
+        from pageindex_mcp.registry.queries import upsert_doc
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value={
+            "doc_id": "d1", "verdict": "FAIL",
+            "pipeline_version": 5, "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-25T00:00:00Z",
+        })
+        with (
+            patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool),
+            caplog.at_level(logging.INFO),
+        ):
+            await upsert_doc(
+                {"doc_id": "d1", "verdict": "FAIL"},
+                force_verdict_override=True,
+            )
+        assert any("verdict override" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_empty_doc_id_returns_none_regardless_of_override(self):
+        """Edge: empty doc_id returns None even with force_verdict_override."""
+        from pageindex_mcp.registry.queries import upsert_doc
+
+        mock_pool = AsyncMock()
+        with patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool):
+            result = await upsert_doc(
+                {"doc_id": "", "verdict": "FAIL"},
+                force_verdict_override=True,
+            )
+        assert result is None
+
+
+# ===========================================================================
+# SQL verdict_priority function matches VERDICT_PRIORITY dict (regression)
+# ===========================================================================
+
+
+class TestSQLVerdictPriorityMapping:
+    """The SQL CASE expression generated from VERDICT_PRIORITY must match
+    the Python dict exactly.  Any divergence is a regression."""
+
+    def test_sql_case_contains_all_verdicts_with_correct_priorities(self):
+        """Each verdict string in VERDICT_PRIORITY must appear in the SQL
+        CASE with its exact integer priority value."""
+        from pageindex_mcp.registry.queries import _VERDICT_PRIORITY_SQL_CASE
+
+        for verdict, priority in VERDICT_PRIORITY.items():
+            fragment = f"= '{verdict}' THEN {priority}"
+            assert fragment in _VERDICT_PRIORITY_SQL_CASE, (
+                f"SQL CASE missing mapping: {verdict} -> {priority}"
+            )
+
+    def test_sql_case_has_else_minus_one(self):
+        """Unknown verdicts must map to -1 (lower than ERROR=0)."""
+        from pageindex_mcp.registry.queries import _VERDICT_PRIORITY_SQL_CASE
+
+        assert "ELSE -1 END" in _VERDICT_PRIORITY_SQL_CASE
+
+    def test_verdict_priority_expr_substitutes_column(self):
+        """_verdict_priority_expr must correctly substitute the column name."""
+        from pageindex_mcp.registry.queries import _verdict_priority_expr
+
+        expr = _verdict_priority_expr("my_col")
+        assert "my_col = 'PASS'" in expr
+        assert "my_col = 'ERROR'" in expr
+
+    def test_upsert_sql_uses_excluded_and_existing(self):
+        """The _UPSERT_SQL must use EXCLUDED.verdict and doc_registry.verdict
+        in its CAS comparison via the pre-computed expressions."""
+        from pageindex_mcp.registry.queries import _UPSERT_SQL
+
+        assert "EXCLUDED.verdict" in _UPSERT_SQL
+        assert "doc_registry.verdict" in _UPSERT_SQL
+
+    def test_no_hardcoded_case_expressions_outside_queries(self):
+        """There must be no hardcoded CASE WHEN ... PASS ... MARGINAL ...
+        expressions in queries.py outside the generated constant."""
+        from pageindex_mcp.registry import queries
+        import inspect
+
+        source = inspect.getsource(queries)
+        # Count occurrences of the full CASE pattern with all 4 verdicts
+        # The only pattern should be the generated _VERDICT_PRIORITY_SQL_CASE
+        lines_with_case_pass = [
+            line.strip()
+            for line in source.splitlines()
+            if "CASE" in line and "'PASS'" in line and "THEN" in line
+        ]
+        # All such lines must come from the generated constant or its
+        # pre-computed expressions, not from hand-written SQL.
+        # The generated constant is defined once; the rest are in
+        # _UPSERT_VERDICT_CAS which is an f-string embedding.
+        assert len(lines_with_case_pass) <= 2, (
+            f"Found {len(lines_with_case_pass)} hardcoded CASE...PASS lines; "
+            "expected at most 2 (the generated constant + one f-string)"
+        )

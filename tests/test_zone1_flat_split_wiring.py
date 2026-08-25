@@ -282,12 +282,13 @@ class TestStructuralOkSourceContract:
     the all_defects-based isdisjoint() check, not sig-based heuristics."""
 
     def test_structural_ok_uses_isdisjoint_in_source(self):
-        """Source code must contain the unified isdisjoint expression."""
-        src = inspect.getsource(apply_promotions)
+        """Source code must contain the unified isdisjoint expression
+        (in _try_structural_pass, called by apply_promotions)."""
+        from pageindex_mcp.helpers.verdict import _try_structural_pass
+        src = inspect.getsource(_try_structural_pass)
         assert "isdisjoint" in src
         assert "NODE_COUNT_LOW" in src
         assert "DEPTH_LOW" in src
-        assert "_all_defects" in src
 
     def test_no_sig_node_count_heuristic_in_apply_promotions(self):
         """The old sig.node_count >= 3 and sig.depth >= 2 heuristic

@@ -36,6 +36,29 @@ class TreeDefect(StrEnum):
 # (storage/verdict.py) and _LEDGER_PRIORITY (helpers/verdict.py).
 VERDICT_PRIORITY: dict[str, int] = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
 
+# Import-time assertion: values must be unique and form a strict total order.
+assert len(set(VERDICT_PRIORITY.values())) == len(VERDICT_PRIORITY), (
+    f"VERDICT_PRIORITY values must be unique: {VERDICT_PRIORITY}"
+)
+assert sorted(VERDICT_PRIORITY.values(), reverse=True) == list(VERDICT_PRIORITY.values()), (
+    f"VERDICT_PRIORITY values must be in descending order: {VERDICT_PRIORITY}"
+)
+
+
+@dataclass(frozen=True)
+class PromotionCandidate:
+    """A scored promotion path candidate from apply_promotions().
+
+    Higher ``priority`` wins when multiple paths fire.  The ``path_name``
+    identifies which _try_* function produced this candidate.
+    ``verdict`` and ``reason`` are the values the candidate would yield.
+    """
+
+    priority: int
+    path_name: str
+    verdict: str
+    reason: str
+
 
 @dataclass(frozen=True)
 class TreeGateResult:

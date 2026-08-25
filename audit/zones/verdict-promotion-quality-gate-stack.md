@@ -3,7 +3,7 @@ zone_name: Verdict Promotion / Quality Gate Stack
 severity: critical
 wave: 2
 priority: 4
-status: triaged
+status: implemented
 audit_date: 2026-08-25
 audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST.md
 tags:

@@ -76,7 +76,10 @@ from .backfill import (  # noqa: E402
     run_auto_backfill,
     upsert_doc,
 )
-from .cleanup import _delete_stale_rows  # noqa: E402
+from .cleanup import (  # noqa: E402
+    _delete_stale_rows,
+    cleanup_protect_empty_processed_at,
+)
 from .reconcile import (  # noqa: E402
     _drain_verdict_retry_queue,
     _record_reconcile_heartbeat,
@@ -86,6 +89,7 @@ from .reconcile import (  # noqa: E402
 __all__ = [
     "_backfill",
     "_delete_stale_rows",
+    "cleanup_protect_empty_processed_at",
     "_drain_verdict_retry_queue",
     "_enrich_one",
     "_heal_orphans",

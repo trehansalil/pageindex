@@ -24,6 +24,7 @@ from .gates import (
 from .tree_validation import TreeSignals, _tree_max_leaf_ratio, _tree_node_count
 from .types import (
     GateOutcome,
+    PromotionCandidate,
     TreeDefect,
     TreeGateResult,
     VerdictResult,
@@ -216,6 +217,193 @@ def evaluate_gates(
     )
 
 
+def _try_image_enrichment(
+    sig: TreeSignals,
+    content_class: str,
+    image_enrichment_ratio: float | None,
+    th: VerdictThresholds,
+    expected_script: str | None,
+    script_context: ScriptContext | None,
+) -> PromotionCandidate | None:
+    """Image-enrichment rescue path (RFC-022 B2).
+
+    Priority 100: highest among all promotion paths.  This intentionally
+    outranks the structural hard-fail (max_leaf_ratio > 0.75) because flat
+    image-enriched documents render as a single leaf (max_leaf_ratio=1.0),
+    so the structural metric is not meaningful for them.  Ordering locked
+    by RFC-022 B2.
+    """
+    if content_class not in ("flat_prose", "flat_mixed"):
+        return None
+    if image_enrichment_ratio is None or image_enrichment_ratio < 0.8:
+        return None
+    _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
+    total_chars = len(_promoted_text)
+    if total_chars < th.min_image_promoted_chars:
+        return PromotionCandidate(
+            priority=100,
+            path_name="image_enrichment_promoted",
+            verdict="MARGINAL",
+            reason="image_enrichment_promoted_below_char_floor",
+        )
+    _sc = (
+        script_context
+        if script_context is not None
+        else ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=False,
+            source="apply_promotions",
+        )
+    )
+    if detect_garble(
+        _promoted_text,
+        script_context=_sc,
+        config=_garble_config,
+        blob_kind=BlobKind.TREE_TEXT,
+    ):
+        return None
+    return PromotionCandidate(
+        priority=100,
+        path_name="image_enrichment_promoted",
+        verdict="PASS",
+        reason="image_enrichment_promoted",
+    )
+
+
+def _try_structural_pass(
+    sig: TreeSignals,
+    all_defects: frozenset[TreeDefect],
+    th: VerdictThresholds,
+) -> PromotionCandidate | None:
+    """Direct PASS when structural metrics are clean."""
+    _structural_ok = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(all_defects)
+    _effective_max_leaf = th.pass_max_leaf_ratio
+    if _structural_ok and sig.max_leaf_ratio < _effective_max_leaf and not sig.effectively_garbled:
+        return PromotionCandidate(
+            priority=50,
+            path_name="structural_pass",
+            verdict="PASS",
+            reason="",
+        )
+    return None
+
+
+def _try_cat_a(
+    sig: TreeSignals,
+    content_class: str,
+) -> PromotionCandidate | None:
+    """OCR category-A promotion."""
+    if not content_class.startswith("ocr_"):
+        return None
+    if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
+        return PromotionCandidate(
+            priority=40,
+            path_name="cat_a_promoted",
+            verdict="PASS",
+            reason="cat_a_promoted",
+        )
+    return None
+
+
+def _try_cat_b(
+    sig: TreeSignals,
+    content_class: str,
+    th: VerdictThresholds,
+) -> PromotionCandidate | None:
+    """Flat category-B promotion."""
+    if not content_class.startswith("flat_"):
+        return None
+    _stripped_flat_text = sig.flat_text.strip()
+    _text_blocks = [b for b in _stripped_flat_text.splitlines() if b.strip()]
+    _placeholder_ratio = (
+        sum(1 for b in _text_blocks if b.strip() == "<!-- image -->") / len(_text_blocks)
+        if _text_blocks
+        else 0.0
+    )
+    if (
+        not sig.effectively_garbled
+        and sig.max_leaf_ratio < th.cat_bc_promotion_threshold
+        and sig.node_count >= 3
+        and len(_stripped_flat_text) >= th.min_flat_promotion_chars
+        and _placeholder_ratio <= 0.5
+    ):
+        return PromotionCandidate(
+            priority=40,
+            path_name="cat_b_promoted",
+            verdict="PASS",
+            reason="cat_b_promoted",
+        )
+    return None
+
+
+def _try_cat_c(
+    sig: TreeSignals,
+    content_class: str,
+    inspector_class: str | None,
+    th: VerdictThresholds,
+) -> PromotionCandidate | None:
+    """Generic category-C promotion."""
+    if content_class.startswith("ocr_") or content_class.startswith("flat_"):
+        return None
+    _cat_c_threshold = th.cat_bc_promotion_threshold
+    if not content_class and inspector_class == "text_based":
+        _cat_c_threshold = th.cat_bc_promotion_threshold * 1.2
+    if (
+        not sig.effectively_garbled
+        and hash_pipe_ratio(sig.flat_text) < 0.01
+        and sig.max_leaf_ratio < _cat_c_threshold
+    ):
+        return PromotionCandidate(
+            priority=40,
+            path_name="cat_c_promoted",
+            verdict="PASS",
+            reason="cat_c_promoted",
+        )
+    return None
+
+
+def _try_small_doc(
+    sig: TreeSignals,
+    content_class: str,
+    th: VerdictThresholds,
+) -> PromotionCandidate | None:
+    """Small document promotion."""
+    if not th.small_doc_enabled:
+        return None
+    if not content_class.startswith("flat_"):
+        return None
+    _small_doc_leaf_ratio_bound = (
+        th.small_doc_leaf_ratio_bound_high
+        if sig.node_count <= 5
+        else th.small_doc_leaf_ratio_bound_low
+    )
+    if (
+        not sig.effectively_garbled
+        and sig.node_count >= 1
+        and sig.node_count <= 10
+        and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
+        and 100 <= len(sig.flat_text.strip()) < 15000
+    ):
+        return PromotionCandidate(
+            priority=30,
+            path_name="small_doc_promoted",
+            verdict="PASS",
+            reason="small_doc_promoted",
+        )
+    return None
+
+
+# RFC-expected aliases — the zone fix specs name promotion paths by their
+# domain semantics (_try_ocr_promotion, _try_flat_promotion, etc.) while the
+# implementation uses shorter category labels (_try_cat_a, _try_cat_b, ...).
+# These aliases make the RFC names callable in production and importable from
+# the helpers package.
+_try_ocr_promotion = _try_cat_a
+_try_flat_promotion = _try_cat_b
+_try_content_class_promotion = _try_cat_c
+_try_small_doc_promotion = _try_small_doc
+
+
 def apply_promotions(
     outcome: GateOutcome,
     content_class: str,
@@ -229,11 +417,17 @@ def apply_promotions(
 ) -> VerdictResult:
     """Zone-4 Phase 2: promotion/cap logic (tried only when no HARD_FAIL fired).
 
-    The image-enrichment rescue is intentionally positioned before the
-    max_leaf_ratio structural hard-fail: flat image-enriched documents
-    render as a single leaf (max_leaf_ratio=1.0), so the structural
-    metric is not meaningful for them.  This ordering is locked by
-    RFC-022 B2.
+    Refactored from sequential first-match cascade to score-all-then-pick-best
+    using a :class:`PromotionCandidate` list.  Each promotion path is an
+    independent ``_try_*`` function returning ``Optional[PromotionCandidate]``.
+    Candidates are collected, the best (highest priority) is selected, and
+    clamping is applied uniformly.
+
+    The image-enrichment rescue retains its RFC-022 B2 locked priority
+    (priority=100) so it outranks the structural hard-fail on
+    max_leaf_ratio > 0.75 -- flat image-enriched documents render as a
+    single leaf (max_leaf_ratio=1.0), so the structural metric is not
+    meaningful for them.
 
     Thresholds are sourced from *th* (:class:`VerdictThresholds` built
     via ``VerdictThresholds.from_config(pipeline_config)``).  The
@@ -257,28 +451,22 @@ def apply_promotions(
         _v, _r = _clamp_pass(reason, defect=defect, sig=sig)
         return VerdictResult(_v, _r, defect=defect, signals=sig, all_defects=_all_defects)
 
-    _structural_ok = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(_all_defects)
+    # --- Score all promotion paths ---
+    candidates: list[PromotionCandidate] = []
 
-    if (
-        content_class in ("flat_prose", "flat_mixed")
-        and image_enrichment_ratio is not None
-        and image_enrichment_ratio >= 0.8
-    ):
-        _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
-        total_chars = len(_promoted_text)
-        if total_chars < th.min_image_promoted_chars:
-            return VerdictResult(
-                "MARGINAL",
-                "image_enrichment_promoted_below_char_floor",
-                defect=defect,
-                signals=sig,
-                all_defects=_all_defects,
-            )
-        _sc = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="apply_promotions")
-        if not detect_garble(_promoted_text, script_context=_sc, config=_garble_config, blob_kind=BlobKind.TREE_TEXT):
-            return _apply_clamp("image_enrichment_promoted")
+    _ie = _try_image_enrichment(
+        sig, content_class, image_enrichment_ratio, th, expected_script, script_context
+    )
+    if _ie is not None:
+        candidates.append(_ie)
 
-    if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
+    # RFC-022 B2: image-enrichment rescue fires BEFORE the structural hard-fail
+    # check.  If the only candidate is the image-enrichment path (priority=100),
+    # we honor it even when max_leaf_ratio > hard_fail_max_leaf_ratio.  If no
+    # image-enrichment candidate fired, apply the structural hard-fail.
+    _has_image_rescue = any(c.path_name == "image_enrichment_promoted" for c in candidates)
+
+    if not _has_image_rescue and sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
         return VerdictResult(
             "FAIL",
             f"max_leaf_ratio={sig.max_leaf_ratio:.2f}",
@@ -287,56 +475,38 @@ def apply_promotions(
             all_defects=_all_defects,
         )
 
-    _effective_max_leaf = th.pass_max_leaf_ratio
-    if _structural_ok and sig.max_leaf_ratio < _effective_max_leaf and not sig.effectively_garbled:
-        return _apply_clamp("")
+    _sp = _try_structural_pass(sig, _all_defects, th)
+    if _sp is not None:
+        candidates.append(_sp)
 
-    if content_class.startswith("ocr_"):
-        if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
-            return _apply_clamp("cat_a_promoted")
-    elif content_class.startswith("flat_"):
-        _stripped_flat_text = sig.flat_text.strip()
-        _text_blocks = [b for b in _stripped_flat_text.splitlines() if b.strip()]
-        _placeholder_ratio = (
-            sum(1 for b in _text_blocks if b.strip() == "<!-- image -->") / len(_text_blocks)
-            if _text_blocks
-            else 0.0
+    _ca = _try_ocr_promotion(sig, content_class)
+    if _ca is not None:
+        candidates.append(_ca)
+
+    _cb = _try_flat_promotion(sig, content_class, th)
+    if _cb is not None:
+        candidates.append(_cb)
+
+    _cc = _try_content_class_promotion(sig, content_class, inspector_class, th)
+    if _cc is not None:
+        candidates.append(_cc)
+
+    _sd = _try_small_doc_promotion(sig, content_class, th)
+    if _sd is not None:
+        candidates.append(_sd)
+
+    # --- Pick best candidate (highest priority wins) ---
+    if candidates:
+        best = max(candidates, key=lambda c: c.priority)
+        if best.verdict == "PASS":
+            return _apply_clamp(best.reason)
+        # MARGINAL candidates (e.g. image_enrichment_promoted_below_char_floor)
+        # are returned directly without clamping.
+        return VerdictResult(
+            best.verdict, best.reason, defect=defect, signals=sig, all_defects=_all_defects
         )
-        if (
-            not sig.effectively_garbled
-            and sig.max_leaf_ratio < th.cat_bc_promotion_threshold
-            and sig.node_count >= 3
-            and len(_stripped_flat_text) >= th.min_flat_promotion_chars
-            and _placeholder_ratio <= 0.5
-        ):
-            return _apply_clamp("cat_b_promoted")
-    else:
-        _cat_c_threshold = th.cat_bc_promotion_threshold
-        if not content_class and inspector_class == "text_based":
-            _cat_c_threshold = th.cat_bc_promotion_threshold * 1.2
-        if (
-            not sig.effectively_garbled
-            and hash_pipe_ratio(sig.flat_text) < 0.01
-            and sig.max_leaf_ratio < _cat_c_threshold
-        ):
-            return _apply_clamp("cat_c_promoted")
 
-    _small_doc_leaf_ratio_bound = (
-        th.small_doc_leaf_ratio_bound_high
-        if sig.node_count <= 5
-        else th.small_doc_leaf_ratio_bound_low
-    )
-    if (
-        th.small_doc_enabled
-        and not sig.effectively_garbled
-        and content_class.startswith("flat_")
-        and sig.node_count >= 1
-        and sig.node_count <= 10
-        and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
-        and 100 <= len(sig.flat_text.strip()) < 15000
-    ):
-        return _apply_clamp("small_doc_promoted")
-
+    # --- Fallback: no promotion path fired → MARGINAL ---
     if sig.effectively_garbled:
         reason = f"garbling(ratio={sig.garble_ratio:.2f})"
     elif sig.node_count < 3:

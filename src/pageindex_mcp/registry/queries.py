@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..helpers.types import VERDICT_PRIORITY
 from . import schema as _schema
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,31 @@ logger = logging.getLogger(__name__)
 # Write path
 # ---------------------------------------------------------------------------
 
-_UPSERT_SQL = """
+# Zone-verdict: single SQL CASE expression generated from the canonical
+# VERDICT_PRIORITY dict (helpers/types.py:37).  Replaces 4x copy-pasted
+# CASE WHEN expressions that previously diverged from the dict.
+_VERDICT_PRIORITY_SQL_CASE = (
+    "CASE "
+    + " ".join(f"WHEN {{0}} = '{v}' THEN {p}" for v, p in VERDICT_PRIORITY.items())
+    + " ELSE -1 END"
+)
+
+
+def _verdict_priority_expr(col: str) -> str:
+    """Return a SQL CASE expression mapping *col* to its verdict priority."""
+    return _VERDICT_PRIORITY_SQL_CASE.format(col)
+
+
+# Pre-computed expressions for EXCLUDED and existing row columns.
+_VP_EXCLUDED = _verdict_priority_expr("EXCLUDED.verdict")
+_VP_EXISTING = _verdict_priority_expr("doc_registry.verdict")
+
+# ---------------------------------------------------------------------------
+# SQL templates: _UPSERT_SQL (CAS-guarded) and _UPSERT_OVERRIDE_SQL
+# (force-override bypasses verdict-priority CAS, keeps processed_at CAS).
+# ---------------------------------------------------------------------------
+
+_UPSERT_PREAMBLE = """
 INSERT INTO doc_registry (
     doc_id, doc_name, source_url, processed_at,
     content_class, sha256, product, tier, doc_family,
@@ -55,49 +80,70 @@ ON CONFLICT (doc_id) DO UPDATE SET
         THEN EXCLUDED.node_count
         ELSE doc_registry.node_count
     END,
-    -- RFC-037 D1: max-priority-wins guard — replaces the old timestamp-only
-    -- CAS with a verdict-PRIORITY comparison (PASS=3 > MARGINAL=2 > FAIL=1 >
-    -- ERROR=0; unrecognised/empty verdict = -1).  An existing row's verdict
-    -- is preserved whenever its priority is higher than the incoming one, so
-    -- a verdict can only be upgraded, never downgraded, across re-ingestion
+"""
+
+_UPSERT_VERDICT_CAS = f"""    -- RFC-037 D1: max-priority-wins guard — verdict-PRIORITY comparison
+    -- generated from the canonical VERDICT_PRIORITY dict (helpers/types.py).
+    -- A verdict can only be upgraded, never downgraded, across re-ingestion
     -- cycles.  This is the single SQL arbiter all three registry writers
     -- (_upsert_registry_row, reconcile_registry_drift,
     -- _drain_verdict_retry_queue) inherit automatically.
     verdict         = CASE
-        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
-             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+        WHEN ({_VP_EXCLUDED}) >= ({_VP_EXISTING})
         THEN COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict)
         ELSE doc_registry.verdict
     END,
     pipeline_version = CASE
-        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
-             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+        WHEN ({_VP_EXCLUDED}) >= ({_VP_EXISTING})
         THEN EXCLUDED.pipeline_version
         ELSE doc_registry.pipeline_version
     END,
     permanent_marginal = CASE
-        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
-             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+        WHEN ({_VP_EXCLUDED}) >= ({_VP_EXISTING})
         THEN EXCLUDED.permanent_marginal
         ELSE doc_registry.permanent_marginal
     END,
     verdict_computed_at = CASE
-        WHEN (CASE EXCLUDED.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
-             >= (CASE doc_registry.verdict WHEN 'PASS' THEN 3 WHEN 'MARGINAL' THEN 2 WHEN 'FAIL' THEN 1 WHEN 'ERROR' THEN 0 ELSE -1 END)
+        WHEN ({_VP_EXCLUDED}) >= ({_VP_EXISTING})
         THEN EXCLUDED.verdict_computed_at
         ELSE doc_registry.verdict_computed_at
     END
+"""
+
+_UPSERT_VERDICT_OVERRIDE = """    -- force_verdict_override=True: bypass verdict-priority CAS guard.
+    -- The incoming verdict columns always win.  processed_at CAS is
+    -- still respected (stale reconcile data cannot regress sha256 etc.).
+    verdict            = COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict),
+    pipeline_version   = EXCLUDED.pipeline_version,
+    permanent_marginal = EXCLUDED.permanent_marginal,
+    verdict_computed_at = EXCLUDED.verdict_computed_at
+"""
+
+_UPSERT_RETURNING = """
 RETURNING doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at;
 """
 
+_UPSERT_SQL = _UPSERT_PREAMBLE + _UPSERT_VERDICT_CAS + _UPSERT_RETURNING
+_UPSERT_OVERRIDE_SQL = _UPSERT_PREAMBLE + _UPSERT_VERDICT_OVERRIDE + _UPSERT_RETURNING
 
-async def upsert_doc(meta: dict) -> dict[str, Any] | None:
+
+async def upsert_doc(
+    meta: dict,
+    *,
+    force_verdict_override: bool = False,
+) -> dict[str, Any] | None:
     """Insert or update a registry row from a metadata dict.
 
     Tolerates missing keys with safe defaults so it can be called directly
     with a raw ``.meta.json`` payload.  Returns the winning row's verdict
     columns as a dict (via RETURNING), or ``None`` when the pool is
     unavailable or ``doc_id`` is empty.
+
+    When *force_verdict_override* is ``True`` the verdict-priority CAS
+    guard is bypassed: the incoming verdict columns always win regardless
+    of their priority relative to the existing row.  The processed_at CAS
+    guard is still respected.  Default ``False`` preserves the existing
+    max-priority-wins behavior.
     """
     pool = _schema.get_pool()
     if pool is None:
@@ -106,8 +152,9 @@ async def upsert_doc(meta: dict) -> dict[str, Any] | None:
     if not doc_id:
         logger.warning("registry.upsert_doc: skipping row with empty doc_id")
         return None
+    sql = _UPSERT_OVERRIDE_SQL if force_verdict_override else _UPSERT_SQL
     row = await pool.fetchrow(
-        _UPSERT_SQL,
+        sql,
         doc_id,
         meta.get("doc_name", ""),
         meta.get("source_url", ""),
@@ -130,7 +177,10 @@ async def upsert_doc(meta: dict) -> dict[str, Any] | None:
         # Zone-8: verdict_computed_at for temporal CAS guard.
         meta.get("verdict_computed_at", ""),
     )
-    logger.debug("registry: upserted doc_id=%s", doc_id)
+    if force_verdict_override:
+        logger.info("registry: upserted doc_id=%s (verdict override)", doc_id)
+    else:
+        logger.debug("registry: upserted doc_id=%s", doc_id)
     return dict(row) if row is not None else None
 
 

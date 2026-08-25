@@ -390,8 +390,8 @@ def test_upsert_sql_has_verdict_cas_guard():
     from pageindex_mcp.registry.queries import _UPSERT_SQL
 
     sql = _UPSERT_SQL
-    assert "CASE EXCLUDED.verdict WHEN 'PASS' THEN 3" in sql
-    assert "CASE doc_registry.verdict WHEN 'PASS' THEN 3" in sql
+    assert "EXCLUDED.verdict = 'PASS' THEN 3" in sql
+    assert "doc_registry.verdict = 'PASS' THEN 3" in sql
 
 
 def test_upsert_sql_has_processed_at_cas_guard():
@@ -530,3 +530,118 @@ async def test_upsert_doc_returns_dict_type():
 
     assert isinstance(result, dict)
     assert result["doc_id"] == "dt-1"
+
+
+# ---------------------------------------------------------------------------
+# Wiring: force_verdict_override threads through _upsert_registry_row
+# ---------------------------------------------------------------------------
+
+
+class TestForceVerdictOverrideWiring:
+    """Wiring test: force_verdict_override is popped from verdict_fields in
+    _upsert_registry_row and passed as a kwarg to upsert_doc.  It must NOT
+    be persisted as a column value in the meta dict sent to Postgres."""
+
+    @pytest.mark.asyncio
+    async def test_force_override_popped_and_passed_to_upsert_doc(self):
+        """force_verdict_override=True in verdict_fields is popped and
+        forwarded as kwarg to upsert_doc."""
+        from pageindex_mcp.worker.registry_mirror import _upsert_registry_row
+
+        mock_upsert = AsyncMock(return_value={
+            "doc_id": "w1", "verdict": "FAIL",
+            "pipeline_version": 5, "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-25T00:00:00Z",
+        })
+        mock_fields = {
+            "doc_id": "w1", "verdict": "FAIL",
+            "pipeline_version": 5, "content_class": "flat_prose",
+        }
+
+        with (
+            patch("pageindex_mcp.worker.registry_mirror.settings",
+                  MagicMock(registry_enabled=True, postgres_dsn="postgresql://x")),
+            patch("pageindex_mcp.registry.get_pool", return_value=MagicMock()),
+            patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
+            patch("pageindex_mcp.worker.registry_mirror.read_registry_fields",
+                  return_value=mock_fields),
+            patch("pageindex_mcp.storage.verdict.save_doc_meta"),
+            patch("pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
+                  MagicMock()),
+            patch("pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+                  AsyncMock()),
+        ):
+            await _upsert_registry_row(
+                "w1", "flat_prose",
+                verdict_fields={"verdict": "FAIL", "force_verdict_override": True},
+            )
+
+        mock_upsert.assert_awaited_once()
+        call_kwargs = mock_upsert.await_args.kwargs
+        assert call_kwargs.get("force_verdict_override") is True
+        # The meta dict (positional arg) must NOT contain force_verdict_override
+        meta_arg = mock_upsert.await_args.args[0]
+        assert "force_verdict_override" not in meta_arg
+
+    @pytest.mark.asyncio
+    async def test_default_override_false_when_not_in_fields(self):
+        """When verdict_fields lacks force_verdict_override, default is False."""
+        from pageindex_mcp.worker.registry_mirror import _upsert_registry_row
+
+        mock_upsert = AsyncMock(return_value={
+            "doc_id": "w2", "verdict": "PASS",
+            "pipeline_version": 4, "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-25T00:00:00Z",
+        })
+        mock_fields = {
+            "doc_id": "w2", "verdict": "PASS",
+            "pipeline_version": 4, "content_class": "flat_prose",
+        }
+
+        with (
+            patch("pageindex_mcp.worker.registry_mirror.settings",
+                  MagicMock(registry_enabled=True, postgres_dsn="postgresql://x")),
+            patch("pageindex_mcp.registry.get_pool", return_value=MagicMock()),
+            patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
+            patch("pageindex_mcp.worker.registry_mirror.read_registry_fields",
+                  return_value=mock_fields),
+            patch("pageindex_mcp.storage.verdict.save_doc_meta"),
+            patch("pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
+                  MagicMock()),
+            patch("pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+                  AsyncMock()),
+        ):
+            await _upsert_registry_row(
+                "w2", "flat_prose",
+                verdict_fields={"verdict": "PASS"},
+            )
+
+        call_kwargs = mock_upsert.await_args.kwargs
+        assert call_kwargs.get("force_verdict_override") is False
+
+
+# ---------------------------------------------------------------------------
+# Wiring: force_verdict_override import verification
+# ---------------------------------------------------------------------------
+
+
+def test_force_verdict_override_importable_from_queries():
+    """The force_verdict_override parameter must exist on upsert_doc."""
+    import inspect
+
+    from pageindex_mcp.registry.queries import upsert_doc
+
+    sig = inspect.signature(upsert_doc)
+    assert "force_verdict_override" in sig.parameters
+    param = sig.parameters["force_verdict_override"]
+    assert param.default is False
+
+
+def test_verdict_downgrade_enabled_in_pipeline_config():
+    """VERDICT_DOWNGRADE_ENABLED must be a field on PipelineConfig."""
+    import dataclasses
+
+    from pageindex_mcp.config import PipelineConfig
+
+    field_names = {f.name for f in dataclasses.fields(PipelineConfig)}
+    assert "verdict_downgrade_enabled" in field_names

@@ -254,3 +254,100 @@ class TestHardFailTiebreakOrder:
 # ---------------------------------------------------------------------------
 # Legacy None path preserved
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# VERDICT_DOWNGRADE_ENABLED integration with compute_verdict
+# ---------------------------------------------------------------------------
+
+
+class TestVerdictDowngradeEnabled:
+    """Integration: VERDICT_DOWNGRADE_ENABLED config flag controls whether
+    force_verdict_override is set in the indexer's verdict_fields dict.
+
+    These tests verify the config flag reads correctly and that the
+    verdict computation itself is unaffected by the flag (the flag only
+    affects the persistence layer via force_verdict_override in
+    last_verdict_fields)."""
+
+    def test_config_flag_defaults_to_false(self):
+        """Default: VERDICT_DOWNGRADE_ENABLED=false (no behavioral change)."""
+        import os
+        from unittest.mock import patch as _patch
+
+        env = {k: v for k, v in os.environ.items() if k != "VERDICT_DOWNGRADE_ENABLED"}
+        with _patch.dict(os.environ, env, clear=True):
+            from pageindex_mcp.config import PipelineConfig
+
+            cfg = PipelineConfig.from_env()
+            assert cfg.verdict_downgrade_enabled is False
+
+    def test_config_flag_true_when_env_set(self):
+        """VERDICT_DOWNGRADE_ENABLED=true enables verdict downgrades."""
+        import os
+        from unittest.mock import patch as _patch
+
+        with _patch.dict(os.environ, {"VERDICT_DOWNGRADE_ENABLED": "true"}):
+            from pageindex_mcp.config import PipelineConfig
+
+            cfg = PipelineConfig.from_env()
+            assert cfg.verdict_downgrade_enabled is True
+
+    def test_compute_verdict_unaffected_by_flag(self):
+        """compute_verdict's output must be identical regardless of
+        VERDICT_DOWNGRADE_ENABLED — the flag only affects persistence."""
+        import os
+        from unittest.mock import patch as _patch
+
+        structure = _well_formed()
+
+        # Compute with flag off
+        with _patch.dict(os.environ, {"VERDICT_DOWNGRADE_ENABLED": "false"}):
+            from pageindex_mcp.config import PipelineConfig, reset_pipeline_config
+
+            reset_pipeline_config()
+            result_off = compute_verdict(structure, "flat_prose", None)
+
+        # Compute with flag on
+        with _patch.dict(os.environ, {"VERDICT_DOWNGRADE_ENABLED": "true"}):
+            reset_pipeline_config()
+            result_on = compute_verdict(structure, "flat_prose", None)
+
+        # Clean up
+        with _patch.dict(os.environ, {"VERDICT_DOWNGRADE_ENABLED": "false"}):
+            reset_pipeline_config()
+
+        assert result_off.verdict == result_on.verdict
+        assert result_off.reason == result_on.reason
+
+    def test_verdict_downgrade_flag_in_indexer_wiring(self):
+        """When VERDICT_DOWNGRADE_ENABLED=true, the indexer sets
+        force_verdict_override=True in last_verdict_fields."""
+        import inspect
+
+        from pageindex_mcp.client.indexer import CustomPageIndexClient
+
+        # Verify the indexer references the VERDICT_DOWNGRADE_ENABLED constant
+        source = inspect.getsource(CustomPageIndexClient)
+        assert "VERDICT_DOWNGRADE_ENABLED" in source
+        assert "force_verdict_override" in source
+
+    def test_pipeline_version_comparison_not_in_indexer(self):
+        """The verdict_downgrade_enabled flag is a simple boolean gate --
+        no pipeline_version comparison is needed in the indexer because
+        the SQL processed_at CAS guard handles temporal ordering."""
+        import inspect
+
+        from pageindex_mcp.client.indexer import CustomPageIndexClient
+
+        source = inspect.getsource(CustomPageIndexClient)
+        # The flag is used directly, not via version comparison in the
+        # force_verdict_override setting blocks
+        lines = source.splitlines()
+        for i, line in enumerate(lines):
+            if "force_verdict_override" in line and "True" in line:
+                # The preceding line should reference verdict_downgrade_enabled
+                context = "\n".join(lines[max(0, i - 3) : i + 1])
+                assert "VERDICT_DOWNGRADE_ENABLED" in context, (
+                    f"force_verdict_override=True set without VERDICT_DOWNGRADE_ENABLED guard"
+                )
