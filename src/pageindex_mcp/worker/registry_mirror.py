@@ -56,6 +56,7 @@ async def _upsert_registry_row(
     doc_id: str,
     content_class: str | None,
     verdict_fields: dict[str, Any] | None = None,
+    registry_fields: dict[str, Any] | None = None,
 ) -> None:
     """Postgres-authoritative registry write (Zone-4 Phase 3).
 
@@ -68,10 +69,18 @@ async def _upsert_registry_row(
     awaited so it cannot be lost the way a fire-and-forget task would be.
     Best-effort: any failure logs a warning but never fails the job.
 
+    When *registry_fields* is supplied (a dict carrying all _REGISTRY_FIELDS
+    plus doc_id/content_class/node_count, produced in-memory during persist),
+    the MinIO re-read is skipped entirely — the child already computed
+    every column value, so re-reading the just-written artifact is pure
+    waste and a race window.  Falls back to the MinIO read path when
+    *registry_fields* is ``None`` (older child binaries, or callers like
+    ``preprocess_client.py`` that don't supply it).
+
     When *verdict_fields* is supplied (a dict carrying any subset of
     verdict / verdict_reason / pipeline_version / max_leaf_ratio /
     verdict_computed_at / node_count), those values are merged into the
-    registry row **after** the MinIO read, so they take precedence over
+    registry row **after** the base fields, so they take precedence over
     whatever the artifact carries.  Callers that lack job-context verdict
     data (e.g. ``preprocess_client.py`` batch CLI) simply omit the kwarg
     and fall back to the MinIO-only field read.
@@ -89,8 +98,16 @@ async def _upsert_registry_row(
         return
     try:
         # Zone-4 Phase 3: single linear path (Postgres-authoritative).
-        # 1. Read full fields from MinIO artifact.
-        fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+        if registry_fields is not None:
+            # Zone-7 (dual-write consistency): registry fields supplied by
+            # the child process — skip the MinIO re-read entirely.
+            fields: dict[str, Any] | None = dict(registry_fields)
+            fields["doc_id"] = doc_id
+            if content_class and "content_class" not in fields:
+                fields["content_class"] = content_class
+        else:
+            # Fallback: read full fields from MinIO artifact.
+            fields = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
         if not fields and verdict_fields:
             # MinIO artifact unreadable but we have verdict data from the
             # job — write a minimal row so verdict columns are not lost.
@@ -100,8 +117,11 @@ async def _upsert_registry_row(
             # over any stale or not-yet-visible artifact data.
             fields.update(verdict_fields)
         if fields:
+            # Pop force_verdict_override before calling upsert_doc so it
+            # becomes a kwarg, not a column value persisted to Postgres.
+            _force_override = bool(fields.pop("force_verdict_override", False))
             # 2. Single CAS upsert to Postgres (with RETURNING).
-            winning = await upsert_doc(fields)
+            winning = await upsert_doc(fields, force_verdict_override=_force_override)
             # 3. Best-effort sidecar backfill with the winning Postgres
             #    values so both stores converge.  Uses asyncio.to_thread
             #    because save_doc_meta is synchronous MinIO I/O.

@@ -346,10 +346,22 @@ async def process_document_job(  # noqa: C901, PLR0915
         # read_registry_fields MinIO-read path when verdict_fields is absent
         # (older child binaries, or tree/flat persist paths that don't emit it).
         verdict_fields = result.get("verdict_fields")
+        # Zone-7 (dual-write consistency): the converter child's stdout
+        # JSON now carries registry_fields (all _REGISTRY_FIELDS columns
+        # plus node_count) computed in-memory during index().  Threading
+        # them via the registry_fields kwarg eliminates the MinIO re-read
+        # in _upsert_registry_row entirely — no race window, no extra GET.
+        # Falls back gracefully (None) when the child doesn't emit them
+        # (older child binaries or callers that don't supply it).
+        registry_fields = result.get("registry_fields")
 
         from .registry_mirror import _upsert_registry_row
 
-        await _upsert_registry_row(doc_id, content_class, verdict_fields=verdict_fields)
+        await _upsert_registry_row(
+            doc_id, content_class,
+            verdict_fields=verdict_fields,
+            registry_fields=registry_fields,
+        )
         cleanup_staging = True  # terminal success
         return doc_id
     except (TimeoutError, ConverterOOMError, ConverterChildError) as exc:

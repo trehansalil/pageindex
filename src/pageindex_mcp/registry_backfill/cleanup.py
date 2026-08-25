@@ -7,6 +7,22 @@ from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger("registry_backfill")
 
+
+def cleanup_protect_empty_processed_at(processed_at_str: str | None) -> bool:
+    """Return True if a row with this *processed_at* value should be
+    **treated as old enough** to be a stale-deletion candidate (i.e. NOT
+    protected by the age guard).
+
+    Rows with an empty or ``None`` ``processed_at`` (legacy rows that
+    predate the timestamp column, or rows written with the schema default
+    ``''``) are treated as old enough --- they are not protected by the
+    age guard.
+
+    Returns ``True`` (old enough, not protected) for empty/None values,
+    ``False`` (possibly protected, needs further age check) otherwise.
+    """
+    return not processed_at_str
+
 # A stale-row purge is only trusted when it wouldn't wipe out most of the
 # registry — an untrustworthy/partial MinIO listing (e.g. list-API glitch,
 # wrong bucket/prefix) should never cascade into mass deletion.
@@ -54,8 +70,8 @@ async def _delete_stale_rows(
     age_protected: set[str] = set()
     for doc_id in stale:
         processed_at_str = registry_rows.get(doc_id, "")
-        if not processed_at_str:
-            # Legacy row with empty processed_at — treat as old enough.
+        if cleanup_protect_empty_processed_at(processed_at_str):
+            # Legacy row with empty/None processed_at — treat as old enough.
             continue
         try:
             processed_at = datetime.fromisoformat(processed_at_str)

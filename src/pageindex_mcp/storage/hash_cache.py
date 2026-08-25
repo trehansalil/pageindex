@@ -65,8 +65,62 @@ def hash_cache_set(filename: str, sha256: str) -> None:
     get_cache_redis().hset(HASH_CACHE_KEY, filename, sha256)
 
 
+def _purge_legacy_hash_entry(filename: str) -> None:
+    """Best-effort removal of *filename* from the legacy MinIO hash-cache blob.
+
+    The pre-D6 hash cache is a monolithic JSON object at
+    ``hashes/processed_hashes.json``.  During erasure (HR2 step 5) both
+    the Redis entry AND the legacy blob entry must be purged so that a
+    subsequent ``hash_cache_get`` fallback cannot resurrect a deleted
+    document's hash.
+
+    Failures are logged but never raised --- the Redis entry (primary
+    store post-D6) is already deleted by the caller, so a legacy-blob
+    failure is an acceptable degradation.
+    """
+    mc = _minio_ops.get_minio()
+    try:
+        cache = _load_legacy_minio_hash_cache()
+    except Exception:
+        logger.debug(
+            "Legacy hash-cache purge: could not load blob for %s", filename, exc_info=True
+        )
+        return
+    if filename not in cache:
+        return
+    del cache[filename]
+    try:
+        from ..config import settings
+
+        import json as _json
+        from io import BytesIO as _BytesIO
+
+        content = _json.dumps(cache).encode()
+        mc.put_object(
+            settings.minio_bucket,
+            HASH_OBJECT,
+            _BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+        logger.debug("Legacy hash-cache purge: removed entry for %s", filename)
+    except Exception:
+        logger.debug(
+            "Legacy hash-cache purge: failed to write back blob after removing %s",
+            filename,
+            exc_info=True,
+        )
+
+
 def hash_cache_delete(filename: str) -> None:
-    """Remove filename's hash-cache entry (HR2 erasure cascade step 5)."""
+    """Remove filename's hash-cache entry (HR2 erasure cascade step 5).
+
+    Purges both the Redis HSET entry (primary, post-D6) and the legacy
+    MinIO blob entry (best-effort, for migration-window completeness).
+    """
     from ..cache import get_cache_redis  # lazy: no top-level storage->cache edge
 
     get_cache_redis().hdel(HASH_CACHE_KEY, filename)
+    # Best-effort legacy blob purge so a hash_cache_get fallback read
+    # cannot resurrect a deleted document's hash.
+    _purge_legacy_hash_entry(filename)

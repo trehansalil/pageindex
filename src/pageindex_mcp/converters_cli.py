@@ -166,6 +166,14 @@ async def main() -> int:  # noqa: PLR0915
             verdict_fields = getattr(client, "last_verdict_fields", None)
             if verdict_fields:
                 payload["verdict_fields"] = verdict_fields
+            # Zone-7 (dual-write consistency): surface registry fields
+            # computed during index() so the worker parent can pass them
+            # to _upsert_registry_row, eliminating the MinIO re-read
+            # race window for all registry columns (not just verdict).
+            # Omitted when None (backward compat with older workers).
+            last_registry_fields = getattr(client, "last_registry_fields", None)
+            if last_registry_fields:
+                payload["registry_fields"] = last_registry_fields
             _emit(payload)
             return 0
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -15,6 +16,41 @@ from ..metrics import MINIO_DURATION, MINIO_OPS
 from . import minio_ops as _minio_ops
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# HR2 erasure manifest — authoritative ordered list of stores that
+# delete_doc must cascade through for right-to-erasure compliance.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ErasureStep:
+    """One store in the HR2 right-to-erasure cascade.
+
+    *name* is a short, stable identifier (used in error messages and
+    observability); *step* is the 1-based ordering from the CLAUDE.md
+    HR2 spec; *description* is a human-readable summary.
+    """
+
+    name: str
+    step: int
+    description: str
+
+
+_ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
+    ErasureStep(name="uploads", step=1, description="Raw upload objects at uploads/<doc_id>/*"),
+    ErasureStep(name="processed_json", step=2, description="Processed tree at processed/<doc_id>.json"),
+    ErasureStep(name="processed_flat_json", step=2, description="Flat artifact at processed/<doc_id>.flat.json"),
+    ErasureStep(name="figures", step=2, description="Figure crops at figures/<doc_id>/*"),
+    ErasureStep(name="verdicts", step=2, description="Verdict ledger at verdicts/<sha256>.json"),
+    ErasureStep(name="meta_json", step=3, description="Sidecar at processed/<doc_id>.meta.json"),
+    ErasureStep(name="redis_cache", step=4, description="Redis doc cache entry"),
+    ErasureStep(name="reconcile_etag", step=4, description="Reconcile-etag map entry"),
+    ErasureStep(name="hash_cache", step=5, description="Hash-cache entry (filename -> sha256)"),
+    ErasureStep(name="registry", step=6, description="Postgres registry row"),
+    ErasureStep(name="preloaded", step=7, description="Preloaded raw object at preloaded/<doc_name>"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +199,19 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
     except Exception as e:
         errors.append(f"read-doc-name: {e}")
 
+    # Validate manifest integrity at the start of every erasure — each entry
+    # must be an ErasureStep so downstream observability/logging can rely on
+    # the typed fields.  This is a dev-time guard (the manifest is a frozen
+    # module constant) not a runtime hot-path concern.
+    for entry in _ERASURE_MANIFEST:
+        if not isinstance(entry, ErasureStep):
+            raise TypeError(
+                f"_ERASURE_MANIFEST entry is {type(entry).__name__}, expected ErasureStep"
+            )
+    # Build a name set for the completeness log at the end.
+    _manifest_names = {step.name for step in _ERASURE_MANIFEST}
+    completed_steps: set[str] = set()
+
     try:
         # 1. uploads/<doc_id>/*
         removed = 0
@@ -183,6 +232,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                 mc.remove_object(settings.minio_bucket, object_name)
                 removed += 1
             logger.info("ERASE %s step1: removed %d uploads object(s)", doc_id, removed)
+            completed_steps.add("uploads")
         except S3Error as e:
             errors.append(f"uploads/: {e}")
 
@@ -190,17 +240,23 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.json")
             logger.info("ERASE %s step2: removed processed/%s.json", doc_id, doc_id)
+            completed_steps.add("processed_json")
         except S3Error as e:
             if getattr(e, "code", "") != "NoSuchKey":
                 errors.append(f"processed.json: {e}")
+            else:
+                completed_steps.add("processed_json")  # NoSuchKey is idempotent success
 
         # 2b. processed/<doc_id>.flat.json  (FLAT-02-C2: derived store joins HR2 cascade)
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.flat.json")
             logger.info("ERASE %s step2b: removed processed/%s.flat.json", doc_id, doc_id)
+            completed_steps.add("processed_flat_json")
         except S3Error as e:
             if getattr(e, "code", "") != "NoSuchKey":
                 errors.append(f"processed.flat.json: {e}")
+            else:
+                completed_steps.add("processed_flat_json")
 
         # 2c. figures/<doc_id>/* (image crops)
         try:
@@ -215,6 +271,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                     fig_removed += 1
             if fig_removed:
                 logger.info("ERASE %s step2c: removed %d figure(s)", doc_id, fig_removed)
+            completed_steps.add("figures")
         except S3Error as e:
             errors.append(f"figures/: {e}")
 
@@ -238,9 +295,12 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
             try:
                 mc.remove_object(settings.minio_bucket, f"verdicts/{sha256}.json")
                 logger.info("ERASE %s step2d: removed verdicts/%s.json", doc_id, sha256)
+                completed_steps.add("verdicts")
             except S3Error as e:
                 if getattr(e, "code", "") != "NoSuchKey":
                     errors.append(f"verdicts/: {e}")
+                else:
+                    completed_steps.add("verdicts")
         else:
             logger.warning(
                 "ERASE %s step2d: sha256 unavailable; cannot purge verdicts/ ledger", doc_id
@@ -250,9 +310,12 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
         try:
             mc.remove_object(settings.minio_bucket, f"processed/{doc_id}.meta.json")
             logger.info("ERASE %s step3: removed processed/%s.meta.json", doc_id, doc_id)
+            completed_steps.add("meta_json")
         except S3Error as e:
             if getattr(e, "code", "") != "NoSuchKey":
                 errors.append(f"processed.meta.json: {e}")
+            else:
+                completed_steps.add("meta_json")
 
         # 4. Redis cache
         try:
@@ -260,6 +323,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
 
             doc_cache_delete(doc_id)
             logger.info("ERASE %s step4: invalidated Redis cache", doc_id)
+            completed_steps.add("redis_cache")
         except Exception as e:
             errors.append(f"redis-cache: {e}")
 
@@ -270,6 +334,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
 
             reconcile_etag_delete(doc_id)
             logger.info("ERASE %s step4b: cleared reconcile-etag entry", doc_id)
+            completed_steps.add("reconcile_etag")
         except Exception as e:
             errors.append(f"reconcile-etag: {e}")
 
@@ -280,6 +345,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
 
                 hash_cache_delete(doc_name)
                 logger.info("ERASE %s step5: cleared hash-cache entry for %s", doc_id, doc_name)
+                completed_steps.add("hash_cache")
             except Exception as e:
                 errors.append(f"hash-cache: {e}")
         else:
@@ -303,6 +369,7 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
                         timeout=settings.registry_delete_timeout_s,
                     )
                     logger.info("ERASE %s step6: removed from Postgres registry", doc_id)
+                    completed_steps.add("registry")
                 except TimeoutError:
                     errors.append(
                         f"registry: delete timed out after {settings.registry_delete_timeout_s}s"
@@ -326,12 +393,25 @@ async def delete_doc(doc_id: str) -> dict:  # noqa: C901, PLR0915
             try:
                 mc.remove_object(settings.minio_bucket, f"preloaded/{doc_name}")
                 logger.info("ERASE %s step7: removed preloaded/%s", doc_id, doc_name)
+                completed_steps.add("preloaded")
             except S3Error as e:
                 if getattr(e, "code", "") != "NoSuchKey":
                     errors.append(f"preloaded/: {e}")
+                else:
+                    completed_steps.add("preloaded")
         else:
             logger.warning(
                 "ERASE %s step7: doc_name unknown; cannot purge preloaded object", doc_id
+            )
+
+        # Manifest completeness check: log any stores that the cascade
+        # did not reach (e.g. doc_name unknown -> hash_cache skipped).
+        missed = _manifest_names - completed_steps
+        if missed:
+            logger.warning(
+                "ERASE %s manifest gap: stores not reached: %s",
+                doc_id,
+                sorted(missed),
             )
 
         if errors:
