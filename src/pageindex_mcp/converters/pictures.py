@@ -17,8 +17,11 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
-from ..config import OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE
+from ..config import pipeline_config
 from ..helpers import _garble_config, detect_garble
+
+# Backward-compat alias: tests monkeypatch this attribute via setattr.
+_OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
 from ..metrics import TESSERACT_OCR_FAILURE_TOTAL
 from ..picture_plane import (
     OcrMode,
@@ -483,9 +486,7 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
     """
     if not _PAGE_ROTATION_DETECTION_ENABLED:
         return pdf_path
-    from ..config import ALLOW_AGPL_FALLBACK
-
-    if not ALLOW_AGPL_FALLBACK:
+    if not pipeline_config.allow_agpl_fallback:
         logger.warning(
             "rotation normalization skipped for %s: ALLOW_AGPL_FALLBACK=false "
             "(fitz/PyMuPDF is AGPL-3.0)",
@@ -533,9 +534,7 @@ def _tag_landscape_pages_for_fallback(pdf_path: str) -> list[dict]:
     Does not mutate the PDF or the primary extraction path — portrait-only
     documents yield an all-False probe and are otherwise unaffected.
     """
-    from ..config import ALLOW_AGPL_FALLBACK
-
-    if not ALLOW_AGPL_FALLBACK:
+    if not pipeline_config.allow_agpl_fallback:
         return []
     try:
         import fitz  # PyMuPDF, AGPL-3.0
@@ -642,10 +641,9 @@ def _landscape_rasterize_rotate_reextract(
     PictureResults back into flat-mixed classification) is Phase 2's
     follow-on, not this function's concern.
     """
-    from ..config import ALLOW_AGPL_FALLBACK
     from .docling_conv import _docling_converter, _repair_docling_tables
 
-    if not ALLOW_AGPL_FALLBACK:
+    if not pipeline_config.allow_agpl_fallback:
         return []
     results: list[dict] = []
     deadline = time.monotonic() + LANDSCAPE_REEXTRACT_DEADLINE_SECONDS
@@ -755,9 +753,9 @@ def _recover_picture_text(  # noqa: PLR0915, C901
     For ``clip_text_already_exported`` the ``clip_text`` is also propagated
     into ``PictureResult.ocr_text`` so ``splice_figure_markers`` can emit a
     ``[Chart text]`` block."""
-    from ..config import ALLOW_AGPL_FALLBACK, settings
+    from ..config import settings
 
-    if not ALLOW_AGPL_FALLBACK:
+    if not pipeline_config.allow_agpl_fallback:
         logger.warning(
             "picture-region recovery skipped for %s: ALLOW_AGPL_FALLBACK=false "
             "(fitz/PyMuPDF is AGPL-3.0)",

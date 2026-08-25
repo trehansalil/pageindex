@@ -9,14 +9,8 @@ import tempfile
 from typing import TYPE_CHECKING
 
 from ..config import (
-    IMAGE_DOMINANT_OCR_ESCALATION_ENABLED as _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
-)
-from ..config import (
-    OCR_ESCALATION_GARBLE as _OCR_ESCALATION_GARBLE,
-)
-from ..config import (
-    REMOTE_MD_RENORMALIZE,
     ZDRComplianceError,
+    pipeline_config,
     settings,
 )
 from ..converters import (
@@ -56,19 +50,18 @@ logger = logging.getLogger(__name__)
 # ---- Module-level constants re-exported from client.py scope ----
 # These are read from env in the original client.py at module level.
 
-LOW_CONTENT_OCR_CHAR_FLOOR = int(os.getenv("LOW_CONTENT_OCR_CHAR_FLOOR", "300"))
-
-_VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
-    "VLM_TESSERACT_FALLBACK_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
-
-_D7_GARBLE_RECOVERY_ENABLED = os.getenv("D7_GARBLE_RECOVERY_ENABLED", "true").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
-_RFC029_FLAT_PREFER_MULTIPLIER = float(os.getenv("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
+# Backward-compat module-level aliases derived from the pipeline_config
+# singleton.  Function bodies below read ``pipeline_config.<attr>`` directly
+# so they pick up fresh values after ``reset_pipeline_config()``.
+# These aliases are kept for re-export via ``client/__init__.py`` and for
+# test code that patches them via ``monkeypatch.setattr``.
+LOW_CONTENT_OCR_CHAR_FLOOR = pipeline_config.low_content_ocr_char_floor
+_VLM_TESSERACT_FALLBACK_ENABLED = pipeline_config.vlm_tesseract_fallback_enabled
+_D7_GARBLE_RECOVERY_ENABLED = pipeline_config.d7_garble_recovery_enabled
+_RFC029_FLAT_PREFER_MULTIPLIER = pipeline_config.rfc029_flat_prefer_multiplier
+_IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
+_OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
 
 # Zone-3: Arabic documents use a lower flat-prefer multiplier because
 # heading injection can inflate tree structure, making a content-poor tree
@@ -193,7 +186,7 @@ class RecoveryMixin:
             # validate_tree recomputes on new text.  Unifies the inconsistent
             # semantics where Recovery 1 cleared only on remote+renormalize
             # and Recovery 5 cleared unconditionally.
-            if state.use_remote and REMOTE_MD_RENORMALIZE:
+            if state.use_remote and pipeline_config.remote_md_renormalize:
                 state.md_content, state.rtl_decision = _renormalize_bidi_guarded(
                     state.md_content,
                     filename,
@@ -362,7 +355,7 @@ class RecoveryMixin:
             return
         if not _OCR_ESCALATION_GARBLE:
             return
-        if state.total_chars >= LOW_CONTENT_OCR_CHAR_FLOOR:
+        if state.total_chars >= pipeline_config.low_content_ocr_char_floor:
             return
         await self._execute_ocr_retry(
             state,
@@ -549,7 +542,7 @@ class RecoveryMixin:
             if (
                 not state.ok
                 and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-                and _D7_GARBLE_RECOVERY_ENABLED
+                and pipeline_config.d7_garble_recovery_enabled
             ):
                 from .images import _attempt_tesseract_raster_recovery
 
@@ -568,7 +561,7 @@ class RecoveryMixin:
                 filename,
                 vlm_zdr_exc,
             )
-            if _VLM_TESSERACT_FALLBACK_ENABLED:
+            if pipeline_config.vlm_tesseract_fallback_enabled:
                 from .images import _attempt_tesseract_raster_recovery
 
                 recovered_md = await _attempt_tesseract_raster_recovery(
@@ -586,7 +579,7 @@ class RecoveryMixin:
                 vlm_exc,
                 exc_info=True,
             )
-            if _VLM_TESSERACT_FALLBACK_ENABLED:
+            if pipeline_config.vlm_tesseract_fallback_enabled:
                 from .images import _attempt_tesseract_raster_recovery
 
                 recovered_md = await _attempt_tesseract_raster_recovery(
@@ -621,7 +614,7 @@ class RecoveryMixin:
         _multiplier = (
             _ARABIC_FLAT_PREFER_MULTIPLIER
             if expected_script == "Arab"
-            else _RFC029_FLAT_PREFER_MULTIPLIER
+            else pipeline_config.rfc029_flat_prefer_multiplier
         )
         try:
             _flat_cc, _flat_blocks = await asyncio.to_thread(

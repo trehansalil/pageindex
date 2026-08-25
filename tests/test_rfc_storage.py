@@ -14,10 +14,9 @@ from bidi.algorithm import get_display
 import pageindex_mcp.client as client_mod
 from pageindex_mcp import converters
 from pageindex_mcp.client import (
-    _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
     MIN_STANDALONE_IMAGE_MD_CHARS,
 )
-from pageindex_mcp.config import OCR_ESCALATION_GARBLE, reset_pipeline_config
+from pageindex_mcp.config import OCR_ESCALATION_GARBLE, pipeline_config, reset_pipeline_config
 from pageindex_mcp.converters import (
     PictureResult,
     _recover_picture_text,
@@ -462,7 +461,7 @@ def _would_escalate(reason: str, md_content: str, *, ext: str = ".pdf") -> bool:
     failures + image-dominant), gated on the module flags."""
     if reason not in ("node_count<3", "depth<2"):
         return False
-    if ext != ".pdf" or not OCR_ESCALATION_GARBLE or not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
+    if ext != ".pdf" or not OCR_ESCALATION_GARBLE or not pipeline_config.image_dominant_ocr_escalation_enabled:
         return False
     dominant, _, _ = _image_dominant(md_content)
     return dominant

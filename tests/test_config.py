@@ -84,3 +84,37 @@ def test_settings_llm_provider_normalized(monkeypatch):
 
     importlib.reload(cfg)
     assert cfg.settings.llm_provider == "compatible"
+
+
+def test_reset_pipeline_config_refreshes_singleton(monkeypatch):
+    """reset_pipeline_config() rebuilds the singleton and propagates to consumer modules."""
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "false")
+    from pageindex_mcp.config import PipelineConfig, reset_pipeline_config
+
+    reset_pipeline_config()
+    from pageindex_mcp.config import pipeline_config
+
+    assert isinstance(pipeline_config, PipelineConfig)
+    assert pipeline_config.allow_agpl_fallback is False
+
+    # Verify consumer modules received the refreshed singleton.
+    import sys
+
+    for mod_name in (
+        "pageindex_mcp.converters.pipeline",
+        "pageindex_mcp.converters.pictures",
+        "pageindex_mcp.client.recovery",
+        "pageindex_mcp.worker.subprocess_mgr",
+    ):
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, "pipeline_config"):
+            assert getattr(mod, "pipeline_config") is pipeline_config, (
+                f"{mod_name}.pipeline_config is stale after reset"
+            )
+
+    # Flip back and verify refresh
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true")
+    reset_pipeline_config()
+    from pageindex_mcp.config import pipeline_config as refreshed
+
+    assert refreshed.allow_agpl_fallback is True

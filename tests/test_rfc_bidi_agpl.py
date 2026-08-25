@@ -273,7 +273,7 @@ _ALREADY_CORRECT_MD = (
 
 def _apply_d3_gate(md_content: str, use_remote: bool = True) -> str:
     """Mirrors the D3 gate in `CustomPageIndexClient.index()` (client.py ~972-980)."""
-    if use_remote and _idx.REMOTE_MD_RENORMALIZE:
+    if use_remote and _idx.pipeline_config.remote_md_renormalize:
         renormalized, _ = reconstruct_bidi_order(md_content)
         if renormalized != md_content:
             REMOTE_MD_RENORMALIZED.inc()

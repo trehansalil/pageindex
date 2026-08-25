@@ -12,7 +12,7 @@ confidence threshold — with validate_tree() and the Fix-3 OCR-escalation retry
 still acting as unconditional safety nets underneath it.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -292,7 +292,10 @@ def _wire_index(monkeypatch, *, preclassify, validate_tree=None):
     fake_settings = _fake_settings()
     monkeypatch.setattr(_idx, "settings", fake_settings)
     monkeypatch.setattr(_rec, "settings", fake_settings)
-    monkeypatch.setattr(_idx, "PDF_INSPECTOR_PRECLASSIFY", preclassify)
+    # pipeline_config is now the canonical source (indexer.py reads
+    # pipeline_config.pdf_inspector_preclassify live rather than importing a
+    # frozen module-level constant), so patch the config object itself.
+    monkeypatch.setattr(_idx, "pipeline_config", replace(_idx.pipeline_config, pdf_inspector_preclassify=preclassify))
     monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
     monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())

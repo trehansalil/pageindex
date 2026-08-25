@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from pageindex_mcp.config import reset_pipeline_config
 from pageindex_mcp.helpers.types import ExtractionState, Route, TreeDefect
 
 
@@ -22,6 +23,7 @@ class TestConverterChainShape:
         """Build a converter chain with controlled env."""
         monkeypatch.setenv("PDF_CONVERTER", primary)
         monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
+        reset_pipeline_config()
         # Mock docling availability
         if not docling_available:
             with patch("importlib.util.find_spec", return_value=None):

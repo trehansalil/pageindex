@@ -61,6 +61,7 @@ class TestEffectiveConfigSnapshot:
             "garble_latin_gibberish_enabled",
             "garble_latin_ratio",
             "garble_node_ratio_threshold",
+            "garble_digit_floor",
             "pass_max_leaf_ratio",
             "bidi_coherence_enforce",
             "small_doc_promotion_enabled",
@@ -73,13 +74,14 @@ class TestEffectiveConfigSnapshot:
             "low_content_ocr_char_floor",
             "rfc029_flat_prefer_multiplier",
             "rfc029_min_chars_per_node",
+            "verdict_downgrade_enabled",
         }
 
         assert set(snap.keys()) == expected_keys, (
             f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
             f"  Extra:   {set(snap.keys()) - expected_keys}"
         )
-        assert len(snap) == 26
+        assert len(snap) == 28
 
         assert isinstance(snap["pipeline_version"], int)
         for fk in (
@@ -98,6 +100,7 @@ class TestEffectiveConfigSnapshot:
             "pipeline_version",
             "garble_latin_ratio",
             "garble_node_ratio_threshold",
+            "garble_digit_floor",
             "pass_max_leaf_ratio",
             "leaf_split_ratio",
             "pdf_converter",
@@ -112,12 +115,11 @@ class TestEffectiveConfigSnapshot:
         monkeypatch.setenv("GARBLE_LATIN_RATIO", "0.5")
         monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
 
-        # OCR_ESCALATION_GARBLE is a module-level constant (consolidated in
-        # config.py). To test it, patch the constant directly rather than
-        # setting the env var after import.
-        import pageindex_mcp.config as cfg_mod
-
-        monkeypatch.setattr(cfg_mod, "OCR_ESCALATION_GARBLE", False)
+        # OCR_ESCALATION_GARBLE is now a deprecated read-through alias
+        # reassigned from PipelineConfig.from_env() inside
+        # reset_pipeline_config() — pipeline_config is the canonical source,
+        # so overrides must go through the env var, not the alias.
+        monkeypatch.setenv("OCR_ESCALATION_GARBLE", "false")
 
         from pageindex_mcp.config import effective_config_snapshot, reset_pipeline_config
 
@@ -241,7 +243,7 @@ class TestProcessDocumentJobStamping:
             assert job_start_config is not None
             return {"doc_id": "doc123"}
 
-        async def fake_upsert_registry_row(doc_id, content_class, *, verdict_fields=None):
+        async def fake_upsert_registry_row(doc_id, content_class, *, verdict_fields=None, registry_fields=None):
             pass
 
         monkeypatch.setattr(worker, "get_async_redis", fake_get_async_redis)

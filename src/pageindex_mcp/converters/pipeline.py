@@ -13,6 +13,7 @@ import logging
 import os
 from collections.abc import Callable
 
+from ..config import MAX_DOCLING_PAGES, pipeline_config
 from ..script import RtlDecision
 from .docling_conv import (
     _docling_converter,
@@ -177,10 +178,8 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     # pass. Guard the page count via pymupdf (no pymupdf4llm -- CLAUDE.md Hard
     # Rule 4) before touching the Docling converter and route to the chunked
     # path instead.
-    from ..config import ALLOW_AGPL_FALLBACK, MAX_DOCLING_PAGES
-
     effective_max_pages = max_pages if max_pages is not None else MAX_DOCLING_PAGES
-    if not ALLOW_AGPL_FALLBACK:
+    if not pipeline_config.allow_agpl_fallback:
         logger.warning(
             "chunked-Docling page-count guard skipped for %s: ALLOW_AGPL_FALLBACK=false "
             "(fitz/PyMuPDF is AGPL-3.0)",
@@ -601,12 +600,12 @@ def pdf_markdown_converters() -> list[
     """
     import importlib.util
 
-    from ..config import ALLOW_AGPL_FALLBACK
-
-    primary = os.getenv("PDF_CONVERTER", "docling").strip().lower()
+    # os.getenv for live env reads (tests monkeypatch this); pipeline_config
+    # holds the snapshot from module load.
+    primary = os.getenv("PDF_CONVERTER", pipeline_config.pdf_converter).strip().lower()
     have_docling = importlib.util.find_spec("docling") is not None
 
-    if not have_docling and not ALLOW_AGPL_FALLBACK:
+    if not have_docling and not pipeline_config.allow_agpl_fallback:
         from ..metrics import AGPL_FALLBACK_TOTAL
 
         AGPL_FALLBACK_TOTAL.labels(reason="blocked").inc()
@@ -619,14 +618,14 @@ def pdf_markdown_converters() -> list[
     chain: list[
         tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]], bool]
     ] = []
-    if ALLOW_AGPL_FALLBACK:
+    if pipeline_config.allow_agpl_fallback:
         chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics, False))
     if have_docling:
         if primary == "docling":
             chain.insert(0, ("docling", pdf_to_markdown_docling, True))
         else:
             chain.append(("docling", pdf_to_markdown_docling, True))
-            if ALLOW_AGPL_FALLBACK:
+            if pipeline_config.allow_agpl_fallback:
                 from ..metrics import AGPL_FALLBACK_TOTAL
 
                 AGPL_FALLBACK_TOTAL.labels(reason="operator_configured").inc()

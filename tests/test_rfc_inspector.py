@@ -18,6 +18,7 @@ D2: landscape orientation detection and rasterize-rotate-reextract
 import logging
 import random
 import string
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -435,7 +436,10 @@ def _wire_index(monkeypatch, *, pic_results, flat_return):
     monkeypatch.setattr(_rec, "settings", fake_settings)
     # zdr_egress_gate re-imports settings from .config fresh on every call.
     monkeypatch.setattr("pageindex_mcp.config.settings", fake_settings)
-    monkeypatch.setattr(_idx, "PDF_INSPECTOR_PRECLASSIFY", False)
+    # pipeline_config is now the canonical source (indexer.py reads
+    # pipeline_config.pdf_inspector_preclassify live), so patch the config
+    # object rather than a frozen module-level constant.
+    monkeypatch.setattr(_idx, "pipeline_config", replace(_idx.pipeline_config, pdf_inspector_preclassify=False))
     monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
     monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())

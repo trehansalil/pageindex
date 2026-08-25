@@ -18,6 +18,7 @@ Covers:
 import os
 import tempfile
 import types
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import MagicMock, patch
@@ -468,7 +469,9 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
     monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: (False, "depth<2"))
     monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
     monkeypatch.setattr(_rec, "_OCR_ESCALATION_GARBLE", False)
-    monkeypatch.setattr(_idx, "_OCR_ESCALATION_PER_PICTURE", False)
+    # indexer.py now reads pipeline_config.ocr_escalation_per_picture live
+    # rather than importing a frozen module-level constant.
+    monkeypatch.setattr(_idx, "pipeline_config", replace(_idx.pipeline_config, ocr_escalation_per_picture=False))
     monkeypatch.setattr(
         _idx,
         "pdf_markdown_converters",

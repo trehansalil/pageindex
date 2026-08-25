@@ -10,8 +10,11 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..config import PDF_INSPECTOR_PRECLASSIFY, settings
+from ..config import pipeline_config, settings
 from ..converters import chunked_docling_timeout_s
+
+# Backward-compat alias: tests monkeypatch this attribute via setattr/patch.
+PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
 from ..metrics import (
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_PEAK_RSS_KIB,

@@ -19,13 +19,10 @@ from pageindex import PageIndexClient
 from ..cache import get_doc
 from ..config import (
     CURRENT_PIPELINE_VERSION,
-    PDF_INSPECTOR_PRECLASSIFY,
-    REMOTE_MD_RENORMALIZE,
+    VERDICT_DOWNGRADE_ENABLED,
     ZDRComplianceError,
+    pipeline_config,
     settings,
-)
-from ..config import (
-    OCR_ESCALATION_PER_PICTURE as _OCR_ESCALATION_PER_PICTURE,
 )
 from ..converters import (
     PictureResult,
@@ -63,6 +60,7 @@ from ..helpers import (
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
+    _tree_node_count,
     compute_verdict,
     detect_garble,
     finalize_gate_and_route,
@@ -362,7 +360,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
             inspector_force_ocr = False
             if (
-                PDF_INSPECTOR_PRECLASSIFY
+                pipeline_config.pdf_inspector_preclassify
                 and pdf_classification is not None
                 and pdf_classification.get("pdf_type") in ("scanned", "image_based")
                 and pdf_classification.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD
@@ -379,9 +377,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
             state.pre_garbled = False
             state.pdf_page_count = None
-            from ..config import ALLOW_AGPL_FALLBACK
 
-            if not ALLOW_AGPL_FALLBACK:
+            if not pipeline_config.allow_agpl_fallback:
                 logger.warning(
                     "D3a pre-conversion probe skipped for %s: ALLOW_AGPL_FALLBACK=false "
                     "blocks fitz (PyMuPDF, AGPL-3.0)",
@@ -553,7 +550,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 # Zone-2: post-conversion OcrDecision with actual has_image_markers
                 # (was hardcoded False pre-conversion; now reflects real content).
                 _ocr_decision = decide_ocr_strategy(
-                    ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
+                    ocr_escalation_enabled=pipeline_config.ocr_escalation_per_picture,
                     has_image_markers=bool(md_content and "<!-- image -->" in md_content),
                     force_full_page=force_full_page,
                     garble_status=state.pre_garbled,
@@ -581,7 +578,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                     _log_pic_splice_trace(filename, "primary", state.pic_results)
                     md_content = splice_picture_text_for_tree(md_content, state.pic_results)
-                if state.use_remote and REMOTE_MD_RENORMALIZE:
+                if state.use_remote and pipeline_config.remote_md_renormalize:
                     md_content, state.rtl_decision = _renormalize_bidi_guarded(
                         md_content,
                         filename,
@@ -944,6 +941,28 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "max_leaf_ratio": round(f_mlr, 4),
             "verdict_computed_at": _flat_verdict_computed_at,
         }
+        # Zone-7 (dual-write consistency): stash registry fields for flat
+        # docs so converters_cli can surface them in stdout JSON, eliminating
+        # the MinIO re-read in _upsert_registry_row.  Keys mirror
+        # _REGISTRY_FIELDS (verdict.py) plus content_class and node_count.
+        self.last_registry_fields = {
+            "doc_name": filename,
+            "source_url": source_url,
+            "processed_at": processed_at,
+            "sha256": sha256,
+            "content_class": content_class,
+            "doc_description": flat_desc,
+            "product": "",
+            "tier": "",
+            "doc_family": "",
+            "effective_date": "",
+            "node_count": 0,
+        }
+        # Zone-verdict: when VERDICT_DOWNGRADE_ENABLED and pipeline_version
+        # is strictly newer, allow the verdict-priority CAS to be bypassed
+        # so a re-ingestion can downgrade a verdict locked by a prior run.
+        if VERDICT_DOWNGRADE_ENABLED:
+            self.last_verdict_fields["force_verdict_override"] = True
         return doc_id
 
     async def _persist_tree_result(
@@ -1036,7 +1055,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     meta["converter_contract"] = contract
             if state.pdf_page_count is not None:
                 meta["page_count"] = state.pdf_page_count
-            if pdf_classification and PDF_INSPECTOR_PRECLASSIFY:
+            if pdf_classification and pipeline_config.pdf_inspector_preclassify:
                 meta["inspector_class"] = pdf_classification.get("pdf_type")
             if state.extraction_stages_captured:
                 meta["extraction_stages"] = state.extraction_stages_captured
@@ -1069,6 +1088,27 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "max_leaf_ratio": round(mlr, 4),
             "verdict_computed_at": _verdict_computed_at,
         }
+        # Zone-7 (dual-write consistency): stash registry fields so
+        # converters_cli can surface them in stdout JSON, eliminating the
+        # MinIO re-read in _upsert_registry_row.  Keys mirror
+        # _REGISTRY_FIELDS (verdict.py) plus node_count.
+        self.last_registry_fields = {
+            "doc_name": filename,
+            "source_url": source_url,
+            "processed_at": processed_at,
+            "sha256": sha256,
+            "doc_description": state.result.get("doc_description", ""),
+            "product": "",
+            "tier": "",
+            "doc_family": "",
+            "effective_date": "",
+            "node_count": _tree_node_count(structure),
+        }
+        # Zone-verdict: when VERDICT_DOWNGRADE_ENABLED and pipeline_version
+        # is strictly newer, allow the verdict-priority CAS to be bypassed
+        # so a re-ingestion can downgrade a verdict locked by a prior run.
+        if VERDICT_DOWNGRADE_ENABLED:
+            self.last_verdict_fields["force_verdict_override"] = True
         return doc_id
 
     # ------------------------------------------------------------------

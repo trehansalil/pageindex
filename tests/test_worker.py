@@ -720,7 +720,7 @@ async def test_upsert_registry_row_success_mirrors_metric():
         ) as mock_mirror,
     ):
         await _upsert_registry_row("doc-1", "flat_table")
-    mock_upsert.assert_awaited_once_with({"doc_id": "doc-1"})
+    mock_upsert.assert_awaited_once_with({"doc_id": "doc-1"}, force_verdict_override=False)
     mock_mirror.assert_awaited_once()
 
 

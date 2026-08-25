@@ -407,6 +407,9 @@ class PipelineConfig:
     rfc029_flat_prefer_multiplier: float
     rfc029_min_chars_per_node: float
 
+    # --- Verdict downgrade (force_verdict_override wiring) --------------------
+    verdict_downgrade_enabled: bool
+
     # --- VerdictThresholds fields (from helpers.py VerdictThresholds.from_env) ---
     garble_window_ratio_threshold: float
     min_image_promoted_chars: int
@@ -431,18 +434,32 @@ class PipelineConfig:
         _gnrt = _gnrt_raw if 0 <= _gnrt_raw <= 1 else 0.10
         return cls(
             pipeline_version=CURRENT_PIPELINE_VERSION,
-            pdf_inspector_preclassify=PDF_INSPECTOR_PRECLASSIFY,
-            allow_agpl_fallback=ALLOW_AGPL_FALLBACK,
-            remote_md_renormalize=REMOTE_MD_RENORMALIZE,
-            ocr_escalation_garble=OCR_ESCALATION_GARBLE,
-            ocr_escalation_per_picture=OCR_ESCALATION_PER_PICTURE,
+            pdf_inspector_preclassify=os.environ.get("PDF_INSPECTOR_PRECLASSIFY", "0")
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
+            allow_agpl_fallback=os.environ.get("ALLOW_AGPL_FALLBACK", "1").strip().lower()
+            in ("1", "true", "yes"),
+            remote_md_renormalize=os.environ.get("REMOTE_MD_RENORMALIZE", "1").strip().lower()
+            in ("1", "true", "yes"),
+            ocr_escalation_garble=os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower()
+            in ("1", "true", "yes"),
+            ocr_escalation_per_picture=os.environ.get("OCR_ESCALATION_PER_PICTURE", "1")
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
             pre_garble_force_ocr_enabled=os.environ.get(
                 "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
             ).lower()
             == "true",
             d7_garble_recovery_enabled=_envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
             image_standalone_pipeline_enabled=_envbool("IMAGE_STANDALONE_PIPELINE_ENABLED", "true"),
-            image_dominant_ocr_escalation_enabled=IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
+            image_dominant_ocr_escalation_enabled=os.environ.get(
+                "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "1"
+            )
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
             vlm_tesseract_fallback_enabled=_envbool("VLM_TESSERACT_FALLBACK_ENABLED", "true"),
             garble_latin_gibberish_enabled=_envbool("GARBLE_LATIN_GIBBERISH_ENABLED", "true"),
             garble_latin_ratio=float(os.environ.get("GARBLE_LATIN_RATIO", "0.4")),
@@ -465,6 +482,7 @@ class PipelineConfig:
                 os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
             ),
             rfc029_min_chars_per_node=float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")),
+            verdict_downgrade_enabled=_envbool("VERDICT_DOWNGRADE_ENABLED", "false"),
             # VerdictThresholds fields
             garble_window_ratio_threshold=float(
                 os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")
@@ -506,6 +524,8 @@ class PipelineConfig:
 # Module-level singleton — frozen at process start.
 pipeline_config: PipelineConfig = PipelineConfig.from_env()
 
+VERDICT_DOWNGRADE_ENABLED: bool = pipeline_config.verdict_downgrade_enabled
+
 # Import-time assertion: pass_max_leaf_ratio must not exceed leaf_split_ratio.
 assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.leaf_split_ratio, (
     f"PASS_MAX_LEAF_RATIO ({pipeline_config.pass_max_leaf_ratio}) must be "
@@ -523,8 +543,23 @@ def reset_pipeline_config() -> None:
     Also patches re-importers (``helpers.pipeline_config``) so that
     ``compute_verdict`` and friends see the fresh config immediately.
     """
-    global pipeline_config
+    global pipeline_config  # noqa: PLW0603
+    global PDF_INSPECTOR_PRECLASSIFY, ALLOW_AGPL_FALLBACK  # noqa: PLW0603
+    global REMOTE_MD_RENORMALIZE, OCR_ESCALATION_GARBLE  # noqa: PLW0603
+    global OCR_ESCALATION_PER_PICTURE, IMAGE_DOMINANT_OCR_ESCALATION_ENABLED  # noqa: PLW0603
+    global VERDICT_DOWNGRADE_ENABLED  # noqa: PLW0603
+
     pipeline_config = PipelineConfig.from_env()
+
+    # Reassign deprecated backward-compat module-level aliases so that
+    # `from ..config import X` consumers stay in sync with pipeline_config.
+    PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
+    ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
+    REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
+    OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+    OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
+    IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
+    VERDICT_DOWNGRADE_ENABLED = pipeline_config.verdict_downgrade_enabled
     import sys
 
     _helpers = sys.modules.get("pageindex_mcp.helpers")
@@ -537,6 +572,10 @@ def reset_pipeline_config() -> None:
         "pageindex_mcp.helpers.verdict",
         "pageindex_mcp.helpers.tree_validation",
         "pageindex_mcp.helpers.tree_split",
+        "pageindex_mcp.converters.pipeline",
+        "pageindex_mcp.converters.pictures",
+        "pageindex_mcp.client.recovery",
+        "pageindex_mcp.worker.subprocess_mgr",
     ):
         _mod = sys.modules.get(_sub)
         if _mod is not None and hasattr(_mod, "pipeline_config"):
@@ -572,6 +611,7 @@ def effective_config_snapshot() -> dict:
             "garble_latin_gibberish_enabled",
             "garble_latin_ratio",
             "garble_node_ratio_threshold",
+            "garble_digit_floor",
             "pass_max_leaf_ratio",
             "bidi_coherence_enforce",
             "small_doc_promotion_enabled",
@@ -584,6 +624,7 @@ def effective_config_snapshot() -> dict:
             "low_content_ocr_char_floor",
             "rfc029_flat_prefer_multiplier",
             "rfc029_min_chars_per_node",
+            "verdict_downgrade_enabled",
         }
     )
     full = dataclasses.asdict(pipeline_config)
