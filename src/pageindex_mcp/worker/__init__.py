@@ -3,6 +3,12 @@
 Backward-compatible re-exports: ``from pageindex_mcp.worker import X`` still works.
 """
 
+from .constants import (
+    CHILD_GRACE_SECONDS,
+    CHILD_TIMEOUT,
+    JOB_TIMEOUT,
+    REAP_GRACE,
+)
 from .errors import (
     _CHILD_ERROR_REGISTRY,
     _DEFAULT_CHILD_CLASSIFICATION,
@@ -13,10 +19,8 @@ from .errors import (
 )
 from .job import (
     DLQ_KEY,
-    JOB_TIMEOUT,
     JOB_TTL,
     MAX_TRIES,
-    REAP_GRACE,
     _dlq_push_on_final_attempt,
     process_document_job,
     reap_stale_jobs,
@@ -42,8 +46,6 @@ from .registry_mirror import (
     _upsert_registry_row,
 )
 from .subprocess_mgr import (
-    CHILD_GRACE_SECONDS,
-    CHILD_TIMEOUT,
     KILL_GRACE_SECONDS,
     ConverterChildError,
     ConverterOOMError,

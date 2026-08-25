@@ -171,6 +171,11 @@ mappings:
     tests:
       - test_worker.py            # primary
 
+  worker/constants.py:
+    coverage_threshold: 85
+    tests:
+      - test_worker.py            # primary
+
   worker/job.py:
     coverage_threshold: 85
     tests:
