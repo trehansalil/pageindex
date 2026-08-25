@@ -1,196 +1,199 @@
+---
+title: Zone Delta Analysis — POST (2026-08-12)
+date: 2026-08-12
+type: audit/zone-delta
+tags:
+  - audit
+  - zone-delta
+  - architecture
+  - post-fix
+aliases:
+  - POST zone delta
+  - 2026-08-12 zone delta
+current_audit: "[[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST]]"
+prior_audit: "[[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-24_POST-FIX-11]]"
+scorecard: "[[REMEDIATION_SCORECARD_2026-08-12_POST]]"
+net_bug_delta: +4
+zones_regressed: 4
+zones_improved: 1
+zones_new: 2
+zones_closed: 3
+---
+
 # Zone Delta Analysis — POST
 
-**Current audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST.md
-**Prior audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-19_POST-FIX-10.md
+**Current audit:** [[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST]]
+**Prior audit:** [[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-24_POST-FIX-11]]
 **Date:** 2026-08-12
 
 ## Summary
 
-This delta compares 6 matched zone pairs plus 2 new zones and 1 closed zone, moving the total defect count from 50 to 53 (net +3). Of the 6 matched zones, 3 regressed, 2 improved, and 1 stalled — no zone was fully resolved. The most consequential shift is **Tree/Flat Verdict Split** (formerly Verdict Threshold Oscillation and Hysteresis Failure), which escalated high→critical as its mechanism broadened from narrow threshold whack-a-mole to a structural finding that any verdict fix must be implemented twice across divergent code paths with no shared validation contract — continuing a regression trajectory already flagged in the prior POST-FIX-10 delta. **Garble Detection Fragmentation** remains stalled at critical severity for a 6th+ consecutive cycle: infrastructure (a unified `GateSpec` registry, startup-time wiring validation) has landed, but the three generative causes — NFKC ordering, `expected_script` self-corruption, and per-document calibration — persist identically. **Converter-Gate-Route Ordering Chain** also regressed (critical, unchanged) as its mechanism broadened from reason-code coupling to a three-part ordering chain spanning converter selection, gate evaluation, and stale post-recovery routing. Two zones improved: **Worker-Child Process Boundary** (critical→high, exhaustiveness-assertion auto-sync closed the manual-sync risk) and **Duplicated Convergent Logic**, formerly Config Snapshot Freeze Drift, whose config-drift and wiring-enforcement concerns are now largely resolved, leaving a smaller, lower-severity residual zone. **Arabic/RTL Pipeline Blindness** regressed by 2 bugs even as its mechanism narrowed, reversing the one "improved" result (Mutable ExtractionState, critical→high) from the prior delta. One zone closed (Picture/OCR Enrichment and Page-Level Escalation Conflation); two new zones surfaced (Registry Dual-Write Consistency, ZDR/PII Egress Gap — the latter bearing directly on Hard Rule 3). Only one matched zone (Garble Detection Fragmentation) has its production entry point fully wired end-to-end with zero gaps; the Tree/Flat Verdict Split zone's unified `classify_verdict` entry point remains reachable only from batch scripts and tests, not the live MCP/worker pipeline — a partial-implementation gap consistent with Hard Rule 5's requirement that `validate_tree()` gate `save_doc`.
+The current audit tracks 52 zone-level bugs against 48 in the prior audit, a net delta of +4. Four zones regressed (all escalating in severity), one zone improved, and none stalled. Two zones are new — **Multi-Store Dual-Write Consistency** and **Config Layering Split and Dead-Code Accumulation** — and three prior zones closed out: **Tree-vs-Flat Gate Asymmetry**, **Pre-Tree Text Transforms vs Table/Block Integrity**, and **HR3 PII Egress Gap (Docling + VLM Silent Degradation)**. Every tracked zone reports `implemented_and_wired` proposal status per CodeGraph confirmation, but wiring presence continues to mask correctness gaps — most sharply in **Garble Detection Fragmentation**, which despite resolving five prior recovery-wiring gaps, picked up new calibration instabilities (PASS_MAX_LEAF_RATIO relaxation, RTL vocabulary insufficiency) and a legacy-API usage finding (`had_presentation_forms=False` across 10 production call sites), holding at critical severity. The broader pattern across regressed zones is scope widening rather than root-cause elimination: **OCR Strategy Bifurcation** and **Verdict Promotion / Quality Gate Stack** both escalated from high to critical as their prior narrow framings (filter composition, threshold oscillation) gave way to deeper structural findings (unconditional content replacement, promotion-gate bypass ordering), and **God-Function Orchestration** absorbed the previously narrow Worker/Inspector timeout-race zone wholesale while adding a documented Hard Rule 5 violation (Run 13: empty body-extraction persisted despite the no-silent-persist mandate). The lone improvement, **validate_tree Reason-String Dispatch** (formerly Recovery Routing Wiring Gaps), closed five dead-code/unwired findings via RFC-036/RFC-038 work but still carries two new reason-routing gaps, keeping it at high severity with a net -3 bug delta.
 
 ## Delta Table
 
-| Zone | Status | Severity (prior→current) | Bugs (prior→current, Δ) | Proposal Status | Key Change |
+| Zone | Status | Severity (prior→current) | Bugs (prior→current) | Proposal Status | Key Change |
 |---|---|---|---|---|---|
-| Tree/Flat Verdict Split *(was: Verdict Threshold Oscillation and Hysteresis Failure)* | regressed | high→critical | Δ+2 | partially_implemented | Mechanism broadened from threshold/hysteresis to a 7-gate asymmetry + dual promotion paths; unified entry point (`classify_verdict`) not on the served pipeline |
-| Garble Detection Fragmentation *(was: Garble Detection Heuristic Patchwork)* | stalled | critical→critical | Δ0 | implemented_and_wired | Unified `GateSpec` registry landed and is production-wired, but NFKC ordering, `expected_script` self-corruption, per-doc calibration unchanged; `hash_pipe_ratio` orphaned |
-| Converter-Gate-Route Ordering Chain *(was: GATE_TABLE to Recovery Dispatch Reason-Code Coupling)* | regressed | critical→critical | Δ+1 | implemented_and_wired | Mechanism broadened to converter-selection fragility + flat-gate narrowing + stale routing after recovery; wiring correct for old defect, gaps remain for new one |
-| Worker-Child Process Boundary *(was: Cross-Process Error Classification Boundary)* | improved | critical→high | Δ0 | implemented_and_wired | `_TERMINAL_CHILD_REASONS` now derived from `_CHILD_ERROR_REGISTRY` with startup exhaustiveness assertion; 2 findings resolved |
-| Arabic/RTL Pipeline Blindness *(was: Mutable ExtractionState Recovery Path Ordering)* | regressed | high→high | Δ+2 | no_proposal | Mechanism narrowed to Arabic/RTL-specific blindness (headings, OCR lang detection, table RTL, content-density) but bug count still rose; reverses prior "improved" verdict |
-| Duplicated Convergent Logic *(was: Config Snapshot Freeze Drift and Incomplete Wiring Enforcement)* | improved | high→medium | Δ-3 | not_applicable | Config-drift/wiring-enforcement concerns largely resolved; residual zone narrowed to genuinely duplicated logic (flat-block text, garble, verdict hysteresis, table-text) |
-
-**New zones:** Registry Dual-Write Consistency; ZDR/PII Egress Gap
-**Closed zones:** Picture/OCR Enrichment and Page-Level Escalation Conflation
-
-**Totals:** 50 → 53 bugs (net +3) · 2 improved · 3 regressed · 1 stalled · 2 new · 1 closed
+| Garble Detection Fragmentation | regressed | critical→critical | Δ+2 | implemented_and_wired | Mechanism broadened to include oscillation/false-positive cycling (Runs 10-15); recovery-wiring gaps resolved but new calibration + legacy-API findings surfaced |
+| OCR Strategy Bifurcation | regressed | high→critical | Δ+1 | implemented_and_wired | Filter-composition framing gave way to document-class-specific destruction; forced-OCR now destroys PictureItems outright, not just filters them |
+| Verdict Promotion / Quality Gate Stack | regressed | high→critical | Δ+2 | implemented_and_wired (relocated mechanism) | Threshold-oscillation framing gave way to promotion-stack sequential bypass + CAS upgrade-only lock-in; dual-CAS divergence resolved via RFC-037 SQL-level guards |
+| God-Function Orchestration with Duplicated Divergent Logic | regressed | medium→high | Δ+2 | implemented_and_wired | Absorbed prior narrow Worker/Inspector timeout-race zone; timeout mechanism resolved via RFC-038 but broader duplication/content-destruction findings surfaced, incl. Hard Rule 5 violation |
+| validate_tree Reason-String Dispatch | improved | high→high | Δ-3 | implemented_and_wired | Five dead-code/unwired recovery gaps closed (RFC-036/RFC-038); reason-string dispatch mechanism persists with two new routing gaps |
 
 ## Per-Zone Details
 
-### Tree/Flat Verdict Split (was: Verdict Threshold Oscillation and Hysteresis Failure)
-**Status:** regressed · **Severity:** high → critical · **Bugs:** +2 · **Proposal:** partially_implemented
+### Garble Detection Fragmentation
+*(prior: Garble Detection Prong Blindness — NFKC, Script Threading, Title Inspection)*
 
-**What changed.** The prior zone was scoped narrowly to threshold-widening oscillation and structurally-inert hysteresis (the MinIO wipe defeating `find_prior_verdict`). The current zone broadens the mechanism to the entire tree/flat verdict split: the 7-gate asymmetry where the flat path sees only 3 gates, promotion branches that independently return PASS without re-consulting defect sets, and the original threshold oscillation findings all now fold into one mechanism — "any fix must be implemented twice across divergent code paths with no shared validation contract." Severity was escalated high→critical to match.
+**Status:** regressed · **Severity:** critical → critical · **Bug delta:** +2
 
-**Key files:** `src/pageindex_mcp/helpers/verdict.py`, `src/pageindex_mcp/helpers/gates.py`, `src/pageindex_mcp/client/indexer.py`
+**Key files:** `src/pageindex_mcp/helpers/garble.py`, `src/pageindex_mcp/helpers/gates.py`, `src/pageindex_mcp/helpers/tree_validation.py`, `src/pageindex_mcp/helpers/verdict.py`, `src/pageindex_mcp/client/indexer.py`
+
+**What changed:** The mechanism broadened from "structurally independent blind spots" (NFKC normalization, script threading, title inspection, signal-never-reaches-action) to a more general "independently-gated prong fragmentation" framing. The current audit newly treats oscillation and false-positive cycling (Runs 10-15) as a first-class mechanism component alongside the prior blind-spot findings. Several prior recovery-wiring gaps are resolved, but new calibration instabilities and a legacy-API usage pattern surfaced, holding the zone at critical severity.
 
 **New findings:**
-- RFC-022 B1: synthetic structure from empty flat blocks triggered false garble (D3) and false PASS via `cat_b_promoted` (D4)
-- RFC-022 B2-B: `image_enrichment_promoted` reordered above `max_leaf_ratio` hard-fail
-- RFC-023 D4: added content-quality guards to `cat_b_promoted`
-- RFC-023 D5: expanded synthetic-structure guard
-- RFC-025 D0: added hysteresis via `find_prior_verdict`, structurally dead on reingestion
-- RFC-029 D1/D2: 4 new `validate_tree` reasons with no flat-path recovery routing → 3 PASS→ERROR regressions
-- RFC-030 D3: `low_content_density` threshold too aggressive for legal documents
-- Run 9: `image_enrichment_promoted` let 38–123 char docs PASS (violating Hard Rule 5)
-- Run 8→9: German garbled doc (Haftpflicht) FAIL→PASS via `expected_script` propagation gaps + hysteresis relaxation
-- Runs 7→8: all 8 RFC-023 fix categories regressed simultaneously (17 PASS → 7 PASS)
+- RFC-010 D3/D3B: token-repetition guard duplicated in two functions, fixed RFC-013 D7
+- RFC-023 D3: image-marker token repetition false positive ('image' at 100% ratio)
+- RFC-024: `PASS_MAX_LEAF_RATIO` relaxation let 81/132 garbled nodes PASS with empty `verdict_reason`
+- RFC-028 D3: RTL reversal detection vocabulary too small (14 words), zero true-positive on governance docs
+- RFC-029 D2: improved OCR language detection paradoxically removed garble-gate safety net on junk text
+- Runs 10-13: garble gate oscillated on MOU and ward 597 despite visible garbling
+- Run 15: exact garble false-positive from Run 13 reappeared after Run 14 correction
+- Observation #5330: 10 production `check_garble` calls use legacy `had_presentation_forms=False`
 
 **Resolved findings:**
-- RFC-022 B1-Fix: guard only triggers when `flat_structure` is completely empty (doc 20 missed)
-- RFC-029 D6: judge-calibration rules designed but never written to SKILL.md; phantom regressions persisted
+- RFC-018 D3b: `node_garbling` reason never recognized by OCR-escalation conditional
+- RFC-025 D3: recovery triggers only checked `garbling`, missing `node_garbling`
+- RFC-028 D2: Arabic PF garble detection tripped on legitimate text
+- RFC-029 D1/D2: four new `validate_tree` failure reasons never wired into recovery
+- RFC-030 D2: unhandled reasons caused 3 PASS→ERROR regressions
+- Run 11: five independent Arabic-garble instances catalogued, none caught
 
-**Proposal implementation status.** `compute_verdict`, `evaluate_gates`, `apply_promotions`, `detect_regression` in `helpers/verdict.py` are production-wired (in-degree 2–13, called from `client/indexer.py`). However `classify_verdict` (in-degree 54) is reached only from root-level batch scripts (`promotion_sweep.run_sweep`, `preprocess_client.recompute_verdicts`) and tests — never from the live MCP/worker pipeline (`server.py` / `worker/job.py`). The verdict-classification split exists structurally but the unified entry point is not on the served pipeline.
-
-**History flag.** The prior zone (Verdict Threshold Oscillation) was already marked "regressed" in the POST-FIX-10 delta (Δ+3) with hysteresis wired yet structurally inert. Severity has now escalated to critical with a broadened mechanism, continuing that regression trajectory across two consecutive delta cycles.
+**Proposal implementation status:** `implemented_and_wired`. CodeGraph confirms `detect_garble` (`src/pageindex_mcp/helpers/garble.py`) is called from `_garble_check_nodes`/`_garble_check_flat_blocks`/`_garble_ratio`, `apply_promotions` (`src/pageindex_mcp/helpers/verdict.py`), `src/pageindex_mcp/converters/pictures.py`, `src/pageindex_mcp/client/indexer.py`, and all `RecoveryMixin` OCR-retry methods. `validate_tree` is called by `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/client/recovery.py`, `mcp_server.py`, `promotion_sweep.py`, `preprocess_client.py`, and `issue/verify_corpus.py`. Gate helpers feed `validate_feature_wirings`, called from `src/pageindex_mcp/server.py` lifespan and `src/pageindex_mcp/worker/lifecycle.py` startup. All production and offline paths confirmed wired. **History note:** this zone has shown oscillation across multiple prior delta reports; `implemented_and_wired` reflects infrastructure presence, not correctness of the detection logic itself.
 
 ---
 
-### Garble Detection Fragmentation (was: Garble Detection Heuristic Patchwork)
-**Status:** stalled · **Severity:** critical → critical · **Bugs:** 0 · **Proposal:** implemented_and_wired
+### OCR Strategy Bifurcation
+*(prior: Picture Enrichment / OCR Filter Composition)*
 
-**What changed.** The generative mechanism is unchanged: fragmented heuristics each calibrated per-document, NFKC normalization decomposing detection signals before checking (0% TPR on reversed-morphology), `expected_script` self-corruption from corrupted text, and per-call-site wiring inconsistency. The zone was renamed "Patchwork" → "Fragmentation" but the underlying defect pattern is identical. Post-refactor, code moved from `helpers.py` into `helpers/gates.py` and `helpers/tree_validation.py`, but the same structural problems persist.
+**Status:** regressed · **Severity:** high → critical · **Bug delta:** +1
 
-**Key files:** `src/pageindex_mcp/helpers/gates.py`, `src/pageindex_mcp/helpers/tree_validation.py`, `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/helpers/verdict.py`
+**Key files:** `src/pageindex_mcp/picture_plane.py`, `src/pageindex_mcp/converters/pictures.py`, `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/client/images.py`, `src/pageindex_mcp/helpers/verdict.py`
+
+**What changed:** The mechanism evolved from "independently-tuned filter chain that combines to zero out enrichment" to "document-class-specific filter applied uniformly destroys content for document types where the filtered condition IS the content." Severity escalated from high to critical, reflecting forced-OCR now destroying `PictureItem`s outright (not merely filtering them), the tree path never invoking `splice_figure_markers`, OCR retry unconditionally replacing content without a quality comparison, and language detection derived from near-empty markdown. The prior zone's list-multiplication and five-fix filter-composition findings are resolved, but deeper structural issues surfaced.
 
 **New findings:**
-- RFC-029 D4: `_repeating_token_density` short-text floor made OCR retry win condition arithmetically impossible
-- RFC-034 B1-C2: confirms 0% TPR, 40% Latin mojibake undetected
-- Run 8: `expected_script` parameter removed, garble detection regressed on Latin-gibberish CMap mojibake
-- Run 9: detection partially restored but OCR escalation not wired
-- Session memory (Jul 31): 5 distinct Arabic corruption mechanisms invisible to PUA-only heuristic
+- RFC-017 D1: standalone images never call `splice_figure_markers`, `pic_results` stays empty
+- RFC-020: tree path never calls `splice_figure_markers` before `md_to_tree`, markdown becomes nearly empty
+- RFC-023 D0: F1 coverage exemption only checks character count without garble detection
+- RFC-027 D2/RFC-028 D4: OCR retry unconditionally replaces `md_content`, causing content regression when retry produces fewer chars
+- RFC-028 D5: language detection derived from near-empty Docling markdown returned `['eng']` for scanned Arabic PDFs
+- RFC-030 D1: `_repeating_token_density` hardcoded 0.0 for text <20 tokens, making OCR retry win condition arithmetically impossible
+- Cross-cutting 2026-07-27: standalone image branch bypasses enrichment entirely, confirmed data loss on pie chart numeric labels
 
 **Resolved findings:**
-- RFC-015 D8: sparse mixed-script mojibake coverage gap
-- RFC-013/RFC-015: Latin-gibberish scope gap for German filenames (Haftpflicht 81/132 garbled nodes FAIL-to-PASS via four compounding gaps)
-- RFC-030 D4: garble gate ignores `node.title` (siyasat-hawkama 23/24 reversed titles undetected)
-- RFC-027 D3/RFC-028 D3: RTL readability scoring only 14 common words, siyasat hawkama 100% reversed stored PASS
-- obs #5627: RTL word-splitting and embedded Latin OCR fragments escape all heuristics
+- RFC-019 D0: list multiplication shared references, mutated siblings
+- RFC-020 F1/F2/F3/F4/F5: five fixes to the same filter composition
+- RFC-021 QF1→RFC-022 B3: GHV-TKV OCR splice regression
+- RFC-024 D1→RFC-025 D1: `clip_text` never executed, Human Rights doc 503k→382 chars
+- RFC-023 D8a: standalone images create synthetic `PictureResult` with empty `ocr_text`
 
-**Proposal implementation status.** All `_gate_*` garble/structure functions in `helpers/gates.py` are unified into a single declarative `GATES: list[GateSpec]` registry, dispatched via a `gate_fn` field into `GATE_TABLE`/`FLAT_GATE_SUBSET`, feeding `validate_tree` (in-degree 41, production-wired). `validate_feature_wirings()` is called at startup from both `server.py:_lifespan_with_scrape` and `worker/lifecycle.py:startup`, refuting the stale 08-19 audit claim of atexit-only invocation. Gap: `hash_pipe_ratio` in `helpers/tree_validation.py` has in-degree=0 and out-degree=0 — orphaned dead code.
-
-**History flag.** Longest-stalled zone across 6+ remediation cycles (already flagged in the POST-FIX-10 delta as longest-stalled). Infrastructure has landed (`GateSpec` registry, startup wiring validation), but the three generative causes — NFKC ordering, `expected_script` self-corruption, per-doc calibration — persist identically.
+**Proposal implementation status:** `implemented_and_wired`. CodeGraph confirms `src/pageindex_mcp/picture_plane.py`'s `decide_ocr_strategy` is called by `decide_ocr_mode`, `src/pageindex_mcp/client/indexer.py`'s `_convert_to_tree` and `index`, and `src/pageindex_mcp/converters/pictures.py`'s `_recover_picture_results`. All `src/pageindex_mcp/converters/pictures.py` and `src/pageindex_mcp/client/images.py` functions show production call sites in `src/pageindex_mcp/client/indexer.py`. `TestOcrGatingWiring` test class exists specifically to assert wiring correctness. Fully wired across both live pipeline and offline paths.
 
 ---
 
-### Converter-Gate-Route Ordering Chain (was: GATE_TABLE to Recovery Dispatch Reason-Code Coupling)
-**Status:** regressed · **Severity:** critical → critical · **Bugs:** +1 · **Proposal:** implemented_and_wired
+### Verdict Promotion / Quality Gate Stack
+*(prior: Verdict Threshold Oscillation and Dual-CAS Divergence)*
 
-**What changed.** The prior zone focused on a two-site maintenance contract: adding a reason to `GATES` required wiring into three separate recovery paths. The current zone broadens to a three-part chain: (1) converter chain-order fragility — OCR escalation only reachable via the docling branch; (2) flat-gate narrowing — the 3-gate subset; and (3) recovery mixins that re-run `validate_tree` but do not re-trigger `decide_route`, so stale routing persists after recovery fixes a defect. The mechanism evolved from "reason-code coupling" to "ordering chain across converter selection, gate evaluation, and route decision" — a superset that subsumes the prior coupling issue plus new converter-selection and stale-route defects.
+**Status:** regressed · **Severity:** high → critical · **Bug delta:** +2
 
-**Key files:** `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/helpers/types.py`, `src/pageindex_mcp/converters/pipeline.py`, `src/pageindex_mcp/worker/errors.py`
+**Key files:** `src/pageindex_mcp/helpers/verdict.py`, `src/pageindex_mcp/helpers/gates.py`, `src/pageindex_mcp/registry/queries.py`, `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/storage/verdict.py`, `src/pageindex_mcp/storage/documents.py`
+
+**What changed:** The mechanism evolved from "threshold oscillation + dual-CAS divergence" to "promotion-stack sequential bypass + CAS upgrade-only lock-in." The prior zone focused on `PASS_MAX_LEAF_RATIO` widening instability and dual MinIO/Postgres CAS divergence. The current zone identifies a deeper structural issue: `apply_promotions()` rescue paths bypass subsequent gates, and the CAS priority comparison (PASS=3>MARGINAL=2>FAIL=1>ERROR=0) permanently locks in a bad verdict once granted. Dual-CAS divergence findings are resolved — RFC-037's verdict CAS landed as SQL-level guards in `src/pageindex_mcp/registry/queries.py`'s `upsert_doc` with unconditional sidecar merge in `src/pageindex_mcp/storage/verdict.py`, superseding the dual-CAS design. New promotion-gate ordering bugs surfaced in its place. Severity escalated high→critical.
 
 **New findings:**
-- RFC-003 D3: Docling made primary, contingent on Phase 0 validation
-- RFC-003 Amendment 3: pymupdf4llm moved to primary after Docling MPS NO-GO, fully opening the AGPL gate
-- RFC-003 Amendment 4: Docling restored as default primary via `PDF_CONVERTER` config
-- RFC-005 Fix-3: OCR escalation retry on garbling reason only
-- RFC-016 D5: D4 tree-path VLM block skipped for structural reasons (node_count<3) instead of garbling
-- RFC-020 F2/F3: Arabic OCR lang detection broke F0 tree-path splice (zero PictureResults)
-- RFC-023 D0/D11: structural `validate_tree` reasons pre-empted garble check, blocking OCR escalation
-- RFC-028 D4: unconditional `md_content` overwrite on OCR retry
-- RFC-030 D1: `_repeating_token_density` floor made OCR retry win condition impossible
-- RFC-032 D0-D2: inspector OCR pre-routing wired but required 16.5x timeout multiplier
+- RFC-022 B2: QF2a promotion unreachable for `max_leaf_ratio>0.75` — hard-FAIL gate fires before QF2a check
+- RFC-022 B1: `structure=[]` produces degenerate metrics (`node_count=0`), blocking all promotion gates
+- RFC-023 D4: synthetic structure from 15 flat blocks (210 total chars) passed `node_count>=3`, producing factually wrong PASS
+- RFC-025 Run 9: `image_enrichment_promoted` assigned PASS with 38 chars (barcode watermark), less than prior run's 60-char FAIL
+- RFC-025: garble detection correctly flagged garbling but no escalation hook — persisted fully-garbled text as MARGINAL
+- RFC-029 D1: heading injection gave shallow Arabic trees just enough depth to clear `validate_tree`, blocking richer flat fallback
+- RFC-030 D3: `low_content_density` threshold of 500 chars/node calibrated against one doc, over-rejected legitimate legal trees
+- RFC-036 D4: `landscape_fallback_picture` `PictureResult`s with `skipped_reason` triggered false `image_enrichment_promoted` verdicts
+- Run 14: `low_content_density` gate removal caused federal_decree_law oscillation PASS→MARGINAL→PASS
 
 **Resolved findings:**
-- RFC-018 D3b: added 'node_garbling' reason, never matched by any of 3 recovery triggers
-- RFC-025 D3: extended triggers to match ('garbling','node_garbling') but still missed node_count<3 early-exit before garble check
-- RFC-026 D5: moved garble check before early-exit
-- RFC-036 D3: 'rtl_reversal' hit terminal-raise list instead of flat-routing whitelist
-- RFC-023 D3/Run 9: garble detected but no escalation hook
+- RFC-023 D10: widened `PASS_MAX_LEAF_RATIO` 0.17→0.20
+- RFC-024 D0: widened 0.20→0.30, own risk table predicted failure
+- RFC-025 D0: hysteresis via prior-verdict anchoring, defeated by corpus reingestion
+- RFC-026 D3: GHV-TKV-Tarif flapped PASS→MARGINAL on identical tree after wipe
+- Run 8: Doc 8 Reitlehrer remained degraded despite widening
+- RFC-034 D18: write-visibility barrier over-provisioned (4.4s blocking delay)
+- RFC-036 D1: reduced delays, caught error as warning
 
-**Proposal implementation status.** `decide_route` (`helpers/types.py`, in-degree 3) is called from `client/indexer.py:_convert_to_tree` — confirmed via search_code match_lines. `pdf_to_markdown_docling`, `_run_stages`, `_build_candidate` in `converters/pipeline.py` all have in-degree ≥1 from production converter call sites. `_classify_llm_failure` (`worker/errors.py`) has in-degree 3. `REASON_POLICY` auto-derives from `GateSpec`, and `decide_route` reads only `REASON_POLICY`. However, the mechanism has shifted: the wiring is correct for the prior (reason-code coupling) defect, but the broadened mechanism (stale routing after recovery, converter chain-order fragility) represents new structural gaps not covered by this wiring.
-
-**History flag.** Prior zone (GATE_TABLE coupling) was already "regressed" in the POST-FIX-10 delta (Δ+2), continuing to regress with a broadened mechanism.
+**Proposal implementation status:** `implemented_and_wired` (relocated mechanism). CodeGraph confirms `compute_verdict`/`classify_verdict`/`evaluate_gates`/`apply_promotions` (`src/pageindex_mcp/helpers/verdict.py`) and `finalize_gate_and_route` (`src/pageindex_mcp/helpers/types.py`) are called throughout `src/pageindex_mcp/client/indexer.py` and `src/pageindex_mcp/client/recovery.py`, plus offline tools. Several proposals landed via different mechanisms than originally proposed: the verdict CAS guard is SQL-level guards in `src/pageindex_mcp/registry/queries.py`'s `upsert_doc` (not a standalone module), hysteresis was deliberately removed from `src/pageindex_mcp/helpers/verdict`, and `_decomposed_verdict` is confirmed dead code. Tests explicitly assert these relocations (`TestSidecarPassivity`, `TestHysteresisRemoval`, `TestDecomposedVerdictDeadCode`). This is `implemented_and_wired` via relocated mechanism, not a gap.
 
 ---
 
-### Worker-Child Process Boundary (was: Cross-Process Error Classification Boundary)
-**Status:** improved · **Severity:** critical → high · **Bugs:** 0 · **Proposal:** implemented_and_wired
+### God-Function Orchestration with Duplicated Divergent Logic
+*(prior: Worker/Inspector Dual-Threshold and Timeout Race)*
 
-**What changed.** Core mechanism is unchanged: child-process exception classification collapsing to a default/generic classification, causing wasteful retries or terminal-state mismatches. Severity dropped critical→high because `_TERMINAL_CHILD_REASONS` is now derived from `_CHILD_ERROR_REGISTRY` with a module-level exhaustiveness assertion auto-syncing it, closing the previously-flagged manual-sync risk. Two prior-zone findings (RFC-006 D3 fire-and-forget, RFC-033 D3 write-visibility) are resolved. Remaining findings concern dead-code wiring across process boundaries and the dual outcome channel (arq job result vs. Redis status hash) never being reconciled.
+**Status:** regressed · **Severity:** medium → high · **Bug delta:** +2
 
-**Key files:** `src/pageindex_mcp/worker/job.py`, `src/pageindex_mcp/worker/errors.py`, `src/pageindex_mcp/worker/subprocess_mgr.py`
+**Key files:** `src/pageindex_mcp/worker/subprocess_mgr.py`, `src/pageindex_mcp/worker/job.py`, `src/pageindex_mcp/storage/documents.py`, `src/pageindex_mcp/helpers/flat.py`, `src/pageindex_mcp/helpers/tree_split.py`, `src/pageindex_mcp/helpers/tables.py`, `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/converters/pipeline.py`
+
+**What changed:** The mechanism broadened significantly from "dual-threshold timeout race between worker and inspector" to "god-function orchestration with duplicated divergent logic across multiple subsystems." The prior zone was narrowly scoped to `subprocess_mgr.py` vs `job.py` timeout constants and confidence-threshold divergence. The current zone absorbs that timeout mechanism (partially remediated by RFC-038 via a shared timing-constants module and unified confidence gate) but adds table-separator regex duplication between `src/pageindex_mcp/helpers/tables.py` and `src/pageindex_mcp/helpers/tree_split.py` (causing ~7-row DATA truncation), fence-parity content destruction, a segmentation refactor that broke both orientations at once, and a Hard Rule 5 violation. Severity escalated medium→high reflecting the broader scope.
 
 **New findings:**
-- RFC-034 D18: write-visibility barrier raised `PersistenceNotVisibleError` as `RuntimeError`, propagating to child process as non-terminal (arq retried)
-- RFC-036 D1: wrapped in try/except
-- The `_CHILD_ERROR_REGISTRY` string-match approach is documented in the code map as ordering-dependent with no shared enum
+- RFC-002 Amendment 1: five `dag.yaml` module-boundary edges didn't match actual imports
+- RFC-029 D3: naive fence-parity toggle + unconditional fence/HR-marker stripping destroyed content across corpus
+- RFC-035: table-meta/chart-block segmentation refactor broke BOTH landscape AND portrait orientations together
+- RFC-036 D0: uncapped landscape rasterize caused serial 300-DPI OCR re-runs; chart axis labels shattered into 71+ singleton kv blocks
+- RFC-036 D2: RFC-034 D19 enrichment displacement fix fully implemented and staged in git but never committed
+- Run 13: body-extraction silently returned empty and persisted `flat.json` anyway, **violating Hard Rule 5**
 
 **Resolved findings:**
-- RFC-006 D3: fire-and-forget async Postgres registry delete logged "full cascade succeeded" over silent failure (fixed by RFC-007 D2)
-- RFC-033 D3: read-side minio retry insufficient for write-visibility racing (fixed by RFC-034 D18 with write-side head_object verification)
-- RFC-032 D3: 3x timeout multiplier guess for scanned PDFs (recalibrated by D9 to 16.5x after measurement showed mean 6.16x, max 11.00x)
+- RFC-032 D3: 3x worker timeout multiplier empirically shown insufficient (range 2.32x-11.00x)
+- RFC-032 D9: recalibrated to 16.5x
+- Run 8→Run 9: exception-handling patch converted Arabic CMap crash to near-empty artifact
 
-**Proposal implementation status.** `process_document_job` (in-degree 9), `reap_stale_jobs` (3), `_run_converter_subprocess` (8), `ConverterChildError` (4), `ConverterOOMError` (1) are all live in the worker pipeline. `_TERMINAL_CHILD_REASONS` in `worker/errors.py` is now a derived `frozenset` from `_CHILD_ERROR_REGISTRY` with a module-level assert enforcing exhaustiveness — auto-syncing, closing the previously-flagged manual-sync risk. No wiring gaps found.
+**Proposal implementation status:** `implemented_and_wired`. CodeGraph confirms `src/pageindex_mcp/worker/subprocess_mgr.py`'s `_run_converter_subprocess` is called by `src/pageindex_mcp/worker/job.py`'s `process_document_job` (single call site, not duplicated). RFC-038 commits (visible in git log) specifically targeted timeout/confidence-gate unification — tests `test_early_deadline_persisted_before_subprocess_completes` and `TestReapDynamicTimeout` pass against production code. `src/pageindex_mcp/helpers/flat.py`'s `route_and_extract_flat` is called from `src/pageindex_mcp/client/indexer.py` and `src/pageindex_mcp/client/recovery.py`. `src/pageindex_mcp/helpers/tree_split.py`'s `prepare_tree`/`split_oversized_leaf_nodes`/`_segment_table_nodes`/`table_is_rtl` are called from `src/pageindex_mcp/client/indexer.py` and `src/pageindex_mcp/client/recovery.py`. `src/pageindex_mcp/helpers/tables.py`'s `_flat_parse_table`/`_flat_verbalize_rows` have an explicit wiring test (`TestForwardFillColumnZero.test_wired_into_flat_parse_table`). No evidence of duplicated divergent copies across `src/pageindex_mcp/worker/job.py` vs `src/pageindex_mcp/client/indexer.py` found in this pass, suggesting partial remediation of the "duplicated divergent logic" framing via consolidation into helper modules. Prior zone had no proposal; current zone has one.
 
 ---
 
-### Arabic/RTL Pipeline Blindness (was: Mutable ExtractionState Recovery Path Ordering)
-**Status:** regressed · **Severity:** high → high · **Bugs:** +2 · **Proposal:** no_proposal
+### validate_tree Reason-String Dispatch
+*(prior: Recovery Routing Wiring Gaps — Detection Without Remediation)*
 
-**What changed.** The prior zone focused on mutable `ExtractionState` ordering: keep-best revert leaving stale fields, bidi re-normalization double-application, and Arabic heading injection cascading content loss. The current zone narrows scope to Arabic/RTL-specific pipeline blindness: Latin-centric assumptions blocking Arabic heading detection, OCR lang detection from filenames missing Arabic scans, table RTL detection flipping on borderline ratios, and content-density gates rejecting legitimate Arabic legal documents. The mechanism evolved from general mutable-state ordering to specific Arabic/RTL pipeline integration failures. Bug count rose 7→9 despite the mechanism narrowing, because new Arabic-specific findings (fence-parity toggle destroying SLA/MOU, content-density rejecting Penal Code, Run 13 collapses) surfaced.
+**Status:** improved · **Severity:** high → high · **Bug delta:** -3
 
-**Key files:** `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/converters/pipeline.py`, `src/pageindex_mcp/helpers/flat.py`, `src/pageindex_mcp/helpers/tree_validation.py`
+**Key files:** `src/pageindex_mcp/helpers/tree_validation.py`, `src/pageindex_mcp/helpers/gates.py`, `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/client/recovery.py`, `src/pageindex_mcp/helpers/types.py`
 
-**New findings:**
-- RFC-005 Fix-1: Arabic legal headings rejected by `_segment_label`'s Latin-only gates
-- RFC-013 D6: missing non-Latin tessdata
-- RFC-028 D1: Arabic heading injection blocked richer flat extraction
-- RFC-028 D5: vastly more OCR diluted garble signals (warid-597: 1.8k→54k chars, digit-ratio ~100% to <1%, MARGINAL→PASS)
-- RFC-029 D3: fence-parity toggle destroyed SLA (264→0 blocks), MOU (89% loss), qerar-106, marsoom-13
-- RFC-029 D1: content-density gate rejected Penal Code (408 chars/node), federal_decree_law (54 chars/node)
-- Run 13: MOU collapsed 166→20 nodes, SLA/marsoom-13 went to 0 chars, warid-597 timeout/hang
-
-**Resolved findings:**
-- RFC-029 D4: keep-best revert restores result/ok/reason but leaves md_content/tmp_md_path at post-retry data, creating tree-vs-markdown state mismatch
-- RFC-021 QF1: deferred OCR changed which path F1 exemption fires under (GHV-TKV-Tarif 4,267-to-375 chars)
-- RFC-021 QF1/RFC-022 B2: image-only PDFs produce only image markers as text, tripping >30% token-repetition garble check
-- RFC-028 D0: `chunked_docling_timeout` function created but never called by worker.py
-
-**Proposal implementation status.** Neither the current zone (Arabic/RTL Pipeline Blindness) nor the prior zone (Mutable ExtractionState Recovery Path Ordering) has a simplification proposal (has_proposal=false).
-
-**History flag.** Prior zone (Mutable ExtractionState) was the only "improved" zone in the POST-FIX-10 delta (critical→high, Δ-3), but this cycle's Arabic/RTL refocusing has regressed it back up by 2 bugs.
-
----
-
-### Duplicated Convergent Logic (was: Config Snapshot Freeze Drift and Incomplete Wiring Enforcement)
-**Status:** improved · **Severity:** high → medium · **Bugs:** -3 · **Proposal:** not_applicable
-
-**What changed.** The prior zone combined two concerns: (1) config values read from three competing sites diverging during process lifetime, and (2) incomplete wiring enforcement (`validate_feature_wirings` only at atexit, HR2 cascade unreachable). The current zone narrows to just duplicated convergent logic: multiple independent code paths computing the same derived value (flat-block text, garble detection, verdict hysteresis, table-text extraction) with subtly different implementations. The config-drift and wiring-enforcement concerns are largely resolved: `validate_feature_wirings` now runs at startup from both `server.py` and `worker/lifecycle.py` (confirmed by CodeGraph), and `storage/documents.py:delete_doc` IS production-wired via the MCP tool `delete_document` (a deferred local import in `server.py` lines 42–57 — a graph blind spot, not an actual gap). The remaining zone is smaller and lower severity (medium vs. high).
-
-**Key files:** `src/pageindex_mcp/helpers/flat.py`, `src/pageindex_mcp/client/indexer.py`, `src/pageindex_mcp/client/recovery.py`, `src/pageindex_mcp/client/images.py`
+**What changed:** The core mechanism is unchanged — string/reason-name dispatch from gate detection to recovery routing, where an unhandled or unwired reason falls through to a terminal error. The prior zone's framing as "Detection Without Remediation" (fully implemented detectors inert due to missing wiring) narrowed to the current zone's "Reason-String Dispatch" focus. Several wiring gaps closed: `chunked_docling_timeout_s` wired (RFC-038), `_check_bidi_coherence` dead code resolved (RFC-036 D2 committed staged code), enrichment displacement committed. The fundamental dispatch mechanism (if/elif chain on reason strings) persists, and two new reason-routing gaps appeared. Five resolved findings vs two new findings yields the net -3 bug-count improvement.
 
 **New findings:**
-- RFC-015 D3: `_tree_max_leaf_ratio` counting non-leaf wrappers in denominator
-- Session memory ISS-36: digit-ratio check duplicated at `helpers.py` lines 534-538 and 1072-1075
-- The code map identifies `_flat_block_primary_text`, `_flat_block_text`, `_flat_search_text` as three near-identical reimplementations; verdict-ledger hysteresis is copy-pasted in both persistence methods
+- RFC-036 D3: `rtl_reversal` routed to terminal rejection with no flat-fallback attempt
+- Observation #5330: early-exit in `validate_tree` before garble check makes OCR escalation unreachable for docs classified as `node_count<3`
 
 **Resolved findings:**
-- RFC-027 D7: `chunked_docling_timeout` function created but never imported/called by worker.py
-- RFC-029 D0/RFC-030 D5: `_check_bidi_coherence` dead code, never called
-- RFC-031 shadow mode to RFC-032 activation: PDF-inspector classification computed and logged but never branched on until wired
-- RFC-034 D19: enrichment fix existed as uncommitted git-staged diff through entire audit cycle
-- Remote Docling service code predates locally-committed bidi-heading guard, no client-side re-normalization of remote results
-- AGPL fallback chain: remote Docling failure silently walks to pymupdf4llm with no hard gate (Hard Rule 4 violation)
-- `storage.delete_doc` in_degree=0: HR2 cascade has zero production entrypoints (CLAUDE.md Hard Rule 2 depends on operators knowing to invoke it)
+- RFC-027 task 4.2: `chunked_docling_timeout_s` created but never wired to `worker.py`
+- RFC-028 D0: world-stats-pocketbook timed out 3 consecutive runs
+- RFC-029 D0: `_check_bidi_coherence` fully implemented, duplicated, never wired (dead code)
+- RFC-030 D5: confirmed dead code
+- RFC-034 D19: enrichment displacement guard staged, never committed, inactive
 
-**Proposal implementation status.** Match confidence is low between these zones. The prior zone's proposal (freeze env vars into `PipelineConfig`, wire `validate_feature_wirings` at startup, expose `delete_doc` via MCP tool) has been largely implemented: `validate_feature_wirings` runs at startup (confirmed by CodeGraph), `delete_doc` is production-wired via an MCP tool. The current zone (Duplicated Convergent Logic) is a substantially different concern (code duplication, not config drift) and has no proposal (has_proposal=false). The prior zone's config-drift and wiring-enforcement concerns have been substantially resolved, which is why the successor zone is smaller and lower severity.
+**Proposal implementation status:** `implemented_and_wired`. CodeGraph confirms `validate_tree` (`src/pageindex_mcp/helpers/tree_validation.py`) and gate helpers (`src/pageindex_mcp/helpers/gates.py`) feed into `validate_feature_wirings`, called from `src/pageindex_mcp/server.py` lifespan and `src/pageindex_mcp/worker/lifecycle.py` startup. `src/pageindex_mcp/client/recovery.py`'s `RecoveryMixin` methods (`_execute_ocr_retry`, `_recover_vlm_fallback`, `_recover_garble_ocr`, `_recover_low_content_ocr`, `_recover_image_dominant_ocr`) are all called from `src/pageindex_mcp/client/indexer.py`. Neither the prior nor current zone has a formal proposal document; wiring status here reflects infrastructure presence and connectedness, though the dispatch mechanism itself (reason-string matching) remains the root cause of gaps. **History note:** the prior delta (POST-FIX-6) saw Zone 5 remediation replace string-based routing with a Route StrEnum (TREE/FLAT/REJECT/PERSIST_FAIL). The current audit's persistence of string-dispatch issues suggests the StrEnum may not cover all reason-string paths, or new reasons were added after the StrEnum landed.
 
 ## New Zones
 
-- **Registry Dual-Write Consistency** — surfaced this cycle with no prior-zone match.
-- **ZDR/PII Egress Gap** — surfaced this cycle with no prior-zone match; bears directly on Hard Rule 3 (PII-bearing documents must route only through a no-training + zero-retention LLM tier) and warrants priority triage given the compliance stakes.
+- **Multi-Store Dual-Write Consistency**
+- **Config Layering Split and Dead-Code Accumulation**
+
+No prior-audit lineage exists for these zones in this delta pass; they were not present in the prior audit's zone set and require a first-pass characterization before their next delta comparison.
 
 ## Closed Zones
 
-- **Picture/OCR Enrichment and Page-Level Escalation Conflation** — no successor zone identified in the current audit; treated as resolved/subsumed.
+- **Tree-vs-Flat Gate Asymmetry**
+- **Pre-Tree Text Transforms vs Table/Block Integrity**
+- **HR3 PII Egress Gap (Docling + VLM Silent Degradation)**
+
+These three zones from the prior audit (POST-FIX-11) do not appear in the current audit's zone set, indicating they were either fully remediated and dropped from tracking, or merged into surviving/new zones. Given the presence of new zones **Multi-Store Dual-Write Consistency** and **Config Layering Split and Dead-Code Accumulation**, and the mechanism-broadening pattern observed across every regressed zone in this delta, a merge into a broader-scoped successor zone is plausible for at least one of the three and should be confirmed against the current audit document rather than assumed closed outright.
