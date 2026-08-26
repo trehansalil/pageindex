@@ -16,6 +16,7 @@ mappings:
     coverage_threshold: 90
     tests:
       - test_client.py            # primary
+      - test_compute_verdict.py
       - test_gate_table.py
       - test_image_blocks.py
       - test_preprocess_client_supported.py
@@ -205,6 +206,7 @@ mappings:
       - test_worker.py            # primary
       - test_dual_write_consistency.py
       - test_density_gate.py
+      - test_registry.py
       - test_registry_mirror.py
 
   worker/subprocess_mgr.py:
@@ -227,6 +229,8 @@ mappings:
   config.py:
     tests:
       - test_config.py            # primary
+      - test_compute_verdict.py
+      - test_registry.py
       - test_rfc_quality.py
       - test_rfc_registry.py
       - test_rfc_storage.py
@@ -597,10 +601,12 @@ mappings:
   registry/queries.py:
     tests:
       - test_registry.py          # primary
+      - test_registry_backfill.py
       - test_rfc_registry.py
       - test_pipeline.py
       - test_reconcile_incremental.py
       - test_rfc012_backfill_gather.py
+      - test_rfc037_verdict_cas.py
       - test_storage.py
       - test_worker.py
 
@@ -613,6 +619,7 @@ mappings:
   registry_backfill/reconcile.py:
     tests:
       - test_reconcile_incremental.py  # primary
+      - test_registry_backfill.py
       - test_worker.py
 
   registry_backfill/cleanup.py:
