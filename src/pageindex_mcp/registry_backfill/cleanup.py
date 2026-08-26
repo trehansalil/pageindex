@@ -10,18 +10,27 @@ logger = logging.getLogger("registry_backfill")
 
 def cleanup_protect_empty_processed_at(processed_at_str: str | None) -> bool:
     """Return True if a row with this *processed_at* value should be
-    **treated as old enough** to be a stale-deletion candidate (i.e. NOT
-    protected by the age guard).
+    **protected** from stale deletion (added to the age-guard set).
 
-    Rows with an empty or ``None`` ``processed_at`` (legacy rows that
-    predate the timestamp column, or rows written with the schema default
-    ``''``) are treated as old enough --- they are not protected by the
-    age guard.
+    When ``settings.cleanup_protect_empty_processed_at`` is True (the
+    default), rows with an empty or ``None`` ``processed_at`` are
+    treated as protected --- they may be partial-write rows whose
+    ``processed_at`` was not yet flushed due to the dual-write race
+    between the converter child (MinIO) and the parent (Postgres).
 
-    Returns ``True`` (old enough, not protected) for empty/None values,
-    ``False`` (possibly protected, needs further age check) otherwise.
+    Set the ``CLEANUP_PROTECT_EMPTY_PROCESSED_AT`` env var to ``false``
+    to revert to the legacy behavior where empty/None rows are treated
+    as old enough to be stale-deletion candidates (useful for sweeping
+    truly stale legacy rows that will never receive a timestamp).
+
+    Returns ``True`` (protected, skip deletion) when the value is
+    empty/None and the protection setting is enabled; ``False``
+    otherwise.
     """
-    return not processed_at_str
+    if not processed_at_str:
+        from ..config import settings
+        return settings.cleanup_protect_empty_processed_at
+    return False
 
 # A stale-row purge is only trusted when it wouldn't wipe out most of the
 # registry — an untrustworthy/partial MinIO listing (e.g. list-API glitch,
@@ -45,10 +54,11 @@ async def _delete_stale_rows(
     incorrectly deleted because its doc_id is present in Postgres but
     absent from the stale MinIO listing.
 
-    Rows with an empty or unparseable ``processed_at`` (legacy rows that
-    predate the timestamp, or rows written with the schema default ``''``)
-    are treated as old enough to be stale candidates — they are not
-    protected by the age guard.
+    Rows with an empty or unparseable ``processed_at`` are handled by
+    ``cleanup_protect_empty_processed_at``: when the protection setting is
+    enabled (the default), they are added to the age-guard set and excluded
+    from stale deletion.  Set ``CLEANUP_PROTECT_EMPTY_PROCESSED_AT=false``
+    to sweep truly stale legacy rows that will never get a timestamp.
     """
     from ..registry import delete_doc, list_all_doc_ids_with_timestamps
 
@@ -71,7 +81,8 @@ async def _delete_stale_rows(
     for doc_id in stale:
         processed_at_str = registry_rows.get(doc_id, "")
         if cleanup_protect_empty_processed_at(processed_at_str):
-            # Legacy row with empty/None processed_at — treat as old enough.
+            # Empty/None processed_at — protected by dual-write race guard.
+            age_protected.add(doc_id)
             continue
         try:
             processed_at = datetime.fromisoformat(processed_at_str)
