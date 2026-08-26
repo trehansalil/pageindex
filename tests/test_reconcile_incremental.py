@@ -291,9 +291,10 @@ async def test_drain_verdict_retry_queue_replays_keys():
     ):
         await _drain_verdict_retry_queue(redis_mock)
 
-    # upsert_doc receives a merged meta dict with doc_id + verdict fields.
+    # upsert_doc receives a merged meta dict with doc_id + verdict fields,
+    # plus force_verdict_override kwarg (defaults to False when absent).
     expected_meta = {"doc_id": "doc-replay-1", **verdict_data}
-    upsert_mock.assert_awaited_once_with(expected_meta)
+    upsert_mock.assert_awaited_once_with(expected_meta, force_verdict_override=False)
     save_mock.assert_called_once()
     redis_mock.delete.assert_awaited()
 

@@ -14,7 +14,7 @@ logger = logging.getLogger("registry_backfill")
 def _pkg():
     """Return the registry_backfill package module (late lookup avoids circular
     imports and lets test monkeypatches on the package take effect)."""
-    return sys.modules[__package__]
+    return sys.modules[__package__]  # type: ignore[index]
 
 
 # Phase 3 audit Issue A #2/#3: tracks the reconciliation job's own last-run time,
@@ -69,7 +69,11 @@ async def _drain_verdict_retry_queue(redis_client: Any) -> None:
                     # call upsert_doc directly (upsert_verdict is deprecated).
                     meta: dict[str, Any] = {"doc_id": doc_id}
                     meta.update(verdict_fields)
-                    winning = await upsert_doc(meta)
+                    # Pop force_verdict_override before calling upsert_doc so
+                    # it becomes a kwarg, not a column value persisted to
+                    # Postgres.  Mirrors the registry_mirror.py treatment.
+                    force_override = bool(meta.pop("force_verdict_override", False))
+                    winning = await upsert_doc(meta, force_verdict_override=force_override)
                     if winning:
                         await asyncio.to_thread(save_doc_meta, doc_id, winning)
 
