@@ -7,7 +7,14 @@ import math
 from dataclasses import dataclass
 
 from ..config import pipeline_config
-from ..script import RtlDecision, ScriptContext, _infer_script, decide_rtl
+from ..script import (
+    ARABIC_RANGES,
+    PRESENTATION_RANGES,
+    RtlDecision,
+    ScriptContext,
+    _infer_script,
+    decide_rtl,
+)
 from .types import (
     TreeDefect,
     TreeGateResult,
@@ -191,13 +198,27 @@ class TreeSignals:
             _eff_script = (
                 expected_script if expected_script is not None else _infer_script(flat_text)
             )
-            _had_pf = False
-            logger.debug(
-                "TreeSignals.from_tree received bare expected_script=%r; "
-                "had_presentation_forms defaults to False (upstream should "
-                "pass ScriptContext for accurate PF detection)",
-                expected_script,
-            )
+            # Best-effort presentation-forms scan on flat_text.  When the
+            # tree text is still pre-NFKC the scan detects Arabic
+            # Presentation Forms; post-NFKC the ratio is 0 (same as the
+            # prior False default).
+            _pf_count = sum(
+                1 for c in flat_text
+                if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
+            ) if flat_text else 0
+            _ar_count = sum(
+                1 for c in flat_text
+                if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
+            ) if flat_text else 0
+            _had_pf = _ar_count > 0 and (_pf_count / _ar_count) > 0.50
+            if not _had_pf:
+                logger.debug(
+                    "TreeSignals.from_tree received bare expected_script=%r; "
+                    "had_presentation_forms=%s (scanned flat_text; upstream "
+                    "should pass ScriptContext for accurate PF detection)",
+                    expected_script,
+                    _had_pf,
+                )
 
         # Zone-4: unified detect_garble entry point replaces check_garble.
         _ctx = ScriptContext(
@@ -308,6 +329,21 @@ def validate_tree(
     if sig.garble_ratio > 0.0:
         _warnings.append(
             f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}"
+        )
+    # Near-firing checks for structural gates (cheap — uses pre-computed
+    # signals; advisory only, no behavioral change).
+    if sig.node_count <= 5:
+        _warnings.append(
+            f"near_gate_node_count: count={sig.node_count} (gate fires <3)"
+        )
+    if sig.depth == 2:
+        _warnings.append(
+            f"near_gate_depth: depth={sig.depth} (gate fires <2)"
+        )
+    if sig.max_leaf_ratio > th.pass_max_leaf_ratio * 0.8:
+        _warnings.append(
+            f"near_gate_leaf_concentration: ratio={sig.max_leaf_ratio:.3f} "
+            f"(pass threshold={th.pass_max_leaf_ratio:.2f})"
         )
     return TreeGateResult(
         ok=True,

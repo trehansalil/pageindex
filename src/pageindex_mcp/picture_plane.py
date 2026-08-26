@@ -382,8 +382,23 @@ def decide_ocr_strategy(
     """
     _langs = ocr_langs if ocr_langs is not None else ["deu", "eng"]
 
+    # Zone-2 fix: re-entry guard MUST run before any other branch.
+    # Previously the UNIFIED_OCR_PLAN_ENABLED short-circuit for image
+    # documents ran first, allowing image docs to bypass the re-entry
+    # guard entirely and trigger redundant full-page OCR.
+    if full_page_already_applied:
+        return OcrDecision(
+            mode=OcrMode.NONE,
+            full_page_already_applied=True,
+            has_image_markers=has_image_markers,
+            garble_status=garble_status,
+            ocr_langs=_langs,
+        )
+
     # Zone-8: when unified plan is enabled and document_type is 'image',
-    # images always need full-page OCR with splice.
+    # images always need full-page OCR with splice.  Runs AFTER the
+    # re-entry guard so a second call with full_page_already_applied=True
+    # correctly returns SKIP/NONE instead of firing full-page OCR again.
     if UNIFIED_OCR_PLAN_ENABLED and document_type == "image":
         return OcrDecision(
             mode=OcrMode.FULL_PAGE,
@@ -393,14 +408,6 @@ def decide_ocr_strategy(
             splice_required=True,
         )
 
-    if full_page_already_applied:
-        return OcrDecision(
-            mode=OcrMode.NONE,
-            full_page_already_applied=True,
-            has_image_markers=has_image_markers,
-            garble_status=garble_status,
-            ocr_langs=_langs,
-        )
     if force_full_page:
         return OcrDecision(
             mode=OcrMode.FULL_PAGE,

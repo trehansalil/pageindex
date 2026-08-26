@@ -92,7 +92,7 @@ class RecoveryMixin:
         splice_label: str,
         use_keep_best: bool,
         metric_fail_label: str,
-    ) -> None:
+    ) -> bool:
         """Zone-1: shared OCR retry execution (language derivation, OCR
         dispatch, picture splice, reconvert + revalidate, keep-best, metrics).
 
@@ -101,6 +101,10 @@ class RecoveryMixin:
         checks.  Factoring the ~150-line shared tail into one helper avoids
         the duplication that motivated the former ``_recover_ocr_retry``
         unification while keeping per-method eligibility decoupled.
+
+        Returns True when a successful full-page OCR re-extraction ran
+        (callers should set ``state.full_page_already_applied = True``).
+        Returns False on error or when keep-best reverted to pre-retry.
         """
         # Lazy imports for cross-submodule deps
         from .images import TREE_PATH_PICTURE_SPLICE_ENABLED, _log_pic_splice_trace
@@ -169,13 +173,11 @@ class RecoveryMixin:
                 if stages_out:
                     state.extraction_stages_captured = stages_out
             state.used_converter = "docling"
-            # Zone-2: stamp full_page_already_applied after successful
-            # full-page OCR re-extraction.  This cross-call re-entry guard
-            # prevents downstream _recover_picture_results from firing
-            # redundant per-picture OCR on content that was already
-            # re-extracted via full-page OCR.  Set once regardless of which
-            # of the three split recovery methods invoked _execute_ocr_retry.
-            state.full_page_already_applied = True
+            # Zone-2: full-page OCR successfully applied.  The return value
+            # signals callers to set state.full_page_already_applied = True
+            # explicitly, replacing the former direct mutation that made the
+            # cross-module data flow implicit.
+            _ocr_applied = True
 
             # ---- Picture splice ----
             if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
@@ -223,7 +225,14 @@ class RecoveryMixin:
                     had_presentation_forms=False,
                     source="ocr_retry_keep_best",
                 )
-                if post_retry_chars < pre_retry.total_chars:
+                # Zone-8 fix: no-text-layer shortcut.  When the pre-retry
+                # extraction had zero chars (no text layer at all) and the
+                # OCR retry produced any text, always accept — the 0.80
+                # density threshold would otherwise compare against an empty
+                # baseline and may reject genuine OCR improvements.
+                if pre_retry.total_chars == 0 and post_retry_chars > 0:
+                    retry_wins = True
+                elif post_retry_chars < pre_retry.total_chars:
                     retry_wins = False
                 elif post_retry_chars == pre_retry.total_chars:
                     _pre_text = _flatten_tree_text(pre_retry.result.get("structure", []))
@@ -275,6 +284,7 @@ class RecoveryMixin:
                         retry_wins = True
                 if not retry_wins:
                     pre_retry.apply(state)
+                    _ocr_applied = False
                     # Zone-7: apply() restores state.tmp_md_path to the
                     # pre-retry path string, but _reconvert_and_revalidate
                     # may have unlinked the file at that path during the
@@ -292,6 +302,7 @@ class RecoveryMixin:
             # ---- Metric ----
             _metric_result = "recovered" if state.ok else metric_fail_label
             OCR_ESCALATION_TOTAL.labels(result=_metric_result).inc()
+            return _ocr_applied
         except Exception as ocr_exc:
             OCR_ESCALATION_TOTAL.labels(result="error").inc()
             logger.error(
@@ -301,6 +312,7 @@ class RecoveryMixin:
                 ocr_exc,
                 exc_info=True,
             )
+            return False
 
     # -- Zone-1: per-defect OCR recovery methods (split from _recover_ocr_retry) --
 
@@ -323,7 +335,7 @@ class RecoveryMixin:
             return
         if not _OCR_ESCALATION_GARBLE:
             return
-        await self._execute_ocr_retry(
+        applied = await self._execute_ocr_retry(
             state,
             file_path,
             filename,
@@ -335,6 +347,8 @@ class RecoveryMixin:
             use_keep_best=True,
             metric_fail_label="still_garbled",
         )
+        if applied:
+            state.full_page_already_applied = True
 
     async def _recover_low_content_ocr(
         self,
@@ -357,7 +371,7 @@ class RecoveryMixin:
             return
         if state.total_chars >= pipeline_config.low_content_ocr_char_floor:
             return
-        await self._execute_ocr_retry(
+        applied = await self._execute_ocr_retry(
             state,
             file_path,
             filename,
@@ -369,6 +383,8 @@ class RecoveryMixin:
             use_keep_best=True,
             metric_fail_label="still_garbled",
         )
+        if applied:
+            state.full_page_already_applied = True
 
     async def _recover_image_dominant_ocr(
         self,
@@ -397,7 +413,7 @@ class RecoveryMixin:
         image_lines = sum(1 for ln in non_empty_lines if "<!-- image -->" in ln)
         if not non_empty_lines or (image_lines / len(non_empty_lines)) <= 0.50:
             return
-        await self._execute_ocr_retry(
+        applied = await self._execute_ocr_retry(
             state,
             file_path,
             filename,
@@ -409,6 +425,8 @@ class RecoveryMixin:
             use_keep_best=True,
             metric_fail_label="still_image_only",
         )
+        if applied:
+            state.full_page_already_applied = True
 
     async def _recover_rtl_repair(
         self,
