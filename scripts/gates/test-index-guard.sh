@@ -185,7 +185,7 @@ orphan_count=0
 while IFS= read -r test_path; do
   test_basename="$(basename "$test_path")"
   if ! echo "$all_indexed_tests" | grep -qw "$test_basename"; then
-    warn "test file '$test_basename' exists but is not mapped to any source in TEST_INDEX.yaml"
+    fail "test file '$test_basename' exists but is not mapped to any source in TEST_INDEX.yaml"
     orphan_count=$((orphan_count+1))
   fi
 done < <(find tests -maxdepth 1 -name "test_*.py" | sort)
