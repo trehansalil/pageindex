@@ -17,6 +17,7 @@ mappings:
     tests:
       - test_client.py            # primary
       - test_compute_verdict.py
+      - test_config.py
       - test_gate_table.py
       - test_image_blocks.py
       - test_preprocess_client_supported.py
@@ -35,6 +36,7 @@ mappings:
       - test_observability.py
       - test_hr3_compliance.py
       - test_recovery.py
+      - test_worker.py
 
   client/images.py:
     coverage_threshold: 90
@@ -53,7 +55,9 @@ mappings:
     coverage_threshold: 90
     tests:
       - test_client.py
+      - test_config.py
       - test_image_blocks.py
+      - test_observability.py
       - test_pdf_inspector.py
       - test_rfc_arabic.py
       - test_rfc_bidi.py
@@ -213,7 +217,9 @@ mappings:
     coverage_threshold: 85
     tests:
       - test_worker.py            # primary
+      - test_config.py
       - test_density_gate.py
+      - test_observability.py
       - test_rfc_recovery.py
       - test_rfc012_redis_singleton.py
 
@@ -297,7 +303,9 @@ mappings:
 
   converters/pictures.py:
     tests:
+      - test_config.py
       - test_image_blocks.py
+      - test_observability.py
       - test_ocr_decision.py
       - test_pipeline.py
       - test_rfc_arabic.py
@@ -326,6 +334,7 @@ mappings:
 
   converters/pipeline.py:
     tests:
+      - test_config.py
       - test_converter_chain_ocr.py
       - test_density_gate.py
       - test_observability.py
@@ -626,6 +635,7 @@ mappings:
     tests:
       - test_dual_write_consistency.py
       - test_reconcile_incremental.py
+      - test_registry_backfill.py
 
   registry_backfill/__main__.py:
     tests:
