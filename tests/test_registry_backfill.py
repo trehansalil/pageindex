@@ -210,3 +210,138 @@ class TestDrainVerdictRetryQueueWiring:
 
         # save_doc_meta is called via asyncio.to_thread
         mock_save.assert_called_once_with("doc-sc", winning)
+
+
+# ===========================================================================
+# Contract: _delete_stale_rows protects rows with empty/missing processed_at
+# ===========================================================================
+
+
+class TestDeleteStaleRowsEmptyProcessedAtProtection:
+    """Zone-7: _delete_stale_rows must protect rows with empty/missing
+    processed_at via age guard when cleanup_protect_empty_processed_at is True
+    (default). When False, old behavior (treat as stale) is preserved."""
+
+    @pytest.mark.asyncio
+    async def test_empty_processed_at_protected_by_default(self):
+        """When cleanup_protect_empty_processed_at is True (default), rows with
+        empty processed_at are excluded from stale deletion."""
+        import dataclasses
+
+        from pageindex_mcp.config import settings as _base_settings
+        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
+
+        protected_settings = dataclasses.replace(
+            _base_settings, cleanup_protect_empty_processed_at=True
+        )
+
+        # Registry has one row with empty processed_at that's not in MinIO
+        registry_rows = {"stale-empty-1": ""}
+
+        mock_delete = AsyncMock()
+        mock_list = AsyncMock(return_value=registry_rows)
+
+        with (
+            patch("pageindex_mcp.config.settings", protected_settings),
+            patch("pageindex_mcp.registry.list_all_doc_ids_with_timestamps", mock_list),
+            patch("pageindex_mcp.registry.delete_doc", mock_delete),
+        ):
+            await _delete_stale_rows(set())  # empty MinIO set -> row is "stale"
+
+        # Row should be PROTECTED (not deleted) because processed_at is empty
+        mock_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_none_processed_at_protected_by_default(self):
+        """When cleanup_protect_empty_processed_at is True, rows with None
+        processed_at are also protected."""
+        import dataclasses
+
+        from pageindex_mcp.config import settings as _base_settings
+        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
+
+        protected_settings = dataclasses.replace(
+            _base_settings, cleanup_protect_empty_processed_at=True
+        )
+
+        registry_rows = {"stale-none-1": None}
+
+        mock_delete = AsyncMock()
+        mock_list = AsyncMock(return_value=registry_rows)
+
+        with (
+            patch("pageindex_mcp.config.settings", protected_settings),
+            patch("pageindex_mcp.registry.list_all_doc_ids_with_timestamps", mock_list),
+            patch("pageindex_mcp.registry.delete_doc", mock_delete),
+        ):
+            await _delete_stale_rows(set())
+
+        mock_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_processed_at_deleted_when_protection_disabled(self):
+        """When cleanup_protect_empty_processed_at is False, rows with empty
+        processed_at are treated as stale candidates (old behavior)."""
+        import dataclasses
+
+        from pageindex_mcp.config import settings as _base_settings
+        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
+
+        unprotected_settings = dataclasses.replace(
+            _base_settings, cleanup_protect_empty_processed_at=False
+        )
+
+        # Need >2 rows so the stale fraction stays under the 50% safety cap.
+        # 1 stale + 2 in-MinIO = 33% < 50%.
+        registry_rows = {
+            "stale-old-1": "",
+            "in-minio-1": "2026-01-01T00:00:00+00:00",
+            "in-minio-2": "2026-01-01T00:00:00+00:00",
+        }
+
+        mock_delete = AsyncMock()
+        mock_list = AsyncMock(return_value=registry_rows)
+
+        with (
+            patch("pageindex_mcp.config.settings", unprotected_settings),
+            patch("pageindex_mcp.registry.list_all_doc_ids_with_timestamps", mock_list),
+            patch("pageindex_mcp.registry.delete_doc", mock_delete),
+        ):
+            await _delete_stale_rows({"in-minio-1", "in-minio-2"})
+
+        # Row should be DELETED because protection is disabled
+        mock_delete.assert_awaited_once_with("stale-old-1")
+
+    @pytest.mark.asyncio
+    async def test_normal_old_processed_at_still_deleted_when_protected(self):
+        """Rows with a valid old processed_at are still treated as stale
+        even when cleanup_protect_empty_processed_at is True."""
+        import dataclasses
+
+        from pageindex_mcp.config import settings as _base_settings
+        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
+
+        protected_settings = dataclasses.replace(
+            _base_settings, cleanup_protect_empty_processed_at=True
+        )
+
+        # Old timestamp - well outside the grace period.
+        # Need >2 rows so the stale fraction stays under 50% safety cap.
+        registry_rows = {
+            "stale-old-2": "2020-01-01T00:00:00+00:00",
+            "in-minio-1": "2026-01-01T00:00:00+00:00",
+            "in-minio-2": "2026-01-01T00:00:00+00:00",
+        }
+
+        mock_delete = AsyncMock()
+        mock_list = AsyncMock(return_value=registry_rows)
+
+        with (
+            patch("pageindex_mcp.config.settings", protected_settings),
+            patch("pageindex_mcp.registry.list_all_doc_ids_with_timestamps", mock_list),
+            patch("pageindex_mcp.registry.delete_doc", mock_delete),
+        ):
+            await _delete_stale_rows({"in-minio-1", "in-minio-2"})
+
+        # Old row with valid timestamp should be deleted
+        mock_delete.assert_awaited_once_with("stale-old-2")

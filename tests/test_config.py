@@ -118,3 +118,151 @@ def test_reset_pipeline_config_refreshes_singleton(monkeypatch):
     from pageindex_mcp.config import pipeline_config as refreshed
 
     assert refreshed.allow_agpl_fallback is True
+
+
+# ---------------------------------------------------------------------------
+# Zone-5 Config Layering: reset_pipeline_config re-reads all 6 formerly-frozen
+# fields from os.environ AND refreshes the backward-compat module-level aliases.
+# ---------------------------------------------------------------------------
+
+_FORMERLY_FROZEN_FIELDS = {
+    # (env_var, pipeline_config_attr, module_alias_name, non_default_env_value, expected_python_value)
+    "PDF_INSPECTOR_PRECLASSIFY": ("pdf_inspector_preclassify", "PDF_INSPECTOR_PRECLASSIFY", "1", True),
+    "REMOTE_MD_RENORMALIZE": ("remote_md_renormalize", "REMOTE_MD_RENORMALIZE", "0", False),
+    "ALLOW_AGPL_FALLBACK": ("allow_agpl_fallback", "ALLOW_AGPL_FALLBACK", "0", False),
+    "OCR_ESCALATION_GARBLE": ("ocr_escalation_garble", "OCR_ESCALATION_GARBLE", "0", False),
+    "OCR_ESCALATION_PER_PICTURE": ("ocr_escalation_per_picture", "OCR_ESCALATION_PER_PICTURE", "0", False),
+    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED": (
+        "image_dominant_ocr_escalation_enabled",
+        "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED",
+        "0",
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    list(_FORMERLY_FROZEN_FIELDS.keys()),
+    ids=list(_FORMERLY_FROZEN_FIELDS.keys()),
+)
+def test_reset_pipeline_config_rereads_formerly_frozen_field(monkeypatch, env_var):
+    """Contract: reset_pipeline_config() re-reads os.environ for each of the
+    6 formerly-frozen fields and also updates the module-level backward-compat
+    alias to match."""
+    attr, alias_name, env_value, expected = _FORMERLY_FROZEN_FIELDS[env_var]
+
+    monkeypatch.setenv(env_var, env_value)
+
+    import pageindex_mcp.config as cfg_mod
+    cfg_mod.reset_pipeline_config()
+
+    # pipeline_config attribute must reflect the env override
+    assert getattr(cfg_mod.pipeline_config, attr) is expected, (
+        f"pipeline_config.{attr} should be {expected} after setting {env_var}={env_value}"
+    )
+
+    # module-level backward-compat alias must also reflect the env override
+    assert getattr(cfg_mod, alias_name) is expected, (
+        f"config.{alias_name} (backward-compat alias) should be {expected} "
+        f"after reset_pipeline_config() with {env_var}={env_value}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: PipelineConfig.from_env reads garble_digit_floor from env
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_config_from_env_reads_garble_digit_floor(monkeypatch):
+    """Contract: PipelineConfig.from_env() reads GARBLE_DIGIT_FLOOR from
+    os.environ (not hardcoded 500)."""
+    monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "1000")
+
+    from pageindex_mcp.config import PipelineConfig
+
+    pc = PipelineConfig.from_env()
+    assert pc.garble_digit_floor == 1000
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: GarbleConfig.from_config threads garble_digit_floor from PipelineConfig
+# ---------------------------------------------------------------------------
+
+
+def test_garble_config_from_config_threads_garble_digit_floor(monkeypatch):
+    """Regression: GarbleConfig.from_config(pipeline_config) must thread
+    garble_digit_floor from PipelineConfig rather than hardcoding the default."""
+    monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "1000")
+
+    import pageindex_mcp.config as cfg_mod
+    cfg_mod.reset_pipeline_config()
+
+    from pageindex_mcp.helpers.garble import GarbleConfig
+
+    gc = GarbleConfig.from_config(cfg_mod.pipeline_config)
+    assert gc.garble_digit_floor == 1000, (
+        "GarbleConfig.garble_digit_floor should be sourced from PipelineConfig, not hardcoded"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: effective_config_snapshot includes garble_digit_floor
+# ---------------------------------------------------------------------------
+
+
+def test_effective_config_snapshot_includes_garble_digit_floor(monkeypatch):
+    """Contract: effective_config_snapshot() includes garble_digit_floor in the
+    sidecar output and reflects the live pipeline_config value."""
+    monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "777")
+
+    import pageindex_mcp.config as cfg_mod
+    cfg_mod.reset_pipeline_config()
+
+    snap = cfg_mod.effective_config_snapshot()
+    assert "garble_digit_floor" in snap, (
+        "garble_digit_floor must appear in effective_config_snapshot output"
+    )
+    assert snap["garble_digit_floor"] == 777, (
+        "garble_digit_floor in snapshot should reflect live pipeline_config value (777), "
+        f"got {snap['garble_digit_floor']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: pdf_markdown_converters reads from pipeline_config (integration)
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_markdown_converters_consistent_with_pipeline_config(monkeypatch):
+    """Integration: pdf_markdown_converters() reads pdf_converter and
+    allow_agpl_fallback from the same source (pipeline_config). When
+    PDF_CONVERTER=pymupdf4llm and ALLOW_AGPL_FALLBACK=0, the chain must
+    NOT contain a pymupdf4llm entry (AGPL is blocked)."""
+    import importlib.util
+    from unittest.mock import patch
+
+    monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "0")
+
+    import pageindex_mcp.config as cfg_mod
+    cfg_mod.reset_pipeline_config()
+
+    assert cfg_mod.pipeline_config.pdf_converter == "pymupdf4llm"
+    assert cfg_mod.pipeline_config.allow_agpl_fallback is False
+
+    # docling not installed => RuntimeError because AGPL blocked
+    with patch.object(importlib.util, "find_spec", return_value=None):
+        from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+
+        with pytest.raises(RuntimeError, match="ALLOW_AGPL_FALLBACK=false"):
+            pdf_markdown_converters()
+
+    # docling installed => chain should only have docling (no pymupdf4llm since AGPL blocked)
+    with patch.object(importlib.util, "find_spec", return_value=True):
+        chain = pdf_markdown_converters()
+        names = [n for n, _, _ in chain]
+        assert "pymupdf4llm" not in names, (
+            "pymupdf4llm must not appear in chain when ALLOW_AGPL_FALLBACK=false"
+        )
+        assert "docling" in names

@@ -808,6 +808,86 @@ async def test_process_document_job_calls_upsert_registry_row_after_child(fake_r
     assert call_kwargs[1]["verdict_fields"] == {"verdict": "PASS"}
 
 
+async def test_process_document_job_passes_registry_fields_to_upsert(fake_redis):
+    """Wiring: process_document_job extracts registry_fields from child result
+    and passes it to _upsert_registry_row. Zone-7 dual-write consistency."""
+    staging_key = "uploads/staging/job-rf/report.pdf"
+    ctx = {"redis": fake_redis}
+    child_result = {
+        "ok": True,
+        "doc_id": "rf-wire-1",
+        "peak_rss_kib": 0,
+        "duration_ms": 0,
+        "verdict_fields": {"verdict": "PASS"},
+        "registry_fields": {
+            "doc_name": "report.pdf",
+            "sha256": "abc123",
+            "node_count": 5,
+        },
+    }
+    upsert_mock = AsyncMock()
+
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
+            upsert_mock,
+        ),
+    ):
+        result = await process_document_job(ctx, staging_key, "job-rf")
+
+    assert result == "rf-wire-1"
+    upsert_mock.assert_awaited_once()
+    call_kwargs = upsert_mock.await_args
+    assert call_kwargs[1]["registry_fields"] == {
+        "doc_name": "report.pdf",
+        "sha256": "abc123",
+        "node_count": 5,
+    }
+    assert call_kwargs[1]["verdict_fields"] == {"verdict": "PASS"}
+
+
+async def test_process_document_job_no_registry_fields_passes_none(fake_redis):
+    """Wiring: when child result lacks registry_fields (old binary),
+    _upsert_registry_row is called with registry_fields=None."""
+    staging_key = "uploads/staging/job-norf/report.pdf"
+    ctx = {"redis": fake_redis}
+    child_result = {
+        "ok": True,
+        "doc_id": "norf-1",
+        "peak_rss_kib": 0,
+        "duration_ms": 0,
+    }
+    upsert_mock = AsyncMock()
+
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(return_value=child_result),
+        ),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
+            upsert_mock,
+        ),
+    ):
+        result = await process_document_job(ctx, staging_key, "job-norf")
+
+    assert result == "norf-1"
+    upsert_mock.assert_awaited_once()
+    call_kwargs = upsert_mock.await_args
+    assert call_kwargs[1]["registry_fields"] is None
+    assert call_kwargs[1]["verdict_fields"] is None
+
+
 def test_upsert_registry_row_importable_from_worker():
     """Wiring: _upsert_registry_row must be importable from
     pageindex_mcp.worker (re-exported in __init__.py or directly)."""

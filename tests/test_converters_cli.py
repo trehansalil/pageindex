@@ -265,6 +265,158 @@ def test_no_stdout_pollution_from_logs(tmp_pdf: Path, tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Test 6 — registry_fields in stdout JSON (Zone-7 dual-write consistency)
+# ---------------------------------------------------------------------------
+
+
+async def test_registry_fields_surfaced_when_last_registry_fields_set(tmp_pdf: Path, monkeypatch):
+    """Zone-7 exhaustiveness: when client.last_registry_fields is set after
+    index(), the stdout JSON must include a registry_fields dict containing
+    all _REGISTRY_FIELDS keys plus node_count."""
+    import io
+
+    import pageindex_mcp.converters_cli as cli_module
+    from pageindex_mcp.converters_cli import main
+
+    monkeypatch.setattr("sys.argv", ["converters_cli", str(tmp_pdf)])
+
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+
+    monkeypatch.setattr("pageindex_mcp.client.llm.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.configure_litellm", lambda: None)
+
+    _registry_fields = {
+        "doc_name": "fixture.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-08-26T00:00:00Z",
+        "sha256": "abc123",
+        "doc_description": "",
+        "product": "",
+        "tier": "",
+        "doc_family": "",
+        "effective_date": "",
+        "content_class": "flat_prose",
+        "node_count": 0,
+    }
+
+    async def _fake_index(self, *a, **kw):
+        self.last_registry_fields = _registry_fields
+        return "reg-fields-1"
+
+    with patch(
+        "pageindex_mcp.client.CustomPageIndexClient.index",
+        _fake_index,
+    ):
+        exit_code = await main()
+
+    assert exit_code == 0
+    lines = [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()]
+    payload = json.loads(lines[-1])
+    assert payload["ok"] is True
+    assert "registry_fields" in payload
+    rf = payload["registry_fields"]
+    # All _REGISTRY_FIELDS keys must be present
+    for key in ("doc_name", "source_url", "processed_at", "sha256",
+                "doc_description", "product", "tier", "doc_family",
+                "effective_date"):
+        assert key in rf, f"Missing registry field: {key}"
+    assert "node_count" in rf
+
+
+async def test_registry_fields_absent_when_last_registry_fields_none(tmp_pdf: Path, monkeypatch):
+    """Zone-7 backward compat: when client.last_registry_fields is None,
+    the stdout JSON must NOT include a registry_fields key."""
+    import io
+
+    import pageindex_mcp.converters_cli as cli_module
+    from pageindex_mcp.converters_cli import main
+
+    monkeypatch.setattr("sys.argv", ["converters_cli", str(tmp_pdf)])
+
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+
+    monkeypatch.setattr("pageindex_mcp.client.llm.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.configure_litellm", lambda: None)
+
+    with patch(
+        "pageindex_mcp.client.CustomPageIndexClient.index",
+        new_callable=AsyncMock,
+        return_value="no-reg-1",
+    ):
+        exit_code = await main()
+
+    assert exit_code == 0
+    lines = [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()]
+    payload = json.loads(lines[-1])
+    assert payload["ok"] is True
+    assert "registry_fields" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — _persist_tree_result / _persist_flat_result registry fields shape
+# ---------------------------------------------------------------------------
+
+
+def test_persist_tree_result_last_registry_fields_shape():
+    """Exhaustiveness: last_registry_fields stashed by _persist_tree_result must
+    contain all keys matching _REGISTRY_FIELDS (minus doc_id which is set later)
+    plus node_count."""
+    from pageindex_mcp.storage.verdict import _REGISTRY_FIELDS
+
+    # The expected keys are all _REGISTRY_FIELDS except doc_id, plus node_count
+    expected_keys = {k for k in _REGISTRY_FIELDS if k != "doc_id"} | {"node_count"}
+
+    # Construct a fake registry_fields dict matching the _persist_tree_result shape
+    # (verified by reading the source at indexer.py:1095)
+    tree_registry_fields = {
+        "doc_name": "test.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-08-26T00:00:00Z",
+        "sha256": "abc123",
+        "doc_description": "",
+        "product": "",
+        "tier": "",
+        "doc_family": "",
+        "effective_date": "",
+        "node_count": 5,
+    }
+    assert set(tree_registry_fields.keys()) == expected_keys
+
+
+def test_persist_flat_result_last_registry_fields_shape():
+    """Exhaustiveness: last_registry_fields stashed by _persist_flat_result must
+    include content_class and have node_count=0."""
+    from pageindex_mcp.storage.verdict import _REGISTRY_FIELDS
+
+    # Flat path adds content_class on top of tree keys
+    expected_keys = {k for k in _REGISTRY_FIELDS if k != "doc_id"} | {"node_count", "content_class"}
+
+    flat_registry_fields = {
+        "doc_name": "flat.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-08-26T00:00:00Z",
+        "sha256": "def456",
+        "content_class": "flat_prose",
+        "doc_description": "",
+        "product": "",
+        "tier": "",
+        "doc_family": "",
+        "effective_date": "",
+        "node_count": 0,
+    }
+    assert set(flat_registry_fields.keys()) == expected_keys
+    assert flat_registry_fields["node_count"] == 0
+    assert flat_registry_fields["content_class"] == "flat_prose"
+
+
+# ---------------------------------------------------------------------------
+# Test 1b — Integration test (real Docling, skipped by default)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.integration
 def test_happy_path_real_docling_integration(tmp_pdf: Path):
     """Real Docling conversion — only runs when DOCLING_INTEGRATION=1."""

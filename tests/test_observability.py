@@ -131,6 +131,32 @@ class TestEffectiveConfigSnapshot:
         assert snap["garble_latin_ratio"] == 0.5
         assert snap["pdf_converter"] == "pymupdf4llm"
 
+    def test_allow_agpl_fallback_consistent_after_reset(self, monkeypatch):
+        """Regression (HR4 audit trail): effective_config_snapshot()
+        allow_agpl_fallback field must be consistent with
+        pipeline_config.allow_agpl_fallback after reset_pipeline_config()
+        with ALLOW_AGPL_FALLBACK=0."""
+        monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "0")
+
+        from pageindex_mcp.config import (
+            effective_config_snapshot,
+            pipeline_config,
+            reset_pipeline_config,
+        )
+
+        reset_pipeline_config()
+
+        # Re-import after reset to get the fresh singleton
+        from pageindex_mcp.config import pipeline_config as fresh_pc
+
+        snap = effective_config_snapshot()
+
+        assert fresh_pc.allow_agpl_fallback is False
+        assert snap["allow_agpl_fallback"] is False, (
+            "effective_config_snapshot()['allow_agpl_fallback'] must match "
+            "pipeline_config.allow_agpl_fallback after reset"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Sidecar meta (SIDECAR_VERSION, build_sha, effective_config)
@@ -497,8 +523,12 @@ class TestAgplFallbackCounter:
         by reason='operator_configured'."""
         import importlib.util
 
-        monkeypatch.setattr(config, "ALLOW_AGPL_FALLBACK", True, raising=False)
+        monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "1")
         monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
+
+        from pageindex_mcp.config import reset_pipeline_config
+
+        reset_pipeline_config()
 
         before = AGPL_FALLBACK_TOTAL.labels(reason="fired")._value.get()
 

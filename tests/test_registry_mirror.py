@@ -182,6 +182,152 @@ async def test_upsert_registry_row_pool_not_ready_no_verdict_fields_no_enqueue()
 
 
 # ---------------------------------------------------------------------------
+# Contract: registry_fields kwarg skips MinIO re-read (Zone-7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_registry_fields_skips_minio_read():
+    """Zone-7: when registry_fields is provided, _upsert_registry_row must NOT
+    call read_registry_fields (no MinIO re-read). upsert_doc receives the
+    registry_fields values directly."""
+    registry_fields = {
+        "doc_name": "test.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-08-26T00:00:00Z",
+        "sha256": "abc123",
+        "doc_description": "desc",
+        "product": "",
+        "tier": "",
+        "doc_family": "",
+        "effective_date": "",
+        "node_count": 5,
+    }
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch(
+            "pageindex_mcp.registry.upsert_doc",
+            AsyncMock(return_value=None),
+        ) as mock_upsert,
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"doc_id": "SHOULD-NOT-BE-CALLED"},
+        ) as mock_read,
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+            AsyncMock(),
+        ),
+    ):
+        await _upsert_registry_row(
+            "rf-1", None, registry_fields=registry_fields,
+        )
+
+    # read_registry_fields must NOT be called when registry_fields is provided
+    mock_read.assert_not_called()
+    mock_upsert.assert_awaited_once()
+    upserted = mock_upsert.await_args[0][0]
+    assert upserted["doc_id"] == "rf-1"
+    assert upserted["sha256"] == "abc123"
+    assert upserted["doc_name"] == "test.pdf"
+    assert upserted["node_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_registry_fields_none_falls_back_to_minio():
+    """Zone-7 backward compat: when registry_fields is None (older child binary
+    or batch CLI), read_registry_fields IS called."""
+    minio_fields = {"doc_id": "compat-1", "doc_name": "old.pdf", "sha256": "def"}
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch(
+            "pageindex_mcp.registry.upsert_doc",
+            AsyncMock(return_value=None),
+        ) as mock_upsert,
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value=minio_fields,
+        ) as mock_read,
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+            AsyncMock(),
+        ),
+    ):
+        await _upsert_registry_row("compat-1", None, registry_fields=None)
+
+    mock_read.assert_called_once_with("compat-1", None)
+    mock_upsert.assert_awaited_once()
+    upserted = mock_upsert.await_args[0][0]
+    assert upserted["doc_id"] == "compat-1"
+
+
+# ---------------------------------------------------------------------------
+# Contract: verdict_fields overlay on top of registry_fields (Zone-7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_verdict_fields_override_registry_fields():
+    """Zone-7: when both registry_fields and verdict_fields are provided,
+    verdict_fields values must override any overlapping keys in
+    registry_fields (overlay semantics preserved)."""
+    registry_fields = {
+        "doc_name": "test.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-08-26T00:00:00Z",
+        "sha256": "abc123",
+        "doc_description": "",
+        "product": "",
+        "tier": "",
+        "doc_family": "",
+        "effective_date": "",
+        "node_count": 5,
+    }
+    verdict_fields = {
+        "verdict": "PASS",
+        "pipeline_version": 5,
+        "verdict_computed_at": "2026-08-26T01:00:00Z",
+        "node_count": 10,  # overlapping key -- verdict_fields should win
+    }
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch(
+            "pageindex_mcp.registry.upsert_doc",
+            AsyncMock(return_value=None),
+        ) as mock_upsert,
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"should": "not-be-called"},
+        ) as mock_read,
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+            AsyncMock(),
+        ),
+    ):
+        await _upsert_registry_row(
+            "overlay-1", None,
+            verdict_fields=verdict_fields,
+            registry_fields=registry_fields,
+        )
+
+    mock_read.assert_not_called()
+    mock_upsert.assert_awaited_once()
+    upserted = mock_upsert.await_args[0][0]
+    # verdict_fields overlay wins over registry_fields for overlapping keys
+    assert upserted["verdict"] == "PASS"
+    assert upserted["pipeline_version"] == 5
+    assert upserted["node_count"] == 10  # verdict_fields value wins
+    # registry_fields base values still present
+    assert upserted["sha256"] == "abc123"
+    assert upserted["doc_name"] == "test.pdf"
+
+
+# ---------------------------------------------------------------------------
 # Contract: registry disabled -> early return, no upsert
 # ---------------------------------------------------------------------------
 
