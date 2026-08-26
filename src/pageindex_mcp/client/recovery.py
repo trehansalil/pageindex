@@ -53,8 +53,9 @@ logger = logging.getLogger(__name__)
 # Backward-compat module-level aliases derived from the pipeline_config
 # singleton.  Function bodies below read ``pipeline_config.<attr>`` directly
 # so they pick up fresh values after ``reset_pipeline_config()``.
-# These aliases are kept for re-export via ``client/__init__.py`` and for
-# test code that patches them via ``monkeypatch.setattr``.
+# These aliases are kept ONLY for re-export via ``client/__init__.py`` and for
+# test code that patches them via ``monkeypatch.setattr`` -- new code must
+# read ``pipeline_config.<attr>`` directly.
 LOW_CONTENT_OCR_CHAR_FLOOR = pipeline_config.low_content_ocr_char_floor
 _VLM_TESSERACT_FALLBACK_ENABLED = pipeline_config.vlm_tesseract_fallback_enabled
 _D7_GARBLE_RECOVERY_ENABLED = pipeline_config.d7_garble_recovery_enabled
@@ -333,7 +334,7 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
-        if not _OCR_ESCALATION_GARBLE:
+        if not pipeline_config.ocr_escalation_garble:
             return
         applied = await self._execute_ocr_retry(
             state,
@@ -367,7 +368,7 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
-        if not _OCR_ESCALATION_GARBLE:
+        if not pipeline_config.ocr_escalation_garble:
             return
         if state.total_chars >= pipeline_config.low_content_ocr_char_floor:
             return
@@ -403,7 +404,7 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
-        if not _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED:
+        if not pipeline_config.image_dominant_ocr_escalation_enabled:
             return
         if not (settings.flat_doc_routing and state.md_content):
             return

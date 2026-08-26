@@ -301,9 +301,9 @@ def rasterize_pdf_pages_fitz(pdf_path: str, dpi: int = 200) -> list[str]:
     Fallback backend for ``rasterize_pdf_pages`` when pypdfium2 crashes on
     CMap-corrupt PDFs. Reuses the ``fitz.Page.get_pixmap()`` pattern already
     proven for image cropping in ``_recover_picture_text``."""
-    from ..config import ALLOW_AGPL_FALLBACK
+    from ..config import pipeline_config
 
-    if not ALLOW_AGPL_FALLBACK:
+    if not pipeline_config.allow_agpl_fallback:
         # RFC-034 D4 step 4: this is a literal fallback backend, so a blocked
         # invocation is a prevented AGPL fallback — meter it for observability.
         from ..metrics import AGPL_FALLBACK_TOTAL

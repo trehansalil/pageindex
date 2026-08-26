@@ -600,9 +600,10 @@ def pdf_markdown_converters() -> list[
     """
     import importlib.util
 
-    # os.getenv for live env reads (tests monkeypatch this); pipeline_config
-    # holds the snapshot from module load.
-    primary = os.getenv("PDF_CONVERTER", pipeline_config.pdf_converter).strip().lower()
+    # Zone-5 config layering: single source of truth via pipeline_config.
+    # Tests that need to override PDF_CONVERTER should monkeypatch env vars
+    # and call reset_pipeline_config() instead of patching os.getenv directly.
+    primary = pipeline_config.pdf_converter.strip().lower()
     have_docling = importlib.util.find_spec("docling") is not None
 
     if not have_docling and not pipeline_config.allow_agpl_fallback:

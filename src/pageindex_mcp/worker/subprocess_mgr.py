@@ -14,6 +14,7 @@ from ..config import pipeline_config, settings
 from ..converters import chunked_docling_timeout_s
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr/patch.
+# New code should read ``pipeline_config.pdf_inspector_preclassify`` directly.
 PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
 from ..metrics import (
     CONVERTER_CHILD_OOM_TOTAL,

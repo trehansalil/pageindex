@@ -19,46 +19,24 @@ CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 # to the chunked-Docling path instead of a single direct conversion call.
 MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 
-PDF_INSPECTOR_PRECLASSIFY: bool = os.environ.get(
-    "PDF_INSPECTOR_PRECLASSIFY", "0"
-).strip().lower() in ("1", "true", "yes")
-
-# RFC-034 D3: local re-normalization safety net for remote-returned markdown —
-# runs reconstruct_bidi_order on remote Docling output before md_to_tree.
-REMOTE_MD_RENORMALIZE: bool = os.environ.get("REMOTE_MD_RENORMALIZE", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
-# RFC-034 D4: AGPL exposure gate (CLAUDE.md Hard Rule 4). When false, the
-# pymupdf4llm converter chain link and every direct `import fitz` (PyMuPDF,
-# AGPL-3.0) site in converters.py are refused/skipped. Default true preserves
-# current fallback behavior for backward compatibility.
-ALLOW_AGPL_FALLBACK: bool = os.environ.get("ALLOW_AGPL_FALLBACK", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
-# Zone-4: independent OCR escalation controls (legacy OCR_ESCALATION shim removed).
-# OCR_ESCALATION_GARBLE gates page-level garble retry (Fix 3 / D1 image-dominant).
-# OCR_ESCALATION_PER_PICTURE gates per-picture crop+OCR enrichment in converters.
-# Each flag is a flat, independent env-var read defaulting to True.
-OCR_ESCALATION_GARBLE: bool = os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-OCR_ESCALATION_PER_PICTURE: bool = os.environ.get(
-    "OCR_ESCALATION_PER_PICTURE", "1"
-).strip().lower() in ("1", "true", "yes")
-# Zone-2: independent image-dominant OCR escalation flag (RFC-023 D11).
-# Gates Recovery 5 (image-dominant structural retry for NODE_COUNT_LOW /
-# DEPTH_LOW defects) independently from OCR_ESCALATION_GARBLE.
-IMAGE_DOMINANT_OCR_ESCALATION_ENABLED: bool = os.environ.get(
-    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "1"
-).strip().lower() in ("1", "true", "yes")
+# ---------------------------------------------------------------------------
+# Backward-compat module-level aliases for the 6 pipeline-behavior flags that
+# were historically frozen at import time.  Canonical source is now
+# ``pipeline_config`` (defined below); these are reassigned by
+# ``reset_pipeline_config()`` so test fixtures that monkeypatch env vars and
+# then call ``reset_pipeline_config()`` see the new values everywhere.
+#
+# NOTE: These names exist solely so ``from ..config import X`` patterns in
+# downstream modules and tests keep working.  New code should read
+# ``pipeline_config.<attr>`` directly.
+# ---------------------------------------------------------------------------
+# Placeholders — real values assigned after ``pipeline_config`` init below.
+PDF_INSPECTOR_PRECLASSIFY: bool = False
+REMOTE_MD_RENORMALIZE: bool = True
+ALLOW_AGPL_FALLBACK: bool = True
+OCR_ESCALATION_GARBLE: bool = True
+OCR_ESCALATION_PER_PICTURE: bool = True
+IMAGE_DOMINANT_OCR_ESCALATION_ENABLED: bool = True
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
@@ -171,6 +149,11 @@ class Settings:
     # any URL was returned), so it falls back to storage.DEFAULT_PRESIGN_REGION.
     # Set this only when your MinIO/S3 is configured with a non-default region.
     minio_region: str
+    # Zone-7 (dual-write consistency): when True (default), rows with empty or
+    # None processed_at are protected from stale-row deletion — they may be
+    # partial-write rows whose processed_at was not yet flushed.  Set to False
+    # only to sweep truly stale legacy rows that will never get a timestamp.
+    cleanup_protect_empty_processed_at: bool
     # Zone-4 Phase 3: registry_verdict_authority removed — Postgres is now the
     # sole verdict authority.  MinIO sidecar is archival-only (best-effort
     # backfill).  See _upsert_registry_row in worker/registry_mirror.py.
@@ -341,6 +324,12 @@ def _load_settings() -> Settings:
             os.environ.get("MINIO_PRESIGN_PATH_PREFIX", "")
         ),
         minio_region=os.environ.get("MINIO_REGION", ""),
+        cleanup_protect_empty_processed_at=os.environ.get(
+            "CLEANUP_PROTECT_EMPTY_PROCESSED_AT", "true"
+        )
+        .strip()
+        .lower()
+        not in ("0", "false", "no"),
     )
 
 
@@ -525,6 +514,15 @@ class PipelineConfig:
 pipeline_config: PipelineConfig = PipelineConfig.from_env()
 
 VERDICT_DOWNGRADE_ENABLED: bool = pipeline_config.verdict_downgrade_enabled
+
+# Populate the backward-compat aliases declared above with live values from
+# pipeline_config (replaces the old frozen os.environ.get reads).
+PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
+ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
+REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
+OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
+IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
 
 # Import-time assertion: pass_max_leaf_ratio must not exceed leaf_split_ratio.
 assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.leaf_split_ratio, (

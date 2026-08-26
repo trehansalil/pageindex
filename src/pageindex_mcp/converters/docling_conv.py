@@ -661,9 +661,9 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913
     ``_relevel_by_containment`` pass normalizes heading depth across the
     concatenated output.
     """
-    from ..config import ALLOW_AGPL_FALLBACK
+    from ..config import pipeline_config as _pc
 
-    if not ALLOW_AGPL_FALLBACK:
+    if not _pc.allow_agpl_fallback:
         raise RuntimeError(
             f"cannot chunk {pdf_path} for the oversized-PDF route: fitz "
             "(PyMuPDF, AGPL-3.0) is required and ALLOW_AGPL_FALLBACK=false"
