@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workflow Optimization Plan — zone-post-verify & arch-bug-pattern-audit</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f3a5f;
+    --green: #3fb950;
+    --green-dim: #1a3a2a;
+    --red: #f85149;
+    --red-dim: #3d1a1a;
+    --orange: #d29922;
+    --orange-dim: #3d2e0a;
+    --purple: #bc8cff;
+    --purple-dim: #2a1f3d;
+    --pink: #f778ba;
+    --cyan: #79c0ff;
+    --haiku: #3fb950;
+    --sonnet: #58a6ff;
+    --opus: #bc8cff;
+    --fable: #f778ba;
+    --radius: 8px;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 2rem;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  h1 { font-size: 1.8rem; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; margin-bottom: 1rem; color: var(--accent); }
+  h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+
+  .subtitle { color: var(--text-muted); margin-bottom: 2rem; font-size: 0.95rem; }
+
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 2rem;
+  }
+  .tab {
+    padding: 0.75rem 1.5rem;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+    color: var(--text-muted);
+    font-weight: 500;
+    transition: all 0.2s;
+    user-select: none;
+  }
+  .tab:hover { color: var(--text); background: var(--surface); }
+  .tab.active {
+    color: var(--accent);
+    background: var(--surface);
+    border-color: var(--border);
+  }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 2rem;
+  }
+
+  .column {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    position: relative;
+  }
+  .column.before { border-top: 3px solid var(--red); }
+  .column.after { border-top: 3px solid var(--green); }
+
+  .column-label {
+    position: absolute;
+    top: -1px;
+    right: 1rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0 0 var(--radius) var(--radius);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .before .column-label { background: var(--red-dim); color: var(--red); }
+  .after .column-label { background: var(--green-dim); color: var(--green); }
+
+  .phase {
+    margin-bottom: 1.25rem;
+    border-left: 3px solid var(--border);
+    padding-left: 1rem;
+  }
+  .phase:last-child { margin-bottom: 0; }
+
+  .phase-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.4rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .phase-title .phase-num {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    width: 1.5rem;
+    height: 1.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .agent-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    font-size: 0.82rem;
+  }
+
+  .model-badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    flex-shrink: 0;
+    min-width: 3.2rem;
+    text-align: center;
+  }
+  .model-haiku { background: var(--green-dim); color: var(--haiku); border: 1px solid var(--haiku); }
+  .model-sonnet { background: var(--accent-dim); color: var(--sonnet); border: 1px solid var(--sonnet); }
+  .model-opus { background: var(--purple-dim); color: var(--opus); border: 1px solid var(--opus); }
+  .model-fable { background: rgba(247,120,186,0.15); color: var(--fable); border: 1px solid var(--fable); }
+
+  .agent-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .agent-desc { color: var(--text); }
+
+  .eliminated {
+    text-decoration: line-through;
+    color: var(--text-muted);
+    opacity: 0.5;
+  }
+
+  .new-tag {
+    background: var(--green-dim);
+    color: var(--green);
+    font-size: 0.65rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .removed-tag {
+    background: var(--red-dim);
+    color: var(--red);
+    font-size: 0.65rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .kept-tag {
+    background: var(--orange-dim);
+    color: var(--orange);
+    font-size: 0.65rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .sub-workflow {
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+    margin: 0.5rem 0;
+  }
+  .sub-workflow-label {
+    font-size: 0.75rem;
+    color: var(--cyan);
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+  }
+
+  .arrow-down {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 0.3rem 0;
+    font-size: 0.85rem;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .stat-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+  }
+  .stat-delta {
+    font-size: 0.8rem;
+    margin-top: 0.3rem;
+    font-weight: 600;
+  }
+  .stat-delta.good { color: var(--green); }
+  .stat-delta.bad { color: var(--red); }
+
+  .legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  .flow-diagram {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .flow-node {
+    padding: 0.4rem 0.75rem;
+    border-radius: var(--radius);
+    font-size: 0.78rem;
+    font-weight: 500;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .flow-node.mcp-node {
+    background: rgba(121,192,255,0.1);
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+  .flow-node.agent-node {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .flow-node.obsidian-node {
+    background: rgba(188,140,255,0.1);
+    border-color: var(--purple);
+    color: var(--purple);
+  }
+  .flow-node.data-node {
+    background: rgba(63,185,80,0.1);
+    border-color: var(--green);
+    color: var(--green);
+  }
+
+  .flow-arrow {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+
+  .optimization-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+  }
+  .optimization-card h4 {
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .optimization-card p {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  .mcp-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.72rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 500;
+  }
+  .mcp-cbm { background: rgba(121,192,255,0.12); color: var(--cyan); }
+  .mcp-serena { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .mcp-obsidian { background: rgba(188,140,255,0.12); color: var(--purple); }
+  .mcp-mem { background: rgba(63,185,80,0.12); color: var(--green); }
+
+  .section-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2rem 0;
+  }
+
+  .pipe { color: var(--text-muted); margin: 0 0.15rem; }
+
+  @media (max-width: 1100px) {
+    .comparison { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<h1>Workflow Optimization Plan</h1>
+<p class="subtitle">
+  <code>arch-bug-pattern-audit</code> & <code>zone-post-verify</code> &mdash;
+  MCP-first architecture using Obsidian + Codebase Memory + Serena
+</p>
+
+<div class="legend">
+  <div class="legend-item"><span class="model-badge model-haiku">Haiku</span> Low-cost</div>
+  <div class="legend-item"><span class="model-badge model-sonnet">Sonnet</span> Medium</div>
+  <div class="legend-item"><span class="model-badge model-opus">Opus</span> High</div>
+  <div class="legend-item"><span class="mcp-source mcp-cbm">CBM</span> Codebase Memory</div>
+  <div class="legend-item"><span class="mcp-source mcp-serena">Serena</span> LSP proxy</div>
+  <div class="legend-item"><span class="mcp-source mcp-obsidian">Obsidian</span> Structured notes</div>
+  <div class="legend-item"><span class="mcp-source mcp-mem">mem</span> claude-mem</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('audit')">arch-bug-pattern-audit</div>
+  <div class="tab" onclick="switchTab('postverify')">zone-post-verify (total)</div>
+  <div class="tab" onclick="switchTab('delta')">zone-delta-analysis</div>
+  <div class="tab" onclick="switchTab('strategies')">Optimization Strategies</div>
+</div>
+
+<!-- ================================================================== -->
+<!-- TAB 1: arch-bug-pattern-audit                                      -->
+<!-- ================================================================== -->
+<div id="tab-audit" class="tab-content active">
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--red)">15&ndash;22</div>
+      <div class="stat-label">Current Agents</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--green)">5&ndash;7</div>
+      <div class="stat-label">Optimized Agents</div>
+      <div class="stat-delta good">&darr; 65&ndash;70%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--red)">4</div>
+      <div class="stat-label">Opus Calls (Before)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--green)">1</div>
+      <div class="stat-label">Opus Calls (After)</div>
+      <div class="stat-delta good">&darr; 75%</div>
+    </div>
+  </div>
+
+  <h2>Phase-by-Phase Comparison</h2>
+
+  <div class="comparison">
+    <!-- BEFORE -->
+    <div class="column before">
+      <div class="column-label">Current</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">1</span> Mine History</div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">File discovery agent</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">RFC miners (3 files/batch)</span>
+          <span class="agent-count">&times;N (3&ndash;5)</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Audit-run miners (5 files/batch)</span>
+          <span class="agent-count">&times;M (2&ndash;4)</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Cross-cutting reports reader</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Session memory searcher</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">2</span> Merge Mining</div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Deduplicate all chains</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">3</span> Discover Architecture</div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">get_architecture() &rarr; identify 4&ndash;8 subsystem paths</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">4</span> Map Code</div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Per-subsystem explorer (MCP + Serena)</span>
+          <span class="agent-count">&times;4&ndash;8</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Merge all maps + cross-subsystem check</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">5</span> Synthesize</div>
+        <div class="agent-row">
+          <span class="model-badge model-opus">Opus</span>
+          <span class="agent-desc">Correlate chains + maps &rarr; defect zones</span>
+          <span class="agent-count">&times;1 (high effort)</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">6</span> Simplify</div>
+        <div class="agent-row">
+          <span class="model-badge model-opus">Opus</span>
+          <span class="agent-desc">Simplification proposals (code-simplifier)</span>
+          <span class="agent-count">&times;5 (top zones)</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">7</span> Write Report</div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Write markdown report</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AFTER -->
+    <div class="column after">
+      <div class="column-label">Optimized</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">1</span> Mine History <span class="new-tag">MCP-first</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Single unified miner: Obsidian <code>search_notes</code> + <code>read_multiple_notes</code> for all RFCs/audits/cross-cutting</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Session memory via claude-mem MCP</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row" style="margin-top:0.3rem;">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">search_notes &rarr; read_multiple_notes &rarr; structured extraction</span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">File discovery agent, N RFC batches, M audit batches, cross-cutting reader</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr; chains JSON passed directly (no merge phase needed if single miner)</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">2</span> <span class="eliminated">Merge Mining</span> <span class="removed-tag">eliminated</span></div>
+        <div class="agent-row">
+          <span style="font-size:0.8rem; color:var(--text-muted)">Single miner produces deduplicated chains &mdash; no merge needed</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">3</span> Discover + Map Architecture <span class="new-tag">cached</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">CBM <code>get_architecture()</code> + <code>search_graph</code> + <code>trace_path</code> + Serena LSP &rarr; unified code map</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row" style="margin-top:0.3rem;">
+          <span class="mcp-source mcp-cbm">CBM</span>
+          <span class="mcp-source mcp-serena">Serena</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">Graph queries replace per-subsystem file reading</span>
+        </div>
+        <div class="agent-row" style="margin-top:0.2rem;">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">Cache map to <code>audit/architecture-map.md</code>; skip on re-runs if <code>detect_changes()</code> is clean</span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">4&ndash;8 per-subsystem explorers + merge agent</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">4</span> Synthesize <span class="kept-tag">kept</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-opus">Opus</span>
+          <span class="agent-desc">Correlate chains + code map &rarr; defect zones</span>
+          <span class="agent-count">&times;1 (high effort)</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">5</span> Simplify + Write <span class="new-tag">downgraded</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Simplification proposals (pipeline, not parallel)</span>
+          <span class="agent-count">&times;1 (all zones in one prompt)</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Write markdown report + Obsidian zone notes</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row" style="margin-top:0.3rem;">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">Write structured zone notes with YAML frontmatter for downstream consumption</span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">5 separate Opus code-simplifier agents</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Data Flow: Before vs After</h3>
+  <div class="comparison">
+    <div class="flow-diagram">
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem; font-weight:600;">BEFORE: File &rarr; Agent &rarr; JSON pipeline</div>
+      <div class="flow-row">
+        <span class="flow-node agent-node">find (Haiku)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Read RFC x3 (Haiku)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Read RFC x3 (Haiku)</span>
+        <span class="flow-arrow">&rarr; ...</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node agent-node">Read Audit x5 (Haiku)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Read Audit x5 (Haiku)</span>
+        <span class="flow-arrow">&rarr; ...</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node agent-node">Cross-cutting (Haiku)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Mem-search (Haiku)</span>
+      </div>
+      <div class="flow-row" style="justify-content:center;">
+        <span class="flow-arrow">&darr; all chains &darr;</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node agent-node">Merge (Sonnet)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Arch Discovery (Sonnet)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Explorer x4-8 (Sonnet)</span>
+      </div>
+      <div class="flow-row" style="justify-content:center;">
+        <span class="flow-arrow">&darr;</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node agent-node">Map Merge (Sonnet)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Synthesize (Opus)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Simplify x5 (Opus)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Write (Sonnet)</span>
+      </div>
+    </div>
+
+    <div class="flow-diagram">
+      <div style="font-size:0.8rem; color:var(--green); margin-bottom:0.75rem; font-weight:600;">AFTER: MCP query &rarr; JSON &rarr; Agent pipeline</div>
+      <div class="flow-row">
+        <span class="flow-node obsidian-node">Obsidian search_notes</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node obsidian-node">read_multiple_notes</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Mine All (Sonnet x1)</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node mcp-node">claude-mem search</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Mem Context (Haiku x1)</span>
+      </div>
+      <div class="flow-row" style="justify-content:center;">
+        <span class="flow-arrow">&darr; deduplicated chains &darr;</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node mcp-node">CBM get_architecture</span>
+        <span class="flow-arrow">+</span>
+        <span class="flow-node mcp-node">search_graph + trace_path</span>
+        <span class="flow-arrow">+</span>
+        <span class="flow-node mcp-node">Serena LSP</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Map (Sonnet x1)</span>
+      </div>
+      <div class="flow-row" style="justify-content:center;">
+        <span class="flow-arrow">&darr;</span>
+      </div>
+      <div class="flow-row">
+        <span class="flow-node agent-node">Synthesize (Opus x1)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Simplify (Sonnet x1)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node agent-node">Write (Haiku x1)</span>
+        <span class="flow-arrow">&rarr;</span>
+        <span class="flow-node obsidian-node">Obsidian write_note</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- TAB 2: zone-post-verify (total)                                    -->
+<!-- ================================================================== -->
+<div id="tab-postverify" class="tab-content">
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--red)">34&ndash;41</div>
+      <div class="stat-label">Current Agents (total)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--green)">10&ndash;13</div>
+      <div class="stat-label">Optimized Agents</div>
+      <div class="stat-delta good">&darr; ~70%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--red)">3</div>
+      <div class="stat-label">Sub-Workflows (Before)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--green)">0</div>
+      <div class="stat-label">Sub-Workflows (After)</div>
+      <div class="stat-delta good">Inlined</div>
+    </div>
+  </div>
+
+  <h2>Composite Workflow Breakdown</h2>
+
+  <div class="comparison">
+    <!-- BEFORE -->
+    <div class="column before">
+      <div class="column-label">Current</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">0</span> Bootstrap</div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Read dispatch-context.md</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">1</span> Re-Audit</div>
+        <div class="sub-workflow">
+          <div class="sub-workflow-label">SUB-WORKFLOW: arch-bug-pattern-audit</div>
+          <div class="agent-row">
+            <span class="agent-desc">Full audit pipeline</span>
+            <span class="agent-count" style="color:var(--red)">15&ndash;22 agents</span>
+          </div>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Verify audit file exists</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">2</span> Delta + Context + Reconcile</div>
+        <div class="sub-workflow">
+          <div class="sub-workflow-label">SUB-WORKFLOW: zone-delta-analysis</div>
+          <div class="agent-row">
+            <span class="agent-desc">Full delta pipeline</span>
+            <span class="agent-count" style="color:var(--red)">10 agents</span>
+          </div>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Wiring audit via CodeGraph</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">mem-search past cycles</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="sub-workflow">
+          <div class="sub-workflow-label">SUB-WORKFLOW: audit-reconcile (if RFCs)</div>
+          <div class="agent-row">
+            <span class="agent-desc">Full reconciliation</span>
+            <span class="agent-count" style="color:var(--red)">~10 agents</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">3</span> Scorecard</div>
+        <div class="agent-row">
+          <span class="model-badge model-opus">Opus</span>
+          <span class="agent-desc">Generate scorecard (high effort)</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Write scorecard file</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AFTER -->
+    <div class="column after">
+      <div class="column-label">Optimized</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">0</span> <span class="eliminated">Bootstrap</span> <span class="removed-tag">eliminated</span></div>
+        <div class="agent-row">
+          <span style="font-size:0.8rem; color:var(--text-muted)">Dispatch context baked into agent prompts (static content)</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">1</span> Re-Audit <span class="new-tag">inlined</span></div>
+        <div class="agent-row">
+          <span style="font-size:0.8rem; color:var(--green)">Runs optimized arch-bug-pattern-audit inline</span>
+        </div>
+        <div class="agent-row">
+          <span class="agent-desc">Optimized audit pipeline</span>
+          <span class="agent-count" style="color:var(--green)">5&ndash;7 agents</span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">File-verify agent (script checks return value)</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr; zones JSON passed directly to delta</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">2</span> Delta + Context <span class="new-tag">no sub-workflow</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Direct JSON diff (pre-fix zones from Obsidian frontmatter + post-fix zones from step 1)</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Wiring check via CBM <code>trace_path</code></span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">mem-search past cycles</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row" style="margin-top:0.3rem;">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">get_frontmatter on prior zone notes &rarr; structured data, no parsing agents</span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">zone-delta-analysis sub-workflow (10 agents), audit-reconcile sub-workflow (10 agents), 2 parse agents</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">3</span> Scorecard <span class="new-tag">streamlined</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-opus">Opus</span>
+          <span class="agent-desc">Generate scorecard (default effort &mdash; data is pre-structured)</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Write scorecard + update Obsidian zone notes</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row" style="margin-top:0.3rem;">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">update_frontmatter on zone notes with post-fix status</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Agent Cascade Comparison</h3>
+  <div class="flow-diagram">
+    <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem; font-weight:600;">BEFORE: Nested sub-workflow cascade</div>
+    <div class="flow-row">
+      <span class="flow-node agent-node" style="border-color:var(--red);">zone-post-verify</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-node agent-node" style="border-color:var(--orange);">arch-bug-pattern-audit (15&ndash;22)</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-node agent-node" style="border-color:var(--orange);">zone-delta-analysis (10)</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-node agent-node" style="border-color:var(--orange);">audit-reconcile (10)</span>
+    </div>
+    <div style="font-size:0.8rem; color:var(--text-muted); margin:0.5rem 0;">
+      Each sub-workflow spawns its own agent fleet &rarr; <strong style="color:var(--red)">34&ndash;41 total agents</strong>, each doing its own ToolSearch + dispatch-context read
+    </div>
+  </div>
+  <div class="flow-diagram">
+    <div style="font-size:0.8rem; color:var(--green); margin-bottom:0.75rem; font-weight:600;">AFTER: Flat MCP-first pipeline</div>
+    <div class="flow-row">
+      <span class="flow-node obsidian-node">Obsidian frontmatter</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-node mcp-node">CBM + Serena</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-node agent-node" style="border-color:var(--green);">zone-post-verify (10&ndash;13 flat)</span>
+      <span class="flow-arrow">&rarr;</span>
+      <span class="flow-node obsidian-node">Obsidian update</span>
+    </div>
+    <div style="font-size:0.8rem; color:var(--text-muted); margin:0.5rem 0;">
+      No sub-workflows. Structured data flows as JSON between phases. <strong style="color:var(--green)">10&ndash;13 total agents</strong>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- TAB 3: zone-delta-analysis                                         -->
+<!-- ================================================================== -->
+<div id="tab-delta" class="tab-content">
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--red)">10</div>
+      <div class="stat-label">Current Agents</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--green)">3&ndash;4</div>
+      <div class="stat-label">Optimized Agents</div>
+      <div class="stat-delta good">&darr; 65%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--red)">2</div>
+      <div class="stat-label">Opus Calls (Before)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" style="color:var(--green)">0</div>
+      <div class="stat-label">Opus Calls (After)</div>
+      <div class="stat-delta good">Sonnet suffices</div>
+    </div>
+  </div>
+
+  <h2>Phase-by-Phase Comparison</h2>
+
+  <div class="comparison">
+    <div class="column before">
+      <div class="column-label">Current</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">1</span> Parse</div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Parse current audit file &rarr; PARSED_ZONES_SCHEMA</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Parse prior audit file &rarr; PARSED_ZONES_SCHEMA</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">2</span> Match + Context</div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Zone matching by mechanism fingerprint</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">CodeGraph wiring verification</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">mem-search past delta decisions</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">3</span> Diff</div>
+        <div class="agent-row">
+          <span class="model-badge model-opus">Opus</span>
+          <span class="agent-desc">Compute per-zone delta (high effort)</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">4</span> Write</div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Write delta report</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+      </div>
+
+      <div class="agent-row" style="margin-top:0.5rem;">
+        <span style="font-size:0.8rem; color:var(--text-muted)">+ agentWithFallback retries on each &rarr; up to 10 agents</span>
+      </div>
+    </div>
+
+    <div class="column after">
+      <div class="column-label">Optimized</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">1</span> <span class="eliminated">Parse</span> <span class="removed-tag">eliminated</span></div>
+        <div class="agent-row">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.8rem; color:var(--text-muted)">
+            <code>get_frontmatter</code> on zone notes from <code>audit/zones/</code> &rarr; structured JSON directly
+          </span>
+        </div>
+        <div class="agent-row">
+          <span style="font-size:0.78rem; color:var(--text-muted)">
+            Prior zones already have YAML frontmatter (written by zone-triage). Current zones arrive as ZONES_SCHEMA JSON from arch-bug-pattern-audit return value.
+          </span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">2 haiku parse agents</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr; structured JSON &darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">2</span> Match + Diff + Context <span class="new-tag">merged</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-sonnet">Sonnet</span>
+          <span class="agent-desc">Zone matching + diff in one pass (data is already structured)</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">CBM wiring check via <code>trace_path</code></span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="removed-tag">cut</span>
+          <span class="eliminated">Separate match agent + Opus diff agent (Sonnet handles both now)</span>
+        </div>
+      </div>
+
+      <div class="arrow-down">&darr;</div>
+
+      <div class="phase">
+        <div class="phase-title"><span class="phase-num">3</span> Write <span class="kept-tag">kept</span></div>
+        <div class="agent-row">
+          <span class="model-badge model-haiku">Haiku</span>
+          <span class="agent-desc">Write delta report (downgraded from Sonnet &mdash; template fill)</span>
+          <span class="agent-count">&times;1</span>
+        </div>
+        <div class="agent-row">
+          <span class="mcp-source mcp-obsidian">Obsidian</span>
+          <span style="font-size:0.78rem; color:var(--text-muted)">update_frontmatter on zone notes with delta status</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- TAB 4: Strategies                                                  -->
+<!-- ================================================================== -->
+<div id="tab-strategies" class="tab-content">
+  <h2>Five Optimization Strategies</h2>
+
+  <div class="optimization-card" style="border-left: 3px solid var(--purple);">
+    <h4><span class="mcp-source mcp-obsidian">Obsidian</span> Strategy 1: Obsidian as the Structured Data Bus</h4>
+    <p>
+      <strong>Problem:</strong> Each workflow writes markdown reports that the next workflow re-parses with LLM agents (2 haiku agents per parse).
+      <br><strong>Solution:</strong> <code>zone-triage</code> already writes Obsidian notes with YAML frontmatter. Use <code>get_frontmatter()</code> to read structured data directly &mdash; zero tokens, no agent needed. Write all audit outputs as Obsidian notes with typed frontmatter (severity, bug_count, status, key_files as arrays).
+      <br><strong>Saves:</strong> 2&ndash;4 parse agents per workflow invocation. Eliminates the "LLM as JSON parser" anti-pattern.
+    </p>
+  </div>
+
+  <div class="optimization-card" style="border-left: 3px solid var(--cyan);">
+    <h4><span class="mcp-source mcp-cbm">CBM</span> Strategy 2: Replace File-Reading Miners with Graph Queries</h4>
+    <p>
+      <strong>Problem:</strong> <code>arch-bug-pattern-audit</code> spawns N+M haiku agents to <code>Read</code> RFC/audit files and extract chains. Each agent reads full files sequentially.
+      <br><strong>Solution:</strong> Use Obsidian <code>search_notes</code> to find all RFC/audit notes by tag, then <code>read_multiple_notes</code> to batch-read. One sonnet agent processes all inputs in a single pass instead of N+M haiku agents in parallel.
+      <br><strong>Saves:</strong> 6&ndash;10 miner agents. Single-agent extraction produces pre-deduplicated chains, eliminating the merge phase entirely.
+    </p>
+  </div>
+
+  <div class="optimization-card" style="border-left: 3px solid var(--orange);">
+    <h4><span class="mcp-source mcp-cbm">CBM</span> + <span class="mcp-source mcp-serena">Serena</span> Strategy 3: Cache Architecture Maps</h4>
+    <p>
+      <strong>Problem:</strong> <code>arch-bug-pattern-audit</code> rediscovers the full architecture every run &mdash; 1 sonnet for discovery + 4&ndash;8 sonnet explorers + 1 sonnet merger = 6&ndash;10 agents.
+      <br><strong>Solution:</strong> One sonnet agent calls <code>get_architecture()</code> + <code>search_graph()</code> + <code>trace_path()</code> + Serena LSP to build a unified code map. Cache it in Obsidian (<code>audit/architecture-map.md</code>). On re-runs, call <code>detect_changes()</code> &mdash; if clean, read the cached map. Only re-explore changed subsystems.
+      <br><strong>Saves:</strong> 5&ndash;9 agents on re-runs (first run saves 4&ndash;8). Architecture exploration becomes incremental, not full-scan.
+    </p>
+  </div>
+
+  <div class="optimization-card" style="border-left: 3px solid var(--green);">
+    <h4>Strategy 4: Flatten Sub-Workflow Cascade</h4>
+    <p>
+      <strong>Problem:</strong> <code>zone-post-verify</code> calls 3 sub-workflows (<code>arch-bug-pattern-audit</code>, <code>zone-delta-analysis</code>, <code>audit-reconcile</code>), each spawning their own agent fleet. Total: 34&ndash;41 agents. Each sub-workflow agent independently loads ToolSearch schemas + reads dispatch-context.
+      <br><strong>Solution:</strong> Inline the essential work. The re-audit returns structured JSON; the delta is a JSON diff (no file parsing needed); wiring checks are MCP queries. No sub-workflow boundary needed.
+      <br><strong>Saves:</strong> Eliminates ~20 agents from sub-workflow overhead. Removes ToolSearch + dispatch-context tax multiplied across 30+ agents.
+    </p>
+  </div>
+
+  <div class="optimization-card" style="border-left: 3px solid var(--accent);">
+    <h4>Strategy 5: Model Tier Rightsizing</h4>
+    <p>
+      <strong>Problem:</strong> 5 opus agents for simplification proposals (text-only, no code edits). Opus for diff computation on pre-structured data. Sonnet for template-fill report writing.
+      <br><strong>Solution:</strong> Simplification proposals &rarr; 1 sonnet agent (all zones in one prompt, text output). Diff &rarr; sonnet (structured JSON in, structured JSON out). Report writing &rarr; haiku (template fill with data injection).
+      <br><strong>Saves:</strong> 4 opus calls per <code>arch-bug-pattern-audit</code> run. 2 opus calls per <code>zone-delta-analysis</code>. Opus reserved solely for the synthesis phase where reasoning depth matters.
+    </p>
+  </div>
+
+  <hr class="section-divider">
+
+  <h2>Projected Savings Summary</h2>
+
+  <div style="overflow-x:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left; padding:0.6rem;">Workflow</th>
+          <th style="text-align:center; padding:0.6rem;">Agents (Before)</th>
+          <th style="text-align:center; padding:0.6rem;">Agents (After)</th>
+          <th style="text-align:center; padding:0.6rem;">Opus Calls</th>
+          <th style="text-align:center; padding:0.6rem;">Reduction</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><code>arch-bug-pattern-audit</code></td>
+          <td style="text-align:center; padding:0.6rem; color:var(--red);">15&ndash;22</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">5&ndash;7</td>
+          <td style="text-align:center; padding:0.6rem;">4 &rarr; 1</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">~65&ndash;70%</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><code>zone-delta-analysis</code></td>
+          <td style="text-align:center; padding:0.6rem; color:var(--red);">10</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">3&ndash;4</td>
+          <td style="text-align:center; padding:0.6rem;">2 &rarr; 0</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">~65%</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:0.6rem;"><code>zone-post-verify</code> (own)</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--red);">9</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">5</td>
+          <td style="text-align:center; padding:0.6rem;">2 &rarr; 1</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">~45%</td>
+        </tr>
+        <tr style="border-top:2px solid var(--border); font-weight:700;">
+          <td style="padding:0.6rem;"><code>zone-post-verify</code> (total)</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--red);">34&ndash;41</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green);">10&ndash;13</td>
+          <td style="text-align:center; padding:0.6rem;">8&ndash;9 &rarr; 2</td>
+          <td style="text-align:center; padding:0.6rem; color:var(--green); font-size:1rem;">~70%</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top:1.5rem; padding:1rem; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); font-size:0.85rem;">
+    <strong>Token savings estimate:</strong> ~60&ndash;70% reduction. The biggest wins:
+    <ul style="margin:0.5rem 0 0 1.5rem; color:var(--text-muted);">
+      <li>Eliminating file-reading agents (replaced by Obsidian MCP queries)</li>
+      <li>Removing parse-back-into-JSON agents (replaced by Obsidian frontmatter reads)</li>
+      <li>Collapsing sub-workflow chains (no ToolSearch/dispatch-context tax per agent)</li>
+      <li>Model tier rightsizing (opus reserved for synthesis only)</li>
+      <li>Architecture map caching (incremental on re-runs)</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+function switchTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+
+</body>
+</html>
