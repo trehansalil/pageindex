@@ -61,7 +61,7 @@ done
 
 # ── Gate definitions (name, script, needs_infra) ──────────────────────────────
 # Declared in §7 order: gates 1–6 no-infra, 7–8 infra.
-declare -a GATE_NAMES=(static unit contracts dag build supply-chain integration e2e)
+declare -a GATE_NAMES=(static unit contracts dag build supply-chain test-ratio-guard integration e2e)
 declare -A GATE_NEEDS_INFRA=(
     [static]=false
     [unit]=false
@@ -69,6 +69,7 @@ declare -A GATE_NEEDS_INFRA=(
     [dag]=false
     [build]=false
     [supply-chain]=false
+    [test-ratio-guard]=false
     [integration]=true
     [e2e]=true
 )
@@ -79,6 +80,7 @@ declare -A GATE_SCRIPTS=(
     [dag]="$GATES_DIR/dag.sh"
     [build]="$GATES_DIR/build.sh"
     [supply-chain]="$GATES_DIR/supply-chain.sh"
+    [test-ratio-guard]="$GATES_DIR/test-ratio-guard.sh"
     [integration]="$GATES_DIR/integration.sh"
     [e2e]="$GATES_DIR/e2e.sh"
 )
