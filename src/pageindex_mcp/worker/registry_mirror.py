@@ -86,11 +86,20 @@ async def _upsert_registry_row(
     and fall back to the MinIO-only field read.
     """
     if not (settings.registry_enabled and settings.postgres_dsn):
+        logger.info(
+            "registry: disabled or DSN missing for doc_id=%s "
+            "-- sidecar is sole source of truth (degraded consistency)",
+            doc_id,
+        )
         return
     from ..registry import get_pool, upsert_doc
 
     if get_pool() is None:
-        logger.debug("registry: pool not ready, skipping dual-write for %s", doc_id)
+        logger.info(
+            "registry: pool not ready for doc_id=%s "
+            "-- sidecar is sole source of truth (degraded consistency)",
+            doc_id,
+        )
         # Zone-4 Phase 3: unconditionally queue verdict for retry when pool
         # is unavailable so reconcile_registry_drift can heal later.
         if verdict_fields:

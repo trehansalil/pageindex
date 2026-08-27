@@ -20,6 +20,39 @@ from . import minio_ops as _minio_ops
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Storage-prefix registry — compile-time erasure-manifest completeness guard.
+#
+# Every MinIO write path registers its prefix here.  After the erasure
+# manifest is defined (bottom of this module), ``validate_erasure_manifest``
+# asserts that every registered prefix has a corresponding ErasureStep.
+# A missing step becomes a loud ImportError, not a silent erasure gap.
+# ---------------------------------------------------------------------------
+
+_KNOWN_STORAGE_PREFIXES: set[str] = set()
+
+
+def register_storage_prefix(prefix: str) -> str:
+    """Record *prefix* as a MinIO storage location that must have a
+    corresponding ``ErasureStep`` in ``_ERASURE_MANIFEST``.
+
+    Returns *prefix* unchanged so it can be used inline at call sites.
+    """
+    _KNOWN_STORAGE_PREFIXES.add(prefix)
+    return prefix
+
+
+# Register prefixes written by functions in this module.
+# Prefixes written by other modules (verdict.py, staging.py, hash_cache.py)
+# are registered at the bottom of this file after import-time ordering is safe.
+register_storage_prefix("uploads/")
+register_storage_prefix("processed/")
+register_storage_prefix("figures/")
+# preloaded/ and verdicts/ are written by external processes but erased here.
+register_storage_prefix("preloaded/")
+register_storage_prefix("verdicts/")
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -215,10 +248,18 @@ async def delete_doc(doc_id: str) -> dict:
                 missed_optional,
             )
 
+        required_ok = len(
+            [s for s in _ERASURE_MANIFEST if s.required and s.name in ctx.completed]
+        )
         if ctx.errors:
             logger.error("ERASE %s partial failure across stores: %s", doc_id, ctx.errors)
         else:
-            logger.info("ERASE %s complete: full cascade succeeded", doc_id)
+            logger.info(
+                "ERASE %s cascade complete: %d required ok, %d optional skipped",
+                doc_id,
+                required_ok,
+                len(missed_optional),
+            )
         return {"errors": ctx.errors}
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
@@ -579,6 +620,66 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         required=False,  # RFC-011 D2: not all docs have one
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Erasure-manifest completeness guard (runs at import time)
+# ---------------------------------------------------------------------------
+
+# Map each registered MinIO storage prefix to the ErasureStep name(s) that
+# cover it.  A prefix may be covered by multiple steps (e.g. processed/ is
+# covered by processed_json, processed_flat_json, and meta_json).  Non-MinIO
+# stores (redis_cache, reconcile_etag, hash_cache, registry) are not MinIO
+# prefixes and are not tracked here -- they have their own erasure steps but
+# no MinIO write-path registration.
+_PREFIX_TO_ERASURE_STEPS: dict[str, tuple[str, ...]] = {
+    "uploads/": ("uploads",),
+    "processed/": ("processed_json", "processed_flat_json", "meta_json"),
+    "figures/": ("figures",),
+    "verdicts/": ("verdicts",),
+    "preloaded/": ("preloaded",),
+}
+
+
+def validate_erasure_manifest() -> None:
+    """Assert every registered storage prefix has a corresponding
+    ``ErasureStep`` in ``_ERASURE_MANIFEST``.
+
+    Called at module load time (below) so a missing step is a loud
+    ``ImportError`` rather than a silent HR2 erasure gap discovered
+    only by audit.
+    """
+    manifest_names = frozenset(s.name for s in _ERASURE_MANIFEST)
+    missing: list[str] = []
+
+    for prefix in sorted(_KNOWN_STORAGE_PREFIXES):
+        expected_steps = _PREFIX_TO_ERASURE_STEPS.get(prefix)
+        if expected_steps is None:
+            # A newly registered prefix with no mapping entry -- the
+            # developer forgot to update _PREFIX_TO_ERASURE_STEPS *and*
+            # _ERASURE_MANIFEST.
+            missing.append(
+                f"prefix '{prefix}' has no entry in _PREFIX_TO_ERASURE_STEPS "
+                f"and no matching ErasureStep"
+            )
+            continue
+        for step_name in expected_steps:
+            if step_name not in manifest_names:
+                missing.append(
+                    f"prefix '{prefix}' expects ErasureStep '{step_name}' "
+                    f"but it is missing from _ERASURE_MANIFEST"
+                )
+
+    if missing:
+        raise ImportError(
+            "HR2 erasure-manifest completeness check failed -- storage "
+            "prefixes exist without corresponding erasure steps:\n  "
+            + "\n  ".join(missing)
+        )
+
+
+# Run the guard at import time.
+validate_erasure_manifest()
 
 
 def wipe_processed() -> None:

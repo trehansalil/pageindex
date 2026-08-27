@@ -81,6 +81,14 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
     subset-payload callers (promotion_sweep, registry_backfill) from
     accidentally dropping fields they don't carry.
 
+    Consistency: eventual -- no ``_confirm_write_visible`` call.  Readers may
+    see stale data for up to MinIO's eventual-consistency window after this
+    write returns.  This is intentional (Zone-4 Phase 3): the sidecar is an
+    archival mirror; Postgres is the sole verdict authority (RFC-037 D5).
+    Contrast with ``save_doc`` / ``save_flat_doc`` in ``documents.py``, which
+    retain the ``_confirm_write_visible`` barrier for read-after-write
+    consistency on primary processed artifacts.
+
     Zone-5 (verdict-persistence): this function is the **sole authoritative
     entry point** for verdict persistence.  Both the tree path
     (``_persist_tree_result``) and the flat path (``_persist_flat_result``)
@@ -167,6 +175,10 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
                 sidecar[ff] = existing[ff]
 
         sidecar["sidecar_version"] = SIDECAR_VERSION
+        # Zone-9: machine-queryable consistency model so downstream code can
+        # reason about the write-visibility guarantee without reading comments.
+        # save_doc / save_flat_doc use 'read-after-write' (barrier retained).
+        sidecar["consistency_model"] = "eventual"
         content = json.dumps(sidecar, indent=2).encode()
         key = f"processed/{doc_id}.meta.json"
         mc.put_object(

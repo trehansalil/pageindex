@@ -347,6 +347,63 @@ async def test_upsert_registry_row_registry_disabled_noop():
 
 
 # ---------------------------------------------------------------------------
+# Regression: registry disabled logs degraded-consistency warning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_disabled_logs_degraded_consistency(caplog):
+    """When registry_enabled is False, _upsert_registry_row must log a message
+    containing 'degraded consistency' so operators can detect that the effective
+    consistency model changed (sidecar-only, no Postgres authority)."""
+    import logging
+
+    disabled = _settings(registry_enabled=False, postgres_dsn="")
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
+        caplog.at_level(logging.INFO, logger="pageindex_mcp.worker.registry_mirror"),
+    ):
+        await _upsert_registry_row("doc-degraded", None)
+
+    degraded_msgs = [
+        r.message for r in caplog.records if "degraded consistency" in r.message
+    ]
+    assert len(degraded_msgs) >= 1, (
+        f"Expected 'degraded consistency' log but got: "
+        f"{[r.message for r in caplog.records]}"
+    )
+    # The message should mention the doc_id for traceability
+    assert "doc-degraded" in degraded_msgs[0]
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_pool_not_ready_logs_degraded_consistency(caplog):
+    """When registry is enabled but pool is not ready, _upsert_registry_row must
+    also log 'degraded consistency'."""
+    import logging
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=None),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
+            AsyncMock(),
+        ),
+        caplog.at_level(logging.INFO, logger="pageindex_mcp.worker.registry_mirror"),
+    ):
+        await _upsert_registry_row("doc-pooldown", None)
+
+    degraded_msgs = [
+        r.message for r in caplog.records if "degraded consistency" in r.message
+    ]
+    assert len(degraded_msgs) >= 1, (
+        f"Expected 'degraded consistency' log but got: "
+        f"{[r.message for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Contract: best-effort sidecar backfill with winning row
 # ---------------------------------------------------------------------------
 
