@@ -18,6 +18,7 @@ mappings:
       - test_client.py            # primary
       - test_compute_verdict.py
       - test_config.py
+      - test_converters_cli.py
       - test_gate_table.py
       - test_image_blocks.py
       - test_preprocess_client_supported.py
