@@ -474,8 +474,12 @@ class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
     image_enrichment_promoted branch (image_enrichment_ratio >= 0.8) never
     fires -- it falls through to the ordinary max_leaf_ratio path."""
 
-    def _tree_with_text(self, chars: int) -> list:
-        return [{"title": "", "text": "x" * chars, "nodes": []}]
+    def _tree_with_text(self, chars: int, nodes: int = 3) -> list:
+        per_node = chars // nodes
+        return [
+            {"title": "", "text": "x" * per_node, "nodes": []}
+            for _ in range(nodes)
+        ]
 
     def test_genuinely_enriched_blocks_still_promote_verdict(self):
         """Sanity check: the suppression is targeted -- a document whose
@@ -487,7 +491,7 @@ class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
         image_enrichment_ratio = compute_image_enrichment_ratio(blocks)
         assert image_enrichment_ratio == 1.0
 
-        structure = self._tree_with_text(600)
+        structure = self._tree_with_text(600, nodes=3)
         verdict, reason = classify_verdict(
             structure,
             content_class="flat_prose",

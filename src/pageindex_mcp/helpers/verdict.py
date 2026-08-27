@@ -24,7 +24,6 @@ from .gates import (
 from .tree_validation import TreeSignals, _tree_max_leaf_ratio, _tree_node_count
 from .types import (
     GateOutcome,
-    PromotionCandidate,
     TreeDefect,
     TreeGateResult,
     VerdictResult,
@@ -224,18 +223,20 @@ def _try_image_enrichment(
     th: VerdictThresholds,
     expected_script: str | None,
     script_context: ScriptContext | None,
-) -> PromotionCandidate | None:
-    """Image-enrichment rescue path (RFC-022 B2).
+) -> str | None:
+    """Image-enrichment rescue path (RFC-022 B2, RFC-040 D1 guards).
 
-    Priority 100: highest among all promotion paths.  This intentionally
-    outranks the structural hard-fail (max_leaf_ratio > 0.75) because flat
-    image-enriched documents render as a single leaf (max_leaf_ratio=1.0),
-    so the structural metric is not meaningful for them.  Ordering locked
-    by RFC-022 B2.
+    Returns the promotion reason string, or None if ineligible.
+    D1 guards: node_count >= 3 and not effectively_garbled prevent
+    structurally-empty or garbled docs from re-entering via image rescue.
     """
     if content_class not in ("flat_prose", "flat_mixed"):
         return None
     if image_enrichment_ratio is None or image_enrichment_ratio < 0.8:
+        return None
+    if sig.node_count < 3:
+        return None
+    if sig.effectively_garbled:
         return None
     _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
     total_chars = len(_promoted_text)
@@ -257,46 +258,31 @@ def _try_image_enrichment(
         blob_kind=BlobKind.TREE_TEXT,
     ):
         return None
-    return PromotionCandidate(
-        priority=100,
-        path_name="image_enrichment_promoted",
-        verdict="PASS",
-        reason="image_enrichment_promoted",
-    )
+    return "image_enrichment_promoted"
 
 
 def _try_structural_pass(
     sig: TreeSignals,
     all_defects: frozenset[TreeDefect],
     th: VerdictThresholds,
-) -> PromotionCandidate | None:
+) -> str | None:
     """Direct PASS when structural metrics are clean."""
     _structural_ok = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(all_defects)
     _effective_max_leaf = th.pass_max_leaf_ratio
     if _structural_ok and sig.max_leaf_ratio < _effective_max_leaf and not sig.effectively_garbled:
-        return PromotionCandidate(
-            priority=50,
-            path_name="structural_pass",
-            verdict="PASS",
-            reason="",
-        )
+        return ""
     return None
 
 
 def _try_cat_a(
     sig: TreeSignals,
     content_class: str,
-) -> PromotionCandidate | None:
+) -> str | None:
     """OCR category-A promotion."""
     if not content_class.startswith("ocr_"):
         return None
     if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
-        return PromotionCandidate(
-            priority=40,
-            path_name="cat_a_promoted",
-            verdict="PASS",
-            reason="cat_a_promoted",
-        )
+        return "cat_a_promoted"
     return None
 
 
@@ -304,7 +290,7 @@ def _try_cat_b(
     sig: TreeSignals,
     content_class: str,
     th: VerdictThresholds,
-) -> PromotionCandidate | None:
+) -> str | None:
     """Flat category-B promotion."""
     if not content_class.startswith("flat_"):
         return None
@@ -322,12 +308,7 @@ def _try_cat_b(
         and len(_stripped_flat_text) >= th.min_flat_promotion_chars
         and _placeholder_ratio <= 0.5
     ):
-        return PromotionCandidate(
-            priority=40,
-            path_name="cat_b_promoted",
-            verdict="PASS",
-            reason="cat_b_promoted",
-        )
+        return "cat_b_promoted"
     return None
 
 
@@ -336,7 +317,7 @@ def _try_cat_c(
     content_class: str,
     inspector_class: str | None,
     th: VerdictThresholds,
-) -> PromotionCandidate | None:
+) -> str | None:
     """Generic category-C promotion."""
     if content_class.startswith("ocr_") or content_class.startswith("flat_"):
         return None
@@ -348,12 +329,7 @@ def _try_cat_c(
         and hash_pipe_ratio(sig.flat_text) < 0.01
         and sig.max_leaf_ratio < _cat_c_threshold
     ):
-        return PromotionCandidate(
-            priority=40,
-            path_name="cat_c_promoted",
-            verdict="PASS",
-            reason="cat_c_promoted",
-        )
+        return "cat_c_promoted"
     return None
 
 
@@ -361,7 +337,7 @@ def _try_small_doc(
     sig: TreeSignals,
     content_class: str,
     th: VerdictThresholds,
-) -> PromotionCandidate | None:
+) -> str | None:
     """Small document promotion."""
     if not th.small_doc_enabled:
         return None
@@ -379,12 +355,7 @@ def _try_small_doc(
         and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
         and 100 <= len(sig.flat_text.strip()) < 15000
     ):
-        return PromotionCandidate(
-            priority=30,
-            path_name="small_doc_promoted",
-            verdict="PASS",
-            reason="small_doc_promoted",
-        )
+        return "small_doc_promoted"
     return None
 
 
@@ -412,23 +383,12 @@ def apply_promotions(
 ) -> VerdictResult:
     """Zone-4 Phase 2: promotion/cap logic (tried only when no HARD_FAIL fired).
 
-    Refactored from sequential first-match cascade to score-all-then-pick-best
-    using a :class:`PromotionCandidate` list.  Each promotion path is an
-    independent ``_try_*`` function returning ``Optional[PromotionCandidate]``.
-    Candidates are collected, the best (highest priority) is selected, and
-    clamping is applied uniformly.
+    RFC-040 D1: structural hard-fail (max_leaf_ratio > threshold) is
+    unconditional — evaluated BEFORE any promotion path.  Image-enrichment
+    is a guarded EXCEPTION, not a bypass.
 
-    The image-enrichment rescue retains its RFC-022 B2 locked priority
-    (priority=100) so it outranks the structural hard-fail on
-    max_leaf_ratio > 0.75 -- flat image-enriched documents render as a
-    single leaf (max_leaf_ratio=1.0), so the structural metric is not
-    meaningful for them.
-
-    Thresholds are sourced from *th* (:class:`VerdictThresholds` built
-    via ``VerdictThresholds.from_config(pipeline_config)``).  The
-    ``PASS_MAX_LEAF_RATIO <= LEAF_SPLIT_RATIO`` coupling assertion is
-    owned by ``PipelineConfig`` in ``config.py`` and is NOT duplicated
-    here.
+    RFC-040 D2: ordered if/elif pipeline replaces score-all-then-pick-best.
+    Priority is expressed in source-code order; first match wins.
     """
     defect = outcome.defect
     sig = outcome.signals
@@ -446,22 +406,13 @@ def apply_promotions(
         _v, _r = _clamp_pass(reason, defect=defect, sig=sig)
         return VerdictResult(_v, _r, defect=defect, signals=sig, all_defects=_all_defects)
 
-    # --- Score all promotion paths ---
-    candidates: list[PromotionCandidate] = []
-
-    _ie = _try_image_enrichment(
-        sig, content_class, image_enrichment_ratio, th, expected_script, script_context
-    )
-    if _ie is not None:
-        candidates.append(_ie)
-
-    # RFC-022 B2: image-enrichment rescue fires BEFORE the structural hard-fail
-    # check.  If the only candidate is the image-enrichment path (priority=100),
-    # we honor it even when max_leaf_ratio > hard_fail_max_leaf_ratio.  If no
-    # image-enrichment candidate fired, apply the structural hard-fail.
-    _has_image_rescue = any(c.path_name == "image_enrichment_promoted" for c in candidates)
-
-    if not _has_image_rescue and sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
+    # D1: Unconditional structural hard-fail gate
+    if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
+        _ie = _try_image_enrichment(
+            sig, content_class, image_enrichment_ratio, th, expected_script, script_context
+        )
+        if _ie is not None:
+            return _apply_clamp(_ie)
         return VerdictResult(
             "FAIL",
             f"max_leaf_ratio={sig.max_leaf_ratio:.2f}",
@@ -470,38 +421,34 @@ def apply_promotions(
             all_defects=_all_defects,
         )
 
+    # D2: Ordered promotion pipeline — first match wins
+    _ie = _try_image_enrichment(
+        sig, content_class, image_enrichment_ratio, th, expected_script, script_context
+    )
+    if _ie is not None:
+        return _apply_clamp(_ie)
+
     _sp = _try_structural_pass(sig, _all_defects, th)
     if _sp is not None:
-        candidates.append(_sp)
+        return _apply_clamp(_sp)
 
     _ca = _try_ocr_promotion(sig, content_class)
     if _ca is not None:
-        candidates.append(_ca)
+        return _apply_clamp(_ca)
 
     _cb = _try_flat_promotion(sig, content_class, th)
     if _cb is not None:
-        candidates.append(_cb)
+        return _apply_clamp(_cb)
 
     _cc = _try_content_class_promotion(sig, content_class, inspector_class, th)
     if _cc is not None:
-        candidates.append(_cc)
+        return _apply_clamp(_cc)
 
     _sd = _try_small_doc_promotion(sig, content_class, th)
     if _sd is not None:
-        candidates.append(_sd)
+        return _apply_clamp(_sd)
 
-    # --- Pick best candidate (highest priority wins) ---
-    if candidates:
-        best = max(candidates, key=lambda c: c.priority)
-        if best.verdict == "PASS":
-            return _apply_clamp(best.reason)
-        # MARGINAL candidates (e.g. image_enrichment_promoted_below_char_floor)
-        # are returned directly without clamping.
-        return VerdictResult(
-            best.verdict, best.reason, defect=defect, signals=sig, all_defects=_all_defects
-        )
-
-    # --- Fallback: no promotion path fired → MARGINAL ---
+    # Fallback: no promotion path fired → MARGINAL
     if sig.effectively_garbled:
         reason = f"garbling(ratio={sig.garble_ratio:.2f})"
     elif sig.node_count < 3:

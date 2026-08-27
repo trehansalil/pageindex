@@ -232,6 +232,30 @@ class TestEnsureTessdataNonLatinVerification:
         assert "ara" not in _LATIN_LANGS
 
 
+class TestTessdataLatinSubstitutionClosure:
+    """D5: requesting non-Latin langs that are all unavailable must raise,
+    never silently fall back to Latin-only OCR."""
+
+    def test_tessdata_raises_on_latin_only_substitution(self, monkeypatch, tmp_path):
+        """Request ['ara', 'eng'], only 'eng' available → raises."""
+        monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+        monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
+        _system_tessdata_cache.clear()
+        (tmp_path / "eng.traineddata").write_bytes(b"x")
+        with pytest.raises(TessdataUnavailableError, match="non-Latin tessdata missing"):
+            ensure_tessdata(["ara", "eng"])
+
+    def test_tessdata_allows_pure_latin_request(self, monkeypatch, tmp_path):
+        """Request ['deu', 'eng'], both available → no error."""
+        monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+        monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
+        _system_tessdata_cache.clear()
+        (tmp_path / "deu.traineddata").write_bytes(b"x")
+        (tmp_path / "eng.traineddata").write_bytes(b"x")
+        result = ensure_tessdata(["deu", "eng"])
+        assert result == ["deu", "eng"]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Test 4 (regression): table_is_rtl stability
 # ═══════════════════════════════════════════════════════════════════════════

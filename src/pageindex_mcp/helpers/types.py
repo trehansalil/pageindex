@@ -45,20 +45,6 @@ assert sorted(VERDICT_PRIORITY.values(), reverse=True) == list(VERDICT_PRIORITY.
 )
 
 
-@dataclass(frozen=True)
-class PromotionCandidate:
-    """A scored promotion path candidate from apply_promotions().
-
-    Higher ``priority`` wins when multiple paths fire.  The ``path_name``
-    identifies which _try_* function produced this candidate.
-    ``verdict`` and ``reason`` are the values the candidate would yield.
-    """
-
-    priority: int
-    path_name: str
-    verdict: str
-    reason: str
-
 
 @dataclass(frozen=True)
 class TreeGateResult:

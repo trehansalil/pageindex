@@ -163,8 +163,9 @@ class TestHardFails:
         assert (verdict, reason) == ("FAIL", "garbling")
 
     def test_image_enrichment_rescue(self):
+        tree = _make_tree([400, 300, 300], depth=1)
         verdict, reason = classify_verdict(
-            _single_leaf(),
+            tree,
             "flat_prose",
             None,
             image_enrichment_ratio=0.9,

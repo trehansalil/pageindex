@@ -691,21 +691,20 @@ def _garble_check_nodes(
     # fall below garble_digit_floor per node but surface in aggregate.
     if _is_toplevel and garbled == 0:
         _concat = _collect_all_node_text(nodes)
-        if len(_concat) >= config.garble_digit_floor:
-            _norm = normalize_for_garble(_concat, BlobKind.TREE_TEXT)
-            _fallback_prongs = garble_prongs(
-                _norm,
-                expected_script=_doc_script,
-                original_text=_concat,
-                had_presentation_forms=script_context.had_presentation_forms,
-                config=config,
+        _norm = normalize_for_garble(_concat, BlobKind.TREE_TEXT)
+        _fallback_prongs = garble_prongs(
+            _norm,
+            expected_script=_doc_script,
+            original_text=_concat,
+            had_presentation_forms=script_context.had_presentation_forms,
+            config=config,
+        )
+        if _fallback_prongs:
+            logger.info(
+                "Whole-tree concatenated fallback detected garble: prongs=%s",
+                _fallback_prongs,
             )
-            if _fallback_prongs:
-                logger.info(
-                    "Whole-tree concatenated fallback detected garble: prongs=%s",
-                    _fallback_prongs,
-                )
-                garbled = 1
+            garbled = 1
     return garbled
 
 

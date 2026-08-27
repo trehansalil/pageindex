@@ -111,6 +111,27 @@ class TestNFKCCanonicalization:
         assert "ﭐ" not in result
 
 
+class TestPresentationFormsDetectedBeforeNFKC:
+    """D6: had_presentation_forms is captured BEFORE NFKC destroys the
+    codepoints.  After NFKC, the same codepoints are absent."""
+
+    def test_presentation_forms_detected_before_nfkc(self):
+        import unicodedata
+        # U+FB50 (ALEF WASLA ISOLATED FORM) decomposes under NFKC to U+0671
+        pf_char = "ﭐ"
+        regular = "".join(chr(c) for c in range(0x0620, 0x0640))
+        raw = regular + pf_char * 20
+        pf_before = sum(1 for c in raw if 0xFB50 <= ord(c) <= 0xFDFF)
+        assert pf_before > 0
+        nfkc_text = unicodedata.normalize("NFKC", raw)
+        pf_after = sum(1 for c in nfkc_text if 0xFB50 <= ord(c) <= 0xFDFF)
+        assert pf_after == 0, "NFKC must decompose U+FB50"
+        # _pre_inference_normalize captures the signal before NFKC runs
+        result, rtl = _pre_inference_normalize(raw)
+        assert rtl is not None
+        assert rtl.had_presentation_forms is True
+
+
 class TestBidiCoherenceCheck:
     """Zone-3 consolidation: _check_bidi_coherence was deleted; its sole
     signal was decide_rtl(...).reversed. Tests use decide_rtl directly."""

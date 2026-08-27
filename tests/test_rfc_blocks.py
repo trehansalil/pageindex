@@ -56,15 +56,22 @@ def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
 
 
 def _single_leaf_tree(size: int = 1000) -> list:
-    """One top-level leaf -> max_leaf_ratio == 1.0 (> 0.75 hard-FAIL threshold)."""
-    return [{"title": "", "text": "x" * size, "nodes": []}]
+    """Three nodes, one dominant leaf -> max_leaf_ratio > 0.75 (hard-FAIL threshold).
+    D1 requires node_count >= 3 for image-enrichment exception."""
+    return [
+        {"title": "", "text": "x" * size, "nodes": []},
+        {"title": "", "text": "y" * 10, "nodes": []},
+        {"title": "", "text": "z" * 10, "nodes": []},
+    ]
 
 
 def _multi_node_tree() -> list:
-    """Two children -> max_leaf_ratio ~0.60 (below 0.75 ceiling, above 0.30 pass)."""
+    """Three children -> max_leaf_ratio ~0.60 (below 0.75 ceiling, above 0.30 pass).
+    D1 requires node_count >= 3 for image-enrichment exception."""
     return [
         {"node_id": "1", "title": "A", "text": "x" * 600, "nodes": []},
         {"node_id": "2", "title": "B", "text": "y" * 400, "nodes": []},
+        {"node_id": "3", "title": "C", "text": "z" * 20, "nodes": []},
     ]
 
 

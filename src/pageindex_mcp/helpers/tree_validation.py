@@ -316,6 +316,14 @@ def validate_tree(
 
     if fired:
         primary_defect, primary_detail = fired[0]
+        # D4: garble-type defects must win as primary when co-firing with
+        # non-garble defects, so OCR recovery dispatches correctly.
+        _garble_defects = {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
+        if primary_defect not in _garble_defects:
+            for d, detail in fired:
+                if d in _garble_defects:
+                    primary_defect, primary_detail = d, detail
+                    break
         return TreeGateResult(
             ok=False,
             defect=primary_defect,

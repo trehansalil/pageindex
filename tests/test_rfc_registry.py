@@ -97,7 +97,14 @@ class TestZeroContentFailFloor:
 
 
 def _structure_with_chars(n_chars):
-    return [{"node_id": "1", "title": "", "text": "x" * n_chars, "nodes": []}]
+    # 3 non-empty text parts joined by 2 newlines → flat_text_len = n_chars
+    text_budget = n_chars - 2  # subtract 2 separator newlines
+    dominant = max(text_budget - 2, 1)
+    return [
+        {"node_id": "1", "title": "", "text": "x" * dominant, "nodes": []},
+        {"node_id": "2", "title": "", "text": "x", "nodes": []},
+        {"node_id": "3", "title": "", "text": "x", "nodes": []},
+    ]
 
 
 class TestImageEnrichmentPromotedVolumeFloor:

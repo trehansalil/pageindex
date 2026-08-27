@@ -95,7 +95,10 @@ class TestImageEnrichmentPromotedGarbleGate:
     def test_legitimate_blob_above_floor_still_passes(self):
         """A legitimate low-digit-ratio blob above the floor is not a
         false-positive -- PASS is still reachable."""
-        structure = _structure_with_text("x" * 600)
+        structure = [
+            {"node_id": str(i), "title": "", "text": "x" * 200, "nodes": []}
+            for i in range(3)
+        ]
         verdict, reason = classify_verdict(
             structure, "flat_mixed", None, image_enrichment_ratio=0.85
         )

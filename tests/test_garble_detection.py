@@ -7,6 +7,7 @@ from pageindex_mcp.helpers import (
     BlobKind,
     GarbleConfig,
     ScriptContext,
+    TreeDefect,
     _garble_check_nodes,
     garble_prongs,
     normalize_for_garble,
@@ -335,6 +336,27 @@ class TestConcatenatedFallback:
         assert garbled_count > 0
 
 
+    def test_fallback_delegates_floor_to_garble_prongs(self):
+        """D3: below-floor aggregate text is handled by garble_prongs' own
+        floor check, not an outer guard in the fallback."""
+        digit_chunk = "1234567890" * 5  # 50 chars per node, 100 total
+        config = GarbleConfig(garble_digit_floor=500)
+        tree = [
+            {"title": "A", "text": digit_chunk, "nodes": []},
+            {"title": "B", "text": digit_chunk, "nodes": []},
+        ]
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(
+                dominant_script="Latn",
+                had_presentation_forms=False,
+                source="test",
+            ),
+            config=config,
+        )
+        assert garbled_count == 0
+
+
 class TestGarbleProngsExhaustiveness:
     """Exhaustiveness: every prong name returned by garble_prongs is in a
     known valid set. No silent additions."""
@@ -388,3 +410,20 @@ class TestGarbleProngsExhaustiveness:
             config=GarbleConfig(),
         )
         assert prongs <= self.KNOWN_PRONGS
+
+
+class TestGarbleReasonWinsOverNodeCountLow:
+    """D4: when both garbling/node_garbling and node_count_low fire,
+    garbling must win as the primary defect so OCR recovery triggers."""
+
+    def test_garble_reason_wins_over_node_count_low(self):
+        garbled_text = "\x00\x00\x00" + "GLYPH<X>" * 50
+        tree = [
+            {"title": "A", "text": garbled_text, "nodes": []},
+            {"title": "B", "text": garbled_text, "nodes": []},
+        ]
+        ctx = ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test")
+        result = validate_tree(tree, expected_script=ctx)
+        assert not result.ok
+        assert result.defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+        assert TreeDefect.NODE_COUNT_LOW in result.all_defects
