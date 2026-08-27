@@ -18,6 +18,7 @@ tags:
   - gates
 scorecard_verdict: needs_another_cycle
 scorecard_date: 2026-08-27
+wave: 1
 scorecard_run: POST-RUN20
 ---
 ## Mechanism

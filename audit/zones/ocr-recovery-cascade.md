@@ -19,6 +19,7 @@ tags:
 scorecard_verdict: needs_another_cycle
 scorecard_date: 2026-08-27
 scorecard_run: POST-RUN20
+wave: 2
 ---
 ## Mechanism
 
