@@ -167,8 +167,19 @@ async def _process_one(sem: asyncio.Semaphore, file: Path) -> None:
     if doc_id:
         from pageindex_mcp.worker import _upsert_registry_row
 
+        # Zone-7 (dual-write consistency): this CLI drives the very same
+        # converters_cli child as the arq worker, so its stdout JSON already
+        # carries registry_fields / verdict_fields.  Thread them through so
+        # the batch path skips the MinIO re-read and its race window too —
+        # otherwise the optimisation only covers the worker.  Both are None
+        # for older child binaries, which restores the MinIO-read fallback.
         try:
-            await _upsert_registry_row(doc_id, content_class)
+            await _upsert_registry_row(
+                doc_id,
+                content_class,
+                verdict_fields=result.get("verdict_fields"),
+                registry_fields=result.get("registry_fields"),
+            )
         except Exception as exc:
             print(f"  [{file.name}] registry upsert failed (non-fatal): {exc}", flush=True)
 

@@ -1069,7 +1069,7 @@ def _recover_picture_results(  # noqa: PLR0913
 
     OCR + crop ONLY — no markdown mutation, no VLM (both moved to the flat branch
     of ``client.index()``, the sole consumer — audit findings 6/8). Gated on
-    ``_OCR_ESCALATION_PER_PICTURE`` (config.py) + the presence of a ``<!-- image -->``
+    ``pipeline_config.ocr_escalation_per_picture`` + the presence of a ``<!-- image -->``
     marker, and never fatal.
 
     Returns a DENSE list: element ``i`` corresponds to the i-th PictureItem in
@@ -1101,7 +1101,7 @@ def _recover_picture_results(  # noqa: PLR0913
     # Zone-6: centralised OCR-mode dispatch replaces ad-hoc boolean gate.
     # Zone-5: per-picture enrichment gate (not page-level garble retry).
     _ocr_mode = decide_ocr_mode(
-        ocr_escalation_enabled=_OCR_ESCALATION_PER_PICTURE,
+        ocr_escalation_enabled=pipeline_config.ocr_escalation_per_picture,
         has_image_markers=_IMAGE_MARKER in md,
     )
     if _ocr_mode == OcrMode.NONE:

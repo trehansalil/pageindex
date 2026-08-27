@@ -11,6 +11,7 @@ ERASE-01-C2  delete_doc is idempotent (missing objects tolerated, no-op success)
 ERASE-01-C3  a mid-cascade failure is surfaced and names the unpurged store
 """
 
+import inspect
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -778,23 +779,31 @@ def test_hash_cache_delete_legacy_purge_failure_redis_still_deleted(fake_cache_r
     succeeded (best-effort)."""
     hash_cache_set("faillegacy.pdf", "hash-fail")
 
+    # Exercise the REAL _purge_legacy_hash_entry against an unreachable MinIO:
+    # the guard inside it must swallow the failure so hash_cache_delete never
+    # raises and the Redis HDEL stands.
     with patch(
-        "pageindex_mcp.storage.hash_cache._purge_legacy_hash_entry",
+        "pageindex_mcp.storage.minio_ops.get_minio",
         side_effect=RuntimeError("MinIO down"),
     ):
-        # _purge_legacy_hash_entry is called after HDEL, but even if the mock
-        # raises, hash_cache_delete itself catches it (best-effort).
-        # Since we're patching the function to raise, the call chain is:
-        # 1. HDEL (succeeds)  2. _purge_legacy_hash_entry (raises)
-        # The function structure in hash_cache.py calls HDEL first, then
-        # _purge_legacy_hash_entry. If the latter raises, the HDEL already ran.
-        try:
-            hash_cache_delete("faillegacy.pdf")
-        except RuntimeError:
-            pass  # If it bubbles up, that's fine -- HDEL still ran first
+        hash_cache_delete("faillegacy.pdf")  # must NOT raise
 
-    # Redis entry was deleted before the legacy purge attempt
     assert fake_cache_redis.hget("pageindex:hashes", "faillegacy.pdf") is None
+
+    # Same guarantee when the blob loads but the write-back put_object fails.
+    hash_cache_set("faillegacy2.pdf", "hash-fail2")
+    mc = MagicMock()
+    mc.put_object.side_effect = RuntimeError("write-back refused")
+    with (
+        patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mc),
+        patch(
+            "pageindex_mcp.storage.hash_cache._load_legacy_minio_hash_cache",
+            return_value={"faillegacy2.pdf": "stale"},
+        ),
+    ):
+        hash_cache_delete("faillegacy2.pdf")  # must NOT raise
+
+    assert fake_cache_redis.hget("pageindex:hashes", "faillegacy2.pdf") is None
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +849,56 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
     assert name_to_step["hash_cache"] == 5
     assert name_to_step["registry"] == 6
     assert name_to_step["preloaded"] == 7
+
+    # Relative ordering of the manifest tuple itself (drives execution order).
+    order = [e.name for e in _ERASURE_MANIFEST]
+    for earlier, later in (
+        ("uploads", "processed_json"),
+        ("processed_json", "meta_json"),
+        ("meta_json", "redis_cache"),
+        ("redis_cache", "reconcile_etag"),
+        ("reconcile_etag", "hash_cache"),
+        ("hash_cache", "registry"),
+        ("registry", "preloaded"),
+    ):
+        assert order.index(earlier) < order.index(later), (
+            f"HR2 cascade violated: {earlier} must precede {later} in {order}"
+        )
+
+
+def test_erasure_manifest_required_flags_match_behaviour():
+    """Exhaustiveness: every manifest step's ``required`` flag is pinned, so a
+    store silently flipping from compliance-mandatory to optional (or back)
+    breaks this test rather than the HR2 audit."""
+    from pageindex_mcp.storage.documents import _ERASURE_MANIFEST
+
+    expected_required = {
+        "uploads": True,
+        "processed_json": True,
+        # Optional: only flat-doc ingests emit a .flat.json artifact.
+        "processed_flat_json": False,
+        # Optional: text-only documents never produce figure crops.
+        "figures": False,
+        # Optional: an unreachable sidecar carries no sha256 to key on.
+        "verdicts": False,
+        "meta_json": True,
+        "redis_cache": True,
+        "reconcile_etag": True,
+        "hash_cache": True,
+        "registry": True,
+        # Optional: RFC-011 D2 — only preloaded ingests have a raw object here.
+        "preloaded": False,
+    }
+    actual_required = {e.name: e.required for e in _ERASURE_MANIFEST}
+    assert actual_required == expected_required
+
+    # Every step exposes a non-empty description and an awaitable executor.
+    for entry in _ERASURE_MANIFEST:
+        assert entry.description.strip(), f"{entry.name} has no description"
+        assert callable(entry.execute), f"{entry.name}.execute is not callable"
+        assert inspect.iscoroutinefunction(entry.execute), (
+            f"{entry.name}.execute must be a coroutine function"
+        )
 
 
 # ---------------------------------------------------------------------------

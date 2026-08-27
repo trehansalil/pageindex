@@ -214,30 +214,20 @@ _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".x
 # near-zero/garbled scanned content) also earn the force_full_page_ocr retry, not just
 # the garbling reasons above -- calibrated to the Run-10 corpus (highest affected doc
 # القرار التنظيمي at 230 garbled chars; legitimate sparse docs all exceed 400 chars).
-LOW_CONTENT_OCR_CHAR_FLOOR = int(os.getenv("LOW_CONTENT_OCR_CHAR_FLOOR", "300"))
-# RFC-023 D11: _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED now imported from config.py
-# (Zone-2 flag decoupling — eliminates local env-var read duplication).
-# RFC-023 D7 kill-switch (default on): Tesseract-on-raster last resort when the
-# VLM fallback itself crashes (rate limit / content-policy / token overflow).
-_VLM_TESSERACT_FALLBACK_ENABLED = os.getenv(
-    "VLM_TESSERACT_FALLBACK_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
-# RFC-024 D5 kill-switch (default on): also attempt the D7 Tesseract-on-raster
-# recovery when the VLM *succeeds* but validate_tree still reports 'garbling'
-# (as opposed to only when the VLM call itself raises). Set to false to
-# restore the RFC-023 D7 behavior where this path falls through to
-# LowQualityTreeError unchanged.
-_D7_GARBLE_RECOVERY_ENABLED = os.getenv("D7_GARBLE_RECOVERY_ENABLED", "true").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-# RFC-029 D1 (Task 3.1): flat-prefer multiplier — when flat char count exceeds
-# tree char count by this factor, prefer flat over tree result post-validation.
-_RFC029_FLAT_PREFER_MULTIPLIER = float(os.getenv("RFC029_FLAT_PREFER_MULTIPLIER", "3.0"))
-# RFC-029 D1 (Task 3.1): minimum chars-per-node floor (mirrors helpers.py constant;
-# client module holds the flat-prefer logic while helpers.py holds the validate gate).
-_RFC029_MIN_CHARS_PER_NODE = float(os.getenv("RFC029_MIN_CHARS_PER_NODE", "500"))
+# Zone-5 config layering: deprecated read-through alias.  The canonical value
+# is ``pipeline_config.low_content_ocr_char_floor`` (and the live copy used by
+# the recovery paths lives in client/recovery.py).  Kept only so existing
+# ``client.indexer.LOW_CONTENT_OCR_CHAR_FLOOR`` readers keep resolving.
+LOW_CONTENT_OCR_CHAR_FLOOR = pipeline_config.low_content_ocr_char_floor
+# Zone-5 dead-code removal: _VLM_TESSERACT_FALLBACK_ENABLED,
+# _D7_GARBLE_RECOVERY_ENABLED, _RFC029_FLAT_PREFER_MULTIPLIER and
+# _RFC029_MIN_CHARS_PER_NODE used to be re-read from os.getenv here as a second
+# config layer.  Nothing in this module ever read them (the live values are
+# client/recovery.py's pipeline_config reads and helpers' constants), and the
+# _RFC029_MIN_CHARS_PER_NODE copy had drifted to a stale default of 500 vs the
+# canonical 150.  Removed — read ``pipeline_config.<attr>`` instead.
+# RFC-023 D11: _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED is read from
+# pipeline_config (Zone-2 flag decoupling — eliminates env-var read duplication).
 
 
 def _split_converter_output(out) -> tuple[str, list, list]:

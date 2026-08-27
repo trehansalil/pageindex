@@ -10,6 +10,7 @@ helpers.py: D3A (tree-bulk garble detection), D3B (flat-markdown garble detectio
 D4 (_looks_like_toc_page).
 """
 
+import dataclasses
 import types
 from unittest import mock
 
@@ -186,7 +187,15 @@ class TestRecoverPictureResults:
     the figure splice happens only in client.index()'s flat branch."""
 
     def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
-        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", False)
+        # Zone-5 config layering: the gate now reads the pipeline_config
+        # singleton at call time, not the frozen module-level alias.
+        monkeypatch.setattr(
+            converters.pictures,
+            "pipeline_config",
+            dataclasses.replace(
+                converters.pictures.pipeline_config, ocr_escalation_per_picture=False
+            ),
+        )
         md = "Intro\n\n<!-- image -->\n\nOutro"
         bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
         pictures = [{"page": 1, "bbox": bbox}]

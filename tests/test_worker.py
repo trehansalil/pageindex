@@ -44,6 +44,18 @@ from pageindex_mcp.worker.constants import (
 )
 
 
+def _preclassify_on():
+    """Zone-5 config layering: the pdf-inspector preclassify gate reads
+    ``pipeline_config.pdf_inspector_preclassify`` at call time now, so tests
+    override the singleton instead of the deprecated module-level alias."""
+    from pageindex_mcp.worker import subprocess_mgr as _sm
+
+    return patch(
+        "pageindex_mcp.worker.subprocess_mgr.pipeline_config",
+        dataclasses.replace(_sm.pipeline_config, pdf_inspector_preclassify=True),
+    )
+
+
 @pytest.fixture
 def mock_redis():
     return AsyncMock()
@@ -311,7 +323,7 @@ async def test_timeout_multiplier_requires_confidence_threshold(confidence, expe
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ),
-        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
     ):
         result = await _run_converter_subprocess("/tmp/x.pdf")
@@ -351,7 +363,7 @@ async def test_effective_timeout_capped_at_max():
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ),
-        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
     ):
         result = await _run_converter_subprocess("/tmp/x.pdf")
@@ -375,7 +387,7 @@ async def test_timeout_cap_configurable_via_env(monkeypatch):
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ),
-        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
         patch("pageindex_mcp.worker.subprocess_mgr.MAX_EFFECTIVE_TIMEOUT", 100),
     ):
@@ -498,7 +510,7 @@ async def test_scanned_pdf_below_threshold_no_extended_timeout(fake_redis):
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ),
-        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
         patch("pageindex_mcp.worker.job.download_staging"),
         patch("pageindex_mcp.worker.job.delete_staging"),
@@ -555,7 +567,7 @@ async def test_scanned_pdf_above_threshold_extended_timeout(fake_redis):
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
             AsyncMock(return_value=proc),
         ),
-        patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+        _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
         patch("pageindex_mcp.worker.job.download_staging"),
         patch("pageindex_mcp.worker.job.delete_staging"),
@@ -632,7 +644,7 @@ def test_property_timeout_always_bounded(is_docling_route, chunk_count, pdf_type
                 "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
                 AsyncMock(return_value=proc),
             ),
-            patch("pageindex_mcp.worker.subprocess_mgr.PDF_INSPECTOR_PRECLASSIFY", True),
+            _preclassify_on(),
             patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
         ):
             return await _run_converter_subprocess("/tmp/x.pdf")

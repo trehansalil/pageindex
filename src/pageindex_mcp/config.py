@@ -538,7 +538,8 @@ def reset_pipeline_config() -> None:
     the old ``reset_verdict_thresholds()`` with a single function that
     resets ALL pipeline-behavior config at once.
 
-    Also patches re-importers (``helpers.pipeline_config``) so that
+    Also rebinds ``pipeline_config`` in every already-imported
+    ``pageindex_mcp.*`` module that holds a reference to the old instance, so
     ``compute_verdict`` and friends see the fresh config immediately.
     """
     global pipeline_config  # noqa: PLW0603
@@ -560,23 +561,17 @@ def reset_pipeline_config() -> None:
     VERDICT_DOWNGRADE_ENABLED = pipeline_config.verdict_downgrade_enabled
     import sys
 
-    _helpers = sys.modules.get("pageindex_mcp.helpers")
-    if _helpers is not None:
-        setattr(_helpers, "pipeline_config", pipeline_config)
-    for _sub in (
-        "pageindex_mcp.helpers.types",
-        "pageindex_mcp.helpers.garble",
-        "pageindex_mcp.helpers.gates",
-        "pageindex_mcp.helpers.verdict",
-        "pageindex_mcp.helpers.tree_validation",
-        "pageindex_mcp.helpers.tree_split",
-        "pageindex_mcp.converters.pipeline",
-        "pageindex_mcp.converters.pictures",
-        "pageindex_mcp.client.recovery",
-        "pageindex_mcp.worker.subprocess_mgr",
-    ):
-        _mod = sys.modules.get(_sub)
-        if _mod is not None and hasattr(_mod, "pipeline_config"):
+    # Zone-5 config layering: any module that did ``from ..config import
+    # pipeline_config`` holds a *name binding* to the old frozen instance and
+    # would otherwise go stale after this reset.  Rebinding is done by scanning
+    # every loaded ``pageindex_mcp.*`` module rather than a hardcoded list, so
+    # a new consumer module can never silently miss the resync.
+    for _name, _mod in list(sys.modules.items()):
+        if _mod is None or _name == __name__:
+            continue
+        if _name != "pageindex_mcp" and not _name.startswith("pageindex_mcp."):
+            continue
+        if getattr(_mod, "pipeline_config", None) is not None:
             setattr(_mod, "pipeline_config", pipeline_config)
 
 

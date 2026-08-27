@@ -171,7 +171,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 pdf_class.get("has_encoding_issues", False),
             )
             if (
-                PDF_INSPECTOR_PRECLASSIFY
+                pipeline_config.pdf_inspector_preclassify
                 and pdf_class.get("pdf_type") in ("scanned", "image_based")
                 and pdf_class.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD
             ):

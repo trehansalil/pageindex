@@ -78,8 +78,11 @@ def _purge_legacy_hash_entry(filename: str) -> None:
     store post-D6) is already deleted by the caller, so a legacy-blob
     failure is an acceptable degradation.
     """
-    mc = _minio_ops.get_minio()
+    # get_minio() itself performs network I/O (bucket existence probe), so it
+    # must sit inside the guard: an unreachable MinIO must degrade this
+    # best-effort purge, never abort the caller's erasure cascade.
     try:
+        mc = _minio_ops.get_minio()
         cache = _load_legacy_minio_hash_cache()
     except Exception:
         logger.debug(
@@ -90,12 +93,9 @@ def _purge_legacy_hash_entry(filename: str) -> None:
         return
     del cache[filename]
     try:
-        from ..config import settings
-
-        import json as _json
         from io import BytesIO as _BytesIO
 
-        content = _json.dumps(cache).encode()
+        content = json.dumps(cache).encode()
         mc.put_object(
             settings.minio_bucket,
             HASH_OBJECT,
