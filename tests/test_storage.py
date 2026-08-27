@@ -1,24 +1,18 @@
-# tests/test_storage.py
-"""Consolidated tests for pageindex_mcp.storage: MinIO read/write, sidecar
-persistence, the right-to-erasure cascade (ERASE-01 / Hard Rule 2), and the
-hash-cache / staging helpers.
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
+"""Storage operations: MinIO path prefix, presign public route, and core storage tests."""
+from __future__ import annotations
 
-STORE-01-C1  save_doc persists the tree JSON to processed/<doc_id>.json
-STORE-01-C2  re-uploading unchanged bytes is idempotent via SHA-256 dedup
-STORE-01-C3  load_doc returns the exact bytes save_doc persisted
-ERASE-01-C1  delete_doc cascades across stores in the mandated order
-ERASE-01-C2  delete_doc is idempotent (missing objects tolerated, no-op success)
-ERASE-01-C3  a mid-cascade failure is surfaced and names the unpurged store
-"""
-
+import importlib
 import inspect
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import urllib3
 from minio.error import S3Error
 
 from pageindex_mcp.helpers import GarbleConfig, ScriptContext, _garble_check_nodes
+from pageindex_mcp.minio_client import PrefixedPoolManager, make_minio
 from pageindex_mcp.storage import (
     _load_legacy_minio_hash_cache,
     delete_doc,
@@ -38,6 +32,9 @@ from pageindex_mcp.storage import (
 )
 
 
+# --- from test_storage.py ---
+
+
 def _obj(name: str) -> MagicMock:
     obj = MagicMock()
     obj.object_name = name
@@ -53,20 +50,9 @@ def _other_s3error(code="InternalError") -> S3Error:
 
 
 @pytest.fixture
-def mock_minio():
-    client = MagicMock()
-    client.bucket_exists.return_value = True
-    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=client):
-        yield client
-
-
-@pytest.fixture
-def fake_cache_redis():
-    import fakeredis
-
-    fake = fakeredis.FakeRedis(decode_responses=True)
-    with patch("pageindex_mcp.cache._redis_sync", fake):
-        yield fake
+def fake_cache_redis(fake_redis_sync):
+    with patch("pageindex_mcp.cache._redis_sync", fake_redis_sync):
+        yield fake_redis_sync
 
 
 def _wire_registry(monkeypatch, *, registry_delete_doc, get_pool_return=object()):
@@ -971,3 +957,324 @@ async def test_delete_doc_unknown_doc_name_skips_hash_cache_and_preloaded(mock_m
 
     # hash_cache_delete should NOT be called (no doc_name)
     mock_hc.assert_not_called()
+
+
+# --- from test_minio_path_prefix.py ---
+
+
+class TestPrefixedPoolManager:
+    def _capture(self, prefix, url, **kw):
+        pm = PrefixedPoolManager(prefix)
+        with patch.object(urllib3.PoolManager, "urlopen") as mock:
+            pm.urlopen("GET", url, **kw)
+        return mock.call_args
+
+    def test_prefix_inserted_before_path(self):
+        args = self._capture("/minio", "https://infra.example.com/pageindex/a.pdf")
+        assert args.args[1] == "https://infra.example.com/minio/pageindex/a.pdf"
+
+    def test_query_string_preserved_exactly(self):
+        """The signature covers the query — rewriting it would invalidate it."""
+        url = "https://infra.example.com/pageindex/?list-type=2&prefix=proc%2F"
+        args = self._capture("/minio", url)
+        assert args.args[1].endswith("?list-type=2&prefix=proc%2F")
+
+    def test_already_prefixed_path_not_prefixed_twice(self):
+        """urllib3 follows redirects by re-entering urlopen, so a redirect back
+        to /minio/... must not become /minio/minio/..."""
+        args = self._capture("/minio", "https://infra.example.com/minio/pageindex/a.pdf")
+        assert args.args[1] == "https://infra.example.com/minio/pageindex/a.pdf"
+
+    def test_prefix_lookalike_path_is_still_prefixed(self):
+        """/minio-staging is a different path, not an already-prefixed one."""
+        args = self._capture("/minio", "https://infra.example.com/minio-staging/a")
+        assert args.args[1] == "https://infra.example.com/minio/minio-staging/a"
+
+
+class TestPrefixedPoolInheritsSdkSettings:
+    """Passing http_client= replaces the SDK's own pool, so the prefixed pool
+    must carry the same timeout/retry/CA policy or those guarantees silently
+    vanish on exactly the deployments that use the public route."""
+
+    def test_timeout_and_retries_match_sdk_defaults(self):
+        pm = PrefixedPoolManager("/minio")
+        kw = pm.connection_pool_kw
+
+        assert kw["timeout"].connect_timeout == 300
+        assert kw["timeout"].read_timeout == 300
+        assert kw["maxsize"] == 10
+        assert kw["cert_reqs"] == "CERT_REQUIRED"
+        assert kw["ca_certs"]
+        assert kw["retries"].total == 5
+        assert kw["retries"].status_forcelist == [500, 502, 503, 504]
+
+    def test_explicit_kwargs_still_override(self):
+        pm = PrefixedPoolManager("/minio", maxsize=3)
+        assert pm.connection_pool_kw["maxsize"] == 3
+
+
+class TestMakeMinio:
+    def test_prefix_installs_custom_http_client(self):
+        client = make_minio("infra.example.com", "k", "s", secure=True, path_prefix="/minio")
+        assert isinstance(client._http, PrefixedPoolManager)
+
+    def test_endpoint_with_path_is_still_rejected(self):
+        """Guards the reason this module exists — if the SDK ever accepted a
+        path, the whole workaround could be dropped."""
+        with pytest.raises(ValueError, match="path in endpoint"):
+            make_minio("infra.example.com/minio", "k", "s", secure=True, path_prefix="")
+
+
+@pytest.fixture
+def reloadable_config(monkeypatch):
+    """Yield pageindex_mcp.config, restoring the module-level singleton after.
+
+    ``importlib.reload`` rebinds ``config.settings``, and monkeypatch only
+    rewinds the environment — not the reloaded module. Without this teardown a
+    test that reloads under MINIO_PATH_PREFIX=/minio leaves that value visible
+    to every later test that reads ``config.settings`` directly.
+    """
+    import pageindex_mcp.config as cfg
+
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    original = cfg.settings
+    try:
+        yield cfg
+    finally:
+        cfg.settings = original
+
+
+class TestConfig:
+    def test_minio_path_prefix_defaults_empty(self, monkeypatch, reloadable_config):
+        monkeypatch.delenv("MINIO_PATH_PREFIX", raising=False)
+
+        importlib.reload(reloadable_config)
+        assert reloadable_config.settings.minio_path_prefix == ""
+
+    def test_minio_path_prefix_normalized(self, monkeypatch, reloadable_config):
+        for raw in ("minio", "/minio", "/minio/"):
+            monkeypatch.setenv("MINIO_PATH_PREFIX", raw)
+            importlib.reload(reloadable_config)
+            assert reloadable_config.settings.minio_path_prefix == "/minio", raw
+
+
+class TestPresignFallsBackToMainPrefix:
+    """With no separate presign endpoint, presigned URLs are built from the main
+    endpoint — so they need the main endpoint's route prefix, or they 404."""
+
+    def test_main_prefix_used_when_no_presign_endpoint(self):
+        import pageindex_mcp.storage as storage
+
+        signed = "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        with patch.object(storage.minio_ops, "settings") as s:
+            s.minio_endpoint = "infra.example.com"
+            s.minio_path_prefix = "/minio"
+            s.minio_presign_endpoint = None
+            s.minio_presign_path_prefix = ""
+            out = storage._apply_route_prefix(signed)
+
+        assert out == (
+            "https://infra.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        )
+
+    def test_presign_endpoint_prefix_wins_when_set(self):
+        import pageindex_mcp.storage as storage
+
+        signed = "https://public.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        with patch.object(storage.minio_ops, "settings") as s:
+            s.minio_endpoint = "10.43.0.1:9000"
+            s.minio_path_prefix = ""
+            s.minio_presign_endpoint = "public.example.com"
+            s.minio_presign_path_prefix = "/minio"
+            out = storage._apply_route_prefix(signed)
+
+        assert out == (
+            "https://public.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        )
+
+
+# --- from test_presign_public_route.py ---
+
+
+class TestPresignSettings:
+    def test_presign_secure_defaults_to_true(self, monkeypatch):
+        monkeypatch.delenv("MINIO_PRESIGN_SECURE", raising=False)
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+        import pageindex_mcp.config as cfg
+
+        importlib.reload(cfg)
+        assert cfg.settings.minio_presign_secure is True
+
+    def test_presign_secure_read_from_env(self, monkeypatch):
+        monkeypatch.setenv("MINIO_PRESIGN_SECURE", "false")
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+        import pageindex_mcp.config as cfg
+
+        importlib.reload(cfg)
+        assert cfg.settings.minio_presign_secure is False
+
+    def test_presign_path_prefix_defaults_to_empty(self, monkeypatch):
+        monkeypatch.delenv("MINIO_PRESIGN_PATH_PREFIX", raising=False)
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+        import pageindex_mcp.config as cfg
+
+        importlib.reload(cfg)
+        assert cfg.settings.minio_presign_path_prefix == ""
+
+    def test_presign_path_prefix_normalized(self, monkeypatch):
+        """Accept 'minio', '/minio' and '/minio/' — all mean the same route."""
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+        import pageindex_mcp.config as cfg
+
+        for raw in ("minio", "/minio", "/minio/"):
+            monkeypatch.setenv("MINIO_PRESIGN_PATH_PREFIX", raw)
+            importlib.reload(cfg)
+            assert cfg.settings.minio_presign_path_prefix == "/minio", raw
+
+
+class TestDoclingUrlNormalization:
+    """`{url}/convert/pdf` on a trailing-slash URL yields `//convert/pdf`, which
+    the Scaleway function 404s. Observed live against a real conversion call."""
+
+    def test_trailing_slash_stripped(self, monkeypatch):
+        monkeypatch.setenv("DOCLING_SERVICE_URL", "https://docling.example.com/")
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+        import pageindex_mcp.config as cfg
+
+        importlib.reload(cfg)
+        assert cfg.settings.docling_service_url == "https://docling.example.com"
+        assert f"{cfg.settings.docling_service_url}/convert/pdf" == (
+            "https://docling.example.com/convert/pdf"
+        )
+
+    def test_unset_stays_none(self, monkeypatch):
+        monkeypatch.delenv("DOCLING_SERVICE_URL", raising=False)
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+        import pageindex_mcp.config as cfg
+
+        importlib.reload(cfg)
+        assert cfg.settings.docling_service_url is None
+
+
+def _presign_settings(mock_settings, **overrides):
+    mock_settings.minio_presign_endpoint = "infra.example.com"
+    mock_settings.minio_endpoint = "10.43.0.1:9000"
+    mock_settings.minio_path_prefix = ""
+    mock_settings.minio_bucket = "pageindex"
+    mock_settings.minio_access_key = "key"
+    mock_settings.minio_secret_key = "secret"
+    mock_settings.minio_secure = False  # internal endpoint is plaintext
+    mock_settings.minio_presign_secure = True  # public endpoint is HTTPS
+    mock_settings.minio_presign_path_prefix = ""
+    mock_settings.minio_region = "us-east-1"
+    for k, v in overrides.items():
+        setattr(mock_settings, k, v)
+    return mock_settings
+
+
+class TestPresignClientConstruction:
+    def test_uses_presign_secure_not_minio_secure(self):
+        """MINIO_SECURE=false must not downgrade a public HTTPS presign host."""
+        import pageindex_mcp.storage as storage
+
+        with (
+            patch.object(storage.minio_ops, "_presign_client", None),
+            patch.object(storage.minio_ops, "make_minio") as mock_cls,
+            patch.object(storage.minio_ops, "settings") as mock_settings,
+        ):
+            _presign_settings(mock_settings)
+            storage._get_presign_minio()
+
+        assert mock_cls.call_args.kwargs["secure"] is True
+
+    def test_pins_region_to_avoid_live_bucket_location_lookup(self):
+        """Unset region makes the SDK call GetBucketLocation on the public host,
+        which is not routable for that verb — it raised instead of signing."""
+        import pageindex_mcp.storage as storage
+
+        with (
+            patch.object(storage.minio_ops, "_presign_client", None),
+            patch.object(storage.minio_ops, "make_minio") as mock_cls,
+            patch.object(storage.minio_ops, "settings") as mock_settings,
+        ):
+            _presign_settings(mock_settings)
+            storage._get_presign_minio()
+
+        assert mock_cls.call_args.kwargs.get("region") == "us-east-1"
+
+
+class TestPresignPathPrefix:
+    def test_prefix_spliced_after_signing(self):
+        """Signature covers /pageindex/<key>; the route serves it under /minio."""
+        import pageindex_mcp.storage as storage
+
+        mock_client = MagicMock()
+        mock_client.presigned_get_object.return_value = (
+            "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        )
+        with (
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
+        ):
+            _presign_settings(mock_settings, minio_presign_path_prefix="/minio")
+            url = storage.presigned_get_url("uploads/a.pdf")
+
+        assert url == (
+            "https://infra.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        )
+
+    def test_query_string_is_untouched(self):
+        """Rewriting the query would invalidate the signature."""
+        import pageindex_mcp.storage as storage
+
+        signed_query = "X-Amz-Signature=abc&X-Amz-Credential=k%2Fus-east-1&X-Amz-Expires=900"
+        mock_client = MagicMock()
+        mock_client.presigned_get_object.return_value = (
+            f"https://infra.example.com/pageindex/uploads/a.pdf?{signed_query}"
+        )
+        with (
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
+        ):
+            _presign_settings(mock_settings, minio_presign_path_prefix="/minio")
+            url = storage.presigned_get_url("uploads/a.pdf")
+
+        assert url.split("?", 1)[1] == signed_query
+
+    def test_no_prefix_leaves_url_unchanged(self):
+        import pageindex_mcp.storage as storage
+
+        signed = "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        mock_client = MagicMock()
+        mock_client.presigned_get_object.return_value = signed
+        with (
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
+        ):
+            _presign_settings(mock_settings, minio_presign_path_prefix="")
+            url = storage.presigned_get_url("uploads/a.pdf")
+
+        assert url == signed
+
+    def test_prefix_ignored_when_endpoint_addresses_minio_directly(self):
+        """A ClusterIP endpoint has no route prefix, so nothing is spliced —
+        the presign prefix belongs to the presign host, not this one."""
+        import pageindex_mcp.storage as storage
+
+        signed = "http://10.43.23.66:9000/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+        mock_client = MagicMock()
+        mock_client.presigned_get_object.return_value = signed
+        with (
+            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
+            patch.object(storage.minio_ops, "settings") as mock_settings,
+        ):
+            _presign_settings(
+                mock_settings,
+                minio_presign_endpoint=None,
+                minio_endpoint="10.43.23.66:9000",
+                minio_path_prefix="",
+                minio_presign_path_prefix="/minio",
+            )
+            url = storage.presigned_get_url("uploads/a.pdf")
+
+        assert url == signed

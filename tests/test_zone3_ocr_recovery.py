@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Zone 3 — OCR Recovery Cascade contract tests.
 
 Tests the extracted pure functions from the wave-2 refactor:

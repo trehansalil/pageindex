@@ -1,30 +1,106 @@
-# tests/test_outline_inference.py
-"""Unit tests for the PDF-OUTLINE heading-depth recovery in
-``pageindex_mcp.converters`` — the last-resort depth source for flat-prose German
-insurance PDFs (IPID / FAQ T&Cs) whose headings carry NO numbering, so the
-numbering-prefix chain (_relevel_by_containment / _relevel_by_numbering) leaves
-them flat (max_heading_level == 1) and the HR5 depth>=2 gate falsely rejects them.
-
-These are FAST pure-Python tests: no Docling, no PyMuPDF, no PDF, no LLM. They
-drive ``_apply_outline_levels`` (the pure string transform) directly with a
-synthetic {heading -> page} map + parsed TOC, pinning the behaviour each
-adversarial review of the design demanded:
-
-  _outline_norm          title -> lowercase alphanumerics (cross-source matching)
-  _title_matches         exact / substantial-substring section-title match
-  _apply_outline_levels  assign H-levels from outline page-spans + inject missing
-                         section titles (BLOCKER-1 fix: anchor only on real title
-                         match, never "first child"; BLOCKER-2 fix: nesting-aware
-                         extents so co-page L1/L2 entries don't collapse)
-"""
-
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
+from __future__ import annotations
+"""Outline extraction, inference, and depth tests."""
 import re
+
+import pytest
 
 from pageindex_mcp.converters import (
     _apply_outline_levels,
+    _collapse_spaced,
+    _containment_depths,
     _outline_norm,
+    _read_pdf_outline,
+    _relevel_by_containment,
+    _segment_label,
+    _split_alnum,
     _title_matches,
+    numbering_depth,
 )
+from pageindex_mcp.helpers import split_oversized_leaf_nodes
+
+
+# --- from test_read_pdf_outline.py ---
+
+def _pdf_with_outline(tmp_path, entries, n_pages=6):
+    """Write a PDF with ``n_pages`` blank pages and a nested outline.
+
+    ``entries``: list of ``(title, page_0based, is_child)`` — an ``is_child`` entry
+    nests under the most recent top-level item."""
+    from PyPDF2 import PdfWriter
+
+    w = PdfWriter()
+    for _ in range(n_pages):
+        w.add_blank_page(width=200, height=200)
+    last_parent = None
+    for title, page0, is_child in entries:
+        if is_child and last_parent is not None:
+            w.add_outline_item(title, page0, parent=last_parent)
+        else:
+            last_parent = w.add_outline_item(title, page0)
+    path = tmp_path / "outlined.pdf"
+    with open(path, "wb") as fh:
+        w.write(fh)
+    return str(path)
+
+
+def test_read_pdf_outline_applies_one_based_offsets(tmp_path):
+    """A 2-level outline round-trips to 1-based level + 1-based page tuples in
+    document (outline) order — the offset the consumer depends on."""
+    path = _pdf_with_outline(
+        tmp_path,
+        [
+            ("Chapter A", 0, False),  # level 1, page 1
+            ("Section A.1", 2, True),  # level 2, page 3
+            ("Chapter B", 4, False),  # level 1, page 5
+        ],
+    )
+    toc, total_pages = _read_pdf_outline(path)
+    assert total_pages == 6
+    assert toc == [
+        (1, "Chapter A", 1),
+        (2, "Section A.1", 3),
+        (1, "Chapter B", 5),
+    ]
+
+
+def test_read_pdf_outline_preserves_outline_order_not_page_order(tmp_path):
+    """Document/outline order is preserved verbatim — entries are NOT re-sorted by
+    page, because section extents are computed by nesting (reading order)."""
+    path = _pdf_with_outline(
+        tmp_path,
+        [
+            ("First", 1, False),  # page 2
+            ("Second", 0, False),  # page 1 (earlier page, later in outline)
+            ("Third", 3, False),  # page 4
+        ],
+    )
+    toc, _ = _read_pdf_outline(path)
+    assert [t for _, t, _ in toc] == ["First", "Second", "Third"]
+    assert [p for _, _, p in toc] == [2, 1, 4]
+
+
+def test_read_pdf_outline_fewer_than_two_entries_returns_empty(tmp_path):
+    """A single-bookmark outline yields no usable structural signal -> ([], 0), so
+    the caller leaves the markdown flat and the gate rejects it legitimately (HR5)."""
+    path = _pdf_with_outline(tmp_path, [("Solo", 0, False)])
+    assert _read_pdf_outline(path) == ([], 0)
+
+
+def test_read_pdf_outline_no_outline_returns_empty(tmp_path):
+    """A PDF with pages but no bookmarks at all -> ([], 0)."""
+    from PyPDF2 import PdfWriter
+
+    w = PdfWriter()
+    for _ in range(3):
+        w.add_blank_page(width=200, height=200)
+    path = tmp_path / "flat.pdf"
+    with open(path, "wb") as fh:
+        w.write(fh)
+    assert _read_pdf_outline(str(path)) == ([], 0)
+
+
+# --- from test_outline_inference.py ---
 
 _HEAD = re.compile(r"^(#{1,6})[ \t]+(.*\S)[ \t]*$", re.MULTILINE)
 
@@ -263,3 +339,125 @@ def test_heading_without_page_provenance_is_left_unchanged():
     assert levels["Orphan Heading"] == 1  # no provenance -> untouched
     assert levels["Besondere Bedingungen Katzen-Krankenversicherung"] == 1
     assert levels["Leistungen"] == 2
+
+
+# --- from test_depth_inference.py ---
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("A.1.1", ["A", "1", "1"]),
+        ("Versicherte Personen", []),
+    ],
+)
+def test_segment_label_components(title, expected):
+    assert _segment_label(title) == expected
+
+
+def test_segment_label_letter_spaced():
+    assert _collapse_spaced("T e i l   A") == "Teil A"
+    assert _segment_label("T e i l   A") == ["A"]
+
+
+@pytest.mark.parametrize(
+    "tok,expected",
+    [
+        ("A1", ["A", "1"]),
+        ("A(GB)1", ["A", "GB", "1"]),
+    ],
+)
+def test_split_alnum(tok, expected):
+    assert _split_alnum(tok) == expected
+
+
+def test_containment_depths():
+    assert _containment_depths(["A", "A.1", "A.1.1", "Versicherte Personen"]) == [1, 2, 3, None]
+
+
+def test_relevel_by_containment():
+    md = "# A\n\nbody a\n\n# A.1\n\nbody a1\n\n# A.1.1\n\nbody a11\n\n# Versicherte Personen\n\nbody vp\n"
+    out = _relevel_by_containment(md)
+    heading_lines = [ln for ln in out.splitlines() if ln.startswith("#")]
+    assert heading_lines == ["# A", "## A.1", "### A.1.1", "# Versicherte Personen"]
+
+
+def test_numeric_extension():
+    lab = tuple(_segment_label("A.1.1"))
+    anchors = {("A",), ("A", "1")}
+    assert any(
+        lab[:k] in anchors and all(c.isdigit() for c in lab[k:]) for k in range(len(lab) - 1, 0, -1)
+    )
+    bad_lab = tuple(_segment_label("A.1.x"))
+    assert not any(
+        bad_lab[:k] in anchors and all(c.isdigit() for c in bad_lab[k:])
+        for k in range(len(bad_lab) - 1, 0, -1)
+    )
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("المادة (9)", 2),
+        ("A.1 Geltungsbereich", 2),
+    ],
+)
+def test_numbering_depth(title, expected):
+    assert numbering_depth(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("المادة ٩", ["9"]),
+        ("Abschnitt A1", ["A", "1"]),
+    ],
+)
+def test_segment_label_arabic(title, expected):
+    assert _segment_label(title) == expected
+
+
+_SMALL_MAX = 50
+
+
+def _make_leaf(node_id, text):
+    return {"title": "Root", "text": text, "nodes": [], "node_id": node_id}
+
+
+def test_split_oversized_arabic_markers():
+    preamble = "مقدمة " * 10 + "\n"
+    body = "المادة (1)\nنص المادة الأولى\nالمادة (2)\nنص المادة الثانية\nالمادة (3)\nنص المادة الثالثة\n"
+    text = preamble + body
+    assert len(text) > _SMALL_MAX
+    node = _make_leaf("root-1", text)
+    result = split_oversized_leaf_nodes([node], max_chars=_SMALL_MAX)
+    assert len(result[0]["nodes"]) == 3
+    assert result[0]["nodes"][0]["node_id"] == "root-1-s0"
+
+
+def test_split_oversized_english_paren_inline():
+    preamble = "preamble. "
+    body = (
+        "Article (1) the first provision states things. "
+        "Article (2) the second provision continues. "
+        "Article (3) the third provision concludes here."
+    )
+    text = preamble + body
+    assert len(text) > _SMALL_MAX
+    node = _make_leaf("paren", text)
+    result = split_oversized_leaf_nodes([node], max_chars=_SMALL_MAX)
+    assert len(result[0]["nodes"]) == 3
+    assert result[0]["text"] + "".join(c["text"] for c in result[0]["nodes"]) == text
+
+
+def test_frontmatter_toc_left_intact():
+    entries = "\n".join(
+        f"Chapter Title {i} for Dartmouth Publishing House Social Rights Review "
+        + "." * 12
+        + f" {i}"
+        for i in range(40)
+    )
+    text = "حقـوق الإنسان\nDartmouth Publishing House, Social Rights Review 1996.\n" + entries
+    assert len(text) > _SMALL_MAX
+    node = _make_leaf("toc", text)
+    result = split_oversized_leaf_nodes([node], max_chars=_SMALL_MAX)
+    assert result[0]["nodes"] == []

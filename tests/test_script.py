@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Tests for pageindex_mcp.script -- Arabic/RTL script-detection primitives.
 
 Consolidates:

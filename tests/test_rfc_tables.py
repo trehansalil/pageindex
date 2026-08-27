@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """RFC-029 table/quality-gate consolidated tests.
 
 Consolidates test_rfc029_d0, d1, d2, d3, d4, d5ab, d7, d8 into one file,

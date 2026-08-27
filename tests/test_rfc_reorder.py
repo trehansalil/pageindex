@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """RFC-015 reorder-detection consolidated tests.
 
 Merges test_rfc015_couple_d.py (D5a/D5b/D8/D9 — helpers.py oversized-leaf

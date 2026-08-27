@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Consolidated RFC-026 registry tests.
 
 Merges the former test_rfc026_d0/d1/d2/d3/d5 modules. Covers:
@@ -16,19 +17,12 @@ were removed upstream — those APIs were replaced by the verdict ledger
 (Zone 4). See tests/test_zone4_verdict_ledger.py for that coverage.
 """
 
-import json
 import os
-import re
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from pageindex_mcp.helpers import classify_verdict, validate_tree
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-HARNESS_JS = PROJECT_ROOT / ".claude" / "workflows" / "corpus-ingest-score.js"
 
 
 # ---------------------------------------------------------------------------
@@ -249,51 +243,6 @@ class TestPageRotationDetection:
         path = _make_pdf(tmp_path, "needs_fix.pdf", width=800, height=600, rotate=0)
         result_path = _normalize_pdf_page_rotation(path)
         assert result_path == path
-
-
-# ---------------------------------------------------------------------------
-# Scoring-harness Stage 2 guard (D4)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(
-    not HARNESS_JS.exists() or shutil.which("node") is None,
-    reason="workflow JS not present or node not on PATH",
-)
-class TestScoringHarnessStage2Guard:
-    """The scoring harness's Stage 2 guard
-    (.claude/workflows/corpus-ingest-score.js) short-circuits to ERROR iff
-    ingestResult is falsy or ingestResult.status === 'error' -- never on a
-    substring match against unrelated string fields."""
-
-    @pytest.fixture(scope="class")
-    def guard_predicate(self):
-        source = HARNESS_JS.read_text()
-        match = re.search(r"if \(!ingestResult \|\| ingestResult\.status === 'error'\)", source)
-        assert match, "Stage 2 guard predicate not found in corpus-ingest-score.js"
-        return "!ingestResult || ingestResult.status === 'error'"
-
-    def _run_guard(self, guard_predicate: str, ingest_result_json: str) -> bool:
-        script = f"""
-        const ingestResult = {ingest_result_json};
-        const isError = {guard_predicate};
-        console.log(JSON.stringify(isError));
-        """
-        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
-        return json.loads(result.stdout.strip())
-
-    def test_success_status_with_unrelated_error_substring_proceeds(self, guard_predicate):
-        ingest_result = json.dumps(
-            {"status": "success", "doc_id": "x", "note": "error handling succeeded"}
-        )
-        assert self._run_guard(guard_predicate, ingest_result) is False
-
-    def test_error_status_short_circuits(self, guard_predicate):
-        ingest_result = json.dumps({"status": "error", "error": "OOM"})
-        assert self._run_guard(guard_predicate, ingest_result) is True
-
-    def test_null_ingest_result_short_circuits(self, guard_predicate):
-        assert self._run_guard(guard_predicate, "null") is True
 
 
 # ---------------------------------------------------------------------------

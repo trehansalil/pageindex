@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Zone-6: density gate & tree-prep consolidated tests.
 
 Consolidates (former test_zone6_*.py files):

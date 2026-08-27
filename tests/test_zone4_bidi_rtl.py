@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Zone 4 — Bidi/RTL Processing Split contract tests.
 
 Tests the wave-2 fixes:

@@ -29,11 +29,6 @@ def patch_settings():
 
 
 @pytest.fixture
-def fake_redis():
-    return fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-
-@pytest.fixture
 def mock_arq_pool():
     pool = AsyncMock()
     pool.enqueue_job = AsyncMock()

@@ -410,15 +410,6 @@ def jpg_file():
         os.unlink(path)
 
 
-@pytest.fixture
-def pdf_file():
-    fd, path = tempfile.mkstemp(suffix=".pdf")
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\nreal-looking pdf bytes")
-    yield path
-    if os.path.exists(path):
-        os.unlink(path)
-
 
 async def test_bare_jpg_extension_overrides_flat_mixed_to_image_standalone(monkeypatch, jpg_file):
     """D7: a .jpg whose OCR markdown route_and_extract_flat classifies as

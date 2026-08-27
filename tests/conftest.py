@@ -33,7 +33,7 @@ makes it "already present" (parses to the memory-safe default via
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -76,6 +76,35 @@ def _reset_verdict_thresholds_cache():
     reset_verdict_thresholds()
     yield
     reset_verdict_thresholds()
+
+
+@pytest.fixture
+def fake_redis_sync():
+    import fakeredis
+
+    return fakeredis.FakeRedis(decode_responses=True)
+
+
+@pytest.fixture
+def fake_redis():
+    import fakeredis
+
+    return fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+
+@pytest.fixture
+def mock_minio():
+    client = MagicMock()
+    client.bucket_exists.return_value = True
+    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=client):
+        yield client
+
+
+@pytest.fixture
+def pdf_file(tmp_path):
+    path = tmp_path / "doc.pdf"
+    path.write_bytes(b"%PDF-1.4\n fake pdf bytes")
+    return str(path)
 
 
 _FILLER_WORDS = (

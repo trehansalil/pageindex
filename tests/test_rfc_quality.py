@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """RFC-021 quality-gate tests, consolidated and trimmed."""
 
 import os
@@ -47,15 +48,6 @@ def _fake_settings(flat_doc_routing: bool = True):
 def _make_client():
     return CustomPageIndexClient(api_key="test-key")
 
-
-@pytest.fixture
-def pdf_file_with_content():
-    fd, path = tempfile.mkstemp(suffix=".pdf")
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n real-looking pdf bytes")
-    yield path
-    if os.path.exists(path):
-        os.unlink(path)
 
 
 async def _tree_coro():
@@ -113,16 +105,16 @@ def _wire_garble_probe(
 
 
 class TestOcrDeferralQF1:
-    async def test_ocr_deferral_default(self, monkeypatch, pdf_file_with_content):
+    async def test_ocr_deferral_default(self, monkeypatch, pdf_file):
         monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
         mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
-        await c.index(pdf_file_with_content)
-        conv_mock.assert_called_once_with(pdf_file_with_content, expected_script="Latn")
+        await c.index(pdf_file)
+        conv_mock.assert_called_once_with(pdf_file, expected_script="Latn")
         mocks["save_doc"].assert_called_once()
 
-    async def test_fix3_retry_still_fires(self, monkeypatch, pdf_file_with_content):
+    async def test_fix3_retry_still_fires(self, monkeypatch, pdf_file):
         monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
         mocks, conv_mock = _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
         vt = MagicMock(side_effect=[(False, "garbling"), (True, None)])
@@ -143,7 +135,7 @@ class TestOcrDeferralQF1:
         monkeypatch.setattr(_rec, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
-        await c.index(pdf_file_with_content)
+        await c.index(pdf_file)
         assert len(escalation_calls) == 1
         assert escalation_calls[0]["force_full_page_ocr"] is True
 
@@ -226,7 +218,7 @@ class TestClassifyImageVerdict:
 
 
 class TestImageStandaloneClientRouting:
-    async def test_env_enabled_promotes_content_class(self, monkeypatch, pdf_file_with_content):
+    async def test_env_enabled_promotes_content_class(self, monkeypatch, pdf_file):
         from pageindex_mcp.helpers import GarbleReport
 
         _IMAGE_LIGHT_MD = "\n".join(["<!-- image -->"] * 2 + ["some real text line"] * 5)
@@ -271,7 +263,7 @@ class TestImageStandaloneClientRouting:
         monkeypatch.setattr(_img, "_IMAGE_STANDALONE_PIPELINE_ENABLED", True)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
-        await c.index(pdf_file_with_content)
+        await c.index(pdf_file)
         flat_docs_mock.labels.assert_called_once_with(content_class="image_standalone")
 
 

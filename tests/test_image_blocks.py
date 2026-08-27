@@ -445,15 +445,6 @@ def _fake_client_settings(vlm_describe_images=False):
     )
 
 
-@pytest.fixture
-def pdf_file():
-    fd, path = tempfile.mkstemp(suffix=".pdf")
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n fake pdf bytes")
-    yield path
-    if os.path.exists(path):
-        os.unlink(path)
-
 
 async def _tree_coro():
     return {"structure": [], "doc_description": ""}
