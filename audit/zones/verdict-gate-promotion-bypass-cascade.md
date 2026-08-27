@@ -1,68 +1,49 @@
 ---
 zone_name: Verdict Gate Promotion Bypass Cascade
 severity: critical
-bug_count: 8
-status: regressed
+bug_count: 11
+status: audited
 audit_date: 2026-08-26
-audit_run: POST-FIX-12
-audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-12.md
+audit_run: POST-FIX-13
+audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-13.md
 key_files:
   - src/pageindex_mcp/helpers/verdict.py
+  - src/pageindex_mcp/helpers/tree_validation.py
+  - src/pageindex_mcp/helpers/gates.py
   - src/pageindex_mcp/config.py
-  - src/pageindex_mcp/storage/verdict.py
 tags:
   - zone-spec
   - critical
-  - hard-rule-5
-scorecard_verdict: regressed
-scorecard_date: 2026-08-26
-scorecard_run: POST-FIX-12
+  - verdict
+  - gate
+  - promotion
 ---
 ## Mechanism
 
-The verdict engine implements a two-stage cascade (evaluate_gates → apply_promotions) where multiple promotion branches bypass structural quality gates, violating Hard Rule 5 ('never silently persist a low-quality tree'). 
+The generative mechanism is **MULTIPLE INDEPENDENT BYPASS PATHS WITH CIRCULAR THRESHOLD COUPLING**. `apply_promotions` (verdict.py:407-518) runs only when no HARD_FAIL fired, but the hard-fail check itself is conditionally gated: the max_leaf_ratio structural hard-fail at line 476 is evaluated 'if not _has_image_rescue' — so a fired image_enrichment_promoted candidate (priority=100, _try_image_enrichment at verdict.py:220-270) bypasses what would otherwise be an unconditional FAIL.
 
-The generative mechanism is a priority-based candidate system where each RFC adds a new promotion path to rescue one category of false-positive FAILs, but each new path also opens a bypass for genuinely-bad documents. The `image_enrichment_promoted` candidate carries locked priority=100 that explicitly outranks the structural max_leaf_ratio hard-fail. Small_doc_promotion, flat_promotion, and content_class_promotion candidates independently bypass content-volume quality checks.
+`_try_image_enrichment` checks image_enrichment_ratio >= 0.8 but has no minimum char floor for the PASS verdict path when total_chars >= th.min_image_promoted_chars — and below that floor, it returns a MARGINAL verdict still at priority=100, still outranking structural passes.
 
-Threshold ratcheting (PASS_MAX_LEAF_RATIO widened 0.17→0.20→0.30) progressively weakened structural gates. RFC-025 hysteresis mechanism (prior-verdict anchoring) was defeated entirely by corpus reingestion wiping processed/*.meta.json sidecars, AND independently softened four zero-char Arabic docs from FAIL/ERROR to MARGINAL.
-
-## Evidence History
-
-| RFC/Run | Finding |
-|---|---|
-| RFC-023 D10 | Widened PASS_MAX_LEAF_RATIO 0.17→0.20; missed Reitlehrer at 0.2571 |
-| RFC-024 D0 | Widened 0.20→0.30; own risk table predicted failure |
-| RFC-025 D0 | Hysteresis defeated by corpus reingestion wiping meta.json sidecars; softened four zero-char Arabic docs FAIL/ERROR→MARGINAL |
-| RFC-025 D1 | Page-level `_text_layer_has_content` from header/footer disabled picture OCR (503k→382 chars) |
-| Run 9 audit | Flagged `image_enrichment_promoted` bypass — documents with only 38-123 chars received PASS verdicts (marsoom-13, al-qarar) |
+The threshold coupling is circular: widening PASS_MAX_LEAF_RATIO to reduce false FAILs (RFC-023 D10: 0.17→0.20, RFC-024 D0: 0.20→0.30) let garbled documents through; adding hysteresis (RFC-025 D0) to stabilize verdicts was defeated by reingestion wiping processed/*.meta.json (RFC-026 D3); and the hysteresis itself interacts badly with garble detection because it relaxes max_leaf_ratio when prior_verdict=='PASS', letting identical garbling metrics pass on re-score.
 
 ## Code Evidence
 
-**compute_verdict** (verdict.py:521-564) — Hard-fail short-circuit
-```python
-outcome = evaluate_gates(...)
-if outcome.hard_fail_verdict is not None:
-    return outcome.hard_fail_verdict
-```
+- `apply_promotions` (verdict.py:407-518): hard-fail check at line 476 'if not _has_image_rescue and sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio' — the _has_image_rescue guard is computed at line 473 'any(c.path_name == "image_enrichment_promoted" for c in candidates)'.
 
-**apply_promotions** (verdict.py:407-518) — Image enrichment bypass
-```python
-_has_image_rescue = any(c.path_name == 'image_enrichment_promoted' for c in candidates)
-if not _has_image_rescue and sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
-    return VerdictResult('FAIL', ...)
-# image enrichment explicitly bypasses structural hard-fail
-best = max(candidates, key=lambda c: c.priority)  # image_enrichment at priority=100
-```
+- `_try_image_enrichment` (verdict.py:220-270): returns `PromotionCandidate(priority=100, path_name='image_enrichment_promoted', verdict='PASS')` at line 267 when ratio>=0.8 and total_chars >= min_image_promoted_chars and not garbled. Returns MARGINAL at priority=100 when below char floor (line 244).
 
-**evaluate_gates** (verdict.py:119-217) — Zero-content hard-fail
-```python
-if sig.node_count == 0 or len(sig.flat_text.strip()) == 0:
-    return GateOutcome(...hard_fail_verdict=VerdictResult('FAIL', 'zero_content'...))
-# But promotion candidates can fire on near-zero content
-```
+- `GATE_TABLE` (gates.py:321-408): 10 active gates evaluated exhaustively, severity-ordered (GARBLING=0 highest, SUSPECT_DENSITY=9 lowest).
 
-## Key Files
+- `validate_tree` (tree_validation.py:262-354): returns only the first firing gate as primary defect even though all_defects carries every co-firing gate — callers reading the 2-tuple form lose co-firing information.
 
-- src/pageindex_mcp/helpers/verdict.py
-- src/pageindex_mcp/config.py
-- src/pageindex_mcp/storage/verdict.py
+## Related RFCs
+
+PASS_MAX_LEAF_RATIO widened three times (0.17→0.20→0.30), hysteresis added then defeated by ledger wipe (RFC-023→024→025→026).
+
+image_enrichment_promoted evolved from implicit drift to explicitly hard-coded priority=100 escape hatch.
+
+RFC-024 threshold widening caused 'Haftpflicht' with 81/132 garbled nodes to flip FAIL→PASS.
+
+Near-zero-content documents earn PASS via promotion flag with no content-validity check.
+
+Hysteresis relaxes max_leaf_ratio for garbled trees when prior PASS exists (Chain 27).

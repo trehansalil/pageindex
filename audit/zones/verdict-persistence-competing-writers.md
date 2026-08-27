@@ -1,75 +1,47 @@
 ---
 zone_name: Verdict Persistence Competing Writers
 severity: high
-bug_count: 5
-status: improved
+bug_count: 7
+status: audited
 audit_date: 2026-08-26
-audit_run: POST-FIX-12
-audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-12.md
+audit_run: POST-FIX-13
+audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-13.md
 key_files:
   - src/pageindex_mcp/storage/verdict.py
   - src/pageindex_mcp/worker/registry_mirror.py
+  - src/pageindex_mcp/registry_backfill/reconcile.py
   - src/pageindex_mcp/registry/queries.py
-  - src/pageindex_mcp/client/indexer.py
 tags:
   - zone-spec
   - high
-  - hard-rule-2
-scorecard_verdict: regressed
-scorecard_date: 2026-08-26
-scorecard_run: POST-FIX-12
+  - verdict
+  - storage
+  - consistency
 ---
 ## Mechanism
 
-The verdict persistence layer has a competing-writer pattern where the same MinIO key (processed/{doc_id}.meta.json) is written by two different processes. A provisional write occurs from the isolated converters_cli child subprocess via save_doc_meta, then an authoritative backfill write from the worker parent via _upsert_registry_row after Postgres CAS arbitration.
+The generative mechanism is **DUAL-STORE EVENTUAL CONSISTENCY WITH ASYMMETRIC CAS GUARDS**. `_upsert_registry_row` (registry_mirror.py:55-155) is the Postgres-authoritative path: it CAS-upserts to Postgres (with RETURNING), then best-effort backfills the MinIO sidecar via save_doc_meta. But `save_doc_meta` (storage/verdict.py:78-185) is a read-merge-write that has no CAS guard — if the Postgres CAS accepted a higher-priority verdict but the sidecar backfill fails (exception caught at registry_mirror.py:144-149), the sidecar retains a stale verdict until reconcile_registry_drift heals it.
 
-Three stores (MinIO sidecar, Postgres registry, Redis cache) each hold verdict state, written by different processes at different times with different guarantees. Postgres is designated the 'true arbiter' via CAS priority, but the MinIO sidecar is written first by the child process (which has no Postgres pool) and then overwritten by the parent. If the parent's backfill write fails (best-effort, non-fatal per the try/except in _upsert_registry_row), the sidecar retains the child's provisional verdict which may disagree with Postgres.
+When the Postgres pool is unavailable, `_upsert_registry_row` at line 99 queues a Redis retry via `_enqueue_verdict_retry`, but if `_enqueue_verdict_retry` itself throws, the failure is swallowed.
 
-The ordering is enforced only by async sequencing, not locking. The write-visibility barrier was removed for verdict-field merges in save_doc_meta but 'intentionally retained' for primary artifact writes — an inconsistent durability guarantee. The deprecated write_verdict wrapper still exists as an additional surface that could drift.
+The reingestion pipeline wipes processed/*.meta.json, destroying the hysteresis ledger that find_prior_verdict scans, so verdicts computed with hysteresis context can flap to different values on reingestion.
 
-## Evidence History
-
-| RFC/Issue | Finding |
-|---|---|
-| RFC-036 D1 | Shrank `_WRITE_BARRIER_DELAYS` from 4.4s/8.8s to 0.45s and added `_verdict_cas_guard`, but Python-side and SQL-side CAS logic remained asymmetric |
-| Flat-doc path | Still triple-writes, bypassing consolidation |
-| Converters_cli boundary | Identified as additional race surface not covered by CAS guard |
-| RFC-027 task 4.2 | `chunked_docling_timeout_s` created but never wired to worker.py (marked complete in tasks file) |
-| Hard Rule 2 | Registry upsert with empty verdict string can overwrite previously-FAIL-verdicted documents, reintroducing them to queryable results |
+The write-visibility barrier was removed from save_doc_meta (documented at storage/verdict.py line 176-179) but retained in save_doc/save_flat_doc — a deliberate asymmetry that a future refactor could easily miss.
 
 ## Code Evidence
 
-**save_doc_meta** (storage/verdict.py:78-185) — Dual-write surface
-```python
-# Invoked from both converters_cli child and worker parent
-# Comment at ~line 180: 
-# "Zone-4 Phase 3: write-visibility barrier removed. 
-#  Postgres is the sole verdict authority; the sidecar is archival-only"
-```
+- `_upsert_registry_row` (registry_mirror.py:55-155): Postgres pool check at line 96, Redis retry at line 99 ('await _enqueue_verdict_retry(doc_id, verdict_fields)'). CAS upsert at line 128 ('winning = await upsert_doc(fields, force_verdict_override=_force_override)'). Sidecar backfill at line 133-143 with exception swallowed at line 144-149.
 
-**_upsert_registry_row** (registry_mirror.py:55-155) — Best-effort backfill
-```python
-winning = await upsert_doc(fields, force_verdict_override=_force_override)
-if winning:
-    # Backfill is best-effort inside try/except
-    await asyncio.to_thread(save_doc_meta, doc_id, winning)
-```
+- `save_doc_meta` (storage/verdict.py:78-185): read-merge-write pattern with _read_existing_sidecar at line 113, merge loop at lines 128-170, put_object at line 173. Write-visibility barrier removal documented at line 176-179: 'Zone-4 Phase 3: write-visibility barrier removed. Postgres is the sole verdict authority; the sidecar is archival-only'.
 
-**upsert_doc** (registry/queries.py:130-184) — Two SQL variants
-```python
-sql = _UPSERT_OVERRIDE_SQL if force_verdict_override else _UPSERT_SQL
-# Two SQL variants: one with CAS guard, one without
-```
+- `reconcile_registry_drift` (reconcile.py:109-228): drains Redis verdict retry queue at line 155, then does incremental O(delta) reconcile using etag-based change detection.
 
-**Registry upsert vulnerability**
-```python
-# meta.get('verdict', '') could overwrite a previously-FAIL-verdicted document
-# Reintroducing it to queryable results (violates Hard Rule 2)
-```
+## Related RFCs
 
-## Key Files
+RFC-034→036: Write-visibility barrier over-provisioned at 4.4s caused PersistenceNotVisibleError. Zone improved but residual gap remains: MinIO sidecar still lacks CAS equivalent.
 
-- src/pageindex_mcp/storage/verdict.py
-- src/pageindex_mcp/worker/registry_mirror.py
-- src/pageindex_mcp/registry/queries.py
-- src/pageindex_mcp/client/indexer.py
+RFC-026 D3: Reingestion wipes processed/*.meta.json, breaking hysteresis lookup, causing GHV-TKV-Tarif verdict flap.
+
+Registry upsert_doc unconditionally overwrites verdict with empty string when sidecar omits it (Chain 31).
+
+Cabinet Decision 106/2022 stored verdict=PASS with empty reason despite 40% Latin-mojibake garbling (Chain 32).

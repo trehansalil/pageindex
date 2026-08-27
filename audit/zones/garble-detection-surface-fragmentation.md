@@ -1,82 +1,51 @@
 ---
 zone_name: Garble Detection Surface Fragmentation
 severity: critical
-bug_count: 10
-status: improved
+bug_count: 12
+status: audited
 audit_date: 2026-08-26
-audit_run: POST-FIX-12
-audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-12.md
+audit_run: POST-FIX-13
+audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-13.md
 key_files:
   - src/pageindex_mcp/helpers/garble.py
-  - src/pageindex_mcp/converters/normalize.py
-  - src/pageindex_mcp/converters/pictures.py
-  - src/pageindex_mcp/converters/ocr_langs.py
   - src/pageindex_mcp/script.py
+  - src/pageindex_mcp/helpers/gates.py
+  - src/pageindex_mcp/helpers/tree_validation.py
 tags:
   - zone-spec
   - critical
-scorecard_verdict: regressed
-scorecard_date: 2026-08-26
-scorecard_run: POST-FIX-12
+  - garble
+  - arabic
+  - unicode
 ---
 ## Mechanism
 
-The garble detection pipeline is structurally fragmented across multiple dimensions where signal destruction occurs before detection instruments can inspect the signals. The ordering-dependent signal destruction combined with self-referential inference creates five independently-sufficient blind spots:
+The generative mechanism is **HEURISTIC INTERACTION WITH NORMALIZATION DESTRUCTION**. `detect_garble` (garble.py:494-564) normalizes text via `normalize_for_garble` before passing to `garble_prongs`, but NFKC normalization decomposes Arabic Presentation-Form codepoints (U+FB50-FEFF) into logical Arabic, destroying the very signal the presentation_forms prong keys on.
 
-1. **NFKC normalization destroys Presentation Forms:** `_pre_inference_normalize` (normalize.py:157, pictures.py:167) runs `unicodedata.normalize('NFKC', text)` BEFORE garble_prongs or bidi detectors can inspect raw codepoints, destroying Arabic Presentation Forms (U+FB50-FEFF).
+`ScriptContext.from_document` (script.py:896-968) computes `had_presentation_forms` from raw text pre-NFKC, and `detect_garble` at line 540 reads `script_context.had_presentation_forms`, with a fallback computation at lines 541-543 scanning the blob directly — but if the blob has already been NFKC-normalized before reaching `detect_garble`, the fallback always returns False.
 
-2. **Self-referential script detection:** `expected_script` is derived from `_infer_script(blob)` on potentially-corrupted text, so garbled text cannot trigger the garble gate because the gate's language-detection input is itself derived from the garbled text.
+`garble_prongs` (garble.py:318-405) has a second structural problem: multiple prongs have independent blind spots that interact. The digit_ratio prong (line 383) only fires when len(norm) > cfg.garble_digit_floor (default 500), so short garbled text passes uninspected. The latin_gibberish prong (line 392) requires garble_latin_gibberish_enabled AND expected_script must be available — but _script_from_filename returns None for German filenames, making the prong permanently unfireable for German docs.
 
-3. **Latin-gibberish scope narrowing:** The Latin-gibberish check in garble_prongs only fires when `expected_script` is non-Latin, so CMap-corrupted German documents (expected_script='Latn') bypass all Latin-script garble heuristics.
-
-4. **OCR language fallback blindness:** `ensure_tessdata` silently falls back to `['deu','eng']` when no requested languages are available, so an Arabic OCR-escalation request runs Latin-only OCR producing garbled Latin mojibake that still passes the garble gate.
-
-5. **Digit-ratio floor gating:** The garble_prongs digit_ratio check is gated behind `if len(norm) > cfg.garble_digit_floor`, letting short numeric-junk blobs pass uninspected.
-
-Each RFC fix targeting one prong is defeated by the NFKC ordering destroying the codepoints before the new prong runs. Fixes that target inference (RFC-033 D2's `_check_bidi_coherence`) measured 0% true-positive rate because of the same ordering problem.
-
-## Evidence History
-
-| RFC/Issue | Finding |
-|---|---|
-| RFC-010 D3B | Added `_flat_text_is_garbled` duplicating `_tree_is_garbled` (fix-one-miss-the-other drift); confirmed root cause of marsoom-13 Latin-mojibake |
-| RFC-013 D7 (ISS-36) | Diagnosed duplication, unresolved through FIX-11 |
-| RFC-015/018/026/027 | `expected_script` gap flip-flopped across 6+ runs and 5+ RFCs without closing |
-| RFC-028 D2 | Arabic presentation-forms prong caused Human Rights PDF FAIL→ERROR regression |
-| RFC-033 D2 | `_check_bidi_coherence` measured 0% TPR (two independent causes: `_reversed_morphology` fires only on U+FB50-FEFF but `get_display()`-reversed text uses canonical U+06xx; line-selector excludes presentation-form lines) |
-| ISS-34/marsoom-13 | `ensure_tessdata` silent deu/eng fallback produced exact failure mode |
+The short_text_prior_garble short-circuit (lines 524-534) makes detect_garble non-idempotent: when blob_kind==RAW_MARKDOWN, original_defect was GARBLING/NODE_GARBLING, and text<200 chars, it forces is_garbled=True without running any heuristic, so a prior garbling verdict permanently poisons short post-retry text.
 
 ## Code Evidence
 
-**garble_prongs** (garble.py:318-405)
-```
-digit_ratio check gated behind: if len(norm) > cfg.garble_digit_floor
-latin_gibberish check fires only when: garble_latin_gibberish_enabled and ratio > threshold
-No coverage for expected_script='Latn'
-```
+- `detect_garble` (garble.py:494-564): short-circuit at lines 524-534 checks `blob_kind==RAW_MARKDOWN`, `config.garble_short_text_default`, `len(blob)<200`, `original_defect in (GARBLING, NODE_GARBLING)` and returns `GarbleReport(is_garbled=True, fired_prongs={'short_text_prior_garble'})` without calling `garble_prongs`.
 
-**_pre_inference_normalize** (converters/normalize.py:157, converters/pictures.py:167)
-```
-had_pres_forms captured BEFORE NFKC
-text = unicodedata.normalize('NFKC', text)  # destroys U+FB50-FEFF codepoints
-```
+- `ScriptContext` (script.py:869-968): docstring at line 881 states 'Post-NFKC the ratio is always 0 because presentation-form codepoints are decomposed into logical Arabic.' from_document at line 907 computes had_pf by scanning raw_text for PRESENTATION_RANGES codepoints, confirming pre-NFKC capture is intentional.
 
-**detect_garble** (garble.py:494-564)
-```
-_effective_script = script_context.dominant_script
-if _effective_script is None:
-    _effective_script = _infer_script(blob)  # self-inferred from potentially-corrupted text
-```
+- `garble_prongs` (garble.py:318-405): digit_ratio at line 383 gated behind 'len(norm) > cfg.garble_digit_floor'; latin_gibberish at line 392 gated behind 'cfg.garble_latin_gibberish_enabled'; had_presentation_forms at line 368 simply adds the prong if True.
 
-**ensure_tessdata** (converters/ocr_langs.py:91-188)
-```
-Final fallback: return ['deu', 'eng']  # regardless of requested script
-```
+- `normalize_for_garble` (script.py:677-690): RAW_MARKDOWN path strips heading markers and table pipes but does NOT strip NFKC-decomposed presentation forms.
 
-## Key Files
+## Related RFCs
 
-- src/pageindex_mcp/helpers/garble.py
-- src/pageindex_mcp/converters/normalize.py
-- src/pageindex_mcp/converters/pictures.py
-- src/pageindex_mcp/converters/ocr_langs.py
-- src/pageindex_mcp/script.py
+NFKC destruction independently rediscovered in RFC-028 D2, RFC-033 D2, RFC-034 D7.
+
+expected_script never threaded to garble callers (RFC-019 D2).
+
+_check_bidi_coherence had 0% TPR due to range exclusion (RFC-033 D2, BIDI_ROOT_CAUSE_RFC033).
+
+D8 mixed-script regex included space in character class (Chain 21).
+
+Markdown formatting dilutes digit-ratio below threshold (Chain 22).
