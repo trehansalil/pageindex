@@ -48,6 +48,67 @@ def _tree_depth(nodes: list) -> int:
     return best
 
 
+def _node_text_parts(n: dict) -> list[str]:
+    """Extract all text-bearing content from a single tree node.
+
+    Zone-5 fix: table blocks carry content in 'headers', 'rows', and
+    'row_records' instead of 'text'.  This helper mirrors the extraction
+    logic in flat.py:_flat_search_text (L187-236) so tree-level char
+    counting, garble detection, and leaf-ratio scoring see the same
+    content that flat-document tooling already sees.
+
+    Returns a list of non-empty string parts (title, body text, and
+    table content).
+    """
+    parts: list[str] = []
+    for field in ("title", "text"):
+        value = str(n.get(field, ""))
+        if value:
+            parts.append(value)
+    # Table block content (headers/rows/row_records carry text, not 'text' key)
+    for header in n.get("headers") or []:
+        if isinstance(header, str) and header:
+            parts.append(header)
+    for row in n.get("rows") or []:
+        if isinstance(row, (list, tuple)):
+            for cell in row:
+                cell_str = str(cell) if cell else ""
+                if cell_str:
+                    parts.append(cell_str)
+    for rec in n.get("row_records") or []:
+        if isinstance(rec, str) and rec:
+            parts.append(rec)
+        elif isinstance(rec, dict):
+            for v in rec.values():
+                v_str = str(v) if v else ""
+                if v_str:
+                    parts.append(v_str)
+    return parts
+
+
+def _node_char_count(n: dict) -> int:
+    """Total character count for a single tree node including table content.
+
+    Zone-5 fix: used by _tree_max_leaf_ratio to correctly size table-only
+    leaf nodes that carry zero chars in 'title'+'text' but substantive
+    content in 'headers'/'rows'/'row_records'.
+    """
+    return sum(len(p) for p in _node_text_parts(n))
+
+
+def _node_text_length(n: dict) -> int:
+    """Stripped text length of a single tree node across all content sources.
+
+    Measurement-tooling blind-spot fix: replaces bare
+    ``node.get('text', '').strip()`` checks in emptiness gates that miss
+    table blocks carrying content in 'headers'/'rows'/'row_records'.
+    Delegates to :func:`_node_text_parts` so every content source is
+    counted -- closing the shared blind spot between pipeline code and the
+    measurement/audit tools that mirror it.
+    """
+    return sum(len(p.strip()) for p in _node_text_parts(n))
+
+
 def _flatten_tree_text(nodes: list) -> str:
     """Concatenate all title+text from a tree structure into a single string.
 
@@ -56,15 +117,16 @@ def _flatten_tree_text(nodes: list) -> str:
     for `_has_sparse_mojibake`. Empty parts are dropped rather than joined —
     emitting a separator for an absent title would inflate the character counts
     that the volume floors in `classify_verdict` measure.
+
+    Zone-5 fix: also extracts table block content from 'headers', 'rows',
+    and 'row_records' via _node_text_parts, so table-heavy documents are
+    no longer invisible to char-count scoring and garble detection.
     """
     parts: list[str] = []
 
     def _walk(ns: list) -> None:
         for n in ns:
-            for field in ("title", "text"):
-                value = str(n.get(field, ""))
-                if value:
-                    parts.append(value)
+            parts.extend(_node_text_parts(n))
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
@@ -92,8 +154,12 @@ def _count_empty_body_nodes(structure: list) -> tuple[int, int, int]:
     """RFC-029 D10: count non-root nodes with empty stripped body text.
 
     Returns (total_non_root, empty_leaf, empty_non_leaf).
-    A node's «body text» is its ``text`` field (stripped); ``title``-only
-    nodes are intentional structural nodes and are NOT counted as empty.
+    A node is «empty» when :func:`_node_text_length` returns 0 -- i.e. it
+    has no stripped text in *any* content source (title, text, headers,
+    rows, row_records).  Zone-7 fix: the prior ``node.get('text', '')``
+    check missed table blocks whose content lives in headers/rows/
+    row_records, falsely inflating the empty-node count for table-heavy
+    documents.
     Counts are over all non-root nodes (the entire tree minus the top-level
     list elements, which are document roots).
     """
@@ -109,8 +175,11 @@ def _count_empty_body_nodes(structure: list) -> tuple[int, int, int]:
             children = node.get("nodes") or []
             if not is_root_level:
                 total += 1
-                body = node.get("text", "") or ""
-                if not body.strip() and not str(node.get("title") or "").strip():
+                # Zone-7 fix: use _node_text_length which covers all
+                # content sources (title, text, headers, rows, row_records)
+                # — closing the measurement blind spot where table-only
+                # nodes were falsely counted as empty.
+                if not _node_text_length(node):
                     if children:
                         empty_non_leaf += 1
                     else:
@@ -122,10 +191,12 @@ def _count_empty_body_nodes(structure: list) -> tuple[int, int, int]:
 
 
 def _tree_max_leaf_ratio(structure: list) -> tuple[int, int, float]:
+    # Zone-5 fix: use _node_char_count instead of title+text-only sizing
+    # so table-only leaves are correctly measured.
     max_leaf = 0
     total = 0
     for leaf in _walk_leaves(structure):
-        chars = len(leaf.get("title", "")) + len(leaf.get("text", ""))
+        chars = _node_char_count(leaf)
         total += chars
         max_leaf = max(max_leaf, chars)
 

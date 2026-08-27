@@ -76,7 +76,13 @@ def _dedupe_chart_text_lines(text: str) -> str:
     """RFC-027 D1: drop repeated '> [Chart text]:' lines before a promoted
     doc's char/garble calculations -- a single OCR read spliced into prose
     can otherwise be double-counted toward both the char floor and the
-    garble check. Keeps the first occurrence of each distinct line. Pure."""
+    garble check. Keeps the first occurrence of each distinct line. Pure.
+
+    Note: table block content is included via _flatten_tree_text (Zone-5 fix).
+    No change needed here -- this function operates on the flat_text string
+    produced by _flatten_tree_text, which now automatically includes table
+    content from headers/rows/row_records.
+    """
     seen: set[str] = set()
     kept: list[str] = []
     for line in text.splitlines(keepends=True):

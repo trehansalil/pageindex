@@ -150,6 +150,70 @@ class TestIntegration:
         assert not result.ok
         assert result.defect == TreeDefect.GARBLING
 
+    def test_pipe_delimited_table_rows_no_false_positive(self):
+        """Regression: detect_garble must NOT false-positive on pipe-delimited
+        table rows that appear in flat_text after Zone-5 fix includes table
+        content from headers/rows/row_records.
+
+        Pipe-separated cells are valid tabular data, not garble artifacts.
+        """
+        from pageindex_mcp.helpers.garble import GarbleConfig, detect_garble
+        from pageindex_mcp.script import BlobKind, ScriptContext
+
+        # Simulate what _flatten_tree_text produces for a table-heavy document:
+        # clean German insurance table rows with pipe separators
+        table_text = (
+            "Versicherungsschutz\n"
+            "Leistungsart | Deckungssumme | Selbstbehalt\n"
+            "Haftpflicht | 5000000 | 500\n"
+            "Kasko | 50000 | 300\n"
+            "Insassen | 100000 | 0\n"
+            "Rechtsschutz | 300000 | 250\n"
+            "Die Versicherung deckt Schaden an Dritten im Rahmen der "
+            "vereinbarten Deckungssumme. Der Versicherungsnehmer ist "
+            "verpflichtet, den Schaden unverzueglich zu melden.\n"
+        )
+        ctx = ScriptContext(dominant_script=None, had_presentation_forms=False, source="test")
+        cfg = GarbleConfig()
+        report = detect_garble(
+            table_text,
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert not report.is_garbled, (
+            f"pipe-delimited table rows falsely detected as garble: prongs={report.fired_prongs}"
+        )
+
+    def test_numeric_table_cells_no_false_positive(self):
+        """Regression: table cells with numeric data (amounts, dates, IDs)
+        must not trigger digit_ratio garble prong."""
+        from pageindex_mcp.helpers.garble import GarbleConfig, detect_garble
+        from pageindex_mcp.script import BlobKind, ScriptContext
+
+        # A typical insurance premium table flattened into text
+        table_text = (
+            "Praemienrechnung\n"
+            "Vertragsnummer | Praemie | Faellig\n"
+            "VN-2024-001 | 1200.50 | 01.01.2025\n"
+            "VN-2024-002 | 890.00 | 15.02.2025\n"
+            "VN-2024-003 | 2340.75 | 01.03.2025\n"
+            "Die jaehrliche Praemie wird im Voraus berechnet und ist zum "
+            "genannten Datum faellig. Weitere Informationen entnehmen Sie "
+            "bitte Ihrem Versicherungsvertrag.\n"
+        )
+        ctx = ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test")
+        cfg = GarbleConfig()
+        report = detect_garble(
+            table_text,
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert not report.is_garbled, (
+            f"numeric table content falsely detected as garble: prongs={report.fired_prongs}"
+        )
+
     def test_clean_tree_no_garble(self):
         clean = _CLEAN_GERMAN * 3
         tree = [

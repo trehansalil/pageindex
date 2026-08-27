@@ -18,6 +18,8 @@ mappings:
       - test_client.py            # primary
       - test_compute_verdict.py
       - test_config.py
+      - test_converter_chain_ocr.py
+      - test_converters.py
       - test_converters_cli.py
       - test_gate_table.py
       - test_image_blocks.py
@@ -113,6 +115,7 @@ mappings:
       - test_storage.py           # primary
       - test_client.py
       - test_density_gate.py
+      - test_documents_tools.py
       - test_image_blocks.py
       - test_metrics.py
       - test_observability.py
@@ -135,6 +138,7 @@ mappings:
       - test_storage.py           # primary
       - test_client.py
       - test_density_gate.py
+      - test_documents_tools.py
       - test_image_blocks.py
       - test_metrics.py
       - test_observability.py
@@ -241,6 +245,8 @@ mappings:
     tests:
       - test_config.py            # primary
       - test_compute_verdict.py
+      - test_converter_chain_ocr.py
+      - test_converters.py
       - test_registry.py
       - test_rfc_quality.py
       - test_rfc_registry.py
@@ -345,6 +351,7 @@ mappings:
     tests:
       - test_config.py
       - test_converter_chain_ocr.py
+      - test_converters.py
       - test_density_gate.py
       - test_observability.py
       - test_pipeline.py
@@ -441,6 +448,7 @@ mappings:
       - test_rfc_storage.py
       - test_rfc_worker.py
       - test_script.py
+      - test_validate_tree_contract.py
       - test_vlm_fallback.py
       - test_zone1_flat_gate_asymmetry.py
 

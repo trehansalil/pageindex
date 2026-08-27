@@ -351,3 +351,88 @@ class TestVerdictDowngradeEnabled:
                 assert "VERDICT_DOWNGRADE_ENABLED" in context, (
                     f"force_verdict_override=True set without VERDICT_DOWNGRADE_ENABLED guard"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5 regression: table-heavy documents produce non-zero char counts
+# ---------------------------------------------------------------------------
+
+
+class TestTableHeavyDocCharCounts:
+    """Regression: char-count scoring must reflect actual table content.
+
+    Before Zone-5 fix, _flatten_tree_text only extracted 'title' and 'text',
+    making table blocks (headers/rows/row_records) invisible to char counting.
+    This caused table-heavy documents to appear as zero-content and receive
+    FAIL verdicts despite carrying substantive tabular data.
+    """
+
+    @staticmethod
+    def _table_heavy_tree() -> list:
+        """A tree with substantive table content but minimal 'text' fields."""
+        return [
+            {
+                "node_id": "1",
+                "title": "Insurance Policy",
+                "text": "",
+                "nodes": [
+                    {
+                        "node_id": "2",
+                        "title": "Coverage Table",
+                        "text": "",
+                        "headers": ["Type", "Limit", "Deductible"],
+                        "rows": [
+                            ["Liability", "5000000", "500"],
+                            ["Comprehensive", "50000", "300"],
+                            ["Collision", "50000", "1000"],
+                        ],
+                    },
+                    {
+                        "node_id": "3",
+                        "title": "Premium Schedule",
+                        "text": "",
+                        "row_records": [
+                            {"period": "Annual", "amount": "2400", "due": "January"},
+                            {"period": "Semi-Annual", "amount": "1250", "due": "January/July"},
+                        ],
+                    },
+                    {
+                        "node_id": "4",
+                        "title": "Terms",
+                        "text": "Standard terms and conditions apply to all coverage types listed above.",
+                    },
+                ],
+            }
+        ]
+
+    def test_compute_verdict_table_heavy_not_zero_content(self):
+        """A table-heavy tree must NOT receive a zero_content FAIL verdict."""
+        result = compute_verdict(
+            self._table_heavy_tree(),
+            content_class="flat_mixed",
+            validate_result=None,
+        )
+        assert result.reason != "zero_content", (
+            "table-heavy document scored as zero_content -- table chars invisible"
+        )
+
+    def test_tree_signals_flat_text_includes_table_chars(self):
+        """TreeSignals.from_tree must produce flat_text containing table data."""
+        sig = TreeSignals.from_tree(self._table_heavy_tree())
+        # Table content should contribute significant chars
+        assert len(sig.flat_text) > 100, (
+            f"flat_text length {len(sig.flat_text)} is too low for table-heavy doc"
+        )
+        # Verify specific table content is present
+        assert "Liability" in sig.flat_text
+        assert "5000000" in sig.flat_text
+        assert "Annual" in sig.flat_text
+
+    def test_classify_verdict_table_heavy_nonzero(self):
+        """classify_verdict backward-compat wrapper also reflects table chars."""
+        verdict, reason = classify_verdict(
+            self._table_heavy_tree(),
+            content_class="flat_mixed",
+            validate_result=None,
+        )
+        assert reason != "zero_content"

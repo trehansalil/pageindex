@@ -597,15 +597,20 @@ infer_script = _infer_script
 
 
 def _collect_all_node_text(nodes: list[dict]) -> str:
-    """Recursively collect all node text into a single concatenated string."""
+    """Recursively collect all node text into a single concatenated string.
+
+    Zone-5 fix: also extracts table block content from 'headers', 'rows',
+    and 'row_records' via tree_validation._node_text_parts, so per-node
+    garble checking sees table-heavy nodes.
+    """
+    from .tree_validation import _node_text_parts
+
     parts: list[str] = []
     for node in nodes:
-        text = node.get("text") or ""
-        if text.strip():
-            parts.append(text)
-        title = node.get("title") or ""
-        if title.strip():
-            parts.append(title)
+        node_parts = _node_text_parts(node)
+        for p in node_parts:
+            if p.strip():
+                parts.append(p)
         children = node.get("nodes") or []
         if children:
             child_text = _collect_all_node_text(children)
@@ -765,9 +770,23 @@ def ocr_noise_ratio(text: str) -> float:
 
 
 def hash_pipe_ratio(text: str) -> float:
+    """Ratio of '#' and '|' characters in *text*.
+
+    Zone-5 defensive guard: lines that look like markdown table rows
+    (start with '|') have their pipe characters exempted from the count,
+    so table content included via _flatten_tree_text (Zone-5 fix) does
+    not inflate the ratio and block category-C promotion in verdict.py.
+    """
     if not text:
         return 0.0
-    count = sum(1 for c in text if c in "#|")
+    count = 0
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("|"):
+            # Exempt pipe chars in markdown table rows; still count '#'
+            count += sum(1 for c in line if c == "#")
+        else:
+            count += sum(1 for c in line if c in "#|")
     return count / len(text)
 
 
