@@ -12,6 +12,7 @@ import functools
 import logging
 import os
 from collections.abc import Callable
+from enum import StrEnum
 
 from ..config import MAX_DOCLING_PAGES, pipeline_config
 from ..script import RtlDecision
@@ -49,6 +50,93 @@ from .pictures import (
 from .types import Candidate, PictureResult, StageRecord
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ConverterFailurePolicy — encodes the chain-walker's decision for a
+# given failure (transient vs. structural) and the AGPL status of the
+# next converter in line.  Replaces the inline if/else tree in
+# _convert_to_tree with an explicit, testable policy enum.
+# ---------------------------------------------------------------------------
+
+
+class ConverterFailurePolicy(StrEnum):
+    """Policy decision for how the converter chain walker should handle a failure.
+
+    The converter chain in ``_convert_to_tree`` classifies each failure as
+    *transient* (network timeout, HTTP 5xx) or *structural* (parse error,
+    import failure) and checks whether the next converter is AGPL-licensed.
+    This enum captures the four resulting policy branches so they can be
+    tested, logged, and metricked without reading branching logic.
+
+    Values:
+        RETRY:
+            Retry the **same** converter up to
+            ``CONVERTER_TRANSIENT_RETRY_COUNT`` times before giving up.
+            Applied when a transient failure occurs and retries remain.
+        BLOCK_AGPL:
+            Block the chain walk because the next converter is AGPL-licensed
+            and the failure was transient — an unplanned outage must not
+            silently become AGPL-licensed network-served conversion (HR4).
+        WALK:
+            Walk to the next converter in the chain.  Applied for
+            structural failures (original behavior) and for transient
+            failures when the next converter is non-AGPL.
+        REJECT:
+            No more converters remain; the document falls to the legacy
+            ``page_index`` fallback path.
+    """
+
+    RETRY = "retry"
+    BLOCK_AGPL = "block_agpl"
+    WALK = "walk"
+    REJECT = "reject"
+
+
+# ---------------------------------------------------------------------------
+# ConverterChainEntry — structured chain entry replacing flat 3-tuples
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class ConverterChainEntry:
+    """One entry in the ordered PDF-to-markdown converter chain.
+
+    Replaces the former ``(name, fn, supports_ocr)`` flat tuple with a
+    typed, extensible record.  Adding ``is_agpl`` lets the chain walker
+    in ``_convert_to_tree`` distinguish AGPL-licensed converters from
+    MIT/permissive ones so that transient failures (HTTP 504, network
+    timeout) do **not** silently fall through to an AGPL route the
+    operator may not have intended.
+
+    Backward-compat: the class supports ``len(entry)``, ``entry[i]``,
+    and iterable unpacking so that existing ``for name, fn, ocr in chain``
+    patterns keep working without changes.
+    """
+
+    name: str
+    fn: Callable[..., tuple[str, list[PictureResult], dict[str, dict]]]
+    supports_ocr: bool
+    is_agpl: bool = False
+
+    # -- sequence protocol so (name, fn, ocr) unpacking still works ------
+    def __len__(self) -> int:
+        # Expose only the original 3 fields for backward-compat tuple unpack.
+        return 3
+
+    def __getitem__(self, idx: int) -> object:
+        if idx == 0:
+            return self.name
+        if idx == 1:
+            return self.fn
+        if idx == 2:
+            return self.supports_ocr
+        raise IndexError(idx)
+
+    def __iter__(self):  # type: ignore[override]
+        yield self.name
+        yield self.fn
+        yield self.supports_ocr
 
 
 # ---------------------------------------------------------------------------
@@ -568,10 +656,15 @@ def _pdf_to_markdown_no_pics(
     return pdf_to_markdown(pdf_path), [], {}
 
 
-def pdf_markdown_converters() -> list[
-    tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]], bool]
-]:
-    """Ordered ``(name, fn, supports_ocr)`` PDF->markdown converters, per the ``PDF_CONVERTER`` env.
+def pdf_markdown_converters() -> list[ConverterChainEntry]:
+    """Ordered PDF->markdown converter chain, per the ``PDF_CONVERTER`` env.
+
+    Returns a list of :class:`ConverterChainEntry` instances.  Each entry
+    carries ``name``, ``fn``, ``supports_ocr``, and ``is_agpl``.  The
+    ``is_agpl`` flag lets the chain walker in ``_convert_to_tree`` block
+    fallback to AGPL-licensed converters on transient failures (HTTP 504,
+    network timeout) — only structural parse errors justify walking to an
+    AGPL route.
 
     Every chain callable accepts ``(pdf_path: str, **kwargs)`` at minimum —
     ``expected_script: str | None`` may be passed as a keyword argument by the
@@ -582,9 +675,9 @@ def pdf_markdown_converters() -> list[
 
     Every chain callable returns ``(markdown, pic_results, extraction_stages)``.
 
-    The third element ``supports_ocr`` is ``True`` when the converter
-    accepts ``force_full_page_ocr`` / ``ocr_lang_override`` kwargs and
-    can perform OCR escalation.  Currently only ``docling`` supports OCR;
+    The ``supports_ocr`` flag is ``True`` when the converter accepts
+    ``force_full_page_ocr`` / ``ocr_lang_override`` kwargs and can perform
+    OCR escalation.  Currently only ``docling`` supports OCR;
     ``pymupdf4llm`` does not.
 
     INDEX-01: ``pymupdf4llm`` (AGPL, fast, default) and ``docling`` (MIT,
@@ -597,6 +690,10 @@ def pdf_markdown_converters() -> list[
     vertical and MIT-licensed, lowering AGPL exposure); set
     ``PDF_CONVERTER=pymupdf4llm`` to make the faster AGPL route primary instead, in
     which case Docling becomes the secondary markdown attempt.
+
+    Backward-compat: ``ConverterChainEntry`` supports ``len(entry)``,
+    ``entry[i]``, and ``for name, fn, ocr in chain`` unpacking so existing
+    3-element unpack patterns keep working.
     """
     import importlib.util
 
@@ -616,16 +713,25 @@ def pdf_markdown_converters() -> list[
             "ALLOW_AGPL_FALLBACK=true"
         )
 
-    chain: list[
-        tuple[str, Callable[..., tuple[str, list[PictureResult], dict[str, dict]]], bool]
-    ] = []
+    chain: list[ConverterChainEntry] = []
     if pipeline_config.allow_agpl_fallback:
-        chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics, False))
+        chain.append(ConverterChainEntry(
+            name="pymupdf4llm",
+            fn=_pdf_to_markdown_no_pics,
+            supports_ocr=False,
+            is_agpl=True,
+        ))
     if have_docling:
+        docling_entry = ConverterChainEntry(
+            name="docling",
+            fn=pdf_to_markdown_docling,
+            supports_ocr=True,
+            is_agpl=False,
+        )
         if primary == "docling":
-            chain.insert(0, ("docling", pdf_to_markdown_docling, True))
+            chain.insert(0, docling_entry)
         else:
-            chain.append(("docling", pdf_to_markdown_docling, True))
+            chain.append(docling_entry)
             if pipeline_config.allow_agpl_fallback:
                 from ..metrics import AGPL_FALLBACK_TOTAL
 

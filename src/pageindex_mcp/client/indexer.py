@@ -18,6 +18,7 @@ from pageindex import PageIndexClient
 
 from ..cache import get_doc
 from ..config import (
+    CONVERTER_TRANSIENT_RETRY_COUNT,
     CURRENT_PIPELINE_VERSION,
     VERDICT_DOWNGRADE_ENABLED,
     ZDRComplianceError,
@@ -25,6 +26,7 @@ from ..config import (
     settings,
 )
 from ..converters import (
+    ConverterFailurePolicy,
     PictureResult,
     _tesseract_ocr_image,
     detect_ocr_langs,
@@ -273,6 +275,81 @@ def _split_converter_output(out) -> tuple[str, list, list]:
     return out, [], []
 
 
+# ---------------------------------------------------------------------------
+# Converter chain: transient-failure classification
+# ---------------------------------------------------------------------------
+
+# Exception types that indicate a transient (retryable) infrastructure
+# failure rather than a structural (parse/import) error.  When a converter
+# raises one of these, the chain walker should NOT silently fall through to
+# an AGPL-licensed converter — the operator did not intend AGPL conversion
+# just because a network hop timed out (HR4).
+_TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+)
+
+
+def _classify_transient_failure(exc: BaseException) -> bool:
+    """Return ``True`` when *exc* looks like a transient infrastructure failure.
+
+    Checks:
+    1. Direct isinstance match against ``_TRANSIENT_EXCEPTION_TYPES``
+       (``TimeoutError``, ``ConnectionError``, ``OSError``, ``asyncio.TimeoutError``).
+    2. ``httpx.TimeoutException`` / ``httpx.ConnectError`` (lazy check via
+       module name so httpx is not a hard import-time dependency).
+    3. Any exception carrying a ``status_code`` attribute >= 500 (covers
+       ``httpx.HTTPStatusError`` and similar HTTP-wrapper exceptions for
+       server-side errors like 502/503/504).
+
+    Everything else (``ValueError``, ``RuntimeError``, ``ImportError``,
+    parse-level exceptions) is classified as structural.
+    """
+    if isinstance(exc, _TRANSIENT_EXCEPTION_TYPES):
+        return True
+
+    # httpx exceptions: TimeoutException and ConnectError are not subclasses
+    # of the stdlib types above, so check by module/class name to avoid a
+    # hard dependency on httpx at import time.
+    exc_module = type(exc).__module__ or ""
+    if exc_module.startswith("httpx"):
+        exc_class = type(exc).__name__
+        if exc_class in (
+            "TimeoutException",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "ConnectError",
+        ):
+            return True
+
+    # HTTP 5xx status code (server error) on any exception that carries one.
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        try:
+            if int(status_code) >= 500:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    # Also check for httpx response attribute (HTTPStatusError stores the
+    # response on exc.response).
+    response = getattr(exc, "response", None)
+    if response is not None:
+        resp_status = getattr(response, "status_code", None)
+        if resp_status is not None:
+            try:
+                if int(resp_status) >= 500:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+    return False
+
+
 # Zone-7: BUILD_SHA is the convention services/docling-service's CI/Dockerfile
 # already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
 # permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
@@ -461,13 +538,17 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             )
 
             chain = pdf_markdown_converters()
-            primary_name = chain[0][0] if chain else None
+            primary_name = chain[0].name if chain else None
             state.used_converter = None
             state.extraction_stages_captured = []
             state.use_remote = bool(
                 getattr(settings, "docling_service_url", None) and self._staging_key
             )
-            for idx, (conv_name, conv_fn, _conv_supports_ocr) in enumerate(chain):
+            _transient_attempts: int = 0  # Zone-7: per-converter transient retry counter
+            for idx, entry in enumerate(chain):
+                conv_name = entry.name
+                conv_fn = entry.fn
+                _conv_supports_ocr = entry.supports_ocr
                 try:
                     logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
                     if state.use_remote and _conv_supports_ocr:
@@ -535,28 +616,129 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 except Exception as conv_exc:
                     md_content = None
                     state.pic_results = []
+
+                    # -------------------------------------------------------
+                    # Failure-mode classification: transient vs. structural.
+                    #
+                    # Transient failures (network timeout, HTTP 5xx, connection
+                    # reset) should NOT silently walk to an AGPL-licensed
+                    # converter — an unplanned outage must not become AGPL-
+                    # licensed network-served conversion (HR4).  Only structural
+                    # failures (parse errors, import failures) justify walking
+                    # the chain to the next converter.
+                    # -------------------------------------------------------
+                    _is_transient = _classify_transient_failure(conv_exc)
+
                     if idx == 0:
                         PDF_PRIMARY_CONVERTER_FAILURES.labels(
                             converter=conv_name, error=type(conv_exc).__name__
                         ).inc()
                         logger.error(
-                            "PRIMARY PDF converter '%s' FAILED for %s (%s: %s); falling "
-                            "back to the next converter — output quality will likely "
-                            "degrade. If this is docling, verify model artifacts are "
-                            "present (DOCLING_ARTIFACTS_PATH or network egress) and the "
-                            "docling-hierarchical-pdf add-on is installed in THIS image.",
+                            "PRIMARY PDF converter '%s' FAILED for %s (%s: %s); "
+                            "failure classified as %s.",
                             conv_name,
                             filename,
                             type(conv_exc).__name__,
                             conv_exc,
+                            "TRANSIENT" if _is_transient else "STRUCTURAL",
                             exc_info=True,
                         )
                     else:
                         logger.warning(
-                            "%s failed for %s (%s); trying next converter",
+                            "%s failed for %s (%s); failure classified as %s",
                             conv_name,
                             filename,
                             conv_exc,
+                            "TRANSIENT" if _is_transient else "STRUCTURAL",
+                        )
+
+                    # -------------------------------------------------------
+                    # Determine the ConverterFailurePolicy for this failure.
+                    # -------------------------------------------------------
+                    next_idx = idx + 1
+                    next_is_agpl = (
+                        next_idx < len(chain) and chain[next_idx].is_agpl
+                    )
+
+                    if _is_transient and _transient_attempts < CONVERTER_TRANSIENT_RETRY_COUNT:
+                        _failure_policy = ConverterFailurePolicy.RETRY
+                    elif _is_transient and next_is_agpl:
+                        _failure_policy = ConverterFailurePolicy.BLOCK_AGPL
+                    elif next_idx >= len(chain):
+                        _failure_policy = ConverterFailurePolicy.REJECT
+                    else:
+                        _failure_policy = ConverterFailurePolicy.WALK
+
+                    logger.info(
+                        "Converter failure policy for '%s' on %s: %s "
+                        "(transient=%s, attempt=%d/%d, next_agpl=%s)",
+                        conv_name,
+                        filename,
+                        _failure_policy.value,
+                        _is_transient,
+                        _transient_attempts,
+                        CONVERTER_TRANSIENT_RETRY_COUNT,
+                        next_is_agpl,
+                    )
+
+                    if _failure_policy is ConverterFailurePolicy.RETRY:
+                        # Retry the same converter: bump attempt counter,
+                        # rewind idx so the for-loop re-enters this entry.
+                        _transient_attempts += 1
+                        logger.info(
+                            "Retrying '%s' for %s (attempt %d/%d).",
+                            conv_name,
+                            filename,
+                            _transient_attempts,
+                            CONVERTER_TRANSIENT_RETRY_COUNT,
+                        )
+                        continue
+
+                    if _failure_policy is ConverterFailurePolicy.BLOCK_AGPL:
+                        AGPL_FALLBACK_TOTAL.labels(
+                            reason="transient_blocked"
+                        ).inc()
+                        logger.warning(
+                            "Transient failure on '%s' for %s would fall "
+                            "through to AGPL converter '%s'; blocking "
+                            "chain walk (HR4). Document will use legacy "
+                            "page_index fallback instead.",
+                            conv_name,
+                            filename,
+                            chain[next_idx].name,
+                        )
+                        break
+
+                    if _failure_policy is ConverterFailurePolicy.REJECT:
+                        logger.warning(
+                            "No more converters after '%s' for %s; "
+                            "falling through to legacy page_index.",
+                            conv_name,
+                            filename,
+                        )
+                        break
+
+                    # ConverterFailurePolicy.WALK — walk to next converter.
+                    # Reset transient attempt counter for the next converter.
+                    _transient_attempts = 0
+                    if not _is_transient and next_is_agpl:
+                        # Structural failure: allow chain walk (original
+                        # behavior).  Log if the next entry is AGPL so the
+                        # operator is aware.
+                        logger.warning(
+                            "Structural failure on '%s' for %s; falling "
+                            "back to AGPL converter '%s'. If this is "
+                            "undesired, set ALLOW_AGPL_FALLBACK=false.",
+                            conv_name,
+                            filename,
+                            chain[next_idx].name,
+                        )
+                    elif _is_transient:
+                        logger.info(
+                            "Transient failure on '%s'; next converter '%s' is "
+                            "non-AGPL, allowing chain walk.",
+                            conv_name,
+                            chain[next_idx].name if next_idx < len(chain) else "<none>",
                         )
             if md_content is not None:
                 # Zone-2: stamp full_page_already_applied when the initial

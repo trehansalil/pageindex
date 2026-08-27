@@ -550,3 +550,85 @@ async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
     html_path = _write_html(tmp_path)
     with pytest.raises(TypeError, match="boom"):
         await converters_mod.html_to_markdown_with_images(html_path, model="gpt-4.1")
+
+
+# =========================================================================
+# ConverterChainEntry metadata: is_agpl + fallback_policy fields (Zone D5)
+# =========================================================================
+
+from pageindex_mcp.config import reset_pipeline_config
+from pageindex_mcp.converters.pipeline import ConverterChainEntry
+
+
+class TestConverterChainEntryMetadata:
+    """pdf_markdown_converters() returns ConverterChainEntry instances with
+    correct is_agpl metadata so the chain walker can block transient-failure
+    fallback to AGPL converters."""
+
+    def _get_chain(self, monkeypatch, primary="docling", agpl=True):
+        """Build a converter chain with controlled env vars."""
+        monkeypatch.setenv("PDF_CONVERTER", primary)
+        monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
+        reset_pipeline_config()
+        from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+        return pdf_markdown_converters()
+
+    def test_entries_are_converter_chain_entry_instances(self, monkeypatch):
+        """Every chain element is a ConverterChainEntry, not a bare tuple."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
+        for entry in chain:
+            assert isinstance(entry, ConverterChainEntry), (
+                f"Expected ConverterChainEntry, got {type(entry).__name__}: {entry}"
+            )
+
+    def test_docling_entry_is_not_agpl(self, monkeypatch):
+        """Docling entry has is_agpl=False (MIT-licensed)."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
+        docling_entries = [e for e in chain if e.name == "docling"]
+        assert len(docling_entries) > 0, "docling entry should be in chain"
+        for entry in docling_entries:
+            assert entry.is_agpl is False, (
+                f"docling should have is_agpl=False, got {entry.is_agpl}"
+            )
+
+    def test_pymupdf4llm_entry_is_agpl(self, monkeypatch):
+        """pymupdf4llm entry has is_agpl=True (AGPL-3.0-licensed)."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
+        pymupdf_entries = [e for e in chain if e.name == "pymupdf4llm"]
+        assert len(pymupdf_entries) > 0, "pymupdf4llm entry should be in chain"
+        for entry in pymupdf_entries:
+            assert entry.is_agpl is True, (
+                f"pymupdf4llm should have is_agpl=True, got {entry.is_agpl}"
+            )
+
+    def test_every_entry_has_is_agpl_bool(self, monkeypatch):
+        """Every chain entry has is_agpl as a bool."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
+        for entry in chain:
+            assert isinstance(entry.is_agpl, bool), (
+                f"is_agpl should be bool, got {type(entry.is_agpl).__name__} for {entry.name}"
+            )
+
+    def test_backward_compat_3_tuple_unpack(self, monkeypatch):
+        """ConverterChainEntry supports (name, fn, ocr) 3-tuple unpacking
+        for backward compatibility with existing code."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
+        for entry in chain:
+            name, fn, supports_ocr = entry  # must not raise
+            assert name == entry.name
+            assert fn == entry.fn
+            assert supports_ocr == entry.supports_ocr
+
+    def test_chain_entry_len_is_3(self, monkeypatch):
+        """len(entry) == 3 for backward-compat tuple protocol."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
+        for entry in chain:
+            assert len(entry) == 3
+
+    def test_no_agpl_fallback_excludes_pymupdf(self, monkeypatch):
+        """When ALLOW_AGPL_FALLBACK=false, pymupdf4llm is not in the chain."""
+        chain = self._get_chain(monkeypatch, primary="docling", agpl=False)
+        pymupdf_names = [e.name for e in chain if e.name == "pymupdf4llm"]
+        assert len(pymupdf_names) == 0, (
+            "pymupdf4llm should not appear when ALLOW_AGPL_FALLBACK=false"
+        )

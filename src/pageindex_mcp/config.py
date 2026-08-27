@@ -396,6 +396,9 @@ class PipelineConfig:
     rfc029_flat_prefer_multiplier: float
     rfc029_min_chars_per_node: float
 
+    # --- Converter chain transient-failure retry policy -----------------------
+    converter_transient_retry_count: int
+
     # --- Verdict downgrade (force_verdict_override wiring) --------------------
     verdict_downgrade_enabled: bool
 
@@ -471,6 +474,9 @@ class PipelineConfig:
                 os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
             ),
             rfc029_min_chars_per_node=float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")),
+            converter_transient_retry_count=int(
+                os.environ.get("CONVERTER_TRANSIENT_RETRY_COUNT", "1")
+            ),
             verdict_downgrade_enabled=_envbool("VERDICT_DOWNGRADE_ENABLED", "false"),
             # VerdictThresholds fields
             garble_window_ratio_threshold=float(
@@ -514,6 +520,7 @@ class PipelineConfig:
 pipeline_config: PipelineConfig = PipelineConfig.from_env()
 
 VERDICT_DOWNGRADE_ENABLED: bool = pipeline_config.verdict_downgrade_enabled
+CONVERTER_TRANSIENT_RETRY_COUNT: int = pipeline_config.converter_transient_retry_count
 
 # Populate the backward-compat aliases declared above with live values from
 # pipeline_config (replaces the old frozen os.environ.get reads).

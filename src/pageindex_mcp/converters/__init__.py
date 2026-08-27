@@ -148,6 +148,8 @@ from .pictures import (
 
 # --- pipeline.py ---
 from .pipeline import (
+    ConverterChainEntry,
+    ConverterFailurePolicy,
     _build_candidate,
     _fallback_and_recover_pictures,
     _run_stages,
@@ -190,6 +192,8 @@ __all__ = [
     "_RFC029_TABLE_MIN_COLLAPSE_COLS",
     "_VERDICT_RANK",
     "BlobKind",
+    "ConverterChainEntry",
+    "ConverterFailurePolicy",
     # types
     "Candidate",
     "BIDI_NORM_VERSION",
