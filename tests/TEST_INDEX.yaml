@@ -63,6 +63,7 @@ mappings:
       - test_rfc_bidi.py
       - test_rfc_bidi_agpl.py
       - test_rfc_inspector.py
+      - test_rfc_promotions.py
       - test_rfc_quality.py
       - test_vlm_fallback.py
       - test_recovery.py
@@ -249,6 +250,7 @@ mappings:
       - test_verdict_misc.py
       - test_zdr_egress.py
       - test_dual_write_consistency.py
+      - test_garble_detection.py
       - test_hr3_compliance.py
       - test_hr3_integration.py
       - test_zone1_verdict_unification.py
@@ -433,6 +435,7 @@ mappings:
       - test_rfc_worker.py
       - test_script.py
       - test_vlm_fallback.py
+      - test_zone1_flat_gate_asymmetry.py
 
   helpers/gates.py:
     tests:
@@ -568,11 +571,13 @@ mappings:
       - test_auth.py
       - test_cache.py
       - test_converters.py
+      - test_image_blocks.py
       - test_observability.py
       - test_pdf_inspector.py
       - test_queue_metrics.py
       - test_rfc_arabic.py
       - test_rfc_bidi_agpl.py
+      - test_rfc_converters.py
       - test_hr3_compliance.py
       - test_hr3_integration.py
       - test_density_gate.py
