@@ -181,6 +181,13 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
                 allow_dl,
             )
     if not available:
+        _had_non_latin = any(lang not in _LATIN_LANGS for lang in langs)
+        if _had_non_latin:
+            raise TessdataUnavailableError(
+                f"no OCR languages available and request included non-Latin "
+                f"scripts {[l for l in langs if l not in _LATIN_LANGS]}; "
+                f"refusing Latin-only fallback"
+            )
         logger.warning("no requested OCR languages available; falling back to deu,eng")
         from ..metrics import TESSDATA_LATIN_FALLBACK_TOTAL  # lazy to avoid circular import
 

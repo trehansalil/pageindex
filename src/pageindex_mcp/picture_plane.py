@@ -440,6 +440,7 @@ def decide_ocr_mode(
     ocr_escalation_enabled: bool,
     has_image_markers: bool,
     force_full_page: bool = False,
+    full_page_already_applied: bool = False,
 ) -> OcrMode:
     """Thin backward-compat wrapper delegating to ``decide_ocr_strategy``.
 
@@ -453,6 +454,7 @@ def decide_ocr_mode(
         ocr_escalation_enabled=ocr_escalation_enabled,
         has_image_markers=has_image_markers,
         force_full_page=force_full_page,
+        full_page_already_applied=full_page_already_applied,
     ).mode
 
 

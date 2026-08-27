@@ -107,14 +107,16 @@ class TestImageEnrichmentPromotedVolumeFloor:
     floor (default MIN_IMAGE_PROMOTED_CHARS=500); otherwise capped at
     MARGINAL."""
 
-    def test_boundary_one_below_floor_marginal(self):
-        """total_chars == 499 (one below the default 500 floor) -> MARGINAL."""
+    def test_boundary_one_below_floor_no_rescue(self):
+        """total_chars == 499 (one below the default 500 floor) -> image
+        enrichment rescue does NOT fire; doc falls through to structural
+        gates which FAIL it (single leaf node -> max_leaf_ratio=1.0)."""
         structure = _structure_with_chars(499)
         verdict, reason = classify_verdict(
             structure, "flat_prose", None, image_enrichment_ratio=0.85
         )
-        assert verdict == "MARGINAL"
-        assert reason == "image_enrichment_promoted_below_char_floor"
+        assert verdict == "FAIL"
+        assert "image_enrichment" not in (reason or "")
 
     def test_boundary_chars_equal_floor_passes(self):
         """total_chars == MIN_IMAGE_PROMOTED_CHARS exactly (500) is
@@ -140,16 +142,17 @@ class TestImageEnrichmentPromotedVolumeFloor:
         assert verdict == "PASS"
         assert reason == "image_enrichment_promoted"
 
-    def test_env_override_still_caps_below_new_floor(self, monkeypatch):
+    def test_env_override_still_blocks_below_new_floor(self, monkeypatch):
         """MIN_IMAGE_PROMOTED_CHARS=100: 50 chars is still below the lowered
-        floor and stays capped at MARGINAL (tasks §1.4 item c)."""
+        floor — image rescue does NOT fire, doc gets FAIL from structural
+        gates (single leaf -> max_leaf_ratio=1.0)."""
         monkeypatch.setenv("MIN_IMAGE_PROMOTED_CHARS", "100")
         structure = _structure_with_chars(50)
         verdict, reason = classify_verdict(
             structure, "flat_mixed", None, image_enrichment_ratio=0.85
         )
-        assert verdict == "MARGINAL"
-        assert reason == "image_enrichment_promoted_below_char_floor"
+        assert verdict == "FAIL"
+        assert "image_enrichment" not in (reason or "")
 
 
 # ---------------------------------------------------------------------------

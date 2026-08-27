@@ -240,12 +240,7 @@ def _try_image_enrichment(
     _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
     total_chars = len(_promoted_text)
     if total_chars < th.min_image_promoted_chars:
-        return PromotionCandidate(
-            priority=100,
-            path_name="image_enrichment_promoted",
-            verdict="MARGINAL",
-            reason="image_enrichment_promoted_below_char_floor",
-        )
+        return None
     _sc = (
         script_context
         if script_context is not None

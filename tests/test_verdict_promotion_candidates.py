@@ -368,15 +368,15 @@ class TestTryImageEnrichment:
         )
         assert result is None
 
-    def test_below_char_floor_returns_marginal(self):
+    def test_below_char_floor_returns_none(self):
+        """Below-floor docs must NOT get image rescue — return None so
+        the structural gates (which will FAIL them) apply instead."""
         sig = _make_sig(flat_text="short", primary_text="short")
         th = _default_th(min_image_promoted_chars=500)
         result = _try_image_enrichment(
             sig, "flat_prose", 0.9, th, None, None
         )
-        assert result is not None
-        assert result.verdict == "MARGINAL"
-        assert result.reason == "image_enrichment_promoted_below_char_floor"
+        assert result is None
 
 
 # ===========================================================================
