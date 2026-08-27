@@ -6,7 +6,6 @@ Mechanical extraction from converters.py — lines 1609-2760 plus 2068-2076.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import logging
 import os
 import re
@@ -31,6 +30,7 @@ from ..picture_plane import (
     SkipReason,
     _classify_region,
     decide_ocr_mode,
+    decide_ocr_strategy,
 )
 from ..script import RtlDecision, ScriptContext
 from .headings import _heading_count
@@ -126,49 +126,22 @@ LANDSCAPE_REEXTRACT_DEADLINE_SECONDS: float = float(
 )
 
 # ---------------------------------------------------------------------------
-# Normalize helpers used in _pre_inference_normalize (lines 2568-2600)
+# Normalize helpers — delegate to the canonical implementation in normalize.py
+# to eliminate the duplicate bidi normalization site (Zone bidi-rtl-split fix).
 # ---------------------------------------------------------------------------
 
 
 def _pre_inference_normalize(text: str) -> tuple[str, RtlDecision | None]:
     """Markdown clean-up run BEFORE heading-depth inference (RFC-015 D5c/D4/D7).
 
-    Ordering is load-bearing: D5c (split run-together headings) must precede D4 (the
-    per-line hash-sentinel fix, so ``##Foo ###Bar`` is split before the one-marker-per-
-    line pass), which must precede D7 (BiDi reorder) and depth inference (so في is a
-    single token by the time the heading regex parses it).
-
-    Zone-6: NFKC canonicalization of Arabic Presentation Forms (U+FB50-FDFF,
-    U+FE70-FEFF) now runs AFTER ``reconstruct_bidi_order`` so that
-    ``_word_has_reversed_morphology`` sees presentation-form codepoints intact
-    when they exist.  The ``had_presentation_forms`` signal is captured before
-    NFKC and attached to the ``RtlDecision`` for downstream garble-gate use.
-    (Supersedes RFC-029 §1.1 Design Property 1 ordering; idempotence is
-    preserved because NFKC is still gated on detection.)
+    Delegates to ``normalize._pre_inference_normalize`` — the single canonical
+    implementation.  This wrapper exists solely to preserve the import path
+    ``converters.pictures._pre_inference_normalize`` used by ``pipeline.py``
+    and ``converters/__init__.py``.
     """
-    from .normalize import (
-        _fix_fi_hash_substitution,
-        _split_run_together_headings,
-        reconstruct_bidi_order,
-    )
+    from .normalize import _pre_inference_normalize as _canonical
 
-    text = _split_run_together_headings(text)  # D5c
-    text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
-    text, rtl_decision = reconstruct_bidi_order(text)  # D7 (Zone-3: sole bidi normalization step)
-
-    # Zone-6: capture presentation-form signal BEFORE NFKC destroys the
-    # codepoints, then canonicalize.  The boolean is threaded through
-    # RtlDecision.had_presentation_forms so the garble gate (helpers.py)
-    # can still detect presentation-form artefacts post-NFKC.
-    # Ranges: Arabic Presentation Forms-A U+FB50-U+FDFF,
-    #         Arabic Presentation Forms-B U+FE70-U+FEFF.
-    had_pres_forms = any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in text)
-    if had_pres_forms:
-        text = unicodedata.normalize("NFKC", text)
-    if had_pres_forms and rtl_decision is not None:
-        rtl_decision = dataclasses.replace(rtl_decision, had_presentation_forms=True)
-
-    return text, rtl_decision
+    return _canonical(text)
 
 
 # ---------------------------------------------------------------------------
@@ -1094,17 +1067,18 @@ def _recover_picture_results(  # noqa: PLR0913
     alone falls through to ``['eng']``. Union with ``detect_ocr_langs(filename)``
     (matching the escalation sites in client.py) so filename script hints survive
     even when the export carries no usable signal."""
-    # Zone-2: re-entry guard — skip per-picture OCR when a full-page OCR
-    # retry has already re-extracted all content (prevents duplicate OCR).
-    if force_full_page_ocr_applied:
-        return []
     # Zone-6: centralised OCR-mode dispatch replaces ad-hoc boolean gate.
     # Zone-5: per-picture enrichment gate (not page-level garble retry).
-    _ocr_mode = decide_ocr_mode(
+    # Zone-8 fix: use decide_ocr_strategy directly to pass all available
+    # context (force_full_page_ocr_applied re-entry guard, document_type,
+    # ocr_langs) instead of the lossy decide_ocr_mode wrapper.
+    _ocr_decision = decide_ocr_strategy(
         ocr_escalation_enabled=pipeline_config.ocr_escalation_per_picture,
         has_image_markers=_IMAGE_MARKER in md,
+        full_page_already_applied=force_full_page_ocr_applied,
+        document_type="pdf",
     )
-    if _ocr_mode == OcrMode.NONE:
+    if _ocr_decision.mode == OcrMode.NONE:
         return []
     containment_md = body_for_containment if body_for_containment is not None else md
     try:

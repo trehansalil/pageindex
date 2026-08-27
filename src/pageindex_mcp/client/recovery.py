@@ -72,6 +72,111 @@ REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
 _ARABIC_FLAT_PREFER_MULTIPLIER = float(os.getenv("ARABIC_FLAT_PREFER_MULTIPLIER", "1.5"))
 
 
+def _repeating_token_density(text: str) -> float:
+    """Repeating-token density (0.0=none, 1.0=maximally degenerate).
+
+    Zone-2 fix: returns 1.0 for <20 tokens so the RFC-029 D4
+    density comparison always runs for no-text-layer PDFs.
+    """
+    from collections import Counter
+
+    tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
+    if len(tokens) < 20:
+        return 1.0
+    return Counter(tokens).most_common(1)[0][1] / len(tokens)
+
+
+def _keep_best_wins(
+    *,
+    pre_result: dict,
+    pre_total_chars: int,
+    post_result: dict,
+    post_ok: bool,
+    expected_script: str | None,
+    script_context: ScriptContext | None,
+    filename: str,
+) -> bool:
+    """Pure-function keep-best decision for OCR retry vs pre-retry snapshot.
+
+    Extracted from ``_execute_ocr_retry`` to eliminate the ``_Unset``-union
+    type hazard: callers narrow ``RecoveryOutcome`` fields to concrete types
+    before invoking this function, so every comparison is statically safe.
+
+    Returns ``True`` when the OCR-retry result should be kept (retry wins),
+    ``False`` when the pre-retry snapshot should be restored.
+
+    Decision cascade (order matters):
+    1. Zero-char shortcut: pre had no text, post has text -> retry wins.
+    2. Char-count regression: post has fewer chars -> revert.
+    3. Equal-count garble tiebreak: retry wins if pre was garbled and post is not.
+    4. Char-count increase + garble check: if pre was garbled, apply RFC-029 D4
+       density comparison; if pre was not garbled, retry wins (more chars, no garble).
+    """
+    post_retry_chars = len(_flatten_tree_text(post_result.get("structure", [])))
+
+    _kb_ctx = script_context if script_context is not None else ScriptContext(
+        dominant_script=expected_script,
+        had_presentation_forms=False,
+        source="ocr_retry_keep_best",
+    )
+
+    # Stage 1: zero-char shortcut (Zone-8 fix).
+    if pre_total_chars == 0 and post_retry_chars > 0:
+        return True
+
+    # Stage 2: char-count regression check.
+    if post_retry_chars < pre_total_chars:
+        return False
+
+    # Stage 3: equal-count garble tiebreak.
+    if post_retry_chars == pre_total_chars:
+        _pre_text = _flatten_tree_text(pre_result.get("structure", []))
+        _post_text = _flatten_tree_text(post_result.get("structure", []))
+        return post_ok or (
+            bool(detect_garble(
+                _pre_text,
+                script_context=_kb_ctx,
+                config=_garble_config,
+                blob_kind=BlobKind.TREE_TEXT,
+            ))
+            and not detect_garble(
+                _post_text,
+                script_context=_kb_ctx,
+                config=_garble_config,
+                blob_kind=BlobKind.TREE_TEXT,
+            )
+        )
+
+    # Stage 4: char-count increase — check pre-garble + RFC-029 D4 density.
+    _pre_text_cmp = _flatten_tree_text(pre_result.get("structure", []))
+    _pre_garble_flag = bool(detect_garble(
+        _pre_text_cmp,
+        script_context=_kb_ctx,
+        config=_garble_config,
+        blob_kind=BlobKind.TREE_TEXT,
+    ))
+    if not _pre_garble_flag:
+        return True
+
+    _pre_density = _repeating_token_density(
+        _flatten_tree_text(pre_result.get("structure", []))
+    )
+    _post_density = _repeating_token_density(
+        _flatten_tree_text(post_result.get("structure", []))
+    )
+    _density_improved = _post_density < _pre_density * 0.80
+    if not _density_improved:
+        logger.warning(
+            "RFC-029 D4: post-retry repeating-token density (%.3f)"
+            " not substantially better than pre-retry (%.3f) for %s"
+            " — reverting to pre-retry result",
+            _post_density,
+            _pre_density,
+            filename,
+        )
+    return _density_improved
+
+
 class RecoveryMixin:
     """Mixin providing recovery methods for CustomPageIndexClient.
 
@@ -79,6 +184,22 @@ class RecoveryMixin:
     ``CustomPageIndexClient`` — this class is intended to be used only
     as a base class for that client.
     """
+
+    # -- TYPE_CHECKING-only stubs for attributes defined on the concrete
+    # CustomPageIndexClient.  These let Pyright verify attribute access on
+    # ``self`` without requiring a runtime Protocol or ABC.
+    if TYPE_CHECKING:
+        _staging_key: str | None
+
+        async def _reconvert_and_revalidate(
+            self,
+            state: ExtractionState,
+            md_content: str,
+            *,
+            expected_script: str | None,
+        ) -> None: ...
+
+        async def _run_md_to_tree(self, md_path: str) -> dict: ...
 
     async def _execute_ocr_retry(
         self,
@@ -156,6 +277,9 @@ class RecoveryMixin:
             # bidi_renorm_applied so the flag reflects the new content.
             state.bidi_renorm_applied = False
             if state.use_remote:
+                assert self._staging_key is not None, (
+                    "use_remote=True but _staging_key is None"
+                )
                 state.md_content, state.pic_results = await _remote_pdf_to_markdown(
                     self._staging_key,
                     force_full_page_ocr=True,
@@ -205,84 +329,20 @@ class RecoveryMixin:
 
             # ---- Keep-best heuristic (GARBLE/LOW_CONTENT only) ----
             if use_keep_best and pre_retry is not None:
-                post_retry_chars = len(_flatten_tree_text(state.result.get("structure", [])))
+                # Narrow _Unset union types: pre_retry was constructed with
+                # all fields set from state, so these are always concrete.
+                assert isinstance(pre_retry.total_chars, int)
+                assert isinstance(pre_retry.result, dict)
 
-                def _repeating_token_density(text: str) -> float:
-                    """Repeating-token density (0.0=none, 1.0=maximally degenerate).
-
-                    Zone-2 fix: returns 1.0 for <20 tokens so the RFC-029 D4
-                    density comparison always runs for no-text-layer PDFs.
-                    """
-                    from collections import Counter
-
-                    tokens = [t for t in text.split() if any(c.isalnum() for c in t)]
-                    if len(tokens) < 20:
-                        return 1.0
-                    return Counter(tokens).most_common(1)[0][1] / len(tokens)
-
-                # Zone-4: unified detect_garble replaces legacy check_garble.
-                _kb_ctx = script_context if script_context is not None else ScriptContext(
-                    dominant_script=expected_script,
-                    had_presentation_forms=False,
-                    source="ocr_retry_keep_best",
+                retry_wins = _keep_best_wins(
+                    pre_result=pre_retry.result,
+                    pre_total_chars=pre_retry.total_chars,
+                    post_result=state.result,
+                    post_ok=state.ok,
+                    expected_script=expected_script,
+                    script_context=script_context,
+                    filename=filename,
                 )
-                # Zone-8 fix: no-text-layer shortcut.  When the pre-retry
-                # extraction had zero chars (no text layer at all) and the
-                # OCR retry produced any text, always accept — the 0.80
-                # density threshold would otherwise compare against an empty
-                # baseline and may reject genuine OCR improvements.
-                if pre_retry.total_chars == 0 and post_retry_chars > 0:
-                    retry_wins = True
-                elif post_retry_chars < pre_retry.total_chars:
-                    retry_wins = False
-                elif post_retry_chars == pre_retry.total_chars:
-                    _pre_text = _flatten_tree_text(pre_retry.result.get("structure", []))
-                    _post_text = _flatten_tree_text(state.result.get("structure", []))
-                    retry_wins = state.ok or (
-                        detect_garble(
-                            _pre_text,
-                            script_context=_kb_ctx,
-                            config=_garble_config,
-                            blob_kind=BlobKind.TREE_TEXT,
-                        )
-                        and not detect_garble(
-                            _post_text,
-                            script_context=_kb_ctx,
-                            config=_garble_config,
-                            blob_kind=BlobKind.TREE_TEXT,
-                        )
-                    )
-                else:
-                    _pre_text_cmp = _flatten_tree_text(pre_retry.result.get("structure", []))
-                    _pre_garble_flag = detect_garble(
-                        _pre_text_cmp,
-                        script_context=_kb_ctx,
-                        config=_garble_config,
-                        blob_kind=BlobKind.TREE_TEXT,
-                    )
-                    if _pre_garble_flag:
-                        _pre_density = _repeating_token_density(
-                            _flatten_tree_text(pre_retry.result.get("structure", []))
-                        )
-                        _post_density = _repeating_token_density(
-                            _flatten_tree_text(state.result.get("structure", []))
-                        )
-                        # Zone-2 fix: _repeating_token_density always returns a float
-                        # (1.0 for <20 tokens), so RFC-029 D4 density comparison
-                        # always runs — no None shortcut branches.
-                        _density_improved = _post_density < _pre_density * 0.80
-                        retry_wins = _density_improved
-                        if not retry_wins:
-                            logger.warning(
-                                "RFC-029 D4: post-retry repeating-token density (%.3f)"
-                                " not substantially better than pre-retry (%.3f) for %s"
-                                " — reverting to pre-retry result",
-                                _post_density,
-                                _pre_density,
-                                filename,
-                            )
-                    else:
-                        retry_wins = True
                 if not retry_wins:
                     pre_retry.apply(state)
                     _ocr_applied = False
@@ -438,7 +498,12 @@ class RecoveryMixin:
         expected_script: str | None,
         script_context: ScriptContext | None = None,
     ) -> None:
-        """Recovery 2: RTL bidi repair in-place. Mutates state."""
+        """Recovery 2: RTL bidi repair in-place. Mutates state.
+
+        Bidi-RTL-split fix: logs ``BIDI_NORM_VERSION`` so version drift
+        between the per-node repair path and the whole-document
+        normalization paths is observable rather than silent.
+        """
         if not (not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf"):
             return
         # Zone-7: guard against double bidi correction.
@@ -455,6 +520,7 @@ class RecoveryMixin:
             )
             return
         try:
+            from ..converters.normalize import BIDI_NORM_VERSION
 
             def _repair_rtl_nodes(nodes: list) -> None:
                 for n in nodes:
@@ -477,9 +543,10 @@ class RecoveryMixin:
             )
             finalize_gate_and_route(state, _vt_raw, settings.flat_doc_routing)
             logger.warning(
-                "RTL reversal on %s; reconstruct_bidi_order repair %s",
+                "RTL reversal on %s; reconstruct_bidi_order repair %s (bidi_norm_v%d)",
                 filename,
                 "converged" if state.ok else "did not converge",
+                BIDI_NORM_VERSION,
             )
         except Exception as bidi_exc:
             logger.error("RTL bidi repair failed for %s (%s)", filename, bidi_exc, exc_info=True)

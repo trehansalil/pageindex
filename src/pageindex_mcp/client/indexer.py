@@ -125,14 +125,29 @@ def _renormalize_bidi_guarded(
     thread the same decision into ``validate_tree`` without recomputing.
     When the bilingual guard skips, an explicit sentinel decision is
     returned (``method='bilingual_guard_skip'``) instead of silent None.
+
+    Bidi-RTL-split fix: now runs NFKC canonicalization on Arabic
+    Presentation Forms and captures ``had_presentation_forms`` on the
+    RtlDecision, matching the local-path depth in
+    ``normalize._pre_inference_normalize``.  Without this, documents
+    routed through the remote Docling path retained presentation-form
+    codepoints that the local path canonicalized, and the bidi coherence
+    gate (``_gate_bidi_degraded``) could not detect degradation because
+    the signal was absent from the decision object.
     """
+    import dataclasses
+    import unicodedata
+
+    from ..converters.normalize import BIDI_NORM_VERSION
+
     latin_frac = _latin_fraction(md_content)
     if latin_frac > _BIDI_RENORM_LATIN_GUARD:
         BIDI_RENORM_SKIPPED.inc()
         logger.info(
-            "bidi_renorm_skipped: %s latin_frac=%.2f -- bilingual guard",
+            "bidi_renorm_skipped: %s latin_frac=%.2f -- bilingual guard (bidi_norm_v%d)",
             filename,
             latin_frac,
+            BIDI_NORM_VERSION,
         )
         return md_content, RtlDecision(
             reversed=False,
@@ -144,10 +159,23 @@ def _renormalize_bidi_guarded(
     if renorm != md_content:
         REMOTE_MD_RENORMALIZED.inc()
         logger.debug(
-            "D3 re-normalization changed %d chars for %s",
+            "D3 re-normalization changed %d chars for %s (bidi_norm_v%d)",
             len(md_content) - len(renorm),
             filename,
+            BIDI_NORM_VERSION,
         )
+
+    # Bidi-RTL-split fix: capture presentation-form signal BEFORE NFKC
+    # destroys the codepoints, then canonicalize — matching the local
+    # path's _pre_inference_normalize depth.
+    # Ranges: Arabic Presentation Forms-A U+FB50-U+FDFF,
+    #         Arabic Presentation Forms-B U+FE70-U+FEFF.
+    had_pres_forms = any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in renorm)
+    if had_pres_forms:
+        renorm = unicodedata.normalize("NFKC", renorm)
+    if had_pres_forms and rtl_decision is not None:
+        rtl_decision = dataclasses.replace(rtl_decision, had_presentation_forms=True)
+
     return renorm, rtl_decision
 
 

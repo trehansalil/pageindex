@@ -38,6 +38,7 @@ mappings:
       - test_hr3_compliance.py
       - test_recovery.py
       - test_worker.py
+      - test_zone4_bidi_rtl.py
 
   client/images.py:
     coverage_threshold: 90
@@ -68,6 +69,8 @@ mappings:
       - test_rfc_quality.py
       - test_vlm_fallback.py
       - test_recovery.py
+      - test_zone3_ocr_recovery.py
+      - test_zone4_bidi_rtl.py
 
   client/remote.py:
     coverage_threshold: 90
@@ -303,6 +306,7 @@ mappings:
       - test_rfc_storage.py
       - test_route_decision.py
       - test_rtl.py
+      - test_zone4_bidi_rtl.py
 
   converters/pictures.py:
     tests:
@@ -323,6 +327,8 @@ mappings:
       - test_rfc_tables.py
       - test_rfc_worker.py
       - test_rtl.py
+      - test_zone3_ocr_recovery.py
+      - test_zone4_bidi_rtl.py
 
   converters/docling_conv.py:
     tests:
@@ -466,6 +472,7 @@ mappings:
       - test_verdict_misc.py
       - test_vlm_fallback.py
       - test_zone1_flat_gate_asymmetry.py
+      - test_zone4_bidi_rtl.py
       - test_zone6_recovery_wiring.py
 
   helpers/verdict.py:
@@ -599,6 +606,7 @@ mappings:
       - test_rfc_garble_gate.py
       - test_rfc_storage.py
       - test_rfc_worker.py
+      - test_zone3_ocr_recovery.py
 
   queue_metrics.py:
     tests:

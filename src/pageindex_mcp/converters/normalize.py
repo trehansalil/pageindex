@@ -7,6 +7,15 @@ import unicodedata
 from ..script import AR_CHAR_RE as _AR_SCRIPT_RE
 from ..script import RtlDecision, apply_rtl, decide_rtl
 
+# ---------------------------------------------------------------------------
+# Bidi normalization version — bump whenever reconstruct_bidi_order,
+# _pre_inference_normalize, or the NFKC / presentation-form logic changes.
+# All call sites (local pipeline, remote renormalize, per-node recovery)
+# reference this constant so version drift across deployment units is
+# observable rather than silent.
+# ---------------------------------------------------------------------------
+BIDI_NORM_VERSION: int = 2
+
 _INDENTED_HEADING_RE = re.compile(r"^[ \t]+(#{1,6}\s)", re.MULTILINE)
 
 

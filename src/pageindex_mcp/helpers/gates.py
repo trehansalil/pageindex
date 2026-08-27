@@ -147,14 +147,32 @@ def _gate_bidi_degraded(
     Because the gate table is evaluated exhaustively, both gates now fire
     together on reversed text: RTL_REVERSAL wins as the primary defect
     (earlier in table order) while BIDI_DEGRADED is recorded in
-    ``all_defects`` instead of being masked.  Additional bidi-degradation
-    heuristics that detect degradation without full reversal belong here
-    and must respect the same env var.
+    ``all_defects`` instead of being masked.
+
+    Bidi-RTL-split fix: now also fires on ``had_presentation_forms`` --
+    the presence of Arabic Presentation Forms (U+FB50-FDFF, U+FE70-FEFF)
+    in the source text is a bidi-degradation signal independent of full
+    reversal.  Previously, NFKC normalization destroyed presentation-form
+    codepoints before the check ran, making this a zero-sensitivity
+    detector; now the signal is captured pre-NFKC in both the local path
+    (``_pre_inference_normalize``) and the remote path
+    (``_renormalize_bidi_guarded``) and threaded via
+    ``RtlDecision.had_presentation_forms``.
     """
     if os.environ.get("BIDI_COHERENCE_ENFORCE", "true").lower() != "true":
         return (False, "")
-    fires = bool(rtl_decision and rtl_decision.reversed)
-    return (fires, "")
+    if rtl_decision is None:
+        return (False, "")
+    reversed_signal = rtl_decision.reversed
+    pres_forms_signal = rtl_decision.had_presentation_forms
+    fires = reversed_signal or pres_forms_signal
+    detail = ""
+    if fires:
+        detail = (
+            f"reversed={reversed_signal}"
+            f",had_presentation_forms={pres_forms_signal}"
+        )
+    return (fires, detail)
 
 
 def _gate_empty_node_contamination(

@@ -441,12 +441,20 @@ def decide_ocr_mode(
     has_image_markers: bool,
     force_full_page: bool = False,
     full_page_already_applied: bool = False,
+    garble_status: bool = False,
+    document_type: DocumentType = "pdf",
+    ocr_langs: list[str] | None = None,
 ) -> OcrMode:
     """Thin backward-compat wrapper delegating to ``decide_ocr_strategy``.
 
-    Preserves the existing 3-arg keyword-only signature so all call sites
+    Preserves the existing keyword-only signature so call sites
     (including test exhaustive truth-table assertions) continue to work
     without a synchronized multi-file rewrite.
+
+    Zone-8 fix: ``garble_status``, ``document_type``, and ``ocr_langs``
+    are now forwarded to ``decide_ocr_strategy`` instead of being silently
+    dropped.  All three default to backward-compatible values so existing
+    callers that omit them are unaffected.
 
     Pure function, no side effects.
     """
@@ -455,6 +463,9 @@ def decide_ocr_mode(
         has_image_markers=has_image_markers,
         force_full_page=force_full_page,
         full_page_already_applied=full_page_already_applied,
+        garble_status=garble_status,
+        document_type=document_type,
+        ocr_langs=ocr_langs,
     ).mode
 
 

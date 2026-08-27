@@ -91,6 +91,7 @@ from .headings import (
 
 # --- normalize.py ---
 from .normalize import (
+    BIDI_NORM_VERSION,
     _fix_fi_hash_substitution,
     _normalize_indented_headings,
     _split_run_together_headings,
@@ -191,6 +192,7 @@ __all__ = [
     "BlobKind",
     # types
     "Candidate",
+    "BIDI_NORM_VERSION",
     # concurrent.futures
     "FuturesTimeoutError",
     "PictureResult",
