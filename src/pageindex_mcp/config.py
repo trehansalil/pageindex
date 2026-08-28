@@ -372,6 +372,7 @@ class PipelineConfig:
     allow_agpl_fallback: bool
     remote_md_renormalize: bool
     ocr_escalation_garble: bool
+    ocr_escalation_low_content: bool
     ocr_escalation_per_picture: bool
     pre_garble_force_ocr_enabled: bool
     d7_garble_recovery_enabled: bool
@@ -441,6 +442,11 @@ class PipelineConfig:
             remote_md_renormalize=os.environ.get("REMOTE_MD_RENORMALIZE", "1").strip().lower()
             in ("1", "true", "yes"),
             ocr_escalation_garble=os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower()
+            in ("1", "true", "yes"),
+            ocr_escalation_low_content=os.environ.get(
+                "OCR_ESCALATION_LOW_CONTENT",
+                os.environ.get("OCR_ESCALATION_GARBLE", "1"),
+            ).strip().lower()
             in ("1", "true", "yes"),
             ocr_escalation_per_picture=os.environ.get("OCR_ESCALATION_PER_PICTURE", "1")
             .strip()
@@ -535,6 +541,7 @@ PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
 ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
 REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
 OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+OCR_ESCALATION_LOW_CONTENT = pipeline_config.ocr_escalation_low_content
 OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
 IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
 
@@ -559,6 +566,7 @@ def reset_pipeline_config() -> None:
     global pipeline_config  # noqa: PLW0603
     global PDF_INSPECTOR_PRECLASSIFY, ALLOW_AGPL_FALLBACK  # noqa: PLW0603
     global REMOTE_MD_RENORMALIZE, OCR_ESCALATION_GARBLE  # noqa: PLW0603
+    global OCR_ESCALATION_LOW_CONTENT  # noqa: PLW0603
     global OCR_ESCALATION_PER_PICTURE, IMAGE_DOMINANT_OCR_ESCALATION_ENABLED  # noqa: PLW0603
     global VERDICT_DOWNGRADE_ENABLED  # noqa: PLW0603
 
@@ -570,6 +578,7 @@ def reset_pipeline_config() -> None:
     ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
     REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
     OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+    OCR_ESCALATION_LOW_CONTENT = pipeline_config.ocr_escalation_low_content
     OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
     IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
     VERDICT_DOWNGRADE_ENABLED = pipeline_config.verdict_downgrade_enabled
@@ -609,6 +618,7 @@ def effective_config_snapshot() -> dict:
             "allow_agpl_fallback",
             "remote_md_renormalize",
             "ocr_escalation_garble",
+            "ocr_escalation_low_content",
             "ocr_escalation_per_picture",
             "pre_garble_force_ocr_enabled",
             "d7_garble_recovery_enabled",

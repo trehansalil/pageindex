@@ -435,7 +435,7 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
-        if not pipeline_config.ocr_escalation_garble:
+        if not pipeline_config.ocr_escalation_low_content:
             return
         if state.total_chars >= pipeline_config.low_content_ocr_char_floor:
             return

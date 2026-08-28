@@ -4,10 +4,8 @@
 Tests the extracted pure functions from the wave-2 refactor:
 - _repeating_token_density: repeating-token density measure
 - _keep_best_wins: keep-best decision cascade for OCR retry
-- decide_ocr_mode parameter forwarding
+- decide_ocr_strategy parameter acceptance
 """
-
-from unittest.mock import patch
 
 from pageindex_mcp.client.recovery import _keep_best_wins, _repeating_token_density
 
@@ -81,24 +79,18 @@ class TestKeepBestWins:
         assert result is True
 
 
-class TestDecideOcrModeForwarding:
+class TestDecideOcrStrategyAcceptsForwardedParams:
 
-    def test_forwards_garble_status_document_type_ocr_langs(self):
-        with patch("pageindex_mcp.picture_plane.decide_ocr_strategy") as mock_strategy:
-            from pageindex_mcp.picture_plane import OcrDecision, OcrMode, decide_ocr_mode
+    def test_accepts_garble_status_document_type_ocr_langs(self):
+        from pageindex_mcp.picture_plane import OcrDecision, OcrMode, decide_ocr_strategy
 
-            mock_strategy.return_value = OcrDecision(mode=OcrMode.NONE)
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=True,
+            has_image_markers=True,
+            garble_status=True,
+            document_type="pdf",
+            ocr_langs=["deu", "ara"],
+        )
 
-            decide_ocr_mode(
-                ocr_escalation_enabled=True,
-                has_image_markers=True,
-                garble_status=True,
-                document_type="pdf",
-                ocr_langs=["deu", "ara"],
-            )
-
-            mock_strategy.assert_called_once()
-            call_kwargs = mock_strategy.call_args[1]
-            assert call_kwargs["garble_status"] is True
-            assert call_kwargs["document_type"] == "pdf"
-            assert call_kwargs["ocr_langs"] == ["deu", "ara"]
+        assert isinstance(result, OcrDecision)
+        assert isinstance(result.mode, OcrMode)

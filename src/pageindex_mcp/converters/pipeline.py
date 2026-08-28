@@ -15,6 +15,7 @@ from collections.abc import Callable
 from enum import StrEnum
 
 from ..config import MAX_DOCLING_PAGES, pipeline_config
+from ..picture_plane import strip_unresolved_image_markers
 from ..script import RtlDecision
 from .docling_conv import (
     _docling_converter,
@@ -635,6 +636,11 @@ def _fallback_and_recover_pictures(  # noqa: PLR0913
         expected_script=expected_script,
         force_full_page_ocr_applied=force_full_page_ocr_applied,
     )
+
+    # Zone-1 fix: when per-picture OCR is skipped (returns empty), strip
+    # residual <!-- image --> markers so they do not persist in tree output.
+    if not pic_results:
+        md = strip_unresolved_image_markers(md)
 
     # RFC-035 D2 Fix: surface landscape-fallback pages with pictures as
     # routing-only markers (no ocr_text/png_bytes, inert to splice alignment).

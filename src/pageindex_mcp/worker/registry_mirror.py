@@ -12,6 +12,7 @@ from ..config import settings
 from ..metrics import (
     _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY,
     _REGISTRY_WRITE_FAILURES_REDIS_KEY,
+    REGISTRY_CONSISTENCY_DEGRADED,
     REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP,
     REGISTRY_WRITE_FAILURES_TOTAL,
     bridge_redis_key,
@@ -91,6 +92,19 @@ async def _upsert_registry_row(
             "-- sidecar is sole source of truth (degraded consistency)",
             doc_id,
         )
+        # Zone-5: observable metric for consistency degradation.
+        REGISTRY_CONSISTENCY_DEGRADED.inc()
+        await _mirror_bridged_incr("registry_consistency_degraded")
+        # Zone-5: stamp consistency_regime in sidecar so the runtime regime
+        # is forensically visible in stored metadata (best-effort).
+        try:
+            from ..storage import save_doc_meta
+
+            await asyncio.to_thread(
+                save_doc_meta, doc_id, {"consistency_regime": "sidecar-only"}
+            )
+        except Exception:
+            pass  # best-effort — sidecar stamp is non-critical
         return
     from ..registry import get_pool, upsert_doc
 
@@ -100,6 +114,18 @@ async def _upsert_registry_row(
             "-- sidecar is sole source of truth (degraded consistency)",
             doc_id,
         )
+        # Zone-5: observable metric for consistency degradation.
+        REGISTRY_CONSISTENCY_DEGRADED.inc()
+        await _mirror_bridged_incr("registry_consistency_degraded")
+        # Zone-5: stamp consistency_regime in sidecar (best-effort).
+        try:
+            from ..storage import save_doc_meta
+
+            await asyncio.to_thread(
+                save_doc_meta, doc_id, {"consistency_regime": "sidecar-only"}
+            )
+        except Exception:
+            pass  # best-effort — sidecar stamp is non-critical
         # Zone-4 Phase 3: unconditionally queue verdict for retry when pool
         # is unavailable so reconcile_registry_drift can heal later.
         if verdict_fields:
@@ -137,6 +163,11 @@ async def _upsert_registry_row(
             if winning:
                 from ..storage import save_doc_meta
 
+                # Zone-5: stamp consistency_regime so the sidecar records
+                # that this write was Postgres-authoritative (forensic
+                # visibility).  Piggybacks on the existing save_doc_meta
+                # call — no additional MinIO write.
+                winning["consistency_regime"] = "postgres-authoritative"
                 try:
                     await asyncio.to_thread(save_doc_meta, doc_id, winning)
                 except Exception as smc_exc:
@@ -162,6 +193,11 @@ async def _upsert_registry_row(
             exc_info=True,
         )
         await _mirror_registry_write_failure_to_redis()
+        # Zone-5: enqueue verdict retry on ANY Postgres failure — not just
+        # pool-not-ready.  Closes the silent verdict loss gap where transient
+        # query/connection errors permanently dropped verdict_fields.
+        if verdict_fields:
+            await _enqueue_verdict_retry(doc_id, verdict_fields)
 
 
 async def _mirror_registry_metric_to_redis(key: str, value: str) -> None:

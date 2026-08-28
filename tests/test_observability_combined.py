@@ -68,6 +68,7 @@ class TestEffectiveConfigSnapshot:
             "allow_agpl_fallback",
             "remote_md_renormalize",
             "ocr_escalation_garble",
+            "ocr_escalation_low_content",
             "ocr_escalation_per_picture",
             "pre_garble_force_ocr_enabled",
             "d7_garble_recovery_enabled",
@@ -97,7 +98,7 @@ class TestEffectiveConfigSnapshot:
             f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
             f"  Extra:   {set(snap.keys()) - expected_keys}"
         )
-        assert len(snap) == 28
+        assert len(snap) == 29
 
         assert isinstance(snap["pipeline_version"], int)
         for fk in (

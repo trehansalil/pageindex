@@ -267,44 +267,64 @@ _GateFn = Callable[
 # ---------------------------------------------------------------------------
 
 
+def _all_defects(state: ExtractionState) -> frozenset[TreeDefect]:
+    """Return all active defects from gate_result, or a singleton from first_defect."""
+    if state.gate_result is not None:
+        return state.gate_result.all_defects or frozenset({state.first_defect})
+    return frozenset({state.first_defect})
+
+
 def _eligible_garble(state: ExtractionState) -> bool:
     """Garble-type OCR + VLM recovery eligibility (GARBLING or NODE_GARBLING).
+
+    Zone-1 fix: checks *all* active defects (not just first_defect) so
+    garble detection firing as a secondary defect behind NODE_COUNT_LOW
+    still triggers garble-specific recovery.
 
     Flag gates for OCR escalation and VLM are checked inside the individual
     recovery methods (_recover_garble_ocr, _recover_vlm_fallback) to preserve
     their independence (VLM can fire even when OCR escalation is off).
     """
-    return not state.ok and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
+    if state.ok:
+        return False
+    _garble_types = {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
+    return bool(_all_defects(state) & _garble_types)
 
 
 def _eligible_low_content(state: ExtractionState) -> bool:
     """Low-content / image-dominant recovery eligibility (NODE_COUNT_LOW).
 
-    Combined OR-gate: at least one of ocr_escalation_garble or
+    Zone-1 fix: checks *all* active defects (not just first_defect) so
+    NODE_COUNT_LOW firing as a secondary defect still triggers recovery.
+
+    Combined OR-gate: at least one of ocr_escalation_low_content or
     image_dominant_ocr_escalation_enabled must be active.  Individual
     recovery methods check their specific flag.
     """
+    if state.ok:
+        return False
+    if TreeDefect.NODE_COUNT_LOW not in _all_defects(state):
+        return False
     return (
-        not state.ok
-        and state.first_defect == TreeDefect.NODE_COUNT_LOW
-        and (
-            pipeline_config.ocr_escalation_garble
-            or pipeline_config.image_dominant_ocr_escalation_enabled
-        )
+        pipeline_config.ocr_escalation_low_content
+        or pipeline_config.image_dominant_ocr_escalation_enabled
     )
 
 
 def _eligible_image_dominant(state: ExtractionState) -> bool:
     """Image-dominant OCR recovery eligibility (DEPTH_LOW).
 
+    Zone-1 fix: checks *all* active defects (not just first_defect) so
+    DEPTH_LOW firing as a secondary defect still triggers recovery.
+
     DEPTH_LOW only has image-dominant recovery; the flag is checked here
     so the gate is skipped entirely when disabled.
     """
-    return (
-        not state.ok
-        and pipeline_config.image_dominant_ocr_escalation_enabled
-        and state.first_defect == TreeDefect.DEPTH_LOW
-    )
+    if state.ok:
+        return False
+    if not pipeline_config.image_dominant_ocr_escalation_enabled:
+        return False
+    return TreeDefect.DEPTH_LOW in _all_defects(state)
 
 
 def _eligible_rtl(state: ExtractionState) -> bool:

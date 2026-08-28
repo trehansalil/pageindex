@@ -247,13 +247,27 @@ _DELETE_SQL = "DELETE FROM doc_registry WHERE doc_id = $1;"
 async def delete_doc(doc_id: str) -> None:
     """Remove a doc_registry row.  Idempotent — no-op if the row is absent.
     Returns silently if the pool is not initialised.
+
+    Zone-5: uses a transaction block with SET LOCAL statement_timeout so
+    Postgres itself kills the query server-side on timeout, preventing
+    orphan queries when the asyncpg client-side timeout fires first.
+    The asyncpg timeout= is kept as a client-side backstop.
     """
     pool = _schema.get_pool()
     if pool is None:
         return
     from ..config import settings
 
-    await pool.execute(_DELETE_SQL, doc_id, timeout=settings.registry_delete_timeout_s)
+    timeout_s = settings.registry_delete_timeout_s
+    # Server-side timeout in ms; slightly less than client-side to let
+    # Postgres cancel first rather than relying on asyncpg's client abort.
+    timeout_ms = int(timeout_s * 1000)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                f"SET LOCAL statement_timeout = '{timeout_ms}';"
+            )
+            await conn.execute(_DELETE_SQL, doc_id, timeout=timeout_s)
     logger.info("registry: deleted doc_id=%s", doc_id)
 
 

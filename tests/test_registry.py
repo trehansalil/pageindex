@@ -100,13 +100,25 @@ async def test_reads_return_none_when_pool_absent(no_pool):
 
 
 async def test_delete_doc_passes_statement_timeout():
+    conn = AsyncMock()
+    conn.execute = AsyncMock(return_value="DELETE 1")
+    conn.transaction = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=None),
+        __aexit__=AsyncMock(return_value=False),
+    ))
     pool = _mock_pool()
+    pool.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
     with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         await registry.delete_doc("test-doc-id")
-    pool.execute.assert_awaited_once()
-    call_kwargs = pool.execute.await_args.kwargs
-    assert "timeout" in call_kwargs
-    assert call_kwargs["timeout"] > 0
+    assert conn.execute.await_count == 2
+    set_timeout_call = conn.execute.await_args_list[0]
+    assert "statement_timeout" in set_timeout_call.args[0]
+    delete_call = conn.execute.await_args_list[1]
+    assert "timeout" in delete_call.kwargs
+    assert delete_call.kwargs["timeout"] > 0
 
 
 # ---------------------------------------------------------------------------

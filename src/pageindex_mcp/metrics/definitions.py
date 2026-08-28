@@ -134,6 +134,12 @@ REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP = Gauge(
     "reconcile interval to catch silent drift between MinIO and the registry. "
     "Mirrored from Redis on scrape — see note above.",
 )
+REGISTRY_CONSISTENCY_DEGRADED = Gauge(
+    "pageindex_registry_consistency_degraded_total",
+    "Times the registry write path was bypassed (registry_enabled=false or pool "
+    "not ready), leaving the MinIO sidecar as sole source of truth with degraded "
+    "consistency. Mirrored from Redis on scrape.",
+)
 
 LOW_QUALITY_TREES = Counter(
     "pageindex_low_quality_trees_total",

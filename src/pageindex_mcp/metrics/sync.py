@@ -17,6 +17,7 @@ from .definitions import (
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_CHILD_TIMEOUT_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
+    REGISTRY_CONSISTENCY_DEGRADED,
     REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP,
     REGISTRY_METRICS_SYNC_INTERVAL_S,
     REGISTRY_WRITE_FAILURES_TOTAL,
@@ -44,6 +45,7 @@ _BRIDGED_METRICS = {
     "converter_child_timeout_total": CONVERTER_CHILD_TIMEOUT_TOTAL,
     "converter_child_peak_rss_kib": CONVERTER_PEAK_RSS_KIB,
     "staging_delete_failures_total": STAGING_DELETE_FAILURES,
+    "registry_consistency_degraded": REGISTRY_CONSISTENCY_DEGRADED,
 }
 
 

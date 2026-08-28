@@ -75,6 +75,10 @@ async def _drain_verdict_retry_queue(redis_client: Any) -> None:
                     force_override = bool(meta.pop("force_verdict_override", False))
                     winning = await upsert_doc(meta, force_verdict_override=force_override)
                     if winning:
+                        # Zone-5: stamp consistency_regime so the sidecar
+                        # records that this drain write restored Postgres
+                        # authority (forensic visibility).
+                        winning["consistency_regime"] = "postgres-authoritative"
                         await asyncio.to_thread(save_doc_meta, doc_id, winning)
 
                     await redis_client.delete(key)

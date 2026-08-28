@@ -30,7 +30,6 @@ from ..picture_plane import (
     RegionDisposition,
     SkipReason,
     _classify_region,
-    decide_ocr_mode,
     decide_ocr_strategy,
 )
 from ..script import RtlDecision, ScriptContext

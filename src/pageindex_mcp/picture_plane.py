@@ -431,49 +431,25 @@ def decide_ocr_strategy(
 
 
 # ---------------------------------------------------------------------------
-# decide_ocr_mode: backward-compat wrapper (delegates to decide_ocr_strategy)
+# Marker cleanup: strip unresolved <!-- image --> markers
 # ---------------------------------------------------------------------------
 
+_IMAGE_MARKER = "<!-- image -->"
 
-def decide_ocr_mode(
-    *,
-    ocr_escalation_enabled: bool,
-    has_image_markers: bool,
-    force_full_page: bool = False,
-    full_page_already_applied: bool = False,
-    garble_status: bool = False,
-    document_type: DocumentType = "pdf",
-    ocr_langs: list[str] | None = None,
-) -> OcrMode:
-    """Thin backward-compat wrapper delegating to ``decide_ocr_strategy``.
 
-    Preserves the existing keyword-only signature so call sites
-    (including test exhaustive truth-table assertions) continue to work
-    without a synchronized multi-file rewrite.
+def strip_unresolved_image_markers(md: str) -> str:
+    """Remove all residual ``<!-- image -->`` markers from *md*.
 
-    Zone-8 fix: ``garble_status``, ``document_type``, and ``ocr_langs``
-    are now forwarded to ``decide_ocr_strategy`` instead of being silently
-    dropped.  All three default to backward-compatible values so existing
-    callers that omit them are unaffected.
-
-    Pure function, no side effects.
+    Called when per-picture OCR is skipped or returns empty so that
+    literal markers do not persist in tree output.  Pure function,
+    no side effects.
     """
-    return decide_ocr_strategy(
-        ocr_escalation_enabled=ocr_escalation_enabled,
-        has_image_markers=has_image_markers,
-        force_full_page=force_full_page,
-        full_page_already_applied=full_page_already_applied,
-        garble_status=garble_status,
-        document_type=document_type,
-        ocr_langs=ocr_langs,
-    ).mode
+    return md.replace(_IMAGE_MARKER, "")
 
 
 # ---------------------------------------------------------------------------
 # bind_markers: per-marker splice alignment
 # ---------------------------------------------------------------------------
-
-_IMAGE_MARKER = "<!-- image -->"
 
 
 def bind_markers(
