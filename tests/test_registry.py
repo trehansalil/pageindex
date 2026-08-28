@@ -1823,3 +1823,332 @@ class TestHR2CascadeStoreCoverage:
 
     def test_preloaded_store_covered(self):
         assert "preloaded/" in self._get_delete_doc_src()
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Regression — upsert_doc exception enqueues verdict retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_failure_enqueues_verdict_retry():
+    """Regression: when upsert_doc raises inside _upsert_registry_row,
+    verdict_fields must be enqueued via _enqueue_verdict_retry (not silently
+    dropped). This closes the silent verdict loss gap on transient Postgres
+    errors."""
+    verdict = {"verdict": "PASS", "pipeline_version": 7}
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch(
+            "pageindex_mcp.registry.upsert_doc",
+            AsyncMock(side_effect=RuntimeError("connection refused")),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"doc_id": "retry-1"},
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
+            AsyncMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+            AsyncMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
+            AsyncMock(),
+        ) as mock_enqueue,
+    ):
+        await _upsert_registry_row("retry-1", None, verdict_fields=verdict)
+
+    mock_enqueue.assert_awaited_once_with("retry-1", verdict)
+
+
+@pytest.mark.asyncio
+async def test_upsert_failure_no_verdict_fields_no_enqueue():
+    """When upsert_doc raises but verdict_fields is None, no retry is
+    enqueued (nothing to retry)."""
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch(
+            "pageindex_mcp.registry.upsert_doc",
+            AsyncMock(side_effect=RuntimeError("connection refused")),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"doc_id": "retry-2"},
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
+            AsyncMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+            AsyncMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
+            AsyncMock(),
+        ) as mock_enqueue,
+    ):
+        await _upsert_registry_row("retry-2", None)
+
+    mock_enqueue.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Wiring — REGISTRY_CONSISTENCY_DEGRADED metric fires on disabled/pool-None
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_registry_disabled_increments_consistency_degraded_metric():
+    """Wiring: when registry_enabled=false, REGISTRY_CONSISTENCY_DEGRADED must
+    be incremented AND _mirror_bridged_incr('registry_consistency_degraded')
+    must be called."""
+    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
+
+    mock_gauge = MagicMock()
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
+            mock_gauge,
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
+            AsyncMock(),
+        ) as mock_bridged,
+    ):
+        await _upsert_registry_row("degraded-metric-1", None)
+
+    mock_gauge.inc.assert_called_once()
+    mock_bridged.assert_awaited_once_with("registry_consistency_degraded")
+
+
+@pytest.mark.asyncio
+async def test_pool_none_increments_consistency_degraded_metric():
+    """Wiring: when pool=None, REGISTRY_CONSISTENCY_DEGRADED must be incremented
+    AND _mirror_bridged_incr('registry_consistency_degraded') must fire."""
+    mock_gauge = MagicMock()
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=None),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
+            mock_gauge,
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
+            AsyncMock(),
+        ) as mock_bridged,
+        patch(
+            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
+            AsyncMock(),
+        ),
+    ):
+        await _upsert_registry_row("degraded-metric-2", None)
+
+    mock_gauge.inc.assert_called_once()
+    mock_bridged.assert_awaited_once_with("registry_consistency_degraded")
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Contract — consistency_regime='postgres-authoritative' stamped on winning dict
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_successful_upsert_stamps_postgres_authoritative_in_sidecar():
+    """Contract: after successful Postgres upsert, the winning dict passed to
+    save_doc_meta must contain consistency_regime='postgres-authoritative'."""
+    winning = {"doc_id": "regime-1", "verdict": "PASS", "pipeline_version": 4}
+    save_calls = []
+
+    def _capture_save(doc_id, meta):
+        save_calls.append((doc_id, dict(meta)))
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch(
+            "pageindex_mcp.registry.upsert_doc",
+            AsyncMock(return_value=winning),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"doc_id": "regime-1"},
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
+            AsyncMock(),
+        ),
+        patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
+    ):
+        await _upsert_registry_row("regime-1", None)
+
+    assert len(save_calls) == 1
+    _, meta = save_calls[0]
+    assert meta["consistency_regime"] == "postgres-authoritative"
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Contract — pool not ready stamps 'sidecar-only' in sidecar
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pool_not_ready_stamps_sidecar_only_consistency_regime():
+    """Contract: when pool is not ready, save_doc_meta is called with
+    consistency_regime='sidecar-only' (best-effort)."""
+    save_calls = []
+
+    def _capture_save(doc_id, meta):
+        save_calls.append((doc_id, dict(meta)))
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=None),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
+            AsyncMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
+            MagicMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
+            AsyncMock(),
+        ),
+        patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
+    ):
+        await _upsert_registry_row("sidecar-1", None, verdict_fields={"verdict": "PASS"})
+
+    assert len(save_calls) == 1
+    _, meta = save_calls[0]
+    assert meta["consistency_regime"] == "sidecar-only"
+
+
+@pytest.mark.asyncio
+async def test_registry_disabled_stamps_sidecar_only_consistency_regime():
+    """Contract: when registry_enabled=false, save_doc_meta is called with
+    consistency_regime='sidecar-only' (best-effort)."""
+    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
+    save_calls = []
+
+    def _capture_save(doc_id, meta):
+        save_calls.append((doc_id, dict(meta)))
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
+            MagicMock(),
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
+            AsyncMock(),
+        ),
+        patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
+    ):
+        await _upsert_registry_row("sidecar-2", None)
+
+    assert len(save_calls) == 1
+    _, meta = save_calls[0]
+    assert meta["consistency_regime"] == "sidecar-only"
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Contract — delete_doc SET LOCAL statement_timeout precedes DELETE
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_doc_statement_timeout_precedes_delete_with_correct_value():
+    """Contract: delete_doc in queries.py must execute SET LOCAL
+    statement_timeout inside a transaction block BEFORE the DELETE, using
+    the correct timeout value derived from settings.registry_delete_timeout_s."""
+    import dataclasses
+
+    from pageindex_mcp.config import settings as base_settings
+
+    timeout_s = 3.0
+    patched_settings = dataclasses.replace(base_settings, registry_delete_timeout_s=timeout_s)
+    expected_ms = int(timeout_s * 1000)
+
+    conn = AsyncMock()
+    conn.execute = AsyncMock(return_value="DELETE 1")
+    conn.transaction = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=None),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+    pool = _mock_pool()
+    pool.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=conn),
+        __aexit__=AsyncMock(return_value=False),
+    ))
+
+    with (
+        patch("pageindex_mcp.registry.schema.get_pool", return_value=pool),
+        patch("pageindex_mcp.config.settings", patched_settings),
+    ):
+        await registry.delete_doc("timeout-doc")
+
+    # Two execute calls: SET LOCAL then DELETE
+    assert conn.execute.await_count == 2
+    set_call = conn.execute.await_args_list[0]
+    delete_call = conn.execute.await_args_list[1]
+
+    # SET LOCAL must come first and contain the correct timeout
+    assert "SET LOCAL statement_timeout" in set_call.args[0]
+    assert str(expected_ms) in set_call.args[0]
+
+    # DELETE must be second with client-side timeout= kwarg
+    assert "DELETE" in delete_call.args[0]
+    assert delete_call.kwargs["timeout"] == timeout_s
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: Wiring — REGISTRY_CONSISTENCY_DEGRADED across metrics modules
+# ---------------------------------------------------------------------------
+
+
+def test_registry_consistency_degraded_defined_in_definitions():
+    """Wiring: REGISTRY_CONSISTENCY_DEGRADED must be defined in
+    metrics.definitions."""
+    from pageindex_mcp.metrics.definitions import REGISTRY_CONSISTENCY_DEGRADED as gauge
+
+    assert gauge is not None
+    assert gauge._name == "pageindex_registry_consistency_degraded_total"
+
+
+def test_registry_consistency_degraded_reexported_from_metrics_init():
+    """Wiring: REGISTRY_CONSISTENCY_DEGRADED must be re-exported from
+    metrics/__init__.py."""
+    from pageindex_mcp.metrics import REGISTRY_CONSISTENCY_DEGRADED as gauge
+
+    assert gauge is not None
+    from pageindex_mcp.metrics.definitions import (
+        REGISTRY_CONSISTENCY_DEGRADED as original,
+    )
+
+    assert gauge is original
+
+
+def test_registry_consistency_degraded_in_bridged_metrics():
+    """Wiring: REGISTRY_CONSISTENCY_DEGRADED must be registered in
+    _BRIDGED_METRICS in metrics.sync under the key
+    'registry_consistency_degraded'."""
+    from pageindex_mcp.metrics.sync import _BRIDGED_METRICS
+
+    assert "registry_consistency_degraded" in _BRIDGED_METRICS
+
+    from pageindex_mcp.metrics.definitions import REGISTRY_CONSISTENCY_DEGRADED
+
+    assert _BRIDGED_METRICS["registry_consistency_degraded"] is REGISTRY_CONSISTENCY_DEGRADED

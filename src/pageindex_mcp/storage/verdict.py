@@ -161,6 +161,7 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
             "effective_config",
             "effective_config_at_job_start",
             "extraction_stages",
+            "consistency_regime",
         )
         for f in _MERGE_FIELDS:
             if f in meta:

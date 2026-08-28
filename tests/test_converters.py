@@ -2350,3 +2350,128 @@ class TestStructuralFailureOcrEscalation:
     def test_structural_failure_non_image_dominant_no_escalation(self):
         md = "\n".join(["real paragraph text here"] * 8 + [_MARKER])
         assert _would_escalate("node_count<3", md) is False
+
+
+# ===========================================================================
+# Zone: OCR Recovery Cascade — marker cleanup and decide_ocr_mode removal
+# ===========================================================================
+
+
+class TestPipelineMarkerCleanupOnEmptyPicResults:
+    """Regression: when _recover_picture_results returns [] (OCR skip),
+    downstream _fallback_and_recover_pictures strips <!-- image --> markers
+    from the md output.  Markers must not appear in the returned markdown
+    when pic_results is empty."""
+
+    def test_markers_stripped_when_pic_results_empty(self, monkeypatch):
+        """_fallback_and_recover_pictures strips residual <!-- image --> markers
+        when per-picture OCR is skipped and returns empty pic_results."""
+        from pageindex_mcp.converters.pipeline import _fallback_and_recover_pictures
+        from pageindex_mcp.converters import pictures as pictures_mod
+
+        # Mock _recover_picture_results to return empty list (OCR skip)
+        monkeypatch.setattr(
+            pictures_mod,
+            "_recover_picture_results",
+            lambda *a, **kw: [],
+        )
+
+        md_with_markers = "# Heading\n\n<!-- image -->\n\nBody text <!-- image --> end"
+        md_out, pic_results, _records = _fallback_and_recover_pictures(
+            md_with_markers,
+            document=None,
+            pdf_path="/fake.pdf",
+            filename="fake.pdf",
+            expected_script=None,
+            landscape_fallback_pages=[],
+            heading_pages={},
+            force_full_page_ocr_applied=True,  # force OCR skip
+        )
+        assert "<!-- image -->" not in md_out, (
+            "Residual <!-- image --> markers must be stripped when pic_results is empty"
+        )
+        assert pic_results == []
+
+    def test_markers_preserved_when_pic_results_nonempty(self, monkeypatch):
+        """When pic_results are populated, markers are NOT stripped
+        (they serve as splice targets for bind_markers)."""
+        from pageindex_mcp.converters import pipeline as pipeline_mod
+        from pageindex_mcp.converters.pictures import _recover_picture_results
+
+        fake_pr = {"ocr_text": "chart", "page": 1, "bbox": {}, "png_bytes": b"png"}
+        monkeypatch.setattr(
+            pipeline_mod,
+            "_recover_picture_results",
+            lambda *a, **kw: [fake_pr],
+        )
+
+        md_with_markers = "# H\n\n<!-- image -->\n\nBody"
+        md_out, pic_results, _records = pipeline_mod._fallback_and_recover_pictures(
+            md_with_markers,
+            document=None,
+            pdf_path="/fake.pdf",
+            filename="fake.pdf",
+            expected_script=None,
+            landscape_fallback_pages=[],
+            heading_pages={},
+            force_full_page_ocr_applied=False,
+        )
+        assert len(pic_results) == 1
+
+
+class TestIndexerMarkerCleanupFallback:
+    """Regression: indexer.py has a fallback that strips <!-- image --> markers
+    when pic_results is empty but markers exist in md_content."""
+
+    def test_indexer_source_has_marker_cleanup(self):
+        """indexer.py contains the safety-net strip_unresolved_image_markers call
+        when pic_results is empty and markers are present."""
+        import inspect
+        from pageindex_mcp.client import indexer
+
+        source = inspect.getsource(indexer)
+        assert "strip_unresolved_image_markers" in source, (
+            "indexer.py must call strip_unresolved_image_markers as a safety net"
+        )
+        # Verify the guard condition pattern
+        assert 'not state.pic_results and "<!-- image -->" in md_content' in source or \
+               'not state.pic_results' in source, (
+            "indexer.py must check for empty pic_results before stripping markers"
+        )
+
+
+class TestDecideOcrModeRemoved:
+    """Wiring: decide_ocr_mode wrapper is removed; all callers use
+    decide_ocr_strategy directly.  Importing decide_ocr_mode should raise
+    ImportError."""
+
+    def test_decide_ocr_mode_not_importable_from_picture_plane(self):
+        """decide_ocr_mode must not be importable from picture_plane."""
+        from pageindex_mcp import picture_plane
+        assert not hasattr(picture_plane, "decide_ocr_mode"), (
+            "decide_ocr_mode should have been deleted from picture_plane"
+        )
+
+    def test_decide_ocr_mode_not_importable_from_converters(self):
+        """decide_ocr_mode must not be importable from converters."""
+        from pageindex_mcp import converters
+        assert not hasattr(converters, "decide_ocr_mode"), (
+            "decide_ocr_mode should not be re-exported from converters"
+        )
+
+    def test_decide_ocr_strategy_is_importable(self):
+        """decide_ocr_strategy is the canonical replacement — must be importable."""
+        from pageindex_mcp.picture_plane import decide_ocr_strategy as fn
+        assert callable(fn)
+
+    def test_decide_ocr_mode_not_in_converters_pictures_source(self):
+        """converters/pictures.py must use decide_ocr_strategy, not decide_ocr_mode."""
+        import inspect
+        from pageindex_mcp.converters import pictures
+
+        source = inspect.getsource(pictures)
+        # The source should mention decide_ocr_strategy (imported) but NOT
+        # define or call decide_ocr_mode as a wrapper.
+        assert "def decide_ocr_mode" not in source, (
+            "decide_ocr_mode wrapper should be deleted from converters/pictures.py"
+        )

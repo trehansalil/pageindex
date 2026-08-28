@@ -1256,6 +1256,58 @@ class TestPresignPathPrefix:
 
         assert url == signed
 
+    # ---------------------------------------------------------------------------
+    # Zone-5: Regression — save_doc_meta preserves existing consistency_regime
+    # ---------------------------------------------------------------------------
+
+
+def test_save_doc_meta_preserves_consistency_regime_on_verdict_update(mock_minio):
+    """Regression: save_doc_meta must preserve an existing consistency_regime
+    field during read-merge-write when the new call supplies only verdict
+    fields (no consistency_regime). Without this, a subsequent verdict-only
+    write from the promotion sweep would silently drop the forensic regime
+    stamp set by _upsert_registry_row."""
+    import io
+
+    # Existing sidecar with consistency_regime already stamped
+    existing_sidecar = {
+        "doc_id": "regime-preserve-1",
+        "doc_name": "test.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-28T00:00:00+00:00",
+        "consistency_regime": "postgres-authoritative",
+        "verdict": "MARGINAL",
+        "pipeline_version": 3,
+    }
+    existing_bytes = json.dumps(existing_sidecar).encode()
+
+    # Mock the get_object to return existing sidecar
+    response = MagicMock()
+    response.read.return_value = existing_bytes
+    response.close = MagicMock()
+    response.release_conn = MagicMock()
+    mock_minio.get_object.return_value = response
+
+    # Call save_doc_meta with verdict-only update (no consistency_regime)
+    save_doc_meta("regime-preserve-1", {
+        "verdict": "PASS",
+        "pipeline_version": 5,
+        "verdict_computed_at": "2026-08-28T01:00:00+00:00",
+    })
+
+    # Verify the written sidecar preserved consistency_regime
+    written = mock_minio.put_object.call_args[0][2].read()
+    sidecar = json.loads(written)
+    assert sidecar.get("consistency_regime") == "postgres-authoritative", (
+        "consistency_regime must be preserved during read-merge-write when "
+        "the new call supplies only verdict fields"
+    )
+    # Verdict fields must be updated
+    assert sidecar["verdict"] == "PASS"
+    assert sidecar["pipeline_version"] == 5
+
+
+class TestPresignPathPrefix:
     def test_prefix_ignored_when_endpoint_addresses_minio_directly(self):
         """A ClusterIP endpoint has no route prefix, so nothing is spliced —
         the presign prefix belongs to the presign host, not this one."""

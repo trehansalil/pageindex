@@ -86,6 +86,7 @@ from ..metrics import (
 )
 from ..picture_plane import (
     decide_ocr_strategy,
+    strip_unresolved_image_markers,
 )
 from ..script import BlobKind, RtlDecision, ScriptContext
 from ..storage import (
@@ -780,6 +781,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
                     _log_pic_splice_trace(filename, "primary", state.pic_results)
                     md_content = splice_picture_text_for_tree(md_content, state.pic_results)
+                elif not state.pic_results and "<!-- image -->" in md_content:
+                    # Zone-1 safety net: strip residual markers when per-picture
+                    # OCR was skipped/returned empty so literal <!-- image -->
+                    # comments do not persist in the tree output.
+                    md_content = strip_unresolved_image_markers(md_content)
                 if state.use_remote and pipeline_config.remote_md_renormalize:
                     md_content, state.rtl_decision = _renormalize_bidi_guarded(
                         md_content,

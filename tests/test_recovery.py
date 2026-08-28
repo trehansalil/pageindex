@@ -728,3 +728,158 @@ class TestHaftpflichtDeepFixture:
         split_oversized_leaf_nodes(tree, max_chars=50000, min_segments=3)
         assert tree[0]["node_id"] == "root"
         assert tree[0]["text"] == ""
+
+
+# ===========================================================================
+# Zone: OCR Recovery Cascade and Kill-Switch Conflation
+# ===========================================================================
+
+
+class TestKillSwitchDeconflation:
+    """Contract: _recover_low_content_ocr gates on ocr_escalation_low_content
+    independently from ocr_escalation_garble.  Regression guard for the
+    kill-switch conflation bug where disabling garble escalation silently
+    disabled low-content recovery."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_cfg(self):
+        yield
+        from pageindex_mcp.config import reset_pipeline_config
+        reset_pipeline_config()
+
+    def _patch_config(self, monkeypatch, *, garble: bool, low_content: bool):
+        """Replace pipeline_config with one where the two flags are set independently."""
+        import dataclasses as dc
+        from pageindex_mcp.config import pipeline_config as _orig, reset_pipeline_config
+        import pageindex_mcp.client.recovery as recovery_mod
+
+        new_cfg = dc.replace(_orig, ocr_escalation_garble=garble, ocr_escalation_low_content=low_content)
+        monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
+        return new_cfg
+
+    def _make_low_content_state(self) -> ExtractionState:
+        """State eligible for low-content OCR recovery (ok=False, NODE_COUNT_LOW, low chars)."""
+        return ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.NODE_COUNT_LOW,
+                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
+            ),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="# low",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=10,
+            extraction_stages_captured=[],
+        )
+
+    @pytest.mark.asyncio
+    async def test_garble_true_low_content_false_skips_low_content_recovery(self, monkeypatch):
+        """When garble=True but low_content=False, _recover_low_content_ocr must skip."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        self._patch_config(monkeypatch, garble=True, low_content=False)
+        state = self._make_low_content_state()
+        mixin = RecoveryMixin()
+        # _recover_low_content_ocr checks pipeline_config.ocr_escalation_low_content early
+        # and returns without calling _execute_ocr_retry
+        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        # State unchanged -- no OCR retry attempted
+        assert state.total_chars == 10
+
+    @pytest.mark.asyncio
+    async def test_garble_false_low_content_true_runs_low_content_recovery(self, monkeypatch):
+        """When garble=False but low_content=True, _recover_low_content_ocr must proceed."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        self._patch_config(monkeypatch, garble=False, low_content=True)
+        state = self._make_low_content_state()
+        mixin = RecoveryMixin()
+        called = []
+        async def fake_execute(*a, **kw):
+            called.append(True)
+            return False
+        mixin._execute_ocr_retry = fake_execute
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        assert len(called) == 1, "low-content recovery should have fired"
+
+    @pytest.mark.asyncio
+    async def test_both_true_runs_independently(self, monkeypatch):
+        """When both flags are True, _recover_low_content_ocr runs (independent of garble)."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        self._patch_config(monkeypatch, garble=True, low_content=True)
+        state = self._make_low_content_state()
+        mixin = RecoveryMixin()
+        called = []
+        async def fake_execute(*a, **kw):
+            called.append(True)
+            return False
+        mixin._execute_ocr_retry = fake_execute
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        assert len(called) == 1
+
+    def test_regression_disable_garble_does_not_disable_low_content(self, monkeypatch):
+        """Regression guard: the old code gated low-content recovery on
+        ocr_escalation_garble.  The new code uses ocr_escalation_low_content.
+        Verify by inspecting the source that _recover_low_content_ocr does NOT
+        reference ocr_escalation_garble."""
+        import inspect
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        source = inspect.getsource(RecoveryMixin._recover_low_content_ocr)
+        assert "ocr_escalation_garble" not in source, (
+            "_recover_low_content_ocr must not gate on ocr_escalation_garble "
+            "(kill-switch conflation regression)"
+        )
+        assert "ocr_escalation_low_content" in source
+
+
+class TestIntegrationRecoveryLoopMultiDefect:
+    """Integration: full recovery loop with NODE_COUNT_LOW as first_defect and
+    GARBLING as secondary defect fires both low-content and garble recovery."""
+
+    def test_both_recoveries_eligible_when_co_fired(self):
+        """When NODE_COUNT_LOW + GARBLING co-fire, both _eligible_low_content
+        and _eligible_garble return True."""
+        from pageindex_mcp.helpers.gates import _eligible_garble, _eligible_low_content
+
+        state = ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.NODE_COUNT_LOW,
+                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.GARBLING}),
+            ),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="# test",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=10,
+            extraction_stages_captured=[],
+        )
+        assert _eligible_low_content(state), "NODE_COUNT_LOW must make low-content eligible"
+        assert _eligible_garble(state), "GARBLING secondary must make garble eligible"
+
+    def test_gate_specs_cover_both_recovery_chains(self):
+        """NODE_COUNT_LOW gate has low-content + image-dominant recovery;
+        GARBLING gate has garble + VLM recovery.  When both co-fire, the
+        recovery loop visits both gate specs' recovery_fns."""
+        gates_by_defect = {g.defect: g for g in GATES}
+        ncl_gate = gates_by_defect[TreeDefect.NODE_COUNT_LOW]
+        garble_gate = gates_by_defect[TreeDefect.GARBLING]
+        # Each has its own recovery chain
+        assert "_recover_low_content_ocr" in ncl_gate.recovery_fns
+        assert "_recover_garble_ocr" in garble_gate.recovery_fns
+        # They are independent recovery chains
+        assert set(ncl_gate.recovery_fns) != set(garble_gate.recovery_fns)

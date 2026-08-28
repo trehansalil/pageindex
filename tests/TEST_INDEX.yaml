@@ -54,6 +54,8 @@ mappings:
     tests:
       - test_client.py
       - test_config.py
+      - test_converters.py
+      - test_gates.py
       - test_image_blocks.py
       - test_observability_combined.py
       - test_inspector.py
@@ -187,6 +189,7 @@ mappings:
       - test_worker.py            # primary
       - test_registry.py
       - test_density_gate.py
+      - test_storage.py
 
   worker/subprocess_mgr.py:
     coverage_threshold: 85
@@ -222,6 +225,7 @@ mappings:
       - test_observability_combined.py
       - test_hr3_zdr_egress.py
       - test_garble.py
+      - test_recovery.py
 
   converters/types.py:
     tests:
@@ -291,9 +295,11 @@ mappings:
       - test_config.py
       - test_converters.py
       - test_density_gate.py
+      - test_gates.py
       - test_observability_combined.py
       - test_converters_pipeline.py
       - test_bidi.py
+      - test_recovery.py
 
   converters/formats.py:
     tests:
@@ -455,10 +461,14 @@ mappings:
       - test_bidi.py
       - test_hr3_zdr_egress.py
       - test_density_gate.py
+      - test_registry.py
+      - test_storage.py
 
   metrics/sync.py:
     tests:
       - test_observability_combined.py           # primary
+      - test_registry.py
+      - test_storage.py
 
   minio_client.py:
     tests:
@@ -470,6 +480,7 @@ mappings:
       - test_gates.py
       - test_garble.py
       - test_converters.py
+      - test_recovery.py
       - test_zone3_ocr_recovery.py
 
   queue_metrics.py:

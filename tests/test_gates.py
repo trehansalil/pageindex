@@ -947,3 +947,148 @@ def test_waived_gates_have_no_recovery_eligible():
         assert g.recovery_eligible is None, (
             f"{g.defect.name}: recovery_waived=True but recovery_eligible is set"
         )
+
+
+# ===========================================================================
+# Zone: OCR Recovery Cascade — widened eligibility predicates
+# ===========================================================================
+
+
+class TestWidenedGarbleEligibility:
+    """Contract: _eligible_garble checks all_defects, not just first_defect,
+    so garble recovery fires when garbling is a secondary defect."""
+
+    def _make_state_with_defects(
+        self,
+        first: TreeDefect,
+        all_defects: frozenset[TreeDefect],
+        ok: bool = False,
+    ) -> ExtractionState:
+        return ExtractionState(
+            result={},
+            ok=ok,
+            reason=first.value,
+            gate_result=TreeGateResult(
+                ok=ok,
+                defect=first,
+                all_defects=all_defects,
+            ),
+            first_defect=first,
+            route=Route.FLAT,
+            md_content=None,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter=None,
+            total_chars=0,
+            extraction_stages_captured=[],
+        )
+
+    def test_garble_as_secondary_behind_node_count_low(self):
+        """GARBLING as secondary defect behind NODE_COUNT_LOW still triggers
+        garble recovery eligibility."""
+        from pageindex_mcp.helpers.gates import _eligible_garble
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.NODE_COUNT_LOW,
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.GARBLING}),
+        )
+        assert _eligible_garble(state) is True
+
+    def test_node_garbling_as_secondary_triggers_eligibility(self):
+        """NODE_GARBLING as secondary defect triggers garble eligibility."""
+        from pageindex_mcp.helpers.gates import _eligible_garble
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.DEPTH_LOW,
+            all_defects=frozenset({TreeDefect.DEPTH_LOW, TreeDefect.NODE_GARBLING}),
+        )
+        assert _eligible_garble(state) is True
+
+    def test_no_garble_defect_rejects(self):
+        """Without any garble defect in all_defects, garble eligibility is False."""
+        from pageindex_mcp.helpers.gates import _eligible_garble
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.NODE_COUNT_LOW,
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}),
+        )
+        assert _eligible_garble(state) is False
+
+    def test_ok_state_rejects_regardless_of_defects(self):
+        """Even if garble defects present, ok=True rejects recovery."""
+        from pageindex_mcp.helpers.gates import _eligible_garble
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.GARBLING,
+            all_defects=frozenset({TreeDefect.GARBLING}),
+            ok=True,
+        )
+        assert _eligible_garble(state) is False
+
+    def test_source_checks_all_defects_not_first_defect(self):
+        """Verify the implementation reads all_defects (via _all_defects helper),
+        not just first_defect — source-level regression guard."""
+        import inspect
+        from pageindex_mcp.helpers.gates import _eligible_garble
+
+        source = inspect.getsource(_eligible_garble)
+        assert "_all_defects(state)" in source, (
+            "_eligible_garble must call _all_defects(state) to check all active defects"
+        )
+
+
+# ===========================================================================
+# Zone: strip_unresolved_image_markers
+# ===========================================================================
+
+
+class TestStripUnresolvedImageMarkers:
+    """Exhaustiveness: strip_unresolved_image_markers removes all <!-- image -->
+    markers, is a no-op on marker-free markdown, and does not strip partial
+    markers or other HTML comments."""
+
+    def test_removes_all_markers(self):
+        from pageindex_mcp.picture_plane import strip_unresolved_image_markers
+
+        md = "before <!-- image --> middle <!-- image --> after"
+        result = strip_unresolved_image_markers(md)
+        assert "<!-- image -->" not in result
+        assert "before" in result
+        assert "middle" in result
+        assert "after" in result
+
+    def test_noop_without_markers(self):
+        from pageindex_mcp.picture_plane import strip_unresolved_image_markers
+
+        md = "# Heading\n\nNo markers here.\n\nJust plain markdown."
+        result = strip_unresolved_image_markers(md)
+        assert result == md
+
+    def test_empty_string(self):
+        from pageindex_mcp.picture_plane import strip_unresolved_image_markers
+
+        assert strip_unresolved_image_markers("") == ""
+
+    def test_partial_marker_not_stripped(self):
+        """Incomplete HTML comments that resemble the marker must not be stripped."""
+        from pageindex_mcp.picture_plane import strip_unresolved_image_markers
+
+        md = "before <!-- imag --> after"
+        result = strip_unresolved_image_markers(md)
+        assert "<!-- imag -->" in result
+
+    def test_other_html_comments_preserved(self):
+        """Other HTML comments (not <!-- image -->) must be preserved."""
+        from pageindex_mcp.picture_plane import strip_unresolved_image_markers
+
+        md = "<!-- image --> text <!-- comment --> more <!-- image -->"
+        result = strip_unresolved_image_markers(md)
+        assert "<!-- comment -->" in result
+        assert "<!-- image -->" not in result
+
+    def test_consecutive_markers_all_removed(self):
+        from pageindex_mcp.picture_plane import strip_unresolved_image_markers
+
+        md = "<!-- image --><!-- image --><!-- image -->"
+        result = strip_unresolved_image_markers(md)
+        assert result == ""
