@@ -1764,7 +1764,10 @@ class TestFullPageRegionCap:
 
 
 class TestGarbleByDefaultShortPostRetryText:
-    def test_short_text_with_garbling_reason_is_garbled(self, monkeypatch):
+    def test_short_text_with_garbling_reason_clean_text_not_forced(self, monkeypatch):
+        """Zone-7 fix: a prior GARBLING defect no longer force-flags clean
+        short text -- the real prongs run first, and none fire on this
+        clean policy sentence."""
         monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
         assert (
             check_garble(
@@ -1773,13 +1776,12 @@ class TestGarbleByDefaultShortPostRetryText:
                 profile=FLAT_MARKDOWN_PROFILE,
                 original_defect=TreeDefect.GARBLING,
             )
-            is True
+            is False
         )
 
-    def test_short_text_with_node_garbling_reason_is_garbled(self, monkeypatch):
-        """D2/D3 consistency: node_garbling must trigger the same default as
-        garbling, since Task 2.4 (D3) legitimizes node_garbling as a
-        garbling failure class in the same RFC."""
+    def test_short_text_with_node_garbling_reason_clean_text_not_forced(self, monkeypatch):
+        """D2/D3 consistency: node_garbling gets the same treatment as
+        garbling -- clean short text is not force-flagged post Zone-7."""
         monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
         assert (
             check_garble(
@@ -1788,7 +1790,7 @@ class TestGarbleByDefaultShortPostRetryText:
                 profile=FLAT_MARKDOWN_PROFILE,
                 original_defect=TreeDefect.NODE_GARBLING,
             )
-            is True
+            is False
         )
 
     def test_short_text_with_unrelated_reason_gets_normal_evaluation(self, monkeypatch):

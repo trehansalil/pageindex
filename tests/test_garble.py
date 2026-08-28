@@ -208,10 +208,27 @@ class TestCheckGarble:
             is True
         )
 
-    def test_short_circuit_flat_garbling(self):
+    def test_short_circuit_flat_garbling_clean_text_not_forced(self):
+        """Zone-7 fix: clean short text with a prior garble defect is no
+        longer force-flagged as garbled under FLAT_MARKDOWN_PROFILE --
+        the actual prongs run first, and none fire on "Kurzer Text"."""
         assert (
             check_garble(
                 "Kurzer Text",
+                expected_script=None,
+                profile=FLAT_MARKDOWN_PROFILE,
+                original_defect=TreeDefect.GARBLING,
+            )
+            is False
+        )
+
+    def test_short_circuit_flat_garbling_fires_when_prong_trips(self):
+        """When a real garble prong fires on short text with a prior
+        garble defect, the result is still True (short_text_prior_garble
+        tags alongside the real prong rather than substituting for it)."""
+        assert (
+            check_garble(
+                " junk",
                 expected_script=None,
                 profile=FLAT_MARKDOWN_PROFILE,
                 original_defect=TreeDefect.GARBLING,
@@ -714,8 +731,14 @@ class TestConcatenatedFallback:
 
     def test_fallback_delegates_floor_to_garble_prongs(self):
         """D3: below-floor aggregate text is handled by garble_prongs' own
-        floor check, not an outer guard in the fallback."""
-        digit_chunk = "1234567890" * 5  # 50 chars per node, 100 total
+        floor check, not an outer guard in the fallback.
+
+        Zone-garble update: with the numeric_junk_short prong closing the
+        blind spot for short (>= 50 chars, > 90% digits) text, 50-char
+        all-digit nodes are now correctly detected as garbled per-node.
+        Use shorter nodes (< 50 chars) to test the fallback delegation.
+        """
+        digit_chunk = "1234567890" * 2  # 20 chars per node, 40 total (< 50)
         config = GarbleConfig(garble_digit_floor=500)
         tree = [
             {"title": "A", "text": digit_chunk, "nodes": []},
@@ -746,6 +769,7 @@ class TestGarbleProngsExhaustiveness:
         "presentation_forms",
         "single_letter_fragments",
         "digit_ratio",
+        "numeric_junk_short",
         "token_repetition",
         "latin_gibberish",
         "sparse_mojibake",
@@ -1409,3 +1433,359 @@ class TestEndToEndScriptContextNoThrowaway:
                 f"TreeSignals.from_tree constructed ScriptContext with "
                 f"had_presentation_forms=False (source={c.source})"
             )
+
+
+# ===========================================================================
+# Zone "Garble Detection Cross-Cutting Kernel" tests
+# ===========================================================================
+
+
+class TestGarbleCheckNodesTableBlockDetection:
+    """Exhaustiveness: _garble_check_nodes detects garbled content in table-block
+    nodes where text lives in headers/rows/row_records instead of the 'text' field.
+
+    Before the fix, _garble_check_nodes used node.get('text') per-node, making
+    table-block content invisible to per-node garble checking. The fix uses
+    _node_text_parts(node) so headers/rows/row_records are garble-checked.
+    """
+
+    def test_garbled_row_records_detected_per_node(self):
+        """A table node with garbled row_records but empty 'text' must be
+        detected as garbled per-node (not just by the whole-tree fallback)."""
+        garbled_digits = "1234567890" * 60  # 600 chars of digits
+        tree = [
+            {
+                "title": "Root",
+                "text": "",
+                "nodes": [
+                    {
+                        "title": "Coverage Table",
+                        "text": "",
+                        "row_records": [garbled_digits],
+                        "nodes": [],
+                    },
+                    {
+                        "title": "Clean Section",
+                        "text": "This is clean German insurance prose. " * 20,
+                        "nodes": [],
+                    },
+                ],
+            }
+        ]
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(
+                dominant_script="Latn",
+                had_presentation_forms=False,
+                source="test",
+            ),
+            config=GarbleConfig(),
+        )
+        assert garbled_count >= 1, (
+            "table node with garbled row_records not detected per-node"
+        )
+
+    def test_garbled_headers_detected_per_node(self):
+        """A table node with garbled headers but empty 'text' must be caught."""
+        garbled_pua = "" * 200
+        tree = [
+            {
+                "title": "Root",
+                "text": "clean root text " * 20,
+                "nodes": [
+                    {
+                        "title": "Data Table",
+                        "text": "",
+                        "headers": [garbled_pua],
+                        "rows": [],
+                        "nodes": [],
+                    },
+                ],
+            }
+        ]
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(
+                dominant_script=None,
+                had_presentation_forms=False,
+                source="test",
+            ),
+            config=GarbleConfig(),
+        )
+        assert garbled_count >= 1, (
+            "table node with garbled headers not detected per-node"
+        )
+
+    def test_garbled_rows_detected_per_node(self):
+        """A table node with garbled rows (list-of-lists) but empty 'text'."""
+        garbled_digits = "9876543210" * 60  # 600 chars of digits
+        tree = [
+            {
+                "title": "Root",
+                "text": "",
+                "nodes": [
+                    {
+                        "title": "Table",
+                        "text": "",
+                        "rows": [[garbled_digits]],
+                        "nodes": [],
+                    },
+                    {
+                        "title": "Clean",
+                        "text": "Proper insurance text about coverage. " * 20,
+                        "nodes": [],
+                    },
+                ],
+            }
+        ]
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(
+                dominant_script="Latn",
+                had_presentation_forms=False,
+                source="test",
+            ),
+            config=GarbleConfig(),
+        )
+        assert garbled_count >= 1
+
+    def test_clean_table_not_flagged(self):
+        """A table node with clean content in row_records must NOT be flagged."""
+        tree = [
+            {
+                "title": "Root",
+                "text": "Insurance policy document overview. " * 10,
+                "nodes": [
+                    {
+                        "title": "Premium Table",
+                        "text": "",
+                        "headers": ["Type", "Amount", "Due"],
+                        "row_records": [
+                            "Liability | 5000000 | January",
+                            "Comprehensive | 50000 | February",
+                        ],
+                        "nodes": [],
+                    },
+                    {
+                        "title": "Terms",
+                        "text": "Standard terms and conditions apply. " * 15,
+                        "nodes": [],
+                    },
+                ],
+            }
+        ]
+        garbled_count = _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(
+                dominant_script="Latn",
+                had_presentation_forms=False,
+                source="test",
+            ),
+            config=GarbleConfig(),
+        )
+        assert garbled_count == 0
+
+
+class TestNumericJunkShortProng:
+    """Contract: short numeric-junk text (< 500 chars, >= 50 chars, > 90% digits)
+    triggers the numeric_junk_short garble prong. Closes the blind spot where
+    short garbled numeric OCR noise passed unchecked below garble_digit_floor."""
+
+    def test_numeric_junk_short_fires_for_random_digits(self):
+        """100-char string of random digits must trigger numeric_junk_short."""
+        import random
+        random.seed(42)
+        digits_text = "".join(str(random.randint(0, 9)) for _ in range(100))
+        prongs = garble_prongs(
+            digits_text,
+            expected_script=None,
+            config=GarbleConfig(garble_digit_floor=500),
+        )
+        assert "numeric_junk_short" in prongs
+
+    def test_numeric_junk_short_does_not_fire_for_formatted_dates(self):
+        """Legitimate short numeric content like formatted dates must NOT trigger."""
+        # Dates with separators and month names bring digit ratio well below 90%
+        dates_text = (
+            "Faelligkeitsdaten: 01.01.2025, 15.02.2025, 01.03.2025, "
+            "30.04.2025, 15.05.2025, 01.06.2025, 30.07.2025, "
+            "15.08.2025, 01.09.2025"
+        )
+        assert len(dates_text) >= 50
+        prongs = garble_prongs(
+            dates_text,
+            expected_script="Latn",
+            config=GarbleConfig(garble_digit_floor=500),
+        )
+        assert "numeric_junk_short" not in prongs
+
+    def test_numeric_junk_short_does_not_fire_for_currency(self):
+        """Currency amounts with text labels must NOT trigger."""
+        currency_text = (
+            "Praemie: EUR 1200.50, Selbstbehalt: EUR 500.00, "
+            "Deckungssumme: EUR 5000000.00"
+        )
+        assert len(currency_text) >= 50
+        prongs = garble_prongs(
+            currency_text,
+            expected_script="Latn",
+            config=GarbleConfig(garble_digit_floor=500),
+        )
+        assert "numeric_junk_short" not in prongs
+
+    def test_numeric_junk_short_does_not_fire_below_50_chars(self):
+        """Text shorter than 50 chars must NOT trigger even if all digits."""
+        short_digits = "1234567890" * 4  # 40 chars
+        assert len(short_digits) < 50
+        prongs = garble_prongs(
+            short_digits,
+            expected_script=None,
+            config=GarbleConfig(garble_digit_floor=500),
+        )
+        assert "numeric_junk_short" not in prongs
+
+    def test_numeric_junk_short_does_not_fire_above_floor(self):
+        """Text above garble_digit_floor uses digit_ratio prong, not numeric_junk_short."""
+        long_digits = "1234567890" * 60  # 600 chars
+        assert len(long_digits) > 500
+        prongs = garble_prongs(
+            long_digits,
+            expected_script=None,
+            config=GarbleConfig(garble_digit_floor=500),
+        )
+        assert "numeric_junk_short" not in prongs
+        assert "digit_ratio" in prongs
+
+
+class TestLatinGibberishScriptMismatchChain5:
+    """Contract: garble_prongs fires latin_gibberish at a lowered threshold
+    when expected_script is Arabic but text is predominantly Latin (Chain 5
+    Latin tessdata mojibake / script-mismatch detection).
+
+    The fix wires the _effective_script variable into the latin_gibberish
+    prong so that when expected_script='Arab' and text is mostly Latin,
+    the nonsense threshold is lowered from 0.70 to 0.40.
+    """
+
+    def test_latin_gibberish_fires_at_lowered_threshold_for_arab_mismatch(self):
+        """Semi-plausible Latin tokens with ~50% nonsense: would NOT fire at
+        the default 0.70 threshold but MUST fire at the lowered 0.40 threshold
+        when expected_script='Arab'."""
+        # Mix of real words and nonsense -- ~50% nonsense ratio
+        # Real words: service, coverage, insurance, policy, premium (5)
+        # Nonsense:   Bab, rel, igh, ghal, teb (5) -- 50% ratio
+        # 50% > 0.40 (lowered threshold) but 50% < 0.70 (default threshold)
+        mixed_text = (
+            "service Bab coverage rel insurance igh policy ghal premium teb "
+        ) * 5
+        # Verify it fires with Arab expected_script (lowered threshold)
+        prongs_arab = garble_prongs(
+            mixed_text,
+            expected_script="Arab",
+            config=GarbleConfig(
+                garble_latin_gibberish_enabled=True,
+                garble_latin_ratio=0.4,
+                garble_nonsense_ratio=0.7,
+            ),
+        )
+        assert "latin_gibberish" in prongs_arab, (
+            "latin_gibberish should fire at lowered 0.40 threshold for "
+            "Arab script mismatch"
+        )
+
+    def test_latin_gibberish_does_not_fire_at_default_threshold_for_same_text(self):
+        """Same semi-plausible text must NOT fire when expected_script is Latn
+        (default 0.70 threshold applies)."""
+        mixed_text = (
+            "service Bab coverage rel insurance igh policy ghal premium teb "
+        ) * 5
+        prongs_latn = garble_prongs(
+            mixed_text,
+            expected_script="Latn",
+            config=GarbleConfig(
+                garble_latin_gibberish_enabled=True,
+                garble_latin_ratio=0.4,
+                garble_nonsense_ratio=0.7,
+            ),
+        )
+        assert "latin_gibberish" not in prongs_latn, (
+            "latin_gibberish should NOT fire at default 0.70 threshold for "
+            "Latn expected_script"
+        )
+
+    def test_latin_gibberish_does_not_fire_for_clean_latin_text_with_arab_expected(self):
+        """Clean English prose must not trigger even with Arab expected_script."""
+        clean_english = (
+            "The insurance policy covers damage to third parties within the "
+            "agreed coverage amount. The policyholder is obligated to report "
+            "the damage immediately. Further conditions are described in the "
+            "contract. The premium is calculated annually. "
+        ) * 3
+        prongs = garble_prongs(
+            clean_english,
+            expected_script="Arab",
+            config=GarbleConfig(
+                garble_latin_gibberish_enabled=True,
+                garble_latin_ratio=0.4,
+                garble_nonsense_ratio=0.7,
+            ),
+        )
+        assert "latin_gibberish" not in prongs
+
+
+class TestCleanArabicNotFlaggedRegression:
+    """Regression: clean Arabic text (well-formed insurance T&C prose, no
+    presentation forms, no garble) must NOT be flagged as garbled after
+    the ScriptContext fixes."""
+
+    def test_clean_arabic_insurance_prose_not_garbled(self):
+        """Representative clean Arabic document text must return
+        GarbleReport with is_garbled=False and empty fired_prongs."""
+        clean_arabic = (
+            "يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية المتفق عليه. "
+            "يلتزم المؤمن له بالإبلاغ عن الضرر فورا. "
+            "تنطبق الشروط والأحكام العامة على جميع أنواع التغطية المذكورة أعلاه. "
+            "يتم احتساب القسط سنويا ويستحق مقدما. "
+            "في حالة وقوع حادث يجب على المؤمن له إخطار شركة التأمين خلال أسبوع. "
+        ) * 5
+        ctx = ScriptContext(
+            dominant_script="Arab",
+            had_presentation_forms=False,
+            source="test",
+        )
+        cfg = GarbleConfig()
+        report = detect_garble(
+            clean_arabic,
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert report.is_garbled is False, (
+            f"clean Arabic prose flagged as garbled: prongs={report.fired_prongs}"
+        )
+        assert report.fired_prongs == frozenset()
+
+    def test_clean_arabic_with_none_script_not_garbled(self):
+        """Clean Arabic with dominant_script=None (inferred) must also pass."""
+        clean_arabic = (
+            "بسم الله الرحمن الرحيم "
+            "هذه وثيقة تأمين صادرة وفقا للشروط والأحكام العامة. "
+            "يغطي هذا التأمين المسؤولية المدنية تجاه الغير. "
+            "تسري أحكام هذه الوثيقة اعتبارا من تاريخ إصدارها. "
+        ) * 5
+        ctx = ScriptContext(
+            dominant_script=None,
+            had_presentation_forms=False,
+            source="test",
+        )
+        cfg = GarbleConfig()
+        report = detect_garble(
+            clean_arabic,
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert report.is_garbled is False, (
+            f"clean Arabic with inferred script flagged as garbled: "
+            f"prongs={report.fired_prongs}"
+        )

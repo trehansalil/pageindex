@@ -737,10 +737,41 @@ class TestUnifiedGateEvaluation:
 
 
 class TestComputeVerdictSourceSelection:
-    def test_source_selection_skips_bidi_degraded_cap(self):
+    def test_source_selection_does_not_skip_bidi_degraded_cap_outside_image_enrichment(self):
+        """Zone-8: ``source_selection`` bypass is scoped exclusively to the
+        image-enrichment promotion path. A structural-pass promotion (no
+        ``image_enrichment_ratio``) must still be clamped to MARGINAL under
+        BIDI_DEGRADED regardless of ``source_selection``."""
         gate = TreeGateResult(ok=False, defect=TreeDefect.BIDI_DEGRADED)
         result_normal = compute_verdict(_well_formed(), "flat_prose", gate)
         result_ss = compute_verdict(_well_formed(), "flat_prose", gate, source_selection=True)
+        assert result_normal.verdict == "MARGINAL"
+        assert result_ss.verdict == "MARGINAL"
+
+    def test_source_selection_skips_bidi_degraded_cap_for_image_enrichment(self):
+        """The scoped bypass DOES apply on the image-enrichment promotion
+        path: with a qualifying ``image_enrichment_ratio`` and enough
+        promoted text, ``source_selection=True`` lifts the BIDI_DEGRADED
+        cap to PASS, while ``source_selection=False`` stays clamped."""
+        tree = [
+            {
+                "node_id": "1",
+                "title": "Root",
+                "text": "",
+                "nodes": [
+                    {"node_id": "2", "title": "Ch1", "text": "a" * 300, "nodes": []},
+                    {"node_id": "3", "title": "Ch2", "text": "b" * 300, "nodes": []},
+                    {"node_id": "4", "title": "Ch3", "text": "c" * 300, "nodes": []},
+                ],
+            }
+        ]
+        gate = TreeGateResult(ok=False, defect=TreeDefect.BIDI_DEGRADED)
+        result_normal = compute_verdict(
+            tree, "flat_prose", gate, image_enrichment_ratio=0.9
+        )
+        result_ss = compute_verdict(
+            tree, "flat_prose", gate, image_enrichment_ratio=0.9, source_selection=True
+        )
         assert result_normal.verdict == "MARGINAL"
         assert result_ss.verdict == "PASS"
 
@@ -1307,6 +1338,72 @@ class TestTryImageEnrichment:
             sig, "flat_prose", 0.9, _default_th(), None, None
         )
         assert result is None
+
+
+class TestTryImageEnrichmentPresentationFormsRegression:
+    """Regression: _try_image_enrichment correctly detects garbled Arabic
+    promoted text containing presentation-form codepoints (post-NFKC).
+
+    The fix replaces had_presentation_forms=False with
+    _infer_presentation_forms(_promoted_text) in the ScriptContext fallback,
+    so the presentation_forms prong fires and image enrichment promotion
+    is blocked for garbled Arabic content.
+    """
+
+    def test_garbled_arabic_with_presentation_forms_blocks_promotion(self):
+        """When script_context is None and promoted text contains Arabic
+        Presentation-Form codepoints, _try_image_enrichment must return None
+        (garble detected via presentation_forms prong)."""
+        # Build text with Arabic Presentation Forms (U+FB50-FDFF range)
+        # These are Arabic chars that should trigger _infer_presentation_forms
+        # U+FE70 = ARABIC FATHATAN ISOLATED FORM
+        # U+FB50 = ARABIC LETTER ALEF WASLA ISOLATED FORM
+        pf_chars = "ﭐﭑﭒﭓﭔﭕﭖﭗ"
+        # Build text where >50% of Arabic-range chars are presentation forms
+        garbled_arabic_text = (pf_chars + " ") * 80  # 640+ chars
+        assert len(garbled_arabic_text) >= 500  # above min_image_promoted_chars
+
+        sig = _make_sig(
+            node_count=5,
+            flat_text=garbled_arabic_text,
+            primary_text=garbled_arabic_text,
+            effectively_garbled=False,
+        )
+        th = _default_th(min_image_promoted_chars=500)
+        # Pass script_context=None to trigger the fallback path that now
+        # uses _infer_presentation_forms instead of hardcoded False
+        result = _try_image_enrichment(
+            sig, "flat_prose", 0.9, th, "Arab", None
+        )
+        assert result is None, (
+            "_try_image_enrichment should block promotion for garbled Arabic "
+            "text with presentation-form codepoints, but returned "
+            f"{result!r}"
+        )
+
+    def test_clean_arabic_without_presentation_forms_allows_promotion(self):
+        """Clean Arabic text (no presentation forms) should still allow
+        image enrichment promotion when other guards pass."""
+        clean_arabic = (
+            "يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية "
+        ) * 20
+        assert len(clean_arabic) >= 500
+
+        sig = _make_sig(
+            node_count=5,
+            flat_text=clean_arabic,
+            primary_text=clean_arabic,
+            effectively_garbled=False,
+        )
+        th = _default_th(min_image_promoted_chars=500)
+        # With no presentation forms, detect_garble should not fire
+        # for clean Arabic, so promotion should be allowed
+        result = _try_image_enrichment(
+            sig, "flat_prose", 0.9, th, "Arab", None
+        )
+        assert result == "image_enrichment_promoted", (
+            f"clean Arabic should allow image enrichment, got {result!r}"
+        )
 
 
 # ===========================================================================

@@ -58,6 +58,7 @@ from ..helpers import (
     _flatten_tree_text,
     _garble_check_flat_blocks,
     _garble_config,
+    _infer_presentation_forms,
     route_and_extract_flat,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
@@ -508,7 +509,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
-                            _probe_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="pre_garble_probe")
+                            _probe_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=_infer_presentation_forms(raw_text), source="pre_garble_probe")
                             if raw_text.strip() and detect_garble(
                                 raw_text,
                                 script_context=_probe_ctx,

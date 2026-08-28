@@ -399,6 +399,14 @@ def garble_prongs(
         digits = sum(1 for c in norm if c.isdigit())
         if (digits / len(norm)) > 0.60:
             prongs.add("digit_ratio")
+    elif len(norm) >= 50:
+        # Zone-garble fix: secondary short-text numeric-junk check.
+        # Stricter 90% threshold (vs 60% for long text) prevents
+        # false-positives on legitimate short numeric content (dates,
+        # currency amounts, version strings).
+        _short_digits = sum(1 for c in norm if c.isdigit())
+        if (_short_digits / len(norm)) > 0.90:
+            prongs.add("numeric_junk_short")
 
     stripped = re.sub(r"<!--.*?-->", "", norm)
     tokens = [t for t in stripped.split() if any(c.isalnum() for c in t)]
@@ -413,8 +421,14 @@ def garble_prongs(
         nonsense_threshold = cfg.garble_nonsense_ratio
         ratio, latin_tokens = _latin_token_ratio(norm)
         if ratio > latin_ratio_threshold and len(latin_tokens) >= 5:
+            # Zone-garble fix: when expected script is Arabic but text is
+            # predominantly Latin, use a lowered nonsense threshold (0.40)
+            # to catch Latin tessdata mojibake (Chain 5 script-mismatch).
+            _active_nonsense = nonsense_threshold
+            if _effective_script == "Arab" and ratio > latin_ratio_threshold:
+                _active_nonsense = min(nonsense_threshold, 0.40)
             nonsense = sum(1 for t in latin_tokens if _is_morphologically_nonsense(t))
-            if nonsense / len(latin_tokens) > nonsense_threshold:
+            if nonsense / len(latin_tokens) > _active_nonsense:
                 prongs.add("latin_gibberish")
 
     _sparse_text = original_text if original_text is not None else norm
@@ -668,12 +682,20 @@ def _garble_check_nodes(
     garble patterns that fall below garble_digit_floor per node but surface
     in aggregate.
     """
+    from .tree_validation import _node_text_parts  # deferred: avoid circular import
+
     _doc_script = script_context.dominant_script
 
     garbled = 0
     for node in nodes:
         node_garbled = False
-        text = node.get("text") or ""
+        # Zone-garble fix: use _node_text_parts to see table content
+        # (headers, rows, row_records) not just node.get("text").
+        # Exclude title — it has a dedicated morphology + garble check below.
+        _all_parts = _node_text_parts(node)
+        _has_title = bool((node.get("title") or "").strip())
+        _body_parts = _all_parts[1:] if _has_title else _all_parts
+        text = "\n".join(p for p in _body_parts if p.strip())
         if text.strip():
             if _doc_script is not None:
                 inferred = _infer_script(text) if len(text) >= 50 else None

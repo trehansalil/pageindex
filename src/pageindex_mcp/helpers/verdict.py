@@ -12,6 +12,7 @@ from .garble import (
     BlobKind,
     GarbleConfig,
     _garble_config,
+    _infer_presentation_forms,
     detect_garble,
     hash_pipe_ratio,
     ocr_noise_ratio,
@@ -253,7 +254,7 @@ def _try_image_enrichment(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=False,
+            had_presentation_forms=_infer_presentation_forms(_promoted_text),
             source="apply_promotions",
         )
     )
