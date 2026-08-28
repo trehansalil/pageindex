@@ -35,6 +35,7 @@ from ..converters import (
     html_to_markdown_with_images,
     image_to_markdown,
     libreoffice_to_pdf,
+    as_chain_entry,
     pdf_markdown_converters,
     pptx_to_markdown,
     reconstruct_bidi_order,
@@ -537,7 +538,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 state.pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED
             )
 
-            chain = pdf_markdown_converters()
+            chain = [as_chain_entry(e) for e in pdf_markdown_converters()]
             primary_name = chain[0].name if chain else None
             state.used_converter = None
             state.extraction_stages_captured = []

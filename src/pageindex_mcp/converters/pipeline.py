@@ -139,6 +139,30 @@ class ConverterChainEntry:
         yield self.supports_ocr
 
 
+def as_chain_entry(entry: "ConverterChainEntry | tuple") -> "ConverterChainEntry":
+    """Coerce *entry* to a :class:`ConverterChainEntry`.
+
+    ``pdf_markdown_converters`` returns typed entries, but the chain is a
+    documented extension point that callers (and tests) may stub with plain
+    ``(name, fn, supports_ocr)`` tuples.  Consumers that need the typed
+    fields — ``is_agpl`` in particular — must normalise through this helper
+    rather than reaching for attributes directly, otherwise a tuple-shaped
+    chain raises ``AttributeError`` at runtime.
+
+    Tuples are assumed non-AGPL: ``is_agpl`` defaults to ``False`` so a
+    stubbed chain never silently trips the AGPL block policy.
+    """
+    if isinstance(entry, ConverterChainEntry):
+        return entry
+    name, fn, supports_ocr = entry[0], entry[1], entry[2]
+    return ConverterChainEntry(
+        name=name,
+        fn=fn,
+        supports_ocr=bool(supports_ocr),
+        is_agpl=bool(getattr(entry, "is_agpl", False)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # _build_candidate (lines 3182-3200)
 # ---------------------------------------------------------------------------

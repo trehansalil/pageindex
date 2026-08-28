@@ -150,6 +150,7 @@ from .pictures import (
 from .pipeline import (
     ConverterChainEntry,
     ConverterFailurePolicy,
+    as_chain_entry,
     _build_candidate,
     _fallback_and_recover_pictures,
     _run_stages,
@@ -194,6 +195,7 @@ __all__ = [
     "BlobKind",
     "ConverterChainEntry",
     "ConverterFailurePolicy",
+    "as_chain_entry",
     # types
     "Candidate",
     "BIDI_NORM_VERSION",
