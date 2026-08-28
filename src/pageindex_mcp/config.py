@@ -419,6 +419,12 @@ class PipelineConfig:
     rfc029_table_segment_min_rows_landscape: int
     rfc036_singleton_ratio_landscape: float
 
+    # Zone-8 content-volume floor: minimum stripped-text length for a
+    # MARGINAL verdict.  Documents below this floor FAIL regardless of
+    # promotion eligibility, enforcing CLAUDE.md Hard Rule #5 (never
+    # silently persist a low-quality tree).
+    min_marginal_chars: int
+
     @classmethod
     def from_env(cls) -> "PipelineConfig":
         """Read all pipeline-behavior env vars once and return a frozen snapshot."""
@@ -513,6 +519,7 @@ class PipelineConfig:
             rfc036_singleton_ratio_landscape=float(
                 os.environ.get("RFC036_SINGLETON_RATIO_LANDSCAPE", "0.4")
             ),
+            min_marginal_chars=int(os.environ.get("MIN_MARGINAL_CHARS", "50")),
         )
 
 

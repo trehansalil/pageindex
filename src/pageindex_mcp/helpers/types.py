@@ -409,6 +409,10 @@ class VerdictThresholds:
     small_doc_enabled: bool
     small_doc_leaf_ratio_bound_low: float
     small_doc_leaf_ratio_bound_high: float
+    # Zone-8 content-volume floor: minimum stripped-text chars for MARGINAL.
+    # Documents below this floor FAIL regardless of promotion eligibility,
+    # enforcing CLAUDE.md HR#5 (never silently persist a low-quality tree).
+    min_marginal_chars: int = 50
 
     @classmethod
     def from_env(cls) -> VerdictThresholds:
@@ -430,6 +434,7 @@ class VerdictThresholds:
             small_doc_enabled=cfg.small_doc_promotion_enabled,
             small_doc_leaf_ratio_bound_low=0.20,
             small_doc_leaf_ratio_bound_high=0.40,
+            min_marginal_chars=cfg.min_marginal_chars,
         )
 
 

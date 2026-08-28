@@ -27,6 +27,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _infer_presentation_forms(text: str) -> bool:
+    """Best-effort Arabic Presentation-Forms detection from *text*.
+
+    Returns True when Arabic Presentation Forms (U+FB50-FDFF, U+FE70-FEFF)
+    constitute > 50% of all Arabic-range characters.  Post-NFKC this ratio
+    is always 0 (the codepoints decompose into logical Arabic), so callers
+    on post-normalization text correctly get False -- the
+    ``ScriptContext.from_document`` path scans pre-normalization text and
+    gets the real answer; this helper is the fallback for call sites that
+    construct ScriptContext without access to pre-NFKC text.
+
+    Zone-7 fix: extracted to close the ``had_presentation_forms=False``
+    hardcoding pattern across 10+ fallback ScriptContext constructions.
+    """
+    if not text:
+        return False
+    pf_count = sum(1 for c in text if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES))
+    ar_count = sum(1 for c in text if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
+    return ar_count > 0 and (pf_count / ar_count) > 0.50
+
+
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
 
 _COMMON_WORDS: frozenset[str] = frozenset(
@@ -521,17 +542,19 @@ def detect_garble(
     """
     blob = text or ""
 
-    if (
+    # RFC-025 D2 short-text with prior garble defect.
+    # Zone-7 fix: the old unconditional short-circuit forced is_garbled=True
+    # for ALL text < 200 chars with a prior garble defect, regardless of
+    # content -- marking clean short text ("Kurzer Text") as garbled.
+    # Now: run the actual garble prongs first.  If any prong fires,
+    # include the short_text_prior_garble tag alongside the real prongs.
+    # If no prong fires, the text IS clean and is not forced garbled.
+    _short_text_prior = (
         blob_kind == BlobKind.RAW_MARKDOWN
         and config.garble_short_text_default
         and len(blob) < 200
         and original_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
-    ):
-        return GarbleReport(
-            is_garbled=True,
-            fired_prongs=frozenset({"short_text_prior_garble"}),
-            garble_ratio=1.0,
-        )
+    )
 
     _effective_script = script_context.dominant_script
     if _effective_script is None:
@@ -565,6 +588,11 @@ def detect_garble(
         had_presentation_forms=_had_pf,
         config=config,
     )
+    # Zone-7: when short_text_prior applies and prongs fired, tag the
+    # report with short_text_prior_garble for diagnostic visibility.
+    # When prongs did NOT fire, the text is clean -- do not force garbled.
+    if _short_text_prior and prongs:
+        prongs = prongs | frozenset({"short_text_prior_garble"})
     return GarbleReport(
         is_garbled=bool(prongs),
         fired_prongs=prongs,
@@ -802,7 +830,7 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
     """
     _ctx = script_context if script_context is not None else ScriptContext(
         dominant_script=expected_script,
-        had_presentation_forms=False,
+        had_presentation_forms=_infer_presentation_forms(text),
         source="garble_ratio",
     )
     window = 2000

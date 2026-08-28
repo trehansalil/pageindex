@@ -395,6 +395,14 @@ def apply_promotions(
 
     RFC-040 D2: ordered if/elif pipeline replaces score-all-then-pick-best.
     Priority is expressed in source-code order; first match wins.
+
+    Zone-8 fixes (verdict-gate cascade):
+      - ``source_selection`` bypass is scoped to image-enrichment promotion
+        only; other promotion paths always flow through ``_clamp_pass`` so
+        bidi/depth caps are enforced uniformly.
+      - Content-volume floor (``th.min_marginal_chars``) gates all
+        promotion and MARGINAL paths: documents below the floor FAIL
+        regardless of structural metrics, enforcing CLAUDE.md HR#5.
     """
     defect = outcome.defect
     sig = outcome.signals
@@ -404,8 +412,34 @@ def apply_promotions(
         _iv, _ir = _classify_image_verdict(image_enrichment_ratio)
         return VerdictResult(_iv, _ir, defect=defect, signals=sig, all_defects=_all_defects)
 
-    def _apply_clamp(reason: str) -> VerdictResult:
-        if source_selection:
+    # Zone-8: content-volume floor — documents below the minimum stripped-
+    # text threshold FAIL regardless of promotion eligibility.  This closes
+    # the hysteresis gap where near-zero-content docs were reclassified
+    # from FAIL to MARGINAL, violating HR#5.
+    _stripped_len = len(sig.flat_text.strip())
+    if _stripped_len < th.min_marginal_chars:
+        return VerdictResult(
+            "FAIL",
+            f"insufficient_content(chars={_stripped_len})",
+            defect=defect,
+            signals=sig,
+            all_defects=_all_defects,
+        )
+
+    def _apply_clamp(
+        reason: str,
+        *,
+        _is_image_enrichment: bool = False,
+    ) -> VerdictResult:
+        """Apply caps to a promoted verdict.
+
+        Zone-8: ``source_selection`` bypass is scoped exclusively to the
+        image-enrichment promotion path (``_is_image_enrichment=True``).
+        All other paths always flow through ``_clamp_pass`` so that
+        bidi-degraded / depth-inadequacy caps are enforced uniformly,
+        regardless of the ``source_selection`` flag.
+        """
+        if source_selection and _is_image_enrichment:
             return VerdictResult(
                 "PASS", reason, defect=defect, signals=sig, all_defects=_all_defects
             )
@@ -418,7 +452,7 @@ def apply_promotions(
             sig, content_class, image_enrichment_ratio, th, expected_script, script_context
         )
         if _ie is not None:
-            return _apply_clamp(_ie)
+            return _apply_clamp(_ie, _is_image_enrichment=True)
         return VerdictResult(
             "FAIL",
             f"max_leaf_ratio={sig.max_leaf_ratio:.2f}",
@@ -432,7 +466,7 @@ def apply_promotions(
         sig, content_class, image_enrichment_ratio, th, expected_script, script_context
     )
     if _ie is not None:
-        return _apply_clamp(_ie)
+        return _apply_clamp(_ie, _is_image_enrichment=True)
 
     _sp = _try_structural_pass(sig, _all_defects, th)
     if _sp is not None:

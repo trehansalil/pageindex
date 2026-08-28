@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..config import pipeline_config
 from ..helpers import _garble_config, detect_garble
+from ..helpers.garble import _infer_presentation_forms as _infer_pf
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr.
 _OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
@@ -264,9 +265,12 @@ def _text_layer_has_content(
     if len(text) <= _PICTURE_OCR_MIN_CHARS:
         return False
     # Zone-3: use detect_garble with ScriptContext + GarbleConfig (unified API)
+    # Zone-7 fix: scan text for presentation forms instead of hardcoding
+    # False -- closes the ScriptContext threading gap where NFKC-destroyed
+    # presentation-form codepoints went undetected.
     _ctx = script_context if script_context is not None else ScriptContext(
         dominant_script=expected_script,
-        had_presentation_forms=False,
+        had_presentation_forms=_infer_pf(text),
         source="picture_text_probe",
     )
     return not detect_garble(text, script_context=_ctx, config=_garble_config)
@@ -384,9 +388,10 @@ def _document_level_text_fallback(
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
     # Zone-3: detect_garble with ScriptContext + GarbleConfig (unified API)
+    # Zone-7 fix: scan full_text for presentation forms instead of hardcoding False.
     _ctx = script_context if script_context is not None else ScriptContext(
         dominant_script=expected_script,
-        had_presentation_forms=False,
+        had_presentation_forms=_infer_pf(full_text),
         source="doc_text_fallback",
     )
     _garble_report = detect_garble(full_text, script_context=_ctx, config=_garble_config)

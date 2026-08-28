@@ -34,6 +34,7 @@ from ..helpers import (
     route_and_extract_flat,
     validate_tree,
 )
+from ..helpers.garble import _infer_presentation_forms as _infer_pf
 from ..metrics import (
     HR3_EGRESS_BLOCKED_TOTAL,
     OCR_ESCALATION_TOTAL,
@@ -114,9 +115,15 @@ def _keep_best_wins(
     """
     post_retry_chars = len(_flatten_tree_text(post_result.get("structure", [])))
 
+    # Zone-7 fix: scan pre-retry text for presentation forms instead of
+    # hardcoding False -- closes the ScriptContext threading gap so the
+    # garble-detection fallback at detect_garble:543-554 receives accurate
+    # had_presentation_forms when comparing pre vs post OCR results.
     _kb_ctx = script_context if script_context is not None else ScriptContext(
         dominant_script=expected_script,
-        had_presentation_forms=False,
+        had_presentation_forms=_infer_pf(
+            _flatten_tree_text(pre_result.get("structure", []))
+        ),
         source="ocr_retry_keep_best",
     )
 

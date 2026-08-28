@@ -363,17 +363,35 @@ def validate_tree(
 
     th = VerdictThresholds.from_config(pipeline_config)
 
-    # Zone-4: build/preserve ScriptContext for gate dispatch.
-    if isinstance(expected_script, ScriptContext):
-        _script_ctx = expected_script
-    else:
-        _script_ctx = ScriptContext.from_script_str(expected_script)
-
     sig = TreeSignals.from_tree(
         structure,
         expected_script=expected_script,
         garble_threshold=th.garble_threshold,
     )
+
+    # Zone-4 + Zone-7 fix: build ScriptContext for gate dispatch AFTER
+    # TreeSignals.from_tree computes flat_text.  When expected_script is a
+    # bare string, the old from_script_str path hardcoded
+    # had_presentation_forms=False, causing _gate_node_garbling (which
+    # threads _script_ctx into _garble_check_nodes) to disagree with
+    # sig.garbled (which from_tree computed with accurate PF detection).
+    # Now: scan sig.flat_text for presentation forms so the gate dispatch
+    # ScriptContext is consistent with from_tree's internal PF detection.
+    if isinstance(expected_script, ScriptContext):
+        _script_ctx = expected_script
+    else:
+        from .garble import _infer_presentation_forms
+
+        _eff_script = (
+            expected_script
+            if expected_script is not None
+            else _infer_script(sig.flat_text) if sig.flat_text else None
+        )
+        _script_ctx = ScriptContext(
+            dominant_script=_eff_script,
+            had_presentation_forms=_infer_presentation_forms(sig.flat_text),
+            source="validate_tree",
+        )
 
     _rtl_decision = rtl_decision
     if _rtl_decision is None:
