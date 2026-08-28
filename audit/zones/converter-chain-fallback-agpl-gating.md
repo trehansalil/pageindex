@@ -1,43 +1,62 @@
 ---
-zone_name: Converter Chain Fallback / AGPL Gating
-severity: medium
-bug_count: 2
-status: improved
-audit_date: 2026-08-27
-audit_run: POST-RUN20
-audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-27_POST-RUN20.md
+zone_name: Converter Chain Fallback and AGPL Gating
+severity: high
+bug_count: 4
+status: regressed
+audit_date: 2026-08-28
+audit_run: POST-FIX-WAVE3
+audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-28_POST-FIX-WAVE3.md
 key_files:
-  - src/pageindex_mcp/converters/pipeline.py
   - src/pageindex_mcp/client/indexer.py
-  - src/pageindex_mcp/config.py
+  - src/pageindex_mcp/converters/pipeline.py
+  - src/pageindex_mcp/converters/normalize.py
 tags:
   - zone-spec
-  - medium
-  - converter
+  - high
   - agpl
-  - legal
-scorecard_verdict: needs_another_cycle
-scorecard_date: 2026-08-27
-scorecard_run: POST-RUN20
-wave: 3
+  - converter
+  - compliance
+scorecard_verdict: regressed
+scorecard_date: 2026-08-28
+scorecard_run: POST-FIX-WAVE3
 ---
 ## Mechanism
 
-pdf_markdown_converters() builds an ordered converter chain gated by allow_agpl_fallback and PDF_CONVERTER. When the primary converter (Docling) fails or times out, the for-loop in _convert_to_tree walks to the next chain entry unconditionally. If that entry is pymupdf4llm (AGPL-3.0), an unplanned outage silently becomes AGPL-licensed network-served conversion. The allow_agpl_fallback flag now blocks pymupdf4llm from the chain entirely when false, and AGPL_FALLBACK_TOTAL metrics track when it fires. However, the chain is a flat list with no policy for 'which fallbacks are acceptable for which failure modes' — a timeout is treated identically to a parse error. Converter provenance (extraction_route, converter_name) is now persisted in the sidecar via _MERGE_FIELDS, but historical corpus documents lack this data.
+The converter chain walk treats all failures uniformly, with a ConverterFailurePolicy classification that allows **structural failures to silently advance to AGPL-licensed converters**. Remote Docling microservice runs separately-deployed image predating local converter fixes (bidi heading guard never committed, expected_script not forwarded), creating **local-vs-remote code divergence** that no test can catch:
 
-The generative mechanism operates through unconditional chain-walking on converter failure:
-- a. When remote Docling raises HTTP 504 on a large PDF, _convert_to_tree walks to pymupdf4llm — an AGPL route the operator may not have intended, violating HR4's framing as 'a legal decision to clear, not a settled safe-harbor' (chain 6).
-- b. The remote Docling service runs a separately-deployed image that may predate local fixes, so converter-level fixes have no effect on documents routed through the remote path (shared with bidi zone).
-- c. The underlying structural issue is that the chain treats all failures equivalently: a transient network timeout and a fundamental parsing incompatibility both trigger the same fallback path.
+- Structural failures still allow walking to AGPL converters (only logging warning) — **violates CLAUDE.md Hard Rule #4**
+- Remote Docling service runs independently-versioned image with no contract enforcement (no version assertion or script field in payload)
+- Local fixes to normalize.py or garble.py have zero effect on remotely-routed documents
 
 ## Code Evidence
 
-`pdf_markdown_converters` at converters/pipeline.py:571-641: `if pipeline_config.allow_agpl_fallback: chain.append(("pymupdf4llm", _pdf_to_markdown_no_pics, False))` then docling inserted at position 0 or appended based on PDF_CONVERTER. `_convert_to_tree` at client/indexer.py:435-540: `chain = pdf_markdown_converters()` then `for idx, (conv_name, conv_fn, _conv_supports_ocr) in enumerate(chain): try: ... except Exception as conv_exc: md_content = None`. AGPL_FALLBACK_TOTAL.labels(reason='fired').inc() at indexer.py:~580 when used_converter == 'pymupdf4llm' and not primary.
+**indexer.py:441–914** — `_convert_to_tree`:
+- Lines 560–565: converter chain walk loop
+- Lines 576–600: failure-mode classification via `_classify_transient_failure`
+- Lines 609–625: ConverterFailurePolicy decision: RETRY, BLOCK_AGPL, REJECT, or **WALK** (allows advancing to AGPL)
+- Lines 570–572: NOTE that remote path does NOT forward expected_script
+
+**pipeline.py:682–770** — `pdf_markdown_converters`:
+- Builds converter chain with is_agpl flags
+- Lines 641, 656: AGPL_FALLBACK_TOTAL metric shows operator awareness
+- No hard gate beyond ConverterFailurePolicy classification
 
 ## Key Files
 
 | File | Role |
-|---|---|
-| src/pageindex_mcp/converters/pipeline.py | Converter chain construction |
-| src/pageindex_mcp/client/indexer.py | Chain-walking on failure |
-| src/pageindex_mcp/config.py | AGPL gating configuration |
+|------|------|
+| src/pageindex_mcp/client/indexer.py | Converter chain walk, failure classification |
+| src/pageindex_mcp/converters/pipeline.py | Converter chain definition, AGPL metrics |
+| src/pageindex_mcp/converters/normalize.py | Local converter fixes not reaching remote |
+
+## Related Issues
+
+- Chain 1: RFC-033 bidi heading guard never committed
+- Chain 3: Rotation detection asymmetric
+- Chain 4: Unconditional chain-walk silently activates AGPL
+- Chain 29: Converter-gate-route ordering entanglement
+
+## Compliance Note
+
+**CLAUDE.md Hard Rule #4:** "Never silently persist a low-quality tree" + AGPL licensing requirement. Current implementation violates both by allowing structural failures to silently advance to AGPL converters with only logger.warning.
+
