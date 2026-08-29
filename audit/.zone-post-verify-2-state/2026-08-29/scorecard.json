@@ -1,0 +1,107 @@
+{
+  "timestamp": "2026-08-29",
+  "zones_closed": [
+    {
+      "name": "Bidi/RTL Processing Split (Local vs. Remote)",
+      "was_severity": "high",
+      "bugs_eliminated": 0,
+      "note": "Absorbed into Converter Chain / Remote Service Boundary Drift; bidi-heading-guard-never-committed and remote-drift findings now reported as sub-issues of that zone."
+    },
+    {
+      "name": "Erasure Cascade and Storage Consistency Drift",
+      "was_severity": "medium",
+      "bugs_eliminated": 0,
+      "note": "Absorbed into Verdict Persistence Asymmetry as Manual Erasure Manifest Drift bug source (ISS-41 preloaded/ prefix gap)."
+    }
+  ],
+  "zones_remaining": [
+    {
+      "name": "Verdict Promotion / Threshold Ratchet",
+      "severity": "critical",
+      "bug_count": 6,
+      "status": "improved",
+      "bugs_before": 8,
+      "key_change": "VG-1..VG-7 fixes reduced promotion-cascade bugs from 8 to 6; apply_promotions remains an ordered if/elif priority cascade; source_selection clamp-bypass for image_enrichment still suppresses structural caps.",
+      "chronic": true,
+      "chronic_evidence": "Threshold oscillation documented across Runs 6-9 (RFC-023 through RFC-026); image_enrichment_promoted bypass violates Hard Rule 5 spirit.",
+      "simplification_available": true,
+      "simplification_effort": "0.5-1 day"
+    },
+    {
+      "name": "Detection-Remediation Dispatch Gap",
+      "severity": "critical",
+      "bug_count": 4,
+      "status": "improved",
+      "bugs_before": 7,
+      "key_change": "D4 garble-priority override and _eligible_image_dominant all-defects check cut bugs from 7 to 4; D4 only covers GARBLING/NODE_GARBLING pair; detect_garble retains 11 divergent call sites.",
+      "chronic": false,
+      "simplification_available": true,
+      "simplification_effort": "1 day"
+    },
+    {
+      "name": "Converter Chain / Remote Service Boundary Drift",
+      "severity": "high",
+      "bug_count": 4,
+      "status": "stalled",
+      "bugs_before": 4,
+      "key_change": "GATE_AGPL_STRUCTURAL now explicit and metricked, but absorbed Bidi/RTL zone defects; _heading_is_logical_order bidi guard never committed to git; remote Docling microservice still unversioned.",
+      "chronic": true,
+      "chronic_evidence": "Remote-vs-local drift documented since RFC-033; local fixes have zero effect on remotely-routed documents.",
+      "simplification_available": true,
+      "simplification_effort": "1-1.5 days plus 1 week soak"
+    },
+    {
+      "name": "OCR Pipeline Conflation",
+      "severity": "high",
+      "bug_count": 3,
+      "status": "improved",
+      "bugs_before": 6,
+      "key_change": "Zone-2 re-entry guard closed double-Tesseract-pass duplication; decide_ocr_mode now forwards document_type/ocr_langs; root conflation (one function handling both per-picture and full-page OCR) remains.",
+      "chronic": false,
+      "simplification_available": true,
+      "simplification_effort": "1 day + 0.5 day follow-up"
+    },
+    {
+      "name": "Content Measurement Blind Spot",
+      "severity": "high",
+      "bug_count": 3,
+      "status": "regressed",
+      "bugs_before": 4,
+      "key_change": "Role-aware helpers exist and are used in verdict.py, but severity re-rated medium to high after tracing GHV-TKV-Tarif 96.1% char under-count (13022 raw vs 375 measured) and fabricated Run 9 corpus report to naive block.get('text','') sites outside verdict.py.",
+      "chronic": true,
+      "chronic_evidence": "Fabricated corpus report (July 17 2026) traced directly to this zone; Run 9 harness defaulted unscored records to ERROR; scoring stage never invoked meta-consuming path.",
+      "simplification_available": true,
+      "simplification_effort": "0.5 day CI guard + 0.5-1 day audit harness fix"
+    },
+    {
+      "name": "Verdict Persistence Asymmetry",
+      "severity": "medium",
+      "bug_count": 2,
+      "status": "improved",
+      "bugs_before": 4,
+      "key_change": "reconcile.py drain-verdict-retry-queue ordering fix landed; write_verdict confirmed zero live callers; absorbed Erasure Cascade zone's manifest-drift concern (ISS-41); save_doc_meta still omits write-visibility barrier.",
+      "chronic": true,
+      "chronic_evidence": "Run 16 verdict persistence race (stored PASS on docs re-judged FAIL in same session); bifurcated meta schema (tree vs flat)."
+    }
+  ],
+  "zones_new": [],
+  "net_bug_delta": -16,
+  "wiring_status": "fully_wired",
+  "wiring_detail": "All 6 post-fix zones show healthy wiring with zero unwired symbols across 30+ key functions. Entry point CustomPageIndexClient.index() verified. Indirect call patterns (asyncio.to_thread, function references, gate table lookup) all confirmed via source inspection. Feature wiring validation runs at server/worker startup.",
+  "unwired_symbols": [],
+  "overall_verdict": "regressed",
+  "verdict_rationale": "Content Measurement Blind Spot regressed from medium to high severity (the zone that caused the fabricated corpus report), Converter Chain stalled at high severity, and two zones remain critical. Despite a strong net -16 bug delta and fully wired production paths, the regression in the measurement zone -- the same zone responsible for the July 17 fabricated corpus report -- prevents a cycle_complete verdict. Past cycle outcomes show this is a chronic pattern: measurement inaccuracy propagates false confidence into corpus reports, which then drives incorrect remediation priorities.",
+  "recommended_next": "Wave 1 (immediate, blocks corpus report accuracy): (1) Content Measurement Blind Spot -- implement the CI guard (tests/test_no_naive_block_text.py, ~0.5 day) to ban naive block.get('text') outside flat.py, then separately fix the audit harness score-stage to actually call the meta-consuming path before defaulting to ERROR. This zone is the root cause of fabricated corpus reports and must close before the next corpus scoring run. Wave 2 (next sprint): (2) Verdict Promotion -- implement the declarative PROMOTION_TABLE refactor (~0.5-1 day) to eliminate the if/elif priority cascade and image_enrichment special-case threading that have caused threshold oscillation across Runs 6-9. (3) Detection-Remediation Dispatch Gap -- replace the D4 special-case with severity-min dispatch (~1 day). Wave 3 (requires infra coordination): (4) Converter Chain / Remote Service Boundary Drift -- add remote_version_enforce as observe-only metric, then enforce after 1-week soak. (5) OCR Pipeline Conflation -- split the conflated function into two named OCR strategies. Hold: Verdict Persistence Asymmetry (medium severity, improved, acceptable residual risk while higher zones are open).",
+  "summary": {
+    "total_zones_current": 6,
+    "total_zones_prior": 8,
+    "improved": 4,
+    "regressed": 1,
+    "stalled": 1,
+    "new_count": 0,
+    "closed_count": 2,
+    "total_bugs_current": 22,
+    "total_bugs_prior": 38,
+    "simplification_proposals_available": 5
+  }
+}

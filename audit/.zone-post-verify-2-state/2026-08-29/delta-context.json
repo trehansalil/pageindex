@@ -1,0 +1,124 @@
+{
+  "delta": {
+    "zone_deltas": [
+      {
+        "zone_name": "Verdict Promotion / Threshold Ratchet",
+        "status": "improved",
+        "severity_before": "critical",
+        "severity_after": "critical",
+        "bug_count_before": 8,
+        "bug_count_after": 6,
+        "key_change": "VG-1..VG-7 fixes (commit 9ccc6f1) reduced promotion-cascade bugs from 8 to 6 by computing the image-enrichment garble check once and sharing it between D1/D2, but apply_promotions remains an ordered if/elif priority cascade and the source_selection clamp-bypass for image_enrichment still suppresses structural caps, so the threshold-ratchet pattern (widen one edge, admit false-PASS at the new edge) persists.",
+        "proposal_status": "partially_implemented"
+      },
+      {
+        "zone_name": "Garble Detection Cross-Cutting Kernel -> Detection-Remediation Dispatch Gap",
+        "status": "improved",
+        "severity_before": "critical",
+        "severity_after": "critical",
+        "bug_count_before": 7,
+        "bug_count_after": 4,
+        "key_change": "The GATE_TABLE severity-ordering dispatch gap was narrowed via the D4 garble-priority override and the _eligible_image_dominant all-defects check (Zone-1 fix), cutting cross-cutting garble/dispatch bugs from 7 to 4, but D4 only covers the GARBLING/NODE_GARBLING pair -- any newly-added lower-severity gate can still shadow garble detection before it fires -- and detect_garble retains 11 divergent call sites across 9+ subsystems.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "Converter Chain Fallback and AGPL Gating -> Converter Chain / Remote Service Boundary Drift",
+        "status": "stalled",
+        "severity_before": "high",
+        "severity_after": "high",
+        "bug_count_before": 4,
+        "bug_count_after": 4,
+        "key_change": "GATE_AGPL_STRUCTURAL is now an explicit, metricked, operator-gateable policy (previously an unnamed WALK fallthrough that only logged a warning), but this zone absorbed the former separate Bidi/RTL Local-vs-Remote zone's unresolved defects: RFC-033's _heading_is_logical_order bidi guard is still never committed to git (0 occurrences in src/), and the remote Docling microservice is still unversioned with incomplete remote_version_enforce, so local fixes still have zero effect on remotely-routed documents -- net bug count and severity unchanged.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "OCR Recovery Cascade and Kill-Switch Conflation -> OCR Pipeline Conflation",
+        "status": "improved",
+        "severity_before": "high",
+        "severity_after": "high",
+        "bug_count_before": 6,
+        "bug_count_after": 3,
+        "key_change": "The Zone-2 re-entry guard (force_full_page_ocr_applied) closed the double-Tesseract-pass duplication during force_full_page_ocr re-extraction, and decide_ocr_mode now forwards document_type/ocr_langs, cutting bugs from 6 to 3, but the root conflation -- one function (pdf_to_markdown_docling) handling both per-picture and full-page OCR strategies -- remains, and standalone images still bypass splice_figure_markers/_enrich_image_blocks.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "Measurement/Audit Tooling Shared Blind Spots -> Content Measurement Blind Spot",
+        "status": "regressed",
+        "severity_before": "medium",
+        "severity_after": "high",
+        "bug_count_before": 4,
+        "bug_count_after": 3,
+        "key_change": "Role-aware helpers (_flat_block_primary_text/_flat_search_text) now exist and are used in RFC-022 B3's verdict computation, nominally cutting the raw bug count from 4 to 3, but the zone was re-rated from medium to high severity after tracing the GHV-TKV-Tarif 96.1% char under-count (13,022 raw vs 375 measured) and the fabricated Run 9 corpus report directly to naive block.get('text','') sites that still exist outside verdict.py -- the audit harness itself was never updated to use the correct helper.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "Dual-Writer Verdict Persistence and Consistency Model Split -> Verdict Persistence Asymmetry",
+        "status": "improved",
+        "severity_before": "high",
+        "severity_after": "medium",
+        "bug_count_before": 4,
+        "bug_count_after": 2,
+        "key_change": "reconcile.py's load-bearing drain-verdict-retry-queue-before-MinIO-etag-diff ordering fix landed, and write_verdict is now confirmed to have zero live production callers, dropping bug count from 4 to 2 and severity from high to medium; this zone also absorbed the former separate Erasure Cascade zone's manifest-drift concern (preloaded/ prefix, ISS-41) as one of its four listed bug sources rather than a standalone zone, and save_doc_meta still deliberately omits the write-visibility barrier (archival-only by design) so the child/parent process-boundary desync remains structurally possible.",
+        "proposal_status": "no_proposal"
+      }
+    ],
+    "new_zones": [],
+    "closed_zones": [
+      "Bidi/RTL Processing Split (Local vs. Remote) -- absorbed into Converter Chain / Remote Service Boundary Drift; its bidi-heading-guard-never-committed and remote-drift findings are now reported as sub-issues of that zone rather than a standalone zone.",
+      "Erasure Cascade and Storage Consistency Drift -- absorbed into Verdict Persistence Asymmetry as its 'Manual Erasure Manifest Drift' bug source (ISS-41 preloaded/ prefix gap); no longer tracked as a standalone zone."
+    ],
+    "summary": {
+      "total_current": 6,
+      "total_prior": 8,
+      "improved": 4,
+      "regressed": 1,
+      "stalled": 1,
+      "new_count": 0,
+      "closed_count": 2,
+      "net_bug_delta": -16
+    }
+  },
+  "wiring": {
+    "summary": "Wiring analysis of 6 POST-FIX ZONES completed across pageindex repository. All zones show HEALTHY wiring status with zero unwired symbols detected. \n\nZONE-BY-ZONE SUMMARY:\n- ZONE 1 (Verdict Promotion): ✓ apply_promotions, compute_verdict, evaluate_gates, classify_verdict all properly wired to production indexer\n- ZONE 2 (Detection-Remediation): ✓ validate_feature_wirings and validate_recovery_method_names wired to server/worker startup; all gate functions wired via GATE_TABLE lookup\n- ZONE 3 (Converter Chain): ✓ pdf_to_markdown_docling and pdf_markdown_converters wired to converter framework; pipeline versioning tracks remote/local boundary\n- ZONE 4 (OCR Pipeline): ✓ zdr_egress_gate, picture collection, and splice functions all wired to VLM/picture extraction paths\n- ZONE 5 (Content Measurement): ✓ route_and_extract_flat wired to flat extraction on both garble and VLM paths (lines 995, 1025 of indexer.py)\n- ZONE 6 (Verdict Persistence): ✓ save_doc (line 1245), save_flat_doc (line 1136), save_doc_meta (lines 1141, 1302) all properly wired\n\nKEY FINDINGS:\n- Entry point: CustomPageIndexClient.index() in src/pageindex_mcp/client/indexer.py\n- No unwired functions identified across 30+ key functions analyzed\n- Some functions use indirect calling patterns (asyncio.to_thread, function references, gate table lookup) which are verified via source inspection\n- Feature wiring validation runs at server/worker startup via validate_feature_wirings\n- Recovery methods validated during startup ensure dispatch gap closure\n\nINDIRECT CALL PATTERNS VERIFIED:\n- asyncio.to_thread() calls to save_doc, save_flat_doc, route_and_extract_flat\n- Gate functions stored in GATES list and accessed via GateSpec.gate_fn\n- pdf_to_markdown_docling passed as function reference through converter framework\n\nRisk Assessment: LOW - All post-fix zones properly integrated into production code paths.",
+    "wiring_findings": [
+      "ZONE1-VERDICT-OK: apply_promotions→compute_verdict→_persist_flat_result/tree_result chain complete",
+      "ZONE1-VERDICT-OK: evaluate_gates wired to compute_verdict; classify_verdict wraps compute_verdict",
+      "ZONE2-GATES-OK: validate_feature_wirings called at server/worker startup",
+      "ZONE2-GATES-OK: All _gate_* functions (garbling, node_count_low, depth_low, reordered, rtl_reversal, bidi_degraded, empty_node_contamination, low_content_density, suspect_density) stored in GATES list and accessed via GATE_TABLE",
+      "ZONE2-RECOVERY-OK: validate_recovery_method_names wired to validate_feature_wirings; recovery dispatch validated at startup",
+      "ZONE3-CONVERTER-OK: pdf_to_markdown_docling in pdf_markdown_converters registry; called via converter framework",
+      "ZONE3-CONVERTER-OK: CURRENT_PIPELINE_VERSION tracks remote/local converter boundary",
+      "ZONE4-OCR-OK: zdr_egress_gate called from _add_vlm_descriptions and vlm_extract_markdown",
+      "ZONE4-OCR-OK: _collect_picture_regions used in pdf_to_markdown_docling → _recover_picture_results",
+      "ZONE4-OCR-OK: splice_picture_text_for_tree imported in CustomPageIndexClient",
+      "ZONE5-FLAT-OK: route_and_extract_flat called via asyncio.to_thread at indexer.py:995 (garble path) and :1025 (vlm path)",
+      "ZONE5-FLAT-OK: _flat_block_primary_text used in route_and_extract_flat callchain",
+      "ZONE6-PERSIST-OK: save_doc called via asyncio.to_thread at indexer.py:1245 for tree path",
+      "ZONE6-PERSIST-OK: save_flat_doc called via asyncio.to_thread at indexer.py:1136 for flat path",
+      "ZONE6-PERSIST-OK: save_doc_meta carries verdict cascade at indexer.py:1141, 1302",
+      "CROSS-ZONE-OK: Feature wiring validation via FEATURE_WIRINGS registry (6 wirings verified)",
+      "CROSS-ZONE-OK: Production pipeline flow: source selection → extraction → gate evaluation → promotion → classification → persistence",
+      "INTEGRATION-OK: No unwired symbols detected across all 6 zones"
+    ]
+  },
+  "mem": {
+    "summary": "\n**Past Remediation Cycle Outcomes for PageIndex Project**\n\nThis subagent searched the project's claude-mem history across July-August 2026 to identify prior scorecard verdicts, zone closures/regressions, wiring failures, and user feedback. Key patterns emerged around a 4-run (Run 6-9) iterative verdict-gating remediation cycle, a major fabricated corpus report discovery, and systematic accuracy issues in self-reported test metrics and scorecard verdicts.\n\n**Major Past Cycle Outcomes:**\n\n1. **Fabricated Corpus Report (July 17, 2026)**: A published corpus verdict table claiming \"15 PASS / 10 MARGINAL / 0 FAIL\" was discovered to be fabricated (never computed via classify_verdict). Real verified counts from MinIO meta.json: 11 PASS / 12 MARGINAL / 2 FAIL / 1 NOT_PROCESSED across 26 files. RFC-015 formally superseded the fabricated numbers.\n\n2. **Run 9 Corpus Audit (July 31, 2026)**: Harness incorrectly reported all 24 documents as ERROR; live MinIO re-pull (RFC-025 D4 pre-publish verification) revealed actual result: 15 PASS / 8 MARGINAL / 0 FAIL / 1 ERROR. Root cause: scoring harness defaulted unscored records to ERROR instead of failing loudly.\n\n3. **Verdict Threshold Regression (July 31, 2026)**: Three tests expecting MARGINAL verdicts for leaf-ratio ~0.20-0.21 now receive PASS, indicating RFC-023 D10's widening of PASS_MAX_LEAF_RATIO (0.17→0.20) caused unintended test failures and threshold oscillation across runs.\n\n4. **RFC-034 Run15 Reconciliation (August 9, 2026)**: All 6 implementation batches (Gates G1-G6) completed. Addressed three confirmed architectural issues: silent registry dual-write failures (Issue A), inert retrieval quality gate (Issue B), query-path latency (Issue C).\n\n5. **Iterative Run Cycle (Runs 6-9, July 2026)**: Recurring theme across RFC-023→RFC-026 pattern: verdict-gating instability, hysteresis/recovery gaps, rotation-detection issues. Each run produced an RFC + audit report, but chronic issues persisted across cycles.\n\n6. **Gate Semantics Misreporting (Commit 41590f8, July 20)**: Claimed \"554 tests passed\" but independent rerun showed 553 actual. Conflated gate structural checks (PASS=7 sub-checks) with per-test counts. Coverage-thresholds check was SKIPPED, not verified, but claimed as passing.\n\n**Chronic Zone Issues:**\n\n- **Verdict-Promotion Bypass (Run 9)**: image_enrichment_promoted and cat_b_promoted flags marking docs PASS despite near-zero/collapsed content (15x char loss on Unfallversicherung, 0.5x on مرسوم بقانون). Violates Hard Rule 5 in spirit (silently persisting low-quality trees).\n- **Softening Without Recovery**: Zero-content Arabic PDFs shifted FAIL/ERROR→MARGINAL without actual extraction recovery (مرسوم 13/2022, اتفاقية الخدمة, etc.).\n- **Garble Detection Gap**: وارد رقم 597 now correctly fires garble gate (ratio=1.00) but OCR escalation does not follow (remains MARGINAL with fully-garbled content).\n- **Arabic CMap-Crash Recovery**: Three hard-ERROR docs recovered in Run 9; مرسوم 33/2021 regained content (cat_b_promoted path), but other two persist empty extraction—crash fixed but quality unresolved.\n- **Verdict Schema Bifurcation (Run 16, August)**: meta.json split between tree and flat formats; stored PASS verdicts on documents re-judged FAIL this session; persistence-timing race bug suspected.\n- **Content Loss Across Runs**: Stagnant char counts on some docs (uae_numbers_portrait: 764 chars persisting through fresh re-ingestion), suggesting OCR escalation or extraction path regression.\n\n**Wiring Failures Caught in Post-Verify:**\n\n1. **Silent Registry Dual-Write** (worker.py:480-502): _upsert_registry_row catches exceptions and logs warning only; document becomes invisible if Postgres write silently fails (RFC-009 D6 removed MinIO fallback).\n2. **TOOL_ERRORS Inflation** (documents.py): verdict_fail (healthy empty corpus) inflated TOOL_ERRORS metric; fixed to conditionally skip metric for verdict_fail reason.\n3. **Static Import Gate** (worker.py): Unsorted imports triggered static-analysis gate failure.\n4. **Integration Gate Skip**: scripts/gates/integration.sh entirely SKIPPED, not run; unclear if gate logic is broken or test selection logic is wrong.\n5. **Missing SQL Predicate Pushdown**: RFC-006 Stage A facet filter is a no-op; RFC-015 verdict field (PASS/MARGINAL/FAIL) computed and indexed but never consulted in retrieval path before full RAG.\n6. **Unverified Coverage**: Coverage-thresholds sub-check in unit.sh skipped due to missing pytest-cov; gate self-reported as passing despite unverified target.\n\n**Scorecard Accuracy Issues:**\n\n- Prior corpus report numbers were never validated against running classify_verdict() before being published to Confluence.\n- Commit 41590f8 self-reported verdict/test metrics did not match independent reproduction (554 claimed vs 553 actual); further extrapolated single-gate result to broader system health without evidence.\n- Run 9 harness defaulted unscored records to ERROR; RFC-025 D4 rule required live MinIO re-pull before trusting audit figures to catch this.\n- Project memory explicitly flags pattern: \"Verify source before asserting defects — read file:line before any code claim\" and \"Corpus diagnosis focus — skip PASS docs; focus on regressions; prefer simple fixes.\"\n\n**User Feedback / Corrections:**\n\nMemory indicates user locked RFC-004 VLM probe (gpt-4.1 vision hallucinated hierarchy; Granite-258M rejected with user-LOCKED label 2026-06-12) and flagged fabricated corpus report (2026-07-17) as requiring verification. CLAUDE.md Hard Rule 5 requirement (\"Never silently persist a low-quality tree\") remains un-enforced across multiple runs (Run 9 image_enrichment_promoted path, zero-content softening without escalation).\n",
+    "past_cycle_outcomes": "\n**Cycle Outcomes Summary:**\n\n1. **Corpus Report Fabrication Cycle (July 17)**: False verdict table (15/10/0) → RFC-015 correction with live MinIO re-derivation (11/12/2/1) → Confluence page flagged for correction. Verdict: needs_another_cycle (accuracy infrastructure required).\n\n2. **Run 9 Audit Cycle (July 31)**: Harness scoring-stage bug (all records → ERROR) caught by RFC-025 D4 pre-publish rule → corrected to 15/8/0/1. Also surfaced: verdict-ratio threshold regression (three MARGINAL tests now PASS) and image_enrichment_promoted bypass of quality gate. Verdict: needs_another_cycle (three separate issues require fixes: scoring-stage fail-loudly, threshold tuning, promotion-flag gating).\n\n3. **RFC-034 Run15 Reconciliation (Aug 9)**: All 6 batches completed (G1-G6 terminal gate). Three issues fully scoped (Issues A/B/C architecture). Verdict: cycle_complete for this RFC's design scope; implementation remediation ongoing in follow-on PRs.\n\n4. **Runs 6-9 Iterative Pattern (July)**: Each run produced an RFC + audit; recurring verdict-gating instability and hysteresis/recovery gaps. RFC-023→RFC-026 show oscillating fixes without convergence. Verdict: regressed—each run introduces new failures or threshold swings, suggesting the iterative approach is not stabilizing the verdict system.\n\n5. **Gate Semantics / CI (July 20)**: Static gate FAIL → fixed. But integration/e2e/supply-chain gates remain SKIPPED; coverage thresholds unverified; TOOL_ERRORS inflation from verdict_fail. Verdict: needs_another_cycle (wiring gaps in gate logic and metric hygiene).\n\n6. **Run 16 Corpus Re-Ingestion (August 9)**: Full 25-doc corpus re-ingestion within 15-minute window; bifurcated meta schema (tree vs flat); persistent PASS verdicts on documents re-judged FAIL by session. Persistence-timing race suspected. Verdict: regressed—stored verdicts diverged from live judgments in same session.\n",
+    "wiring_findings": [
+      "Run 9 Harness Bug: Scoring stage defaulted unscored records to ERROR instead of failing loudly; RFC-025 D4 pre-publish live MinIO re-pull required to catch false negatives (24 ERROR claim → 15 PASS/8 MARGINAL actual)",
+      "Verdict Threshold Regression: RFC-023 D10 widened PASS_MAX_LEAF_RATIO (0.17→0.20); three tests expecting MARGINAL for ratio ~0.20-0.21 now fail (receive PASS instead), indicating threshold oscillation across runs",
+      "Image Enrichment Promotion Bypass: image_enrichment_promoted and cat_b_promoted verdict-promotion flags mark docs PASS despite near-zero/regressed content (15x char loss on Unfallversicherung-2025 doc, 0.5x on مرسوم بقانون); violates Hard Rule 5 (low-quality trees persist silently)",
+      "Silent Registry Dual-Write: worker._upsert_registry_row (worker.py:480-502) catches exceptions and logs warning; document becomes invisible to all 5 MCP query tools if Postgres write fails silently (RFC-009 D6 removed MinIO fallback)",
+      "TOOL_ERRORS Metric Inflation: verdict_fail reason (healthy empty corpus when all candidates filtered as FAIL) was incorrectly counted toward TOOL_ERRORS alongside genuine outages (postgres_error, pool_not_ready, disabled); fixed to conditionally skip metric increment",
+      "Missing SQL Predicate Pushdown: RFC-006 Stage A facet filter is a no-op; RFC-015 verdict field (indexed, PASS/MARGINAL/FAIL) never consulted in retrieval path before running full RAG over every candidate",
+      "Static Gate Import Sorting: worker.py had unsorted imports; triggered static-analysis gate failure (fixed commit ff4211a)",
+      "Integration Gate Entirely Skipped: scripts/gates/integration.sh not run; gate logic unclear or test-selection broken",
+      "Frozen-Dataclass Settings Patching: worker coverage tests had frozen-dataclass-settings-patching issue (fixed in tests/test_worker_coverage.py)",
+      "Run 16 Verdict Persistence Race: 25-doc corpus re-ingestion within 15-min window; bifurcated meta schema (tree vs flat); stored PASS verdicts persisting uncorrected on documents re-judged FAIL in same session; persistence-timing race suspected",
+      "Garble Detection Without OCR Escalation: وارد رقم 597 correctly fires garble gate (ratio=1.00) but OCR escalation not implemented; doc remains MARGINAL with fully-garbled extracted content",
+      "Zero-Content Softening: Multiple Arabic PDFs (مرسوم 13/2022, اتفاقية الخدمة, قرار مجلس الوزراء 1/2022, etc.) softened FAIL/ERROR→MARGINAL in Run 9 without actual content recovery (0 blocks / 0 chars persists); verdict-gate softening masking real extraction failure",
+      "Coverage Thresholds Unverified: unit.sh coverage-thresholds sub-check SKIPPED due to missing pytest-cov; gate claimed PASS despite unverified enforcement target",
+      "Fabricated Corpus Report Accuracy: Prior published corpus verdict table (15/10/0) never computed via classify_verdict(); live MinIO re-derivation found 11/12/2/1; commit 41590f8 gate self-report miscounted tests and conflated structural checks (PASS=7 sub-checks) with per-test counts"
+    ]
+  }
+}
