@@ -266,3 +266,59 @@ def test_pdf_markdown_converters_consistent_with_pipeline_config(monkeypatch):
             "pymupdf4llm must not appear in chain when ALLOW_AGPL_FALLBACK=false"
         )
         assert "docling" in names
+
+
+# ---------------------------------------------------------------------------
+# Zone (converter-chain fallback + AGPL gating): new PipelineConfig flags
+#   AGPL_STRUCTURAL_FALLBACK_ENABLED  -> agpl_structural_fallback_enabled
+#   REMOTE_VERSION_ENFORCE            -> remote_version_enforce
+# ---------------------------------------------------------------------------
+
+
+def test_agpl_structural_fallback_enabled_defaults_true(monkeypatch):
+    """Contract: unset AGPL_STRUCTURAL_FALLBACK_ENABLED defaults to True, which
+    preserves the historical behavior (structural failures always walked the
+    chain, AGPL next entry included)."""
+    from pageindex_mcp.config import PipelineConfig
+
+    monkeypatch.delenv("AGPL_STRUCTURAL_FALLBACK_ENABLED", raising=False)
+    assert PipelineConfig.from_env().agpl_structural_fallback_enabled is True
+
+
+def test_remote_version_enforce_defaults_false(monkeypatch):
+    """Contract: unset REMOTE_VERSION_ENFORCE defaults to False, keeping the
+    remote pipeline_version skew check warn-only."""
+    from pageindex_mcp.config import PipelineConfig
+
+    monkeypatch.delenv("REMOTE_VERSION_ENFORCE", raising=False)
+    assert PipelineConfig.from_env().remote_version_enforce is False
+
+
+@pytest.mark.parametrize("raw,expected", [("false", False), ("0", False), ("true", True)])
+def test_agpl_structural_fallback_enabled_reads_env(monkeypatch, raw, expected):
+    """Contract: the flag is operator-settable from the environment."""
+    from pageindex_mcp.config import PipelineConfig
+
+    monkeypatch.setenv("AGPL_STRUCTURAL_FALLBACK_ENABLED", raw)
+    assert PipelineConfig.from_env().agpl_structural_fallback_enabled is expected
+
+
+@pytest.mark.parametrize("raw,expected", [("true", True), ("1", True), ("false", False)])
+def test_remote_version_enforce_reads_env(monkeypatch, raw, expected):
+    """Contract: the flag is operator-settable from the environment."""
+    from pageindex_mcp.config import PipelineConfig
+
+    monkeypatch.setenv("REMOTE_VERSION_ENFORCE", raw)
+    assert PipelineConfig.from_env().remote_version_enforce is expected
+
+
+def test_new_zone_flags_are_declared_fields():
+    """Both flags are real declared fields on the frozen PipelineConfig, not
+    ad-hoc attributes -- production reads them via dataclasses.replace()."""
+    import dataclasses
+
+    from pageindex_mcp.config import PipelineConfig
+
+    names = {f.name for f in dataclasses.fields(PipelineConfig)}
+    assert "agpl_structural_fallback_enabled" in names
+    assert "remote_version_enforce" in names

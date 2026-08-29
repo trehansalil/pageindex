@@ -67,7 +67,7 @@ class ConverterFailurePolicy(StrEnum):
     The converter chain in ``_convert_to_tree`` classifies each failure as
     *transient* (network timeout, HTTP 5xx) or *structural* (parse error,
     import failure) and checks whether the next converter is AGPL-licensed.
-    This enum captures the four resulting policy branches so they can be
+    This enum captures the resulting policy branches so they can be
     tested, logged, and metricked without reading branching logic.
 
     Values:
@@ -79,9 +79,18 @@ class ConverterFailurePolicy(StrEnum):
             Block the chain walk because the next converter is AGPL-licensed
             and the failure was transient — an unplanned outage must not
             silently become AGPL-licensed network-served conversion (HR4).
+        GATE_AGPL_STRUCTURAL:
+            A **structural** failure would walk into an AGPL-licensed
+            converter.  Previously this was an unnamed fall-through into
+            ``WALK`` that only emitted a warning log, so an AGPL fallback
+            taken for structural reasons was neither gated nor counted.
+            This branch makes it explicit, metricked
+            (``AGPL_FALLBACK_TOTAL{reason="structural_walk"}``) and
+            operator-gateable via ``AGPL_STRUCTURAL_FALLBACK_ENABLED``
+            (default ``true`` — behavior identical to the old ``WALK``).
         WALK:
             Walk to the next converter in the chain.  Applied for
-            structural failures (original behavior) and for transient
+            structural failures into a non-AGPL converter and for transient
             failures when the next converter is non-AGPL.
         REJECT:
             No more converters remain; the document falls to the legacy
@@ -90,6 +99,7 @@ class ConverterFailurePolicy(StrEnum):
 
     RETRY = "retry"
     BLOCK_AGPL = "block_agpl"
+    GATE_AGPL_STRUCTURAL = "gate_agpl_structural"
     WALK = "walk"
     REJECT = "reject"
 

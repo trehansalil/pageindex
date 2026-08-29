@@ -555,15 +555,13 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 try:
                     logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
                     if state.use_remote and _conv_supports_ocr:
-                        # NOTE (Zone-1 known gap): _remote_pdf_to_markdown does
-                        # NOT forward expected_script to the external Docling
-                        # microservice — the /convert/pdf payload has no script
-                        # field, so server-side garble checks (if any) fall back
-                        # to infer_script(text).  Closing this gap requires a
-                        # contract change in the sibling hetzner-deployment-service
-                        # repo and is out of scope for client-side threading.
-                        # Post-conversion garble detection in the retry/escalation
-                        # paths already receives expected_script from this method.
+                        # expected_script is forwarded to the external Docling
+                        # service as the ``expected_script`` payload key, so a
+                        # server-side garble check no longer has to re-infer the
+                        # script from the extracted text.  A remote build that
+                        # predates the key ignores it, so the client stays
+                        # compatible with both.  Post-conversion garble detection
+                        # in the retry/escalation paths receives the same value.
                         logger.info(
                             "Routing %s to external Docling service at %s",
                             filename,
@@ -574,6 +572,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 self._staging_key,
                                 force_full_page_ocr=True,
                                 ocr_lang_override=detect_ocr_langs(filename),
+                                expected_script=expected_script,
                             )
                         else:
                             if state.pre_garbled:
@@ -584,6 +583,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 )
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
                                 self._staging_key,
+                                expected_script=expected_script,
                             )
                     elif force_full_page and _conv_supports_ocr:
                         md_content, state.pic_results, stages_out = _split_converter_output(
@@ -663,10 +663,16 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         next_idx < len(chain) and chain[next_idx].is_agpl
                     )
 
+                    # Ordering is load-bearing: the AGPL branches must be
+                    # classified BEFORE the generic end-of-chain/WALK branches,
+                    # or a structural failure into an AGPL converter would fall
+                    # through to the bare `else` (its former, ungated behavior).
                     if _is_transient and _transient_attempts < CONVERTER_TRANSIENT_RETRY_COUNT:
                         _failure_policy = ConverterFailurePolicy.RETRY
                     elif _is_transient and next_is_agpl:
                         _failure_policy = ConverterFailurePolicy.BLOCK_AGPL
+                    elif not _is_transient and next_is_agpl:
+                        _failure_policy = ConverterFailurePolicy.GATE_AGPL_STRUCTURAL
                     elif next_idx >= len(chain):
                         _failure_policy = ConverterFailurePolicy.REJECT
                     else:
@@ -721,22 +727,44 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         )
                         break
 
-                    # ConverterFailurePolicy.WALK — walk to next converter.
-                    # Reset transient attempt counter for the next converter.
-                    _transient_attempts = 0
-                    if not _is_transient and next_is_agpl:
-                        # Structural failure: allow chain walk (original
-                        # behavior).  Log if the next entry is AGPL so the
-                        # operator is aware.
+                    if _failure_policy is ConverterFailurePolicy.GATE_AGPL_STRUCTURAL:
+                        # A structural failure whose next converter is AGPL.
+                        # Previously an unnamed fall-through into WALK that only
+                        # logged a warning, so the AGPL fallback was neither
+                        # gateable nor counted.  Now it is both.
+                        if not pipeline_config.agpl_structural_fallback_enabled:
+                            AGPL_FALLBACK_TOTAL.labels(reason="structural_blocked").inc()
+                            logger.warning(
+                                "Structural failure on '%s' for %s would fall "
+                                "through to AGPL converter '%s'; blocking chain "
+                                "walk (AGPL_STRUCTURAL_FALLBACK_ENABLED=false). "
+                                "Document will use legacy page_index fallback "
+                                "instead.",
+                                conv_name,
+                                filename,
+                                chain[next_idx].name,
+                            )
+                            break
+                        AGPL_FALLBACK_TOTAL.labels(reason="structural_walk").inc()
                         logger.warning(
                             "Structural failure on '%s' for %s; falling "
-                            "back to AGPL converter '%s'. If this is "
-                            "undesired, set ALLOW_AGPL_FALLBACK=false.",
+                            "back to AGPL converter '%s'. To block this walk, "
+                            "set AGPL_STRUCTURAL_FALLBACK_ENABLED=false "
+                            "(or ALLOW_AGPL_FALLBACK=false to drop the AGPL "
+                            "converter from the chain entirely).",
                             conv_name,
                             filename,
                             chain[next_idx].name,
                         )
-                    elif _is_transient:
+                        # Same as WALK: reset the per-converter transient
+                        # attempt counter before moving to the next entry.
+                        _transient_attempts = 0
+                        continue
+
+                    # ConverterFailurePolicy.WALK — walk to next converter.
+                    # Reset transient attempt counter for the next converter.
+                    _transient_attempts = 0
+                    if _is_transient:
                         logger.info(
                             "Transient failure on '%s'; next converter '%s' is "
                             "non-AGPL, allowing chain walk.",

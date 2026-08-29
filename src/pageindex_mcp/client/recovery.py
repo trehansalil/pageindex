@@ -291,6 +291,7 @@ class RecoveryMixin:
                     self._staging_key,
                     force_full_page_ocr=True,
                     ocr_lang_override=langs,
+                    expected_script=expected_script,
                 )
             else:
                 state.md_content, state.pic_results, stages_out = _split_converter_output(

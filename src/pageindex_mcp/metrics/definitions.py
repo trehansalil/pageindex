@@ -196,6 +196,15 @@ STAGING_DELETE_FAILURES = Counter(
     "delete_staging S3Error failures (RFC-007 D9). Previously swallowed silently; "
     "now an observable signal alongside the bool return value.",
 )
+# ``reason`` is a free-form label; the values currently emitted are:
+#   blocked             — chain built without the AGPL converter (pipeline.py)
+#   operator_configured — AGPL converter selected by explicit operator config
+#   docling_missing     — Docling unavailable, AGPL entry is the only option
+#   fired               — the AGPL converter actually produced the markdown
+#   transient_blocked   — transient failure would have walked into AGPL; blocked (HR4)
+#   structural_walk     — structural failure walked into AGPL (gate enabled, default)
+#   structural_blocked  — structural walk into AGPL blocked by
+#                         AGPL_STRUCTURAL_FALLBACK_ENABLED=false
 AGPL_FALLBACK_TOTAL = Counter(
     "pageindex_agpl_fallback_total",
     "PDF conversions that used the AGPL pymupdf4llm path",

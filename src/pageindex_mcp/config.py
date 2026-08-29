@@ -180,6 +180,15 @@ class ZDRComplianceError(RuntimeError):
     """
 
 
+class RemoteVersionSkewError(RuntimeError):
+    """Raised when the remote Docling ``pipeline_version`` is behind the local one.
+
+    Only raised when ``REMOTE_VERSION_ENFORCE`` is enabled; the default
+    behavior stays warn-only (log + ``DOCLING_VERSION_SKEW`` counter) so
+    existing deployments are unaffected.
+    """
+
+
 def _is_zdr_allowlisted(base_url: str | None) -> bool:
     """Return True if base_url matches any ZDR allow-list pattern."""
     if not base_url:
@@ -400,6 +409,17 @@ class PipelineConfig:
     # --- Converter chain transient-failure retry policy -----------------------
     converter_transient_retry_count: int
 
+    # --- Zone: converter-chain fallback + AGPL gating -------------------------
+    # ``agpl_structural_fallback_enabled`` gates the STRUCTURAL-failure walk
+    # into an AGPL-licensed converter.  Default True preserves the historical
+    # behavior (structural failures always walked the chain); setting it False
+    # makes HR4 enforcement symmetric with the transient BLOCK_AGPL branch.
+    agpl_structural_fallback_enabled: bool
+    # ``remote_version_enforce`` upgrades the remote Docling pipeline_version
+    # skew check from warn-only to a hard block.  Default False preserves the
+    # historical warn-only behavior.
+    remote_version_enforce: bool
+
     # --- Verdict downgrade (force_verdict_override wiring) --------------------
     verdict_downgrade_enabled: bool
 
@@ -501,6 +521,8 @@ class PipelineConfig:
             converter_transient_retry_count=int(
                 os.environ.get("CONVERTER_TRANSIENT_RETRY_COUNT", "1")
             ),
+            agpl_structural_fallback_enabled=_envbool("AGPL_STRUCTURAL_FALLBACK_ENABLED", "true"),
+            remote_version_enforce=_envbool("REMOTE_VERSION_ENFORCE", "false"),
             verdict_downgrade_enabled=_envbool("VERDICT_DOWNGRADE_ENABLED", "false"),
             # VerdictThresholds fields
             garble_window_ratio_threshold=float(

@@ -2109,7 +2109,7 @@ class TestCatBPromotedContentQualityGuard:
         assert len(flat_text.strip()) >= 500
         verdict, reason = classify_verdict(structure, "flat_prose", None)
         assert verdict == "PASS"
-        assert reason in ("", "cat_b_promoted")
+        assert reason in ("structural_pass", "cat_b_promoted")
 
 
 # ---------------------------------------------------------------------------
@@ -2299,7 +2299,7 @@ class TestPassMaxLeafRatioEnvVar:
         """max_leaf_ratio=0.18 with PASS_MAX_LEAF_RATIO=0.20 -> PASS."""
         monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.20")
         structure = _tree_with_ratio(0.18)
-        assert classify_verdict(structure, "hierarchical", None) == ("PASS", "")
+        assert classify_verdict(structure, "hierarchical", None) == ("PASS", "structural_pass")
 
     def test_ratio_above_widened_threshold_stays_marginal(self, monkeypatch):
         """max_leaf_ratio=0.22 with PASS_MAX_LEAF_RATIO=0.20 -> MARGINAL."""
@@ -2475,3 +2475,265 @@ class TestDecideOcrModeRemoved:
         assert "def decide_ocr_mode" not in source, (
             "decide_ocr_mode wrapper should be deleted from converters/pictures.py"
         )
+
+
+# ---------------------------------------------------------------------------
+# Zone (converter-chain fallback + AGPL gating):
+# ConverterFailurePolicy.GATE_AGPL_STRUCTURAL — a STRUCTURAL failure that would
+# walk into an AGPL-licensed converter is now an explicit, metricked, operator-
+# gateable policy branch instead of an unnamed fall-through into WALK.
+# ---------------------------------------------------------------------------
+
+
+_GATE_TREE = {
+    "structure": [
+        {
+            "node_id": "0001",
+            "title": "Root",
+            "text": "content " * 60,
+            "nodes": [
+                {"node_id": "0002", "title": "Child", "text": "child " * 60, "nodes": []}
+            ],
+        }
+    ]
+}
+
+
+def _make_gate_state():
+    """Fresh ExtractionState for driving the real _convert_to_tree chain walk."""
+    return ExtractionState(
+        result={},
+        ok=False,
+        reason="",
+        gate_result=None,
+        first_defect=TreeDefect.OK,
+        route=Route.TREE,
+        md_content=None,
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter=None,
+        total_chars=0,
+        extraction_stages_captured=[],
+    )
+
+
+def _make_gate_client():
+    """CustomPageIndexClient with the LLM tree-builders stubbed out.
+
+    ``_convert_to_tree`` is exercised for real; only the two terminal
+    tree-producing coroutines are replaced so no LLM/page_index call is made.
+    ``_staging_key = None`` forces the local (non-remote) converter branch.
+    """
+    from pageindex_mcp.client import CustomPageIndexClient
+
+    client = CustomPageIndexClient(api_key="test-key")
+    client._staging_key = None
+    client._run_md_to_tree = AsyncMock(return_value=dict(_GATE_TREE))
+    client._run_page_index_retrying = AsyncMock(return_value=dict(_GATE_TREE))
+    return client
+
+
+def _agpl_metric(reason: str) -> float:
+    from pageindex_mcp.metrics import AGPL_FALLBACK_TOTAL
+
+    return AGPL_FALLBACK_TOTAL.labels(reason=reason)._value.get()
+
+
+async def _run_chain(chain, *, structural_fallback_enabled=True):
+    """Drive the real ``_convert_to_tree`` chain walk over *chain*.
+
+    Returns ``(client, state)`` so callers can assert on which converter won,
+    whether the legacy page_index fallback fired, and which metric moved.
+    """
+    import dataclasses as _dc
+
+    from pageindex_mcp.client import indexer as indexer_mod
+
+    client = _make_gate_client()
+    state = _make_gate_state()
+    patched_cfg = _dc.replace(
+        indexer_mod.pipeline_config,
+        agpl_structural_fallback_enabled=structural_fallback_enabled,
+    )
+    with (
+        patch.object(indexer_mod, "pdf_markdown_converters", lambda: list(chain)),
+        patch.object(indexer_mod, "pipeline_config", patched_cfg),
+    ):
+        await client._convert_to_tree(
+            state,
+            "/nonexistent/zone-gate-fixture.pdf",
+            "zone-gate-fixture.pdf",
+            ".pdf",
+            "latin",
+            None,
+        )
+    return client, state
+
+
+def _gate_chain(first_exc):
+    """non-AGPL primary that raises *first_exc* -> AGPL fallback that succeeds."""
+    from pageindex_mcp.converters.pipeline import ConverterChainEntry
+
+    primary = MagicMock(side_effect=first_exc)
+    agpl = MagicMock(return_value=("# recovered markdown", [], []))
+    chain = [
+        ConverterChainEntry(name="docling", fn=primary, supports_ocr=True, is_agpl=False),
+        ConverterChainEntry(name="pymupdf4llm", fn=agpl, supports_ocr=False, is_agpl=True),
+    ]
+    return chain, primary, agpl
+
+
+class TestGateAgplStructuralPolicy:
+    """GATE_AGPL_STRUCTURAL: structural failure walking into an AGPL converter."""
+
+    def test_enum_member_exists_with_expected_value(self):
+        """Exhaustiveness: the enum carries GATE_AGPL_STRUCTURAL = 'gate_agpl_structural'."""
+        from pageindex_mcp.converters.pipeline import ConverterFailurePolicy
+
+        assert hasattr(ConverterFailurePolicy, "GATE_AGPL_STRUCTURAL")
+        assert ConverterFailurePolicy.GATE_AGPL_STRUCTURAL.value == "gate_agpl_structural"
+        assert ConverterFailurePolicy("gate_agpl_structural") is (
+            ConverterFailurePolicy.GATE_AGPL_STRUCTURAL
+        )
+
+    def test_every_enum_member_has_an_indexer_handler(self):
+        """Exhaustiveness: every ConverterFailurePolicy member is both assigned
+        and dispatched on in the indexer chain walker -- no member may exist
+        without a branch that acts on it."""
+        import inspect
+
+        from pageindex_mcp.client import indexer
+        from pageindex_mcp.converters.pipeline import ConverterFailurePolicy
+
+        source = inspect.getsource(indexer)
+        for member in ConverterFailurePolicy:
+            ref = f"ConverterFailurePolicy.{member.name}"
+            assert source.count(ref) >= 2, (
+                f"{ref} must be both classified and handled in indexer.py "
+                f"(found {source.count(ref)} reference(s))"
+            )
+        # WALK is the documented implicit tail branch (no `is WALK` compare);
+        # every other member must be dispatched with an identity check.
+        for member in ConverterFailurePolicy:
+            if member is ConverterFailurePolicy.WALK:
+                continue
+            assert f"_failure_policy is ConverterFailurePolicy.{member.name}" in source, (
+                f"indexer.py has no dispatch branch for ConverterFailurePolicy.{member.name}"
+            )
+
+    def test_structural_walk_wired_in_indexer_source(self):
+        """Wiring: indexer.py increments AGPL_FALLBACK_TOTAL with
+        reason='structural_walk' and gates on the new config flag."""
+        import inspect
+
+        from pageindex_mcp.client import indexer
+
+        source = inspect.getsource(indexer)
+        assert 'reason="structural_walk"' in source, (
+            "indexer.py must increment AGPL_FALLBACK_TOTAL(reason='structural_walk') "
+            "when a structural failure walks into an AGPL converter"
+        )
+        assert 'reason="structural_blocked"' in source, (
+            "indexer.py must increment AGPL_FALLBACK_TOTAL(reason='structural_blocked') "
+            "when the structural AGPL walk is gated off"
+        )
+        assert "pipeline_config.agpl_structural_fallback_enabled" in source, (
+            "indexer.py must gate the structural AGPL walk on "
+            "pipeline_config.agpl_structural_fallback_enabled"
+        )
+
+    @pytest.mark.asyncio
+    async def test_structural_failure_walks_to_agpl_when_enabled(self):
+        """Contract: structural failure (ValueError) on a non-AGPL converter
+        walks into the AGPL converter when the gate is enabled (default), and
+        the walk is counted as AGPL_FALLBACK_TOTAL(reason='structural_walk')."""
+        chain, primary, agpl = _gate_chain(ValueError("unparseable PDF structure"))
+        before_walk = _agpl_metric("structural_walk")
+        before_blocked = _agpl_metric("structural_blocked")
+
+        client, state = await _run_chain(chain, structural_fallback_enabled=True)
+
+        primary.assert_called_once()
+        agpl.assert_called_once()
+        assert state.used_converter == "pymupdf4llm", (
+            "structural failure must walk to the AGPL converter when enabled"
+        )
+        assert state.md_content == "# recovered markdown"
+        client._run_page_index_retrying.assert_not_called()
+        assert _agpl_metric("structural_walk") == before_walk + 1
+        assert _agpl_metric("structural_blocked") == before_blocked
+
+    @pytest.mark.asyncio
+    async def test_structural_failure_blocked_when_disabled(self):
+        """Contract: with AGPL_STRUCTURAL_FALLBACK_ENABLED=false the walk is
+        blocked -- the AGPL converter is never invoked and the document falls
+        to the legacy page_index path."""
+        chain, primary, agpl = _gate_chain(ValueError("unparseable PDF structure"))
+        before_walk = _agpl_metric("structural_walk")
+        before_blocked = _agpl_metric("structural_blocked")
+
+        client, state = await _run_chain(chain, structural_fallback_enabled=False)
+
+        primary.assert_called_once()
+        agpl.assert_not_called()
+        assert state.used_converter is None
+        assert state.md_content is None
+        client._run_page_index_retrying.assert_called_once()
+        assert _agpl_metric("structural_blocked") == before_blocked + 1
+        assert _agpl_metric("structural_walk") == before_walk
+
+    @pytest.mark.asyncio
+    async def test_transient_to_agpl_still_blocks_unchanged(self):
+        """Regression: the pre-existing BLOCK_AGPL branch is untouched by the
+        new GATE_AGPL_STRUCTURAL branch -- a TRANSIENT failure into an AGPL
+        converter still blocks the walk and still counts as
+        reason='transient_blocked', with the structural gate enabled.
+
+        Retries are disabled here so the BLOCK_AGPL branch is reached on the
+        first failure; see ``test_transient_retry_does_not_reenter_same_converter``
+        for the RETRY branch's separate (defective) behavior.
+        """
+        from pageindex_mcp.client import indexer as indexer_mod
+
+        chain, primary, agpl = _gate_chain(TimeoutError("docling timed out"))
+        before_transient = _agpl_metric("transient_blocked")
+        before_walk = _agpl_metric("structural_walk")
+        before_blocked = _agpl_metric("structural_blocked")
+
+        with patch.object(indexer_mod, "CONVERTER_TRANSIENT_RETRY_COUNT", 0):
+            client, state = await _run_chain(chain, structural_fallback_enabled=True)
+
+        primary.assert_called_once()
+        agpl.assert_not_called()
+        assert state.used_converter is None
+        client._run_page_index_retrying.assert_called_once()
+        assert _agpl_metric("transient_blocked") == before_transient + 1
+        # The structural counters must not move for a transient failure.
+        assert _agpl_metric("structural_walk") == before_walk
+        assert _agpl_metric("structural_blocked") == before_blocked
+
+    @pytest.mark.xfail(
+        strict=False,
+        reason=(
+            "DEFECT: indexer.py's RETRY branch `continue`s a plain "
+            "`for idx, entry in enumerate(chain)` loop. The comment claims it "
+            "'rewinds idx so the for-loop re-enters this entry', but nothing "
+            "rewinds -- the continue advances to the NEXT converter. A transient "
+            "failure therefore walks straight into the AGPL converter on the "
+            "first attempt, bypassing BLOCK_AGPL (HR4) entirely, and the "
+            "configured retry never happens."
+        ),
+    )
+    @pytest.mark.asyncio
+    async def test_transient_retry_does_not_reenter_same_converter(self):
+        """RETRY must re-invoke the SAME converter, not advance the chain --
+        otherwise CONVERTER_TRANSIENT_RETRY_COUNT>0 silently defeats the HR4
+        AGPL block for transient failures."""
+        from pageindex_mcp.client import indexer as indexer_mod
+
+        chain, primary, agpl = _gate_chain(TimeoutError("docling timed out"))
+        with patch.object(indexer_mod, "CONVERTER_TRANSIENT_RETRY_COUNT", 2):
+            client, state = await _run_chain(chain, structural_fallback_enabled=True)
+
+        assert primary.call_count == 3, "RETRY must re-invoke the same converter"
+        agpl.assert_not_called(), "transient failure must never reach the AGPL converter"

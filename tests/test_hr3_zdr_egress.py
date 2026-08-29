@@ -186,12 +186,20 @@ def _make_docling_settings(**overrides) -> SimpleNamespace:
 
 @pytest.fixture(autouse=True)
 def _reset_remote_docling_version_cache():
-    """The remote /version check caches its result on a module-level global."""
+    """The remote /version check caches its result on module-level globals.
+
+    ``_remote_pipeline_version_behind`` is sticky for the process lifetime (it
+    is what lets enforce-mode re-evaluate on every conversion rather than only
+    on the fetching call), so it must be reset alongside the response cache or
+    one test's observed skew leaks into the next.
+    """
     from pageindex_mcp.client import remote as remote_module
 
     remote_module._remote_docling_version = None
+    remote_module._remote_pipeline_version_behind = None
     yield
     remote_module._remote_docling_version = None
+    remote_module._remote_pipeline_version_behind = None
 
 
 class TestDoclingEgressGateBlocks:
@@ -1922,3 +1930,232 @@ class TestConvertersCliStagingKey:
         parser.add_argument("--staging-key", default=None)
         args = parser.parse_args(["test.pdf"])
         assert args.staging_key is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Zone (converter-chain fallback + AGPL gating): remote Docling contract
+#   - expected_script is forwarded to the remote converter in the payload
+#   - pipeline_version skew is warn-only by default, blocking under
+#     REMOTE_VERSION_ENFORCE
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _CapturingDoclingAsyncClient(_FakeDoclingAsyncClient):
+    """Fake AsyncClient that records the JSON payload of every POST."""
+
+    def __init__(self, *args, version_data: dict | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.posts: list[dict] = []
+        self._version_data = version_data or {"commit_sha": "unknown", "pipeline_version": 0}
+
+    async def get(self, url, *, timeout=None):
+        return _FakeDoclingResponse(self._version_data)
+
+    async def post(self, url, *, json=None, headers=None):
+        self.posts.append({"url": url, "json": json, "headers": headers})
+        return await super().post(url, json=json, headers=headers)
+
+
+def _patched_remote_config(**overrides):
+    """dataclasses.replace() of the frozen pipeline_config, bound into remote.py."""
+    import dataclasses
+
+    from pageindex_mcp.client import remote as remote_module
+
+    return patch.object(
+        remote_module,
+        "pipeline_config",
+        dataclasses.replace(remote_module.pipeline_config, **overrides),
+    )
+
+
+class TestRemotePdfExpectedScriptPayload:
+    """Contract: ``expected_script`` reaches the remote Docling service as a
+    payload key so the server-side garble check need not re-infer the script."""
+
+    @pytest.mark.asyncio
+    async def test_expected_script_forwarded_in_payload(self):
+        from pageindex_mcp.client import _remote_pdf_to_markdown
+
+        fake_settings = _make_docling_settings(pii_corpus=False)
+        fake_client = _CapturingDoclingAsyncClient()
+        with (
+            patch("pageindex_mcp.client.remote.settings", fake_settings),
+            patch("pageindex_mcp.config.settings", fake_settings),
+            patch("httpx.AsyncClient", return_value=fake_client),
+            patch(
+                "pageindex_mcp.storage.presigned_get_url",
+                return_value="https://minio/key?sig=abc",
+            ),
+        ):
+            await _remote_pdf_to_markdown("staging/key.pdf", expected_script="arabic")
+
+        convert_posts = [p for p in fake_client.posts if p["url"].endswith("/convert/pdf")]
+        assert len(convert_posts) == 1
+        payload = convert_posts[0]["json"]
+        assert "expected_script" in payload, (
+            "the remote conversion payload must carry the expected_script key"
+        )
+        assert payload["expected_script"] == "arabic"
+
+    @pytest.mark.asyncio
+    async def test_expected_script_key_present_as_none_when_not_supplied(self):
+        """Omitting the argument sends the key with an explicit null rather
+        than dropping it -- a remote build that predates the key ignores it,
+        so the shape stays stable in both directions."""
+        from pageindex_mcp.client import _remote_pdf_to_markdown
+
+        fake_settings = _make_docling_settings(pii_corpus=False)
+        fake_client = _CapturingDoclingAsyncClient()
+        with (
+            patch("pageindex_mcp.client.remote.settings", fake_settings),
+            patch("pageindex_mcp.config.settings", fake_settings),
+            patch("httpx.AsyncClient", return_value=fake_client),
+            patch(
+                "pageindex_mcp.storage.presigned_get_url",
+                return_value="https://minio/key?sig=abc",
+            ),
+        ):
+            await _remote_pdf_to_markdown("staging/key.pdf")
+
+        payload = fake_client.posts[0]["json"]
+        assert payload["expected_script"] is None
+
+    @pytest.mark.asyncio
+    async def test_image_payload_has_no_expected_script(self):
+        """Regression: only the PDF path carries expected_script; the image
+        endpoint's payload shape is unchanged."""
+        from pageindex_mcp.client import _remote_image_to_markdown
+
+        fake_settings = _make_docling_settings(pii_corpus=False)
+        fake_client = _CapturingDoclingAsyncClient()
+        with (
+            patch("pageindex_mcp.client.remote.settings", fake_settings),
+            patch("pageindex_mcp.config.settings", fake_settings),
+            patch("httpx.AsyncClient", return_value=fake_client),
+            patch(
+                "pageindex_mcp.storage.presigned_get_url",
+                return_value="https://minio/key?sig=abc",
+            ),
+        ):
+            await _remote_image_to_markdown("staging/key.png")
+
+        payload = fake_client.posts[0]["json"]
+        assert "expected_script" not in payload
+
+    def test_indexer_forwards_expected_script_to_remote(self):
+        """Wiring: indexer.py passes expected_script into _remote_pdf_to_markdown."""
+        import inspect
+        import re
+
+        from pageindex_mcp.client import indexer
+
+        source = inspect.getsource(indexer)
+        calls = re.findall(
+            r"_remote_pdf_to_markdown\((.*?)\n\s*\)", source, flags=re.DOTALL
+        )
+        assert calls, "indexer.py must call _remote_pdf_to_markdown"
+        for call in calls:
+            assert "expected_script=expected_script" in call, (
+                "every _remote_pdf_to_markdown call in indexer.py must forward "
+                f"expected_script; offending call args: {call!r}"
+            )
+
+
+class TestRemoteDoclingVersionEnforcement:
+    """``REMOTE_VERSION_ENFORCE`` upgrades the pipeline_version skew check from
+    advisory to blocking, so a stale remote converter cannot silently produce
+    trees stamped with the local pipeline version."""
+
+    @staticmethod
+    def _stale_client():
+        return _CapturingDoclingAsyncClient(
+            version_data={"commit_sha": "unknown", "pipeline_version": 0}
+        )
+
+    @staticmethod
+    def _current_client():
+        from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
+
+        return _CapturingDoclingAsyncClient(
+            version_data={
+                "commit_sha": "unknown",
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_when_stale_and_enforce_true(self):
+        from pageindex_mcp.client.remote import _check_remote_docling_version
+        from pageindex_mcp.config import RemoteVersionSkewError
+
+        with _patched_remote_config(remote_version_enforce=True):
+            with pytest.raises(RemoteVersionSkewError, match="REMOTE_VERSION_ENFORCE"):
+                await _check_remote_docling_version(self._stale_client())
+
+    @pytest.mark.asyncio
+    async def test_enforce_blocks_every_call_not_just_the_fetching_one(self):
+        """The /version response is cached after the first fetch, so the block
+        must be re-evaluated per call -- otherwise only the first conversion of
+        the process is gated and every later one slips through."""
+        from pageindex_mcp.client.remote import _check_remote_docling_version
+        from pageindex_mcp.config import RemoteVersionSkewError
+
+        client = self._stale_client()
+        with _patched_remote_config(remote_version_enforce=True):
+            with pytest.raises(RemoteVersionSkewError):
+                await _check_remote_docling_version(client)
+            # Second call: cache is warm, no new fetch, but still blocked.
+            with pytest.raises(RemoteVersionSkewError):
+                await _check_remote_docling_version(client)
+
+    @pytest.mark.asyncio
+    async def test_no_raise_when_remote_is_current_and_enforce_true(self):
+        from pageindex_mcp.client.remote import _check_remote_docling_version
+
+        with _patched_remote_config(remote_version_enforce=True):
+            await _check_remote_docling_version(self._current_client())
+
+    @pytest.mark.asyncio
+    async def test_unreachable_version_endpoint_stays_warn_only_under_enforce(self):
+        """A /version fetch failure never sets the skew flag, so enforce mode
+        must not turn an unreachable endpoint into a hard block."""
+        from pageindex_mcp.client import remote as remote_module
+        from pageindex_mcp.client.remote import _check_remote_docling_version
+
+        broken = MagicMock()
+        broken.get = AsyncMock(side_effect=RuntimeError("connection refused"))
+        with _patched_remote_config(remote_version_enforce=True):
+            await _check_remote_docling_version(broken)
+        assert remote_module._remote_pipeline_version_behind is None
+
+    @pytest.mark.asyncio
+    async def test_warns_only_when_enforce_false(self, caplog):
+        """Regression: the default (enforce=False) path is byte-identical
+        warn-only behavior -- skew is logged and metricked, never raised."""
+        import logging
+
+        from pageindex_mcp.client import remote as remote_module
+        from pageindex_mcp.client.remote import _check_remote_docling_version
+
+        with _patched_remote_config(remote_version_enforce=False):
+            with caplog.at_level(logging.ERROR, logger="pageindex_mcp.client.remote"):
+                await _check_remote_docling_version(self._stale_client())
+
+        assert remote_module._remote_pipeline_version_behind == 0, (
+            "warn-only mode must still observe and record the skew"
+        )
+        assert any(
+            "pipeline_version" in rec.message or "pipeline_version" in rec.getMessage()
+            for rec in caplog.records
+        ), "warn-only mode must log the pipeline_version skew"
+
+    @pytest.mark.asyncio
+    async def test_default_config_is_warn_only(self):
+        """The shipped default for remote_version_enforce is False."""
+        from pageindex_mcp.client.remote import _check_remote_docling_version
+        from pageindex_mcp.config import pipeline_config
+
+        assert pipeline_config.remote_version_enforce is False
+        # No patching: exercise the real, unpatched config.
+        await _check_remote_docling_version(self._stale_client())

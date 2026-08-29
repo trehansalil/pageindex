@@ -92,13 +92,22 @@ class TestEffectiveConfigSnapshot:
             "rfc029_flat_prefer_multiplier",
             "rfc029_min_chars_per_node",
             "verdict_downgrade_enabled",
+            # Verdict-gate thresholds (VG-2/3/4): joined the sidecar snapshot
+            # so a stored verdict can be explained from its own sidecar.
+            "hard_fail_max_leaf_ratio",
+            "cat_a_max_leaf_ratio",
+            "cat_a_max_ocr_noise",
+            "small_doc_min_chars",
+            "small_doc_max_chars",
+            "small_doc_leaf_ratio_bound_low",
+            "small_doc_leaf_ratio_bound_high",
         }
 
         assert set(snap.keys()) == expected_keys, (
             f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
             f"  Extra:   {set(snap.keys()) - expected_keys}"
         )
-        assert len(snap) == 29
+        assert len(snap) == 36
 
         assert isinstance(snap["pipeline_version"], int)
         for fk in (
@@ -124,6 +133,13 @@ class TestEffectiveConfigSnapshot:
             "low_content_ocr_char_floor",
             "rfc029_flat_prefer_multiplier",
             "rfc029_min_chars_per_node",
+            "hard_fail_max_leaf_ratio",
+            "cat_a_max_leaf_ratio",
+            "cat_a_max_ocr_noise",
+            "small_doc_min_chars",
+            "small_doc_max_chars",
+            "small_doc_leaf_ratio_bound_low",
+            "small_doc_leaf_ratio_bound_high",
         }
         for bk in bool_keys:
             assert isinstance(snap[bk], bool), f"{bk} should be bool, got {type(snap[bk])}"
