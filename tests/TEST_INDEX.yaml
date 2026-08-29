@@ -219,6 +219,7 @@ mappings:
       - test_rfc_quality.py
       - test_rfc_registry.py
       - test_gates.py
+      - test_hr3_zdr_egress.py
       - test_staging_e2e.py
       - test_storage.py
       - test_converters_pipeline.py
@@ -347,6 +348,7 @@ mappings:
       - test_rfc_reorder.py
       - test_rfc_tables.py
       - test_storage.py
+      - test_zone4_measurement.py
 
   helpers/garble.py:
     tests:
@@ -437,6 +439,7 @@ mappings:
       - test_rfc_quality.py
       - test_rfc_tables.py
       - test_gates.py
+      - test_zone4_measurement.py
 
   helpers/rag.py:
     tests:
