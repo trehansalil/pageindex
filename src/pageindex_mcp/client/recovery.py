@@ -14,6 +14,7 @@ from ..config import (
     settings,
 )
 from ..converters import (
+    TessdataUnavailableError,
     detect_ocr_langs,
     ensure_tessdata,
     pdf_to_markdown_docling,
@@ -270,7 +271,15 @@ class RecoveryMixin:
                 for lg in src:
                     if lg not in escalation_langs:
                         escalation_langs.append(lg)
-            langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
+            try:
+                langs = await asyncio.to_thread(ensure_tessdata, escalation_langs)
+            except TessdataUnavailableError:
+                langs = ["deu", "eng"]
+                logger.warning(
+                    "tessdata unavailable for %s (detected %s); "
+                    "degrading to %s — pre-bake traineddata in worker image",
+                    filename, escalation_langs, langs,
+                )
 
             logger.warning(
                 "%s on %s; escalating to force_full_page_ocr (lang=%s)",

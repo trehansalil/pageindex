@@ -35,7 +35,7 @@ from ..picture_plane import (
 from ..script import RtlDecision, ScriptContext
 from .headings import _heading_count
 from .ocr_langs import detect_ocr_langs, ensure_tessdata
-from .types import PictureResult
+from .types import PictureResult, TessdataUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -1094,7 +1094,15 @@ def _recover_picture_results(  # noqa: PLR0913
             for lg in src:
                 if lg not in lang_sources:
                     lang_sources.append(lg)
-        langs = ensure_tessdata(lang_sources)
+        try:
+            langs = ensure_tessdata(lang_sources)
+        except TessdataUnavailableError:
+            langs = ["deu", "eng"]
+            logger.warning(
+                "tessdata unavailable for %s (detected %s); "
+                "degrading to %s — pre-bake traineddata in worker image",
+                filename, lang_sources, langs,
+            )
         recovered, skip_reasons = _recover_picture_text(
             pdf_path,
             regions,
