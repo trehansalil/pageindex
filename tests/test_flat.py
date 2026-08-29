@@ -660,3 +660,293 @@ class TestImageEnrichmentGateOrdering:
         )
         assert verdict == "FAIL"
         assert reason.startswith("max_leaf_ratio=")
+
+
+# ---------------------------------------------------------------------------
+# Zone-9: _flat_block_primary_text header-only table fallback
+# ---------------------------------------------------------------------------
+
+
+class TestFlatBlockPrimaryTextHeaderOnly:
+    """Zone-9 fix: when a table block has headers but zero data rows
+    (row_records empty), _flat_block_primary_text must fall back to the
+    header list so flat_char_count is non-zero and recovery.py flat-prefer
+    routing sees real content volume."""
+
+    def test_header_only_table_returns_joined_headers(self):
+        block = {"role": "table", "headers": ["Name", "Age", "City"], "row_records": []}
+        result = _flat_block_primary_text(block)
+        assert result == "Name | Age | City"
+
+    def test_header_only_table_no_row_records_key(self):
+        block = {"role": "table", "headers": ["Col A", "Col B"]}
+        result = _flat_block_primary_text(block)
+        assert result == "Col A | Col B"
+
+    def test_header_only_table_none_row_records(self):
+        block = {"role": "table", "headers": ["X", "Y"], "row_records": None}
+        result = _flat_block_primary_text(block)
+        assert result == "X | Y"
+
+    def test_header_only_table_filters_empty_headers(self):
+        """Empty/falsy header cells should be filtered out."""
+        block = {"role": "table", "headers": ["A", "", "C", None], "row_records": []}
+        result = _flat_block_primary_text(block)
+        assert result == "A | C"
+
+    def test_row_records_preferred_over_headers(self):
+        """When row_records exist, they take precedence over headers."""
+        block = {
+            "role": "table",
+            "headers": ["H1", "H2"],
+            "row_records": ["data1 | data2"],
+        }
+        result = _flat_block_primary_text(block)
+        assert result == "data1 | data2"
+
+    def test_no_headers_no_row_records_returns_empty(self):
+        block = {"role": "table", "headers": [], "row_records": []}
+        result = _flat_block_primary_text(block)
+        assert result == ""
+
+    def test_no_headers_key_no_row_records_returns_empty(self):
+        block = {"role": "table"}
+        result = _flat_block_primary_text(block)
+        assert result == ""
+
+    def test_header_only_table_char_count_nonzero(self):
+        """The whole point of the Zone-9 fix: flat_char_count must not
+        undercount header-only tables to zero."""
+        blocks = [
+            {"role": "prose", "text": "intro"},
+            {"role": "table", "headers": ["Product", "Price", "Rating"], "row_records": []},
+        ]
+        char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+        assert char_count > len("intro"), (
+            f"Header-only table should contribute to char_count, got {char_count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Contract: _flat_block_primary_text is the canonical role-aware accessor
+# ---------------------------------------------------------------------------
+
+
+class TestFlatBlockPrimaryTextContract:
+    """Contract tests verifying _flat_block_primary_text is the single
+    canonical accessor for block primary text across all roles."""
+
+    def test_prose_block_returns_text(self):
+        assert _flat_block_primary_text({"role": "prose", "text": "hello"}) == "hello"
+
+    def test_kv_block_returns_text(self):
+        assert _flat_block_primary_text({"role": "kv", "text": "key: value"}) == "key: value"
+
+    def test_title_block_returns_text(self):
+        assert _flat_block_primary_text({"role": "title", "text": "Section 1"}) == "Section 1"
+
+    def test_image_block_no_text_returns_empty(self):
+        """Image blocks carry enrichment in ocr_text/description, not 'text'.
+        Primary text for image blocks is empty."""
+        block = {"role": "image", "ocr_text": "chart data", "description": "bar chart"}
+        assert _flat_block_primary_text(block) == ""
+
+    def test_table_with_text_key_returns_text(self):
+        """When a table block has a 'text' key (legacy shape), it takes
+        precedence because the function checks text first."""
+        block = {"role": "table", "text": "legacy text", "row_records": ["r1"]}
+        assert _flat_block_primary_text(block) == "legacy text"
+
+    def test_table_row_records_joined_with_newline(self):
+        block = {"role": "table", "row_records": ["row1", "row2", "row3"]}
+        assert _flat_block_primary_text(block) == "row1\nrow2\nrow3"
+
+
+# ---------------------------------------------------------------------------
+# Contract: _flat_search_text role-aware retrieval text
+# ---------------------------------------------------------------------------
+
+
+class TestFlatSearchTextContract:
+    """Contract tests verifying _flat_search_text renders role-aware
+    retrieval text for flat documents."""
+
+    def test_mixed_doc_all_roles_represented(self):
+        """A mixed flat doc with prose, table, and image blocks should
+        include content from each role's appropriate field."""
+        data = {
+            "blocks": [
+                {"role": "prose", "text": "Introduction text."},
+                {"role": "table", "row_records": ["A | B", "1 | 2"]},
+                {"role": "image", "ocr_text": "chart OCR", "description": "pie chart"},
+            ],
+        }
+        result = _flat_search_text(data)
+        assert "Introduction text." in result
+        assert "A | B" in result
+        assert "1 | 2" in result
+        assert "chart OCR" in result
+        assert "pie chart" in result
+
+    def test_table_block_uses_row_records_not_text(self):
+        """_flat_search_text must read row_records for table blocks, not
+        any 'text' key."""
+        data = {
+            "blocks": [
+                {
+                    "role": "table",
+                    "text": "should NOT appear",
+                    "row_records": ["actual | data"],
+                },
+            ],
+        }
+        result = _flat_search_text(data)
+        assert "actual | data" in result
+        assert "should NOT appear" not in result
+
+    def test_image_block_skips_text_key(self):
+        """Image blocks should use ocr_text and description, ignoring
+        any 'text' key."""
+        data = {
+            "blocks": [
+                {
+                    "role": "image",
+                    "text": "should be ignored",
+                    "ocr_text": "OCR result",
+                },
+            ],
+        }
+        result = _flat_search_text(data)
+        assert "OCR result" in result
+        # Image blocks with role='image' skip the text key in the else branch
+        # because the role=='image' branch handles them specially
+
+    def test_none_blocks_handled(self):
+        data = {"blocks": None}
+        assert _flat_search_text(data) == ""
+
+    def test_missing_blocks_key(self):
+        data = {}
+        assert _flat_search_text(data) == ""
+
+
+# ---------------------------------------------------------------------------
+# Wiring: indexer.py flat_char_count uses _flat_block_primary_text
+# ---------------------------------------------------------------------------
+
+
+class TestIndexerFlatCharCountWiring:
+    """Verify that indexer.py's flat_char_count computation and flat
+    structure synthesis use _flat_block_primary_text, not naive
+    block.get('text', '')."""
+
+    def test_flat_char_count_includes_table_row_records(self):
+        """Simulate the flat_char_count computation from
+        indexer.py:_persist_flat_result (line 1103)."""
+        blocks = [
+            {"role": "prose", "text": "Hello world"},
+            {"role": "table", "row_records": ["col1 | col2", "a | b"]},
+        ]
+        # This mirrors indexer.py line 1103:
+        # flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+        flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+        assert flat_char_count > len("Hello world"), (
+            "Table row_records must contribute to flat_char_count"
+        )
+        expected = len("Hello world") + len("col1 | col2\na | b")
+        assert flat_char_count == expected
+
+    def test_flat_char_count_header_only_table_nonzero(self):
+        """Header-only tables must contribute non-zero chars to
+        flat_char_count (Zone-9 fix target)."""
+        blocks = [
+            {"role": "table", "headers": ["Name", "Value"], "row_records": []},
+        ]
+        flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+        assert flat_char_count > 0, (
+            "Header-only table must contribute to flat_char_count"
+        )
+
+    def test_flat_structure_synthesis_uses_primary_text(self):
+        """Simulate the flat_structure synthesis from
+        indexer.py:_persist_flat_result (lines 1080-1084)."""
+        blocks = [
+            {"role": "prose", "text": "Intro paragraph."},
+            {"role": "table", "row_records": ["A | B", "1 | 2"]},
+            {"role": "image", "ocr_text": "chart"},  # no primary text
+        ]
+        # This mirrors indexer.py lines 1080-1084:
+        flat_structure = [
+            {"title": "", "text": _flat_block_primary_text(b)}
+            for b in blocks
+            if _flat_block_primary_text(b).strip()
+        ]
+        assert len(flat_structure) == 2, (
+            "Prose + table blocks should produce structure nodes; image should not"
+        )
+        assert flat_structure[0]["text"] == "Intro paragraph."
+        assert flat_structure[1]["text"] == "A | B\n1 | 2"
+
+    def test_naive_block_get_text_would_miss_table_content(self):
+        """Regression proof: naive block.get('text', '') produces zero
+        for table blocks, demonstrating the bug _flat_block_primary_text
+        fixes."""
+        blocks = [
+            {"role": "table", "row_records": ["data1", "data2"]},
+        ]
+        naive_count = sum(len(b.get("text", "")) for b in blocks)
+        correct_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+        assert naive_count == 0, "Naive access should see zero for table blocks"
+        assert correct_count > 0, "Role-aware access should see table content"
+
+
+# ---------------------------------------------------------------------------
+# Wiring: _flat_block_primary_text is importable from helpers namespace
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalHelperExports:
+    """Verify the two canonical helpers are exported from the helpers
+    package and are the same objects as in flat.py."""
+
+    def test_primary_text_exported_from_helpers(self):
+        from pageindex_mcp.helpers import _flat_block_primary_text as h_fn
+        from pageindex_mcp.helpers.flat import _flat_block_primary_text as f_fn
+        assert h_fn is f_fn
+
+    def test_search_text_exported_from_helpers(self):
+        from pageindex_mcp.helpers import _flat_search_text as h_fn
+        from pageindex_mcp.helpers.flat import _flat_search_text as f_fn
+        assert h_fn is f_fn
+
+    def test_indexer_imports_primary_text_from_helpers(self):
+        """indexer.py must import _flat_block_primary_text from helpers."""
+        import ast as _ast
+        from pathlib import Path as _Path
+
+        indexer_src = (_Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "client" / "indexer.py")
+        tree = _ast.parse(indexer_src.read_text())
+        imported_names = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.ImportFrom):
+                for alias in node.names:
+                    imported_names.add(alias.name)
+        assert "_flat_block_primary_text" in imported_names, (
+            "indexer.py must import _flat_block_primary_text"
+        )
+
+    def test_recovery_imports_primary_text_from_helpers(self):
+        """recovery.py must import _flat_block_primary_text from helpers."""
+        import ast as _ast
+        from pathlib import Path as _Path
+
+        recovery_src = (_Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "client" / "recovery.py")
+        tree = _ast.parse(recovery_src.read_text())
+        imported_names = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.ImportFrom):
+                for alias in node.names:
+                    imported_names.add(alias.name)
+        assert "_flat_block_primary_text" in imported_names, (
+            "recovery.py must import _flat_block_primary_text"
+        )

@@ -115,7 +115,8 @@ mappings:
   storage/verdict.py:
     coverage_threshold: 90
     tests:
-      - test_storage.py           # primary
+      - test_storage.py               # primary
+      - test_registry.py
       - test_client.py
       - test_density_gate.py
       - test_documents_tools.py
@@ -440,6 +441,7 @@ mappings:
       - test_rfc_tables.py
       - test_gates.py
       - test_zone4_measurement.py
+      - test_no_naive_block_text.py    # cross-cutting AST guard
 
   helpers/rag.py:
     tests:
