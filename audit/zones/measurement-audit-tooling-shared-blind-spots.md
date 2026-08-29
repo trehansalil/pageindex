@@ -2,7 +2,7 @@
 zone_name: Measurement/Audit Tooling Shared Blind Spots
 severity: medium
 bug_count: 4
-status: improved
+status: regressed
 audit_date: 2026-08-28
 audit_run: POST-FIX-WAVE3
 audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-28_POST-FIX-WAVE3.md
@@ -17,8 +17,8 @@ tags:
   - measurement
   - blind-spot
 scorecard_verdict: regressed
-scorecard_date: 2026-08-28
-scorecard_run: POST-FIX-WAVE3
+scorecard_date: 2026-08-12
+scorecard_run: POST
 ---
 ## Mechanism
 

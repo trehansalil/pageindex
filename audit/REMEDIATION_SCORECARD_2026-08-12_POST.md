@@ -10,78 +10,75 @@ tags:
 aliases:
   - POST scorecard
   - 2026-08-12 scorecard
-pre_fix_audit: "[[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-24_POST-FIX-11]]"
+pre_fix_audit: "[[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-28_POST-FIX-WAVE3]]"
 post_fix_audit: "[[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST]]"
 delta_report: "[[ZONE_DELTA_2026-08-12_POST]]"
 verdict: REGRESSED
-net_bug_delta: +4
-bug_count_prior: 48
-bug_count_current: 52
-zones_closed: 3
-zones_regressed: 4
-zones_improved: 1
-zones_new: 2
+net_bug_delta: -3
+bug_count_prior: 52
+bug_count_current: 49
+zones_closed: 1
+zones_regressed: 2
+zones_improved: 3
+zones_stalled: 2
+zones_new: 0
 ---
 
 # Remediation Scorecard — POST (2026-08-12)
 
-**Pre-fix audit:** [[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-24_POST-FIX-11]]
-**Post-fix audit:** [[ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST]]
-**Delta report:** [[ZONE_DELTA_2026-08-12_POST]]
+**Pre-fix audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-28_POST-FIX-WAVE3.md
+**Post-fix audit:** audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST.md
+**Delta report:** audit/ZONE_DELTA_2026-08-12_POST.md
 
 ## Verdict: REGRESSED
 
-4 of 5 matched zones regressed with 3 escalating to critical severity; 2 new zones surfaced; net +4 bugs (48 to 52). Three zones closed (25 bugs eliminated) but gains offset by 14 new-zone bugs and regression growth across Garble Detection Fragmentation, OCR Strategy Bifurcation, and Verdict Promotion stacks. Only validate_tree Reason-String Dispatch improved (-3 bugs).
+This scorecard marks a reversal of progress. While one defect zone was closed (Bidi/RTL Processing Split, eliminating 3 bugs) and three zones improved their bug counts, two zones **regressed** (Verdict-Gate Cascade and Measurement/Audit Blind Spots), and two remain stalled despite prior remediation cycles. The Verdict-Gate Cascade is the most concerning: it has cycled through repeated fixes without the promised declarative PROMOTION_TABLE refactor being implemented, leaving prior bypasses intact and causing regressions to accumulate (11→5 in Run 20, 5→8 in Run 21, now 8→11). Measurement/Audit tooling escalated to high severity due to a self-reinforcing blind spot in block.get('text','') that prevents audits from catching pipeline errors. A critical wiring gap in validate_erasure_manifest (import-time only, never called before erasure) leaves data-deletion compliance unverified at runtime.
 
-## Zones Closed (3)
+## Zones Closed (1)
 
-| Zone Name | Was Severity | Bugs Eliminated |
-|-----------|--------------|-----------------|
-| Tree-vs-Flat Gate Asymmetry | critical | 11 |
-| Pre-Tree Text Transforms vs Table/Block Integrity | critical | 9 |
-| HR3 PII Egress Gap (Docling + VLM Silent Degradation) | medium | 5 |
+| Name | Was Severity | Bugs Eliminated |
+|---|---|---|
+| Bidi/RTL Processing Split (Local vs. Remote) | High | 3 |
 
-## Zones Remaining (5)
+## Zones Remaining (7)
 
-| Zone Name | Severity | Bug Count | Status |
-|-----------|----------|-----------|--------|
-| Garble Detection Fragmentation | critical | 14 | regressed |
-| OCR Strategy Bifurcation | critical | 12 | regressed |
-| Verdict Promotion / Quality Gate Stack | critical | 11 | regressed |
-| God-Function Orchestration with Duplicated Divergent Logic | high | 8 | regressed |
-| validate_tree Reason-String Dispatch | high | 7 | improved |
+| Name | Severity | Bug Count | Status |
+|---|---|---|---|
+| Verdict-Gate Cascade (Threshold / Promotion / Override) | Critical | 11 | Regressed |
+| Garble Detection Kernel / Cross-Cutting Kernel | Critical | 7 | Stalled |
+| OCR Recovery Cascade (and Kill-Switch Conflation) | High | 5 | Improved |
+| Converter Pipeline / Chain Fallback and AGPL Gating | High | 3 | Improved |
+| Dual-Writer Verdict Persistence / Dual-Write Consistency Model | High | 3 | Improved |
+| Erasure Cascade (Manually-Maintained Manifest / Storage Consistency Drift) | Medium | 2 | Stalled |
+| Measurement/Audit Tooling Shared Blind Spots | High | 4 | Regressed |
 
-## New Zones (2)
+## New Zones (0)
 
-| Zone Name | Severity | Introduced By |
-|-----------|----------|---------------|
-| Multi-Store Dual-Write Consistency | high | Consolidation of prior dual-CAS and persistence-timing findings into distinct zone; findings span RFC-002 through Run 19 write-barrier regressions |
-| Config Layering Split and Dead-Code Accumulation | medium | Audit scope expansion surfaced config-path bugs (`GarbleConfig.from_config` hardcodes `garble_digit_floor=500` at `src/pageindex_mcp/helpers/garble.py:463`, `ALLOW_AGPL_FALLBACK` frozen at import time `src/pageindex_mcp/config.py:38`) and historical dead-code entries now partially resolved by RFC-038/039 |
+(None)
 
 ## Metrics
 
-- **Net bug delta:** +4 (48 → 52)
-- **Wiring status:** all_wired
-- **Unwired symbols:** none
+- **Net bug delta:** -3 (closed: 1, improved: 3, regressed: 2, stalled: 2, new: 0)
+- **Wiring status:** partially_wired
+- **Unwired symbols:**
+  - `validate_erasure_manifest (src/pageindex_mcp/storage/documents.py:644-678)` — import-time only, no runtime callers before erasure operations execute
 
 ## Recommended Next Steps
 
-**VERDICT: REGRESSED.** 4 of 5 matched zones regressed (3 escalated to critical), 2 new zones surfaced, net +4 bugs (48 to 52). Only validate_tree Reason-String Dispatch improved (-3 bugs). 3 zones closed (25 bugs eliminated) but offset by 14 new-zone bugs and regression growth.
+**Priority 1: Verdict-Gate Cascade REGRESSED from 8 to 11 bugs**  
+This is a **CHRONIC zone** (Run 20 improved 11→5, Run 21 regressed 5→8, now 8→11). The declarative PROMOTION_TABLE refactor was never implemented across three cycles. Execute the simplification proposal: collapse `apply_promotions` into a single deterministic table pass, route `source_selection` through `_clamp_pass`, and add priority field to `GATE_TABLE`. This is the single highest-leverage fix and blocks most downstream zone remediation.
 
-### Chronic Pattern
+**Priority 2: Measurement/Audit Blind Spots SEVERITY ESCALATED medium→high**  
+The self-reinforcing `block.get('text','')` blind spot shared by pipeline and audit tooling means measurement cannot catch its own errors. Extract `count_block_chars` as a shared function in a utility module (2-day effort, low risk, high confidence). This unblocks accurate auditing of zones 4–6.
 
-This is the 12th scorecard; only 1 of 12 achieved CYCLE_COMPLETE (the 2026-08-17 run that dropped 64 to 48). Bug trajectory since: 48 → 53 → 53 → 66 → 77 → 52 (current). The codebase is accumulating diagnosis faster than it ships fixes. Four detailed simplification proposals with time estimates exist but ZERO implementations have landed across all of them.
+**Priority 3: Wire validate_erasure_manifest to runtime erasure path (Zone 7 critical wiring gap)**  
+Currently only fires at module import, not before erasure operations. A 5–10 line routing fix places the call in the erasure path handler. This closes the compliance risk where deletion requests are never validated before committing to storage.
 
-### Priority Actions
+**Priority 4: Garble Detection Kernel STALLED at 7 bugs across two cycles**  
+No simplification proposal was previously on record. The new proposal (explicit `min_reliable_length` parameter, merged digit-ratio prongs) should be scheduled **after** Verdict-Gate lands, since garble detection feeds into verdict evaluation.
 
-1. **STOP FURTHER AUDIT CYCLES** until code lands. Each cycle surfaces more findings than it resolves, inflating bug count without convergence. The next action must be implementation, not diagnosis.
-
-2. **IMPLEMENT existing proposals for the 3 critical zones** — Garble Detection has stalled 6+ consecutive cycles since RFC-013 D7 with zero code landed despite proposals; ScriptContext threading (estimated 6–10 hrs) is the single highest-leverage fix.
-
-3. **Address Verdict Promotion gate-ordering bugs** (QF2a unreachable, synthetic structure PASS) — these are narrow code fixes to `apply_promotions()` sequencing, not architectural changes.
-
-4. **OCR Strategy Bifurcation** needs the RegionMetadata/splice_figure_markers proposal (estimated 3–4 days) to structurally resolve the tree-path-never-calls-splice gap.
-
-5. **The 2 new zones** (Multi-Store Dual-Write Consistency, Config Layering) should be addressed as part of existing proposals rather than new RFC tracks — Multi-Store overlaps with RFC-037 verdict CAS work, Config Layering is cleanup.
-
-6. **Wiring is healthy** (all RFC-037/038/039 symbols confirmed wired via CodeGraph + grep), so the regression is in detection/logic correctness, not in plumbing — fixes must target algorithm calibration and gate ordering, not more wiring.
+**Sequencing note:** Do NOT attempt all zones in parallel. Past cycles prove partial implementations that leave prior bypasses intact cause regressions. Implement in order:
+1. Verdict-Gate (blocks most other zones)
+2. Measurement/Audit (independent, low risk)
+3. Erasure wiring (5–10 line fix)
+4. Garble Kernel (depends on Verdict-Gate gate table changes)

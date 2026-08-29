@@ -2,7 +2,7 @@
 zone_name: Bidi/RTL Processing Split (Local vs. Remote)
 severity: high
 bug_count: 3
-status: stalled
+status: closed
 audit_date: 2026-08-28
 audit_run: POST-FIX-WAVE3
 audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-28_POST-FIX-WAVE3.md
@@ -18,8 +18,8 @@ tags:
   - rtl
   - local-remote-divergence
 scorecard_verdict: regressed
-scorecard_date: 2026-08-28
-scorecard_run: POST-FIX-WAVE3
+scorecard_date: 2026-08-12
+scorecard_run: POST
 ---
 ## Mechanism
 

@@ -3,13 +3,16 @@ zone_name: OCR Recovery Cascade and Kill-Switch Conflation
 severity: high
 wave: 3
 priority: 3
-status: triaged
+status: improved
 audit_date: 2026-08-28
 audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-28_POST-FIX-WAVE3.md
 tags:
   - zone-spec
   - high
   - wave-3
+scorecard_verdict: regressed
+scorecard_date: 2026-08-12
+scorecard_run: POST
 ---
 ## Mechanism to Eliminate
 
