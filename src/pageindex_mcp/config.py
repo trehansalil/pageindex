@@ -426,6 +426,18 @@ class PipelineConfig:
     # silently persist a low-quality tree).
     min_marginal_chars: int
 
+    # --- Verdict-gate thresholds (Zone "verdict-gate cascade", VG-2/3/4) -----
+    # Previously hardcoded as literals inside VerdictThresholds.from_config and
+    # the promotion helpers.  Sourced from env here so every verdict-gate knob
+    # has exactly one owner and appears in the effective-config snapshot.
+    hard_fail_max_leaf_ratio: float
+    cat_a_max_leaf_ratio: float
+    cat_a_max_ocr_noise: float
+    small_doc_min_chars: int
+    small_doc_max_chars: int
+    small_doc_leaf_ratio_bound_low: float
+    small_doc_leaf_ratio_bound_high: float
+
     @classmethod
     def from_env(cls) -> "PipelineConfig":
         """Read all pipeline-behavior env vars once and return a frozen snapshot."""
@@ -526,6 +538,21 @@ class PipelineConfig:
                 os.environ.get("RFC036_SINGLETON_RATIO_LANDSCAPE", "0.4")
             ),
             min_marginal_chars=int(os.environ.get("MIN_MARGINAL_CHARS", "50")),
+            # Verdict-gate thresholds (VG-2/3/4).  Defaults reproduce the
+            # literals they replaced exactly, so the change is behavior-neutral.
+            hard_fail_max_leaf_ratio=float(
+                os.environ.get("HARD_FAIL_MAX_LEAF_RATIO", "0.75")
+            ),
+            cat_a_max_leaf_ratio=float(os.environ.get("CAT_A_MAX_LEAF_RATIO", "0.15")),
+            cat_a_max_ocr_noise=float(os.environ.get("CAT_A_MAX_OCR_NOISE", "0.005")),
+            small_doc_min_chars=int(os.environ.get("SMALL_DOC_MIN_CHARS", "100")),
+            small_doc_max_chars=int(os.environ.get("SMALL_DOC_MAX_CHARS", "15000")),
+            small_doc_leaf_ratio_bound_low=float(
+                os.environ.get("SMALL_DOC_LEAF_RATIO_BOUND_LOW", "0.20")
+            ),
+            small_doc_leaf_ratio_bound_high=float(
+                os.environ.get("SMALL_DOC_LEAF_RATIO_BOUND_HIGH", "0.40")
+            ),
         )
 
 
@@ -549,6 +576,28 @@ IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escal
 assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.leaf_split_ratio, (
     f"PASS_MAX_LEAF_RATIO ({pipeline_config.pass_max_leaf_ratio}) must be "
     f"<= LEAF_SPLIT_RATIO ({pipeline_config.leaf_split_ratio})"
+)
+
+# Import-time assertion (VG-4): the direct-PASS ceiling must never exceed the
+# unconditional hard-fail ceiling, otherwise the D1 gate in apply_promotions
+# would fire before the structural-PASS path could ever be reached.
+assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.hard_fail_max_leaf_ratio, (
+    f"PASS_MAX_LEAF_RATIO ({pipeline_config.pass_max_leaf_ratio}) must be "
+    f"<= HARD_FAIL_MAX_LEAF_RATIO ({pipeline_config.hard_fail_max_leaf_ratio})"
+)
+
+# Import-time assertion (VG-3): the small-doc lower char bound must not fall
+# below the content-volume floor, or _try_small_doc could promote a document
+# that apply_promotions has already FAILed for insufficient content.
+assert pipeline_config.small_doc_min_chars >= pipeline_config.min_marginal_chars, (
+    f"SMALL_DOC_MIN_CHARS ({pipeline_config.small_doc_min_chars}) must be "
+    f">= MIN_MARGINAL_CHARS ({pipeline_config.min_marginal_chars})"
+)
+
+# Import-time assertion (VG-3): the small-doc window must be non-empty.
+assert pipeline_config.small_doc_min_chars < pipeline_config.small_doc_max_chars, (
+    f"SMALL_DOC_MIN_CHARS ({pipeline_config.small_doc_min_chars}) must be "
+    f"< SMALL_DOC_MAX_CHARS ({pipeline_config.small_doc_max_chars})"
 )
 
 
@@ -602,8 +651,9 @@ def effective_config_snapshot() -> dict:
     """Snapshot the pipeline-behavior flags for sidecar persistence.
 
     Now a thin wrapper around ``dataclasses.asdict(pipeline_config)``,
-    filtered to the original 25 sidecar-schema fields so the meta.json
-    shape is byte-identical to prior versions.
+    filtered to the sidecar-schema field set below.  The set is additive:
+    the verdict-gate thresholds (VG-2/3/4) joined it so that a stored
+    verdict can be explained from its own sidecar.
     """
     # The sidecar schema (meta.json version 4) expects exactly these keys.
     # PipelineConfig has additional fields (VerdictThresholds, module-level
@@ -642,6 +692,16 @@ def effective_config_snapshot() -> dict:
             "rfc029_flat_prefer_multiplier",
             "rfc029_min_chars_per_node",
             "verdict_downgrade_enabled",
+            # Verdict-gate thresholds (VG-2/3/4) — previously hardcoded
+            # literals, now env-sourced and therefore part of the audit
+            # trail that explains a stored verdict.
+            "hard_fail_max_leaf_ratio",
+            "cat_a_max_leaf_ratio",
+            "cat_a_max_ocr_noise",
+            "small_doc_min_chars",
+            "small_doc_max_chars",
+            "small_doc_leaf_ratio_bound_low",
+            "small_doc_leaf_ratio_bound_high",
         }
     )
     full = dataclasses.asdict(pipeline_config)

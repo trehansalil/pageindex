@@ -661,7 +661,7 @@ class TestInspectorClassThreading:
         structure = _flat_leaf_tree([20, 20, 20, 20, 20])
         verdict, reason = classify_verdict(structure, "", None, inspector_class="text_based")
         assert verdict == "PASS"
-        assert reason in ("", "cat_c_promoted")
+        assert reason in ("structural_pass", "cat_c_promoted")
 
     def test_flat_mixed_content_class_takes_precedence_over_inspector_class(self):
         """content_class='flat_mixed' with inspector_class='text_based':
@@ -672,7 +672,7 @@ class TestInspectorClassThreading:
             structure, "flat_mixed", None, inspector_class="text_based"
         )
         assert verdict == "PASS"
-        assert reason in ("", "cat_b_promoted")
+        assert reason in ("structural_pass", "cat_b_promoted")
 
     def test_empty_content_class_cat_c_threshold_boundary(self):
         """Positive and negative boundary checks combined, both with
@@ -687,7 +687,7 @@ class TestInspectorClassThreading:
         structure_below = _flat_leaf_tree([20] * 7)
         verdict, reason = classify_verdict(structure_below, "", None)
         assert verdict == "PASS"
-        assert reason in ("", "cat_c_promoted")
+        assert reason in ("structural_pass", "cat_c_promoted")
 
         structure_boundary = _flat_leaf_tree([20] * 5)
         sig = TreeSignals.from_tree(structure_boundary, garble_threshold=0.15)

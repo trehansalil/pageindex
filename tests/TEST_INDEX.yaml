@@ -226,6 +226,7 @@ mappings:
       - test_hr3_zdr_egress.py
       - test_garble.py
       - test_recovery.py
+      - test_zone1_verdict_partition.py
 
   converters/types.py:
     tests:
@@ -323,6 +324,7 @@ mappings:
       - test_rfc_quality.py
       - test_helpers_combined.py
       - test_inspector.py
+      - test_zone1_verdict_partition.py
 
   helpers/tree_validation.py:
     tests:
@@ -340,6 +342,7 @@ mappings:
       - test_flat.py
       - test_inspector.py
       - test_rfc_quality.py
+      - test_zone1_verdict_partition.py
       - test_rfc_registry.py
       - test_rfc_reorder.py
       - test_rfc_tables.py
@@ -379,6 +382,7 @@ mappings:
   helpers/verdict.py:
     tests:
       - test_verdict.py       # primary
+      - test_zone1_verdict_partition.py  # golden promotion-partition table
       - test_client.py
       - test_converters.py
       - test_density_gate.py

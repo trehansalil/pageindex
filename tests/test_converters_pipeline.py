@@ -601,7 +601,7 @@ class TestClassifyVerdictPassMaxLeafRatio:
         (0.30), so this is the exact regression case D0 fixes."""
         monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
         structure = _tree_with_ratio(0.25)
-        assert classify_verdict(structure, "hierarchical", None) == ("PASS", "")
+        assert classify_verdict(structure, "hierarchical", None) == ("PASS", "structural_pass")
 
     def test_ratio_above_widened_default_stays_marginal(self, monkeypatch):
         """max_leaf_ratio=0.35 with default (unset) PASS_MAX_LEAF_RATIO=0.30 -> MARGINAL."""

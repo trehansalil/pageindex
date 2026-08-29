@@ -86,14 +86,21 @@ class VerdictResult:
     defect: TreeDefect = TreeDefect.OK
     signals: TreeSignals | None = None
     all_defects: frozenset[TreeDefect] = frozenset()
+    # VG-6 telemetry: every promotion path that matched, in evaluation order.
+    # ``promotion_paths_matched[0]`` is the winner whose reason became
+    # ``reason``; the remainder are paths that *would* also have promoted the
+    # document and are recorded so the ordering can be audited instead of
+    # inferred.  Empty when no promotion path fired (FAIL / MARGINAL / the
+    # image_standalone short-circuit).
+    promotion_paths_matched: tuple[str, ...] = ()
 
     def __iter__(self) -> Iterator[str]:
         """Yield ``(verdict, reason)`` for backward-compat tuple unpacking.
 
-        ``defect``, ``signals``, and ``all_defects`` are intentionally
-        excluded from iteration so that
-        ``verdict, reason = compute_verdict(...)`` keeps working at all
-        existing call sites.
+        ``defect``, ``signals``, ``all_defects``, and
+        ``promotion_paths_matched`` are intentionally excluded from
+        iteration so that ``verdict, reason = compute_verdict(...)`` keeps
+        working at all existing call sites.
         """
         yield self.verdict
         yield self.reason
@@ -413,6 +420,14 @@ class VerdictThresholds:
     # Documents below this floor FAIL regardless of promotion eligibility,
     # enforcing CLAUDE.md HR#5 (never silently persist a low-quality tree).
     min_marginal_chars: int = 50
+    # VG-2: OCR category-A promotion bounds, previously hardcoded inside
+    # ``_try_cat_a``.  Defaults reproduce the old literals exactly.
+    cat_a_max_leaf_ratio: float = 0.15
+    cat_a_max_ocr_noise: float = 0.005
+    # VG-3: small-doc stripped-text window, previously hardcoded inside
+    # ``_try_small_doc``.  Defaults reproduce the old literals exactly.
+    small_doc_min_chars: int = 100
+    small_doc_max_chars: int = 15000
 
     @classmethod
     def from_env(cls) -> VerdictThresholds:
@@ -425,16 +440,20 @@ class VerdictThresholds:
         from ..config import CATEGORY_BC_PROMOTION_THRESHOLD
 
         return cls(
-            hard_fail_max_leaf_ratio=0.75,
+            hard_fail_max_leaf_ratio=cfg.hard_fail_max_leaf_ratio,
             pass_max_leaf_ratio=cfg.pass_max_leaf_ratio,
             garble_threshold=cfg.garble_window_ratio_threshold,
             cat_bc_promotion_threshold=CATEGORY_BC_PROMOTION_THRESHOLD,
             min_image_promoted_chars=cfg.min_image_promoted_chars,
             min_flat_promotion_chars=cfg.min_flat_promotion_chars,
             small_doc_enabled=cfg.small_doc_promotion_enabled,
-            small_doc_leaf_ratio_bound_low=0.20,
-            small_doc_leaf_ratio_bound_high=0.40,
+            small_doc_leaf_ratio_bound_low=cfg.small_doc_leaf_ratio_bound_low,
+            small_doc_leaf_ratio_bound_high=cfg.small_doc_leaf_ratio_bound_high,
             min_marginal_chars=cfg.min_marginal_chars,
+            cat_a_max_leaf_ratio=cfg.cat_a_max_leaf_ratio,
+            cat_a_max_ocr_noise=cfg.cat_a_max_ocr_noise,
+            small_doc_min_chars=cfg.small_doc_min_chars,
+            small_doc_max_chars=cfg.small_doc_max_chars,
         )
 
 

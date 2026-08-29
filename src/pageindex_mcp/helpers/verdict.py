@@ -273,22 +273,41 @@ def _try_structural_pass(
     all_defects: frozenset[TreeDefect],
     th: VerdictThresholds,
 ) -> str | None:
-    """Direct PASS when structural metrics are clean."""
+    """Direct PASS when structural metrics are clean.
+
+    VG-5: returns the named reason ``"structural_pass"`` rather than the
+    empty string, so a PASS reached through this path is distinguishable in
+    logs and sidecars from a PASS carrying no reason at all.
+    """
     _structural_ok = {TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}.isdisjoint(all_defects)
     _effective_max_leaf = th.pass_max_leaf_ratio
     if _structural_ok and sig.max_leaf_ratio < _effective_max_leaf and not sig.effectively_garbled:
-        return ""
+        return "structural_pass"
     return None
 
 
 def _try_cat_a(
     sig: TreeSignals,
     content_class: str,
+    th: VerdictThresholds,
 ) -> str | None:
-    """OCR category-A promotion."""
+    """OCR category-A promotion.
+
+    VG-1: garbled documents are ineligible.  This was the only promotion
+    path missing the ``effectively_garbled`` guard that its five siblings
+    all carry, which let a garbled ``ocr_*`` document promote straight to
+    PASS in violation of CLAUDE.md HR#5.
+
+    VG-2: the leaf-ratio and OCR-noise bounds come from
+    :class:`VerdictThresholds` instead of inline literals.
+    """
     if not content_class.startswith("ocr_"):
         return None
-    if sig.max_leaf_ratio < 0.15 and ocr_noise_ratio(sig.flat_text) < 0.005:
+    if (
+        not sig.effectively_garbled
+        and sig.max_leaf_ratio < th.cat_a_max_leaf_ratio
+        and ocr_noise_ratio(sig.flat_text) < th.cat_a_max_ocr_noise
+    ):
         return "cat_a_promoted"
     return None
 
@@ -345,7 +364,12 @@ def _try_small_doc(
     content_class: str,
     th: VerdictThresholds,
 ) -> str | None:
-    """Small document promotion."""
+    """Small document promotion.
+
+    VG-3: the stripped-text window comes from :class:`VerdictThresholds`
+    (``small_doc_min_chars`` / ``small_doc_max_chars``) instead of the inline
+    literals 100 / 15000.
+    """
     if not th.small_doc_enabled:
         return None
     if not content_class.startswith("flat_"):
@@ -360,7 +384,7 @@ def _try_small_doc(
         and sig.node_count >= 1
         and sig.node_count <= 10
         and sig.max_leaf_ratio < _small_doc_leaf_ratio_bound
-        and 100 <= len(sig.flat_text.strip()) < 15000
+        and th.small_doc_min_chars <= len(sig.flat_text.strip()) < th.small_doc_max_chars
     ):
         return "small_doc_promoted"
     return None
@@ -404,6 +428,14 @@ def apply_promotions(
       - Content-volume floor (``th.min_marginal_chars``) gates all
         promotion and MARGINAL paths: documents below the floor FAIL
         regardless of structural metrics, enforcing CLAUDE.md HR#5.
+
+    Verdict-gate-cascade fixes:
+      - VG-6: the D2 pipeline evaluates every promotion path and reports
+        the full ordered match set via
+        ``VerdictResult.promotion_paths_matched``.  The winner is still the
+        first match, so the verdict is unchanged.
+      - VG-7: image-enrichment is evaluated once and shared by the D1
+        exception and the D2 pipeline, so the two can no longer diverge.
     """
     defect = outcome.defect
     sig = outcome.signals
@@ -431,6 +463,7 @@ def apply_promotions(
         reason: str,
         *,
         _is_image_enrichment: bool = False,
+        paths: tuple[str, ...] = (),
     ) -> VerdictResult:
         """Apply caps to a promoted verdict.
 
@@ -439,21 +472,43 @@ def apply_promotions(
         All other paths always flow through ``_clamp_pass`` so that
         bidi-degraded / depth-inadequacy caps are enforced uniformly,
         regardless of the ``source_selection`` flag.
+
+        VG-6: ``paths`` is the ordered tuple of every promotion path that
+        matched — telemetry only, it never influences the verdict.
         """
         if source_selection and _is_image_enrichment:
             return VerdictResult(
-                "PASS", reason, defect=defect, signals=sig, all_defects=_all_defects
+                "PASS",
+                reason,
+                defect=defect,
+                signals=sig,
+                all_defects=_all_defects,
+                promotion_paths_matched=paths,
             )
         _v, _r = _clamp_pass(reason, defect=defect, sig=sig)
-        return VerdictResult(_v, _r, defect=defect, signals=sig, all_defects=_all_defects)
+        return VerdictResult(
+            _v,
+            _r,
+            defect=defect,
+            signals=sig,
+            all_defects=_all_defects,
+            promotion_paths_matched=paths,
+        )
+
+    # VG-7: image-enrichment is evaluated exactly once and reused by both the
+    # D1 hard-fail exception and the D2 pipeline.  It used to be computed
+    # twice from two independent call sites, which is how the two copies
+    # could drift apart.
+    _ie = _try_image_enrichment(
+        sig, content_class, image_enrichment_ratio, th, expected_script, script_context
+    )
 
     # D1: Unconditional structural hard-fail gate
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
-        _ie = _try_image_enrichment(
-            sig, content_class, image_enrichment_ratio, th, expected_script, script_context
-        )
         if _ie is not None:
-            return _apply_clamp(_ie, _is_image_enrichment=True)
+            return _apply_clamp(
+                _ie, _is_image_enrichment=True, paths=("image_enrichment",)
+            )
         return VerdictResult(
             "FAIL",
             f"max_leaf_ratio={sig.max_leaf_ratio:.2f}",
@@ -462,32 +517,47 @@ def apply_promotions(
             all_defects=_all_defects,
         )
 
-    # D2: Ordered promotion pipeline — first match wins
-    _ie = _try_image_enrichment(
-        sig, content_class, image_enrichment_ratio, th, expected_script, script_context
-    )
+    # D2: Ordered promotion pipeline.
+    #
+    # VG-6: every path is now evaluated and each match recorded, instead of
+    # short-circuiting at the first one.  The *winner* is still the first
+    # match in source order, so the verdict, reason and clamping behaviour
+    # are byte-identical to the short-circuit version; the trailing entries
+    # are pure telemetry that make the priority ordering auditable rather
+    # than something a reader has to infer from control flow.  All six
+    # ``_try_*`` helpers are side-effect-free predicates, so evaluating them
+    # unconditionally is safe.
+    _matches: list[tuple[str, str]] = []
     if _ie is not None:
-        return _apply_clamp(_ie, _is_image_enrichment=True)
+        _matches.append(("image_enrichment", _ie))
 
     _sp = _try_structural_pass(sig, _all_defects, th)
     if _sp is not None:
-        return _apply_clamp(_sp)
+        _matches.append(("structural_pass", _sp))
 
-    _ca = _try_ocr_promotion(sig, content_class)
+    _ca = _try_ocr_promotion(sig, content_class, th)
     if _ca is not None:
-        return _apply_clamp(_ca)
+        _matches.append(("cat_a", _ca))
 
     _cb = _try_flat_promotion(sig, content_class, th)
     if _cb is not None:
-        return _apply_clamp(_cb)
+        _matches.append(("cat_b", _cb))
 
     _cc = _try_content_class_promotion(sig, content_class, inspector_class, th)
     if _cc is not None:
-        return _apply_clamp(_cc)
+        _matches.append(("cat_c", _cc))
 
     _sd = _try_small_doc_promotion(sig, content_class, th)
     if _sd is not None:
-        return _apply_clamp(_sd)
+        _matches.append(("small_doc", _sd))
+
+    if _matches:
+        _winner_name, _winner_reason = _matches[0]
+        return _apply_clamp(
+            _winner_reason,
+            _is_image_enrichment=_winner_name == "image_enrichment",
+            paths=tuple(_name for _name, _ in _matches),
+        )
 
     # Fallback: no promotion path fired → MARGINAL
     if sig.effectively_garbled:

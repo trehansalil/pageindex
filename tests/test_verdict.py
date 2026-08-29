@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import tempfile
+import textwrap
 from collections import Counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -233,7 +234,7 @@ class TestPromotions:
         tree = _make_tree([30] * 20, depth=1)
         verdict, reason = classify_verdict(tree, "flat_prose", None)
         assert verdict == "PASS"
-        assert reason in ("", "cat_b_promoted")
+        assert reason in ("structural_pass", "cat_b_promoted")
 
 
 class TestCaps:
@@ -263,7 +264,7 @@ class TestThresholdPromotion:
         tree = _make_tree_with_ratio(0.16)
         verdict, reason = classify_verdict(tree, "flat_prose", None)
         assert verdict == "PASS"
-        assert reason in ("", "cat_b_promoted")
+        assert reason in ("structural_pass", "cat_b_promoted")
 
 
 # ---------------------------------------------------------------------------
@@ -1142,18 +1143,18 @@ class TestTryStructuralPass:
 class TestTryCatA:
     def test_ocr_content_class_passes(self):
         sig = _make_sig(max_leaf_ratio=0.10, flat_text="clean text " * 200)
-        result = _try_cat_a(sig, "ocr_scanned")
+        result = _try_cat_a(sig, "ocr_scanned", _default_th())
         assert result is not None
         assert result == "cat_a_promoted"
 
     def test_non_ocr_content_class_returns_none(self):
         sig = _make_sig(max_leaf_ratio=0.10)
-        result = _try_cat_a(sig, "flat_prose")
+        result = _try_cat_a(sig, "flat_prose", _default_th())
         assert result is None
 
     def test_high_leaf_ratio_returns_none(self):
         sig = _make_sig(max_leaf_ratio=0.20)
-        result = _try_cat_a(sig, "ocr_scanned")
+        result = _try_cat_a(sig, "ocr_scanned", _default_th())
         assert result is None
 
 
@@ -1445,7 +1446,7 @@ class TestApplyPromotionsOrderedPipeline:
         outcome = _make_outcome(sig)
         result = apply_promotions(outcome, "flat_prose", None, None, _default_th(), None)
         assert result.verdict == "PASS"
-        assert result.reason == ""  # structural_pass has reason=""
+        assert result.reason == "structural_pass"  # VG-5: named reason
 
     def test_promotion_order_first_match_wins(self):
         """D2: doc eligible for both structural-pass and flat-promotion
@@ -1459,7 +1460,9 @@ class TestApplyPromotionsOrderedPipeline:
         outcome = _make_outcome(sig)
         result = apply_promotions(outcome, "flat_prose", None, None, _default_th(), None)
         assert result.verdict == "PASS"
-        assert result.reason == ""
+        assert result.reason == "structural_pass"  # VG-5: named reason
+        # VG-6: the shadowed paths are now visible in the match set.
+        assert result.promotion_paths_matched[0] == "structural_pass"
 
     def test_no_candidates_returns_marginal(self):
         """When no promotion path fires, the fallback is MARGINAL."""
@@ -1496,7 +1499,7 @@ class TestRFCRegressionFixtures:
         outcome = _make_outcome(sig)
         result = apply_promotions(outcome, "ocr_scanned", None, None, _default_th(), None)
         assert result.verdict == "PASS"
-        assert result.reason in ("cat_a_promoted", "")
+        assert result.reason in ("cat_a_promoted", "structural_pass")
 
     def test_rfc036_flat_cat_b_produces_pass(self):
         sig = _make_sig(
@@ -2814,3 +2817,235 @@ class TestSQLVerdictPriorityMapping:
 
         assert "EXCLUDED.verdict" in _UPSERT_SQL
         assert "doc_registry.verdict" in _UPSERT_SQL
+
+
+# ===========================================================================
+# Verdict-gate cascade VG-2/VG-3: promotion-eligibility literals are
+# threshold-sourced (exhaustiveness over the six _try_* bodies)
+# ===========================================================================
+
+
+class TestPromotionLiteralsAreThresholdSourced:
+    """Every *tunable* promotion-eligibility bound must come from
+    :class:`VerdictThresholds`, not from a bare literal in a ``_try_*`` body.
+
+    The guard is exhaustive over all six promotion helpers: it walks each
+    function's AST, collects every numeric constant that participates in a
+    comparison, and requires it to be listed in ``_STRUCTURAL_LITERALS``
+    below.  A newly introduced bare threshold therefore fails this test and
+    must either move into ``VerdictThresholds`` or be documented here as a
+    structural invariant.
+    """
+
+    _TRY_FUNCS = (
+        "_try_image_enrichment",
+        "_try_structural_pass",
+        "_try_cat_a",
+        "_try_cat_b",
+        "_try_cat_c",
+        "_try_small_doc",
+    )
+
+    # Numeric constants that are NOT tunable thresholds: they encode
+    # structural invariants of the tree/text model itself, so keeping them
+    # inline is deliberate.  Anything not in this map is a bare threshold.
+    _STRUCTURAL_LITERALS: dict[str, set[float]] = {
+        # 0.8 = image-enrichment completeness ratio (RFC-022 B2);
+        # 3 = the minimum node count that makes a tree a tree (RFC-040 D1).
+        "_try_image_enrichment": {0.8, 3},
+        "_try_structural_pass": set(),
+        # VG-2 emptied this one entirely.
+        "_try_cat_a": set(),
+        # 3 = minimum node count; 0.5 = max fraction of "<!-- image -->"
+        # placeholder blocks.
+        "_try_cat_b": {3, 0.5},
+        # 0.01 = hash/pipe density ceiling (markdown-table junk detector).
+        "_try_cat_c": {0.01},
+        # 1/10 = the small-doc node-count window; 5 = the node count at which
+        # the leaf-ratio bound switches from _high to _low.
+        "_try_small_doc": {1, 10, 5},
+    }
+
+    # The literals VG-2 and VG-3 removed.  None of them may reappear as a
+    # comparison constant in any promotion helper.
+    _FORBIDDEN = {0.15, 0.005, 100, 15000}
+
+    def _compare_constants(self, name: str) -> set[float]:
+        import ast
+
+        from pageindex_mcp.helpers import verdict as _verdict_mod
+
+        src = textwrap.dedent(inspect.getsource(getattr(_verdict_mod, name)))
+        tree = ast.parse(src)
+        found: set[float] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            for operand in [node.left, *node.comparators]:
+                if isinstance(operand, ast.Constant) and isinstance(
+                    operand.value, (int, float)
+                ) and not isinstance(operand.value, bool):
+                    found.add(operand.value)
+        return found
+
+    @pytest.mark.parametrize("name", _TRY_FUNCS)
+    def test_no_undocumented_comparison_literals(self, name: str):
+        found = self._compare_constants(name)
+        allowed = self._STRUCTURAL_LITERALS[name]
+        extra = found - allowed
+        assert not extra, (
+            f"{name} compares against bare literal(s) {sorted(extra)}; "
+            "source them from VerdictThresholds or document them as "
+            "structural invariants in _STRUCTURAL_LITERALS"
+        )
+
+    @pytest.mark.parametrize("name", _TRY_FUNCS)
+    def test_vg2_vg3_literals_are_gone(self, name: str):
+        found = self._compare_constants(name)
+        assert not (found & self._FORBIDDEN), (
+            f"{name} still hardcodes a VG-2/VG-3 threshold: "
+            f"{sorted(found & self._FORBIDDEN)}"
+        )
+
+    def test_cat_a_reads_both_bounds_from_thresholds(self):
+        src = inspect.getsource(_try_cat_a)
+        assert "th.cat_a_max_leaf_ratio" in src
+        assert "th.cat_a_max_ocr_noise" in src
+
+    def test_small_doc_reads_both_char_bounds_from_thresholds(self):
+        src = inspect.getsource(_try_small_doc)
+        assert "th.small_doc_min_chars" in src
+        assert "th.small_doc_max_chars" in src
+
+    @pytest.mark.parametrize("name", _TRY_FUNCS)
+    def test_every_th_attribute_exists_on_verdict_thresholds(self, name: str):
+        """Wiring: every ``th.<attr>`` read is a real VerdictThresholds field."""
+        from pageindex_mcp.helpers import verdict as _verdict_mod
+
+        src = inspect.getsource(getattr(_verdict_mod, name))
+        fields = {f.name for f in dataclasses.fields(VerdictThresholds)}
+        for attr in set(re.findall(r"\bth\.([a-z_0-9]+)", src)):
+            assert attr in fields, f"{name} reads th.{attr}, not a VerdictThresholds field"
+
+    def test_hard_fail_bound_is_threshold_sourced_in_apply_promotions(self):
+        """VG-4: the D1 gate reads the ceiling from thresholds, not a literal."""
+        src = inspect.getsource(apply_promotions)
+        assert "th.hard_fail_max_leaf_ratio" in src
+
+
+# ===========================================================================
+# Verdict-gate cascade VG-3/VG-4: thresholds in the effective-config snapshot
+# and their import-time coupling assertions
+# ===========================================================================
+
+
+class TestVerdictGateThresholdConfigContract:
+    """VG-4: every verdict-gate knob has exactly one owner (PipelineConfig),
+    appears in the effective-config snapshot so a stored verdict can be
+    explained from its own sidecar, and is protected by an import-time
+    coupling assertion."""
+
+    _SNAPSHOT_KEYS = (
+        "hard_fail_max_leaf_ratio",
+        "pass_max_leaf_ratio",
+        "cat_a_max_leaf_ratio",
+        "cat_a_max_ocr_noise",
+        "small_doc_min_chars",
+        "small_doc_max_chars",
+        "small_doc_leaf_ratio_bound_low",
+        "small_doc_leaf_ratio_bound_high",
+    )
+
+    @pytest.mark.parametrize("key", _SNAPSHOT_KEYS)
+    def test_key_present_in_effective_config_snapshot(self, key: str):
+        from pageindex_mcp.config import effective_config_snapshot
+
+        snap = effective_config_snapshot()
+        assert key in snap, f"{key} missing from the effective-config snapshot"
+        assert snap[key] == getattr(pipeline_config, key)
+
+    @pytest.mark.parametrize("key", _SNAPSHOT_KEYS)
+    def test_key_is_a_pipeline_config_field(self, key: str):
+        assert key in {f.name for f in dataclasses.fields(PipelineConfig)}
+
+    def test_snapshot_is_json_serializable(self):
+        from pageindex_mcp.config import effective_config_snapshot
+
+        json.dumps(effective_config_snapshot())
+
+    def test_verdict_thresholds_mirror_the_config(self):
+        th = VerdictThresholds.from_config(pipeline_config)
+        assert th.hard_fail_max_leaf_ratio == pipeline_config.hard_fail_max_leaf_ratio
+        assert th.cat_a_max_leaf_ratio == pipeline_config.cat_a_max_leaf_ratio
+        assert th.cat_a_max_ocr_noise == pipeline_config.cat_a_max_ocr_noise
+        assert th.small_doc_min_chars == pipeline_config.small_doc_min_chars
+        assert th.small_doc_max_chars == pipeline_config.small_doc_max_chars
+
+    def test_defaults_reproduce_the_replaced_literals(self):
+        """VG-2/VG-3 are behavior-neutral: the env defaults equal the
+        literals they replaced (0.15 / 0.005 / 100 / 15000 / 0.75)."""
+        assert pipeline_config.cat_a_max_leaf_ratio == 0.15
+        assert pipeline_config.cat_a_max_ocr_noise == 0.005
+        assert pipeline_config.small_doc_min_chars == 100
+        assert pipeline_config.small_doc_max_chars == 15000
+        assert pipeline_config.hard_fail_max_leaf_ratio == 0.75
+
+    # --- import-time coupling assertions ----------------------------------
+
+    @staticmethod
+    def _import_config_with(env: dict[str, str]):
+        """Import pageindex_mcp.config in a fresh interpreter under *env*."""
+        import subprocess
+        import sys
+
+        child_env = dict(os.environ)
+        child_env.update(env)
+        child_env.pop("PYTHONOPTIMIZE", None)  # asserts must stay live
+        return subprocess.run(
+            [sys.executable, "-c", "import pageindex_mcp.config"],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            cwd=str(pathlib.Path(__file__).resolve().parents[1]),
+        )
+
+    def test_baseline_env_imports_cleanly(self):
+        proc = self._import_config_with({})
+        assert proc.returncode == 0, proc.stderr
+
+    def test_pass_ratio_above_hard_fail_ratio_fires_at_import(self):
+        """VG-4: PASS_MAX_LEAF_RATIO > HARD_FAIL_MAX_LEAF_RATIO would let the
+        D1 gate fire before the structural-PASS path could ever be reached."""
+        proc = self._import_config_with(
+            {
+                "PASS_MAX_LEAF_RATIO": "0.90",
+                "LEAF_SPLIT_RATIO": "0.90",  # keep the older coupling satisfied
+                "HARD_FAIL_MAX_LEAF_RATIO": "0.50",
+            }
+        )
+        assert proc.returncode != 0
+        assert "HARD_FAIL_MAX_LEAF_RATIO" in proc.stderr
+        assert "AssertionError" in proc.stderr
+
+    def test_small_doc_min_below_marginal_floor_fires_at_import(self):
+        """VG-3: SMALL_DOC_MIN_CHARS < MIN_MARGINAL_CHARS would let
+        _try_small_doc promote a doc apply_promotions already FAILed."""
+        proc = self._import_config_with(
+            {"SMALL_DOC_MIN_CHARS": "10", "MIN_MARGINAL_CHARS": "50"}
+        )
+        assert proc.returncode != 0
+        assert "MIN_MARGINAL_CHARS" in proc.stderr
+        assert "AssertionError" in proc.stderr
+
+    def test_empty_small_doc_window_fires_at_import(self):
+        proc = self._import_config_with(
+            {"SMALL_DOC_MIN_CHARS": "9000", "SMALL_DOC_MAX_CHARS": "500"}
+        )
+        assert proc.returncode != 0
+        assert "SMALL_DOC_MAX_CHARS" in proc.stderr
+
+    def test_valid_widened_window_still_imports(self):
+        proc = self._import_config_with(
+            {"SMALL_DOC_MIN_CHARS": "200", "SMALL_DOC_MAX_CHARS": "30000"}
+        )
+        assert proc.returncode == 0, proc.stderr

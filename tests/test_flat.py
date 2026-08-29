@@ -518,7 +518,7 @@ class TestSynthesizeFlatStructure:
         assert len(structure) == 6
         verdict, reason = classify_verdict(structure, "flat_prose", None)
         assert verdict == "PASS"
-        assert reason in ("", "cat_b_promoted")
+        assert reason in ("structural_pass", "cat_b_promoted")
 
     def test_empty_structure_and_empty_blocks_yields_zero_content_fail(self):
         # RFC-026 D0: an empty structure is now an unconditional zero_content

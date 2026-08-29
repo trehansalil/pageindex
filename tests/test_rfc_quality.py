@@ -180,7 +180,7 @@ class TestPassMaxLeafRatioQF2b:
     def test_ratio_016_passes(self):
         tree = _make_tree([160] + [10] * 84, depth=4)
         verdict, reason = classify_verdict(tree, "default", None)
-        assert (verdict, reason) == ("PASS", "")
+        assert (verdict, reason) == ("PASS", "structural_pass")
 
 
 class TestSmallDocExemptionQF2c:
