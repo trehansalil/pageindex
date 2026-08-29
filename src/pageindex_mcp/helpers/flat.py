@@ -174,13 +174,26 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
 
 def _flat_block_primary_text(block: dict) -> str:
     """D0 (RFC-027): a single flat block's primary document text, excluding
-    OCR/description enrichment metadata."""
+    OCR/description enrichment metadata.
+
+    Zone-9 fix: when a table block has headers but zero data rows
+    (row_records empty), fall back to the header list so flat_char_count
+    does not undercount and recovery.py:716-718 flat-prefer routing sees
+    the real content volume.
+    """
     text = block.get("text", "")
     if text:
         return text
     role = block.get("role")
     if role == "table":
-        return "\n".join(block.get("row_records", []) or [])
+        rows = block.get("row_records") or []
+        if rows:
+            return "\n".join(rows)
+        # Header-only table: fall back to headers so char count is non-zero
+        headers = block.get("headers") or []
+        if headers:
+            return " | ".join(str(h) for h in headers if h)
+        return ""
     return text
 
 

@@ -191,6 +191,8 @@ from .tree_validation import (
     TreeSignals,
     _count_empty_body_nodes,
     _flatten_tree_text,
+    _node_char_count,
+    _node_text_parts,
     _tree_depth,
     _tree_is_reordered,
     _tree_max_leaf_ratio,
@@ -255,6 +257,8 @@ __all__ = [
     "_Unset",
     "_count_empty_body_nodes",
     "_extract_page_hits",
+    # flat block measurement
+    "_flat_block_primary_text",
     "_flat_is_pipe_row",
     "_flat_is_separator_row",
     # tables
@@ -270,6 +274,9 @@ __all__ = [
     "_get_verdict_thresholds",
     "_infer_presentation_forms",
     "_infer_script",
+    # tree node measurement (canonical — use instead of ad-hoc text sums)
+    "_node_char_count",
+    "_node_text_parts",
     "_is_morphologically_nonsense",
     "_llm",
     "_looks_like_toc_page",
