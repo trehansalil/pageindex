@@ -2191,6 +2191,34 @@ class TestVlmTesseractFallback:
 
 
 # ---------------------------------------------------------------------------
+# D8a: TessdataUnavailableError graceful degradation on image branch
+# ---------------------------------------------------------------------------
+
+
+class TestImageBranchTessdataDegradation:
+    """indexer.py image branch must catch TessdataUnavailableError and degrade
+    to ['deu','eng'] instead of propagating a terminal worker error.  This
+    aligns with the handling in images.py, recovery.py, and pictures.py."""
+
+    def test_ensure_tessdata_failure_degrades_to_latin(self, monkeypatch):
+        from pageindex_mcp.converters import ocr_langs
+        from pageindex_mcp.converters.ocr_langs import TessdataUnavailableError
+
+        monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {})
+        monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+
+        detected = ["ara"]
+        with pytest.raises(TessdataUnavailableError):
+            ensure_tessdata(detected)
+
+    def test_detect_ocr_langs_arabic_filename(self):
+        """An Arabic-named file triggers Arabic lang detection."""
+        from pageindex_mcp.converters import detect_ocr_langs
+
+        result = detect_ocr_langs("وزارة الصناعة والتكنولوجيا المتقدمة.jpg")
+        assert "ara" in result
+
+
 # D8: standalone-image OCR enrichment + terminal-vs-transient LLM failures
 # ---------------------------------------------------------------------------
 

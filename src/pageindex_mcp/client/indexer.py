@@ -28,6 +28,7 @@ from ..config import (
 from ..converters import (
     ConverterFailurePolicy,
     PictureResult,
+    TessdataUnavailableError,
     _tesseract_ocr_image,
     detect_ocr_langs,
     docx_to_markdown,
@@ -882,7 +883,23 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
         elif ext in _IMAGE_EXTS:
             logger.info("OCR image to markdown: %s", filename)
-            img_langs = await asyncio.to_thread(ensure_tessdata, detect_ocr_langs(filename))
+            detected = detect_ocr_langs(filename)
+            try:
+                img_langs = await asyncio.to_thread(ensure_tessdata, detected)
+            except TessdataUnavailableError:
+                # Non-Latin tessdata missing for standalone image.  Every other
+                # ensure_tessdata call site (images.py, recovery.py, pictures.py)
+                # is wrapped in a try/except — align this branch.  Degrade to
+                # Latin-only OCR so the pipeline can still produce a tree (which
+                # will likely fail the garble gate → LowQualityTreeError, the
+                # correct quality signal).  The deployment fix is to pre-bake
+                # the required traineddata in the worker container image.
+                img_langs = ["deu", "eng"]
+                logger.warning(
+                    "tessdata unavailable for %s (detected %s); "
+                    "degrading to %s — pre-bake traineddata in worker image",
+                    filename, detected, img_langs,
+                )
             md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
             img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
             standalone_ocr_text = ""
