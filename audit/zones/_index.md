@@ -17,7 +17,7 @@ total_bugs: 35
 | Priority | Zone | Severity | Bugs | Status | Key Issue |
 |----------|------|----------|------|--------|-----------|
 | 1 | [[verdict-gate-cascade]] | CRITICAL | 11 | **fix-spec approved (rev 2, source-verified)** | First-match-wins promotion pipeline — VG-1..VG-7 + partition characterization test; rev 1 retracted for unverified symbols |
-| 2 | [[garble-detection-kernel]] | CRITICAL | 7 | audited | 15+ caller shared choke point with NFKC destruction problem |
+| 2 | [[garble-detection-kernel]] | CRITICAL | 5 | **partially remediated (2026-08-29)** | Wave-2 spec retired — already shipped in e02ec93; its two missed presentation-forms sites now fixed + AST guard. Shared-kernel blast radius still open |
 | 3 | [[ocr-recovery-cascade]] | HIGH | 5 | audited | Detection without wired remediation; single kill-switch |
 | 4 | [[measurement-and-audit-self-reinforcing-blind-spot]] | HIGH | 4 | **fix-spec approved** | Audit tooling inherits pipeline's blind spots — export helpers + SKILL.md measurement rule spec'd 2026-08-29 |
 | 5 | [[dual-write-consistency-model]] | HIGH | 3 | audited | Asymmetric write-visibility across dual writers |

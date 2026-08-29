@@ -490,3 +490,93 @@ class TestScoringHarnessStage2Guard:
 
     def test_null_ingest_result_short_circuits(self, guard_predicate):
         assert self._run_guard(guard_predicate, "null") is True
+
+
+# ---------------------------------------------------------------------------
+# Contract: no ScriptContext fallback hardcodes had_presentation_forms=False
+# ---------------------------------------------------------------------------
+class TestPresentationFormsNotHardcoded:
+    """Every ``ScriptContext`` built as a fallback must infer
+    ``had_presentation_forms`` from the text it is about to check.
+
+    Hardcoding ``False`` defeats the NFKC presentation-forms compensation
+    that ``detect_garble`` applies internally: an Arabic document whose
+    presentation-form codepoints were normalised away before reaching the
+    caller is then reported as clean.  Commit e02ec93 closed three such
+    sites (verdict.py, images.py, indexer.py's pre-garble probe) but missed
+    two more in indexer.py -- the flat-path garble gate and the VLM
+    fallback.  This guard exists so the pattern cannot be reintroduced a
+    third time.
+
+    ``ScriptContext.from_script_str()`` in script.py is the one allowed
+    occurrence: it is the documented no-information constructor used by
+    test code that has only a script string, and callers that do have the
+    text are expected to build ScriptContext directly instead.
+    """
+
+    ALLOWED_FILES = {"script.py"}
+
+    def _offending_sites(self) -> dict[str, list[int]]:
+        """Real keyword arguments only.
+
+        Parsed with ``ast`` rather than matched textually, so prose in
+        comments and docstrings that *describes* the defect (garble.py's
+        ``_infer_presentation_forms`` docstring does) is not itself
+        reported as an instance of it.
+        """
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        hits: dict[str, list[int]] = {}
+        for path in sorted(src_root.rglob("*.py")):
+            if path.name in self.ALLOWED_FILES:
+                continue
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for kw in node.keywords:
+                    if (
+                        kw.arg == "had_presentation_forms"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is False
+                    ):
+                        hits.setdefault(str(path.relative_to(src_root)), []).append(
+                            kw.value.lineno
+                        )
+        return hits
+
+    def test_no_hardcoded_false_outside_the_no_information_constructor(self):
+        offenders = self._offending_sites()
+        assert not offenders, (
+            "had_presentation_forms=False is hardcoded outside "
+            f"ScriptContext.from_script_str(): {offenders}. Pass "
+            "_infer_presentation_forms(<the text being checked>) instead -- "
+            "hardcoding False makes NFKC-normalised Arabic look clean."
+        )
+
+    @pytest.mark.parametrize(
+        "source_tag,text_var",
+        [("flat_garble_gate", "flat_md"), ("vlm_fallback_garble", "vlm_md")],
+    )
+    def test_indexer_garble_contexts_infer_from_the_checked_text(self, source_tag, text_var):
+        """The two sites e02ec93 missed, pinned individually.
+
+        Each fallback must infer from the *same* text its gate then checks,
+        not from some other blob and not from a constant.
+        """
+        src = (PROJECT_ROOT / "src" / "pageindex_mcp" / "client" / "indexer.py").read_text()
+        assert f'source="{source_tag}"' in src, (
+            f"no ScriptContext with source={source_tag!r} in indexer.py"
+        )
+        assert f"_infer_presentation_forms({text_var})" in src, (
+            f"the {source_tag} ScriptContext must infer presentation forms "
+            f"from {text_var}, the text its garble gate checks"
+        )
+
+    def test_allowed_site_is_the_documented_no_information_constructor(self):
+        """Guard the exemption itself: script.py's occurrence is inside
+        ``from_script_str``, which documents that it has no text to infer from."""
+        from pageindex_mcp.script import ScriptContext
+
+        src = inspect.getsource(ScriptContext.from_script_str)
+        assert "had_presentation_forms=False" in src
+        assert 'source="legacy"' in src

@@ -995,7 +995,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         _, _garble_blocks = await asyncio.to_thread(route_and_extract_flat, flat_md)
         _flat_garble_ctx = script_context if script_context is not None else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=False,
+            had_presentation_forms=_infer_presentation_forms(flat_md),
             source="flat_garble_gate",
         )
         _flat_garble_report = _garble_check_flat_blocks(
@@ -1021,7 +1021,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         settings.vlm_model,
                     )
                     vlm_md = await vlm_extract_markdown(file_path, settings.vlm_model)
-                    _vlm_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=False, source="vlm_fallback_garble")
+                    _vlm_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=_infer_presentation_forms(vlm_md), source="vlm_fallback_garble")
                     _, _vlm_blocks = await asyncio.to_thread(route_and_extract_flat, vlm_md)
                     if not _garble_check_flat_blocks(
                         _vlm_blocks,
