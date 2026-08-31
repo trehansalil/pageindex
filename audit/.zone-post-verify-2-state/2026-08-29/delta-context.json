@@ -1,124 +1,122 @@
 {
   "delta": {
+    "closed_zones": [
+      "Bidi/RTL Processing Split (Local vs. Remote) — absorbed into 'Normalize-before-detect null-detector lattice (presentation forms / NFKC)': its core claim (NFKC destroys the Arabic presentation-form signal, null-detector fallacy) is now the dominant mechanism of the merged zone rather than a standalone local-vs-remote deployment-drift story; the heading-guard-never-committed sub-issue is not mentioned in the post-fix zone and was not separately verified as fixed."
+    ],
+    "new_zones": [
+      "Config-layer bifurcation: frozen snapshot vs live os.environ — newly surfaced; no prior zone described the frozen pipeline_config snapshot vs live os.environ re-reads (BIDI_COHERENCE_ENFORCE truthiness mismatch, LEAF_SPLIT_RATIO re-read at call time defeating the import-time coupling assertion, PRE_GARBLE_FORCE_OCR_ENABLED double-source)."
+    ],
+    "summary": {
+      "total_current": 8,
+      "total_prior": 8,
+      "improved": 3,
+      "regressed": 2,
+      "stalled": 2,
+      "new_count": 1,
+      "closed_count": 1,
+      "net_bug_delta": -2
+    },
     "zone_deltas": [
       {
-        "zone_name": "Verdict Promotion / Threshold Ratchet",
+        "zone_name": "Verdict-Gate Threshold/Promotion/Override Cascade -> ExtractionState route/ok multi-writer cascade",
         "status": "improved",
         "severity_before": "critical",
         "severity_after": "critical",
         "bug_count_before": 8,
-        "bug_count_after": 6,
-        "key_change": "VG-1..VG-7 fixes (commit 9ccc6f1) reduced promotion-cascade bugs from 8 to 6 by computing the image-enrichment garble check once and sharing it between D1/D2, but apply_promotions remains an ordered if/elif priority cascade and the source_selection clamp-bypass for image_enrichment still suppresses structural caps, so the threshold-ratchet pattern (widen one edge, admit false-PASS at the new edge) persists.",
-        "proposal_status": "partially_implemented"
+        "bug_count_after": 7,
+        "key_change": "The zone file for the original threshold/promotion cascade was deleted in 083aa6e as 'resolved', but the underlying order-dependent, multi-writer verdict problem resurfaced under a new name centered on ExtractionState.ok/route/gate_result instead of apply_promotions; bug count dropped 8->7 but severity is unchanged and the fix is still not authoritative (five separate recovery methods still assign state.route/state.ok without re-deriving from gate_result).",
+        "proposal_status": "not_implemented"
       },
       {
-        "zone_name": "Garble Detection Cross-Cutting Kernel -> Detection-Remediation Dispatch Gap",
+        "zone_name": "Garble Detection Cross-Cutting Kernel -> Normalize-before-detect null-detector lattice (presentation forms / NFKC)",
         "status": "improved",
         "severity_before": "critical",
         "severity_after": "critical",
         "bug_count_before": 7,
-        "bug_count_after": 4,
-        "key_change": "The GATE_TABLE severity-ordering dispatch gap was narrowed via the D4 garble-priority override and the _eligible_image_dominant all-defects check (Zone-1 fix), cutting cross-cutting garble/dispatch bugs from 7 to 4, but D4 only covers the GARBLING/NODE_GARBLING pair -- any newly-added lower-severity gate can still shadow garble detection before it fires -- and detect_garble retains 11 divergent call sites across 9+ subsystems.",
+        "bug_count_after": 6,
+        "key_change": "The garble-kernel zone absorbed the Bidi/RTL zone's NFKC/presentation-forms null-detector mechanism (previously a separate High-severity zone); had_presentation_forms now has exactly one live producer (_renormalize_bidi_guarded) versus a dead 'Arabic' string-comparison fallback in detect_garble, and recovery paths (_execute_ocr_retry, _recover_vlm_fallback) still actively null out the one carrier that exists. Net bug count nudged down (7->6) but the flag remains structurally unproducible on most paths.",
         "proposal_status": "no_proposal"
       },
       {
-        "zone_name": "Converter Chain Fallback and AGPL Gating -> Converter Chain / Remote Service Boundary Drift",
+        "zone_name": "OCR Recovery Cascade and Kill-Switch Conflation -> Recovery dispatch: tuple-keyed dedup and unguarded raising normalizers",
+        "status": "improved",
+        "severity_before": "high",
+        "severity_after": "high",
+        "bug_count_before": 6,
+        "bug_count_after": 4,
+        "key_change": "decide_ocr_mode now forwards document_type/ocr_langs (closing one prior bug), and the single _OCR_ESCALATION kill-switch conflation is narrower; remaining defects shifted to a tuple-keyed dedup set that still double-fires _recover_image_dominant_ocr for co-occurring NODE_COUNT_LOW/DEPTH_LOW gates, and ensure_tessdata's new TessdataUnavailableError is caught in one call site but raised bare in another (image-extension branch), producing inconsistent ERROR-vs-MARGINAL outcomes.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "Converter Chain Fallback and AGPL Gating -> Ordered-policy converter chain with load-bearing branch order",
         "status": "stalled",
         "severity_before": "high",
         "severity_after": "high",
         "bug_count_before": 4,
         "bug_count_after": 4,
-        "key_change": "GATE_AGPL_STRUCTURAL is now an explicit, metricked, operator-gateable policy (previously an unnamed WALK fallthrough that only logged a warning), but this zone absorbed the former separate Bidi/RTL Local-vs-Remote zone's unresolved defects: RFC-033's _heading_is_logical_order bidi guard is still never committed to git (0 occurrences in src/), and the remote Docling microservice is still unversioned with incomplete remote_version_enforce, so local fixes still have zero effect on remotely-routed documents -- net bug count and severity unchanged.",
+        "key_change": "Commit 0625ecb ('gate the AGPL structural fallback and close remote converter drift') closed the unconditional structural-failure-walks-to-AGPL bug the pre-fix audit flagged, but a new bug of equal severity took its place: the RETRY branch's bare `continue` advances to the NEXT chain entry instead of re-entering the same one, so with the default retry count of 1 the very first transient failure of the primary converter can walk straight past BLOCK_AGPL into an AGPL converter anyway — same net HR4 exposure, different code path.",
         "proposal_status": "no_proposal"
       },
       {
-        "zone_name": "OCR Recovery Cascade and Kill-Switch Conflation -> OCR Pipeline Conflation",
-        "status": "improved",
+        "zone_name": "Dual-Writer Verdict Persistence and Consistency Model Split -> Split verdict authority: five writers over two stores",
+        "status": "regressed",
         "severity_before": "high",
-        "severity_after": "high",
-        "bug_count_before": 6,
-        "bug_count_after": 3,
-        "key_change": "The Zone-2 re-entry guard (force_full_page_ocr_applied) closed the double-Tesseract-pass duplication during force_full_page_ocr re-extraction, and decide_ocr_mode now forwards document_type/ocr_langs, cutting bugs from 6 to 3, but the root conflation -- one function (pdf_to_markdown_docling) handling both per-picture and full-page OCR strategies -- remains, and standalone images still bypass splice_figure_markers/_enrich_image_blocks.",
+        "severity_after": "critical",
+        "bug_count_before": 4,
+        "bug_count_after": 5,
+        "key_change": "The zone file was deleted in 083aa6e as resolved, but the writer count grew from two (save_doc_meta, _upsert_registry_row) to five (adding registry_backfill/reconcile.py, registry_backfill/backfill.py, and promotion_sweep.py), and the audit now identifies a false belief baked into backfill.py's own comment ('the CAS guard in save_doc_meta protects against clobbering a newer verdict') that is contradicted by save_doc_meta's actual implementation, which has no priority comparison at all. Severity raised High->Critical to reflect that corpus audits reading sidecars can now disagree with the registry through more independent paths than before.",
         "proposal_status": "no_proposal"
       },
       {
-        "zone_name": "Measurement/Audit Tooling Shared Blind Spots -> Content Measurement Blind Spot",
+        "zone_name": "Erasure Cascade and Storage Consistency Drift -> Order-coupled erasure manifest with implicit inter-step data flow",
+        "status": "stalled",
+        "severity_before": "medium",
+        "severity_after": "medium",
+        "bug_count_before": 2,
+        "bug_count_after": 2,
+        "key_change": "No structural change: the manifest is still a hand-maintained ordered list with implicit inter-step data dependencies (doc_name recovered mid-cascade, sha256 read from a sidecar file a later required step deletes) and required=False steps that let a missed purge log at DEBUG as an 'expected miss' rather than surfacing as an error.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "Measurement/Audit Tooling Shared Blind Spots -> Divergent parallel garble/text accessors",
         "status": "regressed",
         "severity_before": "medium",
         "severity_after": "high",
         "bug_count_before": 4,
-        "bug_count_after": 3,
-        "key_change": "Role-aware helpers (_flat_block_primary_text/_flat_search_text) now exist and are used in RFC-022 B3's verdict computation, nominally cutting the raw bug count from 4 to 3, but the zone was re-rated from medium to high severity after tracing the GHV-TKV-Tarif 96.1% char under-count (13,022 raw vs 375 measured) and the fabricated Run 9 corpus report directly to naive block.get('text','') sites that still exist outside verdict.py -- the audit harness itself was never updated to use the correct helper.",
-        "proposal_status": "no_proposal"
-      },
-      {
-        "zone_name": "Dual-Writer Verdict Persistence and Consistency Model Split -> Verdict Persistence Asymmetry",
-        "status": "improved",
-        "severity_before": "high",
-        "severity_after": "medium",
-        "bug_count_before": 4,
-        "bug_count_after": 2,
-        "key_change": "reconcile.py's load-bearing drain-verdict-retry-queue-before-MinIO-etag-diff ordering fix landed, and write_verdict is now confirmed to have zero live production callers, dropping bug count from 4 to 2 and severity from high to medium; this zone also absorbed the former separate Erasure Cascade zone's manifest-drift concern (preloaded/ prefix, ISS-41) as one of its four listed bug sources rather than a standalone zone, and save_doc_meta still deliberately omits the write-visibility barrier (archival-only by design) so the child/parent process-boundary desync remains structurally possible.",
-        "proposal_status": "no_proposal"
+        "bug_count_after": 4,
+        "key_change": "The block.get('text','') blind spot for table/image blocks was partially closed (Zone-9 header-only-table fix landed inside _flat_block_primary_text per commit 98b5038), but the audit now documents that this is only one of several near-identical text accessors (_flat_search_text, the flat.py table branch, and detect_garble vs. the _garble_check_nodes whole-tree fallback which bypasses detect_garble's presentation-forms recovery heuristic entirely) — so the fix closed one instance while confirming the zone has no single choke point, raising severity from Medium to High even though bug count held at 4.",
+        "proposal_status": "partially_implemented"
       }
-    ],
-    "new_zones": [],
-    "closed_zones": [
-      "Bidi/RTL Processing Split (Local vs. Remote) -- absorbed into Converter Chain / Remote Service Boundary Drift; its bidi-heading-guard-never-committed and remote-drift findings are now reported as sub-issues of that zone rather than a standalone zone.",
-      "Erasure Cascade and Storage Consistency Drift -- absorbed into Verdict Persistence Asymmetry as its 'Manual Erasure Manifest Drift' bug source (ISS-41 preloaded/ prefix gap); no longer tracked as a standalone zone."
-    ],
-    "summary": {
-      "total_current": 6,
-      "total_prior": 8,
-      "improved": 4,
-      "regressed": 1,
-      "stalled": 1,
-      "new_count": 0,
-      "closed_count": 2,
-      "net_bug_delta": -16
-    }
-  },
-  "wiring": {
-    "summary": "Wiring analysis of 6 POST-FIX ZONES completed across pageindex repository. All zones show HEALTHY wiring status with zero unwired symbols detected. \n\nZONE-BY-ZONE SUMMARY:\n- ZONE 1 (Verdict Promotion): ✓ apply_promotions, compute_verdict, evaluate_gates, classify_verdict all properly wired to production indexer\n- ZONE 2 (Detection-Remediation): ✓ validate_feature_wirings and validate_recovery_method_names wired to server/worker startup; all gate functions wired via GATE_TABLE lookup\n- ZONE 3 (Converter Chain): ✓ pdf_to_markdown_docling and pdf_markdown_converters wired to converter framework; pipeline versioning tracks remote/local boundary\n- ZONE 4 (OCR Pipeline): ✓ zdr_egress_gate, picture collection, and splice functions all wired to VLM/picture extraction paths\n- ZONE 5 (Content Measurement): ✓ route_and_extract_flat wired to flat extraction on both garble and VLM paths (lines 995, 1025 of indexer.py)\n- ZONE 6 (Verdict Persistence): ✓ save_doc (line 1245), save_flat_doc (line 1136), save_doc_meta (lines 1141, 1302) all properly wired\n\nKEY FINDINGS:\n- Entry point: CustomPageIndexClient.index() in src/pageindex_mcp/client/indexer.py\n- No unwired functions identified across 30+ key functions analyzed\n- Some functions use indirect calling patterns (asyncio.to_thread, function references, gate table lookup) which are verified via source inspection\n- Feature wiring validation runs at server/worker startup via validate_feature_wirings\n- Recovery methods validated during startup ensure dispatch gap closure\n\nINDIRECT CALL PATTERNS VERIFIED:\n- asyncio.to_thread() calls to save_doc, save_flat_doc, route_and_extract_flat\n- Gate functions stored in GATES list and accessed via GateSpec.gate_fn\n- pdf_to_markdown_docling passed as function reference through converter framework\n\nRisk Assessment: LOW - All post-fix zones properly integrated into production code paths.",
-    "wiring_findings": [
-      "ZONE1-VERDICT-OK: apply_promotions→compute_verdict→_persist_flat_result/tree_result chain complete",
-      "ZONE1-VERDICT-OK: evaluate_gates wired to compute_verdict; classify_verdict wraps compute_verdict",
-      "ZONE2-GATES-OK: validate_feature_wirings called at server/worker startup",
-      "ZONE2-GATES-OK: All _gate_* functions (garbling, node_count_low, depth_low, reordered, rtl_reversal, bidi_degraded, empty_node_contamination, low_content_density, suspect_density) stored in GATES list and accessed via GATE_TABLE",
-      "ZONE2-RECOVERY-OK: validate_recovery_method_names wired to validate_feature_wirings; recovery dispatch validated at startup",
-      "ZONE3-CONVERTER-OK: pdf_to_markdown_docling in pdf_markdown_converters registry; called via converter framework",
-      "ZONE3-CONVERTER-OK: CURRENT_PIPELINE_VERSION tracks remote/local converter boundary",
-      "ZONE4-OCR-OK: zdr_egress_gate called from _add_vlm_descriptions and vlm_extract_markdown",
-      "ZONE4-OCR-OK: _collect_picture_regions used in pdf_to_markdown_docling → _recover_picture_results",
-      "ZONE4-OCR-OK: splice_picture_text_for_tree imported in CustomPageIndexClient",
-      "ZONE5-FLAT-OK: route_and_extract_flat called via asyncio.to_thread at indexer.py:995 (garble path) and :1025 (vlm path)",
-      "ZONE5-FLAT-OK: _flat_block_primary_text used in route_and_extract_flat callchain",
-      "ZONE6-PERSIST-OK: save_doc called via asyncio.to_thread at indexer.py:1245 for tree path",
-      "ZONE6-PERSIST-OK: save_flat_doc called via asyncio.to_thread at indexer.py:1136 for flat path",
-      "ZONE6-PERSIST-OK: save_doc_meta carries verdict cascade at indexer.py:1141, 1302",
-      "CROSS-ZONE-OK: Feature wiring validation via FEATURE_WIRINGS registry (6 wirings verified)",
-      "CROSS-ZONE-OK: Production pipeline flow: source selection → extraction → gate evaluation → promotion → classification → persistence",
-      "INTEGRATION-OK: No unwired symbols detected across all 6 zones"
     ]
   },
-  "mem": {
-    "summary": "\n**Past Remediation Cycle Outcomes for PageIndex Project**\n\nThis subagent searched the project's claude-mem history across July-August 2026 to identify prior scorecard verdicts, zone closures/regressions, wiring failures, and user feedback. Key patterns emerged around a 4-run (Run 6-9) iterative verdict-gating remediation cycle, a major fabricated corpus report discovery, and systematic accuracy issues in self-reported test metrics and scorecard verdicts.\n\n**Major Past Cycle Outcomes:**\n\n1. **Fabricated Corpus Report (July 17, 2026)**: A published corpus verdict table claiming \"15 PASS / 10 MARGINAL / 0 FAIL\" was discovered to be fabricated (never computed via classify_verdict). Real verified counts from MinIO meta.json: 11 PASS / 12 MARGINAL / 2 FAIL / 1 NOT_PROCESSED across 26 files. RFC-015 formally superseded the fabricated numbers.\n\n2. **Run 9 Corpus Audit (July 31, 2026)**: Harness incorrectly reported all 24 documents as ERROR; live MinIO re-pull (RFC-025 D4 pre-publish verification) revealed actual result: 15 PASS / 8 MARGINAL / 0 FAIL / 1 ERROR. Root cause: scoring harness defaulted unscored records to ERROR instead of failing loudly.\n\n3. **Verdict Threshold Regression (July 31, 2026)**: Three tests expecting MARGINAL verdicts for leaf-ratio ~0.20-0.21 now receive PASS, indicating RFC-023 D10's widening of PASS_MAX_LEAF_RATIO (0.17→0.20) caused unintended test failures and threshold oscillation across runs.\n\n4. **RFC-034 Run15 Reconciliation (August 9, 2026)**: All 6 implementation batches (Gates G1-G6) completed. Addressed three confirmed architectural issues: silent registry dual-write failures (Issue A), inert retrieval quality gate (Issue B), query-path latency (Issue C).\n\n5. **Iterative Run Cycle (Runs 6-9, July 2026)**: Recurring theme across RFC-023→RFC-026 pattern: verdict-gating instability, hysteresis/recovery gaps, rotation-detection issues. Each run produced an RFC + audit report, but chronic issues persisted across cycles.\n\n6. **Gate Semantics Misreporting (Commit 41590f8, July 20)**: Claimed \"554 tests passed\" but independent rerun showed 553 actual. Conflated gate structural checks (PASS=7 sub-checks) with per-test counts. Coverage-thresholds check was SKIPPED, not verified, but claimed as passing.\n\n**Chronic Zone Issues:**\n\n- **Verdict-Promotion Bypass (Run 9)**: image_enrichment_promoted and cat_b_promoted flags marking docs PASS despite near-zero/collapsed content (15x char loss on Unfallversicherung, 0.5x on مرسوم بقانون). Violates Hard Rule 5 in spirit (silently persisting low-quality trees).\n- **Softening Without Recovery**: Zero-content Arabic PDFs shifted FAIL/ERROR→MARGINAL without actual extraction recovery (مرسوم 13/2022, اتفاقية الخدمة, etc.).\n- **Garble Detection Gap**: وارد رقم 597 now correctly fires garble gate (ratio=1.00) but OCR escalation does not follow (remains MARGINAL with fully-garbled content).\n- **Arabic CMap-Crash Recovery**: Three hard-ERROR docs recovered in Run 9; مرسوم 33/2021 regained content (cat_b_promoted path), but other two persist empty extraction—crash fixed but quality unresolved.\n- **Verdict Schema Bifurcation (Run 16, August)**: meta.json split between tree and flat formats; stored PASS verdicts on documents re-judged FAIL this session; persistence-timing race bug suspected.\n- **Content Loss Across Runs**: Stagnant char counts on some docs (uae_numbers_portrait: 764 chars persisting through fresh re-ingestion), suggesting OCR escalation or extraction path regression.\n\n**Wiring Failures Caught in Post-Verify:**\n\n1. **Silent Registry Dual-Write** (worker.py:480-502): _upsert_registry_row catches exceptions and logs warning only; document becomes invisible if Postgres write silently fails (RFC-009 D6 removed MinIO fallback).\n2. **TOOL_ERRORS Inflation** (documents.py): verdict_fail (healthy empty corpus) inflated TOOL_ERRORS metric; fixed to conditionally skip metric for verdict_fail reason.\n3. **Static Import Gate** (worker.py): Unsorted imports triggered static-analysis gate failure.\n4. **Integration Gate Skip**: scripts/gates/integration.sh entirely SKIPPED, not run; unclear if gate logic is broken or test selection logic is wrong.\n5. **Missing SQL Predicate Pushdown**: RFC-006 Stage A facet filter is a no-op; RFC-015 verdict field (PASS/MARGINAL/FAIL) computed and indexed but never consulted in retrieval path before full RAG.\n6. **Unverified Coverage**: Coverage-thresholds sub-check in unit.sh skipped due to missing pytest-cov; gate self-reported as passing despite unverified target.\n\n**Scorecard Accuracy Issues:**\n\n- Prior corpus report numbers were never validated against running classify_verdict() before being published to Confluence.\n- Commit 41590f8 self-reported verdict/test metrics did not match independent reproduction (554 claimed vs 553 actual); further extrapolated single-gate result to broader system health without evidence.\n- Run 9 harness defaulted unscored records to ERROR; RFC-025 D4 rule required live MinIO re-pull before trusting audit figures to catch this.\n- Project memory explicitly flags pattern: \"Verify source before asserting defects — read file:line before any code claim\" and \"Corpus diagnosis focus — skip PASS docs; focus on regressions; prefer simple fixes.\"\n\n**User Feedback / Corrections:**\n\nMemory indicates user locked RFC-004 VLM probe (gpt-4.1 vision hallucinated hierarchy; Granite-258M rejected with user-LOCKED label 2026-06-12) and flagged fabricated corpus report (2026-07-17) as requiring verification. CLAUDE.md Hard Rule 5 requirement (\"Never silently persist a low-quality tree\") remains un-enforced across multiple runs (Run 9 image_enrichment_promoted path, zero-content softening without escalation).\n",
-    "past_cycle_outcomes": "\n**Cycle Outcomes Summary:**\n\n1. **Corpus Report Fabrication Cycle (July 17)**: False verdict table (15/10/0) → RFC-015 correction with live MinIO re-derivation (11/12/2/1) → Confluence page flagged for correction. Verdict: needs_another_cycle (accuracy infrastructure required).\n\n2. **Run 9 Audit Cycle (July 31)**: Harness scoring-stage bug (all records → ERROR) caught by RFC-025 D4 pre-publish rule → corrected to 15/8/0/1. Also surfaced: verdict-ratio threshold regression (three MARGINAL tests now PASS) and image_enrichment_promoted bypass of quality gate. Verdict: needs_another_cycle (three separate issues require fixes: scoring-stage fail-loudly, threshold tuning, promotion-flag gating).\n\n3. **RFC-034 Run15 Reconciliation (Aug 9)**: All 6 batches completed (G1-G6 terminal gate). Three issues fully scoped (Issues A/B/C architecture). Verdict: cycle_complete for this RFC's design scope; implementation remediation ongoing in follow-on PRs.\n\n4. **Runs 6-9 Iterative Pattern (July)**: Each run produced an RFC + audit; recurring verdict-gating instability and hysteresis/recovery gaps. RFC-023→RFC-026 show oscillating fixes without convergence. Verdict: regressed—each run introduces new failures or threshold swings, suggesting the iterative approach is not stabilizing the verdict system.\n\n5. **Gate Semantics / CI (July 20)**: Static gate FAIL → fixed. But integration/e2e/supply-chain gates remain SKIPPED; coverage thresholds unverified; TOOL_ERRORS inflation from verdict_fail. Verdict: needs_another_cycle (wiring gaps in gate logic and metric hygiene).\n\n6. **Run 16 Corpus Re-Ingestion (August 9)**: Full 25-doc corpus re-ingestion within 15-minute window; bifurcated meta schema (tree vs flat); persistent PASS verdicts on documents re-judged FAIL by session. Persistence-timing race suspected. Verdict: regressed—stored verdicts diverged from live judgments in same session.\n",
+  "wiring": {
+    "summary": "Wiring verification complete for pageindex project across 8 post-fix zones. All recently added/modified symbols (HEAD~15..HEAD) are properly wired to production code with no unwired symbols detected.\n\n**Summary of Findings:**\n\nZONE 1 (ExtractionState route/ok multi-writer cascade):\n- `_apply_clamp()` in verdict.py: Nested function inside `apply_promotions()`, properly wired with 6+ internal calls\n- `_all_defects()` in gates.py: New helper function with 30 total references; used by `_eligible_garble()`, `_eligible_low_content()`, `_eligible_image_dominant()`\n\nZONE 2 (Normalize-before-detect null-detector lattice):\n- `_infer_presentation_forms()` in garble.py: 20 references across production modules (indexer.py: 3 uses, pictures.py, images.py, recovery.py, verdict.py, tree_validation.py); exported in helpers/__init__.py\n\nZONE 3-5 (verdict/recovery/cascades):\n- All verdict chain modifications use properly wired existing symbols; no new unwired symbols\n\nZONE 6 (Config-layer bifurcation):\n- `RemoteVersionSkewError` in config.py: 8 references; used by remote.py to enforce version skew policy; properly caught in tests\n- Config modifications maintain existing exports\n\nZONE 7 (Converter pipeline):\n- `as_chain_entry()` in converters/pipeline.py: 4 references; exported in converters/__init__.py; used in indexer.py\n\nZONE 8 (Erasure manifest):\n- Storage modifications use existing symbol patterns; no new unwired symbols\n\n**Test Coverage:**\n- New test helpers (_th, _sig, _outcome, _run, _reference_apply_promotions) all properly used in test files\n- 694 lines added to test_zone1_verdict_partition.py\n- 239 additional lines in test_hr3_zdr_egress.py\n- No test-only symbols that lack production integration\n\n**Overall Wiring Health:** EXCELLENT\n- 5 new symbols identified\n- 5/5 properly wired to production code\n- 0 unwired symbols\n- 0 orphaned test-only public APIs\n- All exports correctly configured in __init__.py files\n- No missing imports in calling modules",
     "wiring_findings": [
-      "Run 9 Harness Bug: Scoring stage defaulted unscored records to ERROR instead of failing loudly; RFC-025 D4 pre-publish live MinIO re-pull required to catch false negatives (24 ERROR claim → 15 PASS/8 MARGINAL actual)",
-      "Verdict Threshold Regression: RFC-023 D10 widened PASS_MAX_LEAF_RATIO (0.17→0.20); three tests expecting MARGINAL for ratio ~0.20-0.21 now fail (receive PASS instead), indicating threshold oscillation across runs",
-      "Image Enrichment Promotion Bypass: image_enrichment_promoted and cat_b_promoted verdict-promotion flags mark docs PASS despite near-zero/regressed content (15x char loss on Unfallversicherung-2025 doc, 0.5x on مرسوم بقانون); violates Hard Rule 5 (low-quality trees persist silently)",
-      "Silent Registry Dual-Write: worker._upsert_registry_row (worker.py:480-502) catches exceptions and logs warning; document becomes invisible to all 5 MCP query tools if Postgres write fails silently (RFC-009 D6 removed MinIO fallback)",
-      "TOOL_ERRORS Metric Inflation: verdict_fail reason (healthy empty corpus when all candidates filtered as FAIL) was incorrectly counted toward TOOL_ERRORS alongside genuine outages (postgres_error, pool_not_ready, disabled); fixed to conditionally skip metric increment",
-      "Missing SQL Predicate Pushdown: RFC-006 Stage A facet filter is a no-op; RFC-015 verdict field (indexed, PASS/MARGINAL/FAIL) never consulted in retrieval path before running full RAG over every candidate",
-      "Static Gate Import Sorting: worker.py had unsorted imports; triggered static-analysis gate failure (fixed commit ff4211a)",
-      "Integration Gate Entirely Skipped: scripts/gates/integration.sh not run; gate logic unclear or test-selection broken",
-      "Frozen-Dataclass Settings Patching: worker coverage tests had frozen-dataclass-settings-patching issue (fixed in tests/test_worker_coverage.py)",
-      "Run 16 Verdict Persistence Race: 25-doc corpus re-ingestion within 15-min window; bifurcated meta schema (tree vs flat); stored PASS verdicts persisting uncorrected on documents re-judged FAIL in same session; persistence-timing race suspected",
-      "Garble Detection Without OCR Escalation: وارد رقم 597 correctly fires garble gate (ratio=1.00) but OCR escalation not implemented; doc remains MARGINAL with fully-garbled extracted content",
-      "Zero-Content Softening: Multiple Arabic PDFs (مرسوم 13/2022, اتفاقية الخدمة, قرار مجلس الوزراء 1/2022, etc.) softened FAIL/ERROR→MARGINAL in Run 9 without actual content recovery (0 blocks / 0 chars persists); verdict-gate softening masking real extraction failure",
-      "Coverage Thresholds Unverified: unit.sh coverage-thresholds sub-check SKIPPED due to missing pytest-cov; gate claimed PASS despite unverified enforcement target",
-      "Fabricated Corpus Report Accuracy: Prior published corpus verdict table (15/10/0) never computed via classify_verdict(); live MinIO re-derivation found 11/12/2/1; commit 41590f8 gate self-report miscounted tests and conflated structural checks (PASS=7 sub-checks) with per-test counts"
+      "✓ _infer_presentation_forms (garble.py): 20 refs, exported, used in indexer/pictures/images/recovery/verdict/tree_validation",
+      "✓ RemoteVersionSkewError (config.py): 8 refs, used in remote.py to enforce version skew, properly tested",
+      "✓ _all_defects (gates.py): 30 refs, internal helper for _eligible_garble/_eligible_low_content/_eligible_image_dominant",
+      "✓ as_chain_entry (converters/pipeline.py): 4 refs, exported, used in indexer.py for pdf_markdown_converters",
+      "✓ _apply_clamp (verdict.py): nested function in apply_promotions, 6+ internal calls within verdict.py",
+      "✓ Test helpers (_th, _sig, _outcome, _run, _reference_apply_promotions): all properly used in test_zone1_verdict_partition.py",
+      "✓ No unwired public symbols detected",
+      "✓ All zone key files: proper imports configured in __init__.py files",
+      "✓ Cascading symbol usage verified: verdict paths → gates → indexer chain intact",
+      "✓ Production call chains intact: indexer → converters → config → remote → gates → verdict"
+    ],
+    "past_cycle_outcomes": "Recent commits (083aa6e through 9ccc6f1) successfully wired 5 new symbols with no orphaned definitions. Zone-specific tests (test_zone1_verdict_partition.py: 694 lines, test_hr3_zdr_egress.py: 239 lines) verify production integration. No regressions or unwired symbols in verdict-gate cascade (VG-1..VG-7), OCR recovery cascade, or config bifurcation paths."
+  },
+  "mem": {
+    "summary": "Past Remediation Cycle Outcomes for PageIndex Project (Aug 12-31, 2026): Project shows regressive trend across five major cycles. POST-RUN20 (Aug 27) verdict NEEDS_ANOTHER_CYCLE with 2 zones closed (net -40 bugs, 25 unwired symbols blocking GDPR/DSR compliance). POST-FIX-11 (Aug 24) regressed (net +13 bugs, 3 new critical zones, 2 stalled). POST-FIX-12 (Aug 26) regressed (net -34 bugs but 2 severity escalations high to critical). POST-FIX-WAVE3 (Aug 28) regressed (net +14 bugs, 0 closed, 4 regressed, critical inflection requiring re-audit). POST-FIX-WAVE4 (Aug 29) shows 8 zones with 32 bugs (3 critical, 4 high). Codebase accumulating diagnosis faster than fixes; four detailed proposals specified but never implemented.",
+    "past_cycle_outcomes": "CYCLE VERDICTS (chronological): 1. POST-RUN20 (2026-08-27) NEEDS_ANOTHER_CYCLE: zones_closed=2, zones_improved=5, net_bug_delta=-40, unwired_symbols=25 (blocking GDPR cascade). 2. POST-FIX-11 (2026-08-24) REGRESSED: net_bug_delta=+13 (64 to 77 bugs), zones_closed=2, zones_improved=3, zones_stalled=2 (Garble Detection, Verdict), new_zones=3 critical. 3. POST-FIX-12 (2026-08-26) REGRESSED: net_bug_delta=-34 (83 to 49), zones_closed=3 (14+6+4 bugs), severity_escalations=2 high-to-critical (Verdict Gate, OCR Pipeline), critical_unwired=validate_hr3_compliance. 4. POST-FIX-WAVE3 (2026-08-28) REGRESSED: net_bug_delta=+14, zones_closed=0, zones_regressed=4, zones_stalled=1, total_zones=8 (3 critical, 4 high, 1 medium, 38 bugs), fixes_introduced_more_defects_than_resolved. 5. POST-FIX-WAVE4 (2026-08-29): 8 zones, 32 bugs, 3 critical (ExtractionState multi-writer 7 bugs, NFKC-null-detector 6 bugs, split verdict authority 5 bugs), 4 high, 1 medium.",
+    "wiring_findings": [
+      "HARD RULE #2 (GDPR/DSR) COMPLIANCE BLOCKER: 11 erasure cascade functions unwired since POST-RUN20 (2026-08-27): _erase_uploads, _erase_processed_json, _erase_processed_flat_json, _erase_figures, _erase_verdicts, _erase_meta_json, _erase_redis_cache, _erase_reconcile_etag, _erase_hash_cache, _erase_registry, _erase_preloaded. Persists through all subsequent cycles.",
+      "HARD RULE #3 (PII EGRESS) CRITICAL: validate_hr3_compliance (config.py) defined but 0 production callers since POST-FIX-12. CLAUDE.md mandates active compliance gating at startup; current state leaves PII-bearing documents unprotected.",
+      "OCR RECOVERY UNWIRED (test-only): _recover_garble_ocr, _recover_image_dominant_ocr, _recover_low_content_ocr, _recover_rtl_repair, _recover_vlm_fallback all test-only or structurally unreachable from production flow since POST-RUN20.",
+      "GATE ELIGIBILITY FUNCTIONS UNWIRED (4): _eligible_garble, _eligible_low_content, _eligible_image_dominant, _eligible_rtl since POST-RUN20.",
+      "IMAGE ENRICHMENT FILTER UNWIRED: compute_image_enrichment_ratio (RFC-036 D4) defined since POST-FIX-12, 0 production callers.",
+      "GARBLE DETECTION CHRONIC (7+ cycles): Root cause NFKC-destroys-presentation-forms (U+FB50-FDFF) appears in every audit since 2026-07-27. Null-detector pattern where zero violations historically misread as safety evidence. Multiple proposals (ScriptContext threading, per-block checking) specified but unimplemented.",
+      "VERDICT GATE CHRONIC (6+ cycles): Threshold oscillation masquerading as content regression; threshold widening reveals masked defects, tightening causes regressions. image_enrichment_promoted priority=100 bypass outranks structural hard-fail guards. Simplification proposal (declarative PROMOTION_TABLE) specified but unimplemented.",
+      "TREE-VS-FLAT GATE ASYMMETRY REOPENED: Closed POST-FIX-12 with 14 bugs eliminated, reopened POST-FIX-WAVE4 as ExtractionState route/ok multi-writer cascade (Zone 1, 7 bugs). Fix-one-miss-other pattern persists."
     ]
   }
 }
