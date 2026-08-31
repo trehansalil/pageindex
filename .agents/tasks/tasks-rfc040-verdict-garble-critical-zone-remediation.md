@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Verdict Gate & Garble Detection Critical Zone Remediation -->
+<!-- Folder: Tasks -->
+
 ---
 id: "tasks-rfc040-verdict-garble-critical-zone-remediation"
 title: "Tasks: Verdict Gate & Garble Detection Critical Zone Remediation"

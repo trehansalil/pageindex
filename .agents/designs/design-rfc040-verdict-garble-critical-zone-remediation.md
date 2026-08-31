@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Verdict Gate & Garble Detection Critical Zone Remediation -->
+<!-- Folder: Designs -->
+
 ---
 id: "design-rfc040-verdict-garble-critical-zone-remediation"
 title: "Design: Verdict Gate & Garble Detection Critical Zone Remediation"
