@@ -11,6 +11,7 @@ PageIndex MCP Server is a vectorless / tree-reasoning RAG document-ingestion pla
 3. **Route PII-bearing documents only through a no-training + zero-retention LLM tier** (OpenAI ZDR / Anthropic ZDR / Azure modified-abuse-monitoring); EU residency where the corpus warrants. `OPENAI_BASE_URL` is the routing lever; a self-hosted model is the ultimate residency fallback.
 4. **AGPL-3.0 awareness.** pymupdf4llm/PyMuPDF are AGPL-3.0 (transitive dep). Serving them over a network is a legal decision to clear, not a settled safe-harbor. The MIT escape is Docling.
 5. **Never silently persist a low-quality tree.** `validate_tree()` must run before `save_doc`; a failing tree must surface as an arq `low_quality_tree` error, not a stored artifact.
+6. **`/mem-search` always covers both claude-mem projects.** Every memory search must query `pageindex` **and** `pageindex_deployment` — never one alone, or half the history is silently invisible. The claude-mem `search` / `timeline` / `get_observations` tools take a single `project` string, so issue each call twice (in parallel) and merge/dedupe the results. Applies to all three layers of the workflow, not just the first search.
 
 
 ## Document Map
