@@ -30,9 +30,9 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
 
 ## Tasks
 
-- [ ] 1. Foundation — Config Access Consolidation & Measurement Guard (D4, D5)
+- [x] 1. Foundation — Config Access Consolidation & Measurement Guard (D4, D5)
 
-  - [ ] 1.1 Audit `os.environ` reads across src/
+  - [x] 1.1 Audit `os.environ` reads across src/
 
     - Grep all 121 `os.environ` references across the 17 source files
     - Classify each reference as **hot-path** (called per-document during indexing) vs **startup-only** (read once at import/init time)
@@ -40,7 +40,7 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - Identify variables read live that already exist in PipelineConfig (dual-sourced)
     - _Requirements: [R4.1](042-verdict-config-unification#requirement-4-config-access-consolidation), [DP-4.1](design-rfc042-verdict-config-unification#d4-config-access-consolidation)_
 
-  - [ ] 1.2 Route hot-path `os.environ` reads through PipelineConfig
+  - [x] 1.2 Route hot-path `os.environ` reads through PipelineConfig
 
     - Replace live `os.environ` reads in hot-path files with PipelineConfig field access, starting with: gates.py, pictures.py, indexer.py, tree_split.py
     - For variables not yet in PipelineConfig, add new fields to the frozen dataclass at config.py:366-578
@@ -49,14 +49,14 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - NOTE: Startup-only reads (tracing.py, subprocess_mgr.py, minio_client.py) are left as `os.environ` — they run once before PipelineConfig is frozen
     - _Requirements: [R4.2](042-verdict-config-unification#requirement-4-config-access-consolidation), [DP-4.2](design-rfc042-verdict-config-unification#d4-config-access-consolidation)_
 
-  - [ ] 1.3 Add architecture guard test for config access
+  - [x] 1.3 Add architecture guard test for config access
 
     - Write a grep-based test that asserts hot-path source files (gates.py, pictures.py, indexer.py, tree_split.py, garble.py, verdict.py) do not contain direct `os.environ` references
     - Maintain an allowlist for startup-only files where live reads are intentional
     - Test should fail if a new `os.environ` read is added to a hot-path file
     - _Requirements: [R4.3](042-verdict-config-unification#requirement-4-config-access-consolidation), [DP-4.3](design-rfc042-verdict-config-unification#d4-config-access-consolidation)_
 
-  - [ ] 1.4 Add content measurement regression guard (D5)
+  - [x] 1.4 Add content measurement regression guard (D5)
 
     - Write a test that constructs a document with table blocks containing `row_records`/`headers`/`rows` (no `text` key)
     - Assert `block_text(block, BlockTextPurpose.CHAR_COUNT)` returns non-zero character count from table content
@@ -65,23 +65,23 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - Verify no code path in src/ accesses `block.get("text")` directly for measurement (grep guard)
     - _Requirements: [R5.1](042-verdict-config-unification#requirement-5-content-measurement-regression-guard), [DP-5.1](design-rfc042-verdict-config-unification#d5-content-measurement-regression-guard)_
 
-  - [ ] 1.C Checkpoint — Foundation
+  - [x] 1.C Checkpoint — Foundation
 
-    - Run `uv run pytest tests/ -k "config or measurement"` and verify all pass
-    - Run `uv run pytest tests/ -k "architecture_guard"` and verify config + measurement guards pass
-    - Verify no regressions in existing test suite: `uv run pytest tests/`
+    - Run `uv run pytest tests/ -k "config or measurement"` and verify all pass — 114 passed
+    - Run `uv run pytest tests/ -k "architecture_guard"` and verify config + measurement guards pass — 43 passed
+    - Verify no regressions in existing test suite: `uv run pytest tests/` — 2016 passed, 9 skipped, 2 xfailed, 1 xpassed, 0 failed
     - Ask the user if questions arise before proceeding.
 
 - [ ] 2. Verdict Persistence — Single-Writer Enforcement (D3)
 
-  - [ ] 2.1 Enforce `save_doc_meta` single-caller via architecture guard **(Amendment 2026-09-01 v2: guard-only, no rename)**
+  - [x] 2.1 Enforce `save_doc_meta` single-caller via architecture guard **(Amendment 2026-09-01 v2: guard-only, no rename)**
 
     - Keep `save_doc_meta` name unchanged — rename blast radius (19 files, 110+ references including ~12 test mock patches) outweighs benefit
     - NOTE: `_upsert_registry_row` already calls `save_doc_meta` in 3 places (degradation stamp ×2, backfill ×1) and already stamps `consistency_regime`. The write-through pattern exists; this task closes bypass paths.
     - Add architecture guard test (grep-based, matching `TestSidecarPassivityGuards` pattern in test_architecture_guards.py) asserting `save_doc_meta` is only called from `registry_mirror.py` and child-subprocess callers (`_persist_flat_result`, `_persist_tree_result`) in production code
     - _Requirements: [R3.1](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.1](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
 
-  - [ ] 2.2 Consolidate `save_doc_meta` bypass callers **(Amendment 2026-09-01 v2: child-subprocess callers stay, batch tools redirect)**
+  - [x] 2.2 Consolidate `save_doc_meta` bypass callers **(Amendment 2026-09-01 v2: child-subprocess callers stay, batch tools redirect)**
 
     - Consolidate callers outside `_upsert_registry_row` — two strategies by caller type:
     - **Keep as-is (child subprocess, no Postgres access):**
@@ -98,21 +98,21 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - NOTE: Incremental per-caller migration with per-step test runs recommended
     - _Requirements: [R3.2](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.2](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
 
-  - [ ] 2.3 Add CAS guard to MinIO write path
+  - [x] 2.3 Add CAS guard to MinIO write path
 
     - In the write-through path inside `_upsert_registry_row`, add a timestamp + priority CAS comparison before writing to MinIO
     - Use the same `>=` semantics as Postgres `_UPSERT_SQL` (queries.py:127) — eliminate the historical `>` vs `>=` divergence
     - During Postgres degradation (`consistency_regime=sidecar-only`), the MinIO CAS guard must still enforce priority ordering from the last known Postgres state
     - _Requirements: [R3.3](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.3](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
 
-  - [ ] 2.4 Verify `reconcile_registry_drift` uses write-through path **(Amendment 2026-09-01: direction corrected)**
+  - [x] 2.4 Verify `reconcile_registry_drift` uses write-through path **(Amendment 2026-09-01: direction corrected)**
 
     - `reconcile_registry_drift` (reconcile.py:113-232) reads MinIO sidecars → upserts to Postgres via `_upsert_all`. This direction is correct and unchanged.
     - `_drain_verdict_retry_queue` (reconcile.py:82) replays queued verdicts into Postgres, then backfills MinIO. This sub-path must use `_save_doc_meta` via `_upsert_registry_row`, not call it directly.
     - Verify `_drain_verdict_retry_queue` is the only reconcile sub-path that writes to MinIO
     - _Requirements: [R3.4](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.4](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
 
-  - [ ] 2.5 Architecture guard: `save_doc_meta` single-writer enforcement **(Amendment 2026-09-01 v2: guard-only, no rename)**
+  - [x] 2.5 Architecture guard: `save_doc_meta` single-writer enforcement **(Amendment 2026-09-01 v2: guard-only, no rename)**
 
     - Write a grep-based test (matching `TestSidecarPassivityGuards` / `TestNoDirectGarbleProngsOutsideGarblePy` patterns) that verifies `save_doc_meta` is only called from `registry_mirror.py` and the two child-subprocess callers (`_persist_flat_result`, `_persist_tree_result` in indexer.py) in production code
     - Test files are exempt from the guard (they mock `save_doc_meta` for isolation)
@@ -142,11 +142,11 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - Document the ordering contract: changes to order require an RFC amendment
     - _Requirements: [R1.1](042-verdict-config-unification#requirement-1-promotion-evaluation-ordering-contract), [DP-1.1](design-rfc042-verdict-config-unification#d1-promotion-evaluation-ordering-contract)_
 
-  - [ ] 3.2 Refactor `apply_promotions` to iterate `PROMOTION_ORDER`
+  - [ ] 3.2 Refactor `apply_promotions` to use `PROMOTION_ORDER` for winner selection **(Amendment 2026-09-01 v2: winner-selection, not loop replacement)**
 
-    - Replace the implicit source-order iteration with explicit `for try_fn in PROMOTION_ORDER:` loop
-    - Maintain VG-6 telemetry: all paths still evaluated unconditionally and recorded in `_matches`
-    - Winner is still `_matches[0]` (first match in PROMOTION_ORDER) — document this invariant
+    - All six `_try_*` functions continue to evaluate unconditionally in source order (VG-6 telemetry via `promotion_paths_matched` preserved) — each has a distinct signature, so a generic evaluation loop is not feasible
+    - After all `_try_*` functions populate `_matches`, re-sort `_matches` by `PROMOTION_ORDER` index before selecting `_matches[0]` — this decouples priority from source-code position
+    - Document the invariant: winner is `_matches[0]` after re-sort (first match in PROMOTION_ORDER priority)
     - _Requirements: [R1.2](042-verdict-config-unification#requirement-1-promotion-evaluation-ordering-contract), [DP-1.2](design-rfc042-verdict-config-unification#d1-promotion-evaluation-ordering-contract)_
 
   - [ ] 3.3 Absorb `CATEGORY_BC_PROMOTION_THRESHOLD` into PipelineConfig (D2) **(Amendment 2026-09-01: scope narrowed)**
@@ -157,7 +157,7 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - Verify no other module-level constants bypass PipelineConfig in the threshold chain
     - _Requirements: [R2.1](042-verdict-config-unification#requirement-2-promotion-threshold-isolation), [DP-2.1](design-rfc042-verdict-config-unification#d2-promotion-threshold-isolation)_
 
-  - [ ]* 3.4 Add promotion determinism property test
+  - [ ] 3.4 Add promotion determinism property test
 
     - Property: given the same `DocumentSignature` and the same `PipelineConfig` snapshot, `apply_promotions` always returns the same winner and `_matches` list
     - Use hypothesis or parametric fixtures with known document signatures
@@ -190,7 +190,7 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - Assert `consistency_regime` stamp is correct in each mode
     - _Requirements: [R6.1](042-verdict-config-unification#requirement-6-verdict-subsystem-integration-tests), [DP-6.1](design-rfc042-verdict-config-unification#d6-verdict-subsystem-integration-tests)_
 
-  - [ ]* 4.2 Config consistency property test
+  - [ ] 4.2 Config consistency property test
 
     - Property: within a single document processing run, all configuration reads return the same values regardless of access path (PipelineConfig field vs former `os.environ` site)
     - Instrument a test run to capture all config accesses and assert no divergence

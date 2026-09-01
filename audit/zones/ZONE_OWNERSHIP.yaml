@@ -80,26 +80,28 @@ zones:
     name: "Config-layer bifurcation"
     severity: high
     bug_count: 4
-    owning_rfc: null
-    owning_deliverable: null
+    owning_rfc: RFC-042
+    owning_deliverable: "D4"
     resolved: false
     successor_rfc: null
     successor_deliverable: null
     notes: >
-      No RFC owns full remediation yet; RFC-041 D5 (heuristic registry)
-      creates the mechanism to retire compensating paths over time but does
-      not close the zone. Candidate for RFC-041 D9 gap triage or a future RFC.
+      RFC-042 D4 (config access consolidation) routes hot-path os.environ
+      reads through PipelineConfig. RFC-041 D5 (heuristic registry)
+      creates the mechanism to retire compensating paths over time.
 
   zone_5:
     name: "Ordered-policy converter chain"
     severity: high
     bug_count: 4
-    owning_rfc: null
-    owning_deliverable: null
+    owning_rfc: RFC-043
+    owning_deliverable: "D1,D2"
     resolved: false
     successor_rfc: null
     successor_deliverable: null
-    notes: "Unassigned. Retry-loop bug defeating HR4 licensing guarantee needs a future RFC."
+    notes: >
+      RFC-043 D1 (zero-content recovery bypass) and D2 (flag decoupling)
+      address OCR recovery gaps. Converter chain ordering remains unassigned.
 
   zone_6:
     name: "Recovery dispatch: tuple-keyed dedup"
@@ -127,12 +129,12 @@ zones:
     name: "Order-coupled erasure manifest"
     severity: medium
     bug_count: 2
-    owning_rfc: RFC-011
-    owning_deliverable: null
+    owning_rfc: RFC-043
+    owning_deliverable: "D4,D5"
     resolved: false
     successor_rfc: null
     successor_deliverable: null
     notes: >
-      RFC-011 (compliance-auth-quickwins) is the nearest compliance RFC but
-      does not yet explicitly own this zone's erasure-cascade ordering fix.
-      Unassigned deliverable; candidate for triage.
+      RFC-043 D4 (erasure manifest ordering validation) and D5 (failure
+      loudness) address data-flow ordering deps and silent degradation.
+      RFC-011 remains nearest for broader compliance scope.
