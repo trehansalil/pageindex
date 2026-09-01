@@ -7,6 +7,7 @@ import re
 
 from ..config import pipeline_config
 from ..script import ScriptContext, decide_rtl
+from .heuristic_registry import registry as _heuristic_registry
 from .garble import (
     BULK_PROFILE,
     BlobKind,
@@ -477,6 +478,7 @@ def apply_promotions(
         matched — telemetry only, it never influences the verdict.
         """
         if source_selection and _is_image_enrichment:
+            _heuristic_registry.fire("source_selection_bypass")
             return VerdictResult(
                 "PASS",
                 reason,
@@ -506,6 +508,7 @@ def apply_promotions(
     # D1: Unconditional structural hard-fail gate
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
         if _ie is not None:
+            _heuristic_registry.fire("_try_image_enrichment")
             return _apply_clamp(
                 _ie, _is_image_enrichment=True, paths=("image_enrichment",)
             )
@@ -529,26 +532,32 @@ def apply_promotions(
     # unconditionally is safe.
     _matches: list[tuple[str, str]] = []
     if _ie is not None:
+        _heuristic_registry.fire("_try_image_enrichment")
         _matches.append(("image_enrichment", _ie))
 
     _sp = _try_structural_pass(sig, _all_defects, th)
     if _sp is not None:
+        _heuristic_registry.fire("_try_structural_pass")
         _matches.append(("structural_pass", _sp))
 
     _ca = _try_ocr_promotion(sig, content_class, th)
     if _ca is not None:
+        _heuristic_registry.fire("_try_ocr_promotion")
         _matches.append(("cat_a", _ca))
 
     _cb = _try_flat_promotion(sig, content_class, th)
     if _cb is not None:
+        _heuristic_registry.fire("_try_flat_promotion")
         _matches.append(("cat_b", _cb))
 
     _cc = _try_content_class_promotion(sig, content_class, inspector_class, th)
     if _cc is not None:
+        _heuristic_registry.fire("_try_content_class_promotion")
         _matches.append(("cat_c", _cc))
 
     _sd = _try_small_doc_promotion(sig, content_class, th)
     if _sd is not None:
+        _heuristic_registry.fire("_try_small_doc_promotion")
         _matches.append(("small_doc", _sd))
 
     if _matches:

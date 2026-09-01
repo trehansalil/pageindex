@@ -25,6 +25,7 @@ from pageindex_mcp.helpers import (
     _word_has_reversed_morphology,
     BULK_PROFILE,
     ExtractionState,
+    finalize_gate_and_route,
     GATES,
     GateSpec,
     RecoveryOutcome,
@@ -34,6 +35,7 @@ from pageindex_mcp.helpers import (
     TreeGateResult,
     validate_tree,
 )
+from pageindex_mcp.helpers.types import _defect_from_reason_str, _guard_bypass
 from pageindex_mcp.worker import (
     CHILD_TIMEOUT,
     _run_converter_subprocess,
@@ -1068,3 +1070,159 @@ class TestVLMFallbackSingleTesseractBlock:
         assert tesseract_call_count == 1
         assert state.md_content == "# recovered"
         assert state.route == Route.FLAT
+
+
+# ===========================================================================
+# D3: Single-writer invariant enforcement
+# ===========================================================================
+
+
+class TestD3GuardedFieldProtection:
+    @pytest.mark.parametrize("field", ["route", "ok", "reason", "first_defect", "gate_result"])
+    def test_direct_assignment_raises(self, field):
+        state = _make_state()
+        with pytest.raises(AttributeError, match="D3 single-writer"):
+            setattr(state, field, None)
+
+    def test_non_guarded_field_assignment_allowed(self):
+        state = _make_state()
+        state.md_content = "new content"
+        assert state.md_content == "new content"
+
+    def test_finalize_gate_and_route_bypasses_guard(self):
+        state = _make_state()
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        finalize_gate_and_route(state, gate)
+        assert state.ok is True
+        assert state.route == Route.TREE
+
+    def test_recovery_outcome_apply_bypasses_guard(self):
+        state = _make_state()
+        RecoveryOutcome(ok=True, route=Route.FLAT).apply(state)
+        assert state.ok is True
+        assert state.route == Route.FLAT
+
+
+class TestD3DefectFromReasonStrValueError:
+    def test_unrecognized_reason_raises(self):
+        with pytest.raises(ValueError, match="Unrecognized reason string"):
+            _defect_from_reason_str("totally_unknown_reason")
+
+    def test_empty_reason_returns_ok(self):
+        assert _defect_from_reason_str("") == TreeDefect.OK
+
+    def test_none_reason_returns_ok(self):
+        assert _defect_from_reason_str(None) == TreeDefect.OK
+
+    def test_known_reason_returns_defect(self):
+        assert _defect_from_reason_str("garbling") == TreeDefect.GARBLING
+
+    def test_prefixed_reason_returns_defect(self):
+        assert _defect_from_reason_str("garbling(ratio=0.5)") == TreeDefect.GARBLING
+
+
+class TestD3ForceRouteOverride:
+    def test_force_route_overrides_decide_route(self):
+        state = _make_state()
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        finalize_gate_and_route(state, gate, force_route=Route.FLAT)
+        assert state.route == Route.FLAT
+        assert state.ok is True
+
+    def test_force_ok_overrides_gate_ok(self):
+        state = _make_state()
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        finalize_gate_and_route(state, gate, force_ok=False)
+        assert state.ok is False
+        assert state.route == Route.TREE
+
+    def test_force_route_and_force_ok_together(self):
+        state = _make_state()
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        finalize_gate_and_route(state, gate, force_route=Route.FLAT, force_ok=False)
+        assert state.route == Route.FLAT
+        assert state.ok is False
+
+    def test_rtl_comparison_site_produces_flat(self):
+        state = _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.RTL_REVERSAL)
+        gate = TreeGateResult(
+            ok=False, defect=TreeDefect.RTL_REVERSAL,
+            detail="rtl_reversal",
+        )
+        finalize_gate_and_route(
+            state, gate,
+            recovery_method="rtl_comparison",
+            recovery_succeeded=True,
+            force_route=Route.FLAT,
+        )
+        assert state.route == Route.FLAT
+        assert state.ok is False
+
+    def test_vlm_tesseract_site_produces_flat(self):
+        state = _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.GARBLING)
+        gate = TreeGateResult(
+            ok=False, defect=TreeDefect.GARBLING,
+            detail="garbling",
+        )
+        finalize_gate_and_route(
+            state, gate,
+            recovery_method="vlm_tesseract_raster",
+            recovery_succeeded=True,
+            force_route=Route.FLAT,
+        )
+        assert state.route == Route.FLAT
+
+    def test_flat_prefer_density_site(self):
+        state = _make_state(ok=True, route=Route.TREE)
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        finalize_gate_and_route(
+            state, gate,
+            recovery_method="flat_prefer_density",
+            recovery_succeeded=True,
+            force_route=Route.FLAT,
+            force_ok=False,
+        )
+        assert state.route == Route.FLAT
+        assert state.ok is False
+
+    def test_landscape_reroute_site(self):
+        state = _make_state(ok=True, route=Route.TREE)
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        finalize_gate_and_route(
+            state, gate,
+            recovery_method="landscape_reroute",
+            recovery_succeeded=True,
+            force_route=Route.FLAT,
+            force_ok=False,
+        )
+        assert state.route == Route.FLAT
+        assert state.ok is False
+
+
+class TestD3DeprecationWarning:
+    def test_legacy_tuple_emits_deprecation(self):
+        state = _make_state()
+        with pytest.warns(DeprecationWarning, match="legacy.*tuple"):
+            finalize_gate_and_route(state, (True, ""))
+
+    def test_tree_gate_result_no_deprecation(self):
+        import warnings
+        state = _make_state()
+        gate = TreeGateResult(
+            ok=True, defect=TreeDefect.OK,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            finalize_gate_and_route(state, gate)

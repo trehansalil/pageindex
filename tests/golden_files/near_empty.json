@@ -1,0 +1,30 @@
+{
+  "archetype": "near_empty",
+  "description": "Near-empty document with insufficient content, triggering zero_content or insufficient_content FAIL",
+  "input": {
+    "structure": [
+      {
+        "title": "Empty",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Placeholder",
+            "text": "   ",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": false,
+    "gate_defect": "node_count<3",
+    "verdict": "FAIL",
+    "verdict_reason_prefix": "insufficient_content",
+    "recovery_eligible": true,
+    "recovery_method": "_recover_low_content_ocr"
+  }
+}

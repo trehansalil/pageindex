@@ -429,6 +429,12 @@ mappings:
       - test_density_gate.py
       - test_converters.py
 
+  helpers/heuristic_registry.py:
+    tests:
+      - test_heuristic_registry.py    # primary
+      - test_triad_golden.py          # D6 golden-file snapshots
+      - test_triad_properties.py      # D7 property-based triad tests
+
   helpers/flat.py:
     tests:
       - test_helpers_combined.py               # primary
@@ -575,3 +581,10 @@ mappings:
   # ── Standalone top-level files ──────────────────────────────────────────────
   # These are not under src/pageindex_mcp/ but are tracked for completeness.
   # The gate script only enforces src/pageindex_mcp/ mappings.
+
+# ── Standalone scripts (outside src/pageindex_mcp/) ────────────────────────
+# Not enforced by the gate, but tracked for completeness.
+standalone:
+  scripts/rfc_lifecycle_lint.py:
+    tests:
+      - test_rfc_lifecycle_lint.py    # D8 RFC lifecycle CI gate

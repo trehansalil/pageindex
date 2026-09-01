@@ -1,0 +1,33 @@
+{
+  "archetype": "scanned_image_ocr",
+  "description": "OCR-scanned document with low node count triggering recovery eligibility",
+  "input": {
+    "structure": [
+      {
+        "title": "Scanned Page",
+        "text": "",
+        "nodes": [
+          {
+            "title": "OCR Content",
+            "text": "The insurance policy number reference alpha bravo charlie delta echo foxtrot providing coverage for the listed items and services described herein according to the terms established by the underwriting department.",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "ocr_document",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": false,
+    "gate_defect": "node_count<3",
+    "verdict_in": [
+      "PASS",
+      "MARGINAL",
+      "FAIL"
+    ],
+    "recovery_eligible": true,
+    "recovery_method": "_recover_low_content_ocr"
+  }
+}

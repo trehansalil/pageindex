@@ -41,24 +41,24 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
 
 ## Tasks
 
-- [ ] <a id="1-wave-0--immediate-quick-wins-d4"></a>1. Wave 0 — Immediate Quick Wins ([D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4))
+- [x] <a id="1-wave-0--immediate-quick-wins-d4"></a>1. Wave 0 — Immediate Quick Wins ([D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4))
 
   *[RFC-041 Wave 0](../rfcs/041-recurring-defect-consolidation.md#sequencing): Zero/low risk, independent quick wins*
 
-  - [ ] <a id="13-recovery-dispatch-cross-tuple-dedup-d4"></a>1.3 Recovery dispatch cross-tuple dedup ([D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4))
+  - [x] <a id="13-recovery-dispatch-cross-tuple-dedup-d4"></a>1.3 Recovery dispatch cross-tuple dedup ([D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4))
 
     - Change recovery dispatch to dedup by method name across ALL gate tuples (not per-tuple)
     - Add `full_page_already_applied` guard at `_recover_image_dominant_ocr` entry
     - Add test: two co-firing defects (NODE_COUNT_LOW + DEPTH_LOW) with same recovery method — method executes once
     - _Requirements:_ [RFC-041 D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4) | [Design Property 4](../designs/design-rfc041-recurring-defect-consolidation.md#property-4-recovery-dedup-idempotency) | [Design Service: recovery.py](../designs/design-rfc041-recurring-defect-consolidation.md#5-recoverypy) | [Design Sequence: Recovery Dispatch Flow](../designs/design-rfc041-recurring-defect-consolidation.md#recovery-dispatch-flow--d3--d4)
 
-  - [ ] <a id="14-consolidate-vlm-fallback-triple-block-d4"></a>1.4 Consolidate VLM fallback triple-block ([D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4))
+  - [x] <a id="14-consolidate-vlm-fallback-triple-block-d4"></a>1.4 Consolidate VLM fallback triple-block ([D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4))
 
     - Collapse three identical `_attempt_tesseract_raster_recovery` fallback blocks in `_recover_vlm_fallback` (:650,:668,:686) into one
     - Add test: VLM fallback with tesseract raster recovery — single block executes
     - _Requirements:_ [RFC-041 D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4) | [Design Property 4](../designs/design-rfc041-recurring-defect-consolidation.md#property-4-recovery-dedup-idempotency) | [Design Service: recovery.py](../designs/design-rfc041-recurring-defect-consolidation.md#5-recoverypy)
 
-  - [ ] <a id="16-zone-5-ng5-verification"></a>1.6 Zone 5 (NG5) verification **(Added: review v2 2026-09-01)**
+  - [x] <a id="16-zone-5-ng5-verification"></a>1.6 Zone 5 (NG5) verification **(Added: review v2 2026-09-01)**
 
     - Grep for the retry-loop fix claimed to cover Zone 5 (converter chain HR4 enforcement)
     - Validate the fix against the Zone 5 audit spec (`audit/zones/zone5_*`)
@@ -67,18 +67,18 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - _Rationale:_ Prevents repeating the RFC-040 orphan pattern where Zone 2 was deferred on an unvalidated claim
     - _Requirements:_ [RFC-041 NG5](../rfcs/041-recurring-defect-consolidation.md#non-goals)
 
-  - [ ] <a id="15-checkpoint--wave-0"></a>1.5 Checkpoint — Wave 0
+  - [x] <a id="15-checkpoint--wave-0"></a>1.5 Checkpoint — Wave 0
 
     - Run `uv run pytest` and verify all existing tests pass
     - Verify [Property 4](../designs/design-rfc041-recurring-defect-consolidation.md#property-4-recovery-dedup-idempotency) — new tests pass
     - Verify Zone 5 (NG5) verification outcome documented **(Added: review v2 2026-09-01)**
     - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="2-wave-1--garble-and-text-accessor-foundation-d1-d2"></a>2. Wave 1 — Garble & Text Accessor Foundation ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1), [D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
+- [x] <a id="2-wave-1--garble-and-text-accessor-foundation-d1-d2"></a>2. Wave 1 — Garble & Text Accessor Foundation ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1), [D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
 
   *[RFC-041 Wave 1](../rfcs/041-recurring-defect-consolidation.md#sequencing): Unify garble + text accessors before state routing*
 
-  - [ ] <a id="21-garble-entry-point-consolidation-d1"></a>2.1 Garble entry point consolidation ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1))
+  - [x] <a id="21-garble-entry-point-consolidation-d1"></a>2.1 Garble entry point consolidation ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1))
 
     - Replace `garble_prongs` call in `_garble_check_nodes` fallback (:745–750) with `detect_garble`
     - Rename `garble_prongs` → `_garble_prongs`
@@ -87,7 +87,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Add test: document below `garble_digit_floor` — fallback now consistently handled by `detect_garble`
     - _Requirements:_ [RFC-041 D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1) | [Design Property 1](../designs/design-rfc041-recurring-defect-consolidation.md#property-1-garble-detection-convergence) | [Design Service: garble.py](../designs/design-rfc041-recurring-defect-consolidation.md#1-garblepy) | [Design Sequence: Garble Detection Flow](../designs/design-rfc041-recurring-defect-consolidation.md#garble-detection-flow--d1--d10)
 
-  - [ ] <a id="22-block-text-accessor-unification-d2"></a>2.2 Block text accessor unification ([D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
+  - [x] <a id="22-block-text-accessor-unification-d2"></a>2.2 Block text accessor unification ([D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
 
     - Create `BlockTextPurpose` enum in `flat.py`: `GARBLE_CHECK`, `SEARCH`, `CHAR_COUNT`, `DISPLAY`
     - Create two-tier API **(review v2 2026-09-01)**: `block_text(block: dict, purpose: BlockTextPurpose) -> str` for single-block extraction + `doc_text(data: dict, purpose: BlockTextPurpose) -> str` for whole-document iteration. `doc_text` iterates blocks and delegates to `block_text` per block.
@@ -103,27 +103,27 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Add test: `block_text` with each purpose for table, paragraph, image blocks
     - _Requirements:_ [RFC-041 D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2) | [Design Property 2](../designs/design-rfc041-recurring-defect-consolidation.md#property-2-block-text-consistency) | [Design Service: flat.py](../designs/design-rfc041-recurring-defect-consolidation.md#2-flatpy) | [Design Service: tree_validation.py](../designs/design-rfc041-recurring-defect-consolidation.md#3-tree_validationpy)
 
-  - [ ] <a id="23-ci-lint-for-garble-prongs-and-block-text-d1-d2"></a>2.3 CI lint for `garble_prongs` and `block['text']` ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1), [D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
+  - [x] <a id="23-ci-lint-for-garble-prongs-and-block-text-d1-d2"></a>2.3 CI lint for `garble_prongs` and `block['text']` ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1), [D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
 
     - Add CI grep rule blocking direct `_garble_prongs` calls outside `garble.py`
     - Add CI grep rule flagging direct `block['text']` access outside `block_text()`
     - Add test: CI lint test for both patterns
     - _Requirements:_ [RFC-041 D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1) | [RFC-041 D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2) | [Design Property 1](../designs/design-rfc041-recurring-defect-consolidation.md#property-1-garble-detection-convergence) | [Design Property 2](../designs/design-rfc041-recurring-defect-consolidation.md#property-2-block-text-consistency)
 
-  - [ ] <a id="24-fix-arabic-dead-code-d10"></a>2.4 Fix 'Arabic' vs 'Arab' dead code ([D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8))
+  - [x] <a id="24-fix-arabic-dead-code-d10"></a>2.4 Fix 'Arabic' vs 'Arab' dead code ([D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8))
 
     - Change `garble.py` :583 comparison from `'Arabic'` to `'Arab'` to match `_infer_script` return value
     - Add test: Arabic-script text now hits the garble detection path (previously dead code)
     - **Depends on Task 2.1 (D1)** — D1 consolidates the garble entry point; D10's Arabic fix lands in the consolidated path
     - _Requirements:_ [RFC-041 D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8) | [Design Property 9](../designs/design-rfc041-recurring-defect-consolidation.md#property-9-dead-code-elimination) | [Design Service: garble.py](../designs/design-rfc041-recurring-defect-consolidation.md#1-garblepy)
 
-  - [ ] <a id="25-apply-zone-9-fix-to-flat-search-text-d10"></a>2.5 Apply Zone-9 fix to `_flat_search_text` ([D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8))
+  - [x] <a id="25-apply-zone-9-fix-to-flat-search-text-d10"></a>2.5 Apply Zone-9 fix to `_flat_search_text` ([D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8))
 
     - Add header-only-table fallback to `_flat_search_text` (flat.py :200) matching `_flat_block_primary_text` (:192)
     - Add test: header-only table block returns header text from `_flat_search_text`
     - _Requirements:_ [RFC-041 D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8) | [Design Property 10](../designs/design-rfc041-recurring-defect-consolidation.md#property-10-accessor-parity) | [Design Service: flat.py](../designs/design-rfc041-recurring-defect-consolidation.md#2-flatpy)
 
-  - [ ] <a id="26-thread-pre-nfkc-scriptcontext-d10c"></a>2.6 Thread pre-NFKC ScriptContext to post-NFKC call sites ([D10c](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-accessor-parity-and-zone-2-pf-remediation-requirement-8)) **(Added: root-cause review 2026-08-31)**
+  - [x] <a id="26-thread-pre-nfkc-scriptcontext-d10c"></a>2.6 Thread pre-NFKC ScriptContext to post-NFKC call sites ([D10c](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-accessor-parity-and-zone-2-pf-remediation-requirement-8)) **(Added: root-cause review 2026-08-31)**
 
     **Zone 2 remediation — absorbs orphaned NG2 scope**
 
@@ -138,7 +138,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - **Corpus diff expected:** 0-3 docs with PF-bearing Arabic text may see garble scores change as PFs are now correctly detected
     - _Requirements:_ [RFC-041 D10c](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-accessor-parity-and-zone-2-pf-remediation-requirement-8)
 
-  - [ ] <a id="27-checkpoint--wave-1"></a>2.7 Checkpoint — Wave 1 **(renumbered from 2.6: review v2 2026-09-01 — resolved ID collision with D10c task)**
+  - [x] <a id="27-checkpoint--wave-1"></a>2.7 Checkpoint — Wave 1 **(renumbered from 2.6: review v2 2026-09-01 — resolved ID collision with D10c task)**
 
     - Run `uv run pytest` and verify all tests pass
     - Verify [Property 1](../designs/design-rfc041-recurring-defect-consolidation.md#property-1-garble-detection-convergence), [Property 2](../designs/design-rfc041-recurring-defect-consolidation.md#property-2-block-text-consistency), [Property 9](../designs/design-rfc041-recurring-defect-consolidation.md#property-9-dead-code-elimination), [Property 10](../designs/design-rfc041-recurring-defect-consolidation.md#property-10-accessor-parity) — new tests pass
@@ -148,11 +148,11 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - **Zone 2 ownership gate:** Resolve Zone 2 ownership (new successor RFC or RFC-041 amendment) by this checkpoint — see [RFC-041 Risk 8](../rfcs/041-recurring-defect-consolidation.md#risks)
     - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="3-wave-2--state-routing-and-heuristic-registration-d3-d5"></a>3. Wave 2 — State Routing & Heuristic Registration ([D3](../rfcs/041-recurring-defect-consolidation.md#d3-recovery-state-single-writer-enforcement-requirement-3), [D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5))
+- [x] <a id="3-wave-2--state-routing-and-heuristic-registration-d3-d5"></a>3. Wave 2 — State Routing & Heuristic Registration ([D3](../rfcs/041-recurring-defect-consolidation.md#d3-recovery-state-single-writer-enforcement-requirement-3), [D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5))
 
   *[RFC-041 Wave 2](../rfcs/041-recurring-defect-consolidation.md#sequencing): Route state through single writer; register heuristics (scaffolding — visibility, not removal); consolidate verdict authority. Depends on [Wave 1](#2-wave-1--garble-and-text-accessor-foundation-d1-d2).*
 
-  - [ ] <a id="31-recovery-state-single-writer-enforcement-d3"></a>3.1 Recovery state single-writer enforcement ([D3](../rfcs/041-recurring-defect-consolidation.md#d3-recovery-state-single-writer-enforcement-requirement-3))
+  - [x] <a id="31-recovery-state-single-writer-enforcement-d3"></a>3.1 Recovery state single-writer enforcement ([D3](../rfcs/041-recurring-defect-consolidation.md#d3-recovery-state-single-writer-enforcement-requirement-3))
 
     - Extend `finalize_gate_and_route` (types.py :358) with `recovery_method: str | None = None`, `recovery_succeeded: bool | None = None`, `force_route: Route | None = None`, and `force_ok: bool | None = None` parameters
     - When `force_route` is provided, it takes precedence over `decide_route(first_defect)` — serves the 5 intentional override sites:
@@ -170,7 +170,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Add CI lint test: direct `state.route =` or `state.ok =` in recovery.py fails. **CI lint exempts `types.py` `from_gate_result` (:154, :168) and `finalize_gate_and_route` (:388) as legitimate writers**
     - _Requirements:_ [RFC-041 D3](../rfcs/041-recurring-defect-consolidation.md#d3-recovery-state-single-writer-enforcement-requirement-3) | [Design Property 3](../designs/design-rfc041-recurring-defect-consolidation.md#property-3-single-writer-invariant) | [Design Service: recovery.py](../designs/design-rfc041-recurring-defect-consolidation.md#5-recoverypy) | [Design Service: types.py](../designs/design-rfc041-recurring-defect-consolidation.md#4-typesspy) | [Design Sequence: Recovery Dispatch Flow](../designs/design-rfc041-recurring-defect-consolidation.md#recovery-dispatch-flow--d3--d4)
 
-  - [ ] <a id="32-heuristic-registry-module-d5"></a>3.2 Heuristic registry module ([D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5))
+  - [x] <a id="32-heuristic-registry-module-d5"></a>3.2 Heuristic registry module ([D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5))
 
     - Create `src/pageindex_mcp/helpers/heuristic_registry.py`
     - Implement `HeuristicEntry` dataclass: name, rfc_origin, created, expiry, graduation_criteria
@@ -182,7 +182,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - **(Added: root-cause review 2026-08-31)** Add CI dead-heuristic scan: after test suite runs with `coverage.py`, check each registered heuristic's code path for >0 branch coverage. Emit CI warning for zero-coverage entries (potentially dead code). Example: garble.py:583 `"Arabic"` comparison would have been flagged
     - _Requirements:_ [RFC-041 D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5) | [Design Property 5](../designs/design-rfc041-recurring-defect-consolidation.md#property-5-heuristic-expiry-visibility) | [Design Service: heuristic_registry.py](../designs/design-rfc041-recurring-defect-consolidation.md#7-heuristic-registrypy) | [Design Sequence: Verdict Promotion Flow](../designs/design-rfc041-recurring-defect-consolidation.md#verdict-promotion-flow--d5)
 
-  - [ ] <a id="33-register-existing-heuristics-d5"></a>3.3 Register existing heuristics ([D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5))
+  - [x] <a id="33-register-existing-heuristics-d5"></a>3.3 Register existing heuristics ([D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5))
 
     - Register `source_selection` bypass (verdict.py :479) — RFC-022, expiry: 90 days from registration (default; per-heuristic override requires documented justification)
     - Register `_ARABIC_FLAT_PREFER_MULTIPLIER` (recovery.py :74) — RFC-027, expiry: 90 days from registration (default; per-heuristic override requires documented justification)
@@ -191,7 +191,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Add test: all registered heuristics have valid RFC origin and non-null expiry
     - _Requirements:_ [RFC-041 D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5) | [Design Property 5](../designs/design-rfc041-recurring-defect-consolidation.md#property-5-heuristic-expiry-visibility) | [Design Service: verdict.py](../designs/design-rfc041-recurring-defect-consolidation.md#6-verdictpy)
 
-  - [ ] <a id="34-checkpoint--wave-2"></a>3.4 Checkpoint — Wave 2
+  - [x] <a id="34-checkpoint--wave-2"></a>3.4 Checkpoint — Wave 2
 
     - Run `uv run pytest` and verify all tests pass
     - Verify [Property 3](../designs/design-rfc041-recurring-defect-consolidation.md#property-3-single-writer-invariant), [Property 5](../designs/design-rfc041-recurring-defect-consolidation.md#property-5-heuristic-expiry-visibility) — new tests pass
@@ -199,11 +199,11 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Verify Prometheus counters appear for registered heuristics
     - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="4-wave-3--triad-test-oracle-d6-d7"></a>4. Wave 3 — Triad Test Oracle ([D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6), [D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6))
+- [x] <a id="4-wave-3--triad-test-oracle-d6-d7"></a>4. Wave 3 — Triad Test Oracle ([D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6), [D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6))
 
   *[RFC-041 Wave 3](../rfcs/041-recurring-defect-consolidation.md#sequencing): Pin triad behavior with golden files + property tests. Depends on [Wave 1](#2-wave-1--garble-and-text-accessor-foundation-d1-d2) and [Wave 2](#3-wave-2--state-routing-and-heuristic-registration-d3-d5).*
 
-  - [ ] <a id="41-golden-file-pipeline-snapshot-tests-d6"></a>4.1 Golden-file pipeline snapshot tests ([D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6))
+  - [x] <a id="41-golden-file-pipeline-snapshot-tests-d6"></a>4.1 Golden-file pipeline snapshot tests ([D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6))
 
     - Create `tests/test_triad_golden.py`
     - Create `tests/golden_files/` directory with 8–12 archetype JSON snapshots
@@ -214,7 +214,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - **Validates:** [Design Property 6](../designs/design-rfc041-recurring-defect-consolidation.md#property-6-triad-monotonicity), [Design Property 7](../designs/design-rfc041-recurring-defect-consolidation.md#property-7-triad-idempotency) | [RFC-041 D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6) | [RFC-041 Test Strategy: D6 row](../rfcs/041-recurring-defect-consolidation.md#test-strategy)
     - _Requirements:_ [RFC-041 D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6) | [Design Service: verdict.py](../designs/design-rfc041-recurring-defect-consolidation.md#6-verdictpy)
 
-  - [ ] <a id="42-property-based-triad-tests-d7"></a>4.2 Property-based triad tests ([D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6))
+  - [x] <a id="42-property-based-triad-tests-d7"></a>4.2 Property-based triad tests ([D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6))
 
     - Create `tests/test_triad_properties.py`
     - Hypothesis strategies for: `TreeGateResult`, `GarbleConfig`, `ScriptContext`, `BlobKind`
@@ -227,18 +227,18 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - **Validates:** [Design Property 6](../designs/design-rfc041-recurring-defect-consolidation.md#property-6-triad-monotonicity), [Design Property 7](../designs/design-rfc041-recurring-defect-consolidation.md#property-7-triad-idempotency) | [RFC-041 D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6) | [RFC-041 Test Strategy: D7 row](../rfcs/041-recurring-defect-consolidation.md#test-strategy)
     - _Requirements:_ [RFC-041 D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6) | [Design Service: recovery.py](../designs/design-rfc041-recurring-defect-consolidation.md#5-recoverypy) | [Design Service: verdict.py](../designs/design-rfc041-recurring-defect-consolidation.md#6-verdictpy)
 
-  - [ ] <a id="43-checkpoint--wave-3"></a>4.3 Checkpoint — Wave 3
+  - [x] <a id="43-checkpoint--wave-3"></a>4.3 Checkpoint — Wave 3
 
     - Run `uv run pytest` and verify all tests pass including golden-file and property-based tests
     - Verify [Property 6](../designs/design-rfc041-recurring-defect-consolidation.md#property-6-triad-monotonicity), [Property 7](../designs/design-rfc041-recurring-defect-consolidation.md#property-7-triad-idempotency) — property tests pass with `max_examples=200`
     - Verify golden-file snapshots capture post-consolidation state
     - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="5-wave-4--rfc-lifecycle-and-triage-d8-d9"></a>5. Wave 4 — RFC Lifecycle & Triage ([D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7), [D9](../rfcs/041-recurring-defect-consolidation.md#d9-rfc-gap-triage-requirement-7))
+- [x] <a id="5-wave-4--rfc-lifecycle-and-triage-d8-d9"></a>5. Wave 4 — RFC Lifecycle & Triage ([D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7), [D9](../rfcs/041-recurring-defect-consolidation.md#d9-rfc-gap-triage-requirement-7))
 
   *[RFC-041 Wave 4](../rfcs/041-recurring-defect-consolidation.md#sequencing): CI gate + triage. Can run in parallel with [Wave 3](#4-wave-3--triad-test-oracle-d6-d7).*
 
-  - [ ] <a id="51-rfc-lifecycle-ci-gate-d8"></a>5.1 RFC lifecycle CI gate ([D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7))
+  - [x] <a id="51-rfc-lifecycle-ci-gate-d8"></a>5.1 RFC lifecycle CI gate ([D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7))
 
     - Create `.github/workflows/rfc-lifecycle-lint.yml`
     - Create supporting script (`scripts/rfc_lifecycle_lint.py`)
@@ -257,7 +257,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - **Validates:** [Design Property 8](../designs/design-rfc041-recurring-defect-consolidation.md#property-8-rfc-lifecycle-gate-soundness) | [RFC-041 D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7) | [RFC-041 Test Strategy: D8 row](../rfcs/041-recurring-defect-consolidation.md#test-strategy)
     - _Requirements:_ [RFC-041 D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7) | [Design Service: rfc-lifecycle-lint.yml](../designs/design-rfc041-recurring-defect-consolidation.md#8-github-workflows-rfc-lifecycle-lintyml-new)
 
-  - [ ] <a id="52-rfc-gap-triage-d9"></a>5.2 RFC gap triage ([D9](../rfcs/041-recurring-defect-consolidation.md#d9-rfc-gap-triage-requirement-7))
+  - [x] <a id="52-rfc-gap-triage-d9"></a>5.2 RFC gap triage ([D9](../rfcs/041-recurring-defect-consolidation.md#d9-rfc-gap-triage-requirement-7))
 
     - Create GitHub issue: RFC-037 Release B corpus validation skipped
     - Create GitHub issue: RFC-033 D2 Part B bidi enforcement — gated on unexecuted re-ingest; `bidi_coherence_enforce` zero consumers
@@ -266,7 +266,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Each issue: force decision — implement, defer-with-date, or wont-fix
     - _Requirements:_ [RFC-041 D9](../rfcs/041-recurring-defect-consolidation.md#d9-rfc-gap-triage-requirement-7) | [RFC-041 Risk 5](../rfcs/041-recurring-defect-consolidation.md#risks)
 
-  - [ ] <a id="53-checkpoint--wave-4"></a>5.3 Checkpoint — Wave 4
+  - [x] <a id="53-checkpoint--wave-4"></a>5.3 Checkpoint — Wave 4
 
     - Verify all 4 GitHub issues created and labeled
     - Verify RFC lifecycle CI gate passes on current branch

@@ -1,0 +1,40 @@
+{
+  "archetype": "arabic_garbled",
+  "description": "Arabic-script document with garbled text (PUA/mojibake patterns triggering garble detection)",
+  "input": {
+    "structure": [
+      {
+        "title": "Root",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Section 1",
+            "text": "مرحبا بالعالم   garbled mojibake äöüß nonsense xqzk wvjf",
+            "nodes": []
+          },
+          {
+            "title": "Section 2",
+            "text": "  qxjz wvfk plmn garble ratio high enough to trigger detection",
+            "nodes": []
+          },
+          {
+            "title": "Section 3",
+            "text": "القرار التنظيمي some valid text here to provide content volume",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": "Arab"
+  },
+  "expected": {
+    "garble_detected": true,
+    "gate_ok": false,
+    "gate_defect": "garbling",
+    "verdict": "FAIL",
+    "verdict_reason_prefix": "garbling",
+    "recovery_eligible": true,
+    "recovery_method": "_recover_garble_ocr"
+  }
+}

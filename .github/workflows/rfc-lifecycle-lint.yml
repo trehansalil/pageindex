@@ -1,0 +1,39 @@
+name: RFC Lifecycle Lint
+
+on:
+  pull_request:
+    paths:
+      - "agents/rfcs/**"
+      - "agents/tasks/**"
+      - "audit/zones/ZONE_OWNERSHIP.yaml"
+      - "scripts/rfc_lifecycle_lint.py"
+  push:
+    branches: [master]
+    paths:
+      - "agents/rfcs/**"
+      - "agents/tasks/**"
+      - "audit/zones/ZONE_OWNERSHIP.yaml"
+      - "scripts/rfc_lifecycle_lint.py"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv (Python 3.12)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      # Merge-blocking for skipped GATE tasks and orphaned zones (RFC-040
+      # Zone 2 pattern); advisory warnings for all-tasks-done drafts and
+      # unresolved Open Questions are printed but do not fail the job.
+      - name: Run RFC lifecycle gate
+        run: uv run python scripts/rfc_lifecycle_lint.py

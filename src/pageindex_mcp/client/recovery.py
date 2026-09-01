@@ -13,6 +13,7 @@ from ..config import (
     pipeline_config,
     settings,
 )
+from ..helpers.heuristic_registry import registry as _heuristic_registry
 from ..converters import (
     TessdataUnavailableError,
     detect_ocr_langs,
@@ -716,6 +717,8 @@ class RecoveryMixin:
         if _tree_char_count <= 0:
             return
         # Zone-3: select script-aware multiplier
+        if expected_script == "Arab":
+            _heuristic_registry.fire("_ARABIC_FLAT_PREFER_MULTIPLIER")
         _multiplier = (
             _ARABIC_FLAT_PREFER_MULTIPLIER
             if expected_script == "Arab"

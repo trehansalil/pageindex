@@ -6,7 +6,7 @@
 id: "RFC-041"
 title: "Recurring Defect Consolidation"
 type: rfc
-status: draft
+status: implementing
 date: "2026-08-31"
 plan-impact: "yes"
 tags:

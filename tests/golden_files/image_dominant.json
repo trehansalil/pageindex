@@ -1,0 +1,31 @@
+{
+  "archetype": "image_dominant",
+  "description": "Image-dominant document where image_standalone content_class triggers direct image verdict path",
+  "input": {
+    "structure": [
+      {
+        "title": "Image Document",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Caption",
+            "text": "Figure 1: Product specification diagram showing component layout",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "image_standalone",
+    "expected_script": null,
+    "image_enrichment_ratio": 0.85
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": false,
+    "gate_defect": "node_count<3",
+    "verdict": "PASS",
+    "verdict_reason_prefix": "image_enrichment_complete",
+    "recovery_eligible": true,
+    "recovery_method": "_recover_low_content_ocr"
+  }
+}

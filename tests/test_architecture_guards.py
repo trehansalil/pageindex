@@ -633,3 +633,33 @@ class TestNoDirectGarbleProngsOutsideGarblePy:
         assert "garble_prongs" not in helpers_mod.__all__, (
             "garble_prongs must not be in helpers.__all__"
         )
+
+
+# ---------------------------------------------------------------------------
+# D3 CI lint: no direct state.route = or state.ok = in recovery.py
+# ---------------------------------------------------------------------------
+
+
+class TestNoDirectStateMutationInRecovery:
+    """D3 (RFC-041): recovery.py must not assign state.route or state.ok
+    directly.  All state mutations go through finalize_gate_and_route."""
+
+    def test_no_direct_route_or_ok_assignment_in_recovery(self):
+        import re
+
+        src_root = pathlib.Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
+        recovery_path = src_root / "client" / "recovery.py"
+        source = recovery_path.read_text()
+
+        pattern = re.compile(r"^\s+state\.(route|ok)\s*=\s*", re.MULTILINE)
+        violations: list[str] = []
+        for match in pattern.finditer(source):
+            line_no = source[:match.start()].count("\n") + 1
+            field = match.group(1)
+            violations.append(f"  recovery.py:{line_no}: direct state.{field} = assignment")
+
+        assert not violations, (
+            "D3 (RFC-041): direct state.route/state.ok assignments found "
+            "in recovery.py.  Use finalize_gate_and_route() instead.\n"
+            "Violations:\n" + "\n".join(violations)
+        )

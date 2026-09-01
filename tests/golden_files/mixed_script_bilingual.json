@@ -1,0 +1,45 @@
+{
+  "archetype": "mixed_script_bilingual",
+  "description": "Bilingual document mixing Latin and Arabic script without garble triggers",
+  "input": {
+    "structure": [
+      {
+        "title": "Document",
+        "text": "",
+        "nodes": [
+          {
+            "title": "English Section",
+            "text": "This memorandum outlines the terms and conditions of the bilateral agreement between the parties involved in this cooperation framework.",
+            "nodes": []
+          },
+          {
+            "title": "Arabic Section",
+            "text": "هذه المذكرة تحدد الشروط والأحكام للاتفاقية الثنائية بين الأطراف المعنية",
+            "nodes": []
+          },
+          {
+            "title": "Combined",
+            "text": "Additional remarks and supplementary notes about the framework agreement and its implementation timeline.",
+            "nodes": []
+          },
+          {
+            "title": "Appendix",
+            "text": "Reference materials and supporting documentation for the bilateral cooperation agreement between stakeholders.",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": false,
+    "gate_defect": "node_garbling",
+    "verdict": "MARGINAL",
+    "verdict_reason_prefix": "leaf_concentration",
+    "recovery_eligible": true,
+    "recovery_method": "_recover_garble_ocr"
+  }
+}

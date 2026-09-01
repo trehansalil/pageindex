@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..helpers.heuristic_registry import registry as _heuristic_registry
 from ..helpers.types import VERDICT_PRIORITY
 from . import schema as _schema
 
@@ -152,6 +153,8 @@ async def upsert_doc(
     if not doc_id:
         logger.warning("registry.upsert_doc: skipping row with empty doc_id")
         return None
+    if force_verdict_override:
+        _heuristic_registry.fire("force_verdict_override")
     sql = _UPSERT_OVERRIDE_SQL if force_verdict_override else _UPSERT_SQL
     row = await pool.fetchrow(
         sql,

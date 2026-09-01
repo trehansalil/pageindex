@@ -1,0 +1,131 @@
+# audit/zones/ZONE_OWNERSHIP.yaml
+#
+# Zone-to-RFC-deliverable ownership manifest. Bootstrapped from
+# audit/zones/_index.md (POST-FIX-WAVE4, 2026-08-29). Consumed by
+# scripts/rfc_lifecycle_lint.py (RFC-041 D8) to catch the RFC-040 Zone 2
+# pattern: a zone's owning RFC closes while the zone's bugs remain
+# unresolved and no successor RFC has picked it up.
+#
+# Schema (per zone):
+#   name:            zone title, from _index.md
+#   severity:        critical | high | medium
+#   bug_count:       int, from _index.md
+#   owning_rfc:      RFC id currently accountable for the zone (or null if
+#                    never assigned to an RFC deliverable)
+#   owning_deliverable: D-number(s) within owning_rfc, or null
+#   resolved:        whether the zone's bugs are considered fixed
+#   successor_rfc:   set when ownership transfers from a closed owning_rfc
+#                    to a new RFC before the old one closes; the lint script
+#                    treats a zone as clean (not orphaned) once this is set,
+#                    even if owning_rfc's status is closed
+#   successor_deliverable: D-number(s) within successor_rfc, or null
+#   notes:           free text
+
+version: 1
+source_index: audit/zones/_index.md
+audit_run: POST-FIX-WAVE4
+last_updated: "2026-09-01"
+
+zones:
+  zone_1:
+    name: "ExtractionState route/ok multi-writer cascade"
+    severity: critical
+    bug_count: 7
+    owning_rfc: RFC-041
+    owning_deliverable: D3
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: >
+      Structurally closed by RFC-041 D3 (single-writer enforcement via
+      finalize_gate_and_route) per RFC-041 Consequences.
+
+  zone_2:
+    name: "Normalize-before-detect null-detector lattice"
+    severity: critical
+    bug_count: 6
+    owning_rfc: RFC-040
+    owning_deliverable: D6
+    resolved: false
+    successor_rfc: RFC-041
+    successor_deliverable: D10c
+    notes: >
+      RFC-040 D6 reordered NFKC-before-bidi only in _pre_inference_normalize;
+      7 post-NFKC ScriptContext call sites were left broken (the RFC-040
+      Zone 2 pattern this manifest exists to catch). Ownership transferred
+      to RFC-041 D10c (root-cause review 2026-08-31) before RFC-040 closes.
+
+  zone_3:
+    name: "Split verdict authority: five writers over two stores"
+    severity: critical
+    bug_count: 5
+    owning_rfc: RFC-041
+    owning_deliverable: D11
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: >
+      Addressed by RFC-041 D11 (verdict authority consolidation onto
+      _upsert_registry_row), gated on RFC-037 Release B corpus validation
+      (Task 3.5a).
+
+  zone_4:
+    name: "Config-layer bifurcation"
+    severity: high
+    bug_count: 4
+    owning_rfc: null
+    owning_deliverable: null
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: >
+      No RFC owns full remediation yet; RFC-041 D5 (heuristic registry)
+      creates the mechanism to retire compensating paths over time but does
+      not close the zone. Candidate for RFC-041 D9 gap triage or a future RFC.
+
+  zone_5:
+    name: "Ordered-policy converter chain"
+    severity: high
+    bug_count: 4
+    owning_rfc: null
+    owning_deliverable: null
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: "Unassigned. Retry-loop bug defeating HR4 licensing guarantee needs a future RFC."
+
+  zone_6:
+    name: "Recovery dispatch: tuple-keyed dedup"
+    severity: high
+    bug_count: 4
+    owning_rfc: RFC-041
+    owning_deliverable: D4
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: "Structurally closed by RFC-041 D4 (recovery dispatch cross-tuple dedup) per RFC-041 Consequences."
+
+  zone_7:
+    name: "Three parallel garble paths + three text accessors"
+    severity: high
+    bug_count: 4
+    owning_rfc: RFC-041
+    owning_deliverable: "D1,D2"
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: "Structurally closed by RFC-041 D1 (garble entry-point consolidation) + D2 (block_text unification) per RFC-041 Consequences."
+
+  zone_8:
+    name: "Order-coupled erasure manifest"
+    severity: medium
+    bug_count: 2
+    owning_rfc: RFC-011
+    owning_deliverable: null
+    resolved: false
+    successor_rfc: null
+    successor_deliverable: null
+    notes: >
+      RFC-011 (compliance-auth-quickwins) is the nearest compliance RFC but
+      does not yet explicitly own this zone's erasure-cascade ordering fix.
+      Unassigned deliverable; candidate for triage.
