@@ -25,6 +25,13 @@ version: 1
 source_index: audit/zones/_index.md
 audit_run: POST-FIX-WAVE4
 last_updated: "2026-09-01"
+validation_date: "2026-09-01"
+validation_notes: |
+  Code validation refuted 2/3 Zone 1 claims (AGPL fixed, ordering wrong).
+  Zone 4 (Content Measurement) resolved by RFC-041 D2.
+  Zone 5 MinIO CAS guard removed entirely (worse than divergence).
+  Zone 6 os.environ spread is 17 files (not 9).
+  RFC split: RFC-042 (Verdict+Config), RFC-043 (OCR+Garble+Erasure).
 
 zones:
   zone_1:

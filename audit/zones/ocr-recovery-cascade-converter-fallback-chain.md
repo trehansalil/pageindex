@@ -1,8 +1,8 @@
 ---
 zone_name: OCR Recovery Cascade & Converter Fallback Chain
-severity: critical
+severity: high
 bug_count: 8
-status: regressed
+status: improved
 audit_date: 2026-09-01
 audit_run: POST-RFC041
 audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-01_POST-RFC041.md
@@ -21,18 +21,23 @@ tags:
 scorecard_verdict: regressed
 scorecard_date: 2026-09-01
 scorecard_run: POST-RFC041
+validation_date: 2026-09-01
+validation_notes: "2/3 structural claims refuted. AGPL fallback (Chain 9) FIXED via
+  ConverterFailurePolicy.BLOCK_AGPL. Recovery ordering (Chain 23) REFUTED:
+  GARBLING fires FIRST. Kill-switch (Chain 14) PARTIAL: split into 3 flags but
+  indirect coupling remains. Real gap: zero-content early return bypass."
 ---
 ## Mechanism
 
 The OCR recovery subsystem and converter fallback chain form the densest defect-generating zone in the codebase. Three structural coupling patterns make fixes here systematically break other behaviors:
 
-1. **Kill-switch coupling:** `_OCR_ESCALATION` gates both page-level retry AND per-picture crop-OCR enrichment, so toggling it for one purpose silently disables the other (Chain 14).
+1. **Kill-switch coupling (PARTIALLY CONFIRMED):** Original single `_OCR_ESCALATION` was split into three independent flags: `ocr_escalation_garble`, `ocr_escalation_per_picture`, `image_dominant_ocr_escalation_enabled`. However, the recovery eligibility predicates (`_eligible_garble`, `_eligible_low_content`, `_eligible_image_dominant` at gates.py:293-325) still share `image_dominant_ocr_escalation_enabled` as a gate, creating indirect coupling (Chain 14).
 
-2. **Recovery ordering:** `validate_tree` evaluates `node_count`/`depth` gates BEFORE the garbling gate, so image-dominant documents with zero text hit `NODE_COUNT_LOW` and never reach the garbling check that would trigger OCR escalation (Chain 23). Fixing OCR escalation for garbled text cannot help documents that are structurally empty because the structural gate fires first.
+2. **Recovery ordering (REFUTED):** GARBLING is severity=0 in GATE_TABLE and fires FIRST, not after NODE_COUNT_LOW (severity=1). validate_tree evaluates ALL gates exhaustively. The real gap is the **zero-content early return** in evaluate_gates (verdict.py:175-183): `sig.node_count == 0` returns `hard_fail_verdict="FAIL"/"zero_content"` BEFORE any gate-specific recovery can run (Chain 23).
 
-3. **Converter chain walk-through:** The RETRY branch bare `continue` advances to the next chain entry rather than rewinding, so a transient failure of the primary MIT converter walks into the AGPL fallback, defeating `BLOCK_AGPL` and violating CLAUDE.md Hard Rule 4 (Chain 9).
+3. **Converter chain walk-through (FIXED):** The bare `continue` defeating BLOCK_AGPL (Chain 9) was fixed. Current code at indexer.py:660-730 implements a 5-way `ConverterFailurePolicy` with explicit `BLOCK_AGPL` and `GATE_AGPL_STRUCTURAL` branches that `break` instead of walking into AGPL converters.
 
-Each fix to one of these three patterns has historically exposed or created a gap in one of the other two.
+Remaining structural risk: zero-content early return bypass and eligibility predicate coupling.
 
 ## History
 

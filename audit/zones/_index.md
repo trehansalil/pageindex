@@ -10,7 +10,8 @@ tags:
 **Audit Run:** POST-RFC041  
 **Total Zones:** 7  
 **Total Bugs Attributed:** 26  
-**Critical Zones:** 2 | **High Zones:** 3 | **Medium Zones:** 2
+**Critical Zones:** 1 | **High Zones:** 3 | **Medium-High Zones:** 1 | **Medium Zones:** 1 | **Resolved Zones:** 1
+**Validation Date:** 2026-09-01 | **RFC Split:** [[RFC-042]] (Verdict+Config: Zones 2,4,5,6) · [[RFC-043]] (OCR+Garble+Erasure: Zones 1,3,7)
 
 ---
 
@@ -18,13 +19,13 @@ tags:
 
 | Priority | Zone | Severity | Bugs | Status |
 |----------|------|----------|------|--------|
-| 1 | [[ocr-recovery-cascade-converter-fallback-chain\|OCR Recovery Cascade & Converter Fallback Chain]] | CRITICAL | 8 | audited |
-| 2 | [[verdict-computation-promotion-cascade\|Verdict Computation & Promotion Cascade]] | CRITICAL | 6 | audited |
-| 3 | [[garble-detection-nfkc-signal-destruction\|Garble Detection & NFKC Signal Destruction]] | HIGH | 4 | audited |
-| 4 | [[content-measurement-blind-spot-table-block\|Content Measurement Blind Spot (Table Block)]] | HIGH | 3 | audited |
-| 5 | [[verdict-persistence-dual-writer\|Verdict Persistence Dual-Writer]] | HIGH | 2 | audited |
-| 6 | [[config-snapshot-live-read-divergence\|Config Snapshot vs Live-Read Divergence]] | MEDIUM | 2 | audited |
-| 7 | [[hr2-erasure-cascade-ordering\|HR2 Erasure Cascade Hidden Ordering]] | MEDIUM | 1 | audited |
+| 1 | [[ocr-recovery-cascade-converter-fallback-chain\|OCR Recovery Cascade & Converter Fallback Chain]] | HIGH | 8 | validated (downgraded: AGPL fixed, ordering refuted) |
+| 2 | [[verdict-computation-promotion-cascade\|Verdict Computation & Promotion Cascade]] | CRITICAL | 6 | validated |
+| 3 | [[garble-detection-nfkc-signal-destruction\|Garble Detection & NFKC Signal Destruction]] | HIGH | 4 | validated |
+| 4 | [[content-measurement-blind-spot-table-block\|Content Measurement Blind Spot (Table Block)]] | RESOLVED | 3 | validated (D2 complete, trap closed) |
+| 5 | [[verdict-persistence-dual-writer\|Verdict Persistence Dual-Writer]] | HIGH | 2 | validated (no MinIO CAS — worse) |
+| 6 | [[config-snapshot-live-read-divergence\|Config Snapshot vs Live-Read Divergence]] | MEDIUM-HIGH | 2 | validated (17 files, not 9) |
+| 7 | [[hr2-erasure-cascade-ordering\|HR2 Erasure Cascade Hidden Ordering]] | MEDIUM | 1 | validated |
 
 ---
 

@@ -19,6 +19,10 @@ tags:
 scorecard_verdict: regressed
 scorecard_date: 2026-09-01
 scorecard_run: POST-RFC041
+validation_date: 2026-09-01
+validation_notes: 121 os.environ matches confirmed but spread across 17 files (not 9). Worse
+  than claimed. Hot-path files (gates.py, pictures.py, indexer.py,
+  tree_split.py) bypass frozen PipelineConfig.
 ---
 ## Mechanism
 

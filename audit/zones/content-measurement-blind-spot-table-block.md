@@ -1,8 +1,8 @@
 ---
 zone_name: Content Measurement Blind Spot (Table Block Text Extraction)
-severity: high
+severity: resolved
 bug_count: 3
-status: improved
+status: resolved
 audit_date: 2026-09-01
 audit_run: POST-RFC041
 audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-01_POST-RFC041.md
@@ -19,6 +19,9 @@ tags:
 scorecard_verdict: regressed
 scorecard_date: 2026-09-01
 scorecard_run: POST-RFC041
+validation_date: 2026-09-01
+validation_notes: RFC-041 D2 block_text consolidation verified COMPLETE. Zero external callers
+  of block.get('text') remain. Trap closed. Regression guard only.
 ---
 ## Mechanism
 

@@ -21,6 +21,10 @@ tags:
 scorecard_verdict: regressed
 scorecard_date: 2026-09-01
 scorecard_run: POST-RFC041
+validation_date: 2026-09-01
+validation_notes: "MinIO CAS guard REMOVED entirely (not divergent). No MinIO-side guard during
+  Postgres degradation. Worse than claimed. Five write paths partially
+  confirmed: multiple call chains funnel through 2 functions."
 ---
 ## Mechanism
 
