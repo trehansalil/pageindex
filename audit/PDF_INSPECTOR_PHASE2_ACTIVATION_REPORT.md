@@ -175,7 +175,7 @@ No new env vars are strictly required for Tier 1 activation.
 
 ## 10. D6 — FULL CORPUS REGRESSION GATE (PRE-ACTIVATION)
 
-**Task:** [Task 6.2](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#62-full-corpus-regression-gate) · **RFC:** [D6](../.agents/rfcs/032-pdf-inspector-tier1-activation.md#d6-full-corpus-regression-gate-pre-activation) · **Design:** [AD7](../.agents/designs/design-rfc032-pdf-inspector-tier1-activation.md#ad7-corpus-regression-gate-d6) · **Recommended by:** Rec-2b (this report)
+**Task:** [Task 6.2](../agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#62-full-corpus-regression-gate) · **RFC:** [D6](../agents/rfcs/032-pdf-inspector-tier1-activation.md#d6-full-corpus-regression-gate-pre-activation) · **Design:** [AD7](../agents/designs/design-rfc032-pdf-inspector-tier1-activation.md#ad7-corpus-regression-gate-d6) · **Recommended by:** Rec-2b (this report)
 
 **Status: GATE NOT SATISFIED — no PRECLASSIFY=1 corpus run has been executed. Activation remains blocked on this task.**
 
@@ -201,4 +201,4 @@ A full 60-doc regression is a real ingestion: each document goes through live Do
 
 ### Disposition
 
-Recorded here as an explicit outstanding blocker. `PDF_INSPECTOR_PRECLASSIFY` must remain `0` in production until this gate is run with a real `PRECLASSIFY=0`/`PRECLASSIFY=1` pair on the full 60-doc corpus and shows zero PASS→MARGINAL / PASS→FAIL regressions. [Task 6.2](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#62-full-corpus-regression-gate) and the RFC-032 [Final Checkpoint](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#63-final-checkpoint) should not be marked complete until this section is updated with an actual before/after verdict table.
+Recorded here as an explicit outstanding blocker. `PDF_INSPECTOR_PRECLASSIFY` must remain `0` in production until this gate is run with a real `PRECLASSIFY=0`/`PRECLASSIFY=1` pair on the full 60-doc corpus and shows zero PASS→MARGINAL / PASS→FAIL regressions. [Task 6.2](../agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#62-full-corpus-regression-gate) and the RFC-032 [Final Checkpoint](../agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#63-final-checkpoint) should not be marked complete until this section is updated with an actual before/after verdict table.

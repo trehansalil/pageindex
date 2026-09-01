@@ -21,10 +21,10 @@ the audit's MARGINAL taxonomy never had.
 
 | RFC                                                             | Theme                              | Issues                                                                                    | Est. size                        |
 | --------------------------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------- |
-| [RFC-011](../.agents/rfcs/011-compliance-auth-quickwins.md)      | Compliance & auth quick-wins       | ISS-02(closed), 40, 41, 32, 35, 33                                                        | ~50 lines, 5 standalone fixes    |
-| [RFC-012](../.agents/rfcs/012-reliability-deadcode-quickwins.md) | Reliability & dead-code quick-wins | ISS-03(closed), 07, 37, 39, 42, 45, 43, 46                                                | ~40 lines + 2 deletions          |
-| [RFC-013](../.agents/rfcs/013-structural-hardening.md)           | Structural hardening               | ISS-08/18/19(closed), 05, 44, 34, 36                                                      | ~60 lines, 1 corpus revalidation |
-| [RFC-014](../.agents/rfcs/014-corpus-promotion-pipeline.md)      | Automated corpus promotion         | new mechanism; unblocks سياسة حوكمة, Haftpflicht-Besondere; gates مرسوم 33 | ~150 lines + schema migration    |
+| [RFC-011](../agents/rfcs/011-compliance-auth-quickwins.md)      | Compliance & auth quick-wins       | ISS-02(closed), 40, 41, 32, 35, 33                                                        | ~50 lines, 5 standalone fixes    |
+| [RFC-012](../agents/rfcs/012-reliability-deadcode-quickwins.md) | Reliability & dead-code quick-wins | ISS-03(closed), 07, 37, 39, 42, 45, 43, 46                                                | ~40 lines + 2 deletions          |
+| [RFC-013](../agents/rfcs/013-structural-hardening.md)           | Structural hardening               | ISS-08/18/19(closed), 05, 44, 34, 36                                                      | ~60 lines, 1 corpus revalidation |
+| [RFC-014](../agents/rfcs/014-corpus-promotion-pipeline.md)      | Automated corpus promotion         | new mechanism; unblocks سياسة حوكمة, Haftpflicht-Besondere; gates مرسوم 33 | ~150 lines + schema migration    |
 
 Every fix in RFC-011/012/013 is independently shippable — there is no cross-RFC
 sequencing dependency except RFC-013 D6 (ISS-34, tessdata raise) pairing with a
@@ -94,7 +94,7 @@ config, and `uv.lock` — six findings, ranked by whether they're cheap to close
 1. **The audit's own "no dependency/CVE scanning" disclaimer is inaccurate — fix the
    audit, not the codebase.** `scripts/gates/supply-chain.sh` (Gate 6) already runs
    `pip-audit` over `uv.lock` with a whitelist mechanism
-   (`.agents/governance/known-advisories.yaml`), wired into
+   (`agents/governance/known-advisories.yaml`), wired into
    `.github/workflows/build-push.yml`. This is a real, running control; the audit
    report's text should be corrected, not treated as an open item.
 2. **`starlette==1.0.0` in `uv.lock` warrants a two-minute manual check.** Sitting next

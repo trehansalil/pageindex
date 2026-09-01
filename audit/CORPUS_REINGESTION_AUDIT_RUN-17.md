@@ -11,7 +11,7 @@
 - Branch: feat/pdf-inspector-shadow-pilot
 - Date: 2026-08-09
 - Prior run: `audit/CORPUS_REINGESTION_AUDIT_RUN-16.md` (`audit/REGRESSION_WATCHDOG_RUN-16.md`)
-- Task: `.agents/tasks/tasks-rfc034-run15-reconciliation-remediation.md` [15.1](tasks-rfc034-run15-reconciliation-remediation.md#task-15-1) — full 25-doc ingest+score cycle validating D16-D21
+- Task: `agents/tasks/tasks-rfc034-run15-reconciliation-remediation.md` [15.1](tasks-rfc034-run15-reconciliation-remediation.md#task-15-1) — full 25-doc ingest+score cycle validating D16-D21
 
 ---
 
@@ -54,7 +54,7 @@ Per the "Fabricated corpus report" lesson (`audit/RECONCILIATION_REPORT.md` hist
 ## Disposition
 
 - **Task 15.1 is NOT complete.** No corpus cycle ran; R1-R6 status is unchanged from `REGRESSION_WATCHDOG_RUN-16.md`.
-- **Task 15.1 checkbox left unchecked** in `.agents/tasks/tasks-rfc034-run15-reconciliation-remediation.md` — not flipped by this report, since the acceptance criteria (regressions resolved/improved) cannot be evaluated without a real run.
+- **Task 15.1 checkbox left unchecked** in `agents/tasks/tasks-rfc034-run15-reconciliation-remediation.md` — not flipped by this report, since the acceptance criteria (regressions resolved/improved) cannot be evaluated without a real run.
 - **Gate G8** cannot close until a session with one of the following runs this task:
   1. `kubectl` access to the k3s node to regenerate `env/remote.env` (`make env-remote`), then `make preflight && make ingest && <score pipeline>` against the real corpus per the `corpus-ingest-score` skill; or
   2. A manually provisioned `env/remote.env` with the production MinIO/Redis/Postgres endpoints and credentials, copied from a host that has them (per `docs/ENV_PROFILES.md` § "Remote MinIO from anywhere").

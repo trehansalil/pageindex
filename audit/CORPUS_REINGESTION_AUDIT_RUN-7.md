@@ -7,7 +7,7 @@
 Full 25-doc corpus re-ingested from scratch after wiping all persistent stores
 (MinIO, Redis hash cache). Purpose: validate RFC-023 (run6-content-recovery-and-verdict-hardening,
 Batches 1-5: D0-D11) against the Run 6 regression baseline, per
-[RFC-023 Task 6.2](../.agents/tasks/tasks-rfc023-run6-content-recovery-and-verdict-hardening.md#62-run-7-scorecard-and-regression-verification).
+[RFC-023 Task 6.2](../agents/tasks/tasks-rfc023-run6-content-recovery-and-verdict-hardening.md#62-run-7-scorecard-and-regression-verification).
 
 **NET RECOVERY RUN — quality restored beyond Run 4, one unprojected regression on a Run-6 PASS doc.**
 

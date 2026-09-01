@@ -1056,7 +1056,7 @@ flowchart TD
         <div class="card" style="flex: 0 1 auto; border-color: var(--teal); background: var(--teal-bg);">
           <div class="card-label" style="color: var(--teal);">checkpoint</div>
           <div class="card-title">Cross-Session Resume</div>
-          <div class="card-detail">Results persisted to <code>.agents/checkpoints/diagnose-plan-runN/</code> after each phase (triage, cluster-traces, drilldown). Resume via <code>args.resume_from</code>: <code>triage</code> | <code>cluster_trace</code> | <code>drilldown</code> | <code>traces</code>. Avoids re-running expensive Opus work on context-limit interruptions. <span class="model model-haiku">Haiku</span></div>
+          <div class="card-detail">Results persisted to <code>agents/checkpoints/diagnose-plan-runN/</code> after each phase (triage, cluster-traces, drilldown). Resume via <code>args.resume_from</code>: <code>triage</code> | <code>cluster_trace</code> | <code>drilldown</code> | <code>traces</code>. Avoids re-running expensive Opus work on context-limit interruptions. <span class="model model-haiku">Haiku</span></div>
         </div>
       </div>
 
@@ -1075,7 +1075,7 @@ flowchart TD
         <div class="card">
           <div class="card-label">rfc-artifact-build</div>
           <div class="card-title">Design + Tasks Generation</div>
-          <div class="card-detail">Takes the verified RFC and produces design doc + implementation task plan with bidirectional anchor links. Uses reference templates from <code>.agents/reference_files/</code>.</div>
+          <div class="card-detail">Takes the verified RFC and produces design doc + implementation task plan with bidirectional anchor links. Uses reference templates from <code>agents/reference_files/</code>.</div>
         </div>
       </div>
       <div class="card-row">
@@ -1088,10 +1088,10 @@ flowchart TD
       <div style="font-size: 0.78rem; color: var(--text-muted); margin: 0.5rem 0 0.3rem; font-family: var(--font-label);">Artifact destinations:</div>
       <div style="overflow-x: auto;">
         <table class="flow-table" style="min-width: 400px;">
-          <tr><td><code>.agents/rfcs/NNN-&lt;slug&gt;.md</code></td><td>RFC document</td></tr>
-          <tr><td><code>.agents/designs/design-rfcNNN-&lt;slug&gt;.md</code></td><td>Design document</td></tr>
-          <tr><td><code>.agents/tasks/tasks-rfcNNN-&lt;slug&gt;.md</code></td><td>Implementation tasks</td></tr>
-          <tr><td><code>.agents/checkpoints/diagnose-plan-runN/</code></td><td>Trace checkpoints (resume points)</td></tr>
+          <tr><td><code>agents/rfcs/NNN-&lt;slug&gt;.md</code></td><td>RFC document</td></tr>
+          <tr><td><code>agents/designs/design-rfcNNN-&lt;slug&gt;.md</code></td><td>Design document</td></tr>
+          <tr><td><code>agents/tasks/tasks-rfcNNN-&lt;slug&gt;.md</code></td><td>Implementation tasks</td></tr>
+          <tr><td><code>agents/checkpoints/diagnose-plan-runN/</code></td><td>Trace checkpoints (resume points)</td></tr>
         </table>
       </div>
       <div class="gate">
@@ -1179,14 +1179,14 @@ flowchart TD
         <div class="card">
           <div class="card-label">corpus:cycle &rarr; shell</div>
           <div class="card-title">Confluence Sync</div>
-          <div class="card-detail"><code>make confluence-local-sync</code> &mdash; existing Makefile target, no LLM needed. Syncs all files with <code>&lt;!-- Space: CITRA --&gt;</code> metadata headers across <code>.agents/rfcs/</code>, <code>.agents/designs/</code>, <code>.agents/tasks/</code>, <code>audit/</code>.</div>
+          <div class="card-detail"><code>make confluence-local-sync</code> &mdash; existing Makefile target, no LLM needed. Syncs all files with <code>&lt;!-- Space: CITRA --&gt;</code> metadata headers across <code>agents/rfcs/</code>, <code>agents/designs/</code>, <code>agents/tasks/</code>, <code>audit/</code>.</div>
         </div>
         <div class="card">
           <div class="card-label">corpus:cycle &rarr; git</div>
           <div class="card-title">Batched Commits + Push</div>
           <div class="card-detail">
             Changes committed in 4 logical batches with conventional commit prefixes referencing the RFC:<br>
-            <strong>Batch 1</strong> &mdash; <code>docs(rfc-NNN):</code> RFC + design + tasks (<code>.agents/</code>)<br>
+            <strong>Batch 1</strong> &mdash; <code>docs(rfc-NNN):</code> RFC + design + tasks (<code>agents/</code>)<br>
             <strong>Batch 2</strong> &mdash; <code>feat(rfc-NNN):</code> Implementation (<code>src/</code>)<br>
             <strong>Batch 3</strong> &mdash; <code>test(rfc-NNN):</code> Tests (<code>tests/</code>)<br>
             <strong>Batch 4</strong> &mdash; <code>docs(audit):</code> Audit artifacts (<code>audit/</code>)<br>
@@ -1232,17 +1232,17 @@ flowchart TD
           <tr>
             <td><code>corpus:trace</code></td>
             <td>Root-cause investigation (cluster-level + drilldown)</td>
-            <td>Inline in RFC body (no separate file); checkpoints at <code>.agents/checkpoints/</code></td>
+            <td>Inline in RFC body (no separate file); checkpoints at <code>agents/checkpoints/</code></td>
           </tr>
           <tr>
             <td><code>corpus:plan</code></td>
             <td>RFC document (Opus draft &rarr; Fable verify &rarr; max 2 re-drafts via Serena MCP)</td>
-            <td><code>.agents/rfcs/NNN-&lt;slug&gt;.md</code></td>
+            <td><code>agents/rfcs/NNN-&lt;slug&gt;.md</code></td>
           </tr>
           <tr>
             <td><code>rfc-artifact-build</code></td>
             <td>Design + tasks (parallel Sonnet agents, bidirectional anchor links)</td>
-            <td><code>.agents/designs/design-rfcNNN-&lt;slug&gt;.md</code> + <code>.agents/tasks/tasks-rfcNNN-&lt;slug&gt;.md</code></td>
+            <td><code>agents/designs/design-rfcNNN-&lt;slug&gt;.md</code> + <code>agents/tasks/tasks-rfcNNN-&lt;slug&gt;.md</code></td>
           </tr>
           <tr>
             <td>Verify Artifacts <small>(Sonnet)</small></td>
@@ -1301,7 +1301,7 @@ We refer to /mem-search for past decisions undertaken and If REQUIRED then only 
 
 When generating Artifacts, NEVER export them to CLAUDE. ALWAYS export them Locally either as Markdown or HTML
 
-When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP server (replace_content or replace_in_files) instead of Edit/Write tools. Serena provides LSP-aware safe edits that preserve file structure.</div>
+When updating tasks files (agents/tasks/tasks-*.md), ALWAYS use Serena MCP server (replace_content or replace_in_files) instead of Edit/Write tools. Serena provides LSP-aware safe edits that preserve file structure.</div>
 
     <div class="dispatch-file">
       <span>Reference file:</span>
@@ -1345,7 +1345,7 @@ When updating tasks files (.agents/tasks/tasks-*.md), ALWAYS use Serena MCP serv
           <td>Triage &rarr; cluster trace (Opus) &rarr; drilldown (Sonnet/Haiku) &rarr; checkpoint &rarr; Opus plans RFC (schema) &rarr; Opus writes RFC (no schema) &rarr; Fable verifies &rarr; build design + tasks (two parallel agents). Supports <code>resume_from</code>.</td>
         </tr>
         <tr>
-          <td><code class="cmd-full">/corpus-build</code> <code>@.agents/tasks/tasks-rfcNNN-&hellip;.md</code></td>
+          <td><code class="cmd-full">/corpus-build</code> <code>@agents/tasks/tasks-rfcNNN-&hellip;.md</code></td>
           <td>Phase 4</td>
           <td>Pipeline: Sonnet build + Fable/Opus review per task, 3-layer checkpoints, test mending. Supports <code>start_wave</code> resume.</td>
         </tr>

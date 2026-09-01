@@ -16,12 +16,12 @@ Nine artifacts reconciled across three layers:
 | 1 | `audit/PDF_INSPECTOR_VIABILITY_REPORT.md`                         | Audit  | 78    |
 | 2 | `audit/PDF_INSPECTOR_PHASE2_ACTIVATION_REPORT.md`                 | Audit  | 72    |
 | 3 | `audit/RFC032_GRILLING_REPORT.md`                                 | Audit  | 26    |
-| 4 | `.agents/rfcs/031-pdf-inspector-shadow-pilot.md`                  | RFC    | 35    |
-| 5 | `.agents/rfcs/032-pdf-inspector-tier1-activation.md`              | RFC    | 52    |
-| 6 | `.agents/designs/design-rfc031-pdf-inspector-shadow.md`           | Design | 68    |
-| 7 | `.agents/designs/design-rfc032-pdf-inspector-tier1-activation.md` | Design | 70    |
-| 8 | `.agents/tasks/tasks-rfc031-pdf-inspector-shadow.md`              | Tasks  | 57    |
-| 9 | `.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md`    | Tasks  | 50    |
+| 4 | `agents/rfcs/031-pdf-inspector-shadow-pilot.md`                  | RFC    | 35    |
+| 5 | `agents/rfcs/032-pdf-inspector-tier1-activation.md`              | RFC    | 52    |
+| 6 | `agents/designs/design-rfc031-pdf-inspector-shadow.md`           | Design | 68    |
+| 7 | `agents/designs/design-rfc032-pdf-inspector-tier1-activation.md` | Design | 70    |
+| 8 | `agents/tasks/tasks-rfc031-pdf-inspector-shadow.md`              | Tasks  | 57    |
+| 9 | `agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md`    | Tasks  | 50    |
 
 **Total items inventoried:** 508
 

@@ -12,9 +12,9 @@ Defined terms are **bolded on first use** elsewhere. If a word means something d
 
 | Term | Definition |
 | --- | --- |
-| **Contract** | A `(trigger, effect, boundary)` triple with a stable ID (`<FEATURE>-C<n>`) stored as a YAML record under `.agents/contracts/`. The unit of "what a feature guarantees." |
-| **RFC** | A markdown decision record in `.agents/rfcs/`. Lifecycle: `proposed → accepted → closed`. **Closed RFCs are append-only** — change by writing a new RFC that supersedes the old one, never by editing in place. |
-| **Gate** | One executable shell script in `scripts/gates/` that exits 0 (pass) or non-zero (fail) against thresholds in `.agents/governance/verify-gates.yaml`. No prose, no human judgment. |
+| **Contract** | A `(trigger, effect, boundary)` triple with a stable ID (`<FEATURE>-C<n>`) stored as a YAML record under `agents/contracts/`. The unit of "what a feature guarantees." |
+| **RFC** | A markdown decision record in `agents/rfcs/`. Lifecycle: `proposed → accepted → closed`. **Closed RFCs are append-only** — change by writing a new RFC that supersedes the old one, never by editing in place. |
+| **Gate** | One executable shell script in `scripts/gates/` that exits 0 (pass) or non-zero (fail) against thresholds in `agents/governance/verify-gates.yaml`. No prose, no human judgment. |
 | **Mode** | One of `scope`, `develop`, `verify`. The agent is in exactly one mode at a time and names it in every turn (e.g. `[mode: develop]`). |
 | **Checkpoint** | The literal string `[checkpoint]` emitted at the end of a mode, followed by `approve` or `reject` from the human in the next message. No mode transition happens without this exchange in the transcript. |
 | **Significant decision** | A decision that (a) introduces or changes a public interface (an MCP tool signature, a `CustomPageIndexClient` method, a storage key layout, a Redis schema), (b) changes a threshold in `verify-gates.yaml`, (c) adds/removes a module under `src/pageindex_mcp/`, or (d) requires more than 50 lines to implement. Anything else is tactical and goes in module `AGENTS.md`. |
@@ -22,7 +22,7 @@ Defined terms are **bolded on first use** elsewhere. If a word means something d
 | **Phase** | A number on every contract YAML (`phase: N`) and on module declarations in `dag.yaml`. Exit criterion is binary: every `phase: N` contract is greppable in a passing test and `eval.sh` is green. "Nominally complete" is **not a state**. |
 | **Layer** | A functional slice of the `pageindex_mcp` package — `transport`, `service`, `repository`, `provider`, `cross-cutting` (see §9). Import rules between layers are declared in `vocabulary.yaml` and enforced by the static gate. |
 | **Meta contract** | A contract carrying `meta: true` that defines a coding pattern (e.g. "every MCP tool returns a JSON-serializable dict") rather than a runtime behavior. Exempt from grep verification; audited by code review. |
-| **DAG** | The dependency graph in `.agents/governance/dag.yaml` covering bootstrap, tool discovery, and per-phase feature work. Declared by `depends_on` edges; parallel groups are derived; both validated by the `dag` gate. |
+| **DAG** | The dependency graph in `agents/governance/dag.yaml` covering bootstrap, tool discovery, and per-phase feature work. Declared by `depends_on` edges; parallel groups are derived; both validated by the `dag` gate. |
 
 ---
 
@@ -93,7 +93,7 @@ pageindex/
 ├── test.py · stress_test.py        # local-only agent example + load harness                (present)
 ├── postman/ · docs/                # local-only assets (excluded from the image)            (present)
 │
-├── .agents/
+├── agents/
 │   ├── governance/
 │   │   ├── dag.yaml                # The dependency graph (bootstrap + tooling + phases)     (present)
 │   │   ├── vocabulary.yaml         # Layers, error codes, import rules                       (to add)
@@ -129,11 +129,11 @@ PRD.md  (frozen, external)
    ↓
 ARCHITECTURE.md                                  (living, root)
    ↓ constrained by
-.agents/governance/*.yaml                         (frozen rules — includes dag.yaml)
+agents/governance/*.yaml                         (frozen rules — includes dag.yaml)
    ↓ constrains
-.agents/rfcs/*.md                                 (frozen decisions)
+agents/rfcs/*.md                                 (frozen decisions)
    ↓ derive
-.agents/contracts/*.yaml                          (SOT for verification + feature registry)
+agents/contracts/*.yaml                          (SOT for verification + feature registry)
    ↓ implemented + verified by
 src/pageindex_mcp/**  +  tests/**                 (code + tests; contract IDs in test names)
    ↓ graded by
@@ -228,7 +228,7 @@ Each item: `- [TAG] YYYY-MM-DD | Description`.
 
 **Problem it solves.** Without an explicit DAG, every run re-infers parallelism from prose. Two runs over the same input produce two orderings, two parallel batches, two commit shapes — the opposite of reproducibility.
 
-**Mechanism.** `.agents/governance/dag.yaml` declares three graphs:
+**Mechanism.** `agents/governance/dag.yaml` declares three graphs:
 
 1. **`bootstrap`** — runs once per repo (already partly satisfied: `scaffold`, `ci`, this file).
 2. **`tool_discovery`** — the `/tool-curator` fan-out (PyPI/MCP/Skills registries; §10A).
@@ -241,7 +241,7 @@ Each item: `- [TAG] YYYY-MM-DD | Description`.
 
 **Enforcement.** The `dag` gate fails `eval.sh` if: the graph has a cycle; a node maps to a missing artifact path; `execution-log.jsonl` order violates the declared topology (an unlogged `depends_on` ancestor whose `check:` block passes on disk counts as satisfied — this is what keeps `kind: filesystem` nodes like `scaffold` and `kind: skill_generated` nodes like `tools_md` from failing); or `derived.parallel_group` disagrees with what `dag.sh` computes from edges.
 
-**What the agent reads/writes.** At the start of `scope`, the agent reads `dag.yaml` to learn which upcoming files are parallel (same `parallel_group`) vs sequential. During `develop`, every file creation appends one line to `.agents/state/execution-log.jsonl`:
+**What the agent reads/writes.** At the start of `scope`, the agent reads `dag.yaml` to learn which upcoming files are parallel (same `parallel_group`) vs sequential. During `develop`, every file creation appends one line to `agents/state/execution-log.jsonl`:
 
 ```json
 {"ts":"2026-05-30T10:42:11Z","node":"client","artifact":"src/pageindex_mcp/client.py","feature":"INDEX-02"}
@@ -253,7 +253,7 @@ Each item: `- [TAG] YYYY-MM-DD | Description`.
 
 A **contract** is the unit of "what this feature guarantees." It sits between an RFC (the decision) and a test (the verification).
 
-### 5.1 File format (`.agents/contracts/<FEATURE>.yaml`)
+### 5.1 File format (`agents/contracts/<FEATURE>.yaml`)
 
 ```yaml
 feature: UPLOAD-01
@@ -440,7 +440,7 @@ Run by `scripts/eval.sh` in declared order, **fast → slow** and **no-infra →
 
 ## 8. Phase-Based Execution Plan
 
-A **phase** is a number on contract YAMLs (`phase: 1`, …) and on `dag.yaml` module declarations. There is no `ROADMAP.md` — phase membership is queryable (`grep -l 'phase: 1' .agents/contracts/*.yaml`), module dependencies live in `dag.yaml#phase_features.modules`, and the narrative is generated on demand by `scripts/phase-status.sh`.
+A **phase** is a number on contract YAMLs (`phase: 1`, …) and on `dag.yaml` module declarations. There is no `ROADMAP.md` — phase membership is queryable (`grep -l 'phase: 1' agents/contracts/*.yaml`), module dependencies live in `dag.yaml#phase_features.modules`, and the narrative is generated on demand by `scripts/phase-status.sh`.
 
 Suggested phase shape for this repo (a convention, not a stored file):
 
@@ -512,7 +512,7 @@ Bootstrap order is **declared in `dag.yaml#bootstrap`**, not in prose; if the tw
 
 | Group | Steps (parallel within a group) | Status here |
 | --- | --- | --- |
-| 1 | Scaffolding (`.agents/`, `scripts/`, `src/pageindex_mcp/`) | `src/` + `.agents/governance/dag.yaml` present; `scripts/` + rest **to add** |
+| 1 | Scaffolding (`agents/`, `scripts/`, `src/pageindex_mcp/`) | `src/` + `agents/governance/dag.yaml` present; `scripts/` + rest **to add** |
 | 2 | `PRD.md`; `vocabulary.yaml` | **to add** |
 | 3 | `scope-checklist.yaml`, `develop-guide.yaml`, `verify-gates.yaml`, `known-advisories.yaml`; spawn `/tool-curator` (§10A) | **to add** |
 | 4 | `ARCHITECTURE.md`; empty `PENDING_DECISIONS.md` + `execution-log.jsonl` | **to add** (ARCHITECTURE can lift from `CLAUDE.md` + RFC-000) |
@@ -577,9 +577,9 @@ Bootstrap order is **declared in `dag.yaml#bootstrap`**, not in prose; if the tw
 If full adoption is too heavy, the irreducible core for this repo:
 
 1. `AGENT_DRIVEN_DEVELOPMENT.md` (this file) + `CLAUDE.md` at the root.
-2. `.agents/contracts/*.yaml` — even three contracts (e.g. `UPLOAD-01`, `INDEX-01`, `RAG-01`) beats zero.
-3. `.agents/state/PENDING_DECISIONS.md` — capture everything not in scope (seed it from RFC-000).
-4. `.agents/governance/dag.yaml` with `bootstrap` only (present) — defer `tool_discovery`/`phase_features` until phases exist.
+2. `agents/contracts/*.yaml` — even three contracts (e.g. `UPLOAD-01`, `INDEX-01`, `RAG-01`) beats zero.
+3. `agents/state/PENDING_DECISIONS.md` — capture everything not in scope (seed it from RFC-000).
+4. `agents/governance/dag.yaml` with `bootstrap` only (present) — defer `tool_discovery`/`phase_features` until phases exist.
 5. Two gate scripts: `contracts.sh` and `dag.sh` (plus wiring `pytest`/`ruff` into a minimal `static.sh`/`unit.sh`).
 6. The four-stage workflow from §4.1.
 
@@ -592,7 +592,7 @@ Everything else (full governance YAMLs, the eight-gate suite, the RFC template) 
 ### 14.1 `TOOLS.md` skeleton
 Auto-generated by `/tool-curator` (§10A). No human template. Do not hand-author.
 
-### 14.2 RFC template (`.agents/templates/rfc.md`)
+### 14.2 RFC template (`agents/templates/rfc.md`)
 
 ```markdown
 ---
@@ -666,7 +666,7 @@ Format: `- [TAG] YYYY-MM-DD | Description`
 ```
 
 ### 14.5 `dag.yaml` template
-See the live file at `.agents/governance/dag.yaml`. The three sections (`bootstrap`, `tool_discovery`, `phase_features`) are documented in §4.3 and §8. **`phase_features.modules` is currently `[]` — RFC-000 fills it from §8's module list.**
+See the live file at `agents/governance/dag.yaml`. The three sections (`bootstrap`, `tool_discovery`, `phase_features`) are documented in §4.3 and §8. **`phase_features.modules` is currently `[]` — RFC-000 fills it from §8's module list.**
 
 ### 14.6 `execution-log.jsonl` format
 

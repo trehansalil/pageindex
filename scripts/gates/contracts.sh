@@ -2,7 +2,7 @@
 # scripts/gates/contracts.sh — Gate 3: Behavioral Contract Coverage
 #
 # Enforces:
-#   - Every .agents/contracts/*.yaml file contains contract IDs that are
+#   - Every agents/contracts/*.yaml file contains contract IDs that are
 #     grep-found in tests/ (function names, marker comments, or docstrings).
 #   - Every module with code on disk has at least one contract YAML (unless
 #     --built-only is given, in which case only modules with src files are checked).
@@ -15,13 +15,13 @@
 #                  src/pageindex_mcp/<module>.py on disk (used by eval.sh).
 #
 # Needs infra: no
-# Reads thresholds from .agents/governance/verify-gates.yaml via read-yaml.sh.
+# Reads thresholds from agents/governance/verify-gates.yaml via read-yaml.sh.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB_DIR="$REPO_ROOT/scripts/lib"
-GATES_YAML="$REPO_ROOT/.agents/governance/verify-gates.yaml"
+GATES_YAML="$REPO_ROOT/agents/governance/verify-gates.yaml"
 
 # shellcheck source=../lib/read-yaml.sh
 source "$LIB_DIR/read-yaml.sh"
@@ -50,12 +50,12 @@ ALL_CONTRACTS_IN_TESTS=$(gate_threshold      "contracts.all_contracts_in_tests" 
 META_EXEMPT=$(gate_threshold                 "contracts.meta_contract_exempt"          2>/dev/null || echo "true")
 STORAGE_WARN=$(gate_threshold               "contracts.storage_write_requires_integration" 2>/dev/null || echo "warn")
 
-CONTRACTS_DIR="$REPO_ROOT/.agents/contracts"
+CONTRACTS_DIR="$REPO_ROOT/agents/contracts"
 
 # ── 3a. No contracts directory yet ───────────────────────────────────────────
 if [[ ! -d "$CONTRACTS_DIR" ]]; then
-    echo "  [SKIP]  .agents/contracts/ directory does not exist yet"
-    echo "SKIP gate=contracts (.agents/contracts/ absent; create during RFC-000)"
+    echo "  [SKIP]  agents/contracts/ directory does not exist yet"
+    echo "SKIP gate=contracts (agents/contracts/ absent; create during RFC-000)"
     exit 0
 fi
 
@@ -121,7 +121,7 @@ if [[ "$ALL_CONTRACTS_IN_TESTS" == "true" ]]; then
     fi
 
     if [[ ${#CONTRACT_YAMLS[@]} -eq 0 ]]; then
-        echo "  [SKIP]  no contract YAMLs found in .agents/contracts/"
+        echo "  [SKIP]  no contract YAMLs found in agents/contracts/"
     else
         for yaml_file in "${CONTRACT_YAMLS[@]}"; do
             feature_name=$(grep '^feature:' "$yaml_file" | awk '{print $2}' | tr -d '"' || echo "unknown")

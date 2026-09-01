@@ -98,7 +98,7 @@ markers = [
 pageindex-mcp = "pageindex_mcp.server:main"
 
 # ── Ruff: linter + formatter (Gate 1 "static" — scripts/gates/static.sh) ──────
-# Wires the static-analysis thresholds from .agents/governance/verify-gates.yaml
+# Wires the static-analysis thresholds from agents/governance/verify-gates.yaml
 # (gates.static.*) into the linter so the gate's `ruff check` / `ruff format
 # --check` sub-checks stop SKIPping ("no [tool.ruff] config") and actively
 # enforce them. ruff lives in the `dev` extra: `uv sync --extra dev`.

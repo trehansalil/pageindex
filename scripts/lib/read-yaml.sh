@@ -4,7 +4,7 @@
 # Sourceable helper that extracts a scalar value from a YAML file by dot-path key.
 #
 # Usage (after sourcing):
-#   read_yaml ".agents/governance/verify-gates.yaml" "gates.static.ruff_violations"
+#   read_yaml "agents/governance/verify-gates.yaml" "gates.static.ruff_violations"
 #
 # Returns the value on stdout; exits non-zero if key not found.
 #
@@ -22,7 +22,7 @@
 #
 # §6.3 discipline: thresholds always live in verify-gates.yaml; never hardcoded.
 
-GATES_YAML="${GATES_YAML:-.agents/governance/verify-gates.yaml}"
+GATES_YAML="${GATES_YAML:-agents/governance/verify-gates.yaml}"
 
 read_yaml() {
     local yaml_file="$1"

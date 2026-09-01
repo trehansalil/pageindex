@@ -265,7 +265,7 @@ Baseline: A typical German insurance PDF (20–50 pages of structured text):
 | **Scanned PDF**                                           | ~4100ms (first fail + retry)    | ~3500ms (OCR from start)           | **600ms per doc**                      |
 | **Corpus-wide (100 docs, 80% text-based with artifacts)** | ~370s (80 × 4.1s + 20 × 4.1s) | ~260s (80 × 2.1s + 20 × 3.5s)    | **~30% throughput gain** (~110s saved) |
 
-> **Honesty note (2026-08-06):** The 30% throughput gain assumes 80% of a 100-doc corpus has text-based artifacts triggering garble retries. The actual 60-doc validation corpus has only 5 non-text_based documents (4 scanned + 1 mixed = 8.3%), and the text-based docs largely pass without garble retries. Real-world savings depend on the proportion of scanned/garbled documents in production traffic — the 30% figure is a best-case upper bound, not an expected value. Empirical measurement via Prometheus is planned in [RFC-032 D7](../.agents/rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement).
+> **Honesty note (2026-08-06):** The 30% throughput gain assumes 80% of a 100-doc corpus has text-based artifacts triggering garble retries. The actual 60-doc validation corpus has only 5 non-text_based documents (4 scanned + 1 mixed = 8.3%), and the text-based docs largely pass without garble retries. Real-world savings depend on the proportion of scanned/garbled documents in production traffic — the 30% figure is a best-case upper bound, not an expected value. Empirical measurement via Prometheus is planned in [RFC-032 D7](../agents/rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement).
 
 **Critical assumption:** pdf-inspector's `text_based` classification with high confidence (≥0.95) correlates >98% with documents that would pass `validate_tree()` without OCR. If classification is overly aggressive or unreliable, the retry cycle merely shifts to the validation gate.
 
@@ -306,7 +306,7 @@ pdf-inspector classification is **advisory only**. The decision tree is:
 
 ### 4.7 Implementation Checklist
 
-> **SUPERSEDED by [RFC-032 D2](../.agents/rfcs/032-pdf-inspector-tier1-activation.md#d2-converter-loop-wiring--force-ocr-on-first-pass).** The checklist below recommended routing via the `DOCLING_DO_OCR` environment variable (a process-wide toggle affecting all concurrent conversions). RFC-032 instead uses `force_full_page_ocr=True` as a per-call function parameter — surgical, per-document, and already wired through the converter stack. Follow [RFC-032's design document](../.agents/designs/design-rfc032-pdf-inspector-tier1-activation.md) and [task plan](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md) for the authoritative implementation.
+> **SUPERSEDED by [RFC-032 D2](../agents/rfcs/032-pdf-inspector-tier1-activation.md#d2-converter-loop-wiring--force-ocr-on-first-pass).** The checklist below recommended routing via the `DOCLING_DO_OCR` environment variable (a process-wide toggle affecting all concurrent conversions). RFC-032 instead uses `force_full_page_ocr=True` as a per-call function parameter — surgical, per-document, and already wired through the converter stack. Follow [RFC-032's design document](../agents/designs/design-rfc032-pdf-inspector-tier1-activation.md) and [task plan](../agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md) for the authoritative implementation.
 
 - [x] ~~Integrate pdf-inspector's `detect_pdf_bytes()` into `probe_conversion_route()` with ~50ms timeout.~~ (Done in RFC-031)
 - [x] ~~Emit classification and confidence to `arq` job metadata and Prometheus for post-hoc analysis.~~ (Done in RFC-031)
@@ -384,7 +384,7 @@ pdf-inspector earns a **PILOT**, not full adoption: its classification path is a
 
 *Date: 2026-08-06*
 *Branch: `feat/pdf-inspector-shadow-pilot`*
-*RFC: [031-pdf-inspector-shadow-pilot](../.agents/rfcs/031-pdf-inspector-shadow-pilot.md)*
+*RFC: [031-pdf-inspector-shadow-pilot](../agents/rfcs/031-pdf-inspector-shadow-pilot.md)*
 
 ### 8.1 Classification Results — 27 German Insurance T&C PDFs
 
@@ -650,7 +650,7 @@ The extended corpus changes the promotion calculus significantly:
 
 ### 9.10 Prometheus Wall-Clock Savings Measurement (RFC-032 D7, post-activation)
 
-**Purpose:** Validate the modeled savings from Section 4.4 (~600ms per scanned document, ~2000ms per text-based document that would otherwise trigger a garble retry) against actual production `PDF_INSPECTOR_LATENCY` histogram and ingestion timing data, per [RFC-032 D7](../.agents/rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement).
+**Purpose:** Validate the modeled savings from Section 4.4 (~600ms per scanned document, ~2000ms per text-based document that would otherwise trigger a garble retry) against actual production `PDF_INSPECTOR_LATENCY` histogram and ingestion timing data, per [RFC-032 D7](../agents/rfcs/032-pdf-inspector-tier1-activation.md#d7-prometheus-wall-clock-savings-measurement).
 
 **Precondition check (2026-08-06):** `PDF_INSPECTOR_PRECLASSIFY` defaults to `"0"` in `src/pageindex_mcp/config.py` and is absent from `.env` and `.env.active`, present only as a commented-out `# PDF_INSPECTOR_PRECLASSIFY=0` line in `.env.example`, and unset in the environment of the running `arq` worker and `gunicorn` server processes on this host. The flag has **not** been flipped to `1` in production.
 
@@ -662,7 +662,7 @@ The extended corpus changes the promotion calculus significantly:
 1. Query `pageindex_pdf_inspector_preclassify_forced_ocr_total` to confirm forced-OCR activations are occurring (non-zero, growing).
 2. For documents where forced OCR fired, pull end-to-end conversion duration from the existing ingestion timing metrics (worker job duration / `MINIO_DURATION`+conversion span) and compare against the pre-activation baseline distribution for the same `pdf_type` (scanned/`image_based`) captured while `PRECLASSIFY=0`.
 3. Compute the per-document delta and compare against the modeled 600–2000ms range from Section 4.4.
-   - **Expect the scanned-PDF savings line to be refuted.** The D9 calibration ([Task 7.1](../.agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#71-wall-clock-timing-calibration)) measured the OCR pass at **6.16x mean / 11.00x max** the text-layer pass on the 4 scanned corpus docs. Section 4.4's "Scanned PDF → 600ms saved" row assumes OCR-from-start (~3500ms) is *cheaper* than a failed text pass plus OCR retry (~4100ms); at a 6.16x ratio that assumption does not hold, and forced first-pass OCR is likely a wall-clock **cost**, not a saving, for scanned documents. The credible remaining savings case is the text-based-with-garble row (skipping an unnecessary OCR retry), not the scanned row. D7 must report the measured sign, not assume a positive delta.
+   - **Expect the scanned-PDF savings line to be refuted.** The D9 calibration ([Task 7.1](../agents/tasks/tasks-rfc032-pdf-inspector-tier1-activation.md#71-wall-clock-timing-calibration)) measured the OCR pass at **6.16x mean / 11.00x max** the text-layer pass on the 4 scanned corpus docs. Section 4.4's "Scanned PDF → 600ms saved" row assumes OCR-from-start (~3500ms) is *cheaper* than a failed text pass plus OCR retry (~4100ms); at a 6.16x ratio that assumption does not hold, and forced first-pass OCR is likely a wall-clock **cost**, not a saving, for scanned documents. The credible remaining savings case is the text-based-with-garble row (skipping an unnecessary OCR retry), not the scanned row. D7 must report the measured sign, not assume a positive delta.
 4. Cross-reference `PDF_INSPECTOR_LATENCY` (classification overhead, ~50ms per Section 9.8) to confirm it remains a small fraction of any measured savings.
 
 **Gate verdict: NOT YET MEASURABLE.** D7 remains open pending production activation (D6 gate + flag flip) and a subsequent Prometheus observation window (see D8, Section 9.8 recommendation item 3).

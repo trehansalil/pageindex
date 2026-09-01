@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep .agents/{rfcs,designs,tasks} mark-ready before a Confluence sync.
+"""Keep agents/{rfcs,designs,tasks} mark-ready before a Confluence sync.
 
 WHY: mark (kovetskiy/mark) requires `Space`/`Title`/`Folder` metadata comments
 on every file it pushes, and this repo's convention is that every RFC has a
@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-AGENTS_DIR = Path(__file__).resolve().parent.parent / ".agents"
+AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 RFCS_DIR = AGENTS_DIR / "rfcs"
 DESIGNS_DIR = AGENTS_DIR / "designs"
 TASKS_DIR = AGENTS_DIR / "tasks"

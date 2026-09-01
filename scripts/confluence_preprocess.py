@@ -4,7 +4,7 @@
 mark (kovetskiy/mark) cannot resolve relative cross-file links when files are
 processed one at a time (see confluence_sync.sh). This script rewrites:
 
-  - Relative links to synced .agents/ and audit/ files → Confluence display URLs
+  - Relative links to synced agents/ and audit/ files → Confluence display URLs
   - Relative links to non-synced files (CLAUDE.md, etc.) → GitHub blob URLs
   - Same-page #anchors → preserved as-is
 
@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-AGENTS_DIR = ROOT_DIR / ".agents"
+AGENTS_DIR = ROOT_DIR / "agents"
 AUDIT_DIR = ROOT_DIR / "audit"
 SPACE = "CITRA"
 

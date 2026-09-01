@@ -1,9 +1,9 @@
 # OCR Spike Evaluation Report (RFC-036 D7)
 
-**Decision:** [RFC-036 D7 — OCR engine evaluation spike](../.agents/rfcs/036-run19-run19-landscape-writebarrier-enrichment-fixes.md#d7-ocr-engine-evaluation-spike--paddleocr-and-docling-ocr-service-wrappers)
-**Task:** [3.4 — Run spike evaluation and write comparison report](../.agents/tasks/tasks-rfc036-run19-landscape-writebarrier-enrichment-fixes.md#3-4-d7-spike-evaluation)
+**Decision:** [RFC-036 D7 — OCR engine evaluation spike](../agents/rfcs/036-run19-run19-landscape-writebarrier-enrichment-fixes.md#d7-ocr-engine-evaluation-spike--paddleocr-and-docling-ocr-service-wrappers)
+**Task:** [3.4 — Run spike evaluation and write comparison report](../agents/tasks/tasks-rfc036-run19-landscape-writebarrier-enrichment-fixes.md#3-4-d7-spike-evaluation)
 **Script:** `scripts/ocr_spike_eval.py`
-**Raw output:** `.agents/spikes/ocr_eval/ocr_spike_report.json`
+**Raw output:** `agents/spikes/ocr_eval/ocr_spike_report.json`
 
 ## Method
 

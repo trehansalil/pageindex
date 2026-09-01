@@ -2,7 +2,7 @@
 
 **Workflow:** `.claude/workflows/arch-bug-pattern-audit.js` (run `wf_43669e1e-9ee`)
 **Branch at audit time:** `feat/pdf-inspector-shadow-pilot` (zones 1–7 wave-1/wave-2 fixes already landed: `e26b7eb`, `4f196de`, `d93c976`, `d245b86`, `57df3e5`)
-**Inputs:** 3/4 history miners (40 causal chains; the `rfc-chains` miner over `.agents/rfcs/019-036` stalled on all 6 attempts and contributed nothing), 3/3 code maps (2 graph-based, 1 raw-source). Synthesis: Opus, high effort, code citations re-verified against source.
+**Inputs:** 3/4 history miners (40 causal chains; the `rfc-chains` miner over `agents/rfcs/019-036` stalled on all 6 attempts and contributed nothing), 3/3 code maps (2 graph-based, 1 raw-source). Synthesis: Opus, high effort, code citations re-verified against source.
 **Prior report:** `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-11.md` (run 1).
 
 ## Executive summary

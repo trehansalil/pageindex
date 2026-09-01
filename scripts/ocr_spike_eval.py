@@ -174,7 +174,7 @@ def recommend(all_results: list[dict]) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--doc-store", default="doc_store")
-    parser.add_argument("--out-dir", default=".agents/spikes/ocr_eval")
+    parser.add_argument("--out-dir", default="agents/spikes/ocr_eval")
     parser.add_argument("--targets", nargs="*", default=DEFAULT_TARGETS)
     args = parser.parse_args()
 
