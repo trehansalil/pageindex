@@ -60,10 +60,10 @@ This cycle has produced 8 architecture defect zones (3 critical, 4 high, 1 mediu
 ## Non-Goals
 
 - NG1: Full promotion pipeline refactor (RFC-040 D2 ordered pipeline) — deferred until D1 stabilizes verdict boundaries.
-- NG2: ~~NFKC normalization reordering (RFC-040 D6) — detection-only fix, lands separately per RFC-040 sequencing.~~ **RESOLVED (root-cause review 2026-08-31):** Zone 2 absorbed into RFC-041 as D10c. The 7 remaining post-NFKC `_infer_presentation_forms` fallback sites are now owned by D10c, which threads pre-NFKC `ScriptContext` to each site. See [D10](#d10-dead-code-accessor-parity-and-zone-2-pf-remediation-requirement-8).
+- NG2: ~~NFKC normalization reordering (RFC-040 D6) — detection-only fix, lands separately per RFC-040 sequencing.~~ **RESOLVED (root-cause review 2026-08-31):** Zone 2 absorbed into RFC-041 as D10c. The **10** remaining post-NFKC `_infer_presentation_forms` fallback sites are now owned by D10c, which threads pre-NFKC `ScriptContext` to each site. **(Corrected 2026-09-01: 10 sites, not 7 — `images.py:145`, `tree_validation.py:392`, `verdict.py:257` were missing.)** See [D10](#d10-dead-code-accessor-parity-and-zone-2-pf-remediation-requirement-8).
 - NG3: Tessdata Latin substitution closure (RFC-040 D5) — lands per RFC-040 sequencing.
 - NG4: Composite quality scoring to replace six `_try_*` helpers — large refactor deferred pending golden-file baseline.
-- NG5: Converter chain HR4 enforcement (Zone 5) — deferred. The claim that it is "covered by existing retry-loop fix" is unverified and requires validation against the Zone 5 audit spec before this RFC can mark it resolved.
+- NG5: Converter chain HR4 enforcement (Zone 5) — deferred. The claim that it is "covered by existing retry-loop fix" is unverified and requires validation against the Zone 5 audit spec before this RFC can mark it resolved. **(Amendment 2026-09-01):** A verification task (grep for retry-loop fix, validate against Zone 5 spec) is added to Wave 0 — see [Task 1.6](#16-zone-5-ng5-verification). If verification fails, Zone 5 must be escalated for scoping into RFC-041 or a successor RFC.
 
 ## Glossary
 
@@ -204,15 +204,17 @@ This RFC consolidates eight interdependent fixes into a single dependency-ordere
 
 ### D2: Unified Block Text Accessor (Requirement 2)
 
-**What:** Extract a single `block_text(block: dict, purpose: BlockTextPurpose) -> str` function in `flat.py`. All three current accessors (`_flat_block_primary_text`, `_flat_search_text`, `_node_text_parts`) become thin wrappers delegating to `block_text`. Purpose enum selects enrichment inclusions. CI grep flags direct `block['text']` access.
+**What:** Extract a two-tier text extraction API in `flat.py`: `block_text(block: dict, purpose: BlockTextPurpose) -> str` for single-block extraction, and `doc_text(data: dict, purpose: BlockTextPurpose) -> str` for whole-document iteration. `doc_text` iterates blocks internally and calls `block_text` per block. All three current accessors become thin wrappers: `_flat_block_primary_text` → `block_text(block, CHAR_COUNT)`, `_flat_search_text` → `doc_text(data, SEARCH)`, `_node_text_parts` → `block_text(block, CHAR_COUNT)`. Purpose enum selects enrichment inclusions. CI grep flags direct `block['text']` access.
 
 **Why:** Three independent text extraction functions implement different strategies for the same block types. The Zone-9 header-only-table fix exists in `_flat_block_primary_text` but not `_flat_search_text`. This feeds different garble ratios to different detection paths and different char counts to verdict thresholds.
 
-**Files:** `flat.py` (new `block_text` + refactored accessors), `tree_validation.py` (`_node_text_parts` delegates), `helpers/rag.py` (~:190, caller of `_flat_search_text` — search quality impact needs validation alongside verdict corpus diff), `helpers/garble.py` (:648,:685 call `_node_text_parts`; :780 calls `_flat_block_primary_text` — internal consumers that must migrate to `block_text` and be regression-tested for garble-score stability)
+**Interface note (review v2 2026-09-01):** `_flat_search_text` operates on the **entire document** (`data: dict`, iterates blocks internally) while `_flat_block_primary_text` operates on a **single block**. A single `block_text(block, purpose)` function cannot directly replace `_flat_search_text`. The two-tier API (`block_text` + `doc_text`) resolves this: `doc_text` handles whole-document iteration and delegates per-block logic to `block_text`, ensuring all purposes share the same block-level extraction.
+
+**Files:** `flat.py` (new `block_text` + `doc_text` + refactored accessors), `tree_validation.py` (`_node_text_parts` delegates), `helpers/rag.py` (~:190, caller of `_flat_search_text` — search quality impact needs validation alongside verdict corpus diff), `helpers/garble.py` (:648,:685 call `_node_text_parts`; :780 calls `_flat_block_primary_text` — internal consumers that must migrate to `block_text` and be regression-tested for garble-score stability)
 
 **Amendment (root-cause review 2026-08-31):** Added `helpers/garble.py` to file list. The root-cause review found garble.py internally calls `_node_text_parts` (per-node table-content check at :692-695) and `_flat_block_primary_text` (whole-tree fallback at :780). These were omitted from D2's declared scope, creating regression risk: if `block_text(purpose=CHAR_COUNT)` behavior for garble.py's table-handling differs subtly from the current direct calls, garble scores could shift without review.
 
-**Lines changed:** ~60 net
+**Lines changed:** ~80 net (revised from ~60 to account for two-tier API + doc_text iteration)
 
 **Migration risk:** Medium — behavior change for `_flat_search_text` (gains Zone-9 fix) and `_node_text_parts` (gains table handling). `helpers/rag.py` callers must be verified for search quality impact. Run corpus diff.
 
@@ -280,7 +282,7 @@ This RFC consolidates eight interdependent fixes into a single dependency-ordere
 
 ### D8: RFC Lifecycle CI Gate (Requirement 7)
 
-**What:** GitHub Actions workflow parsing `.agents/rfcs/*.md` and `.agents/tasks/*.md`, plus a zone-ownership manifest. Flags: (a) unchecked GATE items below checked implementation items (the RFC-037 Release B pattern); (b) drafts with all tasks complete; (c) Open Questions with no resolution reference; (d) zones with unresolved bugs whose owning RFC is closed and no successor RFC owns them (the RFC-040 Zone 2 pattern). Merge-blocking for skipped gates and orphaned zones, advisory for the rest.
+**What:** GitHub Actions workflow parsing `agents/rfcs/*.md` and `agents/tasks/*.md`, plus a zone-ownership manifest. Flags: (a) unchecked GATE items below checked implementation items (the RFC-037 Release B pattern); (b) drafts with all tasks complete; (c) Open Questions with no resolution reference; (d) zones with unresolved bugs whose owning RFC is closed and no successor RFC owns them (the RFC-040 Zone 2 pattern). Merge-blocking for skipped gates and orphaned zones, advisory for the rest.
 
 **Why:** Two distinct lifecycle failures observed: RFC-037 Release B skipped while Release C executed (checkbox-order); RFC-040 marked done while Zone 2's 7 post-NFKC sites remained unowned (scope-narrowing). Both require automated enforcement.
 
@@ -313,7 +315,7 @@ Gaps to triage:
 **What:** Three sub-deliverables:
 1. **D10a** — `garble.py` (:583): Change `'Arabic'` to `'Arab'` to match `_infer_script` return value
 2. **D10b** — `_flat_search_text` (`flat.py` :200): Add Zone-9 header-only-table fix matching `_flat_block_primary_text`
-3. **D10c** — Thread pre-NFKC `ScriptContext` to 7 post-NFKC `_infer_presentation_forms` call sites so PF detection operates on pre-decomposition text. Sites: `pictures.py:272,393`; `recovery.py:125`; `indexer.py:514,1015,1041`; `garble.py:855`
+3. **D10c** — Thread pre-NFKC `ScriptContext` to **10** post-NFKC `_infer_presentation_forms` call sites so PF detection operates on pre-decomposition text. Sites: `pictures.py:272,393`; `recovery.py:125`; `indexer.py:514,1015,1041`; `garble.py:855`; `images.py:145`; `tree_validation.py:392`; `verdict.py:257` **(3 sites added: review v2 2026-09-01)**
 
 **Why:** D10a/D10b are known bugs with trivial fixes. D10c resolves the Zone 2 orphan: RFC-040 D6 fixed NFKC-before-bidi ordering only in `_pre_inference_normalize`, but 7 fallback call sites still construct `ScriptContext` on post-NFKC text where `_infer_presentation_forms` structurally returns `False` (docstring garble.py:30-48 says so explicitly). D10a fixes the safety net inside `detect_garble`; D10c fixes the source of the problem at each call site.
 
@@ -350,6 +352,8 @@ Gaps to triage:
 
 **Amendment (root-cause review 2026-08-31):** Corrected migration guidance. Original text suggested `asyncio.run()` or synchronous wrapper; both callers are already async. Added hard gate: RFC-037 Release B corpus validation MUST complete before D11 implementation begins. D11 concentrates all 5 write paths onto the `_UPSERT_SQL` max-priority-wins CAS arbiter (storage/verdict.py:97-99) — if that arbiter has bugs, D11 turns a distributed 5-writer problem into a single-point-of-failure. See Task 3.5a.
 
+**Contingency plan (review v2 2026-09-01):** If Release B validation surfaces CAS bugs, D11 proceeds with a **dual-write with soft CAS** approach: `write_verdict` writes to both MinIO (authoritative) and Postgres (advisory, best-effort CAS), with a reconcile sweep treating Postgres as non-authoritative until the CAS guard is validated. This unblocks D11's routing consolidation while deferring Postgres-as-authority to a post-fix Release B re-validation. The reconcile sweep (`_drain_verdict_retry_queue`) already handles Postgres write failures — this contingency extends that pattern to CAS-mismatch scenarios.
+
 ## Implementation Plan
 
 ### Sequencing
@@ -383,20 +387,22 @@ D8  ──► D9 (CI gate before triage)
 |---|---|---|
 | D1 (garble entry point) | 0.5 day | Low |
 | D2 (block_text accessor) | 1 day | Medium — corpus diff |
-| D3 (single-writer enforcement) | 1 day | Medium — corpus diff |
+| D3 (single-writer enforcement) | 2–3 days | Medium — corpus diff + test migration |
 | D4 (recovery dedup) | 0.5 day | Low |
 | D5 (heuristic registry) | 1 day | Low |
 | D6 (golden-file tests) | 1 day | None |
 | D7 (property-based tests) | 1 day | None |
 | D8 (RFC lifecycle CI) | 0.5 day | None |
 | D9 (RFC gap triage) | 0.5 day | None |
-| D10 (dead code + Zone-9) | 0.5 day | Low |
-| D11 (verdict authority) | 1.5 days | Medium — dual-store |
+| D10a/b (dead code + Zone-9) | 0.5 day | Low |
+| D10c (Zone 2 PF threading) | 2–3 days | Medium — 10 call sites across 5 files |
+| D11 (verdict authority) | 2–3 days | Medium-High — dual-store + Release B gate |
 | Corpus-diff per wave | 2 days | Low |
 | Zone 2 ownership resolution | 0.5 day | Medium |
-| **Total** | **15 days** | |
+| Zone 5 verification (NG5) | 0.5 day | Low |
+| **Total** | **~20 days (range: 17–24)** | |
 
-> **Note:** Original estimate of 7.5 days excluded corpus-diff verification time (~0.5 day per wave × 4 waves) and D11. Revised to 12 days based on adversarial review (Fable 5 agent, 2026-08-31). Further revised to 15 days to account for D11 dual-store complexity, Zone 2 ownership resolution, and buffer for D2 hidden-consumer risk (root-cause validation review, 2026-08-31).
+> **Note:** Original estimate of 7.5 days excluded corpus-diff verification time (~0.5 day per wave × 4 waves) and D11. Revised to 12 days based on adversarial review (Fable 5 agent, 2026-08-31). Further revised to 15 days to account for D11 dual-store complexity, Zone 2 ownership resolution, and buffer for D2 hidden-consumer risk (root-cause validation review, 2026-08-31). **Further revised to 17–24 days (review v2, 2026-09-01):** D3 underestimated `__setattr__` guard test migration (~dozens of test assignments); D10c has 10 call sites not 7 (effort: 80–120 lines across 5 files); D11 gated on Release B with no contingency if validation fails. Added Zone 5 verification task.
 
 ## Test Strategy
 

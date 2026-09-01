@@ -235,11 +235,15 @@ sequenceDiagram
 
 ### 2. flat.py
 
-**Responsibility**: Canonical text extraction from flat blocks via `block_text(block, purpose)`.
+**Responsibility**: Canonical text extraction via a two-tier API: `block_text(block, purpose)` for single-block extraction, `doc_text(data, purpose)` for whole-document iteration.
+
+**(Amendment 2026-09-01):** `_flat_search_text` operates on the entire document (`data: dict`, iterates blocks internally) while `_flat_block_primary_text` operates on a single block. A single `block_text(block, purpose)` cannot directly replace `_flat_search_text`. The two-tier API resolves this: `doc_text(data, purpose)` iterates blocks and delegates per-block extraction to `block_text(block, purpose)`.
+
 **Changes** ([D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2)):
 - New `BlockTextPurpose` enum: `GARBLE_CHECK`, `SEARCH`, `CHAR_COUNT`, `DISPLAY`
-- New `block_text(block: dict, purpose: BlockTextPurpose) -> str`
-- `_flat_block_primary_text` and `_flat_search_text` become thin wrappers
+- New `block_text(block: dict, purpose: BlockTextPurpose) -> str` — single-block extraction
+- New `doc_text(data: dict, purpose: BlockTextPurpose) -> str` — whole-document iteration, delegates to `block_text` per block
+- `_flat_block_primary_text` becomes `block_text(block, CHAR_COUNT)`, `_flat_search_text` becomes `doc_text(data, SEARCH)`
 - Zone-9 header-only-table fix applies to all purposes ([D10](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-and-accessor-parity-fixes-requirement-8))
 - **Callers:** `helpers/rag.py` (~:190) calls `_flat_search_text` — search quality impact must be validated alongside verdict corpus diff
 - **Internal callers (added 2026-08-31):** `helpers/garble.py` calls `_node_text_parts` at :648,:685 and `_flat_block_primary_text` at :780. Garble.py's per-node table-content check (:692-695) must be regression-tested against `block_text(purpose=CHAR_COUNT)` to ensure garble scores don't shift
@@ -304,7 +308,7 @@ sequenceDiagram
 
 **Responsibility**: CI gate blocking merges on skipped RFC validation gates.
 **Changes** ([D8](../rfcs/041-recurring-defect-consolidation.md#d8-rfc-lifecycle-ci-gate-requirement-7)):
-- Parse `.agents/rfcs/*.md` and `.agents/tasks/*.md`
+- Parse `agents/rfcs/*.md` and `agents/tasks/*.md`
 - Detect: later-phase checked + earlier GATE unchecked; all-tasks-done drafts; unresolved Open Questions
 - Merge-blocking for skipped gates, advisory for rest
 - Validates [Property 8](#property-8-rfc-lifecycle-gate-soundness)
@@ -406,12 +410,22 @@ class HeuristicEntry:
 **Service contract:** [heuristic_registry.py](#7-heuristic-registrypy)
 **Sequence diagram:** [Verdict Promotion Flow](#verdict-promotion-flow--d5)
 
-### Property 6: Triad Monotonicity
+### Property 6a: Garble Detection Convergence Across Paths (testable now)
 
-*For any* document where garble is detected (`effectively_garbled=True`), THE verdict SHALL be `FAIL` or `MARGINAL`, never `PASS` via any promotion path.
+*For any* document processed by the pipeline, all garble detection paths (per-node, per-block, whole-tree fallback) SHALL converge: `detect_garble` returns the same `effectively_garbled` classification regardless of which path invokes it on the same text.
 
-**Validates:** [RFC-041 D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6), [RFC-041 D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6)
-**Tested in:** [Task 4.2](../tasks/tasks-rfc041-recurring-defect-consolidation.md#42-property-based-triad-tests-d7) — `test_garble_never_passes`
+**Validates:** [RFC-041 D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1), [RFC-041 D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6)
+**Tested in:** [Task 4.2](../tasks/tasks-rfc041-recurring-defect-consolidation.md#42-property-based-triad-tests-d7) — `test_garble_convergence_across_paths`
+**Service contract:** [garble.py](#1-garblepy)
+
+### Property 6b: Triad Monotonicity (testable after D5)
+
+*For any* document where garble is detected (`effectively_garbled=True`), THE verdict SHALL be `FAIL` or `MARGINAL`, never `PASS` via any promotion path. **Note:** The `source_selection` bypass at `verdict.py:479` currently grants unconditional PASS — this property is violated pre-D5. Tests for this property are `xfail` until D5 registers `source_selection` and its expiry mechanism can gate the bypass.
+
+**(Split from Property 6, review v2 2026-09-01):** The original Property 6 described the post-fix invariant but was untestable against the current codebase. Splitting into 6a (testable now) and 6b (testable after D5) ensures Wave 3 tests provide immediate value.
+
+**Validates:** [RFC-041 D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5), [RFC-041 D6](../rfcs/041-recurring-defect-consolidation.md#d6-golden-file-pipeline-snapshot-tests-requirement-6), [RFC-041 D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6)
+**Tested in:** [Task 4.2](../tasks/tasks-rfc041-recurring-defect-consolidation.md#42-property-based-triad-tests-d7) — `test_garble_never_passes` (xfail until D5)
 **Service contract:** [verdict.py](#6-verdictpy)
 
 ### Property 7: Triad Idempotency

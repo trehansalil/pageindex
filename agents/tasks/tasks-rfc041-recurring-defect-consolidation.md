@@ -58,10 +58,20 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Add test: VLM fallback with tesseract raster recovery — single block executes
     - _Requirements:_ [RFC-041 D4](../rfcs/041-recurring-defect-consolidation.md#d4-recovery-dispatch-cross-tuple-dedup-requirement-4) | [Design Property 4](../designs/design-rfc041-recurring-defect-consolidation.md#property-4-recovery-dedup-idempotency) | [Design Service: recovery.py](../designs/design-rfc041-recurring-defect-consolidation.md#5-recoverypy)
 
+  - [ ] <a id="16-zone-5-ng5-verification"></a>1.6 Zone 5 (NG5) verification **(Added: review v2 2026-09-01)**
+
+    - Grep for the retry-loop fix claimed to cover Zone 5 (converter chain HR4 enforcement)
+    - Validate the fix against the Zone 5 audit spec (`audit/zones/zone5_*`)
+    - If the retry-loop fix covers Zone 5: document the evidence and mark NG5 as verified-deferred
+    - If the retry-loop fix does NOT cover Zone 5: escalate to user for scoping — either absorb into RFC-041 as a new deliverable or create a successor RFC
+    - _Rationale:_ Prevents repeating the RFC-040 orphan pattern where Zone 2 was deferred on an unvalidated claim
+    - _Requirements:_ [RFC-041 NG5](../rfcs/041-recurring-defect-consolidation.md#non-goals)
+
   - [ ] <a id="15-checkpoint--wave-0"></a>1.5 Checkpoint — Wave 0
 
     - Run `uv run pytest` and verify all existing tests pass
     - Verify [Property 4](../designs/design-rfc041-recurring-defect-consolidation.md#property-4-recovery-dedup-idempotency) — new tests pass
+    - Verify Zone 5 (NG5) verification outcome documented **(Added: review v2 2026-09-01)**
     - Ask the user if questions arise before proceeding.
 
 - [ ] <a id="2-wave-1--garble-and-text-accessor-foundation-d1-d2"></a>2. Wave 1 — Garble & Text Accessor Foundation ([D1](../rfcs/041-recurring-defect-consolidation.md#d1-garble-entry-point-consolidation-requirement-1), [D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
@@ -80,9 +90,10 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
   - [ ] <a id="22-block-text-accessor-unification-d2"></a>2.2 Block text accessor unification ([D2](../rfcs/041-recurring-defect-consolidation.md#d2-unified-block-text-accessor-requirement-2))
 
     - Create `BlockTextPurpose` enum in `flat.py`: `GARBLE_CHECK`, `SEARCH`, `CHAR_COUNT`, `DISPLAY`
-    - Create `block_text(block: dict, purpose: BlockTextPurpose) -> str` function
+    - Create two-tier API **(review v2 2026-09-01)**: `block_text(block: dict, purpose: BlockTextPurpose) -> str` for single-block extraction + `doc_text(data: dict, purpose: BlockTextPurpose) -> str` for whole-document iteration. `doc_text` iterates blocks and delegates to `block_text` per block.
+    - **Interface note:** `_flat_search_text` operates on the **entire document** (`data: dict`) while `_flat_block_primary_text` operates on a **single block**. `block_text` alone cannot replace `_flat_search_text` — `doc_text` is required for whole-doc callers.
     - Refactor `_flat_block_primary_text` to delegate to `block_text(block, CHAR_COUNT)`
-    - Refactor `_flat_search_text` to delegate to `block_text(block, SEARCH)`
+    - Refactor `_flat_search_text` to delegate to `doc_text(data, SEARCH)` — which internally calls `block_text(block, SEARCH)` per block
     - Refactor `_node_text_parts` (tree_validation.py :51) to delegate to `block_text(block, CHAR_COUNT)`
     - Zone-9 header-only-table fix applies to all purposes via `block_text`
     - Verify `helpers/rag.py` (~:190) callers work correctly with `block_text(block, SEARCH)` — validate search quality impact alongside verdict corpus diff
@@ -116,18 +127,18 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
 
     **Zone 2 remediation — absorbs orphaned NG2 scope**
 
-    **Files:** `pictures.py` (:272,:393), `client/recovery.py` (:125), `client/indexer.py` (:514,:1015,:1041), `helpers/garble.py` (:855)
+    **Files:** `pictures.py` (:272,:393), `client/recovery.py` (:125), `client/indexer.py` (:514,:1015,:1041), `helpers/garble.py` (:855), `images.py` (:145), `tree_validation.py` (:392), `verdict.py` (:257) **(3 sites added: review v2 2026-09-01)**
 
-    - Thread pre-NFKC `ScriptContext` (computed before NFKC decomposition in `_pre_inference_normalize`) to all 7 `_infer_presentation_forms` call sites that currently construct `ScriptContext` from post-NFKC text
+    - Thread pre-NFKC `ScriptContext` (computed before NFKC decomposition in `_pre_inference_normalize`) to all **10** `_infer_presentation_forms` call sites that currently construct `ScriptContext` from post-NFKC text **(corrected from 7: review v2 2026-09-01)**
     - Each call site must receive a `ScriptContext` where `had_presentation_forms` was computed on the original (pre-NFKC) text, not on the decomposed text where PF codepoints no longer exist
-    - This may require adding a `pre_nfkc_script_context: ScriptContext | None` parameter to functions in the recovery/pictures/indexer call chains
-    - Add test: for each of the 7 sites, Arabic text with presentation forms is correctly detected as having PFs (currently returns False for all 7)
+    - This may require adding a `pre_nfkc_script_context: ScriptContext | None` parameter to functions in the recovery/pictures/indexer/images/tree_validation/verdict call chains
+    - Add test: for each of the 10 sites, Arabic text with presentation forms is correctly detected as having PFs (currently returns False for all 10)
     - Add test: `_infer_presentation_forms` result matches between pre-NFKC and post-NFKC paths for Latin text (no change expected)
     - **Depends on Task 2.4 (D10a)** — the `"Arabic"` → `"Arab"` fix must land first so `detect_garble`'s own safety net works while D10c is in progress
     - **Corpus diff expected:** 0-3 docs with PF-bearing Arabic text may see garble scores change as PFs are now correctly detected
     - _Requirements:_ [RFC-041 D10c](../rfcs/041-recurring-defect-consolidation.md#d10-dead-code-accessor-parity-and-zone-2-pf-remediation-requirement-8)
 
-  - [ ] <a id="26-checkpoint--wave-1"></a>2.6 Checkpoint — Wave 1
+  - [ ] <a id="27-checkpoint--wave-1"></a>2.7 Checkpoint — Wave 1 **(renumbered from 2.6: review v2 2026-09-01 — resolved ID collision with D10c task)**
 
     - Run `uv run pytest` and verify all tests pass
     - Verify [Property 1](../designs/design-rfc041-recurring-defect-consolidation.md#property-1-garble-detection-convergence), [Property 2](../designs/design-rfc041-recurring-defect-consolidation.md#property-2-block-text-consistency), [Property 9](../designs/design-rfc041-recurring-defect-consolidation.md#property-9-dead-code-elimination), [Property 10](../designs/design-rfc041-recurring-defect-consolidation.md#property-10-accessor-parity) — new tests pass
@@ -207,10 +218,10 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
 
     - Create `tests/test_triad_properties.py`
     - Hypothesis strategies for: `TreeGateResult`, `GarbleConfig`, `ScriptContext`, `BlobKind`
-    - Property: garble detected ⇒ hard-fail or marginal, never PASS via promotion
+    - Property 6a: garble detection converges across all paths (per-node, per-block, whole-tree fallback) — `test_garble_convergence_across_paths`
+    - Property 6b: garble detected ⇒ hard-fail or marginal, never PASS via promotion — `test_garble_never_passes` — **xfail until D5** (`source_selection` bypass at `verdict.py:479` currently grants unconditional PASS) **(split from Property 6: review v2 2026-09-01)**
     - Property: `_keep_best_wins` never reverts objectively better retries
     - Property: no-op recovery preserves PASS
-    - Property: garble defect ⇒ never PASS via any promotion path
     - CI configuration: `max_examples=200`
     - Nightly configuration: `max_examples=10000`
     - **Validates:** [Design Property 6](../designs/design-rfc041-recurring-defect-consolidation.md#property-6-triad-monotonicity), [Design Property 7](../designs/design-rfc041-recurring-defect-consolidation.md#property-7-triad-idempotency) | [RFC-041 D7](../rfcs/041-recurring-defect-consolidation.md#d7-property-based-triad-tests-requirement-6) | [RFC-041 Test Strategy: D7 row](../rfcs/041-recurring-defect-consolidation.md#test-strategy)
@@ -231,12 +242,12 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
 
     - Create `.github/workflows/rfc-lifecycle-lint.yml`
     - Create supporting script (`scripts/rfc_lifecycle_lint.py`)
-    - Parse `.agents/rfcs/*.md` frontmatter for status
-    - Parse `.agents/tasks/*.md` for checked/unchecked items, GATE markers
+    - Parse `agents/rfcs/*.md` frontmatter for status
+    - Parse `agents/tasks/*.md` for checked/unchecked items, GATE markers
     - Detect: later-phase checked + earlier GATE unchecked (merge-blocking)
     - Detect: all-tasks-done drafts (advisory warning)
     - Detect: unresolved Open Questions (advisory warning)
-    - **(Added: root-cause review 2026-08-31)** Create zone-ownership manifest `audit/zones/ZONE_OWNERSHIP.yaml` — bootstrap from `audit/zones/_index.md`, mapping each zone to its owning RFC deliverable(s)
+    - **(Added: root-cause review 2026-08-31)** Create zone-ownership manifest `audit/zones/ZONE_OWNERSHIP.yaml` — bootstrap from `audit/zones/_index.md`, mapping each zone to its owning RFC deliverable(s). **(Amendment 2026-09-01):** Define the YAML schema in the design doc. Prefer machine-generation from `_index.md` + RFC frontmatter over hand-maintenance to avoid bootstrap-maintenance coupling (NG-5 from review v2).
     - **(Added)** Detect: zone with unresolved bugs whose owning RFC is closed and no successor RFC deliverable owns them (merge-blocking) — catches the RFC-040 scope-narrowing pattern
     - **(Added)** Each RFC checkpoint task must update `ZONE_OWNERSHIP.yaml` to reflect transferred/resolved zone ownership
     - Add test: tasks file with skipped GATE — lint reports failure
@@ -272,7 +283,10 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
     - Verify: zero verdict downgrades (Postgres max-priority-wins CAS never stores a lower-priority verdict than what exists)
     - Verify: Postgres and MinIO agree on final verdict for all documents (sidecar backfill is consistent)
     - Verify: concurrent writes (simulated via parallel ingestion of same doc) resolve to highest-priority verdict
-    - If validation fails: file bug against RFC-037 D5 and block D11 until fixed
+    - If validation fails: file bug against RFC-037 D5 and activate D11 contingency plan **(review v2 2026-09-01)**:
+      - D11 proceeds with **dual-write with soft CAS**: `write_verdict` writes to both MinIO (authoritative) and Postgres (advisory, best-effort CAS)
+      - Reconcile sweep (`_drain_verdict_retry_queue`) treats Postgres as non-authoritative until CAS guard is separately validated
+      - This unblocks D11's routing consolidation while deferring Postgres-as-authority to a post-fix Release B re-validation
     - _Requirements:_ RFC-037 Release B | RFC-041 D11 dependency
 
 - [ ] <a id="35-verdict-authority-consolidation-d11"></a>3.5. Verdict Authority Consolidation (D11)
@@ -311,7 +325,7 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
 - [RFC-041 D5](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5): Heuristic expiry dates SHALL be concrete (90-day default) per [RFC-041 D5 acceptance criterion 4](../rfcs/041-recurring-defect-consolidation.md#d5-heuristic-registry-requirement-5). Per-heuristic override requires documented justification.
 - **Zone 2 ownership:** Must be resolved (new successor RFC or RFC-041 amendment) by Wave 1 checkpoint — see [RFC-041 Risk 8](../rfcs/041-recurring-defect-consolidation.md#risks).
 - **RFC-037 Release B:** Must be validated (or equivalent corpus-diff verifying zero verdict downgrades) before D11 consolidation — see [RFC-041 Risk 9](../rfcs/041-recurring-defect-consolidation.md#risks).
-- **Effort estimate:** 15 days (revised from 12 to account for D11 dual-store complexity, Zone 2 ownership resolution, and buffer for D2 hidden-consumer risk).
+- **Effort estimate:** ~20 days, range 17–24 (revised from 15; review v2 2026-09-01). D3 `__setattr__` guard requires test migration (~dozens of direct assignments); D10c has 10 call sites not 7 (80–120 lines across 5 files); D11 gated on Release B with dual-write contingency. Zone 5 verification task added.
 - [RFC-041 Risk 1](../rfcs/041-recurring-defect-consolidation.md#risks): D2 accessor unification may surface hidden consumers depending on divergent behavior. Mitigation: corpus diff + call-site grep.
 - [RFC-041 Risk 4](../rfcs/041-recurring-defect-consolidation.md#risks): Golden-file brittleness — intentional threshold changes require `scripts/update_golden_files.py` + review.
 - [RFC-041 Risk 5](../rfcs/041-recurring-defect-consolidation.md#risks): D8 retroactive enforcement will flag existing RFCs. D9 triage clears backlog before gate becomes merge-blocking.
@@ -325,12 +339,12 @@ Consolidates 10 interdependent deliverables ([RFC-041 D1–D10](../rfcs/041-recu
   "waves": [
     {
       "id": 0,
-      "tasks": ["1.3", "1.4"],
-      "description": "Immediate quick wins — D4"
+      "tasks": ["1.3", "1.4", "1.6"],
+      "description": "Immediate quick wins — D4 + Zone 5 verification"
     },
     {
       "id": 1,
-      "tasks": ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6"],
+      "tasks": ["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7"],
       "depends_on": [0],
       "description": "Garble + text accessor foundation + dead code fixes + Zone 2 PF remediation — D1, D2, D10a/b/c"
     },
