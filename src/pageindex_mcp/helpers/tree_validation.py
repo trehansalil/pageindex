@@ -57,32 +57,57 @@ def _node_text_parts(n: dict) -> list[str]:
     counting, garble detection, and leaf-ratio scoring see the same
     content that flat-document tooling already sees.
 
+    D2 (RFC-041): delegates primary text extraction to
+    ``block_text(n, CHAR_COUNT)`` for the body portion so table-header
+    handling is consistent across all consumers.  Title is still
+    extracted separately because callers (e.g. garble.py) need it as
+    a distinct part.
+
     Returns a list of non-empty string parts (title, body text, and
     table content).
     """
+    from .flat import BlockTextPurpose, block_text
+
     parts: list[str] = []
     for field in ("title", "text"):
         value = str(n.get(field, ""))
         if value:
             parts.append(value)
-    # Table block content (headers/rows/row_records carry text, not 'text' key)
-    for header in n.get("headers") or []:
-        if isinstance(header, str) and header:
-            parts.append(header)
-    for row in n.get("rows") or []:
-        if isinstance(row, (list, tuple)):
-            for cell in row:
-                cell_str = str(cell) if cell else ""
-                if cell_str:
-                    parts.append(cell_str)
-    for rec in n.get("row_records") or []:
-        if isinstance(rec, str) and rec:
-            parts.append(rec)
-        elif isinstance(rec, dict):
-            for v in rec.values():
-                v_str = str(v) if v else ""
-                if v_str:
-                    parts.append(v_str)
+
+    # Table block content: headers, rows, row_records carry text.
+    # Use block_text for row_records (handles dict records) and
+    # Zone-9 header-only fallback; extract raw rows individually
+    # since block_text collapses them into one string.
+    has_table_fields = (
+        n.get("headers") is not None
+        or n.get("rows") is not None
+        or n.get("row_records") is not None
+    )
+    if has_table_fields:
+        for header in n.get("headers") or []:
+            if isinstance(header, str) and header:
+                parts.append(header)
+        for row in n.get("rows") or []:
+            if isinstance(row, (list, tuple)):
+                for cell in row:
+                    cell_str = str(cell) if cell else ""
+                    if cell_str:
+                        parts.append(cell_str)
+        for rec in n.get("row_records") or []:
+            if isinstance(rec, str) and rec:
+                parts.append(rec)
+            elif isinstance(rec, dict):
+                for v in rec.values():
+                    v_str = str(v) if v else ""
+                    if v_str:
+                        parts.append(v_str)
+    elif not n.get("text"):
+        # Non-table, no text: delegate to block_text for any
+        # remaining content (future-proofing).
+        body = block_text(n, BlockTextPurpose.CHAR_COUNT)
+        if body and body not in parts:
+            parts.append(body)
+
     return parts
 
 

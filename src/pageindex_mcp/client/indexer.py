@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import dataclasses
 import shutil
 import tempfile
 import uuid
@@ -420,6 +421,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         md_content: str,
         *,
         expected_script: str | None,
+        script_context: ScriptContext | None = None,
     ) -> None:
         """Write md → run_md_to_tree → split → segment → validate. Mutates state."""
         if state.tmp_md_path and os.path.exists(state.tmp_md_path):
@@ -436,7 +438,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         )
         _vt_raw = validate_tree(
             state.result.get("structure", []),
-            expected_script=expected_script,
+            expected_script=script_context if script_context is not None else expected_script,
             page_count=state.pdf_page_count,
             rtl_decision=state.rtl_decision,
         )
@@ -952,7 +954,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         )
         _vt_raw = validate_tree(
             state.result.get("structure", []),
-            expected_script=expected_script,
+            expected_script=script_context if script_context is not None else expected_script,
             page_count=state.pdf_page_count if ext == ".pdf" else None,
             rtl_decision=state.rtl_decision,
         )
@@ -1022,7 +1024,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         )
         if _flat_garble_report:
             state.flat_garble_unrecovered = True
-            state.reason = "garbling"
+            from ..helpers.types import _guard_bypass
+            _guard_bypass.active = True
+            try:
+                state.reason = "garbling"
+            finally:
+                _guard_bypass.active = False
             logger.warning(
                 "Flat-path per-block garble gate triggered for %s; overriding reason to garbling (prongs=%s)",
                 filename,
@@ -1105,7 +1112,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             content_class,
             state.gate_result,
             image_enrichment_ratio=image_enrichment_ratio,
-            expected_script=expected_script,
+            expected_script=script_context if script_context is not None else expected_script,
         )
         f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
 
@@ -1229,6 +1236,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         pdf_classification: dict | None,
         _effective_cfg: dict,
         _effective_config_at_job_start: dict | None,
+        *,
+        script_context: ScriptContext | None = None,
     ) -> str:
         """Persist a tree-routed document. Returns doc_id."""
         doc_id = str(uuid.uuid4())
@@ -1247,7 +1256,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "",
             state.gate_result,
             inspector_class=(pdf_classification.get("pdf_type") if pdf_classification else None),
-            expected_script=expected_script,
+            expected_script=script_context if script_context is not None else expected_script,
         )
         verdict, verdict_reason = _vr.verdict, _vr.reason
 
@@ -1461,23 +1470,38 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 script_context = ScriptContext.from_document(
                     filename, raw_text=state.md_content
                 )
+                # D10c: state.md_content is post-NFKC (presentation-form
+                # codepoints decomposed), so from_document's PF scan
+                # always returns False.  Recover the pre-NFKC signal
+                # from state.rtl_decision (captured before NFKC in
+                # _pre_inference_normalize / _renormalize_bidi_guarded).
+                if (
+                    state.rtl_decision is not None
+                    and state.rtl_decision.had_presentation_forms
+                    and not script_context.had_presentation_forms
+                ):
+                    script_context = dataclasses.replace(
+                        script_context, had_presentation_forms=True
+                    )
                 expected_script = script_context.dominant_script
 
             # Zone-1: GateSpec-driven recovery loop (single source of truth).
             # Each GateSpec with non-empty recovery_fns declares its own
             # recovery_eligible predicate and recovery method names.
-            # Iteration follows GATES severity order; dedup by recovery_fns
-            # tuple prevents repeated firing when multiple GateSpecs share
-            # the same recovery pipeline (e.g. GARBLING and NODE_GARBLING
-            # both carry _eligible_garble + the same recovery_fns).
-            _fired_recovery: set[tuple[str, ...]] = set()
+            # Iteration follows GATES severity order; dedup by method name
+            # across ALL gate tuples prevents repeated firing when multiple
+            # GateSpecs share a recovery method (e.g. NODE_COUNT_LOW and
+            # DEPTH_LOW both carry _recover_image_dominant_ocr).
+            _fired_methods: set[str] = set()
             for _gate in GATES:
-                if not _gate.recovery_fns or _gate.recovery_fns in _fired_recovery:
+                if not _gate.recovery_fns:
                     continue
                 if _gate.recovery_eligible is None or not _gate.recovery_eligible(state):
                     continue
-                _fired_recovery.add(_gate.recovery_fns)
                 for _fn_name in _gate.recovery_fns:
+                    if _fn_name in _fired_methods:
+                        continue
+                    _fired_methods.add(_fn_name)
                     await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script, script_context=script_context)
                 # Zone-3: finalize_gate_and_route() is now called inside
                 # each recovery method (_reconvert_and_revalidate,
@@ -1582,6 +1606,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 pdf_classification,
                 _effective_cfg,
                 _effective_config_at_job_start,
+                script_context=script_context,
             )
 
         finally:

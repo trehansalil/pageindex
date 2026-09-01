@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..config import pipeline_config
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..config import PipelineConfig
@@ -147,34 +151,44 @@ class RecoveryOutcome:
     bidi_renorm_applied: bool | _Unset = _UNSET  # type: ignore[assignment]
 
     def apply(self, state: ExtractionState) -> None:
-        """Write provided (non-``_UNSET``) fields back to *state*."""
-        if not isinstance(self.result, _Unset):
-            state.result = self.result
-        if not isinstance(self.ok, _Unset):
-            state.ok = self.ok
-        if not isinstance(self.reason, _Unset):
-            state.reason = self.reason
-        if not isinstance(self.gate_result, _Unset):
-            state.gate_result = self.gate_result
-        if not isinstance(self.md_content, _Unset):
-            state.md_content = self.md_content
-        if not isinstance(self.pic_results, _Unset):
-            state.pic_results = self.pic_results
-        if not isinstance(self.used_converter, _Unset):
-            state.used_converter = self.used_converter
-        if not isinstance(self.total_chars, _Unset):
-            state.total_chars = self.total_chars
-        if not isinstance(self.route, _Unset):
-            state.route = self.route
-        if not isinstance(self.rtl_decision, _Unset):
-            state.rtl_decision = self.rtl_decision
-        if not isinstance(self.tmp_md_path, _Unset):
-            state.tmp_md_path = self.tmp_md_path
-        if not isinstance(self.bidi_renorm_applied, _Unset):
-            state.bidi_renorm_applied = self.bidi_renorm_applied
+        """Write provided (non-``_UNSET``) fields back to *state*.
+
+        Authorized writer for guarded fields (D3 single-writer contract).
+        """
+        _guard_bypass.active = True
+        try:
+            if not isinstance(self.result, _Unset):
+                state.result = self.result
+            if not isinstance(self.ok, _Unset):
+                state.ok = self.ok
+            if not isinstance(self.reason, _Unset):
+                state.reason = self.reason
+            if not isinstance(self.gate_result, _Unset):
+                state.gate_result = self.gate_result
+            if not isinstance(self.md_content, _Unset):
+                state.md_content = self.md_content
+            if not isinstance(self.pic_results, _Unset):
+                state.pic_results = self.pic_results
+            if not isinstance(self.used_converter, _Unset):
+                state.used_converter = self.used_converter
+            if not isinstance(self.total_chars, _Unset):
+                state.total_chars = self.total_chars
+            if not isinstance(self.route, _Unset):
+                state.route = self.route
+            if not isinstance(self.rtl_decision, _Unset):
+                state.rtl_decision = self.rtl_decision
+            if not isinstance(self.tmp_md_path, _Unset):
+                state.tmp_md_path = self.tmp_md_path
+            if not isinstance(self.bidi_renorm_applied, _Unset):
+                state.bidi_renorm_applied = self.bidi_renorm_applied
+        finally:
+            _guard_bypass.active = False
 
 
 ExtractionSnapshot = RecoveryOutcome
+
+_GUARDED_FIELDS = frozenset({"route", "ok", "reason", "first_defect", "gate_result"})
+_guard_bypass = threading.local()
 
 
 @dataclass
@@ -188,6 +202,12 @@ class ExtractionState:
     once during conversion (``_pre_inference_normalize`` for local,
     ``_renormalize_bidi_guarded`` for remote) and threaded into
     ``validate_tree`` so it does not recompute on different text.
+
+    D3 single-writer invariant: fields ``route``, ``ok``, ``reason``,
+    ``first_defect``, ``gate_result`` are protected by ``__setattr__``.
+    Only ``finalize_gate_and_route``, ``RecoveryOutcome.apply``, and
+    ``__init__`` may write them.  Direct assignment raises
+    ``AttributeError``.
     """
 
     result: dict
@@ -212,6 +232,21 @@ class ExtractionState:
     landscape_pages: list | None = None
     full_page_already_applied: bool = False
     supports_ocr: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_init_complete", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if (
+            name in _GUARDED_FIELDS
+            and not getattr(_guard_bypass, "active", False)
+            and getattr(self, "_init_complete", False)
+        ):
+            raise AttributeError(
+                f"ExtractionState.{name} is guarded by the D3 single-writer "
+                f"contract.  Use finalize_gate_and_route() to set it."
+            )
+        object.__setattr__(self, name, value)
 
 
 class _ReasonPolicy(StrEnum):
@@ -346,19 +381,30 @@ def _defect_from_reason_str(reason: str | None) -> TreeDefect:
     Handles both exact matches (``"garbling"``) and prefix matches with
     parenthesised detail (``"empty_node_contamination(fraction=0.35,...)"``)
     by matching against each ``TreeDefect.value``.
+
+    Raises :class:`ValueError` on unrecognized non-empty reason strings
+    (D3 criterion 5) instead of silently returning ``TreeDefect.OK``.
     """
     if not reason:
         return TreeDefect.OK
     for td in TreeDefect:
         if td.value and (reason == td.value or reason.startswith(td.value + "(")):
             return td
-    return TreeDefect.OK
+    raise ValueError(
+        f"Unrecognized reason string {reason!r} in _defect_from_reason_str; "
+        f"cannot map to a TreeDefect"
+    )
 
 
 def finalize_gate_and_route(
     state: ExtractionState,
     vt_raw: TreeGateResult | tuple[bool, str],
     flat_routing_enabled: bool = True,
+    *,
+    recovery_method: str | None = None,
+    recovery_succeeded: bool | None = None,
+    force_route: Route | None = None,
+    force_ok: bool | None = None,
 ) -> None:
     """Single writer of gate_result/ok/reason/first_defect/route on *state*.
 
@@ -370,22 +416,50 @@ def finalize_gate_and_route(
 
     Accepts both :class:`TreeGateResult` (preferred) and a legacy
     ``(ok, reason)`` tuple for backward compatibility.
-    """
-    if isinstance(vt_raw, TreeGateResult):
-        state.gate_result = vt_raw
-        state.ok = vt_raw.ok
-        state.reason = str(vt_raw)
-    else:
-        state.gate_result = None
-        state.ok = vt_raw[0]
-        state.reason = vt_raw[1]
 
-    state.first_defect = (
-        state.gate_result.defect
-        if state.gate_result is not None
-        else _defect_from_reason_str(state.reason)
-    )
-    state.route = decide_route(state.first_defect, flat_routing_enabled)
+    D3 extensions:
+
+    ``recovery_method`` / ``recovery_succeeded``
+        Provenance parameters recording which recovery ran and whether
+        it succeeded.  Informational only (logged).
+
+    ``force_route`` / ``force_ok``
+        When provided, take precedence over ``decide_route(first_defect)``
+        / the gate-result's ``ok``.  Used by the 5 intentional override
+        sites in recovery.py (RTL comparison, VLM-tesseract, flat-prefer,
+        landscape reroute).
+    """
+    _guard_bypass.active = True
+    try:
+        if isinstance(vt_raw, TreeGateResult):
+            state.gate_result = vt_raw
+            state.ok = vt_raw.ok
+            state.reason = str(vt_raw)
+        else:
+            import warnings
+            warnings.warn(
+                "finalize_gate_and_route: legacy (ok, reason) tuple input is "
+                "deprecated; pass a TreeGateResult instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            state.gate_result = None
+            state.ok = vt_raw[0]
+            state.reason = vt_raw[1]
+
+        state.first_defect = (
+            state.gate_result.defect
+            if state.gate_result is not None
+            else _defect_from_reason_str(state.reason)
+        )
+        state.route = decide_route(state.first_defect, flat_routing_enabled)
+
+        if force_route is not None:
+            state.route = force_route
+        if force_ok is not None:
+            state.ok = force_ok
+    finally:
+        _guard_bypass.active = False
 
 
 @dataclass(frozen=True)

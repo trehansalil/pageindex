@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import logging
 import re
 
@@ -172,6 +173,115 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
     return content_class, blocks
 
 
+class BlockTextPurpose(str, enum.Enum):
+    """D2 (RFC-041): purpose tag for block text extraction."""
+
+    GARBLE_CHECK = "garble_check"
+    SEARCH = "search"
+    CHAR_COUNT = "char_count"
+    DISPLAY = "display"
+
+
+def block_text(block: dict, purpose: BlockTextPurpose) -> str:
+    """D2 (RFC-041): canonical single-block text extraction.
+
+    All consumers that need text from a flat block call this function.
+    The *purpose* parameter controls enrichment inclusion:
+
+    - ``GARBLE_CHECK`` / ``CHAR_COUNT`` / ``DISPLAY``: primary document
+      text only (no OCR/description enrichment).
+    - ``SEARCH``: primary text **plus** OCR and description enrichment
+      for image blocks.
+
+    Zone-9 fix (all purposes): when a table block has headers but zero
+    data rows (``row_records`` empty), returns the header text so every
+    consumer sees the real content volume.
+    """
+    role = block.get("role")
+
+    # Detect table content: explicit role OR presence of table-bearing keys
+    # (tree nodes carry table data without a role key).
+    is_table = role == "table" or (
+        not role
+        and (
+            block.get("row_records") is not None
+            or block.get("headers") is not None
+            or block.get("rows") is not None
+        )
+    )
+
+    if is_table:
+        row_records = block.get("row_records") or []
+        if row_records:
+            rec_parts: list[str] = []
+            for rec in row_records:
+                if isinstance(rec, str) and rec:
+                    rec_parts.append(rec)
+                elif isinstance(rec, dict):
+                    for v in rec.values():
+                        v_str = str(v) if v else ""
+                        if v_str:
+                            rec_parts.append(v_str)
+            if rec_parts:
+                return "\n".join(rec_parts)
+        # No row_records: extract from headers and/or structured rows.
+        headers = block.get("headers") or []
+        raw_rows = block.get("rows") or []
+        if headers and not raw_rows:
+            # Header-only table (Zone-9): join with pipe separator
+            return " | ".join(str(h) for h in headers if h)
+        table_parts: list[str] = []
+        for header in headers:
+            if isinstance(header, str) and header:
+                table_parts.append(header)
+        for row in raw_rows:
+            if isinstance(row, (list, tuple)):
+                for cell in row:
+                    cell_str = str(cell) if cell else ""
+                    if cell_str:
+                        table_parts.append(cell_str)
+        if table_parts:
+            return "\n".join(table_parts)
+        return block.get("text", "")
+
+    if role == "image":
+        parts: list[str] = []
+        if purpose is BlockTextPurpose.SEARCH:
+            ocr = block.get("ocr_text")
+            if ocr:
+                parts.append(ocr)
+            desc = block.get("description")
+            if desc:
+                parts.append(desc)
+        return "\n".join(parts)
+
+    return block.get("text", "")
+
+
+def doc_text(data: dict, purpose: BlockTextPurpose) -> str:
+    """D2 (RFC-041): whole-document text extraction.
+
+    Iterates all blocks in *data* and delegates per-block extraction to
+    :func:`block_text`.  Replaces ``_flat_search_text`` for the SEARCH
+    purpose and can serve other document-level text needs.
+
+    For the SEARCH purpose, top-level ``row_records`` (legacy shape) are
+    appended if not already present from block iteration.
+    """
+    parts: list[str] = []
+    for block in data.get("blocks", []) or []:
+        txt = block_text(block, purpose)
+        if txt:
+            parts.append(txt)
+
+    if purpose is BlockTextPurpose.SEARCH:
+        for rec in data.get("row_records", []) or []:
+            if rec not in parts:
+                parts.append(rec)
+
+    return "\n".join(parts)
+
+
 def _flat_block_primary_text(block: dict) -> str:
     """D0 (RFC-027): a single flat block's primary document text, excluding
     OCR/description enrichment metadata.
@@ -180,46 +290,19 @@ def _flat_block_primary_text(block: dict) -> str:
     (row_records empty), fall back to the header list so flat_char_count
     does not undercount and recovery.py:716-718 flat-prefer routing sees
     the real content volume.
+
+    D2 (RFC-041): delegates to ``block_text(block, CHAR_COUNT)``.
     """
-    text = block.get("text", "")
-    if text:
-        return text
-    role = block.get("role")
-    if role == "table":
-        rows = block.get("row_records") or []
-        if rows:
-            return "\n".join(rows)
-        # Header-only table: fall back to headers so char count is non-zero
-        headers = block.get("headers") or []
-        if headers:
-            return " | ".join(str(h) for h in headers if h)
-        return ""
-    return text
+    return block_text(block, BlockTextPurpose.CHAR_COUNT)
 
 
 def _flat_search_text(data: dict) -> str:
     """FLAT-05-C1 helper: render a flat doc's verbalized content as a single
-    retrieval string."""
-    parts: list[str] = []
-    for block in data.get("blocks", []) or []:
-        role = block.get("role")
-        if role == "table":
-            parts.extend(block.get("row_records", []) or [])
-        elif role == "image":
-            ocr = block.get("ocr_text")
-            if ocr:
-                parts.append(ocr)
-            desc = block.get("description")
-            if desc:
-                parts.append(desc)
-        else:
-            txt = block.get("text")
-            if txt:
-                parts.append(txt)
-    for rec in data.get("row_records", []) or []:
-        if rec not in parts:
-            parts.append(rec)
-    return "\n".join(parts)
+    retrieval string.
+
+    D2 (RFC-041): delegates to ``doc_text(data, SEARCH)``.
+    """
+    return doc_text(data, BlockTextPurpose.SEARCH)
 
 
 def flat_doc_view(data: dict) -> dict | None:

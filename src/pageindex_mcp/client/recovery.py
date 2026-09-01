@@ -205,6 +205,7 @@ class RecoveryMixin:
             md_content: str,
             *,
             expected_script: str | None,
+            script_context: ScriptContext | None = None,
         ) -> None: ...
 
         async def _run_md_to_tree(self, md_path: str) -> dict: ...
@@ -341,7 +342,8 @@ class RecoveryMixin:
                 state.rtl_decision = None
 
             await self._reconvert_and_revalidate(
-                state, state.md_content, expected_script=expected_script
+                state, state.md_content, expected_script=expected_script,
+                script_context=script_context,
             )
 
             # ---- Keep-best heuristic (GARBLE/LOW_CONTENT only) ----
@@ -481,6 +483,8 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
+        if state.full_page_already_applied:
+            return
         if not pipeline_config.image_dominant_ocr_escalation_enabled:
             return
         if not (settings.flat_doc_routing and state.md_content):
@@ -599,7 +603,13 @@ class RecoveryMixin:
                     "preferring flat result",
                     filename,
                 )
-                state.route = Route.FLAT
+                _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                finalize_gate_and_route(
+                    state, _vt_existing, settings.flat_doc_routing,
+                    recovery_method="rtl_comparison",
+                    recovery_succeeded=True,
+                    force_route=Route.FLAT,
+                )
         except Exception as _flat_cmp_exc:
             logger.warning(
                 "RFC-033 D8: flat-path reversal comparison failed for %s (%s); keeping tree",
@@ -638,24 +648,16 @@ class RecoveryMixin:
             # clear stale rtl_decision so validate_tree recomputes.
             state.rtl_decision = None
             await self._reconvert_and_revalidate(
-                state, state.md_content, expected_script=expected_script
+                state, state.md_content, expected_script=expected_script,
+                script_context=script_context,
             )
             VLM_FALLBACK_TOTAL.labels(result="recovered" if state.ok else "still_garbled").inc()
 
-            if (
+            _try_tesseract_raster = (
                 not state.ok
                 and state.first_defect in (TreeDefect.GARBLING, TreeDefect.NODE_GARBLING)
                 and pipeline_config.d7_garble_recovery_enabled
-            ):
-                from .images import _attempt_tesseract_raster_recovery
-
-                recovered_md = await _attempt_tesseract_raster_recovery(
-                    file_path, expected_script, filename
-                )
-                if recovered_md:
-                    state.md_content = recovered_md
-                    state.pic_results = []
-                    state.route = Route.FLAT
+            )
         except ZDRComplianceError as vlm_zdr_exc:
             VLM_FALLBACK_TOTAL.labels(result="compliance_blocked").inc()
             HR3_EGRESS_BLOCKED_TOTAL.labels(path="vlm").inc()
@@ -664,16 +666,7 @@ class RecoveryMixin:
                 filename,
                 vlm_zdr_exc,
             )
-            if pipeline_config.vlm_tesseract_fallback_enabled:
-                from .images import _attempt_tesseract_raster_recovery
-
-                recovered_md = await _attempt_tesseract_raster_recovery(
-                    file_path, expected_script, filename
-                )
-                if recovered_md:
-                    state.md_content = recovered_md
-                    state.pic_results = []
-                    state.route = Route.FLAT
+            _try_tesseract_raster = pipeline_config.vlm_tesseract_fallback_enabled
         except Exception as vlm_exc:
             VLM_FALLBACK_TOTAL.labels(result="error").inc()
             logger.error(
@@ -682,16 +675,25 @@ class RecoveryMixin:
                 vlm_exc,
                 exc_info=True,
             )
-            if pipeline_config.vlm_tesseract_fallback_enabled:
-                from .images import _attempt_tesseract_raster_recovery
+            _try_tesseract_raster = pipeline_config.vlm_tesseract_fallback_enabled
 
-                recovered_md = await _attempt_tesseract_raster_recovery(
-                    file_path, expected_script, filename
+        if _try_tesseract_raster:
+            from .images import _attempt_tesseract_raster_recovery
+
+            recovered_md = await _attempt_tesseract_raster_recovery(
+                file_path, expected_script, filename,
+                script_context=script_context,
+            )
+            if recovered_md:
+                state.md_content = recovered_md
+                state.pic_results = []
+                _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                finalize_gate_and_route(
+                    state, _vt_existing, settings.flat_doc_routing,
+                    recovery_method="vlm_tesseract_raster",
+                    recovery_succeeded=True,
+                    force_route=Route.FLAT,
                 )
-                if recovered_md:
-                    state.md_content = recovered_md
-                    state.pic_results = []
-                    state.route = Route.FLAT
 
     async def _recover_flat_prefer(
         self,
@@ -734,8 +736,14 @@ class RecoveryMixin:
                     filename,
                     expected_script,
                 )
-                state.ok = False
-                state.route = Route.FLAT
+                _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                finalize_gate_and_route(
+                    state, _vt_existing, settings.flat_doc_routing,
+                    recovery_method="flat_prefer_density",
+                    recovery_succeeded=True,
+                    force_route=Route.FLAT,
+                    force_ok=False,
+                )
         except Exception as _flat_exc:
             logger.warning(
                 "RFC-029 D1: flat-prefer check failed for %s (%s); keeping tree",
@@ -764,5 +772,11 @@ class RecoveryMixin:
                 "detection for %s — re-routing tree pass to flat-mixed",
                 filename,
             )
-            state.ok = False
-            state.route = Route.FLAT
+            _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+            finalize_gate_and_route(
+                state, _vt_existing, settings.flat_doc_routing,
+                recovery_method="landscape_reroute",
+                recovery_succeeded=True,
+                force_route=Route.FLAT,
+                force_ok=False,
+            )

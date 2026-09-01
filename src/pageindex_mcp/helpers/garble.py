@@ -336,7 +336,7 @@ def _is_morphologically_nonsense(token: str) -> bool:
     return token.lower() not in _COMMON_WORDS
 
 
-def garble_prongs(
+def _garble_prongs(
     norm_blob: str,
     *,
     expected_script: str | None = None,
@@ -538,7 +538,7 @@ def detect_garble(
     """Unified garble evaluation entry point (Zone-3).
 
     Single-surface API: all garble heuristics (bulk prongs + sparse mojibake
-    + presentation-forms) run inside ``garble_prongs``.
+    + presentation-forms) run inside ``_garble_prongs``.
 
     Returns a :class:`GarbleReport` carrying the boolean verdict, the set
     of prongs that fired, and the garble ratio.  The report's ``__bool__``
@@ -580,7 +580,7 @@ def detect_garble(
         _arc = sum(1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
         if _arc > 0 and (_pf / _arc) > 0.50:
             _had_pf = True
-        elif _arc > 0 and _pf == 0 and _effective_script == "Arabic":
+        elif _arc > 0 and _pf == 0 and _effective_script == "Arab":
             # Pipeline NFKC normalization decomposes presentation-form codepoints
             # (U+FB50-FEFF) before text reaches detect_garble. When the dominant
             # script is Arabic but zero presentation forms survive, assume the
@@ -595,7 +595,7 @@ def detect_garble(
     if not norm.strip():
         norm = blob
 
-    prongs = garble_prongs(
+    prongs = _garble_prongs(
         norm,
         expected_script=_effective_script,
         original_text=blob,
@@ -642,17 +642,22 @@ def _collect_all_node_text(nodes: list[dict]) -> str:
     """Recursively collect all node text into a single concatenated string.
 
     Zone-5 fix: also extracts table block content from 'headers', 'rows',
-    and 'row_records' via tree_validation._node_text_parts, so per-node
-    garble checking sees table-heavy nodes.
+    and 'row_records' via block_text, so per-node garble checking sees
+    table-heavy nodes.
+
+    D2 (RFC-041): uses block_text(node, GARBLE_CHECK) instead of
+    _node_text_parts for consistency with the unified accessor.
     """
-    from .tree_validation import _node_text_parts
+    from .flat import BlockTextPurpose, block_text
 
     parts: list[str] = []
     for node in nodes:
-        node_parts = _node_text_parts(node)
-        for p in node_parts:
-            if p.strip():
-                parts.append(p)
+        title = str(node.get("title", ""))
+        if title.strip():
+            parts.append(title)
+        body = block_text(node, BlockTextPurpose.GARBLE_CHECK)
+        if body and body.strip() and body != title:
+            parts.append(body)
         children = node.get("nodes") or []
         if children:
             child_text = _collect_all_node_text(children)
@@ -678,24 +683,24 @@ def _garble_check_nodes(
 
     When ``_is_toplevel`` is True (default, top-level call) and per-node
     detection returned 0 garbled nodes, a concatenated whole-tree fallback
-    runs garble_prongs on the joined text of all nodes.  This catches
+    runs detect_garble on the joined text of all nodes.  This catches
     garble patterns that fall below garble_digit_floor per node but surface
     in aggregate.
     """
-    from .tree_validation import _node_text_parts  # deferred: avoid circular import
+    from .flat import BlockTextPurpose, block_text  # deferred: avoid circular import
 
     _doc_script = script_context.dominant_script
 
     garbled = 0
     for node in nodes:
         node_garbled = False
-        # Zone-garble fix: use _node_text_parts to see table content
-        # (headers, rows, row_records) not just node.get("text").
+        # D2 (RFC-041): use block_text(node, GARBLE_CHECK) instead of
+        # _node_text_parts to see table content consistently.
         # Exclude title — it has a dedicated morphology + garble check below.
-        _all_parts = _node_text_parts(node)
-        _has_title = bool((node.get("title") or "").strip())
-        _body_parts = _all_parts[1:] if _has_title else _all_parts
-        text = "\n".join(p for p in _body_parts if p.strip())
+        text = block_text(node, BlockTextPurpose.GARBLE_CHECK)
+        _node_title = str(node.get("title", ""))
+        if text == _node_title:
+            text = ""
         if text.strip():
             if _doc_script is not None:
                 inferred = _infer_script(text) if len(text) >= 50 else None
@@ -742,22 +747,26 @@ def _garble_check_nodes(
             _is_toplevel=False,
         )
     # Concatenated whole-tree fallback: when per-node detection found nothing
-    # garbled, run garble_prongs on the joined text to catch patterns that
+    # garbled, run detect_garble on the joined text to catch patterns that
     # fall below garble_digit_floor per node but surface in aggregate.
+    # D1: uses detect_garble (not _garble_prongs) so short-text rule and
+    # PF recovery logic apply consistently.
     if _is_toplevel and garbled == 0:
         _concat = _collect_all_node_text(nodes)
-        _norm = normalize_for_garble(_concat, BlobKind.TREE_TEXT)
-        _fallback_prongs = garble_prongs(
-            _norm,
-            expected_script=_doc_script,
-            original_text=_concat,
+        _fallback_ctx = ScriptContext(
+            dominant_script=_doc_script,
             had_presentation_forms=script_context.had_presentation_forms,
+            source="whole_tree_fallback",
+        )
+        _fallback_report = detect_garble(
+            _concat,
+            script_context=_fallback_ctx,
             config=config,
         )
-        if _fallback_prongs:
+        if _fallback_report:
             logger.info(
                 "Whole-tree concatenated fallback detected garble: prongs=%s",
-                _fallback_prongs,
+                _fallback_report.fired_prongs,
             )
             garbled = 1
     return garbled
@@ -777,14 +786,14 @@ def _garble_check_flat_blocks(
 
     Returns a synthetic GarbleReport if any block is garbled, None otherwise.
     """
-    from .flat import _flat_block_primary_text
+    from .flat import BlockTextPurpose, block_text
 
     all_fired: set[str] = set()
     garbled_count = 0
     checked_count = 0
 
     for block in blocks:
-        text = _flat_block_primary_text(block)
+        text = block_text(block, BlockTextPurpose.CHAR_COUNT)
         if not text or not text.strip():
             continue
         checked_count += 1
@@ -877,5 +886,5 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
     return garbled_chunks / len(chunks)
 
 
-# re-import for garble_prongs usage
+# re-import for _garble_prongs usage
 from ..script import is_arabic_char as _is_arabic_char  # noqa: E402

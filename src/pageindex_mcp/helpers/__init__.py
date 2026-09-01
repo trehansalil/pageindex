@@ -63,8 +63,11 @@ ExtractionSnapshot = RecoveryOutcome
 # ── tree_validation ──────────────────────────────────────────────────────────
 # ── flat ─────────────────────────────────────────────────────────────────────
 from .flat import (
+    BlockTextPurpose,
     _flat_block_primary_text,
     _flat_search_text,
+    block_text,
+    doc_text,
     flat_doc_view,
     route_and_extract_flat,
 )
@@ -97,7 +100,6 @@ from .garble import (
     _is_morphologically_nonsense,
     _latin_token_ratio,
     detect_garble,
-    garble_prongs,
     hash_pipe_ratio,
     infer_script,
     ocr_noise_ratio,
@@ -257,7 +259,10 @@ __all__ = [
     "_Unset",
     "_count_empty_body_nodes",
     "_extract_page_hits",
-    # flat block measurement
+    # flat block measurement (D2/RFC-041: canonical API is block_text / doc_text)
+    "BlockTextPurpose",
+    "block_text",
+    "doc_text",
     "_flat_block_primary_text",
     "_flat_is_pipe_row",
     "_flat_is_separator_row",
@@ -309,7 +314,6 @@ __all__ = [
     "finalize_gate_and_route",
     "flag_empty_cells",
     "flat_doc_view",
-    "garble_prongs",
     "hash_pipe_ratio",
     "infer_script",
     "normalize_dashes",
