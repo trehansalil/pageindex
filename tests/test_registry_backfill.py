@@ -19,6 +19,13 @@ from pageindex_mcp.registry_backfill.reconcile import _drain_verdict_retry_queue
 _REAL_DELETE_STALE = rb._delete_stale_rows
 
 
+def _settings(**overrides):
+    """Build a settings snapshot with the given fields overridden."""
+    from pageindex_mcp.config import settings as _base_settings
+
+    return dataclasses.replace(_base_settings, **overrides)
+
+
 # --- from test_registry_backfill.py ---
 
 
@@ -82,6 +89,11 @@ class TestDrainVerdictRetryQueueWiring:
         })
 
         with (
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
+            patch("pageindex_mcp.registry.get_pool", return_value=object()),
             patch("pageindex_mcp.registry.queries.upsert_doc", mock_upsert),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
             patch("pageindex_mcp.storage.verdict.save_doc_meta"),
@@ -117,6 +129,11 @@ class TestDrainVerdictRetryQueueWiring:
         })
 
         with (
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
+            patch("pageindex_mcp.registry.get_pool", return_value=object()),
             patch("pageindex_mcp.registry.queries.upsert_doc", mock_upsert),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
             patch("pageindex_mcp.storage.verdict.save_doc_meta"),
@@ -148,6 +165,11 @@ class TestDrainVerdictRetryQueueWiring:
         })
 
         with (
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
+            patch("pageindex_mcp.registry.get_pool", return_value=object()),
             patch("pageindex_mcp.registry.queries.upsert_doc", mock_upsert),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
             patch("pageindex_mcp.storage.verdict.save_doc_meta"),
@@ -177,8 +199,17 @@ class TestDrainVerdictRetryQueueWiring:
         })
 
         with (
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
+            patch("pageindex_mcp.registry.get_pool", return_value=object()),
             patch("pageindex_mcp.registry.queries.upsert_doc", mock_upsert),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._cas_filter_sidecar_meta",
+                AsyncMock(side_effect=lambda doc_id, cc, meta, **kw: meta),
+            ),
             patch("pageindex_mcp.storage.verdict.save_doc_meta"),
             patch("pageindex_mcp.storage.save_doc_meta"),
         ):
@@ -186,6 +217,34 @@ class TestDrainVerdictRetryQueueWiring:
 
         # delete called for the key
         redis.delete.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_key_retained_when_replay_degraded(self):
+        """RFC-042 R3.2: when _upsert_registry_row cannot reach Postgres
+        (degraded path returns False), the retry key must NOT be deleted --
+        the next sweep retries instead of silently dropping the verdict."""
+        redis = _make_redis({
+            "pageindex:verdict_retry:doc-keep": {
+                "verdict": "PASS",
+            },
+        })
+
+        with (
+            # registry disabled → _upsert_registry_row degraded early return.
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                _settings(registry_enabled=False, postgres_dsn=""),
+            ),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._cas_filter_sidecar_meta",
+                AsyncMock(side_effect=lambda doc_id, cc, meta, **kw: meta),
+            ),
+            patch("pageindex_mcp.storage.verdict.save_doc_meta"),
+            patch("pageindex_mcp.storage.save_doc_meta"),
+        ):
+            await _drain_verdict_retry_queue(redis)
+
+        redis.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sidecar_written_with_winning_values(self):
@@ -207,14 +266,24 @@ class TestDrainVerdictRetryQueueWiring:
         mock_save = MagicMock()
 
         with (
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
+            patch("pageindex_mcp.registry.get_pool", return_value=object()),
             patch("pageindex_mcp.registry.queries.upsert_doc", mock_upsert),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._cas_filter_sidecar_meta",
+                AsyncMock(side_effect=lambda doc_id, cc, meta, **kw: meta),
+            ),
             patch("pageindex_mcp.storage.verdict.save_doc_meta", mock_save),
             patch("pageindex_mcp.storage.save_doc_meta", mock_save),
         ):
             await _drain_verdict_retry_queue(redis)
 
-        # save_doc_meta is called via asyncio.to_thread
+        # save_doc_meta is called via asyncio.to_thread with the winning dict
+        # (mutated in place with the write-through consistency_regime stamp).
         mock_save.assert_called_once_with("doc-sc", winning)
 
 
@@ -498,7 +567,10 @@ async def test_reconcile_fat_sidecar_avoids_full_json_get(reconcile_env, monkeyp
 @pytest.mark.asyncio
 async def test_reconcile_thin_sidecar_self_heals(reconcile_env, monkeypatch):
     """A thin sidecar triggers exactly one read_registry_fields GET and is then
-    rewritten as a fat sidecar (save_doc_meta) so subsequent ticks are O(Δ)."""
+    rewritten as a fat sidecar via the sole write-through path
+    (_upsert_registry_row, RFC-042 D3) so subsequent ticks are O(Δ)."""
+    import pageindex_mcp.worker.registry_mirror as _rm
+
     thin = {"doc_id": "d2", "doc_name": "x"}
     rich = {"doc_id": "d2", "doc_name": "x", "sha256": "h2", "doc_description": "dd"}
     monkeypatch.setattr(
@@ -508,38 +580,38 @@ async def test_reconcile_thin_sidecar_self_heals(reconcile_env, monkeypatch):
     monkeypatch.setattr(_bf, "_load_meta", lambda k: dict(thin))
     read_rf = MagicMock(return_value=dict(rich))
     monkeypatch.setattr(_bf, "read_registry_fields", read_rf)
-    save_meta = MagicMock()
-    monkeypatch.setattr(_bf, "save_doc_meta", save_meta)
+    urr = AsyncMock(return_value=True)
+    monkeypatch.setattr(_rm, "_upsert_registry_row", urr)
     monkeypatch.setattr(_bf, "upsert_doc", AsyncMock())
 
     await rb.reconcile_registry_drift()
 
     assert read_rf.call_count == 1
-    save_meta.assert_called_once()
-    healed = save_meta.call_args[0][1]
+    urr.assert_awaited_once()
+    healed = urr.await_args.kwargs["registry_fields"]
     assert healed["sha256"] == "h2"
 
 
 @pytest.mark.asyncio
 async def test_reconcile_no_sidecar_legacy_orphan_heal(reconcile_env, monkeypatch):
     """§2b: a doc with processed/<id>.json but NO .meta.json (orphan) is healed —
-    read_registry_fields once + save_doc_meta writes a fresh fat sidecar."""
+    read_registry_fields once + one _upsert_registry_row call (RFC-042 D3:
+    CAS-upserts Postgres and writes the fresh fat sidecar)."""
+    import pageindex_mcp.worker.registry_mirror as _rm
+
     rich = {"doc_id": "orph1", "doc_name": "x", "sha256": "ho", "doc_description": "d"}
     monkeypatch.setattr(rb, "_list_meta_entries", lambda: ([], {"orph1": None}))
     monkeypatch.setattr(rb, "reconcile_etag_get_all", MagicMock(return_value={}))
     read_rf = MagicMock(return_value=dict(rich))
     monkeypatch.setattr(_bf, "read_registry_fields", read_rf)
-    save_meta = MagicMock()
-    monkeypatch.setattr(_bf, "save_doc_meta", save_meta)
-    upsert = AsyncMock()
-    monkeypatch.setattr(_bf, "upsert_doc", upsert)
+    urr = AsyncMock(return_value=True)
+    monkeypatch.setattr(_rm, "_upsert_registry_row", urr)
 
     await rb.reconcile_registry_drift()
 
     assert read_rf.call_count == 1
-    save_meta.assert_called_once()
-    assert save_meta.call_args[0][1]["sha256"] == "ho"
-    upsert.assert_awaited_once()
+    urr.assert_awaited_once()
+    assert urr.await_args.kwargs["registry_fields"]["sha256"] == "ho"
 
 
 @pytest.mark.asyncio
@@ -691,7 +763,16 @@ async def test_drain_verdict_retry_queue_replays_keys():
     # The function lazily imports upsert_doc and save_doc_meta;
     # patch at the module level where the imports resolve.
     with (
+        patch(
+            "pageindex_mcp.worker.registry_mirror.settings",
+            _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+        ),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
         patch("pageindex_mcp.registry.upsert_doc", upsert_mock),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._cas_filter_sidecar_meta",
+            AsyncMock(side_effect=lambda doc_id, cc, meta, **kw: meta),
+        ),
         patch("pageindex_mcp.storage.save_doc_meta", save_mock),
     ):
         await _drain_verdict_retry_queue(redis_mock)
@@ -723,6 +804,11 @@ async def test_drain_verdict_retry_queue_calls_upsert_doc_not_upsert_verdict():
     upsert_verdict_mock = AsyncMock(return_value=None)
 
     with (
+        patch(
+            "pageindex_mcp.worker.registry_mirror.settings",
+            _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+        ),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
         patch("pageindex_mcp.registry.upsert_doc", upsert_doc_mock),
         patch("pageindex_mcp.registry.upsert_verdict", upsert_verdict_mock),
         patch("pageindex_mcp.storage.save_doc_meta", MagicMock()),
@@ -751,6 +837,11 @@ async def test_drain_verdict_retry_queue_skips_sidecar_when_upsert_returns_none(
     save_mock = MagicMock()
 
     with (
+        patch(
+            "pageindex_mcp.worker.registry_mirror.settings",
+            _settings(registry_enabled=True, postgres_dsn="postgresql://x"),
+        ),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
         patch("pageindex_mcp.registry.upsert_doc", AsyncMock(return_value=None)),
         patch("pageindex_mcp.storage.save_doc_meta", save_mock),
     ):

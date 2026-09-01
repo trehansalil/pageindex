@@ -455,6 +455,7 @@ mappings:
       - test_gates.py
       - test_zone4_measurement.py
       - test_no_naive_block_text.py    # cross-cutting AST guard
+      - test_rfc042_measurement_guard.py
 
   helpers/rag.py:
     tests:

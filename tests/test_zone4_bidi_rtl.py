@@ -123,15 +123,22 @@ class TestGateBidiDegradedPresentationForms:
         assert fires is False
 
     def test_disabled_by_env(self, dummy_sig, dummy_script_ctx, monkeypatch):
+        from pageindex_mcp.config import reset_pipeline_config
+
         monkeypatch.setenv("BIDI_COHERENCE_ENFORCE", "false")
-        rtl = RtlDecision(
-            reversed=True,
-            repair_effective=False,
-            sampled=0,
-            method="test",
-            had_presentation_forms=True,
-        )
-        fires, _ = _gate_bidi_degraded(
-            dummy_sig, [], dummy_script_ctx, None, rtl
-        )
-        assert fires is False
+        reset_pipeline_config()
+        try:
+            rtl = RtlDecision(
+                reversed=True,
+                repair_effective=False,
+                sampled=0,
+                method="test",
+                had_presentation_forms=True,
+            )
+            fires, _ = _gate_bidi_degraded(
+                dummy_sig, [], dummy_script_ctx, None, rtl
+            )
+            assert fires is False
+        finally:
+            monkeypatch.undo()
+            reset_pipeline_config()

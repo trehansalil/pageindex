@@ -694,8 +694,12 @@ async def test_upsert_single_linear_path_reads_minio_then_upserts():
     ):
         await _upsert_registry_row("doc-1", "flat_table")
 
-    # Exactly one read (MinIO), exactly one upsert (Postgres)
-    mock_read.assert_called_once_with("doc-1", "flat_table")
+    # Two reads (MinIO): one to build the upsert payload, one from the
+    # RFC-042 D3 CAS guard (_cas_filter_sidecar_meta) before the sidecar
+    # backfill -- both against the same doc_id/content_class.
+    assert mock_read.call_count == 2
+    for call in mock_read.call_args_list:
+        assert call.args == ("doc-1", "flat_table")
     mock_upsert.assert_awaited_once()
     # upsert receives the MinIO-read fields dict
     upserted = mock_upsert.await_args[0][0]
@@ -2026,6 +2030,13 @@ async def test_pool_not_ready_stamps_sidecar_only_consistency_regime():
         patch(
             "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
             AsyncMock(),
+        ),
+        # RFC-042 D3 CAS guard (_cas_filter_sidecar_meta) reads MinIO before
+        # stamping the sidecar even during degradation; no prior sidecar
+        # state exists here, so it should pass the meta through unchanged.
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value=None,
         ),
         patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
     ):

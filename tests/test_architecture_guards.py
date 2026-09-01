@@ -636,6 +636,68 @@ class TestNoDirectGarbleProngsOutsideGarblePy:
 
 
 # ---------------------------------------------------------------------------
+# RFC-042 D3: save_doc_meta single-caller architecture guard
+# ---------------------------------------------------------------------------
+
+
+class TestSaveDocMetaSingleCaller:
+    """RFC-042 D3 (Amendment 2026-09-01 v2): save_doc_meta must only be
+    referenced from the MinIO write-through path in registry_mirror.py, or
+    from the two child-subprocess persist paths in indexer.py
+    (_persist_flat_result, _persist_tree_result), which run without
+    Postgres access and write the sidecar directly. Every other call site
+    is a bypass of the single-writer pattern and must route through
+    _upsert_registry_row instead (closed incrementally per task 2.2).
+    """
+
+    ALLOWED_WHOLE_FILES = {"worker/registry_mirror.py"}
+    ALLOWED_FUNCTIONS = {
+        "client/indexer.py": {"_persist_flat_result", "_persist_tree_result"},
+    }
+    DEFINING_FILE = "storage/verdict.py"
+
+    def _violations(self) -> list[str]:
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        violations: list[str] = []
+
+        for pyfile in sorted(src_root.rglob("*.py")):
+            rel = str(pyfile.relative_to(src_root))
+            if rel == self.DEFINING_FILE or rel in self.ALLOWED_WHOLE_FILES:
+                continue
+            tree = ast.parse(pyfile.read_text(), filename=str(pyfile))
+            allowed_funcs = self.ALLOWED_FUNCTIONS.get(rel, set())
+
+            def _refs(node: ast.AST) -> list[int]:
+                return [
+                    n.lineno
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Name) and n.id == "save_doc_meta"
+                ]
+
+            covered: set[int] = set()
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name in allowed_funcs
+                ):
+                    covered.update(_refs(node))
+
+            for lineno in _refs(tree):
+                if lineno not in covered:
+                    violations.append(f"{rel}:{lineno}")
+
+        return violations
+
+    def test_save_doc_meta_only_referenced_from_allowed_sites(self):
+        violations = self._violations()
+        assert not violations, (
+            "RFC-042 D3: save_doc_meta referenced outside the allowed "
+            "single-writer sites (registry_mirror.py; indexer.py's "
+            f"child-subprocess persist paths): {violations}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # D3 CI lint: no direct state.route = or state.ok = in recovery.py
 # ---------------------------------------------------------------------------
 
@@ -662,4 +724,190 @@ class TestNoDirectStateMutationInRecovery:
             "D3 (RFC-041): direct state.route/state.ok assignments found "
             "in recovery.py.  Use finalize_gate_and_route() instead.\n"
             "Violations:\n" + "\n".join(violations)
+        )
+
+
+# ---------------------------------------------------------------------------
+# D4 (RFC-042): hot-path files must read config via PipelineConfig, not
+# os.environ directly
+# ---------------------------------------------------------------------------
+
+
+class TestHotPathConfigAccessGuard:
+    """D4 (RFC-042): hot-path source files must read configuration through
+    the frozen PipelineConfig snapshot, not `os.environ`/`os.getenv`
+    directly.  Startup-only files (tracing, subprocess management, MinIO
+    client init, constants, definitions) run once before PipelineConfig is
+    built and are explicitly allowlisted -- they are not scanned here."""
+
+    HOT_PATH_FILES = (
+        "helpers/gates.py",
+        "converters/pictures.py",
+        "client/indexer.py",
+        "helpers/tree_split.py",
+        "helpers/garble.py",
+        "helpers/verdict.py",
+    )
+
+    STARTUP_ONLY_ALLOWLIST = (
+        "tracing.py",
+        "subprocess_mgr.py",
+        "minio_client.py",
+        "constants.py",
+        "definitions.py",
+    )
+
+    def _env_read_sites(self, rel_path: str) -> list[str]:
+        """AST-based scan for `os.environ`/`os.getenv` attribute access.
+
+        Uses `ast` rather than a textual grep so prose in comments and
+        docstrings that *mentions* os.environ (garble.py's module docstring
+        does, describing what it replaced) is not itself reported as a
+        live read.
+        """
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        path = src_root / rel_path
+        tree = ast.parse(path.read_text(), filename=str(path))
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            # Catch `os.environ[...]`, `os.getenv(...)`, `os.environ.get(...)`
+            if isinstance(node, ast.Attribute):
+                if (
+                    isinstance(node.value, ast.Name)
+                    and node.value.id == "os"
+                    and node.attr in ("environ", "getenv")
+                ):
+                    violations.append(
+                        f"  {rel_path}:{node.lineno}: os.{node.attr}"
+                    )
+            # Catch `from os import environ` / `from os import getenv`
+            elif isinstance(node, ast.ImportFrom) and node.module == "os":
+                for alias in node.names:
+                    if alias.name in ("environ", "getenv"):
+                        violations.append(
+                            f"  {rel_path}:{node.lineno}: from os import {alias.name}"
+                        )
+        return violations
+
+    @pytest.mark.parametrize("rel_path", HOT_PATH_FILES)
+    def test_hot_path_file_has_no_direct_os_environ_reads(self, rel_path):
+        violations = self._env_read_sites(rel_path)
+        assert not violations, (
+            "D4 (RFC-042): direct os.environ/os.getenv read(s) found in a "
+            f"hot-path file. Use PipelineConfig fields instead.\n"
+            "Violations:\n" + "\n".join(violations)
+        )
+
+    def test_startup_only_allowlist_files_exist(self):
+        """The allowlist documents which files are exempt (Requirement 4.3)
+        -- guard the exemption itself so it can't silently drift from the
+        actual startup-only files on disk."""
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        missing = [
+            name
+            for name in self.STARTUP_ONLY_ALLOWLIST
+            if not any(src_root.rglob(name))
+        ]
+        assert not missing, f"allowlisted startup-only file(s) not found in src/: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# D3 (RFC-042): save_doc_meta single-writer enforcement
+# ---------------------------------------------------------------------------
+
+
+class _SaveDocMetaCallVisitor(ast.NodeVisitor):
+    """Tracks the innermost enclosing function name for every reference to
+    ``save_doc_meta`` -- both direct calls (``save_doc_meta(...)``) and
+    deferred-call references (``asyncio.to_thread(save_doc_meta, ...)``,
+    the dominant pattern in this codebase since ``save_doc_meta`` is
+    synchronous MinIO I/O)."""
+
+    def __init__(self) -> None:
+        self._stack: list[str] = []
+        self.calls: list[tuple[str | None, int]] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._stack.append(node.name)
+        self.generic_visit(node)
+        self._stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # noqa: N815
+
+    def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+        if node.id == "save_doc_meta":
+            enclosing = self._stack[-1] if self._stack else None
+            self.calls.append((enclosing, node.lineno))
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+        if node.attr == "save_doc_meta":
+            enclosing = self._stack[-1] if self._stack else None
+            self.calls.append((enclosing, node.lineno))
+        self.generic_visit(node)
+
+
+class TestSaveDocMetaSingleWriter:
+    """D3 (RFC-042): `save_doc_meta` is a single-writer function -- in
+    production code it may only be called from `registry_mirror.py`'s
+    `_upsert_registry_row` write-through path and the two child-subprocess
+    persist paths in indexer.py (`_persist_flat_result`, `_persist_tree_result`).
+    Test files are exempt (they mock `save_doc_meta` for isolation)."""
+
+    ALLOWED_CALLER_FILES = {
+        "worker/registry_mirror.py",
+        "client/indexer.py",
+    }
+    ALLOWED_INDEXER_FUNCTIONS = {"_persist_flat_result", "_persist_tree_result"}
+    DEFINING_FILE = "storage/verdict.py"
+
+    def _offending_sites(self) -> list[str]:
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        violations: list[str] = []
+        for pyfile in sorted(src_root.rglob("*.py")):
+            rel = str(pyfile.relative_to(src_root))
+            if rel == self.DEFINING_FILE:
+                continue
+            try:
+                tree = ast.parse(pyfile.read_text(), filename=str(pyfile))
+            except SyntaxError:
+                continue
+            visitor = _SaveDocMetaCallVisitor()
+            visitor.visit(tree)
+            if not visitor.calls:
+                continue
+            if rel not in self.ALLOWED_CALLER_FILES:
+                violations.extend(
+                    f"  {rel}:{lineno}: save_doc_meta() called outside the "
+                    "single-writer path"
+                    for _enclosing, lineno in visitor.calls
+                )
+            elif rel == "client/indexer.py":
+                violations.extend(
+                    f"  {rel}:{lineno}: save_doc_meta() called from "
+                    f"{enclosing!r}, expected one of {sorted(self.ALLOWED_INDEXER_FUNCTIONS)}"
+                    for enclosing, lineno in visitor.calls
+                    if enclosing not in self.ALLOWED_INDEXER_FUNCTIONS
+                )
+        return violations
+
+    def test_save_doc_meta_called_only_from_single_writer_path(self):
+        """No production module outside registry_mirror.py's write-through
+        path or indexer.py's two child-subprocess persist functions may call
+        save_doc_meta() -- it is the sole authoritative verdict-sidecar
+        writer (D3)."""
+        violations = self._offending_sites()
+        assert not violations, (
+            "D3 (RFC-042): save_doc_meta() called outside the single-writer "
+            "path. Route through registry_mirror.py's _upsert_registry_row "
+            "instead.\nViolations:\n" + "\n".join(violations)
+        )
+
+    def test_underscore_alias_not_introduced(self):
+        """Defense-in-depth: no `_save_doc_meta` private alias should be
+        introduced as a bypass around the public single-writer guard."""
+        mod = importlib.import_module("pageindex_mcp.storage.verdict")
+        assert not hasattr(mod, "_save_doc_meta"), (
+            "_save_doc_meta must not exist -- save_doc_meta is the sole "
+            "entry point and is guarded by TestSaveDocMetaSingleWriter"
         )

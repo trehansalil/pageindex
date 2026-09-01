@@ -142,11 +142,16 @@ def test_load_doc_reraises_non_nosuchkey_s3error(mock_minio):
 
 
 # ── FLAT-02 — save_flat_doc / get_flat_doc ────────────────────────────────────
-def test_flat_02_c1_save_flat_doc_writes_flat_json_and_meta(mock_minio):
+def test_flat_02_c1_save_flat_doc_writes_flat_json_only(mock_minio):
     """FLAT-02-C1: save_flat_doc PUTs the flat blocks JSON to
-    processed/<doc_id>.flat.json AND writes the processed/<doc_id>.meta.json
-    sidecar carrying content_class; get_flat_doc returns a value-equivalent dict.
-    No processed/<doc_id>.json (tree) is written for a flat doc."""
+    processed/<doc_id>.flat.json; get_flat_doc returns a value-equivalent
+    dict. No processed/<doc_id>.json (tree) is written for a flat doc.
+
+    RFC-042 D3: the processed/<doc_id>.meta.json sidecar is no longer
+    written here -- that write-through belongs solely to
+    _upsert_registry_row (registry_mirror.py), which backfills the sidecar
+    from the Postgres-arbitrated row after the worker parent's dual-write.
+    """
     flat = {
         "doc_id": "flat0001",
         "doc_name": "katzen.pdf",
@@ -158,7 +163,7 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_and_meta(mock_minio):
 
     put_keys = [c.args[1] for c in mock_minio.put_object.call_args_list]
     assert "processed/flat0001.flat.json" in put_keys
-    assert "processed/flat0001.meta.json" in put_keys
+    assert "processed/flat0001.meta.json" not in put_keys
     assert "processed/flat0001.json" not in put_keys
 
     flat_put = next(
@@ -168,14 +173,6 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_and_meta(mock_minio):
     )
     written = json.loads(flat_put.args[2].read())
     assert written == flat
-
-    meta_put = next(
-        c
-        for c in mock_minio.put_object.call_args_list
-        if c.args[1] == "processed/flat0001.meta.json"
-    )
-    meta_written = json.loads(meta_put.args[2].read())
-    assert meta_written.get("content_class") == "flat_prose"
 
     response = MagicMock()
     response.read.return_value = json.dumps(flat, indent=2).encode()

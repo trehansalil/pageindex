@@ -53,7 +53,6 @@ from pageindex_mcp.metrics import (
 )
 from pageindex_mcp.storage import (
     save_doc_meta,
-    write_verdict,
 )
 from pageindex_mcp.worker import (
     CHILD_TIMEOUT,
@@ -697,36 +696,18 @@ class TestSaveDocMetaCasIntegration:
         assert sidecar["pipeline_version"] == 4
 
 
-class TestWriteVerdict:
-    """write_verdict writes only the .meta.json sidecar (Zone-5: no
-    dual-write to the artifact)."""
-
-    def test_max_leaf_ratio_rounded_to_4_decimals(self, mock_minio):
-        write_verdict(
-            doc_id="wv04",
-            verdict="PASS",
-            verdict_reason="ok",
-            pipeline_version=4,
-            verdict_computed_at="2026-08-12",
-            max_leaf_ratio=0.123456789,
-        )
-
-        first_call = mock_minio.put_object.call_args_list[0]
-        written = json.loads(first_call[0][2].read())
-        assert written["max_leaf_ratio"] == 0.1235
-
-
 class TestReadRegistryFieldsSidecarFallback:
     """read_registry_fields falls back to the sidecar when the artifact
     lacks verdict fields (Zone-8 Target 4)."""
 
 
 class TestPromotionSweepVerdictRouting:
-    """promotion_sweep.run_sweep routes verdict through write_verdict, never
-    save_doc_meta."""
+    """promotion_sweep.run_sweep routes verdict through the sole
+    write-through path (_upsert_registry_row, RFC-042 D3), never a direct
+    save_doc_meta call."""
 
     @pytest.mark.asyncio
-    async def test_sweep_calls_write_verdict_not_save_doc_meta_for_verdict(self):
+    async def test_sweep_routes_verdict_through_upsert_registry_row(self):
         sweep_meta = {
             "doc_id": "sweep01",
             "doc_name": "sweep.pdf",
@@ -747,11 +728,9 @@ class TestPromotionSweepVerdictRouting:
             patch("promotion_sweep.sweep_candidates", return_value=["sweep01"]),
             patch("promotion_sweep.init_registry"),
             patch("promotion_sweep.close_registry"),
-            patch("promotion_sweep.upsert_doc"),
+            patch("promotion_sweep._upsert_registry_row", new_callable=AsyncMock) as mock_urr,
             patch("promotion_sweep.settings") as mock_settings,
             patch("promotion_sweep.get_minio") as mock_get_minio,
-            patch("promotion_sweep.write_verdict") as mock_wv,
-            patch("promotion_sweep.save_doc_meta") as mock_sdm,
             patch("promotion_sweep.classify_verdict", return_value=("PASS", "base_pass")),
             patch("promotion_sweep._tree_max_leaf_ratio", return_value=(0, 0, 0.05)),
         ):
@@ -772,37 +751,35 @@ class TestPromotionSweepVerdictRouting:
 
             await run_sweep()
 
-            mock_wv.assert_called_once()
-            call_args = mock_wv.call_args
+            mock_urr.assert_called_once()
+            call_args = mock_urr.call_args
             assert call_args[0][0] == "sweep01"
-            assert call_args[0][1] == "PASS"
-            assert call_args[0][2] == "base_pass"
-            assert call_args[0][5] == 0.05
-
-            mock_sdm.assert_called_once()
-            sdm_meta = mock_sdm.call_args[0][1]
-            assert "verdict" not in sdm_meta
-            assert "verdict_reason" not in sdm_meta
+            registry_fields = call_args.kwargs["registry_fields"]
+            assert registry_fields["verdict"] == "PASS"
+            assert registry_fields["verdict_reason"] == "base_pass"
+            assert registry_fields["max_leaf_ratio"] == 0.05
 
 
-class TestRecomputeVerdictsWriteVerdict:
-    """preprocess_client.recompute_verdicts calls write_verdict with the
-    correct positional arguments."""
+class TestRecomputeVerdictsRegistryRouting:
+    """preprocess_client.recompute_verdicts routes verdict + provenance
+    through _upsert_registry_row (RFC-042 D3)."""
 
 
 class TestRegistryBackfillPropagationOnly:
     """_enrich_one and _heal_one are propagators, not computers -- they
-    must never call classify_verdict or write_verdict."""
+    must never call classify_verdict, and route their write-through the
+    sole entry point (_upsert_registry_row) rather than save_doc_meta."""
 
     @pytest.mark.asyncio
-    async def test_heal_one_never_calls_classify_verdict_or_write_verdict(self):
+    async def test_heal_one_never_calls_classify_verdict(self):
         with (
             patch("pageindex_mcp.registry_backfill.backfill.read_registry_fields") as mock_rrf,
-            patch("pageindex_mcp.registry_backfill.backfill.save_doc_meta"),
-            patch("pageindex_mcp.registry_backfill.backfill.upsert_doc"),
             patch("pageindex_mcp.registry_backfill.backfill.get_minio"),
             patch("pageindex_mcp.helpers.classify_verdict") as mock_cv,
-            patch("pageindex_mcp.storage.write_verdict") as mock_wv,
+            patch(
+                "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
+                new_callable=AsyncMock,
+            ) as mock_urr,
         ):
             mock_rrf.return_value = {
                 "doc_id": "heal01",
@@ -818,7 +795,7 @@ class TestRegistryBackfillPropagationOnly:
             await _heal_orphans({"heal01": None})
 
             mock_cv.assert_not_called()
-            mock_wv.assert_not_called()
+            mock_urr.assert_called_once()
 
 
 class TestSqlVerdictFilter:
