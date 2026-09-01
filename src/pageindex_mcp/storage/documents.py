@@ -146,9 +146,15 @@ def get_flat_doc(doc_id: str) -> dict:
 
 
 def save_flat_doc(doc_id: str, data: dict) -> None:
-    """Persist a flat document (no tree) to processed/<doc_id>.flat.json and write
-    the processed/<doc_id>.meta.json sidecar carrying content_class (FLAT-02-C1).
-    Mirrors save_doc; a flat doc never writes the tree artifact processed/<id>.json."""
+    """Persist a flat document (no tree) to processed/<doc_id>.flat.json.
+    Mirrors save_doc; a flat doc never writes the tree artifact processed/<id>.json.
+
+    RFC-042 D3: the processed/<doc_id>.meta.json sidecar (content_class
+    included) is no longer written here — that write-through belongs solely
+    to ``_upsert_registry_row`` (registry_mirror.py), which backfills the
+    sidecar with the Postgres-arbitrated row after the worker parent's
+    dual-write. Callers that need the sidecar written immediately (e.g. no
+    Postgres access) call ``save_doc_meta`` directly themselves."""
     MINIO_OPS.labels(operation="put").inc()
     start = time.monotonic()
     mc = _minio_ops.get_minio()
@@ -169,10 +175,6 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
         doc_cache_delete(doc_id)
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
-    # Sidecar carries content_class for listing/routing (FLAT-02-C1/C3).
-    from .verdict import save_doc_meta  # lazy: cross-submodule dep
-
-    save_doc_meta(doc_id, data)
 
 
 async def delete_doc(doc_id: str) -> dict:

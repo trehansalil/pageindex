@@ -20,7 +20,6 @@ from ..registry import (
 from ..storage import (
     get_minio,
     read_registry_fields,
-    save_doc_meta,
 )
 
 logger = logging.getLogger("registry_backfill")
@@ -142,7 +141,12 @@ async def _enrich_one(key: str, meta: dict, sem: asyncio.Semaphore) -> tuple[str
     # Zone-verdict-persistence: _enrich_one is a PROPAGATOR of verdict fields,
     # never a COMPUTER. Verdict fields pass through unmutated from whichever
     # source (artifact or sidecar fallback) read_registry_fields resolved.
-    # The CAS guard in save_doc_meta protects against clobbering a newer verdict.
+    # RFC-042 D3: the self-heal sidecar write routes through the sole
+    # write-through path (_upsert_registry_row) instead of calling
+    # save_doc_meta directly -- its own CAS guard protects against
+    # clobbering a newer verdict.
+    from ..worker.registry_mirror import _upsert_registry_row
+
     async with sem:
         if _is_fat(meta):
             logger.debug(
@@ -158,7 +162,8 @@ async def _enrich_one(key: str, meta: dict, sem: asyncio.Semaphore) -> tuple[str
                 doc_id,
             )
             meta.update(rich)  # now carries sha256, doc_description, node_count, facets
-            await asyncio.to_thread(save_doc_meta, doc_id, meta)  # SELF-HEAL → v2 fat sidecar
+            # SELF-HEAL → v2 fat sidecar, written through the registry path.
+            await _upsert_registry_row(doc_id, meta.get("content_class"), registry_fields=meta)
             return key, meta, True
         return key, meta, False
 
@@ -278,9 +283,9 @@ async def _upsert_all(
 async def _heal_orphans(orphans: dict[str, str | None]) -> tuple[int, int]:
     """§2b: reconcile docs that have a processed/<id>.json|.flat.json but NO
     .meta.json (the "no sidecar → same legacy fallback" case). Each orphan is
-    treated as thin: one ``read_registry_fields`` GET → ``save_doc_meta`` writes
-    a fresh fat v2 sidecar → upsert. Bounded one-time cost; the next tick then
-    treats each as a normal O(Δ) fat entry.
+    treated as thin: one ``read_registry_fields`` GET → ``_upsert_registry_row``
+    CAS-upserts Postgres and writes a fresh fat v2 sidecar. Bounded one-time
+    cost; the next tick then treats each as a normal O(Δ) fat entry.
 
     Returns ``(failed_count, full_json_fallback_count)``.
     """
@@ -289,11 +294,16 @@ async def _heal_orphans(orphans: dict[str, str | None]) -> tuple[int, int]:
 
     sem = asyncio.Semaphore(10)
 
-    # Zone-verdict-persistence: _heal_one is a PROPAGATOR of verdict fields,
-    # never a COMPUTER. It must never call classify_verdict — it copies verdict
-    # fields unmutated from the authoritative source (artifact or sidecar
-    # fallback via read_registry_fields). The CAS guard in save_doc_meta
-    # protects against clobbering a newer verdict with an older one.
+    # RFC-042 D3: the sidecar write + registry upsert route through the sole
+    # write-through path (_upsert_registry_row) instead of separate
+    # save_doc_meta / upsert_doc calls. _heal_one remains a PROPAGATOR of
+    # verdict fields, never a COMPUTER -- it must never call
+    # classify_verdict; it copies verdict fields unmutated from the
+    # authoritative source (artifact or sidecar fallback via
+    # read_registry_fields). _upsert_registry_row's CAS guard protects
+    # against clobbering a newer verdict with an older one.
+    from ..worker.registry_mirror import _upsert_registry_row
+
     async def _heal_one(doc_id: str, content_class: str | None) -> tuple[str | None, bool]:
         async with sem:
             rich = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
@@ -320,13 +330,8 @@ async def _heal_orphans(orphans: dict[str, str | None]) -> tuple[int, int]:
                                 rich[vf] = sidecar[vf]
                 except Exception:
                     pass  # graceful degradation — sidecar also missing
-            await asyncio.to_thread(save_doc_meta, doc_id, rich)  # write fat v2 sidecar
-            try:
-                await upsert_doc(rich)
-                return None, True
-            except Exception as exc:
-                logger.error("reconcile: orphan heal upsert failed doc_id=%s: %s", doc_id, exc)
-                return doc_id, True
+            await _upsert_registry_row(doc_id, content_class, registry_fields=rich)
+            return None, True
 
     results = await asyncio.gather(*(_heal_one(d, c) for d, c in orphans.items()))
     failed = sum(1 for failed_id, _ in results if failed_id is not None)

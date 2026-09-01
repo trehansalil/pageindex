@@ -39,8 +39,7 @@ async def _drain_verdict_retry_queue(redis_client: Any) -> None:
     """
     import json as _json
 
-    from ..registry import upsert_doc
-    from ..storage import save_doc_meta
+    from ..worker.registry_mirror import _upsert_registry_row
 
     drained = 0
     failed = 0
@@ -64,22 +63,27 @@ async def _drain_verdict_retry_queue(redis_client: Any) -> None:
                         continue
                     verdict_fields = _json.loads(raw.decode() if isinstance(raw, bytes) else raw)
 
-                    # Replay: Postgres first, then MinIO sidecar backfill.
-                    # Build a full meta dict with doc_id merged in so we can
-                    # call upsert_doc directly (upsert_verdict is deprecated).
-                    meta: dict[str, Any] = {"doc_id": doc_id}
-                    meta.update(verdict_fields)
-                    # Pop force_verdict_override before calling upsert_doc so
-                    # it becomes a kwarg, not a column value persisted to
-                    # Postgres.  Mirrors the registry_mirror.py treatment.
-                    force_override = bool(meta.pop("force_verdict_override", False))
-                    winning = await upsert_doc(meta, force_verdict_override=force_override)
-                    if winning:
-                        # Zone-5: stamp consistency_regime so the sidecar
-                        # records that this drain write restored Postgres
-                        # authority (forensic visibility).
-                        winning["consistency_regime"] = "postgres-authoritative"
-                        await asyncio.to_thread(save_doc_meta, doc_id, winning)
+                    # Replay via the sole write-through path (RFC-042 D3):
+                    # Postgres CAS-upsert first, then best-effort MinIO
+                    # sidecar backfill with the winning values — both handled
+                    # inside _upsert_registry_row.  Passed as registry_fields
+                    # (not verdict_fields) so the retry payload is used
+                    # directly, skipping a redundant MinIO re-read.
+                    # _upsert_registry_row never raises — check its return
+                    # value and keep the retry key on failure (degraded
+                    # Postgres, transient error) so the next sweep retries
+                    # instead of silently dropping the verdict (R3.2).
+                    replayed = await _upsert_registry_row(
+                        doc_id, None, registry_fields=verdict_fields
+                    )
+                    if not replayed:
+                        failed += 1
+                        logger.warning(
+                            "reconcile: verdict-retry replay failed for %s; "
+                            "key retained for next sweep",
+                            key_str,
+                        )
+                        continue
 
                     await redis_client.delete(key)
                     drained += 1

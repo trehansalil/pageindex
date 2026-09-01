@@ -25,9 +25,9 @@ from pageindex_mcp.registry import (
     close_registry,
     init_registry,
     sweep_candidates,
-    upsert_doc,
 )
-from pageindex_mcp.storage import get_minio, save_doc_meta, write_verdict
+from pageindex_mcp.storage import get_minio
+from pageindex_mcp.worker import _upsert_registry_row
 
 logger = logging.getLogger(__name__)
 
@@ -97,34 +97,11 @@ async def run_sweep() -> dict:
 
                 verdict_computed_at = datetime.now(UTC).isoformat()
 
-                # Zone-verdict-persistence: route verdict fields through
-                # write_verdict (the sole verdict-mutation entry point) so
-                # artifact and sidecar stay in sync.
-                write_verdict(
-                    doc_id,
-                    verdict,
-                    verdict_reason,
-                    CURRENT_PIPELINE_VERSION,
-                    verdict_computed_at,
-                    mlr,
-                    content_class=content_class or None,
-                )
-
-                # Non-verdict provenance through save_doc_meta (read-merge-write
-                # preserves existing non-verdict fields without overwriting the
-                # verdict fields just written by write_verdict).
-                provenance_meta = {
-                    "doc_id": doc_id,
-                    "doc_name": data.get("doc_name", ""),
-                    "source_url": data.get("source_url", ""),
-                    "processed_at": data.get("processed_at", ""),
-                }
-                if content_class:
-                    provenance_meta["content_class"] = content_class
-                save_doc_meta(doc_id, provenance_meta)
-
-                # Update registry with full metadata (including verdict fields
-                # for the temporal CAS guard in the UPSERT SQL).
+                # RFC-042 D3: route verdict + provenance through the sole
+                # write-through path (_upsert_registry_row) instead of
+                # write_verdict + save_doc_meta + a separate upsert_doc call
+                # -- it CAS-upserts Postgres, then best-effort backfills the
+                # MinIO sidecar with the winning row, keeping both in sync.
                 registry_meta = {
                     "doc_id": doc_id,
                     "doc_name": data.get("doc_name", ""),
@@ -138,7 +115,9 @@ async def run_sweep() -> dict:
                 }
                 if content_class:
                     registry_meta["content_class"] = content_class
-                await upsert_doc(registry_meta)
+                await _upsert_registry_row(
+                    doc_id, content_class or None, registry_fields=registry_meta
+                )
 
                 updated += 1
                 logger.info("Sweep: %s -> %s (%s)", doc_id, verdict, verdict_reason or "clean")

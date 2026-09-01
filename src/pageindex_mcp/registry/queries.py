@@ -89,6 +89,9 @@ _UPSERT_VERDICT_CAS = f"""    -- RFC-037 D1: max-priority-wins guard — verdict
     -- cycles.  This is the single SQL arbiter all three registry writers
     -- (_upsert_registry_row, reconcile_registry_drift,
     -- _drain_verdict_retry_queue) inherit automatically.
+    -- RFC-042 D3: registry_mirror._cas_filter_sidecar_meta mirrors this same
+    -- >= priority semantics for the MinIO write-through path so the sidecar
+    -- can never diverge from this arbiter, including during degradation.
     verdict         = CASE
         WHEN ({_VP_EXCLUDED}) >= ({_VP_EXISTING})
         THEN COALESCE(NULLIF(EXCLUDED.verdict, ''), doc_registry.verdict)

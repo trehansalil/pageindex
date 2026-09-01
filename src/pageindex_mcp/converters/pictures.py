@@ -49,19 +49,17 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_MARKER = "<!-- image -->"
 _PICTURE_OCR_MIN_CHARS = 20  # RFC-015 D6: below this, OCR output is decorative-image noise
-_PICTURE_PAGE_COVERAGE_THRESHOLD = float(os.getenv("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6"))
+_PICTURE_PAGE_COVERAGE_THRESHOLD = pipeline_config.picture_page_coverage_threshold
 # D2 (RFC-023): sub-icon PictureItems (both dims below this) skip crop+OCR
 # entirely and are tagged "decorative_icon" — set to 0 to disable the pre-filter.
-_DECORATIVE_ICON_MIN_DIM_PT = float(os.getenv("DECORATIVE_ICON_MIN_DIM_PT", "20"))
+_DECORATIVE_ICON_MIN_DIM_PT = pipeline_config.decorative_icon_min_dim_pt
 # Audit 2026-07-21 finding 10: bound for the per-picture OCR and VLM thread pools.
 # Keeps a many-figure document from spawning unbounded tesseract subprocesses or
 # parallel paid vision calls inside one conversion.
-_IMAGE_ENRICH_CONCURRENCY = max(1, int(os.getenv("IMAGE_ENRICH_CONCURRENCY", "4") or "4"))
+_IMAGE_ENRICH_CONCURRENCY = pipeline_config.image_enrich_concurrency
 # F1 (RFC-020): when True, pages with no text layer are exempt from the coverage
 # skip — the full-page picture IS the content and must be OCR'd.
-_COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
-    "COVERAGE_EXEMPT_NO_TEXT_LAYER", "true"
-).strip().lower() in ("1", "true", "yes")
+_COVERAGE_EXEMPT_NO_TEXT_LAYER = pipeline_config.coverage_exempt_no_text_layer
 # Zone-4: _TEXT_LAYER_GARBLE_CHECK_ENABLED rollback toggle removed; garble check
 # is now always-on (was default True). The check is integrated into the unified
 # _text_layer_has_content function.
@@ -69,11 +67,7 @@ _COVERAGE_EXEMPT_NO_TEXT_LAYER = os.getenv(
 # already contained in the Docling markdown export (containment-guarded — see
 # _clip_text_contained). Set to False to restore the pre-RFC-024 skip-only
 # behavior (every non-trivial clip_text is discarded, "clip_text" reason).
-_CLIP_TEXT_CAPTURE_ENABLED = os.getenv("CLIP_TEXT_CAPTURE_ENABLED", "true").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
+_CLIP_TEXT_CAPTURE_ENABLED = pipeline_config.clip_text_capture_enabled
 _CLIP_TEXT_CONTAINMENT_THRESHOLD = 0.6
 # D1 (RFC-024): document-level text-layer fallback — when Docling's exported
 # markdown is this thin (excluding `<!-- image -->` markers), the document is
@@ -92,7 +86,7 @@ _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING = 50
 # which is expensive on multi-hundred-page scanned documents. Cap the number
 # of full-page exemptions fired per document; further regions past the cap
 # are skipped (page_coverage) with a warning.
-_MAX_FULLPAGE_PICTURE_OCR_REGIONS = int(os.getenv("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50"))
+_MAX_FULLPAGE_PICTURE_OCR_REGIONS = pipeline_config.max_fullpage_picture_ocr_regions
 
 # Consolidated picture-gate config: reads the 7 env-var-gated constants
 # above into a frozen PictureGateConfig (picture_plane.py) so
@@ -115,15 +109,13 @@ _GATE_CONFIG = PictureGateConfig(
 # primary extraction is considered failed and the rasterize-rotate-reextract
 # fallback should engage. Configurable per corpus (chart-heavy pages may need
 # a different floor than the 748-char stalled baseline this threshold targets).
-LANDSCAPE_CHAR_THRESHOLD: int = int(os.environ.get("LANDSCAPE_CHAR_THRESHOLD", "500"))
+LANDSCAPE_CHAR_THRESHOLD: int = pipeline_config.landscape_char_threshold
 
 # RFC-036 D0a: hard caps on the per-page reextraction loop below, so a
 # document with many low-char landscape pages cannot serially rasterize/OCR
 # its way past the chunk timeout budget.
-MAX_LANDSCAPE_PAGES: int = int(os.environ.get("MAX_LANDSCAPE_PAGES", "10"))
-LANDSCAPE_REEXTRACT_DEADLINE_SECONDS: float = float(
-    os.environ.get("LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", "600")
-)
+MAX_LANDSCAPE_PAGES: int = pipeline_config.max_landscape_pages
+LANDSCAPE_REEXTRACT_DEADLINE_SECONDS: float = pipeline_config.landscape_reextract_deadline_seconds
 
 # ---------------------------------------------------------------------------
 # Normalize helpers — delegate to the canonical implementation in normalize.py
@@ -435,9 +427,7 @@ def _page_rotation_correction_info(page) -> dict:
 
 # RFC-026 D2: gates the rotation-aware coordinate transform below so the fix
 # can be rolled back without a revert if it regresses an unrelated corpus doc.
-_PAGE_ROTATION_DETECTION_ENABLED = os.getenv(
-    "PAGE_ROTATION_DETECTION_ENABLED", "true"
-).strip().lower() in ("1", "true", "yes")
+_PAGE_ROTATION_DETECTION_ENABLED = pipeline_config.page_rotation_detection_enabled
 
 
 def _normalize_pdf_page_rotation(pdf_path: str) -> str:
@@ -1004,8 +994,7 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         k = counter["i"]
         counter["i"] += 1
         if k >= len(real_pics):
-            strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
-            if strip_env != "false":
+            if pipeline_config.strip_skipped_image_markers:
                 return ""
             return m.group(0)
         result = real_pics[k]
@@ -1013,8 +1002,7 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         desc = result.get("description", "")
         if not (ocr or desc or result.get("png_bytes")):
             if result.get("skipped_reason"):
-                strip_env = os.environ.get("STRIP_SKIPPED_IMAGE_MARKERS", "true").lower()
-                if strip_env != "false":
+                if pipeline_config.strip_skipped_image_markers:
                     return ""
             return m.group(0)
         if desc:

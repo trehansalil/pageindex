@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import unicodedata
 
@@ -379,11 +378,9 @@ def _has_heading_markers(text: str) -> bool:
 
 def _blank_line_fallback_enabled(tree_ratio: float) -> bool:
     """RFC-024 D3 (Task 2.3): gate for the blank-line paragraph-boundary fallback."""
-    enabled = os.environ.get("LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true")
-    if enabled.strip().lower() in {"false", "0", "no", "off"}:
+    if not pipeline_config.leaf_concentration_paragraph_split_enabled:
         return False
-    leaf_split_ratio = float(os.environ.get("LEAF_SPLIT_RATIO", "0.30"))
-    return tree_ratio > leaf_split_ratio
+    return tree_ratio > pipeline_config.leaf_split_ratio
 
 
 def prepare_tree(

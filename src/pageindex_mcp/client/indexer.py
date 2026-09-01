@@ -19,6 +19,7 @@ from pageindex import PageIndexClient
 
 from ..cache import get_doc
 from ..config import (
+    CLIENT_BUILD_SHA,
     CONVERTER_TRANSIENT_RETRY_COUNT,
     CURRENT_PIPELINE_VERSION,
     VERDICT_DOWNGRADE_ENABLED,
@@ -355,11 +356,6 @@ def _classify_transient_failure(exc: BaseException) -> bool:
     return False
 
 
-# Zone-7: BUILD_SHA is the convention services/docling-service's CI/Dockerfile
-# already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
-# permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
-_CLIENT_BUILD_SHA = os.environ.get("BUILD_SHA") or os.environ.get("CLIENT_BUILD_SHA", "unknown")
-
 # Imports from sibling submodules — used by the class methods below.
 from . import remote as _remote_mod  # noqa: E402
 from .images import (  # noqa: E402
@@ -529,9 +525,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 except Exception:
                     pass
 
-            PRE_GARBLE_FORCE_OCR_ENABLED = (
-                os.environ.get("PRE_GARBLE_FORCE_OCR_ENABLED", "false").lower() == "true"
-            )
+            PRE_GARBLE_FORCE_OCR_ENABLED = pipeline_config.pre_garble_force_ocr_enabled
 
             # Zone-2: force_full_page is a pre-conversion decision independent
             # of has_image_markers (which is unknown until the converter returns).
@@ -1139,9 +1133,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
         # Zone-5: verdict fields stripped from flat artifact body; sidecar
         # (.meta.json via save_doc_meta) is the sole authoritative verdict
-        # store.  save_flat_doc internally calls save_doc_meta with this dict
-        # (non-verdict fields), then a separate save_doc_meta call below
-        # merges verdict fields into the sidecar.
+        # store.  save_flat_doc no longer touches the sidecar (RFC-042 D3);
+        # the separate save_doc_meta call below is this child subprocess's
+        # only sidecar write, merging verdict fields in directly.
         flat_meta = {
             "doc_id": doc_id,
             "doc_name": filename,
@@ -1153,7 +1147,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "row_records": _row_records,
             "doc_description": flat_desc,
             "flat_char_count": flat_char_count,
-            "build_sha": _CLIENT_BUILD_SHA,
+            "build_sha": CLIENT_BUILD_SHA,
             "effective_config": _effective_cfg,
         }
         if _effective_config_at_job_start is not None:
@@ -1295,7 +1289,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "sha256": sha256,
             "doc_description": state.result.get("doc_description", ""),
             "total_tree_chars": len(_flatten_tree_text(structure)),
-            "build_sha": _CLIENT_BUILD_SHA,
+            "build_sha": CLIENT_BUILD_SHA,
             "effective_config": _effective_cfg,
             "decider_version": "zone3_decide_rtl_v1",
             # Verdict fields -- authoritative via sidecar (Zone-5)

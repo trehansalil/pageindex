@@ -198,40 +198,6 @@ def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
-def write_verdict(  # noqa: PLR0913
-    doc_id: str,
-    verdict: str,
-    verdict_reason: str,
-    pipeline_version: int,
-    verdict_computed_at: str,
-    max_leaf_ratio: float,
-    content_class: str | None = None,
-) -> None:
-    """**Deprecated (Zone-5):** thin wrapper that delegates to ``save_doc_meta``.
-
-    Retained only for legacy callers (``promotion_sweep.run_sweep``,
-    ``preprocess_client.recompute_verdicts``) that import and call this
-    function directly.  New code should call ``save_doc_meta`` with the
-    verdict fields in the *meta* dict instead.
-
-    Previously this function performed an atomic dual-write of verdict
-    fields to both the processed artifact and the sidecar.  Zone-5
-    eliminated the artifact re-write; the sidecar (.meta.json) written by
-    ``save_doc_meta`` is now the sole authoritative verdict store.
-    """
-    meta: dict = {
-        "doc_id": doc_id,
-        "verdict": verdict,
-        "verdict_reason": verdict_reason,
-        "pipeline_version": pipeline_version,
-        "verdict_computed_at": verdict_computed_at,
-        "max_leaf_ratio": round(max_leaf_ratio, 4),
-    }
-    if content_class:
-        meta["content_class"] = content_class
-    save_doc_meta(doc_id, meta)
-
-
 # RFC-006: the registry needs richer fields (sha256, doc_description) than the
 # lean .meta.json sidecar carries. Those live in the full processed-doc JSON, so
 # the parent-side dual-write reads them from there.

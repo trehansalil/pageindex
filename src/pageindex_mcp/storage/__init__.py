@@ -65,7 +65,6 @@ from .verdict import (
     list_processed_docs,
     read_registry_fields,
     save_doc_meta,
-    write_verdict,
 )
 
 __all__ = [
@@ -104,5 +103,4 @@ __all__ = [
     "save_raw",
     "upload_staging",
     "wipe_processed",
-    "write_verdict",
 ]

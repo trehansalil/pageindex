@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 
 from ..config import pipeline_config
@@ -159,7 +158,7 @@ def _gate_bidi_degraded(
     (``_renormalize_bidi_guarded``) and threaded via
     ``RtlDecision.had_presentation_forms``.
     """
-    if os.environ.get("BIDI_COHERENCE_ENFORCE", "true").lower() != "true":
+    if not pipeline_config.bidi_coherence_enforce:
         return (False, "")
     if rtl_decision is None:
         return (False, "")

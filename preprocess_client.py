@@ -246,7 +246,8 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
         classify_verdict,
         validate_tree,
     )
-    from pageindex_mcp.storage import get_minio, save_doc_meta, write_verdict
+    from pageindex_mcp.storage import get_minio
+    from pageindex_mcp.worker import _upsert_registry_row
 
     settings = _load_settings()
     mc = get_minio()
@@ -272,6 +273,9 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     updated = 0
     errors = 0
 
+    # RFC-042 D3: this CLI has Postgres access (unlike the converter child),
+    # so route through the registry write-through path just like preprocess().
+    await _init_registry_pool()
     for did in doc_ids:
         try:
             key = f"processed/{did}.json"
@@ -353,37 +357,33 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
 
             verdict_computed_at = datetime.now(UTC).isoformat()
 
-            # Zone-verdict-persistence: route verdict fields through
-            # write_verdict (the sole verdict-mutation entry point) so
-            # artifact and sidecar stay in sync.
-            write_verdict(
-                did,
-                verdict,
-                verdict_reason,
-                CURRENT_PIPELINE_VERSION,
-                verdict_computed_at,
-                mlr,
-                content_class=content_class or None,
-            )
-
-            # Non-verdict provenance through save_doc_meta (read-merge-write
-            # preserves existing non-verdict fields without overwriting the
-            # verdict fields just written by write_verdict).
-            provenance_meta = {
+            # RFC-042 D3: route verdict + provenance through the sole
+            # write-through path (_upsert_registry_row) instead of
+            # write_verdict + save_doc_meta -- CAS-upserts Postgres, then
+            # best-effort backfills the MinIO sidecar with the winning row.
+            registry_meta = {
                 "doc_id": did,
                 "doc_name": data.get("doc_name", ""),
                 "source_url": data.get("source_url", ""),
                 "processed_at": data.get("processed_at", ""),
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": verdict_computed_at,
+                "max_leaf_ratio": round(mlr, 4),
             }
             if content_class:
-                provenance_meta["content_class"] = content_class
-            save_doc_meta(did, provenance_meta)
+                registry_meta["content_class"] = content_class
+            await _upsert_registry_row(
+                did, content_class or None, registry_fields=registry_meta
+            )
             updated += 1
             print(f"  {did}: {verdict} ({verdict_reason or 'clean'})", flush=True)
         except Exception as e:
             errors += 1
             print(f"  {did}: ERROR — {e}", flush=True)
 
+    await _close_registry_pool()
     print(f"\nDone: {updated} updated, {errors} errors", flush=True)
 
 

@@ -1,4 +1,11 @@
-"""Registry mirror helpers: dual-write upsert, bridged metrics, verdict retry."""
+"""Registry mirror helpers: dual-write upsert, bridged metrics, verdict retry.
+
+RFC-042 D3: this module is the sole write-through caller of
+``save_doc_meta`` in production code, alongside the two child-subprocess
+persist paths in ``client/indexer.py`` (``_persist_flat_result``,
+``_persist_tree_result``), which run without Postgres access. Enforced by
+``TestSaveDocMetaSingleCaller`` in tests/test_architecture_guards.py.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +16,7 @@ from typing import Any
 
 from ..cache import get_async_redis
 from ..config import settings
+from ..helpers.types import VERDICT_PRIORITY
 from ..metrics import (
     _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY,
     _REGISTRY_WRITE_FAILURES_REDIS_KEY,
@@ -26,6 +34,78 @@ logger = logging.getLogger(__name__)
 # and heal later.  Key pattern: pageindex:verdict_retry:<doc_id>.
 _VERDICT_RETRY_KEY_PREFIX = "pageindex:verdict_retry:"
 _VERDICT_RETRY_TTL_S = 86400  # 24 hours — enough for a Postgres outage
+
+# RFC-042 D3 / R3.2-R3.3: fields gated by each of Postgres' two independent
+# CAS guards (queries.py:127 _UPSERT_SQL) — verdict-priority and
+# processed_at-recency.  Mirrored here so the MinIO write-through path can
+# never regress behind the last known state, even while Postgres is down
+# and the sidecar is the sole source of truth.
+_VERDICT_CAS_FIELDS = ("verdict", "pipeline_version", "permanent_marginal", "verdict_computed_at")
+# Sidecar-only companions of the verdict (no Postgres column): save_doc_meta
+# merges them over the existing sidecar, so they must be dropped together with
+# a rejected verdict or the sidecar would pair the old verdict with the
+# rejected write's reason/ratio.
+_VERDICT_CAS_COMPANION_FIELDS = ("verdict_reason", "max_leaf_ratio")
+_PROCESSED_AT_CAS_FIELDS = ("processed_at", "sha256", "node_count")
+
+
+def _verdict_priority(verdict: str | None) -> int:
+    return VERDICT_PRIORITY.get(verdict or "", -1)
+
+
+async def _cas_filter_sidecar_meta(
+    doc_id: str,
+    content_class: str | None,
+    meta: dict[str, Any],
+    *,
+    force_verdict_override: bool = False,
+) -> dict[str, Any]:
+    """Drop CAS-guarded fields from *meta* that would regress the sidecar's
+    last known state.
+
+    Same ``>=`` semantics as Postgres' ``_UPSERT_SQL`` (queries.py:127) for
+    both the verdict-priority CAS and the processed_at CAS, so the MinIO
+    write-through path can never diverge from the Postgres CAS arbiter --
+    including during degradation (consistency_regime=sidecar-only), where
+    this is the *only* guard standing between a stale reconcile/retry write
+    and a verdict regression (RFC-042 D3 / R3.2, R3.3).
+
+    *force_verdict_override* mirrors Postgres' ``_UPSERT_OVERRIDE_SQL``:
+    the verdict-priority CAS is bypassed (an operator-forced downgrade must
+    reach the sidecar, or the MinIO->Postgres reconcile sweep would push the
+    stale higher verdict back and undo the override), while the processed_at
+    CAS is still enforced.
+    """
+    if not any(f in meta for f in (*_VERDICT_CAS_FIELDS, *_PROCESSED_AT_CAS_FIELDS)):
+        return meta
+    existing = await asyncio.to_thread(read_registry_fields, doc_id, content_class)
+    if not existing:
+        return meta
+    meta = dict(meta)
+    # Postgres gates all four verdict columns on the priority comparison even
+    # when the incoming verdict is empty (priority -1), so trigger on any
+    # verdict-CAS field — not just "verdict" — to keep the mirrors identical.
+    if not force_verdict_override and any(f in meta for f in _VERDICT_CAS_FIELDS):
+        incoming_p = _verdict_priority(meta.get("verdict"))
+        existing_p = _verdict_priority(existing.get("verdict"))
+        if incoming_p < existing_p:
+            logger.info(
+                "registry: MinIO CAS guard rejected lower-priority verdict for "
+                "doc_id=%s (incoming=%r prio=%d, existing=%r prio=%d)",
+                doc_id,
+                meta.get("verdict"),
+                incoming_p,
+                existing.get("verdict"),
+                existing_p,
+            )
+            for f in (*_VERDICT_CAS_FIELDS, *_VERDICT_CAS_COMPANION_FIELDS):
+                meta.pop(f, None)
+    if "processed_at" in meta and (meta.get("processed_at") or "") < (
+        existing.get("processed_at") or ""
+    ):
+        for f in _PROCESSED_AT_CAS_FIELDS:
+            meta.pop(f, None)
+    return meta
 
 
 async def _enqueue_verdict_retry(doc_id: str, verdict_fields: dict[str, Any]) -> None:
@@ -58,8 +138,15 @@ async def _upsert_registry_row(
     content_class: str | None,
     verdict_fields: dict[str, Any] | None = None,
     registry_fields: dict[str, Any] | None = None,
-) -> None:
+) -> bool:
     """Postgres-authoritative registry write (Zone-4 Phase 3).
+
+    Returns ``True`` only when the Postgres write path completed; ``False``
+    on every degraded early-return (registry disabled, pool not ready) and
+    on a swallowed write failure.  Callers that manage their own retry
+    state (e.g. ``reconcile._drain_verdict_retry_queue``) MUST check the
+    return value before discarding their payload — the function itself
+    never raises, so an exception is not an observable failure signal.
 
     Single linear path: reads registry-relevant fields from the just-persisted
     MinIO artifact, overlays *verdict_fields* (if supplied), CAS-upserts the
@@ -100,12 +187,21 @@ async def _upsert_registry_row(
         try:
             from ..storage import save_doc_meta
 
-            await asyncio.to_thread(
-                save_doc_meta, doc_id, {"consistency_regime": "sidecar-only"}
+            meta = {"consistency_regime": "sidecar-only"}
+            if verdict_fields:
+                meta.update(verdict_fields)
+            # Keep the override marker out of the sidecar body; honor it in
+            # the CAS guard exactly like upsert_doc's kwarg.
+            _force = bool(meta.pop("force_verdict_override", False))
+            # R3.2/R3.3: CAS from last known Postgres state even though
+            # Postgres itself is unreachable right now.
+            meta = await _cas_filter_sidecar_meta(
+                doc_id, content_class, meta, force_verdict_override=_force
             )
+            await asyncio.to_thread(save_doc_meta, doc_id, meta)
         except Exception:
             pass  # best-effort — sidecar stamp is non-critical
-        return
+        return False
     from ..registry import get_pool, upsert_doc
 
     if get_pool() is None:
@@ -121,16 +217,25 @@ async def _upsert_registry_row(
         try:
             from ..storage import save_doc_meta
 
-            await asyncio.to_thread(
-                save_doc_meta, doc_id, {"consistency_regime": "sidecar-only"}
+            meta = {"consistency_regime": "sidecar-only"}
+            if verdict_fields:
+                meta.update(verdict_fields)
+            # Keep the override marker out of the sidecar body; honor it in
+            # the CAS guard exactly like upsert_doc's kwarg.
+            _force = bool(meta.pop("force_verdict_override", False))
+            # R3.2/R3.3: CAS from last known Postgres state even though
+            # Postgres itself is unreachable right now.
+            meta = await _cas_filter_sidecar_meta(
+                doc_id, content_class, meta, force_verdict_override=_force
             )
+            await asyncio.to_thread(save_doc_meta, doc_id, meta)
         except Exception:
             pass  # best-effort — sidecar stamp is non-critical
         # Zone-4 Phase 3: unconditionally queue verdict for retry when pool
         # is unavailable so reconcile_registry_drift can heal later.
         if verdict_fields:
             await _enqueue_verdict_retry(doc_id, verdict_fields)
-        return
+        return False
     try:
         # Zone-4 Phase 3: single linear path (Postgres-authoritative).
         if registry_fields is not None:
@@ -169,6 +274,14 @@ async def _upsert_registry_row(
                 # call — no additional MinIO write.
                 winning["consistency_regime"] = "postgres-authoritative"
                 try:
+                    # Defense-in-depth: winning already survived Postgres'
+                    # own CAS, but the sidecar may hold a newer state written
+                    # during a prior degradation window (recovery race).
+                    # force_verdict_override mirrors _UPSERT_OVERRIDE_SQL: an
+                    # operator-forced downgrade must reach the sidecar too.
+                    winning = await _cas_filter_sidecar_meta(
+                        doc_id, content_class, winning, force_verdict_override=_force_override
+                    )
                     await asyncio.to_thread(save_doc_meta, doc_id, winning)
                 except Exception as smc_exc:
                     # Sidecar backfill is best-effort — the Postgres row
@@ -184,6 +297,7 @@ async def _upsert_registry_row(
         await _mirror_registry_metric_to_redis(
             _REGISTRY_LAST_WRITE_SUCCESS_REDIS_KEY, str(int(time.time()))
         )
+        return True
     except Exception as exc:
         REGISTRY_WRITE_FAILURES_TOTAL.inc()
         logger.error(
@@ -198,6 +312,7 @@ async def _upsert_registry_row(
         # query/connection errors permanently dropped verdict_fields.
         if verdict_fields:
             await _enqueue_verdict_retry(doc_id, verdict_fields)
+        return False
 
 
 async def _mirror_registry_metric_to_redis(key: str, value: str) -> None:

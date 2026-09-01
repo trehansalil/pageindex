@@ -19,6 +19,15 @@ CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 # to the chunked-Docling path instead of a single direct conversion call.
 MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 
+# Zone-7: BUILD_SHA is the convention services/docling-service's CI/Dockerfile
+# already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
+# permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
+# RFC-042 D4: hoisted from client/indexer.py (hot-path) — this is a startup-only
+# read, config.py is the designated home for it.
+CLIENT_BUILD_SHA: str = os.environ.get("BUILD_SHA") or os.environ.get(
+    "CLIENT_BUILD_SHA", "unknown"
+)
+
 # ---------------------------------------------------------------------------
 # Backward-compat module-level aliases for the 6 pipeline-behavior flags that
 # were historically frozen at import time.  Canonical source is now
@@ -458,6 +467,19 @@ class PipelineConfig:
     small_doc_leaf_ratio_bound_low: float
     small_doc_leaf_ratio_bound_high: float
 
+    # --- Picture-gate + landscape hot-path config (RFC-042 D4) ---------------
+    picture_page_coverage_threshold: float
+    decorative_icon_min_dim_pt: float
+    image_enrich_concurrency: int
+    coverage_exempt_no_text_layer: bool
+    clip_text_capture_enabled: bool
+    max_fullpage_picture_ocr_regions: int
+    landscape_char_threshold: int
+    max_landscape_pages: int
+    landscape_reextract_deadline_seconds: float
+    page_rotation_detection_enabled: bool
+    strip_skipped_image_markers: bool
+
     @classmethod
     def from_env(cls) -> "PipelineConfig":
         """Read all pipeline-behavior env vars once and return a frozen snapshot."""
@@ -575,6 +597,30 @@ class PipelineConfig:
             small_doc_leaf_ratio_bound_high=float(
                 os.environ.get("SMALL_DOC_LEAF_RATIO_BOUND_HIGH", "0.40")
             ),
+            # Picture-gate + landscape hot-path config (RFC-042 D4)
+            picture_page_coverage_threshold=float(
+                os.environ.get("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6")
+            ),
+            decorative_icon_min_dim_pt=float(
+                os.environ.get("DECORATIVE_ICON_MIN_DIM_PT", "20")
+            ),
+            image_enrich_concurrency=max(
+                1, int(os.environ.get("IMAGE_ENRICH_CONCURRENCY", "4") or "4")
+            ),
+            coverage_exempt_no_text_layer=_envbool("COVERAGE_EXEMPT_NO_TEXT_LAYER", "true"),
+            clip_text_capture_enabled=_envbool("CLIP_TEXT_CAPTURE_ENABLED", "true"),
+            max_fullpage_picture_ocr_regions=int(
+                os.environ.get("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50")
+            ),
+            landscape_char_threshold=int(os.environ.get("LANDSCAPE_CHAR_THRESHOLD", "500")),
+            max_landscape_pages=int(os.environ.get("MAX_LANDSCAPE_PAGES", "10")),
+            landscape_reextract_deadline_seconds=float(
+                os.environ.get("LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", "600")
+            ),
+            page_rotation_detection_enabled=_envbool(
+                "PAGE_ROTATION_DETECTION_ENABLED", "true"
+            ),
+            strip_skipped_image_markers=_envbool("STRIP_SKIPPED_IMAGE_MARKERS", "true"),
         )
 
 
