@@ -26,7 +26,7 @@ governs:
 
 ## Overview
 
-Unifies the verdict subsystem and configuration layer to close four POST-RFC041 architecture defect zones. Proceeds foundation-first: consolidate config access, add regression guards, then refactor verdict persistence into a single-writer pattern, and finally stabilize verdict computation ordering and threshold isolation. Total estimated effort: ~22 hours across 4 phases.
+Unifies the verdict subsystem and configuration layer to close four POST-RFC041 architecture defect zones. Proceeds foundation-first: consolidate config access, add regression guards, then refactor verdict persistence into a single-writer pattern, and finally stabilize verdict computation ordering and threshold isolation. Total estimated effort: ~21 hours across 4 phases.
 
 ## Tasks
 
@@ -74,23 +74,25 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
 
 - [ ] 2. Verdict Persistence — Single-Writer Enforcement (D3)
 
-  - [ ] 2.1 Rename `save_doc_meta` → `_save_doc_meta` and enforce single-caller **(Amendment 2026-09-01)**
+  - [ ] 2.1 Enforce `save_doc_meta` single-caller via architecture guard **(Amendment 2026-09-01 v2: guard-only, no rename)**
 
-    - Rename `save_doc_meta` to `_save_doc_meta` in verdict.py — private to `registry_mirror.py`
+    - Keep `save_doc_meta` name unchanged — rename blast radius (19 files, 110+ references including ~12 test mock patches) outweighs benefit
     - NOTE: `_upsert_registry_row` already calls `save_doc_meta` in 3 places (degradation stamp ×2, backfill ×1) and already stamps `consistency_regime`. The write-through pattern exists; this task closes bypass paths.
-    - Add architecture guard test (consistent with existing `test_architecture_guards.py` patterns) asserting `_save_doc_meta` is only imported/called from `registry_mirror.py`
+    - Add architecture guard test (grep-based, matching `TestSidecarPassivityGuards` pattern in test_architecture_guards.py) asserting `save_doc_meta` is only called from `registry_mirror.py` and child-subprocess callers (`_persist_flat_result`, `_persist_tree_result`) in production code
     - _Requirements: [R3.1](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.1](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
 
-  - [ ] 2.2 Migrate all `save_doc_meta` bypass callers **(Amendment 2026-09-01: expanded from 4 to 10+ callers)**
+  - [ ] 2.2 Consolidate `save_doc_meta` bypass callers **(Amendment 2026-09-01 v2: child-subprocess callers stay, batch tools redirect)**
 
-    - Migrate all callers outside `_upsert_registry_row` through the registry write-through path:
-      - `_persist_flat_result` (indexer.py:1166) — redirect through `_upsert_registry_row`
-      - `_persist_tree_result` (indexer.py:1334) — redirect through `_upsert_registry_row`
+    - Consolidate callers outside `_upsert_registry_row` — two strategies by caller type:
+    - **Keep as-is (child subprocess, no Postgres access):**
+      - `_persist_flat_result` (indexer.py:1166) — runs in converter child process; writes MinIO sidecar only; parent worker already calls `_upsert_registry_row` with verdict fields from stdout JSON
+      - `_persist_tree_result` (indexer.py:1334) — same child-subprocess pattern
+    - **Redirect through registry write-through path:**
       - `save_flat_doc` (documents.py:173) — remove direct verdict write; registry flow handles persistence
       - `_drain_verdict_retry_queue` (reconcile.py:82) — already in registry flow, keep as-is
-      - `write_verdict` (verdict.py:232) — deprecated wrapper, remove entirely
-      - `recompute_verdicts` (preprocess_client.py:369) — redirect through registry flow
-      - `run_sweep` (promotion_sweep.py:113,124) — redirect through registry flow
+      - `write_verdict` (verdict.py:232) — deprecated wrapper, remove entirely; clean up `storage/__init__.py` export (lines 68, 107)
+      - `recompute_verdicts` (preprocess_client.py:369) — redirect through registry flow (has Postgres access via `_init_registry_pool`)
+      - `run_sweep` (promotion_sweep.py:113,124) — redirect through registry flow (has Postgres access via `init_registry`)
       - `_enrich_one` (backfill.py:161) — redirect through registry flow
       - `_heal_orphans` (backfill.py:323) — redirect through registry flow
     - NOTE: Incremental per-caller migration with per-step test runs recommended
@@ -110,9 +112,10 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
     - Verify `_drain_verdict_retry_queue` is the only reconcile sub-path that writes to MinIO
     - _Requirements: [R3.4](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.4](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
 
-  - [ ] 2.5 Architecture guard: `_save_doc_meta` single-writer enforcement **(Amendment 2026-09-01)**
+  - [ ] 2.5 Architecture guard: `save_doc_meta` single-writer enforcement **(Amendment 2026-09-01 v2: guard-only, no rename)**
 
-    - Write a test that verifies `_save_doc_meta` is only called from within `registry_mirror.py`
+    - Write a grep-based test (matching `TestSidecarPassivityGuards` / `TestNoDirectGarbleProngsOutsideGarblePy` patterns) that verifies `save_doc_meta` is only called from `registry_mirror.py` and the two child-subprocess callers (`_persist_flat_result`, `_persist_tree_result` in indexer.py) in production code
+    - Test files are exempt from the guard (they mock `save_doc_meta` for isolation)
     - Use AST or grep to assert no other module imports or calls `_save_doc_meta` directly (the underscore prefix plus architecture guard provides defense-in-depth)
     - Mirror the existing pattern from `test_verdict_cas_guard_not_importable` (test_architecture_guards.py:415-419)
     - _Requirements: [R3.5](042-verdict-config-unification#requirement-3-minio-verdict-write-through), [DP-3.5](design-rfc042-verdict-config-unification#d3-minio-verdict-write-through-cache)_
@@ -218,6 +221,7 @@ Unifies the verdict subsystem and configuration layer to close four POST-RFC041 
 - The six `_try_*` promotion functions have canonical names (`_try_cat_a/b/c`, `_try_small_doc`) and alias names (`_try_ocr_promotion` etc.) defined at verdict.py:399-402; count confirmed at 6
 - `save_doc_meta` currently has no CAS guard at all (MinIO guard was explicitly removed) — this is worse than the originally claimed `>` vs `>=` divergence
 - **(Amendment 2026-09-01):** `VerdictThresholds` already isolates thresholds; D2 scope narrowed to absorbing `CATEGORY_BC_PROMOTION_THRESHOLD`. Caller migration for D3 expanded from 4 to 10+ sites. `consistency_regime` stamping already exists. Reconcile direction corrected (MinIO→Postgres, not reverse). `_postgres_authoritative` sentinel replaced by architecture guard + rename to `_save_doc_meta`.
+- **(Amendment 2026-09-01 v2):** Rename dropped — architecture guard achieves same enforcement without 19-file / 110+ reference churn. Child-subprocess callers (`_persist_flat/tree_result`) exempted from redirect: no Postgres in child process, parent already calls `_upsert_registry_row`. PROMOTION_ORDER clarified as winner-selection constant (re-sort `_matches` by index), not loop replacement — `_try_*` functions have distinct signatures preventing generic iteration. D4 scope confirmed: only 13 hot-path `os.environ` reads across 5 files (89/121 already in PipelineConfig's `from_env()`).
 - `os.environ` reads in startup-only files (tracing.py, subprocess_mgr.py, minio_client.py, constants.py, definitions.py) are intentionally left as live reads — they run once before PipelineConfig freezes
 - Golden-file tests (Task 3.5) serve as a change-detection mechanism: any future verdict shift shows up as a test failure requiring explicit acknowledgment
 

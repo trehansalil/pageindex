@@ -82,7 +82,7 @@ graph TB
 
 #### D1: Promotion Evaluation Ordering Contract
 
-Replace implicit source-order iteration in `apply_promotions` with an explicit `PROMOTION_ORDER` tuple. The six `_try_*` functions (canonical names `_try_cat_a/b/c`, `_try_small_doc`; alias names `_try_ocr_promotion` etc. at verdict.py:399-402) still evaluate unconditionally (VG-6 telemetry via `promotion_paths_matched` preserved), but winner selection uses the constant's order. This prevents the Chain 6 pattern where refactoring shifted promotion priority without warning.
+Extract an explicit `PROMOTION_ORDER` tuple that governs **winner selection** (re-sorting `_matches` by index), not evaluation order. The six `_try_*` functions (canonical names `_try_cat_a/b/c`, `_try_small_doc`; alias names `_try_ocr_promotion` etc. at verdict.py:399-402) still evaluate unconditionally in source order (VG-6 telemetry via `promotion_paths_matched` preserved) — each has a distinct signature, so a generic evaluation loop is not feasible. `PROMOTION_ORDER` is used only for priority ranking: `_matches[0]` is selected by index in `PROMOTION_ORDER`, not by insertion order. This prevents the Chain 6 pattern where refactoring shifted promotion priority without warning. **(Amendment 2026-09-01 v2:** clarified as winner-selection constant, not loop replacement, per feasibility review — `_try_image_enrichment` has early-return/clamp behavior incompatible with generic iteration.**)**
 
 #### D2: Promotion Threshold Isolation
 
@@ -94,7 +94,7 @@ Extend existing `VerdictThresholds` to absorb `CATEGORY_BC_PROMOTION_THRESHOLD` 
 
 **(Amendment 2026-09-01:** `_upsert_registry_row` already calls `save_doc_meta` in 3 places and already stamps `consistency_regime`. D3 scope reframed: close 10+ bypass callers across 7 files, add MinIO CAS guard, make `save_doc_meta` private to registry_mirror.py. Sentinel parameter replaced by architecture guard — more idiomatic for this codebase.**)**
 
-Close all `save_doc_meta` bypass paths. Rename to `_save_doc_meta`, enforce single-caller via architecture guard test. Add MinIO CAS guard matching Postgres `>=` semantics. Alternative (remove MinIO storage) rejected — sidecar-only degradation mode is load-bearing for availability.
+Close all `save_doc_meta` bypass paths. Keep the function name public but enforce single-caller via architecture guard test (grep-based, matching `TestSidecarPassivityGuards` pattern in test_architecture_guards.py) that asserts only `registry_mirror.py` calls `save_doc_meta` in production code. Add MinIO CAS guard matching Postgres `>=` semantics. **(Amendment 2026-09-01 v2:** rename dropped — blast radius of 19 files / 110+ references (including ~12 test mock patches) outweighs benefit; architecture guard achieves the same enforcement with zero rename churn. `_persist_flat_result` and `_persist_tree_result` run in a child subprocess without Postgres access — they keep their `save_doc_meta` call for MinIO sidecar writes; the parent worker already calls `_upsert_registry_row` with the verdict fields emitted via stdout JSON.**)** Alternative (remove MinIO storage) rejected — sidecar-only degradation mode is load-bearing for availability.
 
 #### D4: Config Access Consolidation
 
@@ -154,19 +154,20 @@ def apply_promotions(sig, gate_outcome, config) -> PromotionResult
 # Modified: _upsert_registry_row is the SOLE verdict write entry point
 async def _upsert_registry_row(doc_id, verdict_data, config) -> None:
     # 1. Postgres CAS upsert (>= semantics via _UPSERT_SQL)
-    # 2. Write-through to MinIO via save_doc_meta(_postgres_authoritative=True)
+    # 2. Write-through to MinIO via save_doc_meta
     # 3. On Postgres failure: stamp sidecar-only, MinIO CAS from last-known state
 
-# Modified: save_doc_meta renamed to _save_doc_meta (private to registry_mirror.py)
-def _save_doc_meta(...) -> None:
-    # Architecture guard test enforces single-caller from _upsert_registry_row
+# Unchanged name, enforced via architecture guard (Amendment 2026-09-01 v2)
+def save_doc_meta(...) -> None:
+    # Architecture guard test (grep-based) enforces: only registry_mirror.py
+    #   and child-subprocess callers (_persist_flat/tree_result) may call this
     # Adds CAS guard with >= semantics matching Postgres
-    # 10+ existing bypass callers migrated or eliminated (see RFC-042 D3 amendment)
+    # Bypass callers consolidated (see RFC-042 D3 amendment)
 ```
 
 **Internal Interfaces**:
 - Writes to Postgres via `upsert_doc` → `_UPSERT_SQL` (queries.py:127)
-- Writes to MinIO via `save_doc_meta` (verdict.py) — write-through only
+- Writes to MinIO via `save_doc_meta` (storage/verdict.py) — write-through only, guarded by architecture test
 - Queues Redis retry on Postgres failure
 - Called from indexer.py after finalize_gate_and_route
 
@@ -208,7 +209,7 @@ sequenceDiagram
     V-->>I: GateOutcome
 
     I->>V: apply_promotions(sig, outcome, config)
-    Note over V: Snapshot PromotionThresholds<br/>Iterate PROMOTION_ORDER<br/>Winner = _matches[0]
+    Note over V: Snapshot VerdictThresholds<br/>Evaluate all _try_* paths<br/>Winner = _matches sorted by PROMOTION_ORDER
     V-->>I: PromotionResult
 
     I->>F: finalize_gate_and_route(state, result)
@@ -218,7 +219,7 @@ sequenceDiagram
     R->>PG: CAS upsert (>= priority)
     alt Postgres available
         PG-->>R: Success
-        R->>M: save_doc_meta(_postgres_authoritative=True)
+        R->>M: save_doc_meta (write-through)
         Note over M: CAS guard (>= priority)<br/>Write-through from PG data
         M-->>R: OK
     else Postgres unavailable

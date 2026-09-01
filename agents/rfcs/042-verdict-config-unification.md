@@ -141,7 +141,7 @@ Replace implicit source-order iteration in `apply_promotions` with an explicit `
 
 **(Amendment 2026-09-01:** Functions 3-6 have canonical names `_try_cat_a/b/c` and `_try_small_doc`; alias names defined at verdict.py:399-402. PROMOTION_ORDER should use the alias names for readability since `apply_promotions` already uses them.**)**
 
-All six still evaluate unconditionally (VG-6 telemetry via `promotion_paths_matched` preserved), but winner selection uses the constant's order, not source-code position. The current source-order dependency is fragile — any refactor that moves a function definition changes promotion priority without warning. The constant makes the contract explicit and testable.
+All six still evaluate unconditionally in source order (VG-6 telemetry via `promotion_paths_matched` preserved) — each `_try_*` function has a distinct signature (e.g. `_try_image_enrichment` takes `image_enrichment_ratio` + `script_context`, while `_try_structural_pass` takes `all_defects`), so a generic evaluation loop is not feasible. `PROMOTION_ORDER` governs **winner selection only**: `_matches` is re-sorted by `PROMOTION_ORDER` index before selecting `_matches[0]`, decoupling priority from source-code position. **(Amendment 2026-09-01 v2:** clarified as winner-selection constant, not loop replacement, per feasibility review.**)**
 
 ### D2: Promotion Threshold Isolation (Requirement 2)
 
@@ -155,16 +155,22 @@ Key thresholds already isolated via `VerdictThresholds`: `min_marginal_chars` (c
 
 **(Amendment 2026-09-01:** `_upsert_registry_row` already calls `save_doc_meta` in 3 places (degradation stamp ×2, backfill ×1) and already stamps `consistency_regime` (`sidecar-only` / `postgres-authoritative`). The write-through pattern and degradation stamping exist. D3's real scope is closing the bypass paths — 10+ call sites across 7 files that write to MinIO without going through `_upsert_registry_row`.**)**
 
-Close all `save_doc_meta` bypass callers:
-- `_persist_flat_result` (indexer.py:1166), `_persist_tree_result` (indexer.py:1334) — redirect through `_upsert_registry_row`
+Consolidate `save_doc_meta` bypass callers — two strategies by caller type:
+
+**Keep as-is (child subprocess, no Postgres access):**
+- `_persist_flat_result` (indexer.py:1166), `_persist_tree_result` (indexer.py:1334) — run in converter child process; write MinIO sidecar only; parent worker already calls `_upsert_registry_row` with verdict fields emitted via stdout JSON
+
+**Redirect through registry write-through path:**
 - `save_flat_doc` (documents.py:173) — remove direct verdict write; registry flow handles persistence
 - `_drain_verdict_retry_queue` (reconcile.py:82) — already in registry flow, keep
-- `write_verdict` (verdict.py:232) — deprecated wrapper, remove
-- `recompute_verdicts` (preprocess_client.py:369) — redirect through registry flow
-- `run_sweep` (promotion_sweep.py:113,124) — redirect through registry flow
+- `write_verdict` (verdict.py:232) — deprecated wrapper, remove; clean up `storage/__init__.py` export
+- `recompute_verdicts` (preprocess_client.py:369) — redirect through registry flow (has Postgres via `_init_registry_pool`)
+- `run_sweep` (promotion_sweep.py:113,124) — redirect through registry flow (has Postgres via `init_registry`)
 - `_enrich_one` (backfill.py:161), `_heal_orphans` (backfill.py:323) — redirect through registry flow
 
-Add CAS guard to the MinIO write path within `_upsert_registry_row` using `>=` semantics matching Postgres `_UPSERT_SQL` (queries.py:127). Make `save_doc_meta` a private function (`_save_doc_meta`) importable only from `registry_mirror.py`, enforced by architecture guard test (consistent with existing `test_architecture_guards.py` patterns).
+**(Amendment 2026-09-01 v2:** rename dropped — blast radius of 19 files / 110+ references outweighs benefit. Architecture guard (grep-based, matching `TestSidecarPassivityGuards` pattern) achieves same enforcement: asserts only `registry_mirror.py` and child-subprocess callers call `save_doc_meta` in production code.**)**
+
+Add CAS guard to the MinIO write path within `_upsert_registry_row` using `>=` semantics matching Postgres `_UPSERT_SQL` (queries.py:127). Enforce single-caller via architecture guard test.
 
 Alternative considered: removing MinIO verdict storage — rejected because sidecar-only degradation mode is load-bearing for availability during Postgres outages.
 
