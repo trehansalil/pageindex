@@ -2,9 +2,10 @@
 
 Zone 5 (Content Measurement Blind Spot) regression gate.  Flat-doc blocks
 with role='table' carry content in row_records/headers, not 'text'.  Every
-measurement site must route through _flat_block_primary_text or
-_flat_search_text — a raw block.get('text') anywhere else silently
-under-counts table content (96 % miss on GHV-TKV-Tarif).
+measurement site must route through block_text / doc_text (D2/RFC-041) or
+their legacy wrappers _flat_block_primary_text / _flat_search_text — a raw
+block.get('text') anywhere else silently under-counts table content (96 %
+miss on GHV-TKV-Tarif).
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ from pathlib import Path
 SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
 
 APPROVED_FILES_AND_FUNCS: dict[str, set[str]] = {
-    "helpers/flat.py": {"_flat_block_primary_text", "_flat_search_text"},
+    "helpers/flat.py": {
+        "block_text",
+        "doc_text",
+        "_flat_block_primary_text",
+        "_flat_search_text",
+    },
 }
 
 _NAIVE_RE = re.compile(
@@ -75,6 +81,6 @@ def test_no_naive_block_get_text():
 
     assert not violations, (
         "Naive block.get('text') found outside approved helpers.\n"
-        "Use _flat_block_primary_text() or _flat_search_text() instead.\n"
+        "Use block_text(block, purpose) or doc_text(data, purpose) instead.\n"
         "Violations:\n" + "\n".join(violations)
     )

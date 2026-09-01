@@ -36,6 +36,7 @@ mappings:
       - test_recovery.py
       - test_worker.py
       - test_zone4_bidi_rtl.py
+      - test_d10c_pre_nfkc_threading.py
 
   client/images.py:
     coverage_threshold: 90
@@ -65,6 +66,7 @@ mappings:
       - test_recovery.py
       - test_zone3_ocr_recovery.py
       - test_zone4_bidi_rtl.py
+      - test_d10c_pre_nfkc_threading.py
 
   client/remote.py:
     coverage_threshold: 90
@@ -327,6 +329,7 @@ mappings:
       - test_helpers_combined.py
       - test_inspector.py
       - test_zone1_verdict_partition.py
+      - test_d10c_pre_nfkc_threading.py
 
   helpers/tree_validation.py:
     tests:
@@ -364,6 +367,7 @@ mappings:
       - test_verdict.py
       - test_rfc_quality.py
       - test_script.py
+      - test_d10c_pre_nfkc_threading.py
 
   helpers/gates.py:
     tests:

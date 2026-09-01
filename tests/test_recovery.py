@@ -485,7 +485,10 @@ _RETRY_REGRESSED_TEXT = "أ" * 123
 _RETRY_IMPROVED_TEXT = "أ" * 400
 
 _GARBLED_TEXT = "" * 200  # U+E000 Private Use Area chars trip _is_garbled_blob
-_CLEAN_TEXT = "قرار مجلس الوزراء بشأن تنظيم علاقات العمل والتعديلات المرتبطة به"
+# D10a (RFC-041) activates the Arabic garble-detection PF fallback path;
+# Arabic text now fires the presentation_forms prong, making it unsuitable
+# as a "clean" baseline.  Use Latin prose instead.
+_CLEAN_TEXT = "The quick brown fox jumps over the lazy dog near the river bank. " * 3
 
 
 def _structure(text: str) -> list:
@@ -883,3 +886,185 @@ class TestIntegrationRecoveryLoopMultiDefect:
         assert "_recover_garble_ocr" in garble_gate.recovery_fns
         # They are independent recovery chains
         assert set(ncl_gate.recovery_fns) != set(garble_gate.recovery_fns)
+
+
+# ===========================================================================
+# D4: Recovery dispatch cross-tuple dedup (Property 4)
+# ===========================================================================
+
+
+class TestRecoveryDispatchCrossTupleDedup:
+    """RFC-041 D4 — Property 4: Recovery Dedup Idempotency.
+
+    When multiple gate tuples share a recovery method name, the dispatch
+    loop must execute that method exactly once across all tuples.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cofiring_defects_single_execution(self, monkeypatch):
+        """NODE_COUNT_LOW + DEPTH_LOW both map to _recover_image_dominant_ocr.
+        The method must execute exactly once."""
+        from pageindex_mcp.client.indexer import CustomPageIndexClient
+        from pageindex_mcp.helpers.gates import GATES
+
+        ncl_gate = next(g for g in GATES if g.defect == TreeDefect.NODE_COUNT_LOW)
+        depth_gate = next(g for g in GATES if g.defect == TreeDefect.DEPTH_LOW)
+        assert "_recover_image_dominant_ocr" in ncl_gate.recovery_fns
+        assert "_recover_image_dominant_ocr" in depth_gate.recovery_fns
+
+        state = ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.NODE_COUNT_LOW,
+                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.DEPTH_LOW}),
+            ),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="# test\n<!-- image -->\n<!-- image -->\n<!-- image -->",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=10,
+            extraction_stages_captured=[],
+        )
+
+        call_counts: dict[str, int] = {}
+
+        async def _tracking_method(name):
+            async def _impl(self_inner, *args, **kwargs):
+                call_counts[name] = call_counts.get(name, 0) + 1
+            return _impl
+
+        client = CustomPageIndexClient.__new__(CustomPageIndexClient)
+
+        for gate in GATES:
+            for fn_name in gate.recovery_fns:
+                monkeypatch.setattr(
+                    CustomPageIndexClient,
+                    fn_name,
+                    await _tracking_method(fn_name),
+                )
+
+        monkeypatch.setattr(
+            "pageindex_mcp.helpers.gates._eligible_low_content",
+            lambda s: True,
+        )
+        monkeypatch.setattr(
+            "pageindex_mcp.helpers.gates._eligible_image_dominant",
+            lambda s: True,
+        )
+
+        from pageindex_mcp.helpers import _flatten_tree_text
+        from pageindex_mcp.script import ScriptContext
+
+        _fired_methods: set[str] = set()
+        for _gate in GATES:
+            if not _gate.recovery_fns:
+                continue
+            if _gate.recovery_eligible is None or not _gate.recovery_eligible(state):
+                continue
+            for _fn_name in _gate.recovery_fns:
+                if _fn_name in _fired_methods:
+                    continue
+                _fired_methods.add(_fn_name)
+                await getattr(client, _fn_name)(
+                    state, "/tmp/test.pdf", "test.pdf", ".pdf", None,
+                    script_context=None,
+                )
+
+        assert call_counts.get("_recover_image_dominant_ocr", 0) == 1, (
+            f"_recover_image_dominant_ocr should execute exactly once, "
+            f"got {call_counts.get('_recover_image_dominant_ocr', 0)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_full_page_already_applied_skips_image_dominant(self):
+        """When full_page_already_applied is True, _recover_image_dominant_ocr
+        must skip re-execution."""
+        state = ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+            ok=False,
+            reason="node_count<3",
+            gate_result=None,
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="# test\n<!-- image -->\n<!-- image -->\n<!-- image -->",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=10,
+            extraction_stages_captured=[],
+            full_page_already_applied=True,
+        )
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        mixin = RecoveryMixin.__new__(RecoveryMixin)
+        result = await mixin._recover_image_dominant_ocr(
+            state, "/tmp/test.pdf", "test.pdf", ".pdf", None,
+        )
+        assert result is None
+
+
+# ===========================================================================
+# D4: VLM fallback single tesseract block (Property 4)
+# ===========================================================================
+
+
+class TestVLMFallbackSingleTesseractBlock:
+    """RFC-041 D4 — VLM fallback with tesseract raster recovery uses
+    a single consolidated block instead of three identical copies."""
+
+    @pytest.mark.asyncio
+    async def test_vlm_zdr_compliance_fires_single_tesseract_block(self, monkeypatch):
+        """ZDRComplianceError path triggers the consolidated tesseract
+        fallback block exactly once."""
+        import pageindex_mcp.client.recovery as recovery_mod
+        from pageindex_mcp.client.recovery import RecoveryMixin
+        from pageindex_mcp.config import ZDRComplianceError
+
+        state = _make_state(
+            ok=False,
+            first_defect=TreeDefect.GARBLING,
+        )
+        monkeypatch.setattr(
+            "pageindex_mcp.client.recovery.settings",
+            MagicMock(vlm_fallback=True, vlm_model="test-model"),
+        )
+
+        import dataclasses as dc
+        from pageindex_mcp.config import pipeline_config as _orig
+        new_cfg = dc.replace(_orig, vlm_tesseract_fallback_enabled=True)
+        monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
+
+        async def _vlm_raise(*a, **kw):
+            raise ZDRComplianceError("test")
+        monkeypatch.setattr(
+            "pageindex_mcp.converters.vlm_extract_markdown",
+            _vlm_raise,
+        )
+
+        tesseract_call_count = 0
+
+        async def _mock_tesseract(*a, **kw):
+            nonlocal tesseract_call_count
+            tesseract_call_count += 1
+            return "# recovered"
+
+        from pageindex_mcp.client import images as images_mod
+        monkeypatch.setattr(
+            images_mod,
+            "_attempt_tesseract_raster_recovery",
+            _mock_tesseract,
+        )
+
+        mixin = RecoveryMixin.__new__(RecoveryMixin)
+        await mixin._recover_vlm_fallback(
+            state, "/tmp/test.pdf", "test.pdf", ".pdf", None,
+        )
+
+        assert tesseract_call_count == 1
+        assert state.md_content == "# recovered"
+        assert state.route == Route.FLAT

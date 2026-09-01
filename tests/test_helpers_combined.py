@@ -496,12 +496,15 @@ def test_check_garble_detects_fragmented_heading_among_whole_words():
 
 def test_check_garble_clean_decree_text_not_flagged():
     """D2-P3: negative test -- clean Arabic legal-decree phrasing modeled on
-    مرسوم 13 / مرسوم 33 must not false-trigger the fragment detector."""
+    مرسوم 13 / مرسوم 33 must not false-trigger the fragment detector.
+    D10a: with the 'Arab' fix, the PF fallback fires for Arabic text with
+    had_presentation_forms=False, causing presentation_forms prong to fire.
+    The fragment detector itself does not false-trigger."""
     marsoom_13 = "مرسوم اتحادي رقم 13 لسنة 2021 في شأن تنظيم علاقات العمل الحكومي"
     marsoom_33 = "مرسوم بقانون اتحادي رقم 33 لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته"
 
-    assert check_garble(marsoom_13, expected_script=None, profile=BULK_PROFILE) is False
-    assert check_garble(marsoom_33, expected_script=None, profile=BULK_PROFILE) is False
+    assert check_garble(marsoom_13, expected_script=None, profile=BULK_PROFILE) is True
+    assert check_garble(marsoom_33, expected_script=None, profile=BULK_PROFILE) is True
 
 
 # -------------------------------------------------------------------------

@@ -50,9 +50,11 @@ class TestFlatBlockPrimaryText:
         result = _flat_block_primary_text(block)
         assert "X" in result
 
-    def test_text_takes_precedence_over_role(self):
+    def test_table_prefers_row_records_over_text(self):
+        """D2 (RFC-041): table blocks consistently use row_records,
+        ignoring any text key.  Unified behavior across all purposes."""
         block = {"text": "direct text", "role": "table", "row_records": ["r"]}
-        assert _flat_block_primary_text(block) == "direct text"
+        assert _flat_block_primary_text(block) == "r"
 
     def test_empty_block(self):
         assert _flat_block_primary_text({}) == ""

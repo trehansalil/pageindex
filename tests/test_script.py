@@ -2,7 +2,7 @@
 """Tests for pageindex_mcp.script -- Arabic/RTL script-detection primitives.
 
 Consolidates:
-  - test_zone5_script.py            (core script.py + garble_prongs + order_verdict)
+  - test_zone5_script.py            (core script.py + _garble_prongs + order_verdict)
   - test_zone1_script_from_filename.py  (_script_from_filename regression)
   - test_zone5_script_drift.py      (CI guard: no hardcoded Arabic ranges outside script.py)
 """
@@ -113,41 +113,41 @@ class TestBackwardCompat:
 
 
 # ---------------------------------------------------------------------------
-# 7. garble_prongs tests
+# 7. _garble_prongs tests
 # ---------------------------------------------------------------------------
 
 
 class TestGarbleProngs:
-    """garble_prongs returns the same boolean as check_garble for all existing
+    """_garble_prongs returns the same boolean as check_garble for all existing
     fixtures, and exposes named prong sets."""
 
     def test_empty_blob(self):
-        from pageindex_mcp.helpers import garble_prongs
+        from pageindex_mcp.helpers.garble import _garble_prongs
 
-        assert garble_prongs("") == frozenset({"empty"})
-        assert garble_prongs("   ") == frozenset({"empty"})
+        assert _garble_prongs("") == frozenset({"empty"})
+        assert _garble_prongs("   ") == frozenset({"empty"})
 
     def test_glyph_marker(self):
-        from pageindex_mcp.helpers import garble_prongs
+        from pageindex_mcp.helpers.garble import _garble_prongs
 
-        result = garble_prongs("text with GLYPH< markers present")
+        result = _garble_prongs("text with GLYPH< markers present")
         assert "glyph_marker" in result
 
     def test_digit_ratio(self):
-        from pageindex_mcp.helpers import garble_prongs
+        from pageindex_mcp.helpers.garble import _garble_prongs
 
         blob = "1234567890" * 60 + "abc" * 20
         assert len(blob) > 500
-        result = garble_prongs(blob)
+        result = _garble_prongs(blob)
         assert "digit_ratio" in result
 
     def test_clean_text_no_prongs(self):
-        from pageindex_mcp.helpers import garble_prongs
+        from pageindex_mcp.helpers.garble import _garble_prongs
 
         blob = (
             "This is a perfectly normal English paragraph with no garbling issues whatsoever. " * 3
         )
-        result = garble_prongs(blob)
+        result = _garble_prongs(blob)
         assert result == frozenset()
 
 

@@ -580,3 +580,56 @@ class TestPresentationFormsNotHardcoded:
         src = inspect.getsource(ScriptContext.from_script_str)
         assert "had_presentation_forms=False" in src
         assert 'source="legacy"' in src
+
+
+# ---------------------------------------------------------------------------
+# D1 CI lint: no direct _garble_prongs calls outside garble.py
+# ---------------------------------------------------------------------------
+
+
+class TestNoDirectGarbleProngsOutsideGarblePy:
+    """D1 (RFC-041): _garble_prongs is private to garble.py.  No
+    production source file outside garble.py may call it directly --
+    all garble detection must flow through detect_garble."""
+
+    def test_no_garble_prongs_calls_in_production_code(self):
+        import ast as _ast
+
+        src_root = pathlib.Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
+        violations: list[str] = []
+
+        for pyfile in sorted(src_root.rglob("*.py")):
+            rel = str(pyfile.relative_to(src_root))
+            if rel == "helpers/garble.py":
+                continue
+            try:
+                tree = _ast.parse(pyfile.read_text(), filename=str(pyfile))
+            except SyntaxError:
+                continue
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.Call):
+                    func = node.func
+                    name = None
+                    if isinstance(func, _ast.Name):
+                        name = func.id
+                    elif isinstance(func, _ast.Attribute):
+                        name = func.attr
+                    if name in ("_garble_prongs", "garble_prongs"):
+                        violations.append(
+                            f"  {rel}:{node.lineno}: direct {name}() call"
+                        )
+
+        assert not violations, (
+            "D1 (RFC-041): direct _garble_prongs/_garble_prongs calls found "
+            "outside garble.py.  Use detect_garble() instead.\n"
+            "Violations:\n" + "\n".join(violations)
+        )
+
+    def test_garble_prongs_not_exported_from_helpers_init(self):
+        import pageindex_mcp.helpers as helpers_mod
+        assert not hasattr(helpers_mod, "garble_prongs"), (
+            "garble_prongs must not be exported from helpers/__init__.py"
+        )
+        assert "garble_prongs" not in helpers_mod.__all__, (
+            "garble_prongs must not be in helpers.__all__"
+        )

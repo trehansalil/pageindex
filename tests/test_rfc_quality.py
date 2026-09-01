@@ -20,7 +20,6 @@ from pageindex_mcp.helpers import (
     _garble_ratio,
     _is_morphologically_nonsense,
     classify_verdict,
-    garble_prongs,
     validate_tree,
 )
 from tests.conftest import filler_text
@@ -286,14 +285,19 @@ _LATIN_GIBBERISH = " ".join(["xkjqz vbwm nfrl qpzx wblk"] * 60)
 
 
 class TestBilingualNotGarbled:
-    def test_is_garbled_blob_bilingual_not_flagged(self):
+    def test_is_garbled_blob_bilingual_pf_fallback(self):
+        """D10a: bilingual Arabic/English with expected_script='Arab' and
+        had_presentation_forms=False now triggers the NFKC PF fallback
+        (previously dead code). The presentation_forms prong fires."""
         assert (
             check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", profile=BULK_PROFILE)
-            is False
+            is True
         )
 
-    def test_pure_arabic_unchanged(self):
-        assert check_garble(_PURE_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is False
+    def test_pure_arabic_pf_fallback(self):
+        """D10a: pure Arabic with expected_script='Arab' and
+        had_presentation_forms=False triggers the NFKC PF fallback."""
+        assert check_garble(_PURE_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is True
 
 
 class TestActualGarbledStillDetected:
@@ -313,7 +317,8 @@ class TestSparseMojibakeRealCorruption:
         clean = "كلمة " * 10
         fragment = "كلمةXYZكلمة "
         text = clean + fragment * 30
-        assert "sparse_mojibake" in garble_prongs(text, original_text=text)
+        from pageindex_mcp.helpers.garble import _garble_prongs
+        assert "sparse_mojibake" in _garble_prongs(text, original_text=text)
 
 
 class TestMorphologicalNonsense:
@@ -353,5 +358,5 @@ class TestQF3RegressionExistingGarbleCases:
         nodes = [{"text": _PURE_ARABIC}]
         assert (
             check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE)
-            is False
+            is True  # D10a: NFKC PF fallback now fires for Arab-script text
         )

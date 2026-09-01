@@ -616,8 +616,9 @@ class TestDefectFromReasonStr:
         assert _defect_from_reason_str("") == TreeDefect.OK
         assert _defect_from_reason_str(None) == TreeDefect.OK
 
-    def test_unknown_returns_ok(self):
-        assert _defect_from_reason_str("unknown_garbage_string") == TreeDefect.OK
+    def test_unknown_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unrecognized reason string"):
+            _defect_from_reason_str("unknown_garbage_string")
 
 
 # --- from test_ocr_decision.py ---

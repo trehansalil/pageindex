@@ -31,11 +31,11 @@ from pageindex_mcp.helpers import (
     _has_heading_markers,
     _ordinal_value,
     _synthesize_preamble_node,
-    garble_prongs,
     split_oversized_leaf_nodes,
     validate_tree,
 )
 
+from pageindex_mcp.helpers.garble import _garble_prongs
 from tests._garble_compat import check_garble
 
 _LONG_PREAMBLE = (
@@ -118,13 +118,13 @@ class TestHeadingMarkersAndOversizedSplit:
 
 
 class TestSparseMojibakeDetection:
-    """garble_prongs / check_garble / validate_tree."""
+    """_garble_prongs / check_garble / validate_tree."""
 
     def test_glued_mojibake_flagged(self):
         """Latin fragments glued into Arabic (no spaces) → garbled."""
         moji = "كtابcجديدxمادةyنص عربي سليم شروط التأمين " * 5
         assert len(moji) > 100
-        assert "sparse_mojibake" in garble_prongs(moji, original_text=moji)
+        assert "sparse_mojibake" in _garble_prongs(moji, original_text=moji)
 
     def test_clean_and_short_text_not_flagged(self):
         """Clean multi-word Arabic prose must NOT be flagged (space is not
@@ -133,13 +133,13 @@ class TestSparseMojibakeDetection:
         of content."""
         clean_ar = "هذا نص عربي سليم تماما عن شروط التأمين والتغطية القانونية اليوم " * 2
         assert len(clean_ar) > 100
-        assert "sparse_mojibake" not in garble_prongs(clean_ar, original_text=clean_ar)
-        assert "sparse_mojibake" not in garble_prongs("كtابcمادة", original_text="كtابcمادة")
+        assert "sparse_mojibake" not in _garble_prongs(clean_ar, original_text=clean_ar)
+        assert "sparse_mojibake" not in _garble_prongs("كtابcمادة", original_text="كtابcمادة")
 
     def test_transliterated_names_not_flagged(self):
         """Space-separated Latin names among Arabic (b1a72fb2 class) → not flagged."""
         translit = "المدير Ahmed Hassan وقع العقد مع Mohamed Ali في مدينة القاهرة اليوم " * 2
-        assert "sparse_mojibake" not in garble_prongs(translit, original_text=translit)
+        assert "sparse_mojibake" not in _garble_prongs(translit, original_text=translit)
 
     def test_wired_into_garble_gates_additively(self):
         """The mojibake signal reaches both tree-bulk and flat-markdown garble

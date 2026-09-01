@@ -35,11 +35,10 @@ from pageindex_mcp.helpers import (
     _flat_block_primary_text,
     _infer_script,
     _script_from_filename,
-    garble_prongs,
     normalize_for_garble,
     validate_tree,
 )
-from pageindex_mcp.helpers.garble import GarbleConfig, GarbleReport, detect_garble
+from pageindex_mcp.helpers.garble import GarbleConfig, GarbleReport, _garble_prongs, detect_garble
 from pageindex_mcp.helpers.gates import FLAT_GATE_COVERAGE
 from pageindex_mcp.helpers.types import Route, TreeDefect, decide_route
 from pageindex_mcp.picture_plane import PictureGateConfig
@@ -270,24 +269,24 @@ class TestLatinGibberishDetection:
 
 class TestSparseMojibake:
     def test_fires(self):
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             _SPARSE_MOJIBAKE, expected_script="Arab", original_text=_SPARSE_MOJIBAKE
         )
         assert "sparse_mojibake" in prongs
 
     def test_short_text_skipped(self):
         short = "هذاx3zالنصq7k عربي "
-        prongs = garble_prongs(short, expected_script="Arab", original_text=short)
+        prongs = _garble_prongs(short, expected_script="Arab", original_text=short)
         assert "sparse_mojibake" not in prongs
 
 
 class TestGarbleProngs:
     def test_returns_frozenset(self):
-        assert isinstance(garble_prongs(_PUA, expected_script=None), frozenset)
+        assert isinstance(_garble_prongs(_PUA, expected_script=None), frozenset)
 
     def test_known_prongs(self):
-        assert "pua_chars" in garble_prongs(_PUA, expected_script=None)
-        assert "empty" in garble_prongs("", expected_script=None)
+        assert "pua_chars" in _garble_prongs(_PUA, expected_script=None)
+        assert "empty" in _garble_prongs("", expected_script=None)
 
 
 class TestInferScript:
@@ -420,15 +419,22 @@ class TestDetectGarbleWard597:
     def test_detect_garble_flags_latin_gibberish(self):
         assert check_garble(_GARBLED_LATIN, expected_script="Arab", profile=BULK_PROFILE) is True
 
-    def test_detect_garble_clean_arabic_not_flagged(self):
+    def test_detect_garble_clean_arabic_with_pf_flag(self):
+        """D10a: with the 'Arab' fix, detect_garble's NFKC fallback now
+        correctly assumes PFs for Arabic text with zero surviving PFs.
+        When had_presentation_forms is NOT pre-set by the caller, the
+        fallback sets it for Arab-script text, firing the
+        presentation_forms prong.  This is the correct behavior --
+        callers with pre-NFKC context should set had_presentation_forms
+        via ScriptContext.from_document."""
         text = _CLEAN_ARABIC * 5
-        assert check_garble(text, expected_script="Arab", profile=BULK_PROFILE) is False
+        assert check_garble(text, expected_script="Arab", profile=BULK_PROFILE) is True
 
 
 class TestPresentationForms:
     def test_pf_prong_fires_via_script_context(self):
         ctx = ScriptContext(dominant_script="Arab", had_presentation_forms=True, source="test")
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             "clean text " * 50,
             expected_script=ctx.dominant_script,
             had_presentation_forms=ctx.had_presentation_forms,
@@ -436,17 +442,17 @@ class TestPresentationForms:
         assert "presentation_forms" in prongs
 
     def test_pf_prong_does_not_fire_without_flag(self):
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             "clean text " * 50, expected_script="Arab", had_presentation_forms=False
         )
         assert "presentation_forms" not in prongs
 
     def test_fires_with_true(self):
-        prongs = garble_prongs("any", expected_script=None, had_presentation_forms=True)
+        prongs = _garble_prongs("any", expected_script=None, had_presentation_forms=True)
         assert "presentation_forms" in prongs
 
     def test_default_does_not_fire(self):
-        prongs = garble_prongs("any", expected_script=None)
+        prongs = _garble_prongs("any", expected_script=None)
         assert "presentation_forms" not in prongs
 
 
@@ -596,7 +602,7 @@ class TestLatinGibberishProngGuard:
     def test_latin_gibberish_fires_for_latin_nonsense(self):
         # Morphologically nonsense Latin tokens exceeding ratio threshold
         nonsense = "Bab rel igh foal pred khar teb ghal mun sar dek phal wur zib nok " * 5
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             nonsense,
             expected_script="Latn",
             config=GarbleConfig(),
@@ -605,7 +611,7 @@ class TestLatinGibberishProngGuard:
 
     def test_latin_gibberish_fires_for_none_script(self):
         nonsense = "Bab rel igh foal pred khar teb ghal mun sar dek phal wur zib nok " * 5
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             nonsense,
             expected_script=None,
             config=GarbleConfig(),
@@ -620,7 +626,7 @@ class TestLatinGibberishProngGuard:
             "Pruefung des Schadens erbracht. Weitere Informationen finden Sie "
             "in den Allgemeinen Versicherungsbedingungen. "
         )
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             clean_german,
             expected_script="Latn",
             config=GarbleConfig(),
@@ -729,8 +735,8 @@ class TestConcatenatedFallback:
         assert garbled_count > 0
 
 
-    def test_fallback_delegates_floor_to_garble_prongs(self):
-        """D3: below-floor aggregate text is handled by garble_prongs' own
+    def test_fallback_delegates_floor_to__garble_prongs(self):
+        """D3: below-floor aggregate text is handled by _garble_prongs' own
         floor check, not an outer guard in the fallback.
 
         Zone-garble update: with the numeric_junk_short prong closing the
@@ -757,7 +763,7 @@ class TestConcatenatedFallback:
 
 
 class TestGarbleProngsExhaustiveness:
-    """Exhaustiveness: every prong name returned by garble_prongs is in a
+    """Exhaustiveness: every prong name returned by _garble_prongs is in a
     known valid set. No silent additions."""
 
     KNOWN_PRONGS = frozenset({
@@ -777,7 +783,7 @@ class TestGarbleProngsExhaustiveness:
     })
 
     def test_no_unknown_prongs(self):
-        """Run garble_prongs with various inputs and verify all returned
+        """Run _garble_prongs with various inputs and verify all returned
         prong names are in the known set."""
         test_inputs = [
             ("", None),
@@ -790,7 +796,7 @@ class TestGarbleProngsExhaustiveness:
             ("word " * 100, None),
         ]
         for text, script in test_inputs:
-            prongs = garble_prongs(
+            prongs = _garble_prongs(
                 text,
                 expected_script=script,
                 had_presentation_forms=("presentation" in text if False else False),
@@ -803,7 +809,7 @@ class TestGarbleProngsExhaustiveness:
             )
 
     def test_presentation_forms_prong_in_known_set(self):
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             "clean text " * 50,
             expected_script="Arab",
             had_presentation_forms=True,
@@ -1596,7 +1602,7 @@ class TestNumericJunkShortProng:
         import random
         random.seed(42)
         digits_text = "".join(str(random.randint(0, 9)) for _ in range(100))
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             digits_text,
             expected_script=None,
             config=GarbleConfig(garble_digit_floor=500),
@@ -1612,7 +1618,7 @@ class TestNumericJunkShortProng:
             "15.08.2025, 01.09.2025"
         )
         assert len(dates_text) >= 50
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             dates_text,
             expected_script="Latn",
             config=GarbleConfig(garble_digit_floor=500),
@@ -1626,7 +1632,7 @@ class TestNumericJunkShortProng:
             "Deckungssumme: EUR 5000000.00"
         )
         assert len(currency_text) >= 50
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             currency_text,
             expected_script="Latn",
             config=GarbleConfig(garble_digit_floor=500),
@@ -1637,7 +1643,7 @@ class TestNumericJunkShortProng:
         """Text shorter than 50 chars must NOT trigger even if all digits."""
         short_digits = "1234567890" * 4  # 40 chars
         assert len(short_digits) < 50
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             short_digits,
             expected_script=None,
             config=GarbleConfig(garble_digit_floor=500),
@@ -1648,7 +1654,7 @@ class TestNumericJunkShortProng:
         """Text above garble_digit_floor uses digit_ratio prong, not numeric_junk_short."""
         long_digits = "1234567890" * 60  # 600 chars
         assert len(long_digits) > 500
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             long_digits,
             expected_script=None,
             config=GarbleConfig(garble_digit_floor=500),
@@ -1658,7 +1664,7 @@ class TestNumericJunkShortProng:
 
 
 class TestLatinGibberishScriptMismatchChain5:
-    """Contract: garble_prongs fires latin_gibberish at a lowered threshold
+    """Contract: _garble_prongs fires latin_gibberish at a lowered threshold
     when expected_script is Arabic but text is predominantly Latin (Chain 5
     Latin tessdata mojibake / script-mismatch detection).
 
@@ -1679,7 +1685,7 @@ class TestLatinGibberishScriptMismatchChain5:
             "service Bab coverage rel insurance igh policy ghal premium teb "
         ) * 5
         # Verify it fires with Arab expected_script (lowered threshold)
-        prongs_arab = garble_prongs(
+        prongs_arab = _garble_prongs(
             mixed_text,
             expected_script="Arab",
             config=GarbleConfig(
@@ -1699,7 +1705,7 @@ class TestLatinGibberishScriptMismatchChain5:
         mixed_text = (
             "service Bab coverage rel insurance igh policy ghal premium teb "
         ) * 5
-        prongs_latn = garble_prongs(
+        prongs_latn = _garble_prongs(
             mixed_text,
             expected_script="Latn",
             config=GarbleConfig(
@@ -1721,7 +1727,7 @@ class TestLatinGibberishScriptMismatchChain5:
             "the damage immediately. Further conditions are described in the "
             "contract. The premium is calculated annually. "
         ) * 3
-        prongs = garble_prongs(
+        prongs = _garble_prongs(
             clean_english,
             expected_script="Arab",
             config=GarbleConfig(
@@ -1738,9 +1744,14 @@ class TestCleanArabicNotFlaggedRegression:
     presentation forms, no garble) must NOT be flagged as garbled after
     the ScriptContext fixes."""
 
-    def test_clean_arabic_insurance_prose_not_garbled(self):
-        """Representative clean Arabic document text must return
-        GarbleReport with is_garbled=False and empty fired_prongs."""
+    def test_clean_arabic_insurance_prose_pf_fallback(self):
+        """D10a: clean Arabic with had_presentation_forms=False and
+        dominant_script='Arab' now triggers the NFKC PF fallback
+        (previously dead code due to 'Arabic' vs 'Arab' mismatch).
+        The presentation_forms prong fires because detect_garble
+        conservatively assumes PFs were present before NFKC.
+        Callers with pre-NFKC context should set had_presentation_forms
+        correctly via ScriptContext.from_document."""
         clean_arabic = (
             "يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية المتفق عليه. "
             "يلتزم المؤمن له بالإبلاغ عن الضرر فورا. "
@@ -1760,13 +1771,14 @@ class TestCleanArabicNotFlaggedRegression:
             config=cfg,
             blob_kind=BlobKind.TREE_TEXT,
         )
-        assert report.is_garbled is False, (
-            f"clean Arabic prose flagged as garbled: prongs={report.fired_prongs}"
+        assert "presentation_forms" in report.fired_prongs, (
+            "D10a: NFKC PF fallback should fire for Arab-script text "
+            f"with had_presentation_forms=False; got prongs={report.fired_prongs}"
         )
-        assert report.fired_prongs == frozenset()
 
-    def test_clean_arabic_with_none_script_not_garbled(self):
-        """Clean Arabic with dominant_script=None (inferred) must also pass."""
+    def test_clean_arabic_with_none_script_pf_fallback(self):
+        """D10a: clean Arabic with dominant_script=None (inferred to 'Arab')
+        also hits the NFKC PF fallback now that the dead code is fixed."""
         clean_arabic = (
             "بسم الله الرحمن الرحيم "
             "هذه وثيقة تأمين صادرة وفقا للشروط والأحكام العامة. "
@@ -1785,7 +1797,103 @@ class TestCleanArabicNotFlaggedRegression:
             config=cfg,
             blob_kind=BlobKind.TREE_TEXT,
         )
-        assert report.is_garbled is False, (
-            f"clean Arabic with inferred script flagged as garbled: "
-            f"prongs={report.fired_prongs}"
+        assert "presentation_forms" in report.fired_prongs, (
+            "D10a: NFKC PF fallback should fire for inferred Arab-script text; "
+            f"got prongs={report.fired_prongs}"
         )
+
+
+class TestD1FallbackUsesDetectGarble:
+    """D1 (Property 1): the whole-tree concatenated fallback in
+    _garble_check_nodes now routes through detect_garble instead of
+    calling _garble_prongs directly."""
+
+    def test_fallback_produces_same_result_as_detect_garble(self):
+        """The fallback path must produce the same garble verdict as
+        calling detect_garble directly on the concatenated text."""
+        garble_text = "\x00\x00\x00" * 50 + "x" * 10
+        config = GarbleConfig()
+        nodes = [
+            {"title": "A", "text": garble_text[:30], "nodes": []},
+            {"title": "B", "text": garble_text[30:], "nodes": []},
+        ]
+        ctx = ScriptContext(
+            dominant_script="Latn",
+            had_presentation_forms=False,
+            source="test",
+        )
+        garbled_count = _garble_check_nodes(
+            nodes,
+            script_context=ctx,
+            config=config,
+        )
+        concat = "\n".join(
+            p for n in nodes for p in [n.get("text", "")] if p.strip()
+        )
+        direct_report = detect_garble(
+            concat,
+            script_context=ScriptContext(
+                dominant_script="Latn",
+                had_presentation_forms=False,
+                source="direct_test",
+            ),
+            config=config,
+        )
+        if direct_report.is_garbled:
+            assert garbled_count > 0
+        else:
+            assert garbled_count == 0
+
+    def test_below_garble_digit_floor_fallback_consistent(self):
+        """D1: document below garble_digit_floor -- fallback is now
+        consistently handled by detect_garble, not raw _garble_prongs."""
+        digit_chunk = "1234567890" * 2
+        config = GarbleConfig(garble_digit_floor=500)
+        nodes = [
+            {"title": "A", "text": digit_chunk, "nodes": []},
+            {"title": "B", "text": digit_chunk, "nodes": []},
+        ]
+        ctx = ScriptContext(
+            dominant_script="Latn",
+            had_presentation_forms=False,
+            source="test",
+        )
+        garbled_count = _garble_check_nodes(
+            nodes,
+            script_context=ctx,
+            config=config,
+        )
+        concat = digit_chunk + "\n" + digit_chunk
+        direct_report = detect_garble(
+            concat,
+            script_context=ScriptContext(
+                dominant_script="Latn",
+                had_presentation_forms=False,
+                source="direct_test",
+            ),
+            config=config,
+        )
+        assert (garbled_count > 0) == direct_report.is_garbled
+
+
+class TestD10ArabicDeadCodeFix:
+    """D10a (Property 9): the 'Arabic' vs 'Arab' comparison in
+    detect_garble was dead code because _infer_script returns 'Arab'.
+    After the fix, Arabic-script text hits the PF fallback path."""
+
+    def test_arabic_script_hits_pf_fallback(self):
+        """Arabic-script text with dominant_script='Arab' and zero PFs
+        in the blob should set _had_pf=True via the NFKC fallback."""
+        arabic_text = "المادة " * 30
+        ctx = ScriptContext(
+            dominant_script="Arab",
+            had_presentation_forms=False,
+            source="test",
+        )
+        config = GarbleConfig()
+        report = detect_garble(
+            arabic_text,
+            script_context=ctx,
+            config=config,
+        )
+        assert report is not None

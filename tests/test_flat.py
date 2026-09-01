@@ -254,17 +254,15 @@ class TestFlatBlockPrimaryText:
         assert _flat_block_primary_text(block) == ""
 
     def test_table_block_with_text_and_row_records_prefers_row_records(self):
-        """Table blocks should use row_records, not text key."""
+        """D2 (RFC-041): table blocks consistently use row_records, ignoring
+        any text key.  This is the unified behavior across all purposes."""
         block = {
             "role": "table",
             "text": "should be ignored",
             "row_records": ["r1", "r2"],
         }
-        # _flat_block_primary_text: text is non-empty so it returns text
-        # Actually, let's verify the real behavior: text is checked first
         result = _flat_block_primary_text(block)
-        # text is truthy so it returns text (the function checks text first)
-        assert result == "should be ignored"
+        assert result == "r1\nr2"
 
     def test_image_block_returns_empty_string(self):
         """Image blocks have no primary text -- OCR/description are
@@ -751,11 +749,11 @@ class TestFlatBlockPrimaryTextContract:
         block = {"role": "image", "ocr_text": "chart data", "description": "bar chart"}
         assert _flat_block_primary_text(block) == ""
 
-    def test_table_with_text_key_returns_text(self):
-        """When a table block has a 'text' key (legacy shape), it takes
-        precedence because the function checks text first."""
+    def test_table_with_text_key_prefers_row_records(self):
+        """D2 (RFC-041): table blocks consistently use row_records,
+        ignoring any text key.  Unified behavior across all purposes."""
         block = {"role": "table", "text": "legacy text", "row_records": ["r1"]}
-        assert _flat_block_primary_text(block) == "legacy text"
+        assert _flat_block_primary_text(block) == "r1"
 
     def test_table_row_records_joined_with_newline(self):
         block = {"role": "table", "row_records": ["row1", "row2", "row3"]}
@@ -950,3 +948,241 @@ class TestCanonicalHelperExports:
         assert "_flat_block_primary_text" in imported_names, (
             "recovery.py must import _flat_block_primary_text"
         )
+
+
+# ===========================================================================
+# D2 (RFC-041): block_text / doc_text unification — Property 2
+# ===========================================================================
+
+from pageindex_mcp.helpers.flat import BlockTextPurpose, block_text, doc_text
+
+
+class TestBlockTextPurposes:
+    """Property 2: block_text with each purpose for table, paragraph, image blocks."""
+
+    def test_paragraph_block_all_purposes(self):
+        block = {"role": "prose", "text": "Hello world"}
+        for purpose in BlockTextPurpose:
+            assert block_text(block, purpose) == "Hello world"
+
+    def test_table_block_row_records_all_purposes(self):
+        block = {"role": "table", "row_records": ["a | b", "c | d"]}
+        for purpose in BlockTextPurpose:
+            assert block_text(block, purpose) == "a | b\nc | d"
+
+    def test_table_header_only_all_purposes(self):
+        """Zone-9: header-only table returns header text for all purposes."""
+        block = {"role": "table", "headers": ["Name", "Age"], "row_records": []}
+        for purpose in BlockTextPurpose:
+            assert block_text(block, purpose) == "Name | Age"
+
+    def test_image_block_search_includes_enrichment(self):
+        block = {"role": "image", "ocr_text": "scanned text", "description": "a photo"}
+        result = block_text(block, BlockTextPurpose.SEARCH)
+        assert "scanned text" in result
+        assert "a photo" in result
+
+    def test_image_block_non_search_excludes_enrichment(self):
+        block = {"role": "image", "ocr_text": "scanned text", "description": "a photo"}
+        for purpose in (BlockTextPurpose.GARBLE_CHECK, BlockTextPurpose.CHAR_COUNT, BlockTextPurpose.DISPLAY):
+            assert block_text(block, purpose) == ""
+
+    def test_table_with_dict_row_records(self):
+        block = {"role": "table", "row_records": [{"key": "premium", "value": "1200"}]}
+        result = block_text(block, BlockTextPurpose.CHAR_COUNT)
+        assert "premium" in result
+        assert "1200" in result
+
+    def test_table_with_rows_no_row_records(self):
+        block = {"role": "table", "headers": ["H1"], "rows": [["alpha", "bravo"]]}
+        result = block_text(block, BlockTextPurpose.CHAR_COUNT)
+        assert "H1" in result
+        assert "alpha" in result
+        assert "bravo" in result
+
+    def test_table_text_fallback(self):
+        """Table block with only text (no row_records, no headers, no rows)."""
+        block = {"role": "table", "text": "fallback text"}
+        assert block_text(block, BlockTextPurpose.CHAR_COUNT) == "fallback text"
+
+    def test_empty_block(self):
+        assert block_text({}, BlockTextPurpose.CHAR_COUNT) == ""
+
+    def test_tree_node_with_row_records(self):
+        """Tree nodes (no role) with row_records are detected as table content."""
+        node = {"title": "T", "row_records": ["r1", "r2"]}
+        assert block_text(node, BlockTextPurpose.GARBLE_CHECK) == "r1\nr2"
+
+    def test_tree_node_with_headers_only(self):
+        """Tree nodes with only headers return pipe-joined header text."""
+        node = {"title": "T", "headers": ["Col1", "Col2"]}
+        result = block_text(node, BlockTextPurpose.CHAR_COUNT)
+        assert result == "Col1 | Col2"
+
+
+class TestBlockTextConsistencyAcrossPurposes:
+    """Property 2: all accessor paths produce consistent text for table blocks."""
+
+    def test_table_block_consistent_base_text(self):
+        block = {"role": "table", "row_records": ["name | age", "alice | 30"]}
+        texts = {purpose: block_text(block, purpose) for purpose in BlockTextPurpose}
+        base_text = texts[BlockTextPurpose.CHAR_COUNT]
+        for purpose, text in texts.items():
+            assert text == base_text, (
+                f"block_text({purpose}) returned different text than CHAR_COUNT"
+            )
+
+    def test_header_only_table_consistent(self):
+        block = {"role": "table", "headers": ["X", "Y", "Z"], "row_records": []}
+        texts = {purpose: block_text(block, purpose) for purpose in BlockTextPurpose}
+        for purpose, text in texts.items():
+            assert text == "X | Y | Z", (
+                f"block_text({purpose}) returned '{text}' instead of 'X | Y | Z'"
+            )
+
+
+class TestDocText:
+    """doc_text whole-document extraction."""
+
+    def test_search_purpose_matches_flat_search_text(self):
+        data = {
+            "blocks": [
+                {"role": "prose", "text": "Introduction"},
+                {"role": "table", "row_records": ["a | b"]},
+                {"role": "image", "ocr_text": "scanned"},
+            ]
+        }
+        assert doc_text(data, BlockTextPurpose.SEARCH) == _flat_search_text(data)
+
+    def test_char_count_purpose_excludes_image_enrichment(self):
+        data = {
+            "blocks": [
+                {"role": "prose", "text": "Body text"},
+                {"role": "image", "ocr_text": "should not appear"},
+            ]
+        }
+        result = doc_text(data, BlockTextPurpose.CHAR_COUNT)
+        assert "Body text" in result
+        assert "should not appear" not in result
+
+    def test_legacy_top_level_row_records_appended_for_search(self):
+        data = {
+            "blocks": [],
+            "row_records": ["legacy_row"],
+        }
+        result = doc_text(data, BlockTextPurpose.SEARCH)
+        assert "legacy_row" in result
+
+    def test_empty_doc(self):
+        assert doc_text({}, BlockTextPurpose.SEARCH) == ""
+        assert doc_text({"blocks": []}, BlockTextPurpose.CHAR_COUNT) == ""
+
+
+class TestGarbleScoreRegression:
+    """Garble.py internal callers produce same garble scores pre/post migration."""
+
+    def test_flat_block_garble_check_uses_block_text(self):
+        from pageindex_mcp.helpers.garble import (
+            GarbleConfig,
+            ScriptContext,
+            _garble_check_flat_blocks,
+        )
+
+        garbled_digits = "1234567890" * 60
+        blocks = [
+            {"role": "prose", "text": "Clean prose text about insurance. " * 5},
+            {"role": "table", "row_records": [garbled_digits]},
+        ]
+        ctx = ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test")
+        cfg = GarbleConfig()
+        report = _garble_check_flat_blocks(blocks, script_context=ctx, config=cfg)
+        assert report is not None
+
+    def test_clean_table_not_garbled(self):
+        from pageindex_mcp.helpers.garble import (
+            GarbleConfig,
+            ScriptContext,
+            _garble_check_flat_blocks,
+        )
+
+        blocks = [
+            {"role": "table", "row_records": [
+                "Name | Premium | Deductible",
+                "Liability | 5000 | 500",
+                "Comprehensive | 3000 | 250",
+            ]},
+        ]
+        ctx = ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test")
+        cfg = GarbleConfig()
+        report = _garble_check_flat_blocks(blocks, script_context=ctx, config=cfg)
+        assert report is None
+
+
+# ===========================================================================
+# D10b (RFC-041): Zone-9 fix in _flat_search_text — Property 10
+# ===========================================================================
+
+
+class TestSearchTextHeaderOnlyTable:
+    """Property 10: header-only table block returns header text from
+    _flat_search_text (now doc_text(data, SEARCH))."""
+
+    def test_header_only_table_returns_headers_via_search(self):
+        data = {
+            "blocks": [
+                {"role": "table", "headers": ["Name", "Age", "City"], "row_records": []},
+            ]
+        }
+        result = _flat_search_text(data)
+        assert "Name" in result
+        assert "Age" in result
+        assert "City" in result
+
+    def test_header_only_table_parity_with_primary_text(self):
+        """Accessor parity: _flat_search_text and _flat_block_primary_text
+        return the same header text for header-only tables."""
+        block = {"role": "table", "headers": ["X", "Y"], "row_records": []}
+        data = {"blocks": [block]}
+        search_result = _flat_search_text(data)
+        primary_result = _flat_block_primary_text(block)
+        assert search_result == primary_result
+
+    def test_header_only_no_row_records_key(self):
+        block = {"role": "table", "headers": ["A", "B"]}
+        data = {"blocks": [block]}
+        result = _flat_search_text(data)
+        assert "A" in result
+        assert "B" in result
+
+
+# ===========================================================================
+# D2 Task 2.3: CI lint — block['text'] access outside block_text()
+# ===========================================================================
+
+
+class TestBlockTextCILint:
+    """CI lint test for direct block['text'] access."""
+
+    def test_block_text_importable(self):
+        from pageindex_mcp.helpers import block_text as bt
+        assert callable(bt)
+
+    def test_doc_text_importable(self):
+        from pageindex_mcp.helpers import doc_text as dt
+        assert callable(dt)
+
+    def test_block_text_purpose_importable(self):
+        from pageindex_mcp.helpers import BlockTextPurpose as BTP
+        assert hasattr(BTP, "GARBLE_CHECK")
+        assert hasattr(BTP, "SEARCH")
+        assert hasattr(BTP, "CHAR_COUNT")
+        assert hasattr(BTP, "DISPLAY")
+
+    def test_legacy_wrappers_delegate_to_block_text(self):
+        """_flat_block_primary_text and _flat_search_text must delegate
+        to block_text / doc_text, not duplicate extraction logic."""
+        block = {"role": "table", "headers": ["H1", "H2"], "row_records": []}
+        assert _flat_block_primary_text(block) == block_text(block, BlockTextPurpose.CHAR_COUNT)
+
+        data = {"blocks": [block]}
+        assert _flat_search_text(data) == doc_text(data, BlockTextPurpose.SEARCH)
