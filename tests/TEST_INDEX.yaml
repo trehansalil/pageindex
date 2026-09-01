@@ -73,6 +73,8 @@ mappings:
     tests:
       - test_hr3_zdr_egress.py     # primary
       - test_bidi.py
+      - test_config.py
+      - test_converters.py
 
   client/llm.py:
     coverage_threshold: 90
@@ -301,6 +303,7 @@ mappings:
       - test_converters.py
       - test_density_gate.py
       - test_gates.py
+      - test_hr3_zdr_egress.py
       - test_observability_combined.py
       - test_converters_pipeline.py
       - test_bidi.py
@@ -474,6 +477,7 @@ mappings:
       - test_observability_combined.py           # primary
       - test_auth.py
       - test_memory_redis.py
+      - test_config.py
       - test_converters.py
       - test_image_blocks.py
       - test_inspector.py

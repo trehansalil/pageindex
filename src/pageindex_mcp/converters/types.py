@@ -55,4 +55,5 @@ class Candidate:
     heading_pages: dict[str, list[int]] = dataclasses.field(default_factory=dict)
     has_depth: bool = False
     verdict: str = ""
+    promotion_paths_matched: tuple[str, ...] = ()
     rtl_decision: RtlDecision | None = None

@@ -1115,6 +1115,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             expected_script=script_context if script_context is not None else expected_script,
         )
         f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
+        f_promotion_paths = list(_vr.promotion_paths_matched)
 
         _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
 
@@ -1170,6 +1171,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 "max_leaf_ratio": round(f_mlr, 4),
                 "pipeline_version": CURRENT_PIPELINE_VERSION,
                 "verdict_computed_at": _flat_verdict_computed_at,
+                **({"promotion_paths_matched": f_promotion_paths} if f_promotion_paths else {}),
             },
         )
 
@@ -1200,6 +1202,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "pipeline_version": CURRENT_PIPELINE_VERSION,
             "max_leaf_ratio": round(f_mlr, 4),
             "verdict_computed_at": _flat_verdict_computed_at,
+            **({"promotion_paths_matched": f_promotion_paths} if f_promotion_paths else {}),
         }
         # Zone-7 (dual-write consistency): stash registry fields for flat
         # docs so converters_cli can surface them in stdout JSON, eliminating
@@ -1259,6 +1262,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             expected_script=script_context if script_context is not None else expected_script,
         )
         verdict, verdict_reason = _vr.verdict, _vr.reason
+        promotion_paths = list(_vr.promotion_paths_matched)
 
         _, _, mlr = _tree_max_leaf_ratio(structure)
         _verdict_computed_at = datetime.now(UTC).isoformat()
@@ -1301,6 +1305,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "pipeline_version": CURRENT_PIPELINE_VERSION,
             "verdict_computed_at": _verdict_computed_at,
         }
+        if promotion_paths:
+            meta["promotion_paths_matched"] = promotion_paths
         if state.gate_result is not None and state.gate_result.all_defects:
             meta["all_defects"] = sorted(d.value for d in state.gate_result.all_defects)
         if _effective_config_at_job_start is not None:
@@ -1349,6 +1355,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             "pipeline_version": CURRENT_PIPELINE_VERSION,
             "max_leaf_ratio": round(mlr, 4),
             "verdict_computed_at": _verdict_computed_at,
+            **({"promotion_paths_matched": promotion_paths} if promotion_paths else {}),
         }
         # Zone-7 (dual-write consistency): stash registry fields so
         # converters_cli can surface them in stdout JSON, eliminating the

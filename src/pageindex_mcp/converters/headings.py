@@ -975,11 +975,13 @@ def _candidate_from_document(
     # structural-depth proxy alone.  source_selection=True skips _clamp_pass
     # caps that are meaningful only for the final persisted verdict.
     verdict = ""
+    promotion_paths_matched: tuple[str, ...] = ()
     if has_depth:
         try:
             structure = _md_to_structure(recovered)
             _vr = compute_verdict(structure, "", source_selection=True)
             verdict = _vr.verdict
+            promotion_paths_matched = _vr.promotion_paths_matched
         except Exception as exc:
             logger.debug(
                 "compute_verdict in _candidate_from_document failed for %s (%s); "
@@ -993,6 +995,7 @@ def _candidate_from_document(
         heading_pages=heading_pages,
         has_depth=has_depth,
         verdict=verdict,
+        promotion_paths_matched=promotion_paths_matched,
         rtl_decision=rtl_decision,
     )
 
