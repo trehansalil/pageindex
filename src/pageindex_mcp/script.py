@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from typing_extensions import deprecated
+
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -953,16 +955,20 @@ class ScriptContext:
         )
 
     @classmethod
-    def from_script_str(cls, expected_script: str | None) -> ScriptContext:
+    @deprecated("Use ScriptContext.from_document instead")
+    def from_script_str(
+        cls, expected_script: str | None, *, had_presentation_forms: bool
+    ) -> ScriptContext:
         """Backward-compat factory: wrap a bare ``expected_script`` string.
 
-        Used by :func:`detect_garble` and test code that
-        passes ``expected_script`` as a plain string.  ``had_presentation_forms``
-        defaults to ``False`` (callers that have this info should use
-        ``from_document`` or construct directly).
+        .. deprecated::
+            Use :meth:`from_document` or construct :class:`ScriptContext`
+            directly. ``had_presentation_forms`` is now a required keyword
+            argument — callers must supply the real detection result instead
+            of relying on a hardcoded default.
         """
         return cls(
             dominant_script=expected_script,
-            had_presentation_forms=False,
+            had_presentation_forms=had_presentation_forms,
             source="legacy",
         )

@@ -243,12 +243,20 @@ async def delete_doc(doc_id: str) -> dict:
                 doc_id,
                 missed_required,
             )
-        if missed_optional:
-            logger.debug(
-                "ERASE %s optional stores not reached: %s",
+        # RFC-043 D5: a skipped optional step is a partial purge -- WARNING,
+        # not DEBUG, with structured fields so it's queryable across a corpus.
+        for s in _ERASURE_MANIFEST:
+            if s.required or s.name in ctx.completed:
+                continue
+            missing_dep = ", ".join(sorted(s.consumes)) or "unavailable"
+            logger.warning(
+                "ERASE %s optional store not reached: %s (missing_dep=%s)",
                 doc_id,
-                missed_optional,
+                s.name,
+                missing_dep,
+                extra={"step_name": s.name, "missing_dep": missing_dep, "doc_id": doc_id},
             )
+        partial_purge = bool(missed_optional)
 
         required_ok = len(
             [s for s in _ERASURE_MANIFEST if s.required and s.name in ctx.completed]
@@ -262,7 +270,7 @@ async def delete_doc(doc_id: str) -> dict:
                 required_ok,
                 len(missed_optional),
             )
-        return {"errors": ctx.errors}
+        return {"errors": ctx.errors, "partial_purge": partial_purge}
     finally:
         MINIO_DURATION.labels(operation="delete").observe(time.monotonic() - start)
 
@@ -311,6 +319,14 @@ class ErasureStep:
     coroutine that purges the store; *required* marks stores that every
     document is expected to have (an unreached required store is a
     compliance gap worth a WARNING, an unreached optional store is not).
+
+    RFC-043 D4 -- ordering-dependency annotations, two layers:
+    *produces*/*consumes* track ``ctx.*`` fields (e.g. ``ctx.doc_name``
+    discovered in step 1, needed by steps 5 and 7); *reads*/*deletes*
+    track sidecar-object-level dependencies (e.g. step 2d reads
+    ``processed/{id}.meta.json`` before step 3 deletes it). All four are
+    optional and default empty; a step with no cross-step dependency
+    leaves them unset.
     """
 
     name: str
@@ -318,6 +334,10 @@ class ErasureStep:
     description: str
     execute: ErasureExecutor
     required: bool = True
+    produces: frozenset[str] = frozenset()
+    consumes: frozenset[str] = frozenset()
+    reads: frozenset[str] = frozenset()
+    deletes: frozenset[str] = frozenset()
 
 
 def _remove_object_idempotent(
@@ -424,6 +444,18 @@ async def _erase_verdicts(ctx: ErasureContext) -> bool:
     except Exception as e:
         ctx.sha256 = None
         ctx.errors.append(f"verdicts-lookup: {e}")
+
+    if not ctx.sha256:
+        # RFC-043 D5: best-effort fallback to the Postgres registry row before
+        # giving up on this step.
+        try:
+            from ..registry import get_doc_sha256
+
+            ctx.sha256 = await get_doc_sha256(ctx.doc_id)
+        except Exception as e:
+            logger.warning(
+                "ERASE %s step2d: registry sha256 fallback unavailable: %s", ctx.doc_id, e
+            )
 
     if not ctx.sha256:
         logger.warning(
@@ -556,6 +588,10 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         step=1,
         description="Raw upload objects at uploads/<doc_id>/*",
         execute=_erase_uploads,
+        # D4: conservative -- only actually produces ctx.doc_name when the
+        # pre-loop load_doc(doc_id) recovery failed (flat docs / already-gone
+        # sidecar); a no-op when doc_name was already populated.
+        produces=frozenset({"ctx.doc_name"}),
     ),
     ErasureStep(
         name="processed_json",
@@ -583,12 +619,17 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         description="Verdict ledger at verdicts/<sha256>.json",
         execute=_erase_verdicts,
         required=False,  # unreachable when the sidecar carries no sha256
+        # D4: reads sha256 from the sidecar internally, before step 3
+        # deletes it -- self-contained (not a ctx.sha256 consumer; no other
+        # step produces or reads ctx.sha256).
+        reads=frozenset({"processed/{id}.meta.json"}),
     ),
     ErasureStep(
         name="meta_json",
         step=3,
         description="Sidecar at processed/<doc_id>.meta.json",
         execute=_erase_meta_json,
+        deletes=frozenset({"processed/{id}.meta.json"}),  # D4
     ),
     ErasureStep(
         name="redis_cache",
@@ -607,6 +648,7 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         step=5,
         description="Hash-cache entry (filename -> sha256)",
         execute=_erase_hash_cache,
+        consumes=frozenset({"ctx.doc_name"}),  # D4
     ),
     ErasureStep(
         name="registry",
@@ -620,6 +662,7 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         description="Preloaded raw object at preloaded/<doc_name>",
         execute=_erase_preloaded,
         required=False,  # RFC-011 D2: not all docs have one
+        consumes=frozenset({"ctx.doc_name"}),  # D4
     ),
 )
 
@@ -678,6 +721,30 @@ def validate_erasure_manifest() -> None:
             "prefixes exist without corresponding erasure steps:\n  "
             + "\n  ".join(missing)
         )
+
+    # D4: two-layer ordering validation -- a step's dependencies must be
+    # satisfied by an *earlier* step, or reordering the manifest can
+    # silently degrade a purge (RFC-043 Chain 17).
+    seen_produces: set[str] = set()
+    seen_deletes: set[str] = set()
+    for entry in _ERASURE_MANIFEST:
+        for field in entry.consumes:
+            if field not in seen_produces:
+                raise ValueError(
+                    f"ErasureStep '{entry.name}' consumes '{field}' but no "
+                    f"earlier step in _ERASURE_MANIFEST produces it -- move "
+                    f"the producing step before '{entry.name}'"
+                )
+        for sidecar in entry.reads:
+            if sidecar in seen_deletes:
+                raise ValueError(
+                    f"ErasureStep '{entry.name}' reads sidecar '{sidecar}' "
+                    f"but an earlier step in _ERASURE_MANIFEST already "
+                    f"deletes it -- move '{entry.name}' before the step "
+                    f"that deletes '{sidecar}'"
+                )
+        seen_produces.update(entry.produces)
+        seen_deletes.update(entry.deletes)
 
 
 # Run the guard at import time.

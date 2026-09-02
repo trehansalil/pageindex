@@ -296,18 +296,14 @@ def _eligible_low_content(state: ExtractionState) -> bool:
     Zone-1 fix: checks *all* active defects (not just first_defect) so
     NODE_COUNT_LOW firing as a secondary defect still triggers recovery.
 
-    Combined OR-gate: at least one of ocr_escalation_low_content or
-    image_dominant_ocr_escalation_enabled must be active.  Individual
-    recovery methods check their specific flag.
+    Gates solely on ocr_escalation_low_content; independent of
+    image_dominant_ocr_escalation_enabled (see _eligible_image_dominant).
     """
     if state.ok:
         return False
     if TreeDefect.NODE_COUNT_LOW not in _all_defects(state):
         return False
-    return (
-        pipeline_config.ocr_escalation_low_content
-        or pipeline_config.image_dominant_ocr_escalation_enabled
-    )
+    return pipeline_config.ocr_escalation_low_content
 
 
 def _eligible_image_dominant(state: ExtractionState) -> bool:

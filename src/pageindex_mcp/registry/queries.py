@@ -249,6 +249,22 @@ async def sweep_candidates(current_version: int) -> list[str]:
 
 _DELETE_SQL = "DELETE FROM doc_registry WHERE doc_id = $1;"
 
+_SHA256_SQL = "SELECT sha256 FROM doc_registry WHERE doc_id = $1;"
+
+
+async def get_doc_sha256(doc_id: str) -> str | None:
+    """Look up a doc's sha256 from the registry row.
+
+    RFC-043 D5: best-effort fallback for the erasure verdicts step when the
+    MinIO sidecar it normally reads sha256 from is already gone. Returns
+    ``None`` if the pool is unavailable, the row is absent, or sha256 is empty.
+    """
+    pool = _schema.get_pool()
+    if pool is None:
+        return None
+    val = await pool.fetchval(_SHA256_SQL, doc_id)
+    return val or None
+
 
 async def delete_doc(doc_id: str) -> None:
     """Remove a doc_registry row.  Idempotent — no-op if the row is absent.
