@@ -1,62 +1,96 @@
 ---
-zone_name: Garble Detection & NFKC Signal Destruction
-severity: high
-bug_count: 4
-status: improved
-audit_date: 2026-09-01
-audit_run: POST-RFC041
-audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-01_POST-RFC041.md
+zone_name: Garble Detection NFKC Signal Destruction
+severity: critical
+bug_count: 8
+status: new
+audit_date: 2026-09-02
+audit_run: POST-RFC043
+audit_source: audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-02_POST-RFC043.md
 key_files:
   - src/pageindex_mcp/helpers/garble.py
-  - src/pageindex_mcp/helpers/tree_validation.py
   - src/pageindex_mcp/script.py
-  - src/pageindex_mcp/client/indexer.py
-  - src/pageindex_mcp/helpers/verdict.py
+  - src/pageindex_mcp/converters/normalize.py
+  - src/pageindex_mcp/helpers/gates.py
 tags:
   - zone-spec
-  - high
-  - garble
-  - nfkc
-  - signal-destruction
+  - critical
+  - arabic
+  - unicode
+  - signal-loss
 scorecard_verdict: regressed
-scorecard_date: 2026-09-01
-scorecard_run: POST-RFC041
+scorecard_date: 2026-09-02
+scorecard_run: POST-RFC043
 ---
 ## Mechanism
 
-The garble-detection subsystem has a structural vulnerability where NFKC Unicode normalization destroys Arabic presentation-form codepoints (U+FB50-FEFF) before garble checks run, creating a null-detector pattern where quality gates structurally cannot fire on their real failure mode.
+NFKC Unicode normalization destroys the presentation-form signal that downstream garble and bidi-coherence gates depend on. Four structural causes:
 
-1. **NFKC normalization signal destruction:** Normalization decomposes presentation-form codepoints into logical Arabic characters. `_infer_presentation_forms` called on post-NFKC text always returns False because the signal is already destroyed. The fix works at patched call sites, but `ScriptContext` permits construction with `had_presentation_forms=False` with no compile-time enforcement.
+1. **Signal destruction via normalization**:
+   - `_pre_inference_normalize` (normalize.py) captures `had_presentation_forms` BEFORE NFKC
+   - Attaches flag to RtlDecision
+   - Only reaches gates that consume RtlDecision
+   - Multiple independent ScriptContext construction sites (4+) must independently replicate the signal inference
+   - Each new site is a potential signal-loss point
 
-2. **Bidi coherence null-detector:** Its only failure signal (presentation-form morphology) cannot exist in canonical-reversed text because NFKC destroys it before detection, so 0 `bidi_coherence_violations` was read as proof of safety and used to justify defaulting `BIDI_COHERENCE_ENFORCE=true` (Chain 4). This pattern recurs wherever a zero-violation count is interpreted as correctness rather than detector blindness.
+2. **Compensating mechanism proliferation**:
+   - `detect_garble` has fallback (lines 584-592) that infers `had_presentation_forms=True` when dominant_script is Arabic but zero forms survive
+   - Fallback only covers callers that pass script_context
+   - Multiple independent call sites construct ScriptContext with `had_presentation_forms=False`, bypassing the safety net
 
-## History
+3. **Digit-ratio blind spot for short garbled text**:
+   - `digit_ratio` prong only fires above `garble_digit_floor` (default 500 chars)
+   - Secondary `numeric_junk_short` prong (>= 50 chars, > 90% digits) partially closes gap
+   - Was added reactively, not part of original design
 
-- **Chain 3:** RFC-033 D2 heading guard never committed; Scaleway remote ran stale pre-guard image for weeks.
-- **Chain 4:** RFC-033 D2 bidi coherence was null-detector fallacy — 0 violations because NFKC destroys signal before check.
-- **Chain 13:** `detect_garble` declared sole entry point but `_garble_check_nodes` whole-tree fallback previously bypassed it (now fixed at garble.py:758).
-- **Chain 21:** RFC-040 D6 fixed NFKC ordering in normalize.py but left 9 other call sites unpatched (many now fixed via extraction).
+4. **Latin-gibberish unreachable for project's validation vertical**:
+   - Requires `expected_script` non-None
+   - `_script_from_filename` returns None for German filenames
+   - German T&Cs are primary validation vertical
 
 ## Code Evidence
 
-1. **_infer_presentation_forms** at garble.py:30-48 docstring confirms post-NFKC ratio is always 0.
+```python
+# _pre_inference_normalize (normalize.py:138-170)
+# Captures signal BEFORE NFKC
+had_pres_forms = any('fb50' <= ch <= 'fdff' or 'fe70' <= ch <= 'feff' 
+                     for ch in text)
+text = unicodedata.normalize('NFKC', text)
+# Attaches to RtlDecision, only consumed by gates that use it
 
-2. **detect_garble** at garble.py:529-614 has internal PF recovery at lines 579-593.
+# detect_garble (garble.py:529-614, lines 584-592)
+# Compensating fallback only when script_context passed
+if script_context.had_presentation_forms:
+    # Use it
+else:
+    # Compensating fallback: infer from script + content
+    if dominant_script == 'Arab' and arc_count > 0 and pres_count == 0:
+        had_presentation_forms = True
 
-3. **_garble_check_nodes** at garble.py:669-772 now calls `detect_garble` in whole-tree fallback (line 760-768 D1 comment).
+# _garble_prongs (garble.py:339-440)
+# Digit-ratio blind spot for short text
+if len(norm) > cfg.garble_digit_floor:  # default 500
+    # digit_ratio prong fires
+# numeric_junk_short (lines 401-408) partially closes for >= 50 chars at > 90%
 
-4. **validate_tree** at tree_validation.py:407-419 now calls `_infer_presentation_forms(sig.flat_text)`.
-
-5. **ScriptContext references:** Only 3 matches for `had_presentation_forms=False` remain in src/ — down from 10+ previously.
+# latin_gibberish (lines 418-434)
+# Unreachable for German (expected_script is None)
+if expected_script and ratio > threshold:
+    # fires only for non-German
+```
 
 ## Key Files
 
 | File | Role |
-|------|------|
-| garble.py:30-48 | _infer_presentation_forms with null-detector documentation |
-| garble.py:529-614 | detect_garble with internal PF recovery (579-593) |
-| garble.py:669-772 | _garble_check_nodes delegating to detect_garble |
-| tree_validation.py:407-419 | validate_tree calling _infer_presentation_forms |
-| script.py | Script processing with presentation-form handling |
-| indexer.py | Integration of garble detection in indexing |
-| verdict.py | Verdict promotion with garble-aware gates |
+|---|---|
+| src/pageindex_mcp/helpers/garble.py | Garble detection with signal-loss fallback |
+| src/pageindex_mcp/script.py | Script detection |
+| src/pageindex_mcp/converters/normalize.py | NFKC normalization with signal capture |
+| src/pageindex_mcp/helpers/gates.py | Gate declarations |
+
+## Evidence Chain
+
+- **Chain 4** (RFC-028 D2, RFC-033 D2, RFC-034 D7): NFKC destruction independently rediscovered three times; structurally present as of 2026-08-26
+- **Chain 5** (RFC-024→025): _check_bidi_coherence has 0% true-positive rate; promoted to default-true on wrong reasoning
+- **Chain 18** (RFC-018→019): Digit-ratio blind spot for short text (ISS-36); latin_gibberish unreachable for German
+- **Chain 19** (RFC-020): short_text_prior_garble made detect_garble non-idempotent
+- **Chain 28** (RFC-041/042/043): NFKC ownership unresolved across RFC cycle

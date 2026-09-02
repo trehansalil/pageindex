@@ -1,67 +1,88 @@
 ---
+title: Architecture Defect Zones Index
+zone_name: Index
 tags:
   - zone-index
-  - audit
-  - architecture
+  - audit-summary
+  - critical
+audit_date: 2026-09-02
+audit_run: POST-RFC043
 ---
-# Architecture Defect Zones Index
+# Architecture Defect Zones — Index
 
-**Audit Date:** 2026-09-01  
-**Audit Run:** POST-RFC041  
-**Total Zones:** 7  
-**Total Bugs Attributed:** 26  
-**Critical Zones:** 1 | **High Zones:** 3 | **Medium-High Zones:** 1 | **Medium Zones:** 1 | **Resolved Zones:** 1
-**Validation Date:** 2026-09-01 | **RFC Split:** [[RFC-042]] (Verdict+Config: Zones 2,4,5,6) · [[RFC-043]] (OCR+Garble+Erasure: Zones 1,3,7)
+**Audit Date:** 2026-09-02  
+**Audit Run:** POST-RFC043  
+**Scope:** 7 interdependent structural defect zones  
+**Total Attributed Bugs:** 50+
+
+## Zone Priority Table
+
+| Priority | Zone | Severity | Bug Count | Status | Note |
+|---|---|---|---|---|---|
+| 1 | [[ocr-pipeline-decision-recovery-cascade]] | Critical | 12 | Audited | 4 dead-code recovery methods; order-dependent re-entry guard; multiple conflicting decision sites |
+| 2 | [[garble-detection-nfkc-signal-destruction]] | Critical | 8 | Audited | NFKC destroys presentation-form signal; independently rediscovered 3x; structurally present |
+| 3 | [[table-unaware-pre-tree-text-transforms]] | High | 7 | Audited | Asymmetric table guard: headings.py has it, tree_split.py doesn't; cascade of breaks across 7 RFCs |
+| 4 | [[verdict-promotion-hard-rule-5-bypass]] | High | 7 | Audited | Multiple bypass paths override hard-rule-5; zero-content early-return bypasses recovery; threshold widening masks defects |
+| 5 | [[verdict-persistence-dual-writer-hysteresis]] | High | 6 | Audited | 3 writers with different CAS models; silent failures on transient writes; hysteresis ledger destroyed by reingestion |
+| 6 | [[gate-to-recovery-dispatch-wiring-gap]] | High | 6 | Audited | Recovery declared but never invoked; 'fixed but never wired' pattern; RFC-029 failure reasons never routed |
+| 7 | [[remote-local-execution-divergence-config-snapshot]] | Medium | 4 | Audited | Remote service runs stale image; no parity mechanism; config snapshot leak; timeout uncalibrated |
+
+## By Severity
+
+### Critical (2 zones, 20 bugs)
+1. **OCR Pipeline** — Recovery methods fully implemented but zero production callers; multiple decision sites suppress each other
+2. **NFKC Signal Destruction** — Architectural normalization requirement destroys gate inputs; compensation mechanisms proliferating
+
+### High (4 zones, 30 bugs)
+3. **Table-Unaware Transforms** — Guard exists but unwired in same file where needed; collateral breaks across 7 RFCs
+4. **Verdict Promotion Bypass** — Hard-Rule-5 bypass paths; zero-content early-return; threshold widening
+5. **Persistence Dual-Writer** — CAS asymmetry; silent failures; hysteresis fragility
+6. **Gate-to-Recovery Gap** — Declarative/runtime disconnect; 'fixed but never wired' pattern
+
+### Medium (1 zone, 4 bugs)
+7. **Remote/Local Divergence** — No parity mechanism; config snapshot leak; uncalibrated timeouts
+
+## Cross-Cutting Themes
+
+- **Sequential remediation chains:** Most RFC fixes become next RFC's root-cause finding
+- **'Fixed but never wired' pattern:** Distinct from logic bugs; correct implementations never called/committed
+- **Parameter threading gaps:** Signal/reason-strings lost in transit
+- **NFKC destruction (recurring):** Independently rediscovered 3x across RFCs
+- **Threshold widening without anchoring:** Masks extraction defects rather than fixing them
+- **Gates fighting each other:** Multiple mechanisms with conflicting objectives
+- **Null/zero detectors misread as safe:** _check_bidi_coherence 0% true-positive → promoted to default-true
+- **Table/structural destruction:** Multiple independent transforms with no shared primitive
+- **Dual-store divergence:** MinIO vs Postgres with asymmetric CAS
+- **Remote/local parity gap:** Stale deployed image predates local fixes
+- **Audit staleness risk:** Claims frequently stale; validation-before-remediate needed
+- **Dead code & unwired implementations:** Recovery cascade, persistence bypass callers, eligibility machinery
+- **Write barrier & dual-writer gaps:** Claimed single-writer has 10+ bypass callers
+- **Compliance deferred:** Zone 2 NFKC ownership explicitly unresolved
+
+## Key Statistics
+
+| Metric | Value |
+|---|---|
+| Total Zones | 7 |
+| Total Bugs | 50+ |
+| Critical | 20 |
+| High | 30 |
+| Medium | 4 |
+| Key Files Affected | ~40 |
+| RFC Chain Span | RFC-018 → RFC-043 |
+| Audit Date | 2026-09-02 |
+| Audit Source | ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-02_POST-RFC043.md |
 
 ---
 
-## Zones by Severity
+## How to Use This Index
 
-| Priority | Zone | Severity | Bugs | Status |
-|----------|------|----------|------|--------|
-| 1 | [[ocr-recovery-cascade-converter-fallback-chain\|OCR Recovery Cascade & Converter Fallback Chain]] | HIGH | 8 | validated (downgraded: AGPL fixed, ordering refuted) |
-| 2 | [[verdict-computation-promotion-cascade\|Verdict Computation & Promotion Cascade]] | CRITICAL | 6 | validated |
-| 3 | [[garble-detection-nfkc-signal-destruction\|Garble Detection & NFKC Signal Destruction]] | HIGH | 4 | validated |
-| 4 | [[content-measurement-blind-spot-table-block\|Content Measurement Blind Spot (Table Block)]] | RESOLVED | 3 | validated (D2 complete, trap closed) |
-| 5 | [[verdict-persistence-dual-writer\|Verdict Persistence Dual-Writer]] | HIGH | 2 | validated (no MinIO CAS — worse) |
-| 6 | [[config-snapshot-live-read-divergence\|Config Snapshot vs Live-Read Divergence]] | MEDIUM-HIGH | 2 | validated (17 files, not 9) |
-| 7 | [[hr2-erasure-cascade-ordering\|HR2 Erasure Cascade Hidden Ordering]] | MEDIUM | 1 | validated |
+- **For remediation:** Start with Critical zones; use zone slugs to link directly to evidence
+- **For architecture review:** Read cross-cutting themes to understand systemic patterns
+- **For validation:** Each zone has evidence chain showing how it manifests across RFCs
+- **For monitoring:** Watch for 'fixed but never wired' pattern as early warning sign
 
 ---
 
-## Critical Zones (Immediate Attention Required)
-
-### Zone 1: OCR Recovery Cascade & Converter Fallback Chain
-**8 historical bugs** - The densest defect-generating zone. Three structural coupling patterns make fixes here systematically break other behaviors. See [[ocr-recovery-cascade-converter-fallback-chain]].
-
-### Zone 2: Verdict Computation & Promotion Cascade
-**6 historical bugs** - Tightly coupled three-phase pipeline where threshold changes, gate reordering, and promotion eligibility interact non-linearly. See [[verdict-computation-promotion-cascade]].
-
----
-
-## High-Severity Zones (Planned Remediation)
-
-### Zone 3: Garble Detection & NFKC Signal Destruction
-**4 historical bugs** - Structural vulnerability where NFKC normalization destroys signal before garble checks run. See [[garble-detection-nfkc-signal-destruction]].
-
-### Zone 4: Content Measurement Blind Spot (Table Block Text Extraction)
-**3 historical bugs** - Table blocks intentionally omit text key, causing systematic under-measurement. See [[content-measurement-blind-spot-table-block]].
-
-### Zone 5: Verdict Persistence Dual-Writer
-**2 historical bugs** - Verdict persisted to two independent stores with different CAS guard semantics. See [[verdict-persistence-dual-writer]].
-
----
-
-## Medium-Severity Zones (Follow-Up Actions)
-
-### Zone 6: Config Snapshot vs Live-Read Divergence
-**2 historical bugs** - Frozen PipelineConfig at import time vs 121 live os.environ reads in 9 files. See [[config-snapshot-live-read-divergence]].
-
-### Zone 7: HR2 Erasure Cascade Hidden Ordering Dependencies
-**1 historical bug** - Hidden data-flow dependencies between erasure steps. See [[hr2-erasure-cascade-ordering]].
-
----
-
-## Cross-Cutting Patterns
-
-See [[audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-01_POST-RFC041]] for detailed analysis of 11 recurring patterns across all zones.
+**Last Updated:** 2026-09-02  
+**Audit Methodology:** Structural defect zones (not isolated bugs); mechanism → evidence → history → code
