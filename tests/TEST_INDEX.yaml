@@ -67,6 +67,7 @@ mappings:
       - test_zone3_ocr_recovery.py
       - test_zone4_bidi_rtl.py
       - test_d10c_pre_nfkc_threading.py
+      - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
   client/remote.py:
     coverage_threshold: 90
@@ -115,6 +116,7 @@ mappings:
       - test_verdict.py
       - test_rfc_quality.py
       - test_registry.py
+      - test_integration.py          # RFC-043 D1/D5: e2e recovery + erasure
 
   storage/verdict.py:
     coverage_threshold: 90
@@ -388,6 +390,7 @@ mappings:
       - test_rfc_registry.py
       - test_rfc_tables.py
       - test_zone4_bidi_rtl.py
+      - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
   helpers/verdict.py:
     tests:
@@ -527,6 +530,7 @@ mappings:
       - test_rfc_registry.py
       - test_converters_pipeline.py
       - test_verdict.py
+      - test_documents_tools.py  # RFC-043 D5: get_doc_sha256 erasure fallback
       - test_storage.py
       - test_worker.py
 

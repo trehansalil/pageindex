@@ -16,7 +16,7 @@ These tests assert both halves of the contract:
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pageindex_mcp.tools import documents
 
@@ -110,6 +110,44 @@ class TestValidateErasureManifest:
             patch.object(_docs_mod, "_PREFIX_TO_ERASURE_STEPS", extra_mapping),
         ):
             with pytest.raises(ImportError, match="drafts_cleanup"):
+                validate_erasure_manifest()
+
+    def test_raises_when_consumer_precedes_producer(self):
+        """RFC-043 D4: a step that consumes a ctx.* field must come after the
+        step that produces it -- reordering must fail loudly at import time."""
+        import pageindex_mcp.storage.documents as _docs_mod
+
+        reordered = (
+            ErasureStep(
+                name="early_consumer",
+                step=0,
+                description="test",
+                execute=AsyncMock(return_value=True),
+                consumes=frozenset({"ctx.doc_name"}),
+            ),
+        ) + tuple(
+            s for s in _ERASURE_MANIFEST if s.name != "early_consumer"
+        )
+        with patch.object(_docs_mod, "_ERASURE_MANIFEST", reordered):
+            with pytest.raises(ValueError, match="early_consumer.*ctx.doc_name"):
+                validate_erasure_manifest()
+
+    def test_raises_when_reader_follows_deleter(self):
+        """RFC-043 D4: a step that reads a sidecar must come before the step
+        that deletes it -- reordering must fail loudly at import time."""
+        import pageindex_mcp.storage.documents as _docs_mod
+
+        by_name = {s.name: s for s in _ERASURE_MANIFEST}
+        reordered = tuple(
+            by_name["meta_json"] if name == "verdicts"
+            else by_name["verdicts"] if name == "meta_json"
+            else by_name[name]
+            for name in by_name
+        )
+        with patch.object(_docs_mod, "_ERASURE_MANIFEST", reordered):
+            with pytest.raises(
+                ValueError, match="verdicts.*processed/\\{id\\}\\.meta\\.json"
+            ):
                 validate_erasure_manifest()
 
 
@@ -244,3 +282,33 @@ class TestDeleteDocLogMessages:
         assert len(result["errors"]) > 0
         partial_msgs = [r.message for r in caplog.records if "partial failure" in r.message]
         assert len(partial_msgs) >= 1
+
+    @pytest.mark.asyncio
+    async def test_step1_failure_yields_partial_purge_true(self):
+        """RFC-043 D5: when step 1 (uploads) fails, doc_name is never
+        recovered, so the doc_name-dependent optional steps (hash_cache,
+        preloaded) are skipped -- delete_doc must report partial_purge=True."""
+        from pageindex_mcp.storage.documents import delete_doc
+
+        mock_mc = MagicMock()
+        # uploads listing raises -> step 1 fails, doc_name never recovered
+        mock_mc.list_objects.side_effect = _s3_error("InternalError")
+        mock_mc.get_object.side_effect = _s3_no_such_key
+        mock_mc.remove_object.return_value = None
+
+        with (
+            patch("pageindex_mcp.storage.documents._minio_ops.get_minio", return_value=mock_mc),
+            patch("pageindex_mcp.storage.documents.load_doc", side_effect=ValueError("gone")),
+            patch("pageindex_mcp.cache.doc_cache_delete", return_value=None),
+            patch(
+                "pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete",
+                return_value=None,
+            ),
+            patch(
+                "pageindex_mcp.storage.documents.settings",
+                _mock_settings(registry_enabled=False, postgres_dsn=""),
+            ),
+        ):
+            result = await delete_doc("test-doc-partial")
+
+        assert result["partial_purge"] is True

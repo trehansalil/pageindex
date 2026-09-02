@@ -318,6 +318,30 @@ class TestGateSpecFieldsZone1:
 
 
 # ---------------------------------------------------------------------------
+# RFC-043 D1: _eligible_low_content must not gate on a char threshold
+# ---------------------------------------------------------------------------
+
+
+class TestEligibleLowContentNoCharFloor:
+    """The zero-content OCR recovery flow depends on _eligible_low_content
+    checking only flags + defect membership -- no total_chars threshold.
+    The char floor is a *skip* guard that belongs solely in
+    _recover_low_content_ocr (recovery.py); hardening the eligibility
+    predicate with a char threshold would re-introduce the D1 bug where
+    zero-content documents (0 >= 300 = False) get blocked from recovery."""
+
+    def test_no_total_chars_reference_in_source(self):
+        from pageindex_mcp.helpers.gates import _eligible_low_content
+
+        source = inspect.getsource(_eligible_low_content)
+        assert "total_chars" not in source, (
+            "_eligible_low_content must not check total_chars -- the char "
+            "floor belongs in _recover_low_content_ocr (recovery.py), not "
+            "the eligibility predicate"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Contract: _structural_ok unified expression
 # ---------------------------------------------------------------------------
 
@@ -508,13 +532,14 @@ class TestPresentationFormsNotHardcoded:
     fallback.  This guard exists so the pattern cannot be reintroduced a
     third time.
 
-    ``ScriptContext.from_script_str()`` in script.py is the one allowed
-    occurrence: it is the documented no-information constructor used by
-    test code that has only a script string, and callers that do have the
-    text are expected to build ScriptContext directly instead.
+    RFC-043 D3 removed script.py's ``ScriptContext.from_script_str()``
+    hardcoded ``had_presentation_forms=False`` default -- callers must now
+    pass the real detection result explicitly -- so no file is exempt any
+    longer: the guard runs unconditionally against every file in
+    ``src/pageindex_mcp``.
     """
 
-    ALLOWED_FILES = {"script.py"}
+    ALLOWED_FILES: set[str] = set()
 
     def _offending_sites(self) -> dict[str, list[int]]:
         """Real keyword arguments only.
@@ -572,13 +597,17 @@ class TestPresentationFormsNotHardcoded:
             f"from {text_var}, the text its garble gate checks"
         )
 
-    def test_allowed_site_is_the_documented_no_information_constructor(self):
-        """Guard the exemption itself: script.py's occurrence is inside
-        ``from_script_str``, which documents that it has no text to infer from."""
+    def test_allowed_site_no_longer_hardcodes_false(self):
+        """Guard the exemption itself: RFC-043 D3 removed the hardcoded
+        default from ``from_script_str`` -- it is now a required keyword-only
+        parameter, so the ``script.py`` exemption in ``ALLOWED_FILES`` exists
+        only for the deprecation warning boilerplate, not for a hardcoded
+        ``False``."""
         from pageindex_mcp.script import ScriptContext
 
         src = inspect.getsource(ScriptContext.from_script_str)
-        assert "had_presentation_forms=False" in src
+        assert "had_presentation_forms=False" not in src
+        assert "had_presentation_forms: bool" in src
         assert 'source="legacy"' in src
 
 
@@ -910,4 +939,33 @@ class TestSaveDocMetaSingleWriter:
         assert not hasattr(mod, "_save_doc_meta"), (
             "_save_doc_meta must not exist -- save_doc_meta is the sole "
             "entry point and is guarded by TestSaveDocMetaSingleWriter"
+        )
+
+
+# ---------------------------------------------------------------------------
+# RFC-043 D2: OCR escalation flag independence -- _eligible_low_content must
+# not share image_dominant_ocr_escalation_enabled with _eligible_image_dominant
+# ---------------------------------------------------------------------------
+
+
+class TestOcrEscalationFlagIndependence:
+    """D2 (RFC-043): _eligible_low_content gates solely on
+    ocr_escalation_low_content. It must not OR-gate
+    image_dominant_ocr_escalation_enabled as a fallback -- that coupling
+    turned image_dominant_ocr_escalation_enabled into an unintended
+    kill-switch for low-content recovery. _eligible_image_dominant remains
+    the sole predicate gated on image_dominant_ocr_escalation_enabled."""
+
+    def test_eligible_low_content_does_not_reference_image_dominant_flag(self):
+        from pageindex_mcp.helpers.gates import _eligible_low_content
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(_eligible_low_content)))
+        body = tree.body[0]
+        if ast.get_docstring(body) is not None:
+            body.body = body.body[1:]
+        source = ast.unparse(body)
+        assert "image_dominant_ocr_escalation_enabled" not in source, (
+            "_eligible_low_content must not reference "
+            "image_dominant_ocr_escalation_enabled -- the two eligibility "
+            "predicates must not share a config flag (RFC-043 D2)"
         )

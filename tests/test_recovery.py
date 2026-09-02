@@ -846,6 +846,90 @@ class TestKillSwitchDeconflation:
         assert "ocr_escalation_low_content" in source
 
 
+class TestZeroContentRecoveryFlow:
+    """RFC-043 D1: locks the zero-content recovery flow as a regression
+    guard.  Zero-content documents (total_chars=0, node_count=0) must still
+    reach OCR recovery -- ``_eligible_low_content`` gates on flags + defect
+    membership only (no char threshold), and the char-floor *skip* guard in
+    ``_recover_low_content_ocr`` (``0 >= 300`` = False) correctly lets them
+    through rather than blocking them."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_cfg(self):
+        yield
+        from pageindex_mcp.config import reset_pipeline_config
+        reset_pipeline_config()
+
+    def _make_zero_content_state(self) -> ExtractionState:
+        return ExtractionState(
+            result={"structure": []},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.NODE_COUNT_LOW,
+                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
+            ),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=0,
+            extraction_stages_captured=[],
+        )
+
+    def test_eligible_low_content_true_for_zero_node_document(self, monkeypatch):
+        """_eligible_low_content(state) is True for a zero-content document
+        as long as one of the OCR-escalation flags is on."""
+        import dataclasses as dc
+        from pageindex_mcp.config import pipeline_config as _orig
+        import pageindex_mcp.helpers.gates as gates_mod
+        from pageindex_mcp.helpers.gates import _eligible_low_content
+
+        new_cfg = dc.replace(
+            _orig, ocr_escalation_low_content=True, image_dominant_ocr_escalation_enabled=False
+        )
+        monkeypatch.setattr(gates_mod, "pipeline_config", new_cfg)
+        state = self._make_zero_content_state()
+        assert state.total_chars == 0
+        assert _eligible_low_content(state)
+
+    @pytest.mark.asyncio
+    async def test_recover_low_content_ocr_proceeds_with_zero_chars(self, monkeypatch):
+        """_recover_low_content_ocr must invoke OCR retry for a document
+        with total_chars=0 -- the char-floor guard (0 >= 300 = False) must
+        not skip recovery."""
+        import dataclasses as dc
+        from pageindex_mcp.config import pipeline_config as _orig
+        import pageindex_mcp.client.recovery as recovery_mod
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        new_cfg = dc.replace(_orig, ocr_escalation_low_content=True)
+        monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
+        state = self._make_zero_content_state()
+        mixin = RecoveryMixin()
+        called = []
+
+        async def fake_execute(*a, **kw):
+            called.append(True)
+            return False
+
+        mixin._execute_ocr_retry = fake_execute
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        assert len(called) == 1, "zero-content document must reach _execute_ocr_retry"
+
+    def test_char_floor_skip_guard_allows_zero_chars(self):
+        """The char-floor guard ``total_chars >= low_content_ocr_char_floor``
+        evaluates False for total_chars=0, i.e. it is a *skip* guard that
+        zero-content documents pass through rather than get blocked by."""
+        from pageindex_mcp.config import pipeline_config
+
+        state = self._make_zero_content_state()
+        assert not (state.total_chars >= pipeline_config.low_content_ocr_char_floor)
+
+
 class TestIntegrationRecoveryLoopMultiDefect:
     """Integration: full recovery loop with NODE_COUNT_LOW as first_defect and
     GARBLING as secondary defect fires both low-content and garble recovery."""

@@ -18,6 +18,7 @@ from pageindex_mcp.helpers import _script_from_filename
 from pageindex_mcp.script import (
     _AR_COMMON_WORDS,
     AR_CHAR_RE,
+    ScriptContext,
     arabic_char_count,
     arabic_ratio,
     arabic_readability_score,
@@ -261,3 +262,29 @@ class TestScriptFromFilenameReturnType:
 # 10. Script drift guard (zone-5): CI guard against hardcoded Arabic
 #     codepoint ranges outside script.py
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 11. ScriptContext.from_script_str deprecation + required PF param (RFC-043 D3)
+# ---------------------------------------------------------------------------
+
+
+class TestFromScriptStrDeprecation:
+    def test_warns_deprecation(self):
+        with pytest.deprecated_call():
+            ScriptContext.from_script_str("Arab", had_presentation_forms=True)
+
+    def test_had_presentation_forms_is_required(self):
+        with pytest.raises(TypeError):
+            ScriptContext.from_script_str("Arab")
+
+    def test_had_presentation_forms_is_keyword_only(self):
+        with pytest.raises(TypeError):
+            ScriptContext.from_script_str("Arab", True)
+
+    def test_passes_through_supplied_value(self):
+        with pytest.deprecated_call():
+            ctx = ScriptContext.from_script_str("Arab", had_presentation_forms=True)
+        assert ctx.dominant_script == "Arab"
+        assert ctx.had_presentation_forms is True
+        assert ctx.source == "legacy"
