@@ -30,9 +30,9 @@ Closes three validated structural gaps across the OCR recovery, garble detection
 
 ## Tasks
 
-- [ ] 1. OCR Recovery — Zero-Content Bypass & Flag Decoupling (D1, D2)
+- [x] 1. OCR Recovery — Zero-Content Bypass & Flag Decoupling (D1, D2)
 
-  - [ ] 1.1 Lock zero-content recovery flow with regression tests (D1) **(Amendment 2026-09-01 v3)**
+  - [x] 1.1 Lock zero-content recovery flow with regression tests (D1) **(Amendment 2026-09-01 v3)**
 
     - NO production code changes — zero-content recovery already works correctly
     - Write regression test verifying: `_eligible_low_content(state)` returns True when `node_count=0`, `ocr_escalation_low_content=True`, `NODE_COUNT_LOW in defects`
@@ -41,7 +41,7 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - Verified flow: `validate_tree` → `NODE_COUNT_LOW` gate → `_eligible_low_content` True → `_recover_low_content_ocr` proceeds → `evaluate_gates` post-recovery sees recovered signal
     - _Requirements: [R1](043-ocr-garble-erasure-hardening#requirement-1-zero-content-recovery-bypass), [DP-1](design-rfc043-ocr-garble-erasure-hardening#d1-zero-content-recovery-bypass)_
 
-  - [ ] 1.2 Decouple OCR escalation eligibility flags (D2)
+  - [x] 1.2 Decouple OCR escalation eligibility flags (D2)
 
     - In `_eligible_low_content` (gates.py:294-311), remove the `or config.image_dominant_ocr_escalation_enabled` clause
     - Verify `_eligible_low_content` gates solely on `config.ocr_escalation_low_content` after change
@@ -49,13 +49,13 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - Verify `_eligible_image_dominant` (gates.py:314-327) gates solely on `image_dominant_ocr_escalation_enabled` (no change needed)
     - _Requirements: [R2](043-ocr-garble-erasure-hardening#requirement-2-ocr-escalation-flag-decoupling), [DP-2](design-rfc043-ocr-garble-erasure-hardening#d2-ocr-escalation-flag-decoupling)_
 
-  - [ ] 1.3 Add architecture guard for flag independence
+  - [x] 1.3 Add architecture guard for flag independence
 
     - Write test in `test_architecture_guards.py` asserting `_eligible_low_content` source does not reference `image_dominant_ocr_escalation_enabled`
     - Pattern: grep-based guard matching `TestNoDirectGarbleProngsOutsideGarblePy` style
     - _Requirements: [R2.4](043-ocr-garble-erasure-hardening#requirement-2-ocr-escalation-flag-decoupling), [DP-2](design-rfc043-ocr-garble-erasure-hardening#d2-ocr-escalation-flag-decoupling)_
 
-  - [ ] 1.4 End-to-end test for zero-content recovery flow **(Amendment 2026-09-01 v3 — merged scope with 1.1)**
+  - [x] 1.4 End-to-end test for zero-content recovery flow **(Amendment 2026-09-01 v3 — merged scope with 1.1)**
 
     - Create integration test with `node_count == 0` document exercising the full flow
     - Assert recovered document passes `evaluate_gates` post-recovery (no hard-fail)
@@ -63,15 +63,15 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - NOTE: Unit-level assertions (eligibility, char floor skip) moved to task 1.1
     - _Requirements: [R1](043-ocr-garble-erasure-hardening#requirement-1-zero-content-recovery-bypass), [DP-1](design-rfc043-ocr-garble-erasure-hardening#d1-zero-content-recovery-bypass)_
 
-  - [ ] 1.C Checkpoint — OCR Recovery
+  - [x] 1.C Checkpoint — OCR Recovery
 
     - Run `uv run pytest tests/ -k "gate or recovery or architecture_guard"` and verify all pass
     - Run full suite: `uv run pytest tests/`
     - Verify no verdict regressions against corpus golden files
 
-- [ ] 2. Garble Defense — ScriptContext PF Enforcement (D3)
+- [x] 2. Garble Defense — ScriptContext PF Enforcement (D3)
 
-  - [ ] 2.1 Deprecate `ScriptContext.from_script_str` and enforce PF parameter
+  - [x] 2.1 Deprecate `ScriptContext.from_script_str` and enforce PF parameter
 
     - Add `@deprecated("Use ScriptContext.from_document instead")` decorator to `from_script_str` (script.py:956-968)
     - Make `had_presentation_forms` a required keyword parameter (remove hardcoded `False` default)
@@ -79,7 +79,7 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - NOTE: Validation confirmed zero live production callers — only test code uses this factory
     - _Requirements: [R3.1, R3.2](043-ocr-garble-erasure-hardening#requirement-3-scriptcontext-presentation-forms-enforcement), [DP-3](design-rfc043-ocr-garble-erasure-hardening#d3-scriptcontext-pf-enforcement)_
 
-  - [ ] 2.2 Update existing architecture guard for PF hardcode **(Amendment 2026-09-01: no new guard needed)**
+  - [x] 2.2 Update existing architecture guard for PF hardcode **(Amendment 2026-09-01: no new guard needed)**
 
     - `TestPresentationFormsNotHardcoded` (test_architecture_guards.py:498-582) already guards PF hardcodes via AST parsing
     - Currently exempts `script.py` via `ALLOWED_FILES = {"script.py"}` (line 518)
@@ -87,14 +87,14 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - Verify the guard now catches any `had_presentation_forms=False` literal in ALL src/ files (no exemptions)
     - _Requirements: [R3.3](043-ocr-garble-erasure-hardening#requirement-3-scriptcontext-presentation-forms-enforcement), [DP-3](design-rfc043-ocr-garble-erasure-hardening#d3-scriptcontext-pf-enforcement)_
 
-  - [ ] 2.C Checkpoint — Garble Defense
+  - [x] 2.C Checkpoint — Garble Defense
 
     - Run `uv run pytest tests/ -k "script or presentation_forms or architecture_guard"` and verify all pass
     - Verify `from_script_str` deprecation warning fires in test output
 
-- [ ] 3. Erasure Hardening — Ordering Validation & Failure Loudness (D4, D5)
+- [x] 3. Erasure Hardening — Ordering Validation & Failure Loudness (D4, D5)
 
-  - [ ] 3.1 Verify current manifest passes ordering check (prerequisite)
+  - [x] 3.1 Verify current manifest passes ordering check (prerequisite)
 
     - Before adding validation, manually verify the current 11-step `_ERASURE_MANIFEST` (documents.py:551-622) ordering satisfies the data-flow dependencies:
       - Step 1 (uploads) produces `ctx.doc_name` — must precede steps 5, 7
@@ -103,7 +103,7 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - NOTE: Current ordering may actually violate this — step 2d (verdicts, step=2) comes BEFORE step 3 (meta_json, step=3). If so, the ordering needs correction first.
     - _Requirements: [R4](043-ocr-garble-erasure-hardening#requirement-4-erasure-manifest-ordering-validation), [DP-4](design-rfc043-ocr-garble-erasure-hardening#d4-erasure-manifest-ordering-validation)_
 
-  - [ ] 3.2 Extend ErasureStep with dependency tracking fields (D4) **(Amendment 2026-09-01: two-layer model)**
+  - [x] 3.2 Extend ErasureStep with dependency tracking fields (D4) **(Amendment 2026-09-01: two-layer model)**
 
     - Add four fields to `ErasureStep` (documents.py:301-317):
       - `produces: frozenset[str] = frozenset()` — ctx.* fields this step populates
@@ -123,7 +123,7 @@ Closes three validated structural gaps across the OCR recovery, garble detection
       3. Step 6 (`registry`) Postgres pool dependency (`settings.registry_enabled and settings.postgres_dsn`, then `get_pool() is not None`) is runtime availability, not ordering — correctly excluded from DAG
     - _Requirements: [R4](043-ocr-garble-erasure-hardening#requirement-4-erasure-manifest-ordering-validation), [DP-4](design-rfc043-ocr-garble-erasure-hardening#d4-erasure-manifest-ordering-validation)_
 
-  - [ ] 3.3 Extend validate_erasure_manifest with two-layer ordering check (D4) **(Amendment 2026-09-01)**
+  - [x] 3.3 Extend validate_erasure_manifest with two-layer ordering check (D4) **(Amendment 2026-09-01)**
 
     - After existing PREFIX completeness check, add two ordering validations:
       1. **Context-field ordering:** for each step with non-empty `consumes`, verify all consumed values are in the `produces` set of an earlier step
@@ -132,42 +132,42 @@ Closes three validated structural gaps across the OCR recovery, garble detection
     - Import-time enforcement via module-level `validate_erasure_manifest()` call
     - _Requirements: [R4.1, R4.2](043-ocr-garble-erasure-hardening#requirement-4-erasure-manifest-ordering-validation), [DP-4](design-rfc043-ocr-garble-erasure-hardening#d4-erasure-manifest-ordering-validation)_
 
-  - [ ] 3.4 Upgrade delete_doc skip logging and add partial_purge flag (D5)
+  - [x] 3.4 Upgrade delete_doc skip logging and add partial_purge flag (D5)
 
     - Change skip logging for `required=False` steps from DEBUG to WARNING level
     - Add structured fields to log: `step_name`, `missing_dep`, `doc_id`
     - Add `partial_purge: bool` to the return dict — True when any step skipped due to missing dependency
     - _Requirements: [R5.1, R5.2](043-ocr-garble-erasure-hardening#requirement-5-erasure-failure-loudness), [DP-5](design-rfc043-ocr-garble-erasure-hardening#d5-erasure-failure-loudness)_
 
-  - [ ] 3.5 Add sha256 fallback lookup for verdicts step (D5)
+  - [x] 3.5 Add sha256 fallback lookup for verdicts step (D5)
 
     - Before skipping the verdicts erasure step due to missing `ctx.sha256`, attempt fallback lookup from Postgres registry row
     - Use existing `upsert_doc` connection pool — `SELECT sha256 FROM doc_registry WHERE doc_id = ?`
     - Wrap in try/except — fallback is best-effort; if Postgres unavailable, log WARNING and skip as before
     - _Requirements: [R5.3](043-ocr-garble-erasure-hardening#requirement-5-erasure-failure-loudness), [DP-5](design-rfc043-ocr-garble-erasure-hardening#d5-erasure-failure-loudness)_
 
-  - [ ] 3.C Checkpoint — Erasure Hardening
+  - [x] 3.C Checkpoint — Erasure Hardening
 
     - Run `uv run pytest tests/ -k "erasure or delete_doc"` and verify all pass
     - Verify `validate_erasure_manifest` passes for current manifest at import time
     - Test partial purge scenario: mock step 1 failure, assert `partial_purge=True` in return
 
-- [ ] 4. Integration Tests
+- [x] 4. Integration Tests
 
-  - [ ] 4.1 Cross-zone regression test
+  - [x] 4.1 Cross-zone regression test
 
     - End-to-end test: ingest a zero-content image-only PDF → verify OCR recovery fires → verify verdict is not FAIL/zero_content
     - Test with `image_dominant_ocr_escalation_enabled=False` → verify low-content recovery still works independently
     - _Requirements: [R1, R2](043-ocr-garble-erasure-hardening), [DP-1, DP-2](design-rfc043-ocr-garble-erasure-hardening)_
 
-  - [ ] 4.2 Erasure end-to-end test
+  - [x] 4.2 Erasure end-to-end test
 
     - Test full `delete_doc` cascade with all 11 steps
     - Test with simulated step 1 failure → assert `partial_purge=True`, WARNING logs present, steps 5/7 logged as skipped
     - Test sha256 fallback: mock sidecar missing but registry available → assert verdicts step still executes
     - _Requirements: [R4, R5](043-ocr-garble-erasure-hardening), [DP-4, DP-5](design-rfc043-ocr-garble-erasure-hardening)_
 
-  - [ ] 4.F Final Checkpoint
+  - [x] 4.F Final Checkpoint
 
     - Full test suite: `uv run pytest tests/`
     - Verify all architecture guards pass
