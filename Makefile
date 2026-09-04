@@ -181,7 +181,7 @@ confluence-force-sync: scripts/confluence_sync.sh scripts/confluence_scaffold.py
 
 # ─── Sync .claude skills/workflows to server ────────────────────────────────
 SERVER ?= hetzner_server
-REMOTE_CLAUDE_DIR ?= pageindex_deployment/.claude/
+REMOTE_CLAUDE_DIR ?= /mnt/HC_Volume_106759881/pageindex_deployment/.claude/
 
 .PHONY: sync-claude
 sync-claude:
