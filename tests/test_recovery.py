@@ -1093,6 +1093,49 @@ class TestRecoveryDispatchCrossTupleDedup:
         )
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_vlm_escape_hatch_unblocked_by_full_page_already_applied(self, monkeypatch):
+        """RFC-044 D1/Property 1: when full_page_already_applied is True and
+        GARBLING fires, _recover_garble_ocr must return early (guard blocks
+        redundant OCR), but _recover_vlm_fallback is a distinct strategy and
+        must still be called (VLM is the intended escape hatch)."""
+        state = _make_state(ok=False, first_defect=TreeDefect.GARBLING)
+        state.full_page_already_applied = True
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        mixin = RecoveryMixin.__new__(RecoveryMixin)
+        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
+        await mixin._recover_garble_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        mixin._execute_ocr_retry.assert_not_called()
+
+        monkeypatch.setattr(
+            "pageindex_mcp.client.recovery.settings",
+            MagicMock(vlm_fallback=True, vlm_model="test-model"),
+        )
+        vlm_called = AsyncMock(return_value="# vlm recovered")
+        monkeypatch.setattr(converters, "vlm_extract_markdown", vlm_called)
+        mixin._reconvert_and_revalidate = AsyncMock()
+
+        # Keep the test hermetic: the D7 tesseract-raster tail is out of scope
+        # here and would otherwise reach real tessdata/rasterization code.
+        import dataclasses as dc
+
+        import pageindex_mcp.client.recovery as recovery_mod
+        from pageindex_mcp.config import pipeline_config as _orig_cfg
+
+        monkeypatch.setattr(
+            recovery_mod,
+            "pipeline_config",
+            dc.replace(
+                _orig_cfg,
+                d7_garble_recovery_enabled=False,
+                vlm_tesseract_fallback_enabled=False,
+            ),
+        )
+
+        await mixin._recover_vlm_fallback(state, "/f.pdf", "f.pdf", ".pdf", None)
+        vlm_called.assert_called_once()
+
 
 # ===========================================================================
 # D4: VLM fallback single tesseract block (Property 4)
@@ -1310,3 +1353,126 @@ class TestD3DeprecationWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             finalize_gate_and_route(state, gate)
+
+
+class TestReEntryGuardEnforcement:
+    """RFC-044 D1: _recover_garble_ocr and _recover_low_content_ocr must
+    respect state.full_page_already_applied, matching the pre-existing
+    guard in _recover_image_dominant_ocr, so a document that already
+    received full-page OCR does not trigger a redundant retry."""
+
+    def _make_garble_state(self) -> ExtractionState:
+        return ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 200, "nodes": []}]},
+            ok=False,
+            reason="garbled",
+            gate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.NODE_GARBLING,
+                all_defects=frozenset({TreeDefect.NODE_GARBLING}),
+            ),
+            first_defect=TreeDefect.NODE_GARBLING,
+            route=Route.REJECT,
+            md_content="# garbled content",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="pymupdf4llm",
+            total_chars=200,
+            extraction_stages_captured=[],
+        )
+
+    def _make_low_content_state(self) -> ExtractionState:
+        return ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(
+                ok=False,
+                defect=TreeDefect.NODE_COUNT_LOW,
+                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
+            ),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content="# low",
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=10,
+            extraction_stages_captured=[],
+        )
+
+    @pytest.mark.asyncio
+    async def test_garble_recovery_blocked_when_full_page_already_applied(self):
+        """_recover_garble_ocr must not call _execute_ocr_retry when the
+        guard flag is already set."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        state = self._make_garble_state()
+        state.full_page_already_applied = True
+        mixin = RecoveryMixin()
+        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
+        await mixin._recover_garble_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        mixin._execute_ocr_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_low_content_recovery_blocked_when_full_page_already_applied(self):
+        """_recover_low_content_ocr must not call _execute_ocr_retry when
+        the guard flag is already set."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        state = self._make_low_content_state()
+        state.full_page_already_applied = True
+        mixin = RecoveryMixin()
+        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        mixin._execute_ocr_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_garble_recovery_runs_when_flag_false(self):
+        """Regression guard: _recover_garble_ocr still fires normally when
+        full_page_already_applied=False (no behavior change from D1)."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        state = self._make_garble_state()
+        assert state.full_page_already_applied is False
+        mixin = RecoveryMixin()
+        mixin._execute_ocr_retry = AsyncMock(return_value=False)
+        await mixin._recover_garble_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        mixin._execute_ocr_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_low_content_recovery_runs_when_flag_false(self):
+        """Regression guard: _recover_low_content_ocr still fires normally
+        when full_page_already_applied=False (no behavior change from D1)."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        state = self._make_low_content_state()
+        assert state.full_page_already_applied is False
+        mixin = RecoveryMixin()
+        mixin._execute_ocr_retry = AsyncMock(return_value=False)
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        mixin._execute_ocr_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_guard_cascades_to_prevent_triple_ocr(self):
+        """Guard-cascading test (absorbed from dropped Task 5.2): a first
+        recovery that succeeds sets full_page_already_applied=True, and a
+        second recovery on the same state respects that flag, preventing a
+        third OCR pass."""
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        state = self._make_garble_state()
+        mixin = RecoveryMixin()
+        mixin._execute_ocr_retry = AsyncMock(return_value=True)
+
+        # First recovery: flag starts False, OCR retry applied, flag flips True.
+        await mixin._recover_garble_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        assert mixin._execute_ocr_retry.call_count == 1
+        assert state.full_page_already_applied is True
+
+        # Second recovery (e.g. low-content dispatched after garble in the
+        # same GATES loop pass): must respect the now-True flag and skip.
+        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+        assert mixin._execute_ocr_retry.call_count == 1, (
+            "second recovery must not trigger a redundant (third) OCR pass"
+        )

@@ -37,6 +37,7 @@ from ..helpers import (
     validate_tree,
 )
 from ..helpers.garble import _infer_presentation_forms as _infer_pf
+from ..helpers.gates import _all_defects
 from ..metrics import (
     HR3_EGRESS_BLOCKED_TOTAL,
     OCR_ESCALATION_TOTAL,
@@ -414,6 +415,8 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
+        if state.full_page_already_applied:
+            return  # D1: re-entry guard -- prior OCR pass already ran
         if not pipeline_config.ocr_escalation_garble:
             return
         applied = await self._execute_ocr_retry(
@@ -448,6 +451,8 @@ class RecoveryMixin:
         """
         if state.ok or ext != ".pdf":
             return
+        if state.full_page_already_applied:
+            return  # D1: re-entry guard -- prior OCR pass already ran
         if not pipeline_config.ocr_escalation_low_content:
             return
         if state.total_chars >= pipeline_config.low_content_ocr_char_floor:
@@ -526,7 +531,7 @@ class RecoveryMixin:
         between the per-node repair path and the whole-document
         normalization paths is observable rather than silent.
         """
-        if not (not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL and ext == ".pdf"):
+        if not (not state.ok and TreeDefect.RTL_REVERSAL in _all_defects(state) and ext == ".pdf"):
             return
         # Zone-7: guard against double bidi correction.
         # _renormalize_bidi_guarded (whole-markdown-level) already ran on
@@ -585,7 +590,7 @@ class RecoveryMixin:
         """Recovery 3: RTL flat-vs-tree reversal comparison. Mutates state."""
         if not (
             not state.ok
-            and state.first_defect == TreeDefect.RTL_REVERSAL
+            and TreeDefect.RTL_REVERSAL in _all_defects(state)
             and ext == ".pdf"
             and settings.flat_doc_routing
             and state.md_content

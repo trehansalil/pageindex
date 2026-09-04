@@ -323,8 +323,15 @@ def _eligible_image_dominant(state: ExtractionState) -> bool:
 
 
 def _eligible_rtl(state: ExtractionState) -> bool:
-    """RTL repair eligibility (RTL_REVERSAL)."""
-    return not state.ok and state.first_defect == TreeDefect.RTL_REVERSAL
+    """RTL repair eligibility (RTL_REVERSAL).
+
+    Zone-1 fix: checks *all* active defects (not just first_defect) so
+    RTL_REVERSAL firing as a secondary defect behind a higher-severity
+    primary still triggers RTL-specific recovery.
+    """
+    if state.ok:
+        return False
+    return TreeDefect.RTL_REVERSAL in _all_defects(state)
 
 
 # ---------------------------------------------------------------------------

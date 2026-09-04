@@ -436,11 +436,19 @@ class TestInspectorForceOcrDecisionMatrix:
 
 
 class TestSafetyNetsIntactAfterInspectorForcedOcr:
-    """Task 5.2 (RFC-032 D4): validate_tree() and the Fix-3 OCR-retry escalation
-    are unconditional safety nets — they must still run/fire exactly as before
-    even when pdf-inspector already forced full-page OCR on the first pass."""
+    """Task 5.2 (RFC-032 D4): validate_tree() is an unconditional safety net --
+    it still runs exactly as before even when pdf-inspector already forced
+    full-page OCR on the first pass.
 
-    async def test_fix3_retry_fires_after_forced_ocr_when_validate_tree_flags_garbling(
+    RFC-044 D1 (re-entry guard consistency) changed the Fix-3 OCR-retry
+    escalation itself: ``_recover_garble_ocr`` now checks
+    ``state.full_page_already_applied`` (set at indexer.py:777 when the
+    pre-conversion ``force_full_page`` path, e.g. inspector-forced OCR, ran)
+    and returns immediately rather than firing a second, redundant full-page
+    OCR pass. See design-rfc044-recovery-dispatch-wiring.md D1 edge case 1.
+    """
+
+    async def test_garble_retry_skipped_after_forced_ocr_when_validate_tree_flags_garbling(
         self, monkeypatch, pdf_file
     ):
         validate = MagicMock(side_effect=[(False, "garbling"), (True, None)])
@@ -452,9 +460,14 @@ class TestSafetyNetsIntactAfterInspectorForcedOcr:
             validate_tree=validate,
         )
 
-        assert validate.call_count == 2
+        # D1: full_page_already_applied was set True by the inspector-forced
+        # conversion pass, so _recover_garble_ocr's re-entry guard fires and
+        # validate_tree is NOT called a second time for a retry.
+        assert validate.call_count == 1
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_called_once()
-        mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="recovered")
+        mocks["OCR_ESCALATION_TOTAL"].labels.assert_not_called()
+        # The tree still fails its gate (garbling was never repaired), so it
+        # is persisted with a FAIL verdict rather than routed to flat.
         mocks["save_doc"].assert_called_once()
         mocks["save_flat_doc"].assert_not_called()
 

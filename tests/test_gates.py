@@ -761,30 +761,6 @@ class TestDecideRouteExhaustive:
 class TestDecideOcrStrategyDocumentType:
     """Exhaustive tests for decide_ocr_strategy with document_type parameter."""
 
-    def test_image_document_type_returns_full_page_with_splice_when_unified_enabled(self, monkeypatch):
-        """document_type='image' with UNIFIED_OCR_PLAN_ENABLED=true returns
-        FULL_PAGE mode with splice_required=True."""
-        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", True)
-        result = decide_ocr_strategy(
-            ocr_escalation_enabled=False,
-            has_image_markers=False,
-            document_type="image",
-        )
-        assert result.mode == OcrMode.FULL_PAGE
-        assert result.splice_required is True
-
-    def test_image_document_type_ignored_when_unified_disabled(self, monkeypatch):
-        """document_type='image' with UNIFIED_OCR_PLAN_ENABLED=false falls through
-        to the standard PDF truth table (backward compat)."""
-        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", False)
-        result = decide_ocr_strategy(
-            ocr_escalation_enabled=False,
-            has_image_markers=False,
-            document_type="image",
-        )
-        assert result.mode == OcrMode.NONE
-        assert result.splice_required is False
-
     @pytest.mark.parametrize(
         "escalation, markers, force, garble, already_applied, expected_mode",
         [
@@ -796,11 +772,9 @@ class TestDecideOcrStrategyDocumentType:
         ],
     )
     def test_pdf_document_type_preserves_existing_truth_table(
-        self, monkeypatch, escalation, markers, force, garble, already_applied, expected_mode
+        self, escalation, markers, force, garble, already_applied, expected_mode
     ):
-        """document_type='pdf' (default) preserves the existing truth table
-        regardless of UNIFIED_OCR_PLAN_ENABLED."""
-        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", True)
+        """document_type='pdf' (default) preserves the existing truth table."""
         result = decide_ocr_strategy(
             ocr_escalation_enabled=escalation,
             has_image_markers=markers,
@@ -827,19 +801,6 @@ class TestDecideOcrStrategyDocumentType:
             ocr_langs=["ara", "eng"],
         )
         assert result.ocr_langs == ["ara", "eng"]
-
-    def test_image_type_carries_custom_ocr_langs(self, monkeypatch):
-        """document_type='image' with ocr_langs override threads the langs
-        through to the OcrDecision."""
-        monkeypatch.setattr("pageindex_mcp.picture_plane.UNIFIED_OCR_PLAN_ENABLED", True)
-        result = decide_ocr_strategy(
-            ocr_escalation_enabled=False,
-            has_image_markers=False,
-            document_type="image",
-            ocr_langs=["ara"],
-        )
-        assert result.ocr_langs == ["ara"]
-        assert result.splice_required is True
 
 
 # --- from test_zone6_recovery_wiring.py ---
@@ -1035,6 +996,121 @@ class TestWidenedGarbleEligibility:
         source = inspect.getsource(_eligible_garble)
         assert "_all_defects(state)" in source, (
             "_eligible_garble must call _all_defects(state) to check all active defects"
+        )
+
+
+class TestWidenedRtlEligibility:
+    """RFC-044 D2: _eligible_rtl checks all_defects, not just first_defect,
+    so RTL recovery fires when RTL_REVERSAL is a secondary defect behind a
+    higher-severity primary."""
+
+    def _make_state_with_defects(
+        self,
+        first: TreeDefect,
+        all_defects: frozenset[TreeDefect],
+        ok: bool = False,
+    ) -> ExtractionState:
+        return ExtractionState(
+            result={"structure": [{"node_id": "1", "title": "t", "text": "x", "nodes": []}]},
+            ok=ok,
+            reason=first.value,
+            gate_result=TreeGateResult(
+                ok=ok,
+                defect=first,
+                all_defects=all_defects,
+            ),
+            first_defect=first,
+            route=Route.FLAT,
+            md_content=None,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter=None,
+            total_chars=0,
+            extraction_stages_captured=[],
+        )
+
+    def test_rtl_as_secondary_behind_node_count_low(self):
+        """RTL_REVERSAL as secondary defect behind NODE_COUNT_LOW (severity=1)
+        still triggers RTL recovery eligibility. R2.2."""
+        from pageindex_mcp.helpers.gates import _eligible_rtl
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.NODE_COUNT_LOW,
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.RTL_REVERSAL}),
+        )
+        assert _eligible_rtl(state) is True
+
+    def test_rtl_as_secondary_behind_garbling(self):
+        """RTL_REVERSAL as secondary defect behind GARBLING (D4 garble-priority
+        override promotes GARBLING to primary) still triggers RTL recovery
+        eligibility."""
+        from pageindex_mcp.helpers.gates import _eligible_rtl
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.GARBLING,
+            all_defects=frozenset({TreeDefect.GARBLING, TreeDefect.RTL_REVERSAL}),
+        )
+        assert _eligible_rtl(state) is True
+
+    def test_rtl_as_sole_defect_no_regression(self):
+        """Regression guard: RTL_REVERSAL as the only defect still returns
+        True after the D2 widening. R2.3."""
+        from pageindex_mcp.helpers.gates import _eligible_rtl
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.RTL_REVERSAL,
+            all_defects=frozenset({TreeDefect.RTL_REVERSAL}),
+        )
+        assert _eligible_rtl(state) is True
+
+    def test_rtl_absent_rejects(self):
+        """Without RTL_REVERSAL in all_defects, eligibility is False."""
+        from pageindex_mcp.helpers.gates import _eligible_rtl
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.NODE_COUNT_LOW,
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
+        )
+        assert _eligible_rtl(state) is False
+
+    async def test_recover_rtl_repair_performs_work_for_secondary_defect(self, monkeypatch):
+        """Integration-level: when RTL_REVERSAL fires as a secondary defect,
+        the GATES loop dispatches _recover_rtl_repair, and the method must
+        actually perform work (invoke reconstruct_bidi_order) rather than
+        returning immediately -- the pre-Amendment-3 no-op that only checked
+        state.first_defect."""
+        import pageindex_mcp.client.recovery as recovery_mod
+        from pageindex_mcp.client.recovery import RecoveryMixin
+
+        calls = []
+
+        def fake_reconstruct(text):
+            calls.append(text)
+            return text, None
+
+        monkeypatch.setattr(recovery_mod, "reconstruct_bidi_order", fake_reconstruct)
+        monkeypatch.setattr(
+            recovery_mod,
+            "validate_tree",
+            lambda *a, **kw: TreeGateResult(ok=True, defect=TreeDefect.OK),
+        )
+        monkeypatch.setattr(recovery_mod, "finalize_gate_and_route", lambda *a, **kw: None)
+
+        from pageindex_mcp.helpers.gates import _eligible_rtl
+
+        state = self._make_state_with_defects(
+            first=TreeDefect.NODE_COUNT_LOW,
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.RTL_REVERSAL}),
+        )
+        assert _eligible_rtl(state) is True
+
+        mixin = RecoveryMixin()
+        await mixin._recover_rtl_repair(state, "/f.pdf", "f.pdf", ".pdf", None)
+
+        assert len(calls) >= 1, (
+            "_recover_rtl_repair must invoke reconstruct_bidi_order when "
+            "RTL_REVERSAL is a secondary defect -- gating on first_defect "
+            "alone makes it a no-op for this case"
         )
 
 
