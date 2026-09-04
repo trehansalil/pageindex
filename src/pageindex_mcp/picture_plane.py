@@ -12,7 +12,6 @@ ad-hoc string literals.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal
@@ -346,11 +345,6 @@ def _classify_region(
 # ---------------------------------------------------------------------------
 
 
-# Zone-8: feature flag gating unified OCR plan (default off for shadow validation).
-UNIFIED_OCR_PLAN_ENABLED = os.getenv(
-    "UNIFIED_OCR_PLAN_ENABLED", "false"
-).strip().lower() in ("1", "true", "yes")
-
 DocumentType = Literal["pdf", "image", "html", "text", "xlsx"]
 
 
@@ -374,18 +368,23 @@ def decide_ocr_strategy(
     full-page OCR pass has already run (cross-call re-entry guard).
 
     Zone-8: ``document_type`` discriminant and ``ocr_langs`` output allow
-    all file types to route through one decision point.  Gated behind
-    ``UNIFIED_OCR_PLAN_ENABLED`` -- when disabled, the new parameters are
-    accepted but ignored (backward-compatible default ``pdf`` behavior).
+    all file types to route through one decision point.
 
     Pure function, no side effects.
+
+    Authority scope (RFC-044 D5): this function is authoritative for the
+    FIRST conversion pass only (post-conversion diagnostic in the converter
+    chain via _recover_picture_results).  Recovery-pass OCR decisions are
+    made independently by recovery methods in client/recovery.py, which
+    check their own flag gates and the full_page_already_applied re-entry
+    guard but do NOT call this function.  Pre-conversion full-page OCR is
+    driven by force_full_page (indexer.py:536), which bypasses this
+    function entirely.  See design-rfc044 D5 for the phased consolidation
+    plan.
     """
     _langs = ocr_langs if ocr_langs is not None else ["deu", "eng"]
 
     # Zone-2 fix: re-entry guard MUST run before any other branch.
-    # Previously the UNIFIED_OCR_PLAN_ENABLED short-circuit for image
-    # documents ran first, allowing image docs to bypass the re-entry
-    # guard entirely and trigger redundant full-page OCR.
     if full_page_already_applied:
         return OcrDecision(
             mode=OcrMode.NONE,
@@ -393,19 +392,6 @@ def decide_ocr_strategy(
             has_image_markers=has_image_markers,
             garble_status=garble_status,
             ocr_langs=_langs,
-        )
-
-    # Zone-8: when unified plan is enabled and document_type is 'image',
-    # images always need full-page OCR with splice.  Runs AFTER the
-    # re-entry guard so a second call with full_page_already_applied=True
-    # correctly returns SKIP/NONE instead of firing full-page OCR again.
-    if UNIFIED_OCR_PLAN_ENABLED and document_type == "image":
-        return OcrDecision(
-            mode=OcrMode.FULL_PAGE,
-            has_image_markers=has_image_markers,
-            garble_status=garble_status,
-            ocr_langs=_langs,
-            splice_required=True,
         )
 
     if force_full_page:

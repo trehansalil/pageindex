@@ -87,10 +87,7 @@ from ..metrics import (
     REMOTE_MD_RENORMALIZED,
     VLM_FALLBACK_TOTAL,
 )
-from ..picture_plane import (
-    decide_ocr_strategy,
-    strip_unresolved_image_markers,
-)
+from ..picture_plane import strip_unresolved_image_markers
 from ..script import BlobKind, RtlDecision, ScriptContext
 from ..storage import (
     hash_cache_get,
@@ -531,8 +528,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             # of has_image_markers (which is unknown until the converter returns).
             # The PER_PICTURE decision is deferred to the converter chain
             # (_recover_picture_results) where has_image_markers reflects actual
-            # content.  decide_ocr_strategy is called post-conversion to produce
-            # the unified OcrDecision with real document state.
+            # content.
+            #
+            # AUTHORITY INVERSION (RFC-044 D5): this decision causes Docling to
+            # run native full-page OCR BEFORE decide_ocr_strategy is consulted.
+            # decide_ocr_strategy learns what already happened (via
+            # full_page_already_applied) rather than deciding what should happen.
+            # Inputs (pdf_classification, pre_garbled) should feed INTO
+            # decide_ocr_strategy in a future RFC (Phase B consolidation).
+            # See design-rfc044-recovery-dispatch-wiring.md D5 for phased plan.
             force_full_page = inspector_force_ocr or (
                 state.pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED
             )
@@ -775,23 +779,6 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 # the full-page OCR already covered.
                 if force_full_page:
                     state.full_page_already_applied = True
-                # Zone-2: post-conversion OcrDecision with actual has_image_markers
-                # (was hardcoded False pre-conversion; now reflects real content).
-                _ocr_decision = decide_ocr_strategy(
-                    ocr_escalation_enabled=pipeline_config.ocr_escalation_per_picture,
-                    has_image_markers=bool(md_content and "<!-- image -->" in md_content),
-                    force_full_page=force_full_page,
-                    garble_status=state.pre_garbled,
-                    full_page_already_applied=state.full_page_already_applied,
-                )
-                logger.debug(
-                    "Zone-2: post-conversion OcrDecision for %s: mode=%s, "
-                    "has_image_markers=%s, full_page_already_applied=%s",
-                    filename,
-                    _ocr_decision.mode.value,
-                    _ocr_decision.has_image_markers,
-                    _ocr_decision.full_page_already_applied,
-                )
                 if primary_name is not None and state.used_converter != primary_name:
                     logger.error(
                         "PDF %s extracted by FALLBACK converter '%s' because primary "

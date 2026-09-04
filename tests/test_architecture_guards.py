@@ -969,3 +969,300 @@ class TestOcrEscalationFlagIndependence:
             "image_dominant_ocr_escalation_enabled -- the two eligibility "
             "predicates must not share a config flag (RFC-043 D2)"
         )
+
+
+# ---------------------------------------------------------------------------
+# RFC-044: recovery-dispatch-wiring architecture guards
+# ---------------------------------------------------------------------------
+
+
+class TestRFC044RecoveryDispatchGuards:
+    """Static architecture guards for RFC-044 (recovery dispatch wiring).
+
+    Property 1 (D1) -- re-entry guard exhaustiveness: every ``RecoveryMixin``
+    method that calls ``_execute_ocr_retry`` must early-return on
+    ``state.full_page_already_applied`` *before* that call, so a document that
+    already received full-page OCR never triggers a redundant second pass.
+
+    Property 3 (D3) -- single live ``decide_ocr_strategy`` call site in ``src/``.
+
+    Property 4 (D4) -- no unreachable feature flags: the ``UNIFIED_OCR_PLAN_ENABLED``
+    flag and its dead ``document_type='image'`` branch must not reappear in ``src/``.
+    """
+
+    @staticmethod
+    def _ocr_retry_methods() -> dict[str, ast.AST]:
+        """Every RecoveryMixin method whose body calls ``_execute_ocr_retry``.
+
+        Discovered dynamically so a newly added OCR recovery method is covered
+        by this guard without anyone remembering to extend a hardcoded list.
+        """
+        from pageindex_mcp.client import recovery as recovery_mod
+
+        found: dict[str, ast.AST] = {}
+        for name in dir(recovery_mod.RecoveryMixin):
+            attr = getattr(recovery_mod.RecoveryMixin, name, None)
+            if not inspect.isfunction(attr):
+                continue
+            try:
+                source = textwrap.dedent(inspect.getsource(attr))
+            except (OSError, TypeError):  # pragma: no cover - defensive
+                continue
+            func_node = ast.parse(source).body[0]
+            calls_retry = any(
+                isinstance(node, ast.Attribute) and node.attr == "_execute_ocr_retry"
+                for node in ast.walk(func_node)
+            )
+            if calls_retry:
+                found[name] = func_node
+        return found
+
+    @staticmethod
+    def _guard_lineno(func_node: ast.AST) -> int | None:
+        """Line of the first ``if state.full_page_already_applied: return``."""
+        for node in ast.walk(func_node):
+            if not isinstance(node, ast.If):
+                continue
+            references_flag = any(
+                isinstance(sub, ast.Attribute)
+                and sub.attr == "full_page_already_applied"
+                for sub in ast.walk(node.test)
+            )
+            if not references_flag:
+                continue
+            if any(isinstance(stmt, ast.Return) for stmt in node.body):
+                return node.lineno
+        return None
+
+    @staticmethod
+    def _first_retry_call_lineno(func_node: ast.AST) -> int | None:
+        linenos = [
+            node.lineno
+            for node in ast.walk(func_node)
+            if isinstance(node, ast.Attribute) and node.attr == "_execute_ocr_retry"
+        ]
+        return min(linenos) if linenos else None
+
+    def test_ocr_recovery_methods_discovered(self):
+        """Sanity check: the dynamic discovery actually finds the known methods.
+
+        Without this, a discovery bug would make the guard below vacuously pass
+        over an empty method set.
+        """
+        discovered = set(self._ocr_retry_methods())
+
+        assert discovered >= {
+            "_recover_garble_ocr",
+            "_recover_low_content_ocr",
+            "_recover_image_dominant_ocr",
+        }, (
+            "expected the three known _recover_*_ocr methods to be discovered "
+            f"as _execute_ocr_retry callers, got: {sorted(discovered)}"
+        )
+
+    def test_all_ocr_retry_methods_guard_on_full_page_already_applied(self):
+        violations: list[str] = []
+
+        for method_name, func_node in self._ocr_retry_methods().items():
+            guard_line = self._guard_lineno(func_node)
+            retry_line = self._first_retry_call_lineno(func_node)
+
+            if guard_line is None:
+                violations.append(
+                    f"{method_name}: no early-return guard on "
+                    "state.full_page_already_applied"
+                )
+            elif retry_line is not None and guard_line > retry_line:
+                violations.append(
+                    f"{method_name}: re-entry guard (line +{guard_line}) is "
+                    f"positioned after the _execute_ocr_retry call "
+                    f"(line +{retry_line})"
+                )
+
+        assert not violations, (
+            "R1.4/Property 1 (RFC-044): every RecoveryMixin method calling "
+            "_execute_ocr_retry must early-return on "
+            "state.full_page_already_applied before that call. Violations: "
+            + "; ".join(violations)
+        )
+
+    def test_decide_ocr_strategy_single_call_site(self):
+        """R3.3/Property 3 (RFC-044): decide_ocr_strategy must have exactly
+        one call site in src/ (the live call in converters/pictures.py) --
+        the dead call site removed by Task 3.1/3.2 must stay removed."""
+        src_dir = PROJECT_ROOT / "src"
+        call_sites: list[str] = []
+        for py_file in src_dir.rglob("*.py"):
+            if "test" in py_file.name:
+                continue
+            for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
+                if "decide_ocr_strategy(" not in line:
+                    continue
+                if "def decide_ocr_strategy" in line:
+                    continue
+                call_sites.append(f"{py_file.relative_to(PROJECT_ROOT)}:{lineno}")
+
+        assert len(call_sites) == 1, (
+            "R3.3/Property 3 (RFC-044): decide_ocr_strategy must have "
+            f"exactly one call site in src/. Found: {call_sites}"
+        )
+        assert call_sites[0].startswith(
+            "src/pageindex_mcp/converters/pictures.py:"
+        ), (
+            "R3.3/Property 3 (RFC-044): the single live call site must be "
+            f"in converters/pictures.py. Found: {call_sites[0]}"
+        )
+
+    def test_no_unreachable_ocr_plan_flag(self):
+        """R4/Property 4 (RFC-044): the unreachable UNIFIED_OCR_PLAN_ENABLED
+        flag and its dead image branch must be fully removed from src/."""
+        src_dir = PROJECT_ROOT / "src"
+        hits: list[str] = []
+        for py_file in src_dir.rglob("*.py"):
+            for lineno, line in enumerate(
+                py_file.read_text().splitlines(), 1
+            ):
+                if "UNIFIED_OCR_PLAN_ENABLED" in line:
+                    hits.append(f"{py_file.relative_to(PROJECT_ROOT)}:{lineno}")
+
+        assert not hits, (
+            "R4/Property 4 (RFC-044): UNIFIED_OCR_PLAN_ENABLED must not "
+            f"appear anywhere in src/. Found: {hits}"
+        )
+
+
+class TestEligibilityPredicateSymmetry:
+    """R2.4/R2.6/Property 2 (RFC-044): every ``_eligible_*`` predicate in
+    gates.py must use ``_all_defects(state)`` for defect-type membership
+    checks and must never reference ``state.first_defect`` directly.
+
+    Extended (Amendment 3) to verify the ``_recover_rtl_*`` methods in
+    recovery.py also use ``_all_defects(state)`` for the RTL_REVERSAL
+    membership check rather than ``state.first_defect ==
+    TreeDefect.RTL_REVERSAL``. ``_recover_vlm_fallback`` is deliberately
+    excluded -- its ``first_defect`` usage gates Tesseract raster fallback
+    on GARBLING/NODE_GARBLING, not RTL_REVERSAL.
+    """
+
+    _ELIGIBLE_PREDICATE_NAMES = (
+        "_eligible_garble",
+        "_eligible_low_content",
+        "_eligible_image_dominant",
+        "_eligible_rtl",
+    )
+
+    _RECOVER_RTL_METHOD_NAMES = (
+        "_recover_rtl_repair",
+        "_recover_rtl_flat_compare",
+    )
+
+    @staticmethod
+    def _func_source_without_docstring(func) -> str:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+        body = tree.body[0]
+        if ast.get_docstring(body) is not None:
+            body.body = body.body[1:]
+        return ast.unparse(body)
+
+    def test_eligible_predicates_do_not_reference_first_defect(self):
+        from pageindex_mcp.helpers import gates as gates_mod
+
+        violations = []
+        for name in self._ELIGIBLE_PREDICATE_NAMES:
+            func = getattr(gates_mod, name)
+            source = self._func_source_without_docstring(func)
+            if "first_defect" in source:
+                violations.append(name)
+
+        assert not violations, (
+            "R2.4/Property 2 (RFC-044): no _eligible_* predicate may "
+            "reference state.first_defect directly -- all must use "
+            f"_all_defects(state). Violations: {violations}"
+        )
+
+    def test_eligible_predicates_use_all_defects(self):
+        from pageindex_mcp.helpers import gates as gates_mod
+
+        violations = []
+        for name in self._ELIGIBLE_PREDICATE_NAMES:
+            func = getattr(gates_mod, name)
+            source = self._func_source_without_docstring(func)
+            if "_all_defects(state)" not in source:
+                violations.append(name)
+
+        assert not violations, (
+            "R2.4/Property 2 (RFC-044): every _eligible_* predicate must "
+            f"use _all_defects(state) for defect membership. Violations: {violations}"
+        )
+
+    def test_grep_first_defect_absent_from_gates_eligible_functions(self):
+        gates_path = (
+            PROJECT_ROOT / "src" / "pageindex_mcp" / "helpers" / "gates.py"
+        )
+        source = gates_path.read_text()
+        tree = ast.parse(source)
+
+        violations = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if node.name not in self._ELIGIBLE_PREDICATE_NAMES:
+                continue
+            if ast.get_docstring(node) is not None:
+                node.body = node.body[1:]
+            func_source = ast.unparse(node)
+            if "first_defect" in func_source:
+                violations.append(node.name)
+
+        assert not violations, (
+            "Property 2 (RFC-044): grep -n 'first_defect' gates.py must "
+            f"return zero hits inside _eligible_* function bodies. Violations: {violations}"
+        )
+
+    def test_recover_rtl_methods_do_not_gate_on_first_defect_rtl_reversal(self):
+        from pageindex_mcp.client import recovery as recovery_mod
+
+        violations = []
+        for name in self._RECOVER_RTL_METHOD_NAMES:
+            attr = getattr(recovery_mod.RecoveryMixin, name)
+            source = self._func_source_without_docstring(attr)
+            if "first_defect" in source and "RTL_REVERSAL" in source:
+                tree = ast.parse(source)
+                for cmp_node in ast.walk(tree):
+                    if not isinstance(cmp_node, ast.Compare):
+                        continue
+                    left_is_first_defect = (
+                        isinstance(cmp_node.left, ast.Attribute)
+                        and cmp_node.left.attr == "first_defect"
+                    )
+                    compares_to_rtl_reversal = any(
+                        isinstance(comparator, ast.Attribute)
+                        and comparator.attr == "RTL_REVERSAL"
+                        for comparator in cmp_node.comparators
+                    )
+                    if left_is_first_defect and compares_to_rtl_reversal:
+                        violations.append(name)
+
+        assert not violations, (
+            "R2.6/Property 2 extension (RFC-044, Amendment 3): "
+            "_recover_rtl_repair and _recover_rtl_flat_compare must not "
+            "gate on state.first_defect == TreeDefect.RTL_REVERSAL -- they "
+            f"must use _all_defects(state) instead. Violations: {violations}"
+        )
+
+    def test_recover_rtl_methods_use_all_defects_for_rtl_reversal(self):
+        from pageindex_mcp.client import recovery as recovery_mod
+
+        violations = []
+        for name in self._RECOVER_RTL_METHOD_NAMES:
+            attr = getattr(recovery_mod.RecoveryMixin, name)
+            source = self._func_source_without_docstring(attr)
+            if "TreeDefect.RTL_REVERSAL in _all_defects(state)" not in source:
+                violations.append(name)
+
+        assert not violations, (
+            "R2.6/Property 2 extension (RFC-044, Amendment 3): "
+            "_recover_rtl_repair and _recover_rtl_flat_compare must use "
+            "TreeDefect.RTL_REVERSAL in _all_defects(state) for the "
+            f"RTL_REVERSAL membership check. Violations: {violations}"
+        )
