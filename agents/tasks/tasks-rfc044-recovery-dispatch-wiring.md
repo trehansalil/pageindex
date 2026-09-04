@@ -31,9 +31,9 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
 
 ## Tasks
 
-- [ ] 1. Re-entry Guard Consistency (D1)
+- [x] 1. Re-entry Guard Consistency (D1)
 
-  - [ ] 1.1 Add `full_page_already_applied` guard to `_recover_garble_ocr`
+  - [x] 1.1 Add `full_page_already_applied` guard to `_recover_garble_ocr`
 
     - In `_recover_garble_ocr` (recovery.py:400-432), insert `if state.full_page_already_applied: return` AFTER the `if state.ok or ext != ".pdf": return` guard (recovery.py:415-416) and BEFORE `if not pipeline_config.ocr_escalation_garble: return`
     - Add inline comment: `# D1: re-entry guard -- prior OCR pass already ran`
@@ -41,7 +41,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R1.1](044-recovery-dispatch-wiring#requirement-1-re-entry-guard-consistency), [DP-D1](design-rfc044-recovery-dispatch-wiring#d1-re-entry-guard-consistency)_
     - _Dependencies: none (foundation task)_
 
-  - [ ] 1.2 Add `full_page_already_applied` guard to `_recover_low_content_ocr`
+  - [x] 1.2 Add `full_page_already_applied` guard to `_recover_low_content_ocr`
 
     - In `_recover_low_content_ocr` (recovery.py:434-468), insert `if state.full_page_already_applied: return` AFTER the `if state.ok or ext != ".pdf": return` guard (recovery.py:449-450) and BEFORE `if not pipeline_config.ocr_escalation_low_content: return`
     - Add inline comment: `# D1: re-entry guard -- prior OCR pass already ran`
@@ -49,7 +49,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R1.2](044-recovery-dispatch-wiring#requirement-1-re-entry-guard-consistency), [DP-D1](design-rfc044-recovery-dispatch-wiring#d1-re-entry-guard-consistency)_
     - _Dependencies: none (parallel with 1.1)_
 
-  - [ ] 1.3 Unit tests for re-entry guard enforcement
+  - [x] 1.3 Unit tests for re-entry guard enforcement
 
     - Write test: mock `_execute_ocr_retry`, set `state.full_page_already_applied=True`, call `_recover_garble_ocr`, assert `_execute_ocr_retry` was NOT called
     - Write test: mock `_execute_ocr_retry`, set `state.full_page_already_applied=True`, call `_recover_low_content_ocr`, assert `_execute_ocr_retry` was NOT called
@@ -58,7 +58,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R1.3](044-recovery-dispatch-wiring#requirement-1-re-entry-guard-consistency), [DP-D1](design-rfc044-recovery-dispatch-wiring#d1-re-entry-guard-consistency)_
     - _Dependencies: 1.1, 1.2_
 
-  - [ ] 1.4 Architecture guard for re-entry guard exhaustiveness
+  - [x] 1.4 Architecture guard for re-entry guard exhaustiveness
 
     - Write test in `test_architecture_guards.py` asserting ALL three `_recover_*_ocr` methods (`_recover_garble_ocr`, `_recover_low_content_ocr`, `_recover_image_dominant_ocr`) contain a `full_page_already_applied` guard
     - Pattern: AST or source-text inspection of method bodies, matching `TestNoDirectGarbleProngsOutsideGarblePy` style
@@ -66,15 +66,15 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R1.4](044-recovery-dispatch-wiring#requirement-1-re-entry-guard-consistency), [Property 1](design-rfc044-recovery-dispatch-wiring#property-1-re-entry-guard-exhaustiveness)_
     - _Dependencies: 1.1, 1.2_
 
-  - [ ] 1.C Checkpoint -- Re-entry Guard
+  - [x] 1.C Checkpoint -- Re-entry Guard
 
     - Run `uv run pytest tests/ -k "recovery or architecture_guard"` and verify all pass
     - Run full suite: `uv run pytest tests/`
     - Verify no verdict regressions against corpus golden files
 
-- [ ] 2. RTL Eligibility Predicate Consistency (D2)
+- [x] 2. RTL Eligibility Predicate Consistency (D2)
 
-  - [ ] 2.1 Fix `_eligible_rtl` to use `_all_defects(state)`
+  - [x] 2.1 Fix `_eligible_rtl` to use `_all_defects(state)`
 
     - In `_eligible_rtl` (gates.py:325-327), replace `state.first_defect == TreeDefect.RTL_REVERSAL` with `TreeDefect.RTL_REVERSAL in _all_defects(state)`
     - Update docstring to include Zone-1 fix annotation: "Zone-1 fix: checks *all* active defects (not just first_defect) so RTL_REVERSAL firing as a secondary defect behind a higher-severity primary still triggers RTL-specific recovery."
@@ -82,7 +82,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R2.1](044-recovery-dispatch-wiring#requirement-2-rtl-eligibility-predicate-consistency), [DP-D2](design-rfc044-recovery-dispatch-wiring#d2-rtl-eligibility-predicate-consistency)_
     - _Dependencies: Wave 1 complete (shared test infrastructure in gates/recovery subsystem)_
 
-  - [ ] 2.1b Patch RTL recovery methods to use `_all_defects(state)` **(Amendment 3, 2026-09-04)**
+  - [x] 2.1b Patch RTL recovery methods to use `_all_defects(state)` **(Amendment 3, 2026-09-04)**
 
     - In `_recover_rtl_repair` (recovery.py:529), replace `state.first_defect == TreeDefect.RTL_REVERSAL` with `TreeDefect.RTL_REVERSAL in _all_defects(state)`
     - In `_recover_rtl_flat_compare` (recovery.py:586-592), replace `state.first_defect == TreeDefect.RTL_REVERSAL` with `TreeDefect.RTL_REVERSAL in _all_defects(state)`
@@ -91,7 +91,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R2.5](044-recovery-dispatch-wiring#requirement-2-rtl-eligibility-predicate-consistency), [DP-D2 Change location 2](design-rfc044-recovery-dispatch-wiring#d2-rtl-eligibility-predicate-consistency)_
     - _Dependencies: 2.1_
 
-  - [ ] 2.2 Unit tests for RTL eligibility with co-firing defects
+  - [x] 2.2 Unit tests for RTL eligibility with co-firing defects
 
     - Write test: construct ExtractionState with `gate_result.all_defects={NODE_COUNT_LOW, RTL_REVERSAL}` and `first_defect=NODE_COUNT_LOW`, assert `_eligible_rtl(state)` returns True
     - Write test: construct ExtractionState with `gate_result.all_defects={GARBLING, RTL_REVERSAL}` and garble-promoted primary via D4 override, assert `_eligible_rtl(state)` returns True
@@ -101,7 +101,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R2.2, R2.3](044-recovery-dispatch-wiring#requirement-2-rtl-eligibility-predicate-consistency), [DP-D2 edge cases](design-rfc044-recovery-dispatch-wiring#d2-rtl-eligibility-predicate-consistency)_
     - _Dependencies: 2.1_
 
-  - [ ] 2.3 Architecture guard for predicate symmetry
+  - [x] 2.3 Architecture guard for predicate symmetry
 
     - Write test in `test_architecture_guards.py` asserting NO `_eligible_*` predicate in gates.py references `state.first_defect` directly
     - Pattern: source-text or AST inspection of all four `_eligible_*` function bodies (`_eligible_garble`, `_eligible_low_content`, `_eligible_image_dominant`, `_eligible_rtl`)
@@ -111,14 +111,14 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R2.4, R2.6](044-recovery-dispatch-wiring#requirement-2-rtl-eligibility-predicate-consistency), [Property 2](design-rfc044-recovery-dispatch-wiring#property-2-eligibility-predicate-symmetry)_
     - _Dependencies: 2.1, 2.1b_
 
-  - [ ] 2.C Checkpoint -- RTL Eligibility
+  - [x] 2.C Checkpoint -- RTL Eligibility
 
     - Run `uv run pytest tests/ -k "gate or eligible or rtl or architecture_guard"` and verify all pass
     - Run full suite: `uv run pytest tests/`
 
-- [ ] 3. Dead Code Removal (D3, D4)
+- [x] 3. Dead Code Removal (D3, D4)
 
-  - [ ] 3.1 Remove dead `decide_ocr_strategy` call in `_convert_to_tree` (D3)
+  - [x] 3.1 Remove dead `decide_ocr_strategy` call in `_convert_to_tree` (D3)
 
     - Delete lines indexer.py:778-794 -- the `decide_ocr_strategy(...)` call, its parameter construction, and the `logger.debug(...)` block (the "Zone-2: post-conversion OcrDecision" comment and all associated code)
     - Check whether `decide_ocr_strategy`, `OcrDecision`, and `OcrMode` are still imported elsewhere in `indexer.py`; if any import's only consumer was the dead call, remove from the import block **(Amendment 2026-09-04: expanded to cover OcrDecision/OcrMode per GAP-5)**. Note (Amendment 3): verified at HEAD 7bf4947 that `OcrDecision`/`OcrMode` are NOT actually imported in indexer.py — they appear only in comments (lines 535, 778). The check will resolve to removing only the `decide_ocr_strategy` import (indexer.py:91).
@@ -126,7 +126,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R3.1, R3.2](044-recovery-dispatch-wiring#requirement-3-dead-ocr-decision-call-removal), [DP-D3](design-rfc044-recovery-dispatch-wiring#d3-dead-ocr-decision-call-removal)_
     - _Dependencies: none (independent of Waves 1/2)_
 
-  - [ ] 3.2 Remove `UNIFIED_OCR_PLAN_ENABLED` flag and unreachable branch (D4)
+  - [x] 3.2 Remove `UNIFIED_OCR_PLAN_ENABLED` flag and unreachable branch (D4)
 
     - Delete the `UNIFIED_OCR_PLAN_ENABLED` flag definition (picture_plane.py:349-352) and its Zone-8 comment
     - Delete the `if UNIFIED_OCR_PLAN_ENABLED and document_type == "image":` branch inside `decide_ocr_strategy` (approximately picture_plane.py:398-409) **(Amendment 4: line range corrected from 388-415)**
@@ -139,7 +139,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R4.1, R4.2, R4.5, R4.6, R4.7](044-recovery-dispatch-wiring#requirement-4-unreachable-unified_ocr_plan_enabled-image-branch-removal), [DP-D4](design-rfc044-recovery-dispatch-wiring#d4-unreachable-image-branch-removal)_
     - _Dependencies: none (parallel with 3.1, independent of Waves 1/2)_
 
-  - [ ] 3.3 Architecture guard for single live `decide_ocr_strategy` call site (D3)
+  - [x] 3.3 Architecture guard for single live `decide_ocr_strategy` call site (D3)
 
     - Write test in `test_architecture_guards.py` asserting exactly ONE call site for `decide_ocr_strategy(` in `src/` (excluding test files and the function definition itself)
     - Pattern: `grep -rn 'decide_ocr_strategy(' src/ --include='*.py' | grep -v 'def decide_ocr_strategy' | grep -v test`
@@ -147,21 +147,21 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R3.3](044-recovery-dispatch-wiring#requirement-3-dead-ocr-decision-call-removal), [Property 3](design-rfc044-recovery-dispatch-wiring#property-3-single-live-call-site)_
     - _Dependencies: 3.1_
 
-  - [ ] 3.4 Architecture guard for no unreachable feature flags (D4)
+  - [x] 3.4 Architecture guard for no unreachable feature flags (D4)
 
     - Write test in `test_architecture_guards.py` asserting `UNIFIED_OCR_PLAN_ENABLED` does not appear anywhere in `src/` (excluding tests)
     - Pattern: `grep -rn 'UNIFIED_OCR_PLAN_ENABLED' src/` returns zero hits
     - _Requirements: [R4](044-recovery-dispatch-wiring#requirement-4-unreachable-unified_ocr_plan_enabled-image-branch-removal), [Property 4](design-rfc044-recovery-dispatch-wiring#property-4-no-unreachable-feature-flags)_
     - _Dependencies: 3.2_
 
-  - [ ] 3.5 Confirm `decide_ocr_strategy` PDF-path parity (D4) **(Amendment 4: rewritten as confirmation step)**
+  - [x] 3.5 Confirm `decide_ocr_strategy` PDF-path parity (D4) **(Amendment 4: rewritten as confirmation step)**
 
     - Confirm `test_pdf_document_type_preserves_existing_truth_table` passes after Task 3.2's monkeypatch strip. This test already covers the five parameter combinations (force_full_page, garble_status, has_image_markers+ocr_escalation, full_page_already_applied, defaults).
     - If any combination is missing from the retained truth table, add it as a new parametrize entry — but do NOT write a separate test class.
     - _Requirements: [R4.4, R4.6](044-recovery-dispatch-wiring#requirement-4-unreachable-unified_ocr_plan_enabled-image-branch-removal), [DP-D4](design-rfc044-recovery-dispatch-wiring#d4-unreachable-image-branch-removal)_
     - _Dependencies: 3.2_
 
-  - [ ] 3.C Checkpoint -- Dead Code Removal
+  - [x] 3.C Checkpoint -- Dead Code Removal
 
     - Run `uv run pytest tests/ -k "ocr_strategy or decide_ocr or architecture_guard or picture_plane"` and verify all pass
     - Run full suite: `uv run pytest tests/`
@@ -169,9 +169,9 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - Verify `grep -rn 'UNIFIED_OCR_PLAN_ENABLED' tests/` returns zero hits **(Amendment 5)**
     - Verify `grep -rn 'decide_ocr_strategy(' src/ --include='*.py' | grep -v def | grep -v test` returns exactly one hit
 
-- [ ] 4. Authority Documentation (D5)
+- [x] 4. Authority Documentation (D5)
 
-  - [ ] 4.1 Add authority inversion comment to `force_full_page` assignment
+  - [x] 4.1 Add authority inversion comment to `force_full_page` assignment
 
     - At indexer.py:530-537, amend the existing comment block above the `force_full_page` assignment
     - Add lines documenting the authority inversion: "AUTHORITY INVERSION (RFC-044 D5): this decision causes Docling to run native full-page OCR BEFORE decide_ocr_strategy is consulted. decide_ocr_strategy learns what already happened (via full_page_already_applied) rather than deciding what should happen."
@@ -180,26 +180,26 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R5.1](044-recovery-dispatch-wiring#requirement-5-force-full-page-authority-documentation), [DP-D5](design-rfc044-recovery-dispatch-wiring#d5-force-full-page-authority-documentation)_
     - _Dependencies: 3.1 complete (D5 must reflect post-D3 state -- dead call site already removed)_
 
-  - [ ] 4.2 Amend `decide_ocr_strategy` docstring with authority scope
+  - [x] 4.2 Amend `decide_ocr_strategy` docstring with authority scope
 
     - In `decide_ocr_strategy` (picture_plane.py), append authority-scope paragraph to the existing docstring
     - Text: "Authority scope (RFC-044 D5): this function is authoritative for the FIRST conversion pass only (post-conversion diagnostic in the converter chain via _recover_picture_results). Recovery-pass OCR decisions are made independently by recovery methods in client/recovery.py, which check their own flag gates and the full_page_already_applied re-entry guard but do NOT call this function. Pre-conversion full-page OCR is driven by force_full_page (indexer.py:536), which bypasses this function entirely. See design-rfc044 D5 for the phased consolidation plan."
     - _Requirements: [R5.2](044-recovery-dispatch-wiring#requirement-5-force-full-page-authority-documentation), [DP-D5](design-rfc044-recovery-dispatch-wiring#d5-force-full-page-authority-documentation)_
     - _Dependencies: 3.2 complete (docstring must reflect post-D4 state -- no image branch to mention)_
 
-  - [ ] 4.C Checkpoint -- Authority Documentation
+  - [x] 4.C Checkpoint -- Authority Documentation
 
     - Verify inline comment at indexer.py `force_full_page` contains "AUTHORITY INVERSION (RFC-044 D5)"
     - Verify `decide_ocr_strategy` docstring contains "Authority scope (RFC-044 D5)"
     - Run full suite: `uv run pytest tests/` (no behavioral changes -- documentation only)
 
-- [ ] 5. Integration Tests **(Amendment 2026-09-04: consolidated — dropped 5.1/5.2/5.3, slimmed 5.4)**
+- [x] 5. Integration Tests **(Amendment 2026-09-04: consolidated — dropped 5.1/5.2/5.3, slimmed 5.4)**
 
   > **Consolidation rationale:** Existing `TestIntegrationRecoveryLoopMultiDefect` and `TestRecoveryDispatchCrossTupleDedup` in test_recovery.py already cover multi-defect dispatch (5.1) and partial guard cascading (5.2). RTL secondary-defect testing (5.3) is better as a unit test absorbed into Task 2.2. Only the VLM escape-hatch assertion (5.4) is genuinely new. Net: 3 tasks dropped, 1 slimmed.
   >
   > **Architecture guard consolidation note:** Tasks 1.4, 2.3, 3.3, and 3.4 each add one architecture guard. Implementors SHOULD place all four in a single new class `TestRFC044RecoveryDispatchGuards` in `test_architecture_guards.py` with 4 methods, rather than 4 separate classes.
 
-  - [ ] 5.4 VLM escape-hatch test (slimmed) **(Amendment 2026-09-03, consolidated 2026-09-04)**
+  - [x] 5.4 VLM escape-hatch test (slimmed) **(Amendment 2026-09-03, consolidated 2026-09-04)**
 
     - Add ONE test method to `TestRecoveryDispatchCrossTupleDedup` in test_recovery.py (not a standalone test class)
     - Test scenario: `state.full_page_already_applied=True`, document fails validate_tree with GARBLING
@@ -208,7 +208,7 @@ Hardens the GATES-driven recovery dispatch wiring landed in RFC-043 by closing f
     - _Requirements: [R1](044-recovery-dispatch-wiring#requirement-1-re-entry-guard-consistency), [Property 1](design-rfc044-recovery-dispatch-wiring#property-1-re-entry-guard-exhaustiveness)_
     - _Dependencies: Waves 1-4 complete_
 
-  - [ ] 5.C Checkpoint -- Integration Tests
+  - [x] 5.C Checkpoint -- Integration Tests
 
     - Run `uv run pytest tests/ -k "dispatch or vlm_escape"` and verify all pass
     - Run full suite: `uv run pytest tests/`
