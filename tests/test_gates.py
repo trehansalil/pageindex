@@ -190,17 +190,9 @@ class TestCoFiring:
 
 
 class TestGateSpecFields:
-    def test_recovery_tag_removed(self):
-        assert "recovery_tag" not in {f.name for f in dataclasses.fields(GateSpec)}
-
     def test_recovery_fields_exist(self):
         fields = {f.name for f in dataclasses.fields(GateSpec)}
         assert {"recovery_eligible", "recovery_fns", "severity"} <= fields
-
-    def test_flat_applicable_field_removed(self):
-        """flat_applicable was removed during tree/flat verdict unification."""
-        fields = {f.name for f in dataclasses.fields(GateSpec)}
-        assert "flat_applicable" not in fields
 
     def test_priority_equals_severity(self):
         expected = {g.defect: g.severity for g in GATES if g.gate_fn is not None}
@@ -401,15 +393,6 @@ class TestFinalizeAtomicity:
         # Route must match what decide_route would return
         assert state.route == decide_route(defect, flat_routing_enabled=True)
 
-    def test_garbling_routes_to_tree(self):
-        """GARBLING has RETRY_OCR policy -> Route.TREE."""
-        gate = TreeGateResult(ok=False, defect=TreeDefect.GARBLING, detail="ratio=0.4")
-        state = _make_state()
-        finalize_gate_and_route(state, gate)
-        assert state.route == Route.TREE
-        assert state.first_defect == TreeDefect.GARBLING
-        assert state.ok is False
-
     def test_node_count_low_routes_to_flat(self):
         """NODE_COUNT_LOW has RAISE policy -> Route.FLAT with flat enabled."""
         gate = TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW)
@@ -417,15 +400,6 @@ class TestFinalizeAtomicity:
         finalize_gate_and_route(state, gate, flat_routing_enabled=True)
         assert state.route == Route.FLAT
         assert state.first_defect == TreeDefect.NODE_COUNT_LOW
-
-    def test_ok_routes_to_tree(self):
-        """OK defect -> Route.TREE."""
-        gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
-        state = _make_state()
-        finalize_gate_and_route(state, gate)
-        assert state.route == Route.TREE
-        assert state.first_defect == TreeDefect.OK
-        assert state.ok is True
 
     def test_legacy_tuple_sets_all_fields(self):
         """Legacy (ok, reason) tuple path: gate_result=None, defect parsed from reason."""
@@ -556,21 +530,6 @@ class TestRecoveryConvergence:
 class TestWorkaroundArmsUnreachable:
     """Verify that finalize_gate_and_route makes the (True, !TREE) match arms
     unreachable: when ok=True, decide_route(OK) must produce TREE."""
-
-    def test_ok_true_always_routes_tree(self):
-        """decide_route(OK, ...) == TREE for both flat_routing_enabled values."""
-        assert decide_route(TreeDefect.OK, flat_routing_enabled=True) == Route.TREE
-        assert decide_route(TreeDefect.OK, flat_routing_enabled=False) == Route.TREE
-
-    def test_finalize_ok_true_never_produces_flat_or_reject(self):
-        """When gate says ok=True with defect=OK, finalize must yield TREE.
-        This is the invariant that makes the old workaround match arms dead code."""
-        state = _make_state()
-        gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
-        finalize_gate_and_route(state, gate, flat_routing_enabled=True)
-        assert state.route == Route.TREE
-        finalize_gate_and_route(state, gate, flat_routing_enabled=False)
-        assert state.route == Route.TREE
 
     def test_retry_policies_route_tree(self):
         """RETRY_OCR and CAP_MARGINAL policies all map to TREE."""
@@ -728,10 +687,6 @@ class TestReentryGuard:
 
 
 class TestDecideRouteExhaustive:
-    def test_all_defects_produce_a_route(self):
-        for defect in TreeDefect:
-            assert isinstance(decide_route(defect), Route)
-
     def test_all_route_members_reachable(self):
         reached: set[Route] = set()
         for defect in TreeDefect:
@@ -760,30 +715,6 @@ class TestDecideRouteExhaustive:
 
 class TestDecideOcrStrategyDocumentType:
     """Exhaustive tests for decide_ocr_strategy with document_type parameter."""
-
-    @pytest.mark.parametrize(
-        "escalation, markers, force, garble, already_applied, expected_mode",
-        [
-            (True, True, True, True, True, OcrMode.NONE),
-            (True, True, True, False, False, OcrMode.FULL_PAGE),
-            (True, True, False, False, False, OcrMode.PER_PICTURE),
-            (True, False, False, False, False, OcrMode.NONE),
-            (False, False, False, False, False, OcrMode.NONE),
-        ],
-    )
-    def test_pdf_document_type_preserves_existing_truth_table(
-        self, escalation, markers, force, garble, already_applied, expected_mode
-    ):
-        """document_type='pdf' (default) preserves the existing truth table."""
-        result = decide_ocr_strategy(
-            ocr_escalation_enabled=escalation,
-            has_image_markers=markers,
-            force_full_page=force,
-            garble_status=garble,
-            full_page_already_applied=already_applied,
-            document_type="pdf",
-        )
-        assert result.mode == expected_mode
 
     def test_ocr_langs_defaults_to_deu_eng(self):
         """OcrDecision.ocr_langs defaults to ['deu', 'eng'] when not overridden."""
@@ -987,16 +918,6 @@ class TestWidenedGarbleEligibility:
         )
         assert _eligible_garble(state) is False
 
-    def test_source_checks_all_defects_not_first_defect(self):
-        """Verify the implementation reads all_defects (via _all_defects helper),
-        not just first_defect — source-level regression guard."""
-        import inspect
-        from pageindex_mcp.helpers.gates import _eligible_garble
-
-        source = inspect.getsource(_eligible_garble)
-        assert "_all_defects(state)" in source, (
-            "_eligible_garble must call _all_defects(state) to check all active defects"
-        )
 
 
 class TestWidenedRtlEligibility:

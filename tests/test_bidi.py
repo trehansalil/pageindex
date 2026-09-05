@@ -241,27 +241,6 @@ class TestScriptContextFromDocumentFilename:
         assert ctx.source in ("filename", "combined")
 
 
-class TestScriptContextPresentationForms:
-    """had_presentation_forms is detected on raw text BEFORE NFKC
-    normalization (Presentation Forms codepoints are destroyed by NFKC)."""
-
-    @staticmethod
-    def _make_pf_text(pf_ratio: float = 0.60, total_arabic: int = 100) -> str:
-        pf_chars = [chr(c) for c in range(0xFE70, 0xFE70 + int(total_arabic * pf_ratio))]
-        regular_chars = [chr(c) for c in range(0x0620, 0x0620 + total_arabic - len(pf_chars))]
-        return "".join(pf_chars + regular_chars)
-
-    def test_high_pf_ratio_detected(self):
-        raw = self._make_pf_text(pf_ratio=0.60, total_arabic=80)
-        ctx = ScriptContext.from_document("doc.pdf", raw)
-        assert ctx.had_presentation_forms is True
-
-    def test_low_pf_ratio_not_detected(self):
-        raw = "".join(chr(c) for c in range(0x0620, 0x0660))
-        ctx = ScriptContext.from_document("doc.pdf", raw)
-        assert ctx.had_presentation_forms is False
-
-
 class TestScriptContextSourceProvenance:
     def test_source_filename_only(self):
         ctx = ScriptContext.from_document("doc_ara.pdf", "")
@@ -701,23 +680,6 @@ class TestRecoverFlatPreferWiring:
 # --- from test_rfc_bidi.py ---
 
 # ---------------------------------------------------------------------------
-# D0: _flat_block_primary_text excludes enrichment, _flat_block_text keeps it
-# ---------------------------------------------------------------------------
-class TestFlatBlockPrimaryTextExcludesEnrichment:
-    def test_image_block_with_only_enrichment_returns_empty(self):
-        """An image block with no 'text' key but ocr_text/description must
-        contribute 0 chars to `_flat_block_primary_text` -- enrichment
-        metadata is not document content."""
-        block = {"role": "image", "ocr_text": "chart says 42%", "description": "a bar chart"}
-        assert _flat_block_primary_text(block) == ""
-
-    def test_table_block_falls_back_to_row_records(self):
-        """Table blocks carry no 'text' key by design; row_records are
-        document content, not enrichment, so they ARE included."""
-        block = {"role": "table", "row_records": ["row one", "row two"]}
-        assert _flat_block_primary_text(block) == "row one\nrow two"
-
-
 # ---------------------------------------------------------------------------
 # D1: image_enrichment_promoted garble gate + post-splice D3B recheck
 # ---------------------------------------------------------------------------

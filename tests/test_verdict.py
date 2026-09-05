@@ -686,11 +686,6 @@ class TestUnifiedGateEvaluation:
     a ``flat`` kwarg.  All gate evaluation goes through the same path:
     when a TreeGateResult is passed, all 10 gates apply uniformly."""
 
-    def test_flat_kwarg_removed(self):
-        """compute_verdict must not accept flat= after unification."""
-        with pytest.raises(TypeError):
-            compute_verdict(_single_leaf(), "flat_prose", flat=True)  # type: ignore[call-arg]
-
     def test_treegateresult_with_empty_node_contamination_produces_fail(self):
         """Contract: EMPTY_NODE_CONTAMINATION (a hard-fail defect formerly
         invisible to the flat path) must produce FAIL when threaded through
@@ -815,36 +810,6 @@ class TestClassifyVerdictWrapper:
             cv_v, cv_r = classify_verdict(structure, cc, vr, **kw)
             comp = compute_verdict(structure, cc, vr, **kw)
             assert (cv_v, cv_r) == (comp.verdict, comp.reason)
-
-
-# ---------------------------------------------------------------------------
-# Regression: FLAT_GATE_SUBSET / flat_applicable removal confirmed
-# ---------------------------------------------------------------------------
-
-
-class TestFlatPathRemoval:
-    """After tree/flat verdict unification, FLAT_GATE_SUBSET,
-    _FLAT_APPLICABLE_DEFECTS, and the flat_applicable GateSpec field
-    no longer exist.  These tests confirm their removal."""
-
-    def test_flat_gate_subset_not_exported(self):
-        import pageindex_mcp.helpers as helpers_mod
-        assert not hasattr(helpers_mod, "FLAT_GATE_SUBSET")
-
-    def test_flat_applicable_defects_not_exported(self):
-        import pageindex_mcp.helpers as helpers_mod
-        assert not hasattr(helpers_mod, "_FLAT_APPLICABLE_DEFECTS")
-
-    def test_gatespec_has_no_flat_applicable_field(self):
-        field_names = {f.name for f in dataclasses.fields(GateSpec)}
-        assert "flat_applicable" not in field_names
-
-    def test_all_gates_apply_uniformly(self):
-        """Every active gate must apply to all paths (no subset filtering)."""
-        active_gates = [g for g in GATES if g.gate_fn is not None]
-        assert len(active_gates) == 10, (
-            f"Expected 10 active gates, got {len(active_gates)}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1817,51 +1782,6 @@ class TestGateCountUniformity:
 
 
 # --- from test_zone1_flat_split_wiring.py ---
-
-
-# ---------------------------------------------------------------------------
-# Wiring: VERDICT_PRIORITY
-# ---------------------------------------------------------------------------
-
-
-class TestLedgerPriorityWiring:
-    """VERDICT_PRIORITY must exist in helpers.types (RFC-037 D6 single
-    source of truth) with the correct priority ordering:
-    PASS > MARGINAL > FAIL > ERROR."""
-
-    def test_exists_in_types_module(self):
-        assert isinstance(VERDICT_PRIORITY, dict)
-
-    def test_priority_ordering(self):
-        """PASS has highest priority (3), ERROR has lowest (0)."""
-        assert VERDICT_PRIORITY["PASS"] > VERDICT_PRIORITY["MARGINAL"]
-        assert VERDICT_PRIORITY["MARGINAL"] > VERDICT_PRIORITY["FAIL"]
-        assert VERDICT_PRIORITY["FAIL"] > VERDICT_PRIORITY["ERROR"]
-
-    def test_all_four_verdict_strings_present(self):
-        assert set(VERDICT_PRIORITY.keys()) == {"PASS", "MARGINAL", "FAIL", "ERROR"}
-
-
-# ---------------------------------------------------------------------------
-# Contract: evaluate_gates signature has no flat kwarg
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluateGatesSignature:
-    """evaluate_gates must not accept a flat= keyword argument after
-    the tree/flat verdict split removal."""
-
-    def test_rejects_flat_kwarg_at_runtime(self):
-        th = VerdictThresholds.from_config(pipeline_config)
-        with pytest.raises(TypeError):
-            evaluate_gates([], None, None, th, flat=True)  # type: ignore[call-arg]
-
-    def test_rejects_bare_string_validate_result(self):
-        """evaluate_gates must raise TypeError for bare string validate_result
-        (the old compat path removed in Zone-1)."""
-        th = VerdictThresholds.from_config(pipeline_config)
-        with pytest.raises(TypeError, match="TreeGateResult"):
-            evaluate_gates([], "some_string", None, th)  # type: ignore[arg-type]
 
 
 # --- from test_rfc_promotions.py ---

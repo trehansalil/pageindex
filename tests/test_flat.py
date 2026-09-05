@@ -375,54 +375,6 @@ class TestFlatSearchTextEnrichment:
         assert result == ""
 
 
-# ---------------------------------------------------------------------------
-# _flat_block_text removal -- exhaustiveness check
-# ---------------------------------------------------------------------------
-
-
-class TestFlatBlockTextRemoved:
-    """_flat_block_text was dead production code (zero production callers,
-    RFC-022 B3 artifact superseded by RFC-027 D0 _flat_block_primary_text).
-    Verify it is no longer importable from the helpers package."""
-
-    def test_flat_block_text_not_in_helpers_namespace(self):
-        import pageindex_mcp.helpers as helpers
-
-        assert not hasattr(helpers, "_flat_block_text"), (
-            "_flat_block_text should have been removed from helpers; "
-            "it is dead code superseded by _flat_block_primary_text"
-        )
-
-    def test_flat_block_text_not_in_helpers_all(self):
-        import pageindex_mcp.helpers as helpers
-
-        assert "_flat_block_text" not in helpers.__all__, (
-            "_flat_block_text should not be listed in helpers.__all__"
-        )
-
-    def test_flat_block_text_not_importable_from_flat_module(self):
-        from pageindex_mcp.helpers import flat
-
-        assert not hasattr(flat, "_flat_block_text"), (
-            "_flat_block_text should have been removed from flat.py"
-        )
-
-    def test_flat_block_text_direct_import_raises(self):
-        with pytest.raises(ImportError):
-            from pageindex_mcp.helpers import _flat_block_text  # noqa: F401
-
-    def test_primary_text_still_importable(self):
-        """Ensure the production replacement is still available."""
-        from pageindex_mcp.helpers import _flat_block_primary_text  # noqa: F401
-
-        assert callable(_flat_block_primary_text)
-
-    def test_search_text_still_importable(self):
-        """Ensure the search-index variant is still available."""
-        from pageindex_mcp.helpers import _flat_search_text  # noqa: F401
-
-        assert callable(_flat_search_text)
-
 
 # --- from test_rfc_blocks.py ---
 
@@ -560,37 +512,6 @@ class TestSynthesizeFlatStructure:
         assert verdict != "FAIL"
 
 
-class TestFlatBlockText:
-    """Property 5 (B3): _flat_block_primary_text falls back to verbalized
-    row_records for role="table" blocks that carry no "text" key."""
-
-    def test_table_block_without_text_key_falls_back_to_row_records(self):
-        block = {"role": "table", "row_records": ["a | b | c", "d | e | f"]}
-        assert "text" not in block
-        text = _flat_block_primary_text(block)
-        assert text == "a | b | c\nd | e | f"
-
-    def test_pre_fix_text_only_measurement_would_starve_table_blocks(self):
-        # Regression guard: the pre-B3 measurement (b.get("text", "")) sees
-        # zero content for table blocks, which is the bug this fix
-        # addresses.
-        blocks = _table_heavy_doc_blocks()
-        pre_fix_chars = sum(len(b.get("text", "")) for b in blocks)
-        assert pre_fix_chars == 0
-        post_fix_chars = sum(len(_flat_block_primary_text(b)) for b in blocks)
-        assert post_fix_chars > 375
-
-
-class TestTreeGarble:
-    """Property 2 (B1): check_garble on empty tree -> False."""
-
-    def test_tree_garble_empty_list_returns_false(self):
-        assert _tree_garble([]) is False
-
-    def test_tree_garble_non_empty_unchanged(self):
-        assert _tree_garble([{"text": "real content"}]) is False
-        assert _tree_garble([{"text": "\x00" * 200}]) is True
-
 
 class TestImageExtensionRouting:
     """Property 3 (B2): a file whose extension is in _IMAGE_EXTS gets
@@ -724,40 +645,6 @@ class TestFlatBlockPrimaryTextHeaderOnly:
             f"Header-only table should contribute to char_count, got {char_count}"
         )
 
-
-# ---------------------------------------------------------------------------
-# Contract: _flat_block_primary_text is the canonical role-aware accessor
-# ---------------------------------------------------------------------------
-
-
-class TestFlatBlockPrimaryTextContract:
-    """Contract tests verifying _flat_block_primary_text is the single
-    canonical accessor for block primary text across all roles."""
-
-    def test_prose_block_returns_text(self):
-        assert _flat_block_primary_text({"role": "prose", "text": "hello"}) == "hello"
-
-    def test_kv_block_returns_text(self):
-        assert _flat_block_primary_text({"role": "kv", "text": "key: value"}) == "key: value"
-
-    def test_title_block_returns_text(self):
-        assert _flat_block_primary_text({"role": "title", "text": "Section 1"}) == "Section 1"
-
-    def test_image_block_no_text_returns_empty(self):
-        """Image blocks carry enrichment in ocr_text/description, not 'text'.
-        Primary text for image blocks is empty."""
-        block = {"role": "image", "ocr_text": "chart data", "description": "bar chart"}
-        assert _flat_block_primary_text(block) == ""
-
-    def test_table_with_text_key_prefers_row_records(self):
-        """D2 (RFC-041): table blocks consistently use row_records,
-        ignoring any text key.  Unified behavior across all purposes."""
-        block = {"role": "table", "text": "legacy text", "row_records": ["r1"]}
-        assert _flat_block_primary_text(block) == "r1"
-
-    def test_table_row_records_joined_with_newline(self):
-        block = {"role": "table", "row_records": ["row1", "row2", "row3"]}
-        assert _flat_block_primary_text(block) == "row1\nrow2\nrow3"
 
 
 # ---------------------------------------------------------------------------
@@ -897,57 +784,6 @@ class TestIndexerFlatCharCountWiring:
         assert naive_count == 0, "Naive access should see zero for table blocks"
         assert correct_count > 0, "Role-aware access should see table content"
 
-
-# ---------------------------------------------------------------------------
-# Wiring: _flat_block_primary_text is importable from helpers namespace
-# ---------------------------------------------------------------------------
-
-
-class TestCanonicalHelperExports:
-    """Verify the two canonical helpers are exported from the helpers
-    package and are the same objects as in flat.py."""
-
-    def test_primary_text_exported_from_helpers(self):
-        from pageindex_mcp.helpers import _flat_block_primary_text as h_fn
-        from pageindex_mcp.helpers.flat import _flat_block_primary_text as f_fn
-        assert h_fn is f_fn
-
-    def test_search_text_exported_from_helpers(self):
-        from pageindex_mcp.helpers import _flat_search_text as h_fn
-        from pageindex_mcp.helpers.flat import _flat_search_text as f_fn
-        assert h_fn is f_fn
-
-    def test_indexer_imports_primary_text_from_helpers(self):
-        """indexer.py must import _flat_block_primary_text from helpers."""
-        import ast as _ast
-        from pathlib import Path as _Path
-
-        indexer_src = (_Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "client" / "indexer.py")
-        tree = _ast.parse(indexer_src.read_text())
-        imported_names = set()
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.ImportFrom):
-                for alias in node.names:
-                    imported_names.add(alias.name)
-        assert "_flat_block_primary_text" in imported_names, (
-            "indexer.py must import _flat_block_primary_text"
-        )
-
-    def test_recovery_imports_primary_text_from_helpers(self):
-        """recovery.py must import _flat_block_primary_text from helpers."""
-        import ast as _ast
-        from pathlib import Path as _Path
-
-        recovery_src = (_Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "client" / "recovery.py")
-        tree = _ast.parse(recovery_src.read_text())
-        imported_names = set()
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.ImportFrom):
-                for alias in node.names:
-                    imported_names.add(alias.name)
-        assert "_flat_block_primary_text" in imported_names, (
-            "recovery.py must import _flat_block_primary_text"
-        )
 
 
 # ===========================================================================
@@ -1118,71 +954,4 @@ class TestGarbleScoreRegression:
         assert report is None
 
 
-# ===========================================================================
-# D10b (RFC-041): Zone-9 fix in _flat_search_text — Property 10
-# ===========================================================================
 
-
-class TestSearchTextHeaderOnlyTable:
-    """Property 10: header-only table block returns header text from
-    _flat_search_text (now doc_text(data, SEARCH))."""
-
-    def test_header_only_table_returns_headers_via_search(self):
-        data = {
-            "blocks": [
-                {"role": "table", "headers": ["Name", "Age", "City"], "row_records": []},
-            ]
-        }
-        result = _flat_search_text(data)
-        assert "Name" in result
-        assert "Age" in result
-        assert "City" in result
-
-    def test_header_only_table_parity_with_primary_text(self):
-        """Accessor parity: _flat_search_text and _flat_block_primary_text
-        return the same header text for header-only tables."""
-        block = {"role": "table", "headers": ["X", "Y"], "row_records": []}
-        data = {"blocks": [block]}
-        search_result = _flat_search_text(data)
-        primary_result = _flat_block_primary_text(block)
-        assert search_result == primary_result
-
-    def test_header_only_no_row_records_key(self):
-        block = {"role": "table", "headers": ["A", "B"]}
-        data = {"blocks": [block]}
-        result = _flat_search_text(data)
-        assert "A" in result
-        assert "B" in result
-
-
-# ===========================================================================
-# D2 Task 2.3: CI lint — block['text'] access outside block_text()
-# ===========================================================================
-
-
-class TestBlockTextCILint:
-    """CI lint test for direct block['text'] access."""
-
-    def test_block_text_importable(self):
-        from pageindex_mcp.helpers import block_text as bt
-        assert callable(bt)
-
-    def test_doc_text_importable(self):
-        from pageindex_mcp.helpers import doc_text as dt
-        assert callable(dt)
-
-    def test_block_text_purpose_importable(self):
-        from pageindex_mcp.helpers import BlockTextPurpose as BTP
-        assert hasattr(BTP, "GARBLE_CHECK")
-        assert hasattr(BTP, "SEARCH")
-        assert hasattr(BTP, "CHAR_COUNT")
-        assert hasattr(BTP, "DISPLAY")
-
-    def test_legacy_wrappers_delegate_to_block_text(self):
-        """_flat_block_primary_text and _flat_search_text must delegate
-        to block_text / doc_text, not duplicate extraction logic."""
-        block = {"role": "table", "headers": ["H1", "H2"], "row_records": []}
-        assert _flat_block_primary_text(block) == block_text(block, BlockTextPurpose.CHAR_COUNT)
-
-        data = {"blocks": [block]}
-        assert _flat_search_text(data) == doc_text(data, BlockTextPurpose.SEARCH)

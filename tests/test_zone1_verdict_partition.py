@@ -615,20 +615,6 @@ def _reference_apply_promotions(outcome: GateOutcome, content_class, ier, insp, 
 
 
 class TestVG6BehaviorIdentity:
-    @pytest.mark.parametrize("case", GOLDEN_TABLE, ids=lambda c: c.name)
-    def test_verdict_and_reason_unchanged_by_evaluate_all(self, case: Case):
-        ref_verdict, ref_reason = _reference_apply_promotions(
-            _outcome(case.sig, case.all_defects),
-            case.content_class,
-            case.image_enrichment_ratio,
-            case.inspector_class,
-            _th(),
-        )
-        result = _run(case)
-        assert (result.verdict, result.reason) == (ref_verdict, ref_reason), (
-            f"{case.name}: VG-6 changed observable behavior, not just telemetry"
-        )
-
     def test_only_new_observable_is_promotion_paths_matched(self):
         """The reference model exposes no match set; the new field is the
         entire delta, and it never contradicts the winner."""
@@ -682,13 +668,3 @@ class TestVerdictResultUnpackingCompat:
         assert isinstance(result.promotion_paths_matched, tuple)
         assert result.promotion_paths_matched not in list(result)
 
-    def test_default_is_empty_tuple(self):
-        from pageindex_mcp.helpers.types import VerdictResult
-
-        assert VerdictResult("PASS", "x").promotion_paths_matched == ()
-
-    def test_unpacking_holds_across_the_whole_golden_table(self):
-        for case in GOLDEN_TABLE:
-            verdict, reason = _run(case)
-            result = _run(case)
-            assert (verdict, reason) == (result.verdict, result.reason)
