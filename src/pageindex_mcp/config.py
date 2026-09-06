@@ -3,7 +3,6 @@
 import dataclasses
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -76,7 +75,6 @@ class Settings:
     minio_secret_key: str
     minio_bucket: str
     minio_secure: bool
-    doc_store_path: Path
     server_host: str
     server_port: int
     redis_url: str
@@ -269,14 +267,12 @@ def validate_hr3_compliance(settings_obj: "Settings | None" = None) -> None:
 
 
 def _load_settings() -> Settings:
-    repo_root = Path(__file__).resolve().parent.parent.parent
     return Settings(
         minio_endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
         minio_access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
         minio_bucket=os.environ.get("MINIO_BUCKET", "pageindex"),
         minio_secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-        doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
         redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),

@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import tempfile
-import time
 import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,9 +45,6 @@ from pageindex_mcp.converters import (
     reconstruct_bidi_order,
     splice_figure_markers,
     splice_picture_text_for_tree,
-)
-from pageindex_mcp.converters.headings import (
-    _inject_arabic_structural_headings,
 )
 from pageindex_mcp.converters.ocr_langs import (
     TessdataUnavailableError,
@@ -1577,15 +1573,6 @@ class TestWriteVisibilityBarrier:
 
 
 # ===========================================================================
-# converters.pdf_markdown_converters (D4 ALLOW_AGPL_FALLBACK config gate)
-# ===========================================================================
-
-
-def _chain_names(chain):
-    return [name for name, _ in chain]
-
-
-# ===========================================================================
 # helpers.decide_rtl / _word_has_reversed_morphology / validate_tree
 # (D6/D7 Joining_Type reversal detection + D9 NFKC detector-chain integration)
 # ===========================================================================
@@ -1655,21 +1642,6 @@ class TestMaxLandscapePagesCap:
         results = _landscape_rasterize_rotate_reextract("fake.pdf", pages)
 
         assert results == []
-
-
-# Module-level (picklable-by-reference) worker stand-ins for the
-# multiprocessing 'spawn' context Property 2 exercises.
-def _slow_chunk_worker(
-    result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None
-):
-    time.sleep(5)
-    result_queue.put(("ok", ("late content", [])))
-
-
-def _fast_chunk_worker(
-    result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script=None
-):
-    result_queue.put(("ok", ("chunk markdown", [])))
 
 
 class TestSpliceLandscapeFallback:

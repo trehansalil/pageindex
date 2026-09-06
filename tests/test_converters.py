@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import sys
 import types
 from types import SimpleNamespace
@@ -16,13 +15,10 @@ import openpyxl
 import pytest
 from bidi.algorithm import get_display
 
-import pageindex_mcp.client as client_mod
 from pageindex_mcp import converters, helpers
 from pageindex_mcp import converters as converters_mod
-from pageindex_mcp.client import MIN_STANDALONE_IMAGE_MD_CHARS
 from pageindex_mcp.config import OCR_ESCALATION_GARBLE, pipeline_config, reset_pipeline_config
 from pageindex_mcp.converters import (
-    PictureResult,
     _AR_PART_RE,
     _bbox_to_fitz_rect,
     _containment_depths,
@@ -1480,13 +1476,6 @@ assert len(_SHORT_CLEAN_TEXT) < 200
 # NOTE: mock_minio fixture is provided by conftest.py; not redefined here.
 
 
-def _ledger_response(verdict: str, sha256: str = "abc123") -> MagicMock:
-    response = MagicMock()
-    payload = {"sha256": sha256, "verdict": verdict, "verdict_reason": "test"}
-    response.read.return_value = json.dumps(payload).encode()
-    return response
-
-
 def _install_fake_fitz(monkeypatch, *, page_text="", clip_text=None, width=612.0, height=792.0):
     """``page_text`` is what ``page.get_text("text")`` (no clip) returns --
     drives the page-level ``_text_layer_has_content`` check. ``clip_text`` is
@@ -1944,12 +1933,6 @@ class TestTextLayerHasContent:
 # ---------------------------------------------------------------------------
 
 
-def _pic(ocr_text: str = "", **kwargs) -> PictureResult:
-    result: PictureResult = {"ocr_text": ocr_text}
-    result.update(kwargs)
-    return result
-
-
 # ---------------------------------------------------------------------------
 # D2 + D6: decorative-icon bbox classifier and page-rotation-corrected OCR
 # ---------------------------------------------------------------------------
@@ -2167,14 +2150,6 @@ def _vlm_tesseract_fallback(ocr_text: str, *, reason: str = "garbling") -> str:
     return reason
 
 
-def _garbling_without_exception_gate(ok: bool, reason: str) -> bool:
-    """Reproduces client.py's RFC-024 D5 gate: after the VLM try-block's
-    validate_tree() call succeeds (no exception raised), recovery fires
-    only when ok is False, reason is 'garbling', and
-    D7_GARBLE_RECOVERY_ENABLED."""
-    return not ok and reason == "garbling" and client_mod._D7_GARBLE_RECOVERY_ENABLED
-
-
 class TestVlmTesseractFallback:
     """Design Property 8: on VLM exception, Tesseract OCR runs on the
     rasterized page images; clean OCR text overrides reason to
@@ -2221,12 +2196,6 @@ class TestImageBranchTessdataDegradation:
 
 # D8: standalone-image OCR enrichment + terminal-vs-transient LLM failures
 # ---------------------------------------------------------------------------
-
-
-def _standalone_image_ocr_should_run(md_content: str) -> bool:
-    """Reproduces client.py's standalone-image OCR skip-guard condition
-    exactly."""
-    return len("".join(md_content.split())) <= MIN_STANDALONE_IMAGE_MD_CHARS
 
 
 class TestClassifyLlmFailure:
