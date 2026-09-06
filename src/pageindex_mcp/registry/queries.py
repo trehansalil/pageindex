@@ -293,26 +293,6 @@ async def delete_doc(doc_id: str) -> None:
     logger.info("registry: deleted doc_id=%s", doc_id)
 
 
-_LIST_ALL_DOC_IDS_SQL = "SELECT doc_id FROM doc_registry;"
-
-
-async def list_all_doc_ids() -> set[str] | None:
-    """Return every doc_id currently in the registry (including verdict='FAIL'
-    rows — deletion-drift reconciliation needs the true row set, not just the
-    queryable subset). Returns ``None`` on any Postgres error so the caller can
-    treat "unknown" distinctly from "empty" and skip a destructive sync.
-    """
-    pool = _schema.get_pool()
-    if pool is None:
-        return None
-    try:
-        rows = await pool.fetch(_LIST_ALL_DOC_IDS_SQL)
-        return {r["doc_id"] for r in rows}
-    except Exception as exc:
-        logger.error("registry: list_all_doc_ids failed: %s", exc)
-        return None
-
-
 _LIST_ALL_DOC_IDS_WITH_TS_SQL = "SELECT doc_id, processed_at FROM doc_registry;"
 
 

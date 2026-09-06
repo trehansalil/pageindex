@@ -33,7 +33,6 @@ MESSAGES=()
 
 pass()  { PASS=$((PASS+1));  MESSAGES+=("  [PASS]  $*"); }
 fail()  { FAIL=$((FAIL+1));  MESSAGES+=("  [FAIL]  $*"); }
-skip()  { SKIP=$((SKIP+1));  MESSAGES+=("  [SKIP]  $* (not yet configured)"); }
 
 echo "=== Gate 5: build ==="
 

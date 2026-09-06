@@ -69,10 +69,6 @@ def _well_formed() -> list:
     ]
 
 
-def _single_leaf(size: int = 1000) -> list:
-    return [{"node_id": "1", "title": "Root", "text": "x" * size, "nodes": []}]
-
-
 def _varied_text(i: int) -> str:
     paragraphs = [
         "The insurance contract shall be governed by the applicable laws and regulations.",
@@ -250,40 +246,6 @@ def _decomposed_verdict(structure, content_class, validate_result=None, **kw):
 # =============================================================================
 # Verdict ledger
 # =============================================================================
-
-
-def _make_s3_error(code="NoSuchKey"):
-    from minio.error import S3Error
-
-    return S3Error(MagicMock(), code, "not found", "", "", "")
-
-
-def _mock_minio():
-    mc = MagicMock()
-    store: dict[str, bytes] = {}
-
-    def put_object(bucket, key, data, length, content_type=None):
-        store[key] = data.read()
-
-    def get_object(bucket, key):
-        if key not in store:
-            raise _make_s3_error("NoSuchKey")
-        response = MagicMock()
-        response.read.return_value = store[key]
-        return response
-
-    def list_objects(bucket, prefix="", recursive=False):
-        return [type("O", (), {"object_name": k})() for k in store if k.startswith(prefix)]
-
-    def remove_object(bucket, key):
-        store.pop(key, None)
-
-    mc.put_object.side_effect = put_object
-    mc.get_object.side_effect = get_object
-    mc.list_objects.side_effect = list_objects
-    mc.remove_object.side_effect = remove_object
-    mc._store = store
-    return mc
 
 
 class TestLedgerRemoval:
@@ -948,19 +910,6 @@ class TestSplitOversizedLeafNodes:
 # ---------------------------------------------------------------------------
 # _flat_block_primary_text / save_flat_doc: flat-doc char-count measurement (D6)
 # ---------------------------------------------------------------------------
-
-
-def _table_heavy_blocks() -> list:
-    return [
-        {
-            "role": "table",
-            "row_records": ["Tarif A | EUR 10", "Tarif B | EUR 20"],
-        },
-        {
-            "role": "table",
-            "row_records": ["Beitrag 1 | Stufe 1", "Beitrag 2 | Stufe 2"],
-        },
-    ]
 
 
 def _text_only_blocks() -> list:

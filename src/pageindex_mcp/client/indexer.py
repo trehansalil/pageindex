@@ -48,14 +48,11 @@ from ..converters import (
     zdr_egress_gate,
 )
 from ..helpers import (
-    FLAT_MARKDOWN_PROFILE,
     GATES,
     ExtractionState,
-    GarbleReport,
     LowQualityTreeError,
     Route,
     TreeDefect,
-    TreeGateResult,
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,

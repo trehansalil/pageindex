@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 import re
 
 from ..config import pipeline_config
-from ..script import ScriptContext, decide_rtl
+from ..script import ScriptContext
 from .heuristic_registry import registry as _heuristic_registry
 from .garble import (
-    BULK_PROFILE,
     BlobKind,
-    GarbleConfig,
     _garble_config,
     _infer_presentation_forms,
     detect_garble,

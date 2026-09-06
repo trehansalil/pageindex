@@ -160,10 +160,6 @@ def _make_tree(leaf_sizes, depth=2):
     return trees
 
 
-def _diverse_words(n):
-    return " ".join(f"word{i}" for i in range(n))
-
-
 def _two_leaf_flat_tree():
     return _shared_root_tree([500, 500])
 
@@ -200,9 +196,6 @@ class TestGarbleRatioQF4:
     def test_fully_garbled(self):
         text = "" * 3000
         assert _garble_ratio(text) == 1.0
-
-
-_NON_EMPTY_STRUCTURE = [{"node_id": "1", "title": "Cover", "text": "img", "nodes": []}]
 
 
 class TestClassifyImageVerdict:

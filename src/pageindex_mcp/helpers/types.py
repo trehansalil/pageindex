@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -529,11 +529,6 @@ class VerdictThresholds:
             small_doc_min_chars=cfg.small_doc_min_chars,
             small_doc_max_chars=cfg.small_doc_max_chars,
         )
-
-
-def _get_verdict_thresholds() -> VerdictThresholds:
-    """Return VerdictThresholds derived from the current pipeline_config."""
-    return VerdictThresholds.from_config(pipeline_config)
 
 
 def reset_verdict_thresholds() -> None:

@@ -23,12 +23,6 @@ ARABIC_RANGES: tuple[tuple[int, int], ...] = (
     (0xFE70, 0xFEFF),  # Arabic Presentation Forms-B
 )
 
-LOGICAL_RANGES: tuple[tuple[int, int], ...] = (
-    (0x0600, 0x06FF),
-    (0x0750, 0x077F),
-    (0x08A0, 0x08FF),
-)
-
 PRESENTATION_RANGES: tuple[tuple[int, int], ...] = (
     (0xFB50, 0xFDFF),
     (0xFE70, 0xFEFF),
@@ -129,19 +123,6 @@ def arabic_ratio(text: str) -> float:
     return arabic_char_count(text) / len(text)
 
 
-def arabic_letter_ratio(text: str) -> float:
-    """Arabic / (Arabic + Latin) character ratio."""
-    ar = 0
-    la = 0
-    for c in text:
-        if is_arabic_char(c):
-            ar += 1
-        elif c.isascii() and c.isalpha():
-            la += 1
-    total = ar + la
-    return ar / total if total else 0.0
-
-
 # ---------------------------------------------------------------------------
 # Script inference
 # ---------------------------------------------------------------------------
@@ -177,17 +158,6 @@ def _infer_script(text: str) -> str | None:
     if latn_count / total > 0.5:
         return "Latn"
     return None
-
-
-def infer_script(text: str) -> str | None:
-    """Return 'Arab', 'Latn', or None based on majority script.
-
-    Public wrapper around :func:`_infer_script`.
-
-    Zone-3: canonical implementation now lives in script.py (was
-    helpers._infer_script).  No late import needed.
-    """
-    return _infer_script(text)
 
 
 # ---------------------------------------------------------------------------

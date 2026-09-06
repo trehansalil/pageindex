@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-from pathlib import Path
-
 import pytest
 
 from pageindex_mcp.converters import reconstruct_bidi_order
@@ -64,12 +62,6 @@ def _arabic(i):
 
 def _well_formed():
     return [{"title": "Root", "text": "", "nodes": [_leaf(f"Ch{i}", _varied(i)) for i in range(3)]}]
-
-
-def _reason_policy_ok():
-    from pageindex_mcp.helpers import _ReasonPolicy
-
-    return _ReasonPolicy.OK
 
 
 _GATE_CASES = [
@@ -226,9 +218,6 @@ class TestTableSegmentation:
 
 
 # --- from test_route_decision.py ---
-
-CLIENT_PATH = Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp" / "client.py"
-
 
 @pytest.fixture(autouse=True)
 def _restore_pipeline_config():

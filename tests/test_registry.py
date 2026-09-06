@@ -309,9 +309,6 @@ async def reg():
         await registry.close_registry()
 
 
-pytestmark_integration = pytest.mark.integration
-
-
 @pytest.mark.integration
 async def test_upsert_insert_then_update_roundtrip(reg):
     await registry.upsert_doc({"doc_id": "d1", "doc_name": "first.pdf", "verdict": "PASS"})

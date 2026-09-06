@@ -361,12 +361,6 @@ def _pipe_table(header_cells: list[str], data_rows: list[list[str]]) -> str:
     return "\n".join([header, sep] + rows)
 
 
-def _padded_row(value: str, cols: int, pad: int) -> str:
-    """Build a pipe row with heavy GFM whitespace padding on each cell."""
-    cell = value + " " * pad
-    return "| " + " | ".join(cell for _ in range(cols)) + " |"
-
-
 def _data_lines(result: str) -> list[str]:
     return [ln for ln in result.splitlines() if ln.startswith("|") and "---" not in ln]
 
@@ -506,7 +500,6 @@ class TestTrulyEmptyResultStripsMarker:
 # ===========================================================================
 
 _THRESHOLD = 2000  # mirrors _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD default
-_MIN_ROWS = 5  # mirrors _RFC029_TABLE_SEGMENT_MIN_ROWS default
 
 
 def _pipe_table_rows(n_data_rows: int, n_cols: int = 3, has_header: bool = True) -> str:
