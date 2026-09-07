@@ -95,11 +95,6 @@ class SkipReason(StrEnum):
         )
         return self not in _INTENTIONAL_SKIPS
 
-    @property
-    def counts_in_enrichment_denominator(self) -> bool:
-        """Alias matching the spec's naming convention."""
-        return self.counts_in_denominator
-
 
 def skip_reason_from_str(s: str | None) -> SkipReason | None:
     """Parse a raw skip-reason string into a typed SkipReason, or None."""

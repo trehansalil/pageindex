@@ -47,9 +47,6 @@ from tests._garble_compat import check_garble
 
 _RETRY_POLICIES = frozenset({_ReasonPolicy.RETRY_OCR, _ReasonPolicy.RETRY_RTL})
 _GATES_BY_DEFECT: dict[TreeDefect, GateSpec] = {g.defect: g for g in GATES}
-_RECOVERY_GATES = [g for g in GATES if g.recovery_fns]
-
-
 def _make_state(
     ok: bool = False,
     route: Route = Route.REJECT,
@@ -353,16 +350,6 @@ class TestProbeConversionRoute:
 # Mirrors scanned-OCR output for a continuous Arabic legal document: no blank
 # lines separate consecutive مادة articles, and one article title runs past
 # the old 60-char limit (66-76+ chars is the RFC's own observed range).
-_CONTINUOUS_OCR_DOC = (
-    "الباب الأول أحكام عامة\n"
-    "مادة 1\n"
-    "يسري هذا القانون على جميع العاملين في الدولة.\n"
-    "مادة 2\n"
-    "تعريفات هذا القانون كما يلي فيما يتعلق بأحكامه.\n"
-    "مادة (3) نطاق التطبيق والأحكام الاستثنائية الخاصة بهذا القانون وتفسيره\n"
-    "نص هذه المادة يوضح نطاق التطبيق بالتفصيل.\n"
-)
-
 
 class TestCharLimitRaisedTo100:
     @pytest.fixture(autouse=True)
@@ -430,42 +417,12 @@ class TestPresentationFormsGarbleDetection:
 # D3: RTL-reversal vocabulary + morphology detection
 # ---------------------------------------------------------------------------
 
-# Governance/legal sentence built from the RFC-028 D3 vocabulary additions
-# (siyasat-hawkama gap: specialized governance terms, not general-purpose
-# common words).
-_GOV_LOGICAL = "حوكمة البيانات وسياسة الإدارة والتنظيم في القرار الصادر عن الوزارة"
-
-# Mirrors the RFC-027 `_VISUAL_LINE` construction: the whole logical string
-# reversed at the character level, simulating OCR/Docling-emitted visual-order
-# text -- individual "words" no longer match the vocabulary set.
-_GOV_VISUAL = _GOV_LOGICAL[::-1]
-
 # RFC-034 D7: presentation-form glyphs decompose to base Arabic under NFKC
 # before `_word_has_reversed_morphology` runs, so the morphological reversal
 # signal is now Joining_Type-based (see `_arabic_word_joins`) rather than a
 # presentation-form check. A character-reversed base-Arabic word (like a
 # genuine visual-order OCR/Docling artifact) is the fixture that exercises it.
 _REVERSED_WORD = "رارق"  # "قرار" (decision) reversed at the character level
-
-# Correctly-ordered Arabic with zero `_AR_COMMON_WORDS`/`_AR_DEFINITE_RE`
-# matches (country names -- mirrors RFC-027's `_ZERO_SCORE_TEXT`) and no
-# presentation-forms shaping, so neither signal should false-positive.
-_ZERO_SCORE_LOGICAL_TEXT = "قطر مصر سوريا لبنان تونس كندا اسبانيا دولة عربية"
-
-
-def _tree_from_lines(lines: list[str]) -> list:
-    return [
-        {
-            "title": "الباب الأول",
-            "text": "",
-            "start_index": 0,
-            "nodes": [
-                {"title": f"المادة {i + 1}", "text": line, "start_index": i + 1, "nodes": []}
-                for i, line in enumerate(lines)
-            ],
-        }
-    ]
-
 
 class TestMorphologicalReversalCheck:
     def test_character_reversed_word_flagged_reversed(self):
@@ -482,10 +439,6 @@ class TestMorphologicalReversalCheck:
 # Mirrors al-qarar al-tanzimi: pre-retry text-layer extraction at 230 chars,
 # retry's force_full_page_ocr on the same underlying (PUA-encoded) defect
 # produces even less content (123 chars) -- the retry must not win.
-_PRE_RETRY_TEXT = "أ" * 230
-_RETRY_REGRESSED_TEXT = "أ" * 123
-_RETRY_IMPROVED_TEXT = "أ" * 400
-
 _GARBLED_TEXT = "" * 200  # U+E000 Private Use Area chars trip _is_garbled_blob
 # D10a (RFC-041) activates the Arabic garble-detection PF fallback path;
 # Arabic text now fires the presentation_forms prong, making it unsuitable

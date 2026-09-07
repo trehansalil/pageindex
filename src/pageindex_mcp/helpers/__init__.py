@@ -50,7 +50,6 @@ from .types import (
     VerdictThresholds,
     _GateFn,
     _defect_from_reason_str,
-    _get_verdict_thresholds,
     _ReasonPolicy,
     _Unset,
     decide_route,
@@ -101,7 +100,6 @@ from .garble import (
     _latin_token_ratio,
     detect_garble,
     hash_pipe_ratio,
-    infer_script,
     ocr_noise_ratio,
 )
 
@@ -276,7 +274,6 @@ __all__ = [
     "_garble_check_nodes",
     "_garble_config",
     "_garble_ratio",
-    "_get_verdict_thresholds",
     "_infer_presentation_forms",
     "_infer_script",
     # tree node measurement (canonical — use instead of ad-hoc text sums)
@@ -315,7 +312,6 @@ __all__ = [
     "flag_empty_cells",
     "flat_doc_view",
     "hash_pipe_ratio",
-    "infer_script",
     "normalize_dashes",
     "normalize_for_garble",
     "ocr_noise_ratio",

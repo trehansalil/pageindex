@@ -9,9 +9,6 @@ Consolidates:
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 
 from pageindex_mcp.helpers import _script_from_filename
@@ -22,12 +19,8 @@ from pageindex_mcp.script import (
     arabic_char_count,
     arabic_ratio,
     arabic_readability_score,
-    infer_script,
     is_arabic_char,
 )
-
-SRC_DIR = Path(__file__).parent.parent / "src" / "pageindex_mcp"
-_HEX_ARABIC_RE = re.compile(r"0x0[6-8][0-9A-Fa-f]{2}|0xF[BEe][0-9A-Fa-f]{2}")
 
 
 # ---------------------------------------------------------------------------
@@ -61,12 +54,6 @@ class TestArabicRatios:
 # ---------------------------------------------------------------------------
 # 3. Script inference
 # ---------------------------------------------------------------------------
-
-
-class TestInferScript:
-    def test_infer_script_latin(self):
-        text = "This is a long English text that should be detected as Latin script"
-        assert infer_script(text) == "Latn"
 
 
 # ---------------------------------------------------------------------------

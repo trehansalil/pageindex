@@ -116,17 +116,6 @@ def _single_leaf(size: int = 1000) -> list:
     return [{"node_id": "1", "title": "Root", "text": "x" * size, "nodes": []}]
 
 
-def _borderline_ratio_tree() -> list:
-    sizes = [40, 20, 20, 20, 20]
-    return [
-        {
-            "title": "",
-            "text": "",
-            "nodes": [{"title": "", "text": "x" * s, "nodes": []} for s in sizes],
-        }
-    ]
-
-
 def _shallow_many_nodes() -> list:
     nodes = [{"node_id": "1", "title": "Big", "text": filler_text(6000, 0), "nodes": []}]
     for i in range(2, 12):
@@ -2354,8 +2343,6 @@ def _nosuchkey() -> S3Error:
     return S3Error(MagicMock(), "NoSuchKey", "missing", "res", "req", "host")
 
 
-def _other_s3error(code="InternalError") -> S3Error:
-    return S3Error(MagicMock(), code, "boom", "res", "req", "host")
 
 
 def _meta_response(sha256: str) -> MagicMock:

@@ -100,9 +100,6 @@ class HeuristicRegistry:
     def get(self, name: str) -> HeuristicEntry | None:
         return self._entries.get(name)
 
-    def all_entries(self) -> list[HeuristicEntry]:
-        return list(self._entries.values())
-
 
 registry = HeuristicRegistry()
 

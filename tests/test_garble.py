@@ -78,9 +78,6 @@ _MARKER = "<!-- image -->"
 # Latin-gibberish ratio threshold used by check_garble(expected_script="Arab").
 _LATIN_GIBBERISH = " ".join(["xkjqz vbwm nfrl qpzx wblk"] * 60)
 
-_REAL_ARABIC = "بسم الله الرحمن الرحيم " * 20
-
-
 # ---------------------------------------------------------------------------
 # Helpers from test_rfc_garble_gate.py
 # ---------------------------------------------------------------------------

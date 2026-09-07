@@ -702,9 +702,6 @@ async def test_reconcile_deletion_detection(reconcile_env, monkeypatch):
     # Use the REAL _delete_stale_rows this time (fixture stubbed it out).
     monkeypatch.setattr(rb, "_delete_stale_rows", _REAL_DELETE_STALE)
     monkeypatch.setattr(
-        "pageindex_mcp.registry.list_all_doc_ids", AsyncMock(return_value={"d7", "gone1"})
-    )
-    monkeypatch.setattr(
         "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
         AsyncMock(
             return_value={"d7": "2020-01-01T00:00:00+00:00", "gone1": "2020-01-01T00:00:00+00:00"}

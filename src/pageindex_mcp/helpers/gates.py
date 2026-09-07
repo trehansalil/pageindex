@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 
 from ..config import pipeline_config
-from ..script import RtlDecision, ScriptContext, _infer_script
+from ..script import RtlDecision, ScriptContext
 from .garble import (
     _EMPTY_NODE_FRACTION_THRESHOLD,
     _RFC029_DEEP_TREE_DEPTH_THRESHOLD,

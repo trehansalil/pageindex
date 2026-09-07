@@ -377,15 +377,6 @@ _TABLE_MD = (
     "| Komfort | 24 EUR | 50 EUR |\n"
 )
 
-_KV_MD = "1 Allgemeines\n1.1 Geltungsbereich\n2 Leistungen\n2.1 Umfang\n"
-
-_PROSE_MD = (
-    "Der Versicherungsschutz erstreckt sich auf alle versicherten Personen "
-    "im vereinbarten Umfang.\n\n"
-    "Die Beitragszahlung erfolgt jaehrlich im Voraus zum Beginn des "
-    "Versicherungsjahres.\n"
-)
-
 
 def _tbl(headers: list, data_rows: list) -> dict:
     """Build a minimal table block matching the shape _flat_parse_table emits."""
@@ -460,11 +451,6 @@ def _clean_window(seed: int) -> str:
     """~2000 chars of diverse, non-repeating alnum tokens -- not garbled."""
     tokens = [f"token{seed}{i}" for i in range(400)]
     return " ".join(tokens)[:2000]
-
-
-def _garbled_window() -> str:
-    """A window that trips the null-byte check in check_garble."""
-    return "\x00" * 2000
 
 
 def test_garble_ratio_is_zero_when_no_window_is_garbled():

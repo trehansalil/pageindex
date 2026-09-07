@@ -185,4 +185,6 @@ REMOTE_CLAUDE_DIR ?= /mnt/HC_Volume_106759881/pageindex_deployment/.claude/
 
 .PHONY: sync-claude
 sync-claude:
-	rsync -avz --chmod=F644 .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)
+	# --chmod normalises modes: rsync -a otherwise preserves the source machine's
+	# 0600/uid-501 bits, leaving the files unwritable (and sometimes unreadable) on the server.
+	rsync -avz --chmod=D755,F644 .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)

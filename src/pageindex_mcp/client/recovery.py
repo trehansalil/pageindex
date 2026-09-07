@@ -27,7 +27,6 @@ from ..helpers import (
     RecoveryOutcome,
     Route,
     TreeDefect,
-    TreeGateResult,
     _flat_block_primary_text,
     _flatten_tree_text,
     _garble_config,
