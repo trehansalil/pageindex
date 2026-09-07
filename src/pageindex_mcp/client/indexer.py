@@ -1499,7 +1499,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
             # Quality checks (may override route intentionally — no
             # re-derivation afterwards).
-            await self._recover_flat_prefer(state, filename, ext, expected_script)
+            await self._recover_flat_prefer(state, filename, expected_script)
             await self._recover_landscape_reroute(state, filename)
 
             # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered

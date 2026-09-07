@@ -528,7 +528,6 @@ class GarbleReport:
 def detect_garble(
     text: str,
     *,
-    title: str = "",
     script_context: ScriptContext,
     config: GarbleConfig,
     blob_kind: BlobKind = BlobKind.TREE_TEXT,

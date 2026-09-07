@@ -84,10 +84,7 @@ def _fix_fi_hash_substitution(md: str) -> str:
 _BIDI_HEADING_PREFIX_RE = re.compile(r"^(\s*#{1,6}[ \t]+)(.*)$", re.DOTALL)
 
 
-def reconstruct_bidi_order(
-    text: str,
-    expected_script: str | None = None,
-) -> tuple[str, RtlDecision | None]:
+def reconstruct_bidi_order(text: str) -> tuple[str, RtlDecision | None]:
     """Zone-3/6: apply_rtl shim replacing the old bidi reconstructor.
 
     Two-level strategy (preserves RFC-023 D9 per-heading correction):
@@ -103,8 +100,6 @@ def reconstruct_bidi_order(
     only the document-level ``decide_rtl`` call; the per-heading loop
     still runs so bilingual documents get heading-level bidi repair.
 
-    ``expected_script`` is accepted for call-site compatibility but is
-    unused (``decide_rtl`` infers script from content).
     """
     if not text:
         return text, None

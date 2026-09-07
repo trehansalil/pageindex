@@ -704,7 +704,6 @@ class RecoveryMixin:
         self,
         state: ExtractionState,
         filename: str,
-        ext: str,
         expected_script: str | None = None,
         *,
         script_context: ScriptContext | None = None,
