@@ -637,15 +637,6 @@ def _contaminated_tree() -> list[dict]:
     return [root_a, root_b]
 
 
-def _healthy_tree() -> list[dict]:
-    """Build a tree with 20 non-root nodes where only 1 has an empty body
-    (fraction = 0.05, well below the 0.30 threshold)."""
-    leaves = [_make_leaf(f"Leaf{i}", f"paragraph text {i}") for i in range(19)]
-    leaves.append(_make_leaf("EmptyLeaf", ""))
-    root = {"title": "Root", "text": "introduction", "nodes": leaves}
-    return [root]
-
-
 class TestClassifyVerdictFailOnContamination:
     def test_classify_verdict_returns_fail_preserving_reason(self):
         """classify_verdict returns 'FAIL' with the full contamination reason

@@ -320,19 +320,6 @@ def _make_table_node2(title: str, n_data_rows: int, n_cols: int = 3, char_paddin
     return {"title": title, "text": text, "nodes": []}
 
 
-def _make_singleton_table_node(title: str, n_data_rows: int, singleton_fraction: float) -> dict:
-    n_singleton = int(n_data_rows * singleton_fraction)
-    n_multi = n_data_rows - n_singleton
-
-    rows = [f"| Item{i} | Data{i} |" for i in range(n_multi)]
-    rows += [f"| OnlyVal{i} |" for i in range(n_singleton)]
-
-    table_text = "\n".join(["| Key | Value |", "| --- | --- |"] + rows)
-    padding_needed = max(0, _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD - len(table_text) + 100)
-    text = _prose_of_length(padding_needed) + "\n" + table_text
-    return {"title": title, "text": text, "nodes": []}
-
-
 class TestTableSegmentOrientation:
     """Landscape orientation uses min_rows=10 / singleton_ratio=0.4;
     portrait/None uses min_rows=5 / singleton_ratio=0.6."""

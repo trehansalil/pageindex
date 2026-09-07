@@ -40,7 +40,6 @@ from pageindex_mcp.helpers import (
     prepare_tree,
     split_oversized_leaf_nodes,
 )
-from pageindex_mcp.script import ScriptContext
 
 
 # --- from test_pipeline.py ---
@@ -96,13 +95,6 @@ def _outcome_for(
         all_defects=all_defects,
         hard_fail_verdict=None,
     )
-
-
-def _make_ok_gate_result(structure: list | None = None) -> TreeGateResult:
-    if structure is None:
-        structure = _well_formed()
-    sig = TreeSignals.from_tree(structure, garble_threshold=_th().garble_threshold)
-    return TreeGateResult(ok=True, defect=TreeDefect.OK, signals=sig, all_defects=frozenset())
 
 
 def _make_gate_result(
@@ -211,36 +203,6 @@ class TestEvaluateGates:
         outcome = evaluate_gates(_well_formed(), gr, None, _th())
         assert outcome.hard_fail_verdict is not None
         assert outcome.hard_fail_verdict.reason == worst.value
-
-
-# =============================================================================
-# Decomposition regression
-# =============================================================================
-
-
-def _decomposed_verdict(structure, content_class, validate_result=None, **kw):
-    th = _th()
-    expected_script = kw.pop("expected_script", None)
-    flat = kw.pop("flat", False)
-    source_selection = kw.pop("source_selection", False)
-    image_enrichment_ratio = kw.pop("image_enrichment_ratio", None)
-    if isinstance(expected_script, ScriptContext):
-        bare_script = expected_script.dominant_script
-    else:
-        bare_script = expected_script
-    outcome = evaluate_gates(structure, validate_result, expected_script, th, flat=flat)
-    if outcome.hard_fail_verdict is not None:
-        return outcome.hard_fail_verdict
-    return apply_promotions(
-        outcome,
-        content_class,
-        image_enrichment_ratio,
-        None,
-        th,
-        bare_script,
-        validate_result,
-        source_selection=source_selection,
-    )
 
 
 # =============================================================================

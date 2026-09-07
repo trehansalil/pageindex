@@ -631,62 +631,6 @@ class TestStandaloneImageEnrichment:
             pii_corpus=False,
         )
 
-    async def _run_index_with_markdown(self, monkeypatch, markdown: str, source_bytes: bytes):
-        """Drive CustomPageIndexClient.index() over a fake .jpg, capturing the
-        pic_results list passed to splice_figure_markers, exactly as the
-        RFC-017 D1 harness above does."""
-        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(source_bytes)
-
-            monkeypatch.setattr(_idx, "settings", self._fake_settings())
-            monkeypatch.setattr(_img, "settings", self._fake_settings())
-            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(
-                _img,
-                "route_and_extract_flat",
-                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
-            )
-            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_raw", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
-            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: markdown)
-
-            captured_pics = []
-            orig_splice = splice_figure_markers
-
-            def spy_splice(md, pics):
-                captured_pics.extend(pics)
-                return orig_splice(md, pics)
-
-            monkeypatch.setattr(_idx, "splice_figure_markers", spy_splice)
-
-            c = CustomPageIndexClient(api_key="test-key")
-
-            async def _fake_tree(md_path):
-                return {
-                    "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
-                    "doc_description": "",
-                }
-
-            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
-
-            await c.index(jpg_path)
-            return captured_pics
-        finally:
-            if os.path.exists(jpg_path):
-                os.unlink(jpg_path)
-
-
 def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
     """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
     for RFC-018 D1 text-layer-probe tests on _recover_picture_text."""

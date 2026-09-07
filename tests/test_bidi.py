@@ -4,16 +4,12 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
 import re
 import shutil
-import tempfile
-import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-import fitz
 import pytest
 from minio.error import S3Error
 
@@ -28,7 +24,6 @@ from pageindex_mcp.client import (
     _latin_fraction,
     _renormalize_bidi_guarded,
 )
-from pageindex_mcp.client import images as _img
 from pageindex_mcp.client import indexer as _idx
 from pageindex_mcp.client import recovery as _rec
 from pageindex_mcp.client import remote as _remote
@@ -43,7 +38,6 @@ from pageindex_mcp.converters import (
     _splice_landscape_fallback,
     decide_rtl,
     reconstruct_bidi_order,
-    splice_figure_markers,
     splice_picture_text_for_tree,
 )
 from pageindex_mcp.converters.ocr_langs import (
@@ -991,60 +985,6 @@ def _fake_settings_rfc_bidi():
     )
 
 
-async def _run_index_with_markdown(monkeypatch, markdown: str, source_bytes: bytes):
-    """Drive CustomPageIndexClient.index() over a fake .jpg, capturing the
-    pic_results list passed to splice_figure_markers."""
-    fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(source_bytes)
-
-        monkeypatch.setattr(_idx, "settings", _fake_settings_rfc_bidi())
-        monkeypatch.setattr(_img, "settings", _fake_settings_rfc_bidi())
-        monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-        monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-        monkeypatch.setattr(_idx, "hash_cache_set", lambda *a, **kw: None)
-        monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
-        monkeypatch.setattr(
-            _img,
-            "route_and_extract_flat",
-            lambda md: ("flat_prose", [{"role": "prose", "text": "x"}]),
-        )
-        monkeypatch.setattr(_idx, "save_flat_doc", lambda *a, **kw: None)
-        monkeypatch.setattr(_idx, "save_doc", lambda *a, **kw: None)
-        monkeypatch.setattr(_idx, "save_raw", lambda *a, **kw: None)
-        monkeypatch.setattr(_idx, "save_doc_meta", lambda *a, **kw: None)
-        monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
-        monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
-        monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
-        monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: markdown)
-
-        captured_pics = []
-        orig_splice = splice_figure_markers
-
-        def spy_splice(md, pics):
-            captured_pics.extend(pics)
-            return orig_splice(md, pics)
-
-        monkeypatch.setattr(_img, "splice_figure_markers", spy_splice)
-
-        c = CustomPageIndexClient(api_key="test-key")
-
-        async def _fake_tree(md_path):
-            return {
-                "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
-                "doc_description": "",
-            }
-
-        monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
-
-        await c.index(jpg_path)
-        return captured_pics
-    finally:
-        if os.path.exists(jpg_path):
-            os.unlink(jpg_path)
-
-
 class TestMarkerDedupRegex:
     """Unit-level: the dedup regex itself, mirroring the exact pattern used
     at client.py's standalone-image branch."""
@@ -1057,116 +997,6 @@ class TestMarkerDedupRegex:
         md = "<!-- image --><!-- image -->"
         assert _DEDUP_RE.sub("", md).count("<!-- image -->") == 1
 
-
-# ---------------------------------------------------------------------------
-# D7: page-count guard + chunked-Docling route for oversized PDFs, with a
-# pymupdf text-layer-only fallback on chunk timeout.
-# ---------------------------------------------------------------------------
-class _FakePage:
-    def __init__(self, text: str):
-        self._text = text
-
-    def get_text(self, *_args, **_kwargs) -> str:
-        return self._text
-
-
-class _FakeDoc:
-    """Stand-in for a read-mode ``fitz.Document``."""
-
-    def __init__(self, page_count: int, text: str):
-        self.page_count = page_count
-        self._pages = [_FakePage(text) for _ in range(page_count)]
-        self.closed = False
-
-    def __len__(self) -> int:
-        return self.page_count
-
-    def __iter__(self):
-        return iter(self._pages)
-
-    def __getitem__(self, index: int) -> _FakePage:
-        return self._pages[index]
-
-    def load_page(self, index: int) -> _FakePage:
-        return self._pages[index]
-
-    def close(self) -> None:
-        self.closed = True
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc_info):
-        self.close()
-        return False
-
-
-class _FakeWriterDoc:
-    """Stand-in for the empty ``fitz.open()`` document each chunk is built in."""
-
-    def __init__(self, recorder: "_FakeFitz"):
-        self._recorder = recorder
-        self._page_count = 0
-        self.closed = False
-
-    def insert_pdf(self, src, from_page=None, to_page=None):
-        self._recorder.inserts.append((from_page, to_page))
-        self._recorder.insert_sources.append(src)
-        # pymupdf's ``to_page`` is INCLUSIVE -- mirror that here so a chunk cut
-        # from the half-open slice [start, end) materializes exactly
-        # ``end - start`` pages. An off-by-one in the port shows up as a wrong
-        # page count in the timeout-fallback text below.
-        self._page_count = to_page - from_page + 1
-
-    def save(self, path, *_args, **_kwargs):
-        self._recorder.saves.append(path)
-        self._recorder.chunk_page_counts[path] = self._page_count
-
-    def close(self) -> None:
-        self.closed = True
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc_info):
-        self.close()
-        return False
-
-
-class _FakeFitz:
-    """Records every ``fitz.open`` call ``converters.py`` makes.
-
-    ``open(path)`` yields a read doc; ``open()`` (no args) yields the writer doc
-    used for chunk assembly. A path previously written by ``save()`` re-opens
-    with the page count that chunk actually received, so the timeout fallback
-    reads back exactly the pages the split produced.
-    """
-
-    def __init__(self, page_count: int, text: str = "lorem ipsum"):
-        self.source_page_count = page_count
-        self.text = text
-        self.opened_paths: list[str] = []
-        self.inserts: list[tuple[int, int]] = []
-        self.insert_sources: list[object] = []
-        self.saves: list[str] = []
-        self.chunk_page_counts: dict[str, int] = {}
-        self.docs: list[_FakeDoc] = []
-
-    def open(self, path=None, *_args, **_kwargs):
-        if path is None:
-            return _FakeWriterDoc(self)
-        self.opened_paths.append(path)
-        doc = _FakeDoc(self.chunk_page_counts.get(path, self.source_page_count), self.text)
-        self.docs.append(doc)
-        return doc
-
-
-def _patch_fitz(monkeypatch, page_count: int, text: str = "lorem ipsum") -> _FakeFitz:
-    """Patch ``fitz.open`` where ``converters.py`` looks it up: it does a
-    function-local ``import fitz``, so the module attribute is the seam."""
-    recorder = _FakeFitz(page_count, text)
-    monkeypatch.setattr(fitz, "open", recorder.open)
-    return recorder
 
 
 # --- from test_rfc_bidi_agpl.py ---
@@ -1189,10 +1019,6 @@ _LOGICAL_LINE_AGPL = "قرار مجلس الوزراء رقم لسنة بشأن 
 _CLEAN_LINE_2 = "هذا القرار يعمل به من تاريخ نشره في الجريدة الرسمية"
 
 _ARABIC_SHAPING_RANGES = [(0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF)]
-
-
-def _nfkc(text: str) -> str:
-    return unicodedata.normalize("NFKC", text)
 
 
 def _toc_node(title):

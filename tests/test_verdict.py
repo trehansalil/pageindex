@@ -1816,37 +1816,6 @@ async def _tree_coro(structure):
     return {"structure": structure, "doc_description": ""}
 
 
-def _wire_common(monkeypatch, *, flat_doc_routing, validate_return, flat_return):
-    """Patch every collaborator client.index() touches for the zero-block
-    escalation tests, where the caller supplies the flat-extraction result."""
-    monkeypatch.setattr(_idx, "settings", _fake_settings(flat_doc_routing))
-    monkeypatch.setattr(_img, "settings", _fake_settings(flat_doc_routing))
-    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
-    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: validate_return)
-
-    idx_mocks = {
-        "save_flat_doc": MagicMock(),
-        "save_doc": MagicMock(),
-        "save_raw": MagicMock(),
-        "save_doc_meta": MagicMock(),
-        "FLAT_DOCS_TOTAL": MagicMock(),
-    }
-    for name, m in idx_mocks.items():
-        monkeypatch.setattr(_idx, name, m)
-
-    img_mocks = {
-        "route_and_extract_flat": MagicMock(return_value=flat_return),
-        "LOW_QUALITY_TREES": MagicMock(),
-    }
-    for name, m in img_mocks.items():
-        monkeypatch.setattr(_img, name, m)
-
-    mocks = {**idx_mocks, **img_mocks}
-    return mocks
-
-
 def _wire_index(monkeypatch, *, validate_return, flat_doc_routing: bool = True):
     """Patch every collaborator client.index() touches for the
     persist-with-FAIL routing tests, where flat extraction always returns a
@@ -2217,33 +2186,6 @@ def _healthy_leaf(title: str, text: str) -> dict:
     return {"title": title, "text": text, "nodes": []}
 
 
-def _visual_order_tree() -> list:
-    """An Arabic-dominant tree with visual-order (reversed) content.
-    Zone-3 unified decide_rtl needs >=15% Arabic ratio to evaluate,
-    so the tree must be Arabic-dominant for the bidi coherence gate
-    to fire. Uses varied real Arabic words (not repeated) to avoid
-    triggering the token_repetition garble prong."""
-    lines = [
-        "ةيبرعلا ةغللا ملعت يف ةمدقم",
-        "ةيساسألا دعاوقلا حرش ىلإ فدهي",
-        "ةحيحصلا ةقيرطلاب ةباتكلا",
-        "ةيوغللا تاراهملا ريوطت",
-        "يبرعلا بدألا خيرات ةسارد",
-    ]
-    arabic_body = "\n".join(lines)
-    return [
-        {
-            "title": "Root",
-            "text": arabic_body,
-            "nodes": [
-                _healthy_leaf("لوألا لصفلا", arabic_body),
-                _healthy_leaf("يناثلا لصفلا", arabic_body),
-                _healthy_leaf("ثلاثلا لصفلا", arabic_body),
-            ],
-        }
-    ]
-
-
 # ===========================================================================
 # classify_verdict: bidi_degraded caps at MARGINAL, never upgrades a FAIL
 # ===========================================================================
@@ -2251,19 +2193,6 @@ def _varied_text_rfc030(seed: int) -> str:
     """Non-repeating filler that avoids the garble/token-repetition heuristics
     (mirrors test_verdict_rfc015.py's fixture helper)."""
     return " ".join(f"word{seed}n{j}alpha" for j in range(60))
-
-
-def _passing_tree():
-    """A well-formed tree with evenly-sized leaves (low leaf-concentration
-    ratio) that classify_verdict grades PASS, used to prove bidi_degraded
-    caps the verdict rather than upgrading it."""
-    return [
-        {
-            "title": "Chapter",
-            "text": "",
-            "nodes": [_healthy_leaf(f"Leaf {i}", _varied_text_rfc030(i)) for i in range(5)],
-        }
-    ]
 
 
 # ===========================================================================
