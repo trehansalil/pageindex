@@ -6,7 +6,6 @@ import inspect
 import logging
 import re
 import shutil
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -96,7 +95,6 @@ _ARABIC_LINE = "المادة الأولى تنظيم الحقوق"
 _ENGLISH_LINE = "This is a normal English sentence with enough words to test."
 
 _LOGICAL_ARABIC = "المادة الأولى تنظيم الحقوق والواجبات للمواطنين"
-_REVERSED_ARABIC = " ".join(w[::-1] for w in _LOGICAL_ARABIC.split())
 
 
 # ===========================================================================
@@ -745,11 +743,6 @@ class TestLowContentOcrEscalationBoundaries:
 # ---------------------------------------------------------------------------
 # D3: RTL-reversal detection (validate_tree) + repair-first flow
 # ---------------------------------------------------------------------------
-# Arabic text with no `_AR_COMMON_WORDS` hits and no `ال`-prefixed definite
-# articles in EITHER direction (country names) -- both the forward and
-# get_display()-reordered readability score come out to 0.
-_ZERO_SCORE_TEXT = "قطر مصر سوريا لبنان تونس كندا اسبانيا"
-
 # Genuinely visual/glyph-order Arabic (RFC-015 D7's known "visual" fixture) --
 # the forward reading scores 0 while get_display() recovers common-word
 # matches, so this line reads backwards.
@@ -968,23 +961,6 @@ class TestSmallDocLeafRatioDispensation:
 _DEDUP_RE = re.compile(r"(<!-- image -->)\s*(?=<!-- image -->)")
 
 
-def _fake_settings_rfc_bidi():
-    return SimpleNamespace(
-        openai_api_key="k",
-        openai_base_url="https://api.openai.com/v1",
-        azure_api_version=None,
-        llm_model="gpt-test",
-        minio_secure=False,
-        minio_endpoint="localhost:9000",
-        minio_bucket="pageindex",
-        flat_doc_routing=True,
-        vlm_fallback=False,
-        vlm_model="gpt-4.1",
-        vlm_describe_images=False,
-        pii_corpus=False,
-    )
-
-
 class TestMarkerDedupRegex:
     """Unit-level: the dedup regex itself, mirroring the exact pattern used
     at client.py's standalone-image branch."""
@@ -1004,21 +980,6 @@ class TestMarkerDedupRegex:
 # ---------------------------------------------------------------------------
 # Shared fixtures / helpers
 # ---------------------------------------------------------------------------
-
-_DOC_STORE = Path(__file__).resolve().parent.parent / "doc_store"
-_CORPUS_MD_FILES = sorted(_DOC_STORE.rglob("*.md")) if _DOC_STORE.is_dir() else []
-
-# Genuinely visual/glyph-order Arabic (base Arabic U+0600-06FF, character
-# order reversed, no presentation-form shaping). Reads backwards.
-_VISUAL_LINE_AGPL = "رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا يف رطق"
-_VISUAL_LINE_2_AGPL = "رارقلا كلذ لدعملا ةدراولا صوصنلا قفو لمعلا ماكحأ ذيفنت"
-_REVERSED_WORD = "رارق"  # reversed form of "قرار" (decision)
-
-# Correctly-ordered (logical) Arabic.
-_LOGICAL_LINE_AGPL = "قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل وتعديلاته"
-_CLEAN_LINE_2 = "هذا القرار يعمل به من تاريخ نشره في الجريدة الرسمية"
-
-_ARABIC_SHAPING_RANGES = [(0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF)]
 
 
 def _toc_node(title):
@@ -1682,8 +1643,6 @@ _CLEAN_ARABIC_FLAT_MD = "\n\n".join(
     "يمتد على عدة أسطر ويصف محتوى الفقرة بشكل كامل ومفصل."
     for i in range(12)
 )
-
-_NUMERIC_JUNK_FLAT_MD = "651001429 6 1 mo/2025/597 5/8/2025 51001429 " * 40
 
 
 class TestRtlReversalFlatFallback:

@@ -2179,20 +2179,6 @@ class TestRTLReversedTitleDetected:
 # ===========================================================================
 # _flatten_tree_text: title text included for every node (Property 10)
 # ===========================================================================
-# ===========================================================================
-# validate_tree: bidi coherence wired in via decide_rtl (Property 11)
-# ===========================================================================
-def _healthy_leaf(title: str, text: str) -> dict:
-    return {"title": title, "text": text, "nodes": []}
-
-
-# ===========================================================================
-# classify_verdict: bidi_degraded caps at MARGINAL, never upgrades a FAIL
-# ===========================================================================
-def _varied_text_rfc030(seed: int) -> str:
-    """Non-repeating filler that avoids the garble/token-repetition heuristics
-    (mirrors test_verdict_rfc015.py's fixture helper)."""
-    return " ".join(f"word{seed}n{j}alpha" for j in range(60))
 
 
 # ===========================================================================

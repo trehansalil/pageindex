@@ -139,10 +139,6 @@ _LOGICAL_SUMMARY_HEADING = "الخلاصة"
 _LOGICAL_D9_HEADING = "الفصل الأول: تعريفات"
 _VISUAL_D9_HEADING = get_display(_LOGICAL_D9_HEADING)
 
-_LOGICAL_BODY_LINE = (
-    "هذا النص العربي مكتوب بترتيب منطقي صحيح تماما ويجب ان يبقى كما هو دون اي تغيير في الحروف"
-)
-
 
 class TestHeadingGuardIdempotence:
     """Property 10: reconstruct_bidi_order never reverses an already-logical heading."""
@@ -2210,14 +2206,6 @@ class TestClassifyLlmFailure:
         assert (
             _classify_llm_failure("429 rate_limit exceeded, throttled") == "llm_failure_transient"
         )
-
-
-# ---------------------------------------------------------------------------
-# D9: heading-marker BiDi preservation in reconstruct_bidi_order
-# ---------------------------------------------------------------------------
-
-_LOGICAL_HEADING = "الفصل الأول: تعريفات"
-_VISUAL_HEADING = get_display(_LOGICAL_HEADING)
 
 
 # ---------------------------------------------------------------------------
