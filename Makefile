@@ -185,4 +185,4 @@ REMOTE_CLAUDE_DIR ?= /mnt/HC_Volume_106759881/pageindex_deployment/.claude/
 
 .PHONY: sync-claude
 sync-claude:
-	rsync -avz .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)
+	rsync -avz --chmod=F644 .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)
