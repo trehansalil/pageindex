@@ -1,0 +1,28 @@
+{
+  "include": [
+    "src",
+    "tests",
+    "scripts",
+    "services",
+    "mcp_server.py",
+    "preprocess_client.py",
+    "promotion_sweep.py",
+    "ingest_via_server.py",
+    "stress_test.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.venv",
+    "**/node_modules",
+    ".run",
+    "doc_store"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning",
+  "reportUnusedClass": "warning",
+  "reportUnusedFunction": "warning"
+}

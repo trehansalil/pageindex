@@ -1,0 +1,162 @@
+Run-6 fixes for .claude/workflows/dead-code-discover-verify.js
+==============================================================
+.claude/ is gitignored (synced to the server via `make sync-claude`), so the
+workflow script cannot be committed directly. This patch is the reviewable
+record of the change; it is ALREADY APPLIED to the working copy on this host.
+
+Apply elsewhere with:
+    git apply audit/dead-code-workflow-fixes-run6.patch
+
+Supersedes audit/dead-code-workflow-fixes.patch, which was never applied. Its
+PROJECT/REPO env-var change is carried forward here; its Hard-Rule-6 addition
+to the RULES block is included too.
+
+What this changes
+-----------------
+1. PROJECT/REPO now read process.env.CBM_PROJECT / REPO_ROOT before falling
+   back to this host's paths. Run 6 dispatched every lens with a macOS repo
+   path and a codebase-memory project that does not exist here; all 7 lenses
+   detected it and worked around it, at cost.
+2. The RULES block no longer asserts the index is fresh at a hardcoded HEAD.
+   Agents are told to confirm against the current HEAD and re-index if the
+   graph disagrees with the working tree. Adds CLAUDE.md Hard Rule 6
+   (/mem-search must query BOTH claude-mem projects).
+3. normName() / keyOf() / lineKey() replace the raw `${file}::${name}`
+   identity key at all 8 sites. Run 6's cascade round re-confirmed 6 items its
+   own adversarial skeptic had refuted, because agents label the same symbol
+   differently across rounds. normName strips trailing parentheticals and
+   surrounding quotes, but keeps '"X" entry in pkg/__init__.py __all__'
+   DISTINCT from X -- an __all__ string is a separate line to delete than its
+   import, and collapsing them would silently drop one.
+4. Cascade candidates are deduped against every ADJUDICATED item
+   (all + confirmed + refuted + unsure + alive), not just the raw candidate
+   set, so a refuted symbol can never re-enter. Also keys on file:start_line
+   as a second identity, and logs how many candidates were dropped.
+
+--- a/.claude/workflows/dead-code-discover-verify.js
++++ b/.claude/workflows/dead-code-discover-verify.js
+@@ -9,8 +9,8 @@
+   ],
+ }
+ 
+-const PROJECT = 'Users-saliltrehan-Documents-Python_n_R-Personal-pageindex'
+-const REPO = '/Users/saliltrehan/Documents/Python_n_R/Personal/pageindex'
++const PROJECT = process.env.CBM_PROJECT || 'mnt-HC_Volume_106759881-pageindex_deployment'
++const REPO = process.env.REPO_ROOT || '/mnt/HC_Volume_106759881/pageindex_deployment'
+ 
+ const CTX = `# Dispatch Context
+ 
+@@ -53,11 +53,12 @@
+ 
+ const RULES = `
+ ## Session rules (binding)
+-- Repo: ${REPO}. codebase-memory project name: "${PROJECT}" (already indexed and fresh at HEAD 9e2b310).
++- Repo: ${REPO}. codebase-memory project name: "${PROJECT}". Do NOT assume the index is fresh: confirm it against the CURRENT HEAD (\`git -C ${REPO} rev-parse --short HEAD\`), and run index_repository first if the graph disagrees with the working tree.
++- CLAUDE.md Hard Rule 6: every /mem-search must query BOTH claude-mem projects "pageindex" AND "pageindex_deployment" — issue each search/timeline/get_observations call twice in parallel and merge/dedupe. Never one alone.
+ - Load MCP tools with ToolSearch first, e.g. ToolSearch("select:mcp__codebase-memory-mcp__search_graph,mcp__serena__find_referencing_symbols"). Serena is already activated on this repo. Serena line numbers are 0-based.
+ - For Python source: use codebase-memory (search_graph / query_graph / search_code / trace_path / get_code_snippet) and Serena (get_symbols_overview / find_symbol / find_referencing_symbols / get_diagnostics_for_file). Do NOT use the Read tool on .py files. Grep/Bash grep is allowed ONLY for non-code files (Makefile, yaml/toml/json, Dockerfile, .sh, .md, .env*) and for string-literal reference checks.
+ - For Markdown notes (agents/, audit/, docs/): use the Obsidian MCP tools (mcp__obsidian__search_notes, get_note_outline, read_note_lines). The Obsidian vault root IS the repo root.
+-- READ-ONLY PHASE: do not edit, create, or delete any file. Never run git checkout/stash/reset/clean — the working tree has intentional uncommitted changes (5 test files, 1 tasks note).
++- READ-ONLY PHASE: do not edit, create, or delete any file. Never run git checkout/stash/reset/clean — the working tree is clean and must stay that way.
+ - Verify at file:line before asserting anything; never fabricate evidence. If a tool errors, adjust the call and retry rather than guessing.
+ - Your final answer must be the StructuredOutput call only; no prose.
+ - Entry points that are NEVER dead even with zero graph degree: FastAPI/Starlette route handlers and Depends() callables; @mcp.tool registrations; arq WorkerSettings functions/cron/on_startup/on_shutdown; pydantic Settings/BaseModel/dataclass fields and Enum members; __getattr__/__setattr__ module proxies; pytest fixtures and test_* functions; Makefile/CI/Dockerfile-invoked scripts; names listed in an erasure manifest (CLAUDE.md Hard Rule 2); symbols asserted by tests/test_architecture_guards.py.
+@@ -265,6 +266,26 @@
+   return 'scripts'
+ }
+ 
++// Identity key for a candidate. Agents label the same symbol inconsistently across
++// rounds ("X", "X (facade re-export)", "X (re-export from worker package facade)",
++// '"X" entry in pkg/__init__.py __all__'), so strip trailing parentheticals and
++// surrounding quotes before keying. Run 6 lost 6 skeptic-refuted items to this:
++// they re-entered the confirmed set through the cascade round under a new label.
++const normName = n => {
++  const raw = String(n == null ? '' : n).trim()
++  // An __all__ string entry is a DIFFERENT line to delete than its import, so it
++  // must key separately -- do not collapse the two into one candidate.
++  const suffix = /__all__/.test(raw) ? '#__all__' : ''
++  const bare = raw
++    .replace(/^["'`]([^"'`]+)["'`].*$/, '$1')  // '"X" entry in pkg/__init__.py __all__' -> X
++    .replace(/\s*\([^)]*\)\s*$/, '')          // 'X (facade re-export)' -> X
++    .replace(/^["'`]|["'`]$/g, '')
++    .trim()
++  return bare + suffix
++}
++const keyOf = c => `${c.file}::${normName(c.name)}`
++const lineKey = c => (c.start_line ? `${c.file}#${c.start_line}` : null)
++
+ const merged = new Map()
+ const protectedList = []
+ const coverage = []
+@@ -274,7 +295,7 @@
+   coverage.push(`${lens}: ${r.coverage_notes}`)
+   ;(r.protected || []).forEach(p => protectedList.push({ ...p, lens }))
+   ;(r.candidates || []).forEach(c => {
+-    const key = `${c.file}::${c.name}`
++    const key = keyOf(c)
+     const prev = merged.get(key)
+     if (prev) {
+       prev.lenses.push(lens)
+@@ -286,9 +307,9 @@
+     }
+   })
+ })
+-const protectedKeys = new Set(protectedList.map(p => `${p.file || ''}::${p.name}`))
++const protectedKeys = new Set(protectedList.map(p => keyOf({ file: p.file || '', name: p.name })))
+ const all = [...merged.values()]
+-const candidates = all.filter(c => !protectedKeys.has(`${c.file}::${c.name}`))
++const candidates = all.filter(c => !protectedKeys.has(keyOf(c)))
+ log(`Discover: ${all.length} unique candidates from ${finderResults.filter(Boolean).length}/7 lenses; ${all.length - candidates.length} removed by finder 'protected' lists; ${protectedList.length} protected entries`)
+ 
+ const byZone = {}
+@@ -316,7 +337,7 @@
+ 4. Cascade: if dead, list what ELSE becomes dead when it is removed (its imports that are only used by it, helpers only it calls — check with trace_path(direction="outbound", depth=1) and then inbound on each callee), which __all__/re-export lines must change, which tests exclusively cover it (search_code "<name>" path_filter="^tests/" and read the test names), and which notes describe it (Obsidian search_notes "<name>" limit 5).
+ 5. Removal risk: low = private helper/import/commented code with zero refs; medium = public symbol or export with zero refs; high = touches erasure manifest, verdict/gate/recovery dispatch tables, config, worker lifecycle, or anything named in tests/test_architecture_guards.py.
+ 
+-Rules of evidence: "dead" requires (a) zero Serena references outside its own definition, (b) zero string references in code AND non-code files, (c) no entry-point pattern. If any check could not be run, verdict must be "unsure" with the failure explained. Do not mark something dead because it "looks unused" — every verdict cites the actual tool results. Uncommitted test deletions in the working tree are intentional; treat the current working tree as truth.
++Rules of evidence: "dead" requires (a) zero Serena references outside its own definition, (b) zero string references in code AND non-code files, (c) no entry-point pattern. If any check could not be run, verdict must be "unsure" with the failure explained. Do not mark something dead because it "looks unused" — every verdict cites the actual tool results. Treat the current working tree at HEAD 426216c as truth.
+ 
+ PROTECTED (finders say these must stay — if a candidate below overlaps, verdict=alive with that reason):
+ ${protectedText}
+@@ -356,9 +377,9 @@
+ // ---------- Consolidate ----------
+ const confirmed = [], unsure = [], alive = [], refuted = []
+ zoneResults.filter(Boolean).forEach(z => {
+-  const refMap = new Map((z.refutations || []).map(r => [`${r.file}::${r.name}`, r]))
++  const refMap = new Map((z.refutations || []).map(r => [keyOf(r), r]))
+   z.verdicts.forEach(v => {
+-    const key = `${v.file}::${v.name}`
++    const key = keyOf(v)
+     const src = merged.get(key) || {}
+     const item = { ...v, zone: z.group.zone, lenses: src.lenses || [], finder_evidence: src.evidence || '' }
+     if (v.verdict === 'alive') { alive.push(item); return }
+@@ -390,8 +411,15 @@
+ 
+ let cascadeConfirmed = [], cascadeOther = []
+ if (critic && critic.cascade_candidates.length) {
+-  const seen = new Set(all.map(c => `${c.file}::${c.name}`))
+-  const fresh = critic.cascade_candidates.filter(c => !seen.has(`${c.file}::${c.name}`)).map(c => ({ ...c, zone: zoneOf(c.file) }))
++  // Dedupe against every already-adjudicated item, not just the raw candidate set:
++  // a symbol the skeptic REFUTED must never re-enter through the cascade round.
++  const adjudicated = [...all, ...confirmed, ...refuted, ...unsure, ...alive]
++  const seen = new Set(adjudicated.flatMap(c => [keyOf(c), lineKey(c)]).filter(Boolean))
++  const fresh = critic.cascade_candidates
++    .filter(c => !seen.has(keyOf(c)) && !seen.has(lineKey(c)))
++    .map(c => ({ ...c, zone: zoneOf(c.file) }))
++  const dropped = critic.cascade_candidates.length - fresh.length
++  if (dropped) log(`Cascade dedupe: dropped ${dropped} already-adjudicated candidate(s)`)
+   log(`Critic: ${critic.cascade_candidates.length} cascade candidates, ${fresh.length} new -> one extra verify/refute round`)
+   const cgroups = []
+   for (let i = 0; i < fresh.length; i += CHUNK) cgroups.push({ zone: 'cascade', part: Math.floor(i / CHUNK) + 1, items: fresh.slice(i, i + CHUNK) })
+@@ -406,9 +434,9 @@
+     },
+   )
+   cres.filter(Boolean).forEach(z => {
+-    const refMap = new Map((z.refutations || []).map(r => [`${r.file}::${r.name}`, r]))
++    const refMap = new Map((z.refutations || []).map(r => [keyOf(r), r]))
+     z.verdicts.forEach(v => {
+-      const r = refMap.get(`${v.file}::${v.name}`)
++      const r = refMap.get(keyOf(v))
+       if (v.verdict === 'dead' && r && !r.refuted) cascadeConfirmed.push({ ...v, zone: zoneOf(v.file), lenses: ['cascade'], skeptic: r.reason, extra_cascade: r.extra_cascade || [] })
+       else cascadeOther.push({ ...v, refutation: r ? r.reason : undefined })
+     })
