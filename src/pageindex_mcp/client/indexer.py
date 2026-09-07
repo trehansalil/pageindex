@@ -236,7 +236,7 @@ def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_i
 # Zone-8: _IMAGE_EXTS, _IMAGE_STANDALONE_PIPELINE_ENABLED, and
 # MIN_STANDALONE_IMAGE_MD_CHARS are now imported from images.py (canonical source)
 # to eliminate constant duplication across two files.
-from .images import _IMAGE_EXTS, _IMAGE_STANDALONE_PIPELINE_ENABLED, MIN_STANDALONE_IMAGE_MD_CHARS  # noqa: E402
+from .images import _IMAGE_EXTS, MIN_STANDALONE_IMAGE_MD_CHARS  # noqa: E402
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Zone-4: legacy _OCR_ESCALATION removed; split flags _OCR_ESCALATION_GARBLE /
 # _OCR_ESCALATION_PER_PICTURE imported from config.py (canonical source).

@@ -33,15 +33,8 @@ from pageindex_mcp.config import pipeline_config
 from pageindex_mcp.helpers.tree_validation import TreeSignals
 from pageindex_mcp.helpers.types import GateOutcome, TreeDefect, VerdictThresholds
 from pageindex_mcp.helpers.verdict import (
-    _classify_image_verdict,
-    _clamp_pass,
     _try_cat_a,
-    _try_content_class_promotion,
-    _try_flat_promotion,
-    _try_image_enrichment,
     _try_ocr_promotion,
-    _try_small_doc_promotion,
-    _try_structural_pass,
     apply_promotions,
     compute_verdict,
 )
@@ -564,54 +557,6 @@ class TestVG1GarbleGuardOnCatA:
 # ===========================================================================
 # 4. VG-6 behavior identity vs. the pre-change short-circuit pipeline
 # ===========================================================================
-
-
-def _reference_apply_promotions(outcome: GateOutcome, content_class, ier, insp, th):
-    """Faithful model of the PRE-VG-6 ordered if/elif pipeline.
-
-    Same guards, same order, but short-circuits at the first match and has no
-    ``promotion_paths_matched``.  Its ``(verdict, reason)`` must equal the
-    evaluate-all implementation's for every row of the golden table — that is
-    exactly the claim VG-6 makes.
-    """
-    defect = outcome.defect
-    sig = outcome.signals
-    all_defects = outcome.all_defects
-
-    if content_class == "image_standalone":
-        return _classify_image_verdict(ier)
-
-    stripped_len = len(sig.flat_text.strip())
-    if stripped_len < th.min_marginal_chars:
-        return "FAIL", f"insufficient_content(chars={stripped_len})"
-
-    if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
-        ie = _try_image_enrichment(sig, content_class, ier, th, None, None)
-        if ie is not None:
-            return _clamp_pass(ie, defect=defect, sig=sig)
-        return "FAIL", f"max_leaf_ratio={sig.max_leaf_ratio:.2f}"
-
-    reason = _try_image_enrichment(sig, content_class, ier, th, None, None)
-    if reason is None:
-        reason = _try_structural_pass(sig, all_defects, th)
-    if reason is None:
-        reason = _try_ocr_promotion(sig, content_class, th)
-    if reason is None:
-        reason = _try_flat_promotion(sig, content_class, th)
-    if reason is None:
-        reason = _try_content_class_promotion(sig, content_class, insp, th)
-    if reason is None:
-        reason = _try_small_doc_promotion(sig, content_class, th)
-    if reason is not None:
-        return _clamp_pass(reason, defect=defect, sig=sig)
-
-    if sig.effectively_garbled:
-        return "MARGINAL", f"garbling(ratio={sig.garble_ratio:.2f})"
-    if sig.node_count < 3:
-        return "MARGINAL", f"node_count={sig.node_count}"
-    if sig.depth < 2:
-        return "MARGINAL", f"depth={sig.depth}"
-    return "MARGINAL", f"leaf_concentration={sig.max_leaf_ratio:.2f}"
 
 
 class TestVG6BehaviorIdentity:

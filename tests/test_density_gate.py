@@ -48,8 +48,6 @@ from pageindex_mcp.helpers import (
 from pageindex_mcp.job_status import JobStatus, _job_key
 from pageindex_mcp.metrics import (
     FENCE_PARITY_WARNING,
-    TOC_STRIP_HIGH_CHAR_LOSS,
-    TOC_STRIP_SKIPPED,
 )
 from pageindex_mcp.storage import (
     save_doc_meta,
@@ -121,13 +119,6 @@ def _toc_node(title, text=""):
 def _real_node(title, text, nodes=None):
     return {"title": title, "text": text, "nodes": nodes or []}
 
-
-def _skipped_count():
-    return TOC_STRIP_SKIPPED._value.get()
-
-
-def _high_char_loss_count():
-    return TOC_STRIP_HIGH_CHAR_LOSS._value.get()
 
 
 class TestTocStripGuard:
