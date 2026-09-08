@@ -582,6 +582,38 @@ mappings:
     tests:
       - test_upload.py
 
+  # ── Package facades / barrels (RFC-045 D5) ──────────────────────────────────
+  # __init__.py is excluded from the gate's source scan, but each barrel's
+  # __all__ is a real contract: services/docling-service and issue/ import
+  # through it and this suite never exercises them. Frozen by the guard below.
+  client/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  converters/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  helpers/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  metrics/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  registry/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  registry_backfill/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  storage/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  tools/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+  worker/__init__.py:
+    tests:
+      - test_facade_surface_guard.py
+
   # ── Modules with no dedicated test file yet ─────────────────────────────────
   hash_cache_migrate.py:
     tests: []

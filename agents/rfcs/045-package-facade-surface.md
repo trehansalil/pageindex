@@ -126,8 +126,9 @@ by retaining the entry.
 ### Requirement 4: A guard must prevent regrowth
 
 #### Acceptance Criteria
-- **OPEN — maintainer decision required, see Open Questions.**
-- Whatever shape is chosen, `uv run pytest` stays green and the guard fails if a facade regrows an entry with no consumer.
+- **RESOLVED (2026-09-08): frozen list + external-contract pin. See D5.**
+- `tests/test_facade_surface_guard.py` freezes all 412 `__all__` entries across all 9 packages, and pins the 17 names whose only consumers sit outside this suite's import graph.
+- `uv run pytest` stays green, and each guard was demonstrated to fail on the condition it exists to catch *before* it landed.
 
 ## Decision Summary
 
@@ -157,6 +158,43 @@ against the corrected scan and none was invalidated. The corrected scanner is
 the reproducible artefact; a future run must re-measure rather than trust this
 list.
 
+### D5: The regrowth guard is a frozen list plus an unexercised-consumer pin (Requirement 4)
+`tests/test_facade_surface_guard.py`, landed 2026-09-08 ahead of any removal so
+that it captures the **pre-shrink** baseline. Two guards, not one, because each
+covers the other's blind spot:
+
+- **Frozen list** — every package's `__all__` must equal a literal in the test.
+  A pure change detector: it knows nothing about meaning, it only refuses to let
+  the surface drift silently. The churn it causes on every legitimate export is
+  the point — it forces each surface change to be argued in review. Membership
+  is compared as a set (order in `__all__` carries no semantics) with an
+  added/removed diff in the failure message, plus a duplicate check.
+- **Unexercised-consumer pin** — the 17 `(module, name, consumer)` triples that
+  code *outside the suite's import graph* reaches through a facade. This is the
+  half a frozen list structurally cannot do: a reviewer who deletes an export
+  and updates the frozen literal to match — exactly what a failing frozen-list
+  test instructs them to do — gets a green suite, and `services/docling-service`
+  then dies at runtime inside its own image. Pinned consumers are
+  `services/docling-service/app.py` (4), `issue/` (12), and the container
+  command `arq pageindex_mcp.worker.WorkerSettings` (1).
+
+A third assertion keeps the frozen literal honest: every listed name must
+actually be bound by its package, so a stale entry cannot hide until someone
+runs `from pkg import *`.
+
+**Rejected: the "every export has ≥1 consumer" guard.** It needs a repo-wide
+consumer counter, and D4 is the record of how wrong that counter gets — two
+defects inflated the candidate set 162 → 110 before the workflow's own skeptics
+caught them. A guard that can be quietly wrong about liveness is worse than
+none, because it is trusted. Rejected with it: the external pin *alone*, which
+guards the four names that break production but lets the other ~395 reaccumulate
+indefinitely — the very loop this RFC exists to end.
+
+**Coverage correction.** The measurement in this RFC covered 8 packages / 407
+entries. There is a 9th, `pageindex_mcp.tools` (5 entries), which was never
+scanned. All five are live via attribute access from `server.py:29-33`, so the
+removal set is unaffected — but the freeze covers all 9 packages / 412 entries.
+
 ## Risks
 
 | Risk | Mitigation |
@@ -164,18 +202,26 @@ list.
 | An out-of-repo consumer nobody knows about | Gate cleared for the one known deployment repo; package is never published to an index, only as a container image |
 | A group split ships and breaks a half-wired feature | Requirement 2 blocks execution until all 23 splits carry a disposition |
 | The scan misses a dynamic consumer | 15 agents checked string dispatch, `patch()` targets, `FEATURE_WIRINGS` importlib resolution and non-code refs per candidate; 9 entries were refuted on exactly these grounds |
-| The barrels regrow | Requirement 4 guard — shape still open |
+| The barrels regrow | Requirement 4 guard landed 2026-09-08 (D5), freezing the pre-shrink surface |
 
 ## Open Questions
 
-1. **Guard shape (blocking Requirement 4).** Four candidates, unresolved:
-   - assert every `__all__` entry has ≥1 consumer — self-maintaining, but needs a reliable consumer counter, which is the exact thing two scanner defects just showed is hard;
-   - assert each `__all__` equals a frozen literal list — trivially correct, but churns on every legitimate export and says nothing about use;
-   - pin only the external contract (`services/`, `issue/`, `WorkerSettings`) — guards what actually breaks, lets dead entries reaccumulate;
-   - both a frozen list and a consumer check — strongest, two tests to maintain.
-
-   *Recommendation:* the frozen-list guard plus the external-contract pin. It cannot suffer the consumer-counter's false negatives, and the churn it causes is the point — it forces every surface change to be deliberate.
+1. ~~**Guard shape (blocking Requirement 4).**~~ **RESOLVED 2026-09-08** —
+   frozen list plus external-contract pin, implemented in
+   `tests/test_facade_surface_guard.py`. Rationale and the two rejected
+   alternatives are in D5.
 
 2. **Do the 23 splits get resolved wholesale or per package?** Nine sit in `converters` alone; four are the `worker`/`metrics` Zone-7 bridge, which spans two packages and cannot be resolved by either package's owner alone.
 
 3. **`metrics` and `registry`.** `registry` has zero candidates. `metrics` has 7, all inside the Zone-7 bridge group. Both are deferred out of wave 1 — confirm that is acceptable.
+
+4. **`converters._relevel_by_numbering` is already broken.** Surfaced while
+   building the D5 pin: `issue/repro_katzen.py:86` calls
+   `C._relevel_by_numbering`, but the converters facade has never re-exported
+   it — the monolith decomposition (`06b2bae`) left it at
+   `converters/headings.py:312` only. That line raises `AttributeError` today
+   on the `_max_heading_level(md) < 2` branch. It is deliberately **not** in
+   the pin, since pinning it would encode a break. Fix is either a submodule
+   import in the script or a deliberate re-export; this RFC takes no position,
+   but note it inverts the framing — the barrel is not only too wide, it is
+   also missing something a consumer needs.
