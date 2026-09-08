@@ -128,6 +128,29 @@ def test_resolved_open_question_is_not_flagged(rfc_env):
     assert not [v for v in violations if v.rule == "unresolved-open-question"]
 
 
+def test_prose_resolved_does_not_suppress_open_question(rfc_env):
+    """Lowercase 'resolved' in an item's prose must not mark it resolved.
+
+    RFC-045 OQ2 read "...cannot be resolved by either package's owner alone" --
+    genuinely open, but the case-insensitive check skipped it, so the question
+    never surfaced in CI.
+    """
+    rfcs_dir, tasks_dir, zone_file = rfc_env
+    _write_rfc(
+        rfcs_dir,
+        "997-prose.md",
+        "RFC-997",
+        "draft",
+        extra_body=(
+            "\n## Open Questions\n\n"
+            "1. **Wholesale or per package?** This cannot be resolved by "
+            "either owner alone.\n"
+        ),
+    )
+    violations = rfc_lifecycle_lint.lint(rfcs_dir, tasks_dir, zone_file)
+    assert any(v.rule == "unresolved-open-question" for v in violations)
+
+
 def test_closed_rfc_with_orphaned_zone_bugs_is_blocking(rfc_env):
     rfcs_dir, tasks_dir, zone_file = rfc_env
     _write_rfc(rfcs_dir, "998-owner.md", "RFC-998", "implemented")

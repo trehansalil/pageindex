@@ -174,7 +174,11 @@ def detect_unresolved_open_questions(rfc: RfcMeta) -> list[Violation]:
     violations = []
     for match in OPEN_QUESTIONS_ITEM_RE.finditer(body):
         item_text = match.group(0)
-        if re.search(r"\bresolved\b", item_text, re.IGNORECASE):
+        # Case-SENSITIVE on purpose: an item is resolved only when it carries
+        # the explicit ``RESOLVED`` marker. A case-insensitive match also fires
+        # on ordinary prose -- RFC-045 OQ2 ("cannot be resolved by either
+        # package's owner alone") was silently skipped for exactly that reason.
+        if re.search(r"\bRESOLVED\b", item_text):
             continue
         violations.append(
             Violation(
