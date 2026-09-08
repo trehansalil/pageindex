@@ -182,6 +182,17 @@ A third assertion keeps the frozen literal honest: every listed name must
 actually be bound by its package, so a stale entry cannot hide until someone
 runs `from pkg import *`.
 
+Added 2026-09-08 alongside the open-question-4 fix, a fourth check —
+`TestConsumerReferencesResolve` — AST-walks every `pageindex_mcp` reference in
+`issue/`, `services/`, `scripts/` and the top-level entrypoints (44 distinct
+`(module, name)` pairs) and asserts each resolves. It is not the rejected
+consumer counter: it asks only *does this reference resolve*, never *is this
+export used*, so it cannot be quietly wrong about liveness. It scales to
+consumers nobody thought to pin by hand, and it is what would have caught open
+question 4 on the commit that introduced it rather than two years later. A
+floor assertion (`>= 40` refs) stops it going vacuously green if the sweep
+ever stops seeing those directories.
+
 **Rejected: the "every export has ≥1 consumer" guard.** It needs a repo-wide
 consumer counter, and D4 is the record of how wrong that counter gets — two
 defects inflated the candidate set 162 → 110 before the workflow's own skeptics
@@ -215,13 +226,19 @@ removal set is unaffected — but the freeze covers all 9 packages / 412 entries
 
 3. **`metrics` and `registry`.** `registry` has zero candidates. `metrics` has 7, all inside the Zone-7 bridge group. Both are deferred out of wave 1 — confirm that is acceptable.
 
-4. **`converters._relevel_by_numbering` is already broken.** Surfaced while
-   building the D5 pin: `issue/repro_katzen.py:86` calls
-   `C._relevel_by_numbering`, but the converters facade has never re-exported
-   it — the monolith decomposition (`06b2bae`) left it at
-   `converters/headings.py:312` only. That line raises `AttributeError` today
-   on the `_max_heading_level(md) < 2` branch. It is deliberately **not** in
-   the pin, since pinning it would encode a break. Fix is either a submodule
-   import in the script or a deliberate re-export; this RFC takes no position,
-   but note it inverts the framing — the barrel is not only too wide, it is
-   also missing something a consumer needs.
+4. ~~**`converters._relevel_by_numbering` is already broken.**~~ **RESOLVED
+   2026-09-08.** Surfaced while building the D5 pin: `issue/repro_katzen.py`
+   called `C._relevel_by_numbering`, but the converters facade has never
+   re-exported it — the monolith decomposition (`06b2bae`) left it at
+   `converters/headings.py:312` only, so that line raised `AttributeError` on
+   the `_max_heading_level(md) < 2` branch. Fixed by importing from the
+   submodule rather than growing the barrel this RFC is shrinking, which is
+   the same direction production code already takes everywhere. The pin now
+   carries it as the one submodule-path entry. An exhaustive sweep of all
+   non-suite consumers found this was the **only** unresolvable reference:
+   44 of 44 now resolve, and `TestConsumerReferencesResolve` keeps it that
+   way.
+
+   Note the finding this leaves standing: the barrel is not only too wide, it
+   was also missing something a consumer needed. A shrink RFC that only ever
+   removes will not surface that class of defect — the resolution guard will.

@@ -46,7 +46,9 @@ To regenerate after a deliberate change::
 
 from __future__ import annotations
 
+import ast
 import importlib
+import pathlib
 
 import pytest
 
@@ -517,24 +519,23 @@ UNEXERCISED_CONSUMERS: tuple[tuple[str, str, str], ...] = (
     ("pageindex_mcp.helpers", "validate_tree", "issue/verify_corpus.py:19"),
     # issue/ attribute access via ``from pageindex_mcp import converters as C``.
     ("pageindex_mcp.converters", "_build_pdf_pipeline_options", "issue/probe_toc.py:65"),
-    ("pageindex_mcp.converters", "_HEADING_RE", "issue/repro_katzen.py:76"),
-    ("pageindex_mcp.converters", "_patch_hierarchical_infer", "issue/repro_katzen.py:60"),
-    ("pageindex_mcp.converters", "_repromote_numbered_headings", "issue/repro_katzen.py:67"),
-    ("pageindex_mcp.converters", "normalize_dashes", "issue/repro_katzen.py:83"),
-    ("pageindex_mcp.converters", "_relevel_headings", "issue/repro_katzen.py:83"),
-    ("pageindex_mcp.converters", "_relevel_by_containment", "issue/repro_katzen.py:83"),
-    ("pageindex_mcp.converters", "_max_heading_level", "issue/verify_corpus.py:109"),
+    ("pageindex_mcp.converters", "_HEADING_RE", "issue/repro_katzen.py:82"),
+    ("pageindex_mcp.converters", "_patch_hierarchical_infer", "issue/repro_katzen.py:66"),
+    ("pageindex_mcp.converters", "_repromote_numbered_headings", "issue/repro_katzen.py:73"),
+    ("pageindex_mcp.converters", "normalize_dashes", "issue/repro_katzen.py:89"),
+    ("pageindex_mcp.converters", "_relevel_headings", "issue/repro_katzen.py:89"),
+    ("pageindex_mcp.converters", "_relevel_by_containment", "issue/repro_katzen.py:89"),
+    ("pageindex_mcp.converters", "_max_heading_level", "issue/repro_katzen.py:95"),
     # Container entrypoint: docker-compose.yml:188, Dockerfile:110, Makefile:84,
     # and hetzner-deployment-service apps/pageindex-mcp/worker-deployment.yaml:27.
     ("pageindex_mcp.worker", "WorkerSettings", "docker-compose.yml:188"),
-    #
-    # NOT PINNED -- ``issue/repro_katzen.py:86`` calls ``C._relevel_by_numbering``,
-    # but the converters facade has never re-exported it: the name was left
-    # behind by the monolith decomposition (06b2bae) and lives only at
-    # converters/headings.py:312. That call site is an AttributeError today on
-    # the ``_max_heading_level(md) < 2`` branch. It is a pre-existing bug, not a
-    # facade contract, so pinning it would encode a break. Fix is a submodule
-    # import in the script, or a deliberate re-export -- RFC-045 open item.
+    # issue/repro_katzen.py reaches _relevel_by_numbering through the SUBMODULE,
+    # not the facade: the monolith decomposition (06b2bae) never re-exported it,
+    # so the old ``C._relevel_by_numbering`` form was an AttributeError on the
+    # ``_max_heading_level(md) < 2`` branch. Fixed 2026-09-08 by importing from
+    # converters.headings rather than growing the barrel RFC-045 is shrinking --
+    # which is why this pin names a submodule while every other names a facade.
+    ("pageindex_mcp.converters.headings", "_relevel_by_numbering", "issue/repro_katzen.py:19"),
 )
 
 
@@ -593,4 +594,100 @@ class TestUnexercisedConsumerContract:
             "through the facade. Nothing else in this suite covers that consumer, "
             "so removing this name ships a runtime break. Re-export it, or update "
             "the consumer and this pin together."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Guard 3: every pageindex_mcp reference in non-test code outside src/ resolves
+# ---------------------------------------------------------------------------
+# This is the check that would have caught the ``C._relevel_by_numbering``
+# break on the commit that introduced it (06b2bae, 2 years of latency). It is
+# NOT the rejected consumer counter: it asks only "does this reference
+# resolve", never "is this export used", so it has no way to be quietly wrong
+# about liveness. It scales to consumers nobody has thought to pin by hand.
+
+_SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
+_CONSUMER_DIRS = ("issue", "services", "scripts")
+_CONSUMER_FILES = (
+    "mcp_server.py",
+    "preprocess_client.py",
+    "promotion_sweep.py",
+    "ingest_via_server.py",
+    "stress_test.py",
+)
+
+
+def _is_submodule(dotted: str) -> bool:
+    """True if ``dotted`` names a module/package on disk rather than a symbol."""
+    rel = dotted.replace(".", "/")
+    return (_SRC / f"{rel}.py").exists() or (_SRC / rel / "__init__.py").exists()
+
+
+def _collect_consumer_refs() -> list[tuple[str, str, str]]:
+    """(module, name, location) for every pageindex_mcp symbol these files use."""
+    root = pathlib.Path(__file__).resolve().parents[1]
+    paths: list[pathlib.Path] = []
+    for d in _CONSUMER_DIRS:
+        paths += sorted((root / d).rglob("*.py")) if (root / d).is_dir() else []
+    paths += [root / f for f in _CONSUMER_FILES if (root / f).is_file()]
+
+    refs: list[tuple[str, str, str]] = []
+    for path in paths:
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+            continue
+        loc = path.relative_to(root)
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("pageindex_mcp"):
+                for a in node.names:
+                    dotted = f"{node.module}.{a.name}"
+                    if _is_submodule(dotted):
+                        aliases[a.asname or a.name] = dotted
+                    else:
+                        refs.append((node.module, a.name, f"{loc}:{node.lineno}"))
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.startswith("pageindex_mcp"):
+                        aliases[a.asname or a.name.split(".")[0]] = a.name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                module = aliases.get(node.value.id)
+                if module:
+                    refs.append((module, node.attr, f"{loc}:{node.lineno}"))
+
+    seen: set[tuple[str, str]] = set()
+    unique = []
+    for module, name, where in refs:
+        if (module, name) not in seen:
+            seen.add((module, name))
+            unique.append((module, name, where))
+    return unique
+
+
+CONSUMER_REFS = _collect_consumer_refs()
+
+
+class TestConsumerReferencesResolve:
+    """Guard 3: no consumer outside src/ may name something that does not exist."""
+
+    def test_sweep_found_consumers(self) -> None:
+        assert len(CONSUMER_REFS) >= 40, (
+            f"only {len(CONSUMER_REFS)} consumer references found -- the AST sweep "
+            "has probably stopped seeing issue/ or services/, which would make "
+            "TestConsumerReferencesResolve vacuously green"
+        )
+
+    @pytest.mark.parametrize(
+        "module_path,name,location",
+        CONSUMER_REFS,
+        ids=[f"{m.rsplit('.', 1)[-1]}.{n}" for m, n, _ in CONSUMER_REFS],
+    )
+    def test_reference_resolves(self, module_path: str, name: str, location: str) -> None:
+        module = importlib.import_module(module_path)
+        assert hasattr(module, name), (
+            f"{location} references {module_path}.{name}, which does not exist. "
+            "Either the symbol moved (import it from its submodule) or it was "
+            "removed and this consumer was never updated."
         )
