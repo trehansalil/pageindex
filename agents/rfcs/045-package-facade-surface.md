@@ -308,6 +308,18 @@ a result and not a broken checker.
 
 **Final removal set: 59 of 59.**
 
+**Empirically confirmed, not only argued.** An adversarial reviewer simulated
+the full ten-name shrink with a pytest plugin that `delattr`s each name from its
+package object and strips it from `__all__` before collection — a faithful
+simulation, since `from pkg import name` is a `getattr`. Across the 17 test
+modules covering every consumer of the ten: **1220 passed**, with the single
+failure reproducing identically on an unmodified baseline (a known
+counter-ordering flake in `test_observability_combined.py` that passes
+standalone). Post-shrink, `validate_feature_wirings()` and
+`validate_recovery_method_names()` both pass, `CustomPageIndexClient.__mro__`
+still contains `RecoveryMixin`, and `pkgutil.walk_packages` imports every
+`pageindex_mcp` module without error.
+
 **What this means, stated precisely.** The coupling the signals detected is
 *real* — `_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S` genuinely is an arithmetic
 operand of a kept sibling; `_GateFn` genuinely is a type annotation. What the
@@ -335,6 +347,32 @@ Run 6's wrong verdicts:
   flagged as flag-gates with live `monkeypatch.setattr` sites. Those sites
   target `converters.pictures` and `converters.formats` — the submodule
   objects, which survive per D6.
+
+**The one genuinely uniform group: `converters.StageRecord`.** Every other
+ruling dissolves its group by showing the members never met through the facade.
+`StageRecord` does not, and it is the honest hard case. Its import line —
+`converters/__init__.py:162`, `from .types import Candidate, PictureResult,
+StageRecord, TessdataUnavailableError` — is **three-quarters facade-live**:
+`Candidate` (`tests/test_density_gate.py:27`), `PictureResult` (5 sites) and
+`TessdataUnavailableError` (5 sites) all have real facade consumers, and
+`StageRecord` has none. Removing it therefore *does* split a group whose other
+members reach each other through the barrel — exactly the pattern Requirement 2
+was written to catch.
+
+It is still safe, on a different argument entirely: a `StageRecord` instance
+provably never escapes its producer. `_run_stages` (`pipeline.py:208-210`) is
+annotated `-> tuple[str, dict[str, dict]]`, and both construction sites
+(`:229`, `:243`) are wrapped in `dataclasses.asdict(...)`. The facade callers of
+`_run_stages` (`tests/test_converters_pipeline.py:260,267`;
+`tests/test_density_gate.py`) receive plain dicts and have no use for the type.
+The group is real, the split is real, and the split is harmless because the type
+is producer-internal.
+
+This case is recorded in full because the general argument does **not** cover
+it. A future reviewer who reaches for "parenthesised import blocks are mixed
+anyway" will be wrong here — that claim was made for this very candidate during
+review and refuted on `tests/test_density_gate.py:27`. Uniform groups exist;
+they need a per-case argument, not a general one.
 
 **Limits of the rule, recorded rather than implied.** It reads `.py` only, so
 it cannot see contract YAMLs; and a dispatch string is opaque to it — the
@@ -482,6 +520,25 @@ acceptance criteria so companion artefacts can anchor to them. Corrected
 "Nine sit in `converters` alone" to ten, and "four are the `worker`/`metrics`
 Zone-7 bridge" to one, against manifest §E (which has ten `converters`
 rows and a single Zone 7 bridge row, number 16).
+
+### Amendment 4 (2026-09-08): Adversarial review of the rulings
+
+Three independent lenses reviewed all ten rulings. Two (channel, startup)
+confirmed all ten with no dispute; the startup lens built a fully shrunk copy of
+the package and exercised it. The coherence lens confirmed eight and disputed
+the *reasoning* — not the verdict — of one:
+
+- **`converters.StageRecord`.** The ruling argued its import line was "already
+  non-uniform in liveness" because `Candidate` had no facade consumer. That is
+  false: `Candidate` is imported through the facade at
+  `tests/test_density_gate.py:27`, so the line is three-quarters facade-live and
+  the removal genuinely does split a uniform group. Verified independently
+  before accepting the dispute. The REMOVE verdict stands on the other prong —
+  a `StageRecord` never escapes `_run_stages` — and D7 now records the case in
+  full, because it is the one candidate the general argument does not cover.
+
+No verdict changed; the removal set remains 59 of 59. D7 additionally records
+the simulated-shrink result (1220 tests, behaviour-neutral against baseline).
 
 ## Traceability
 
