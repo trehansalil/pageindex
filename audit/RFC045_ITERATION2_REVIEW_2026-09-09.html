@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RFC-045 Iteration 2 Review</title>
+<style>
+:root{--bg:#fbfbf9;--fg:#1c1c1a;--mut:#6b6b63;--line:#e0dfd8;--card:#fff;
+--crit:#b0243b;--high:#c2600f;--med:#8a6d00;--low:#5a6b7a;--ok:#2f6b41;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+h2{font-size:18px;margin:38px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.sub{color:var(--mut);font-size:14px;margin-bottom:28px}
+.verdict{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--crit);
+padding:16px 18px;border-radius:4px;margin-bottom:8px}
+.verdict strong{display:block;margin-bottom:6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:4px;
+padding:14px 16px;margin:12px 0}
+.card.crit{border-left:4px solid var(--crit)}
+.card.high{border-left:4px solid var(--high)}
+.card.med{border-left:4px solid var(--med)}
+.card.low{border-left:4px solid var(--low)}
+.card.ok{border-left:4px solid var(--ok)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.06em;
+text-transform:uppercase;padding:2px 7px;border-radius:3px;margin-right:8px;vertical-align:2px}
+.t-crit{background:#fbe9ec;color:var(--crit)}.t-high{background:#fdf0e3;color:var(--high)}
+.t-med{background:#fbf5e0;color:var(--med)}.t-low{background:#eef2f5;color:var(--low)}
+.t-ok{background:#e8f3ec;color:var(--ok)}
+.card h3{font-size:15px;margin:0 0 8px;font-weight:600;display:inline}
+.card p{margin:8px 0 0}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+background:#f2f1ec;padding:1px 5px;border-radius:3px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.overflow{overflow-x:auto}
+ul{margin:8px 0 0;padding-left:20px}li{margin:4px 0}
+.rule{background:#f4f6f4;border:1px solid #d8e0d8;border-radius:4px;padding:16px 18px;margin-top:10px}
+footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);
+color:var(--mut);font-size:13px}
+</style></head><body><div class="wrap">
+
+<h1>RFC-045 — Iteration 2 Review</h1>
+<div class="sub">Package facade surface · 2026-09-09 · three lenses against the once-amended triad</div>
+
+<div class="verdict"><strong>Verdict: iteration 1 over-corrected. The removal set is untouched at 59; the plan around it grew about as much error as it removed.</strong>
+Iteration 1 fixed one real defect (the wave-3 contradiction) and six of seven citations verified clean.
+It also introduced two false factual claims about <code>metrics</code>, specified a verifier that would have
+failed its own positive control, and booked ~6h for tooling that largely already exists. All corrected here.
+The recommendation is to commit and execute wave 1 — not to run a third round.</div>
+
+<h2>Findings</h2>
+
+<div class="card crit"><span class="tag t-crit">Critical</span><h3>Wave 6b was inoperable, and both claims justifying it were false</h3>
+<p>Iteration 1 asserted <code>metrics</code> has 7 candidates in manifest §B and that it
+"never went through the 15-agent refutation pass." Against source, neither holds.</p>
+<ul>
+<li>§B has six package sections only — <code>:79,110,127,141,154,162</code> = 26/12/9/8/3/1 = 59. No <code>metrics</code> rows exist. The "7" is §A's zero-consumer count (<code>manifest:68</code>), never narrowed the way helpers (21→12) or converters (45→26) were.</li>
+<li>§C records <code>metrics | 38 kept</code>. The pass ran. The consistency critic then judged five of those keeps soft in §F (<code>manifest:256-260</code>), with two more in the §E row-16 bridge group. What was missing is the <em>human adjudication</em> of those disputed keeps.</li>
+<li>The gate could not run: <code>load_removals()</code> (<code>scripts/facade_surface_measure.py:51-54</code>) parses §B only; the script has no package filter; and <code>main()</code> hard-fails unless it sees 59 removals (<code>:40</code>, <code>:605-606</code>). It also could not fail — the underlying measurement passed on 2026-09-07 and again on 2026-09-09.</li>
+</ul>
+<p><strong>Fixed:</strong> 6b.1 is now an adjudication of the five §F rows, the §E row-16 pair, and the star-import at
+<code>docs/superpowers/plans/2026-04-07-grafana-monitoring.md:1406</code> — the one place <code>__all__</code> is
+genuinely load-bearing — followed by a manifest §B extension and a re-pin of the measurement constants.</p></div>
+
+<div class="card high"><span class="tag t-high">High</span><h3>Task 0.3's verifier spec would have failed its own positive control</h3>
+<p>The spec matched <code>ImportFrom(module="pageindex_mcp.&lt;pkg&gt;")</code> — absolute imports only. Two of the
+five mandated controls are relative imports inside <code>src/</code>: <code>converters.zdr_egress_gate</code>'s
+<em>only</em> facade site is <code>src/pageindex_mcp/client/indexer.py:30</code>, and <code>helpers.GATES</code>'s
+6th site is <code>:50</code>. The checker would have reported zero for a wired producer. The spec also never said
+"exact match" — leaving a <code>startswith</code> implementation free to classify
+<code>pageindex_mcp.converters.pictures</code> as Facade_Channel, exactly the confusion D7 exists to prevent —
+and omitted the <code>import pageindex_mcp.&lt;pkg&gt;</code> chained-attribute form.</p>
+<p><strong>Fixed:</strong> both rules are now stated in D7 and in task 0.3.</p></div>
+
+<div class="card high"><span class="tag t-high">High</span><h3>0.3 and 0.4 rebuilt machinery that already exists</h3>
+<p><code>TestConsumerReferencesResolve</code> (<code>tests/test_facade_surface_guard.py:596-693</code>) already does
+alias-tracked <code>ImportFrom</code> + <code>Attribute</code> resolution over <code>issue/</code>,
+<code>services/</code>, <code>scripts/</code> and the five entrypoints. Property 3 is enforced by 47
+<code>monkeypatch.setattr</code> sites that raise <code>AttributeError</code> the moment an attribute vanishes;
+Property 4 by <code>validate_feature_wirings()</code> at <code>server.py:83</code> and <code>lifecycle.py:63</code>,
+imported at every checkpoint. Only Property 2's <code>not hasattr</code> half was genuinely untested — a 10-line
+gap, not a parameterized module. Iteration 1 read "7.1 names a tool that does not exist" as <em>build the tool</em>
+rather than <em>7.1 points at the wrong artefact</em>.</p>
+<p><strong>Fixed:</strong> 0.3 becomes a ~1h extension of the existing sweep to <code>src/</code> and
+<code>tests/</code>; 0.4 becomes a single assertion. Wave 0: ~5–7h → ~1.5–2.5h. Total: ~12–16h → ~7–8h.</p></div>
+
+<div class="card med"><span class="tag t-med">Medium</span><h3>0.4 had no source for the removed-name list</h3>
+<p><code>FROZEN_SURFACE</code> holds only <em>retained</em> names (the 412-entry pre-shrink baseline). Wave 0 runs
+before any removal, so nothing defined the per-wave removed set that P2's assertions need.
+<strong>Fixed</strong> by driving it off the set difference against the pre-shrink literal captured in 0.2.</p></div>
+
+<div class="card med"><span class="tag t-med">Medium</span><h3>Three counts left stale</h3>
+<ul>
+<li><code>worker._run_converter_subprocess</code> has <strong>3</strong> facade sites, not 2 —
+<code>preprocess_client.py:145</code>, <code>tests/test_recovery.py:39</code>, <code>tests/test_worker.py:22</code>.</li>
+<li>Design D4 still read "eight other <code>from ..script import</code> sites" where iteration 1 corrected the
+tasks file to five. Six statements exist (<code>helpers/__init__.py:10,13,25,28,31,34</code>); five survive.</li>
+<li>"Ten" should be <strong>eleven</strong>. <code>tests/test_rfc045_facade_measurement.py:48-60</code> pins exactly
+11 <code>EXPECTED_FLIPS</code>; the design says 11 in five places; no artifact records any candidate being excluded
+from the simulation. Amendment 4's own "eight confirmed plus one disputed" summed to nine.</li>
+</ul>
+<p><strong>Fixed</strong> in all four locations. RFC's aggregate "62 setattr/getattr sites" harmonised to the
+design's itemised enumeration, which sums to 63 and is the checkable one.</p></div>
+
+<h2>Verified clean — no action</h2>
+<div class="card ok"><span class="tag t-ok">Confirmed</span>
+<p>Iteration 1's central fix holds exactly. The wave-3 resolution checks out against source: manifest §B rows 7–8 at
+<code>:151-152</code>, <code>registry_backfill/__init__.py:75,77</code> (imports) and <code>:105,108</code>
+(<code>__all__</code>), <code>backfill.py:13</code>/<code>:20</code>, manifest §G:282. Also confirmed: the
+<code>gates.py:598</code> <code>import_module</code> / <code>:599</code> <code>getattr</code> pair; the six
+<code>from ..script import</code> statements; <code>client/__init__.py:40</code> as a binding with
+<code>__all__</code> at <code>:52-71</code> holding 13 entries and <code>LOW_CONTENT_OCR_CHAR_FLOOR</code> absent;
+<code>UNEXERCISED_CONSUMERS</code> at 17 pins with 12 <code>issue/</code> names and 3 converters +
+1 config docling-service pins; <code>services/docling-service/app.py:144</code>;
+<code>SUBMODULE_SURVIVAL_PAIRS</code> matching D4's eight pairs exactly; "six barrels" matching D3's wave list.
+Waves 4/5/6's "the remainder from manifest §B" reconciles exactly (8+1=9, 9+3=12, 14+12=26).
+<code>FROZEN_SURFACE</code> is module-level and importable.</p></div>
+
+<h2>The stopping rule</h2>
+<div class="rule"><p>Amendment 5 declared "No sixth amendment before a line is deleted." Iteration 2 ran anyway — a
+stopping rule that lives in the artefact but not in the workflow is not a stopping rule. Two rounds have now
+confirmed the removal set at 59 and found defects only in the plan around it, and the second round found roughly
+as much new error as it removed.</p>
+<p><strong>Cost parity, now recorded in RFC Amendment 6:</strong> when the smallest execution step is cheaper than
+a review round, execute the step. Wave 1 is three names, ~30 minutes, and reverts in one commit; a review round is
+three lenses and several hours. The step yields information about the code; the round yields prose about the plan.</p></div>
+
+<h2>Changes applied</h2>
+<div class="overflow"><table>
+<tr><th>Artifact</th><th>Change</th></tr>
+<tr><td><code>agents/rfcs/045-…md</code></td><td>OQ3 rewritten to retract both false <code>metrics</code> claims; wave preamble and Test Strategy repointed at existing artifacts; effort ~12–16h → ~7–8h; ten→eleven (4 sites); 62→63; <strong>Amendment 6</strong> with the cost-parity rule</td></tr>
+<tr><td><code>agents/designs/design-rfc045-…md</code></td><td>D7 gains the relative-import and exact-match rules and points 0.3 at the existing sweep; Property 4's test note corrected; D4 eight→five; 2→3 facade sites; <code>metrics</code> block corrected; <strong>Amendment 3</strong></td></tr>
+<tr><td><code>agents/tasks/tasks-rfc045-…md</code></td><td>0.3 rewritten (~3–4h script → ~1h extension); 0.4 narrowed to one assertion; wave 6b rewritten as adjudication + manifest extension; 7.1 repointed; effort table gains an iter-2 column; dependency-graph 6b description updated; <strong>Amendment 3</strong></td></tr>
+</table></div>
+
+<h2>Next step</h2>
+<div class="card ok"><span class="tag t-ok">Recommended</span>
+<p>Commit the triad, then execute wave 1 — delete the three <code>client</code> entries and their bindings.
+Everything after that, execution answers better than review can.</p></div>
+
+<footer>Checks: 0 broken anchors across the triad · dependency-graph JSON valid ·
+<code>scripts/rfc_lifecycle_lint.py</code> reports 2 blocking / 9 advisory, unchanged and none against RFC-045
+(both blocking items are pre-existing <code>tasks-rfc033</code> skipped-gates).</footer>
+</div></body></html>

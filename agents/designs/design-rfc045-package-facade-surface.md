@@ -150,8 +150,11 @@ Two measured consequences:
 #   converters/__init__.py:5   from concurrent.futures import TimeoutError as FuturesTimeoutError
 #   helpers/__init__.py:10     from ..script import _JOINING_TYPE
 # Neither is a first-party submodule of its own package, so no submodule
-# attribute is lost. `pageindex_mcp.script` stays bound via eight other
-# `from ..script import ...` sites.
+# attribute is lost. `pageindex_mcp.script` stays bound via five other
+# `from ..script import ...` statements -- there are six in all, at
+# helpers/__init__.py:10,13,25,28,31,34, and :10 is the one that empties.
+# (Amendment 2026-09-09 iteration 2: this read "eight" and was missed by
+# iteration 1's correction of the same count in tasks 5.1.)
 
 # Import lines that must NOT empty -- they are the only reason these
 # submodule objects are reachable as package attributes:
@@ -201,11 +204,35 @@ Attr_Channel separately, tracking per-file aliases so that
 `from pageindex_mcp import worker as w` → `w.X` is caught. It returned zero on
 both channels for all 11 names.
 
+**(Amendment 2026-09-09.)** That pass was run ad hoc during review and never
+committed; `scripts/facade_surface_measure.py` measures the Narrow_Rule signals
+and is not a consumer resolver, and `TestConsumerReferencesResolve` only checks
+that *kept* references resolve. This decision therefore now names a deliverable, built in wave 0 — before the
+first removal, where a surprise consumer costs nothing — and re-run in wave 7.
+
+**(Amendment 2026-09-09, iteration 2.)** That deliverable is **not** a new
+script. `TestConsumerReferencesResolve` (`tests/test_facade_surface_guard.py:596-693`)
+already performs alias-tracked `ImportFrom` + `Attribute` resolution over
+`issue/`, `services/`, `scripts/` and the five entrypoints; the residual gap is
+only that it does not sweep `src/` or `tests/`, where a lazy in-function facade
+import could hide. Task 0.3 extends its `_CONSUMER_DIRS` instead. Two rules the
+extension must honour, both of which the iteration-1 script spec got wrong:
+
+- **Relative imports count.** Intra-`src/` facade imports are `from ..converters
+  import ...` (`ImportFrom` with `level=2`). An absolute-only matcher reports
+  zero for `converters.zdr_egress_gate`, whose *only* facade site is the
+  relative import at `src/pageindex_mcp/client/indexer.py:30`, and misses
+  `helpers.GATES`'s 6th site at `:50`. `scripts/facade_surface_measure.py:232-246`
+  already resolves `node.level`; reuse it.
+- **Match `node.module` by exact equality**, never by prefix. `startswith` on
+  `pageindex_mcp.converters` swallows `pageindex_mcp.converters.pictures` — the
+  Facade/Submodule confusion this whole decision exists to prevent.
+
 A checker that returns all zeros is indistinguishable from a broken checker, so
 it was positive-controlled against five names known to be live —
 `converters._docling_converter` (facade, external), `converters.pdf_to_markdown_docling`
 (facade + attr), `converters.zdr_egress_gate` (wired producer), `helpers.GATES`
-(6 facade sites), `worker._run_converter_subprocess` (2 facade sites) — and
+(6 facade sites), `worker._run_converter_subprocess` (3 facade sites: `preprocess_client.py:145`, `tests/test_recovery.py:39`, `tests/test_worker.py:22`) — and
 found every one. The control is part of the design, not a debugging step: any
 future re-verification runs it first.
 
@@ -217,7 +244,9 @@ future re-verification runs it first.
 
 # client/__init__.py            3 removed
 #   REMOVED: RecoveryMixin, + 2 others (manifest B)
-#   RETAINED: LOW_CONTENT_OCR_CHAR_FLOOR (attr consumer, tests/test_bidi.py:721)
+#   RETAINED BINDING: LOW_CONTENT_OCR_CHAR_FLOOR (__init__.py:40) -- attr
+#         consumer at tests/test_bidi.py:721. It is NOT in __all__ (13 entries,
+#         :52-71); the Attr_Channel runs off the import statement alone (D4).
 #   NOTE: the `# recovery` comment in __all__ STAYS -- it also heads
 #         `_remote_image_to_markdown`, which is not a candidate.
 
@@ -254,7 +283,12 @@ future re-verification runs it first.
 
 # --- Unchanged by this RFC ------------------------------------------------
 # registry/__init__.py    zero candidates
-# metrics/__init__.py     7 candidates, deferred (OQ3) -- frozen by D5 meanwhile
+# metrics/__init__.py     no manifest section-B rows exist; the "7" cited before
+#                         2026-09-09 iteration 2 was section A's zero-consumer
+#                         count (manifest:68), never narrowed. Wave 6b must first
+#                         adjudicate the five disputed section-F keeps
+#                         (manifest:256-260) and the section-E row-16 bridge pair,
+#                         then enumerate a section-B set. Frozen by D5 either way
 # tools/__init__.py       5 entries, all live via server.py:29-33 attr access
 ```
 
@@ -300,13 +334,27 @@ All five facade-resolved producer paths SHALL remain resolvable:
 `helpers.compute_image_enrichment_ratio`. Formally:
 `validate_feature_wirings()` raises no `AssertionError`.
 
-**Test:** Existing startup validation, exercised at import; plus an explicit
-per-wave assertion that the intersection of `FEATURE_WIRINGS` attribute names
-and the wave's removal list is empty.
+**Test:** Existing startup validation, exercised at import — `validate_feature_wirings()`
+runs at `src/pageindex_mcp/server.py:83` and `lifecycle.py:63`, and every wave
+checkpoint imports the server, so this property is already mechanical.
+
+**(Amendment 2026-09-09, iteration 2.)** Iteration 1 added a
+`tests/test_rfc045_wave_invariants.py` here carrying Properties 2, 3 and 4 on
+the grounds that all three were prose re-derived by hand. Two of the three were
+not: Property 4 is enforced by the startup validation above, and Property 3 by
+47 `monkeypatch.setattr(converters.pictures|formats|docling_conv, ...)` sites in
+`tests/`, which raise `AttributeError` the moment a submodule attribute
+disappears. Only Property 2's `not hasattr(pkg, name)` half is genuinely
+untested, and its failure mode — a binding surviving without its `__all__`
+entry — is cosmetic rather than breaking. Task 0.4 therefore adds that single
+assertion to `tests/test_facade_surface_guard.py` rather than a parameterized
+module.
 
 ### Property 5: The external contract resolves
 
-`services/docling-service/app.py` (3 names), the `issue/` scripts (3 names),
+`services/docling-service/app.py` (3 converters names, plus
+`config.CURRENT_PIPELINE_VERSION` at `app.py:144`, which this RFC does not
+touch), the `issue/` scripts (12 pinned names),
 and the container command `arq pageindex_mcp.worker.WorkerSettings` SHALL
 continue to resolve. Formally: all 44 off-suite `(module, name)` references
 resolve.
@@ -355,3 +403,59 @@ added RFC decisions D6 (removal scope) and D7 (disposition rule). This design
 carries those forward as architecture decisions D4 and D6-D7, and turns the
 per-wave obligations they imply — submodule-attribute survival, FEATURE_WIRINGS
 overlap, and the entry-plus-binding scope — into Properties 2, 3 and 4.
+
+### Amendment 2 (2026-09-09): Properties 1–4 get implementations
+
+Alongside [[RFC-045]] Amendment 5 and
+[[tasks-rfc045-package-facade-surface]] Amendment 2. An executability review
+found that four of the seven properties this design states as testable had no
+test behind them:
+
+- **D7 named a verification pass, not an artefact.** The two-channel AST sweep
+  was run ad hoc during review and never committed. D7 now names
+  `scripts/facade_channel_verify.py` as a wave-0 deliverable, satisfying
+  Property 1 and re-run at wave 7.
+- **Properties 2, 3 and 4 were prose.** Property 3 (submodule-attribute
+  survival across the eight `(package, submodule)` pairs of D4, plus
+  `pageindex_mcp.script`, which wave 5's emptied import line makes load-bearing)
+  and Property 4 (`FEATURE_WIRINGS` overlap) were tested nowhere; Property 2 was
+  only incidentally covered by the frozen-list assertion, which does not catch
+  the `__all__`-without-binding half. All three now run from
+  `tests/test_rfc045_wave_invariants.py`, parameterized off `FROZEN_SURFACE`.
+- **Property 5 understated `issue/`** at 3 names against the 12 actually pinned
+  in `UNEXERCISED_CONSUMERS`, and folded `config.CURRENT_PIPELINE_VERSION`
+  (`app.py:144`) into the docling-service count; that name is untouched by this
+  RFC. Corrected.
+- `metrics` moves from deferred to gated wave 6b; the
+  `LOW_CONTENT_OCR_CHAR_FLOOR` service contract now says *binding*, since the
+  name never was an `__all__` entry.
+
+Properties 6 and 7 were already implemented and verified — the frozen list
+(412 entries / 9 packages, 17 external pins, 89 tests green) and the
+measurement's self-skip mechanism both behave as this document describes.
+
+### Amendment 3 (2026-09-09): Iteration 2 — the implementations shrink
+
+Iteration 1's Amendment 2 was right that Properties 1–4 lacked implementations
+and wrong about how much had to be built. A second review pass found most of it
+already existed:
+
+- **Property 1's verifier is the existing sweep, extended.** D7 now specifies
+  the two rules the iteration-1 script spec got wrong — relative-import
+  resolution and exact `node.module` matching — and points task 0.3 at
+  `TestConsumerReferencesResolve` rather than a new `scripts/facade_channel_verify.py`.
+  The iteration-1 spec would have failed its own positive control:
+  `converters.zdr_egress_gate`'s only facade site is relative.
+- **Properties 3 and 4 were already enforced**, by 47 `monkeypatch.setattr`
+  sites and by `validate_feature_wirings()` respectively. Only Property 2's
+  `hasattr` half was untested. `tests/test_rfc045_wave_invariants.py` is
+  withdrawn as a deliverable.
+- **Effort ~12–16h → ~7–8h.** The increase iteration 1 booked was for work that
+  did not need doing.
+
+Citations corrected against source: `worker._run_converter_subprocess` has
+**3** facade sites, not 2 (`preprocess_client.py:145`, `tests/test_recovery.py:39`,
+`tests/test_worker.py:22`); D4's surviving `..script` count is **five**, not
+eight — iteration 1 fixed this in the tasks file and missed it here; and the
+`metrics` "7 candidates" was §A's zero-consumer count, not a §B candidate set
+that does not exist.

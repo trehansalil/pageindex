@@ -266,7 +266,7 @@ Two consequences follow, and both were measured:
   submodule attribute is lost.
 - **Submodule attributes must survive.** `monkeypatch.setattr(converters.pictures,
   ...)` works only because the barrel imported `pictures`. A sweep found 8 such
-  attributes reached across 62 `setattr`/`getattr` sites (`converters.pictures`
+  attributes reached across 63 `setattr`/`getattr` sites (`converters.pictures`
   alone accounts for 42); every one of their import lines retains at least one
   surviving name. This check SHALL be re-run per wave, because it is a property
   of the *remaining* set, not of any single removal.
@@ -309,10 +309,10 @@ a result and not a broken checker.
 **Final removal set: 59 of 59.**
 
 **Empirically confirmed, not only argued.** An adversarial reviewer simulated
-the full ten-name shrink with a pytest plugin that `delattr`s each name from its
+the full eleven-name shrink with a pytest plugin that `delattr`s each name from its
 package object and strips it from `__all__` before collection — a faithful
 simulation, since `from pkg import name` is a `getattr`. Across the 17 test
-modules covering every consumer of the ten: **1220 passed**, with the single
+modules covering every consumer of the eleven: **1220 passed**, with the single
 failure reproducing identically on an unmodified baseline (a known
 counter-ordering flake in `test_observability_combined.py` that passes
 standalone). Post-shrink, `validate_feature_wirings()` and
@@ -334,8 +334,9 @@ Three of the eleven are worth recording individually, because each is the
 submodule-vs-facade error wearing a new costume — the same class that produced
 Run 6's wrong verdicts:
 
-- `client.RecoveryMixin` flagged on a string-registry hit at `gates.py:599`.
-  That line is `importlib.import_module("pageindex_mcp.client.recovery")` —
+- `client.RecoveryMixin` flagged on a string-registry hit at `gates.py:598-599`.
+  The hit is `RecoveryMixin = getattr(recovery_mod, "RecoveryMixin")` (`:599`),
+  fed by `importlib.import_module("pageindex_mcp.client.recovery")` (`:598`) —
   a **submodule** path, chosen deliberately (its docstring says so) to avoid a
   circular import from `client` into `helpers`.
 - `worker._mirror_bridged_incr` / `_mirror_bridged_set` flagged on the Zone 7
@@ -353,7 +354,7 @@ ruling dissolves its group by showing the members never met through the facade.
 `StageRecord` does not, and it is the honest hard case. Its import line —
 `converters/__init__.py:162`, `from .types import Candidate, PictureResult,
 StageRecord, TessdataUnavailableError` — is **three-quarters facade-live**:
-`Candidate` (`tests/test_density_gate.py:27`), `PictureResult` (5 sites) and
+`Candidate` (`tests/test_density_gate.py:28`), `PictureResult` (5 sites) and
 `TessdataUnavailableError` (5 sites) all have real facade consumers, and
 `StageRecord` has none. Removing it therefore *does* split a group whose other
 members reach each other through the barrel — exactly the pattern Requirement 2
@@ -371,7 +372,7 @@ is producer-internal.
 This case is recorded in full because the general argument does **not** cover
 it. A future reviewer who reaches for "parenthesised import blocks are mixed
 anyway" will be wrong here — that claim was made for this very candidate during
-review and refuted on `tests/test_density_gate.py:27`. Uniform groups exist;
+review and refuted on `tests/test_density_gate.py:28`. Uniform groups exist;
 they need a per-case argument, not a general one.
 
 **Limits of the rule, recorded rather than implied.** It reads `.py` only, so
@@ -411,11 +412,26 @@ Waves are independent — no removal in one package is a prerequisite for anothe
 — but they run in sequence so that a regression is attributable to a single
 package.
 
+**(Amendment 2026-09-09.)** Two waves are added either side of the six: a
+**wave 0** that closes the two verification gaps the plan assumed were already
+closed — extending `TestConsumerReferencesResolve` to sweep `src/` and `tests/`,
+and adding the one untested half of Property 2 — and a conditional **wave 6b**
+for `metrics`, gated on adjudicating its disputed manifest §F keeps.
+**(Iteration 2 correction: this previously named two new artifacts,
+`scripts/facade_channel_verify.py` and `tests/test_rfc045_wave_invariants.py`.
+Most of what they would have built already exists.)** See [[tasks-rfc045-package-facade-surface]] Amendment 2.
+
 ### Effort estimate
 
-~6h total: ~30min per wave for waves 1–4, ~1h for wave 5, ~2h for wave 6
-(largest set, external contract, most guard-literal churn), plus ~1h for the
-final cross-wave verification.
+**~7–8h total** (~6h original → ~12–16h in iteration 1 → **~7–8h in iteration 2**,
+both on 2026-09-09). The original figure assumed verification tooling that did
+not exist. Iteration 1 responded by specifying two new artifacts and booked
+~5–7h for them. Iteration 2 found that most of what they would build already
+exists — `TestConsumerReferencesResolve` for Property 1, 47 `monkeypatch.setattr`
+sites for Property 3, `validate_feature_wirings()` for Property 4 — leaving
+~1h to extend the sweep to `src/`/`tests/` and ~30min for Property 2's untested
+`hasattr` half. Waves 1–5 unchanged, wave 6 ~3h, wave 6b ~1h, wave 7 ~1h. The
+per-item trail is in the tasks file.
 
 ## Test Strategy
 
@@ -425,6 +441,8 @@ final cross-wave verification.
 | External pin | 17 off-suite `(module, name, consumer)` triples resolve | `tests/test_facade_surface_guard.py` |
 | Resolution | all 44 `pageindex_mcp` refs in `issue/`, `services/`, `scripts/` resolve | `TestConsumerReferencesResolve` |
 | Measurement | both rule outcomes, per-package split, and the 11-name hand-review set | `tests/test_rfc045_facade_measurement.py` |
+| Invariants | P3 via 47 `monkeypatch.setattr` sites; P4 via `validate_feature_wirings()` at `server.py:83`; P2's `hasattr` half added in wave 0 | `tests/`, startup validation, `tests/test_facade_surface_guard.py` |
+| Channels | every surviving `pageindex_mcp` reference resolves, swept across `src/` and `tests/` as well | `TestConsumerReferencesResolve`, extended in wave 0 |
 | Startup | FEATURE_WIRINGS producer/consumer paths resolve | `validate_feature_wirings()`, exercised at import |
 | Regression | full suite green after each wave | `uv run pytest` |
 
@@ -469,12 +487,49 @@ mid-wave; re-pinning them is a task of the final verification wave.
    for one owner ruling on all of them rather than five owners ruling on
    slices of the same question.
 
-3. ~~**`metrics` and `registry`.**~~ **RESOLVED 2026-09-08 — deferral accepted.**
-   `registry` has zero candidates, so there is nothing to defer. `metrics` has 7,
-   all inside the Zone 7 bridge group; D7 established that the bridge is a
-   Redis key-string contract that no facade mediates, so the deferral costs
-   nothing and can be picked up as a wave 7 without re-opening this RFC. Both
-   remain frozen by the D5 guard meanwhile.
+3. ~~**`metrics` and `registry`.**~~ **RESOLVED 2026-09-08 — deferral accepted.
+   SUPERSEDED 2026-09-09 — `metrics` becomes a gated wave 6b.**
+   `registry` has zero candidates, so there is nothing to defer; that part
+   stands. The `metrics` half does not. The 2026-09-08 argument was that D7
+   established the Zone 7 bridge to be a Redis key-string contract no facade
+   mediates, "so the deferral costs nothing and can be picked up as a wave 7."
+   Two defects: it collided with the tasks file, which said wave 8, while wave 7
+   is the verification wave; and more seriously it is the wrong shape of
+   argument. If the bridge is a key-string contract, that makes the 7 `metrics`
+   names *as removable as* `worker._mirror_bridged_incr` and `_mirror_bridged_set`
+   — which are in the set. An argument that clears the worker half cannot
+   simultaneously justify deferring the metrics half.
+
+   **AMENDED 2026-09-09 (iteration 2) — the replacement reason given above was
+   itself wrong, twice, and is retracted.** This entry previously asserted that
+   "`metrics` never went through the 15-agent refutation pass the other 59 did"
+   and that the package has 7 candidates gated on a measurement. Against source:
+
+   - **It did go through the pass.** Manifest §C records `metrics | 38 kept`.
+     The metrics agent ran and kept all 7 on governance-hold / deliberate-
+     re-export grounds; the consistency critic then judged five of those keeps
+     soft in §F (`audit/FACADE_SURFACE_MANIFEST_2026-09-07.md:256-260`), with
+     the other two in the §E row-16 bridge group. What `metrics` never got is
+     the step the 59 got *after* the pass — **a human adjudication of its
+     disputed keeps.**
+   - **There is no `metrics` candidate set.** Manifest §B has six package
+     sections only (`:79,110,127,141,154,162` = 26/12/9/8/3/1 = 59). The "7"
+     is §A's *zero-consumer* count (`manifest:68`), never narrowed the way
+     helpers (21→12) and converters (45→26) were.
+   - **The proposed gate could not fail.** It was the §A measurement, which
+     already returned 7 zeros on 2026-09-07 and again on 2026-09-09. A
+     conditional wave on a pre-passed gate is not a gate.
+
+   Resolved by adjudicating rather than measuring. `metrics` becomes **wave 6b**,
+   run after `converters` and gated on a human ruling over the five §F soft-keep
+   rows, the §E row-16 bridge pair, and the one place `__all__` is genuinely
+   load-bearing — the star-import at
+   `docs/superpowers/plans/2026-04-07-grafana-monitoring.md:1406`. If the ruling
+   clears, wave 6b extends manifest §B with an enumerated `metrics` section,
+   re-pins the measurement constants, and removes the set. If any row survives
+   on its merits, `metrics` stays deferred and that row is recorded — the
+   concrete reason this open question has lacked. Both packages remain frozen by
+   the D5 guard either way.
 
 4. ~~**`converters._relevel_by_numbering` is already broken.**~~ **RESOLVED
    2026-09-08.** Surfaced while building the D5 pin: `issue/repro_katzen.py`
@@ -523,15 +578,15 @@ rows and a single Zone 7 bridge row, number 16).
 
 ### Amendment 4 (2026-09-08): Adversarial review of the rulings
 
-Three independent lenses reviewed all ten rulings. Two (channel, startup)
-confirmed all ten with no dispute; the startup lens built a fully shrunk copy of
-the package and exercised it. The coherence lens confirmed eight and disputed
+Three independent lenses reviewed all eleven rulings. Two (channel, startup)
+confirmed all eleven with no dispute; the startup lens built a fully shrunk copy of
+the package and exercised it. The coherence lens confirmed ten and disputed
 the *reasoning* — not the verdict — of one:
 
 - **`converters.StageRecord`.** The ruling argued its import line was "already
   non-uniform in liveness" because `Candidate` had no facade consumer. That is
   false: `Candidate` is imported through the facade at
-  `tests/test_density_gate.py:27`, so the line is three-quarters facade-live and
+  `tests/test_density_gate.py:28`, so the line is three-quarters facade-live and
   the removal genuinely does split a uniform group. Verified independently
   before accepting the dispute. The REMOVE verdict stands on the other prong —
   a `StageRecord` never escapes `_run_stages` — and D7 now records the case in
@@ -539,6 +594,86 @@ the *reasoning* — not the verdict — of one:
 
 No verdict changed; the removal set remains 59 of 59. D7 additionally records
 the simulated-shrink result (1220 tests, behaviour-neutral against baseline).
+
+### Amendment 5 (2026-09-09): Executability review — the plan, not the verdict
+
+Three lenses reviewed the triad for *executability* rather than correctness.
+The removal set is untouched: still 59, still cleared. What changed is the plan.
+
+- **A blocking contradiction in wave 3**, found independently by two lenses.
+  Tasks 3.1 removed "the remaining two from manifest §B" and then declared those
+  same two — `read_registry_fields`, `upsert_doc` — out of scope, making the
+  wave both 8 and 6 and the total both 59 and 57. Manifest §G:282 rules them in
+  and demands a caveat that had been dropped: `backfill.py:13,20` keep their
+  submodule imports or the module breaks. Both restored.
+- **Two prerequisites did not exist.** Wave 7 depended on a positive-controlled
+  AST checker that was never committed — the D7 sweep was ad hoc — and P2/P3/P4
+  were prose re-derived in each of six waves, with Properties 3 and 4 untested
+  anywhere in the suite. Both are now wave-0 deliverables, built before the
+  first removal rather than after the sixth.
+- **Effort ~6h → ~12–16h**, entirely from those two, with a per-wave trail.
+- **Open question 3 superseded**: `metrics` becomes a gated wave 6b.
+- Citation drift corrected against source: `tests/test_density_gate.py:27`→`:28`
+  (three sites, and it carries the whole StageRecord group-split argument);
+  `gates.py:599`→`:598-599`; design Property 5's `issue/` count 3→12; six
+  barrels modified, not eight; five surviving `..script` statements, not eight;
+  three docling-service converters pins, not four;
+  `LOW_CONTENT_OCR_CHAR_FLOOR` is a retained *binding*, never an `__all__` entry.
+
+The lens verdict on the RFC itself: ready, and over-deliberated by roughly two
+amendments. The evidence that matters is already empirical — a positive-controlled
+two-channel pass returning zero, a simulated shrink behaviour-neutral across
+1220 tests, a fully shrunk package copy exercised at startup. Further prose does
+not reduce the one residual risk, which is the class "a consumer nobody
+scanned". Execution is now cheaper than review and yields strictly more
+information. **No sixth amendment before a line is deleted.**
+
+### Amendment 6 (2026-09-09): Iteration 2 — the correction to Amendment 5
+
+Amendment 5 declared that no sixth amendment should precede a deletion. This is
+that amendment, and it exists because a second review pass found that
+**iteration 1 introduced roughly as much error as it removed** — which is the
+finding that closes the loop rather than extending it.
+
+What iteration 1 got right stands: the wave-3 contradiction was real and is
+fixed, and six of its seven citation corrections verified clean against source
+(the wave-3 line numbers, `gates.py:598-599`, the `client/__init__.py:40`
+binding, `SUBMODULE_SURVIVAL_PAIRS` against D4, the `issue/` count, "six
+barrels").
+
+What it got wrong:
+
+- **Two false claims about `metrics`**, both retracted in open question 3
+  above: that the package skipped the refutation pass (it did not — §C,
+  `metrics | 38 kept`), and that it has 7 §B candidates (§B has no `metrics`
+  rows; the 7 is §A's zero-consumer count). The wave-6b gate built on them was
+  inoperable — `load_removals()` parses §B only, and
+  `scripts/facade_surface_measure.py` has no package filter and hard-fails
+  unless it sees 59 removals.
+- **~6h of redundant tooling.** `scripts/facade_channel_verify.py` largely
+  duplicated `TestConsumerReferencesResolve`, and its spec would have failed its
+  own positive control: it matched absolute imports only, while
+  `converters.zdr_egress_gate`'s single facade site is the *relative* import at
+  `src/pageindex_mcp/client/indexer.py:30`. Two of the three properties
+  `tests/test_rfc045_wave_invariants.py` was to mechanise were already
+  mechanical. Both are withdrawn; wave 0 becomes ~1.5–2.5h and total effort
+  returns to **~7–8h**.
+- **Three counts left stale**: `worker._run_converter_subprocess` has 3 facade
+  sites, not 2; design D4 still said "eight" surviving `..script` sites where
+  iteration 1 corrected the tasks file to five; and the "ten" in D7's simulation
+  paragraph and in Amendment 4 should be **eleven** — `tests/test_rfc045_facade_measurement.py:48-60`
+  pins exactly 11 `EXPECTED_FLIPS`, the design says 11 in five places, and no
+  artifact records any candidate being excluded from the simulation. The "ten"
+  was unsourced arithmetic, and Amendment 4's own "eight confirmed plus one
+  disputed" summed to nine. Corrected to eleven and ten-plus-one.
+
+**The stopping rule this workstream lacked, now stated: cost parity.** When the
+smallest execution step is cheaper than a review round, execute the step. Wave 1
+is three names, ~30 minutes, and reverts in one commit; a review round is three
+lenses and several hours. The step yields information about the actual code; the
+round yields prose about the plan. Two rounds have now confirmed the removal set
+at 59 and found defects only in the plan around it. **The next change to these
+artifacts is a deletion, not an amendment.**
 
 ## Traceability
 

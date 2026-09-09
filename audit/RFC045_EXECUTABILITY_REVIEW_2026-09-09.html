@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RFC-045 Executability Review — 2026-09-09</title>
+<style>
+:root{--bg:#fbfbf9;--fg:#1a1a18;--mut:#6b6b64;--line:#e2e2dc;--crit:#b3261e;--high:#a35a00;--med:#5a5a52;--ok:#1e6b3a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+main{max-width:52rem;margin:0 auto;padding:3rem 1.5rem 5rem}
+h1{font-size:1.7rem;line-height:1.25;margin:0 0 .3rem;letter-spacing:-.015em}
+.sub{color:var(--mut);margin:0 0 2.5rem;font-size:.95rem}
+h2{font-size:1.1rem;margin:2.75rem 0 .9rem;padding-bottom:.4rem;border-bottom:1px solid var(--line);letter-spacing:-.01em}
+table{width:100%;border-collapse:collapse;font-size:.9rem;margin:.5rem 0 1rem}
+th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em}
+code{font:.85em ui-monospace,SFMono-Regular,Menlo,monospace;background:#f0f0ea;padding:.1em .35em;border-radius:3px}
+.sev{font-weight:700;font-size:.75rem;letter-spacing:.04em;white-space:nowrap}
+.crit{color:var(--crit)}.high{color:var(--high)}.med{color:var(--med)}
+.card{border:1px solid var(--line);border-left:3px solid var(--line);border-radius:4px;padding:1rem 1.2rem;margin:1rem 0;background:#fff}
+.card.c{border-left-color:var(--crit)}.card.h{border-left-color:var(--high)}.card.m{border-left-color:var(--med)}
+.card h3{margin:0 0 .5rem;font-size:.98rem}
+.card p{margin:.5rem 0}
+.clean{background:#f2f7f3;border:1px solid #cfe3d5;border-radius:4px;padding:1rem 1.2rem;font-size:.9rem}
+.clean strong{color:var(--ok)}
+ul{margin:.5rem 0;padding-left:1.2rem}li{margin:.3rem 0}
+.q{border-left:2px solid var(--line);padding-left:1rem;margin:1rem 0;color:var(--mut);font-style:italic}
+footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--mut);font-size:.85rem}
+</style>
+<main>
+<h1>RFC-045 — Executability Review</h1>
+<p class="sub">2026-09-09 · three lenses (root-cause validation · implementation feasibility · lead analysis) · outcome: <strong>removal set unchanged at 59; plan amended</strong></p>
+
+<h2>Verdict</h2>
+<p>The RFC's <em>claims</em> hold up almost everywhere — every one of the 59 names exists, the counts reconcile, the measurement reproduces exactly, and the simulated shrink empties precisely the two import lines it says it will. What did not hold up is the <em>plan</em>: one wave was self-contradictory, and two tools the plan depends on had never been written.</p>
+<p>The lens judgement on the RFC itself: ready to execute, and over-deliberated by roughly two amendments. Further prose does not reduce the one residual risk — a consumer nobody scanned — while execution does.</p>
+
+<h2>Findings</h2>
+
+<div class="card c">
+<h3><span class="sev crit">CRITICAL</span> · Wave 3 instructs both removal and non-removal of the same two names</h3>
+<p>Task 3.1 lists six <code>registry_backfill</code> entries plus "the remaining two from manifest §B" — by elimination, <code>read_registry_fields</code> and <code>upsert_doc</code>. The next bullet declared those same two <strong>not in scope</strong>. The wave was simultaneously 8 and 6; the total 59 and 57.</p>
+<p>Found independently by two lenses. Manifest §G:282 rules the opposite — <em>"Removing them is correct, but the RFC must say the import lines in <code>backfill.py</code> stay, or the module breaks."</em> That caveat had been lost entirely in the original phrasing.</p>
+<p><strong>Applied:</strong> both names kept in the set (59 stands); the §G caveat restored — <code>backfill.py:13</code> and <code>:20</code> keep their submodule imports, only the re-export at <code>__init__.py:75,77,105,108</code> goes.</p>
+</div>
+
+<div class="card h">
+<h3><span class="sev high">HIGH</span> · Wave 7's positive-controlled AST checker does not exist</h3>
+<p><code>scripts/facade_surface_measure.py</code> measures the five Narrow_Rule signals against manifest §B — it is not a consumer resolver. <code>TestConsumerReferencesResolve</code> checks only that <em>kept</em> references resolve. The D7 two-channel sweep was run ad hoc during review and never committed, so the RFC's central verification is unreproducible.</p>
+<p><strong>Applied:</strong> new task 0.3 builds <code>scripts/facade_channel_verify.py</code> at the gate — before the first removal, where a surprise consumer is cheap — with the five-name positive control as a hard failure. Wave 7 re-runs it rather than inventing it.</p>
+</div>
+
+<div class="card m">
+<h3><span class="sev med">MEDIUM</span> · Properties 2, 3 and 4 have no implementation</h3>
+<p>P2/P3/P4 exist only as prose in task 1.2 and are re-derived by hand in each of six waves. Property 3 (submodule-attribute survival) and Property 4 (<code>FEATURE_WIRINGS</code> overlap) are tested nowhere in the suite; P2 is only incidentally covered by the frozen-list assertion, which does not catch the <code>__all__</code>-without-binding half — exactly the failure P2 exists for.</p>
+<p><strong>Applied:</strong> new task 0.4 builds <code>tests/test_rfc045_wave_invariants.py</code>, parameterized off the existing <code>FROZEN_SURFACE</code> plus <code>SUBMODULE_SURVIVAL_PAIRS</code> (the eight D4 pairs, plus <code>pageindex_mcp.script</code>, which wave 5's emptied line makes load-bearing) and <code>FEATURE_WIRINGS_FACADE_NAMES</code>.</p>
+</div>
+
+<div class="card m">
+<h3><span class="sev med">MEDIUM</span> · The <code>metrics</code> deferral argued against itself</h3>
+<p>OQ3 deferred <code>metrics</code> because D7 established its Zone-7 bridge to be a Redis key-string contract no facade mediates — "so the deferral costs nothing." But that argument establishes the 7 names are <em>as removable as</em> <code>worker._mirror_bridged_incr</code>/<code>_set</code>, which are already in the set. An argument that clears the worker half cannot also justify deferring the metrics half. Compounding it: the RFC said wave 7, the tasks said wave 8, and wave 7 is the verification wave.</p>
+<p><strong>Applied:</strong> <code>metrics</code> becomes <strong>wave 6b</strong>, gated on its own zero-consumer measurement. If the gate fails, the blocking name and channel are recorded — the concrete reason OQ3 lacked. The real distinction is now stated plainly: <code>metrics</code> never went through the 15-agent refutation pass.</p>
+</div>
+
+<div class="card m">
+<h3><span class="sev med">MEDIUM</span> · Effort estimate assumed both tools already existed</h3>
+<p>~6h → <strong>~12–16h</strong>. The entire increase is wave 0 (~5–7h): ~3–4h for the channel verifier (alias tracking, dual-channel resolution, positive control) and ~2–3h for the invariant test. Waves 1–5 are unchanged; wave 6 rises ~2h→~3h on first real exercise of the new tooling; wave 6b adds ~1h; wave 7 stays ~1h because the verifier is re-run, not written.</p>
+</div>
+
+<div class="card m">
+<h3><span class="sev med">LOW ×7</span> · Citation drift, corrected against source</h3>
+<ul>
+<li><code>tests/test_density_gate.py:27</code> → <code>:28</code> (three sites) — <code>:27</code> is the opening <code>from … import (</code>. This citation carries the entire <code>StageRecord</code> group-split argument, so it needs to be exact.</li>
+<li><code>gates.py:599</code> → <code>:598-599</code> — <code>:599</code> is the <code>getattr</code> (the actual string hit); <code>:598</code> is the <code>import_module</code> the text quoted.</li>
+<li>"eight barrels" → <strong>six</strong> modified (eight is the measured scope).</li>
+<li>"eight other <code>..script</code> sites" → <strong>five</strong> other statements (<code>:13,25,28,31,34</code>). Conclusion unaffected.</li>
+<li><code>LOW_CONTENT_OCR_CHAR_FLOOR</code> is a retained <strong>binding</strong> (<code>client/__init__.py:40</code>), never an <code>__all__</code> entry — the Attr_Channel runs off the import statement alone.</li>
+<li>Design Property 5: <code>issue/</code> is <strong>12</strong> pinned names, not 3; the 4th docling-service pin is <code>config.CURRENT_PIPELINE_VERSION</code> (<code>app.py:144</code>), untouched by wave 6.</li>
+</ul>
+</div>
+
+<h2>Verified clean</h2>
+<div class="clean">
+<p><strong>No fabricated symbols anywhere in the removal or retention lists.</strong> All 59 manifest §B names exist in the live <code>__all__</code> of their package; per-package counts (26/12/9/8/3/1) and headers reconcile exactly to 59, and §A matches live <code>__all__</code> for all 8 packages (407).</p>
+<p><code>tests/test_facade_surface_guard.py</code> freezes <strong>412 entries across 9 packages</strong> and pins <strong>17</strong> external triples — both exact; 89 tests pass; the off-suite sweep finds <strong>44</strong> references against its <code>&gt;= 40</code> floor.</p>
+<p><code>scripts/facade_surface_measure.py</code> runs and reports exactly <strong>48/59 Narrow REMOVE and 10/59 Broad</strong>, as task 0.2 claims; all 11 narrow flips are individually adjudicated.</p>
+<p>Simulating the full 59-name removal empties <strong>exactly two</strong> import statements and no others — <code>converters/__init__.py:5</code> and <code>helpers/__init__.py:10</code> — so the "do not empty <code>.pictures</code>/<code>.formats</code>" instruction holds. <code>FEATURE_WIRINGS</code> has 6 entries, exactly 5 with facade-resolved producers, none in the removal set.</p>
+<p>Every submodule <code>setattr</code>/<code>getattr</code> count is exact (pictures 42, llm 8, formats 4, garble 4, minio_ops 2, recovery 1, gates 1). The measurement self-skip mechanism is real and correctly wired — waves 1–6 will not hit red measurement tests. All anchor links across the three artifacts resolve; the RFC lifecycle lint reports no RFC-045 entries.</p>
+</div>
+
+<h2>The steelman against executing at all</h2>
+<div class="q">
+<p>The shrink has zero runtime benefit; the only payoff is ending an audit loop. The D5 guard already freezes 412 entries and pins external consumers, so regrowth is solved <em>without deleting anything</em>. The package is never published to an index — but "never published" is not "never imported": a notebook, a cron container, or a Scaleway-side script copying this source the way <code>services/docling-service</code> does would fail only at runtime, invisibly to this suite. And open question 4 proved the scanners have already missed a broken reference once.</p>
+</div>
+<p>"Land the guard, skip the removal" is therefore a defensible terminal state — but only if the 59 are also recorded as accepted-dead in the manifest and the dead-code lens is taught to skip them. Otherwise the loop this RFC exists to end simply continues, which was the whole motivation. Weighed against a ~12–16h cost that is behaviour-neutral by simulation and revertable per package, execution wins. The narrowing that would have made sense is not "skip removal" but "skip <code>converters</code>" (26 of 59, the only real external contract) — and the docling-service pins plus <code>TestConsumerReferencesResolve</code> cover precisely that exposure.</p>
+
+<h2>What changed, by artifact</h2>
+<table>
+<tr><th>Artifact</th><th>Amendment</th><th>Substance</th></tr>
+<tr><td><code>agents/rfcs/045-…md</code></td><td>Amendment 5</td><td>Effort revised with trail; OQ3 superseded (<code>metrics</code> → gated wave 6b); Test Strategy gains the invariant and channel rows; six citation corrections; "no sixth amendment before a line is deleted"</td></tr>
+<tr><td><code>agents/designs/design-rfc045-…md</code></td><td>Amendment 2</td><td>D7 now names a deliverable rather than describing a past pass; Properties 2/3/4 gain an implementation; Property 5 <code>issue/</code> count corrected 3→12; service contract says <em>binding</em> for <code>LOW_CONTENT_OCR_CHAR_FLOOR</code></td></tr>
+<tr><td><code>agents/tasks/tasks-rfc045-…md</code></td><td>Amendment 2</td><td>Wave 3 contradiction resolved with the §G caveat restored; tasks 0.3/0.4/0.5 added; wave 6b added; 7.1 re-runs rather than builds; follow-up tickets moved 7.3→0.5; dependency graph updated</td></tr>
+</table>
+
+<h2>Recommended next step</h2>
+<p>Approve RFC-045 and execute. Wave 0's two tools first — they are the only real new engineering — then waves 1–6 as one commit per package, the <code>metrics</code> gate before wave 7, then close out. Do not open another review round: three lenses converged, the one blocking defect is fixed, and every remaining question is answered by running the code rather than reading it again.</p>
+
+<footer>Generated 2026-09-09 · lenses: root-cause validation (Opus), implementation feasibility (Sonnet), lead analysis (Fable) · <code>audit/RFC045_EXECUTABILITY_REVIEW_2026-09-09.html</code></footer>
+</main>
