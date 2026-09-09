@@ -180,9 +180,9 @@ ships as a document for review first; no facade entry is touched before that.
 
     - `uv run pytest` green (2058 passed, 13 skipped); server import succeeds; single commit
 
-- [ ] 4. Wave 4 — `worker` (9 removals)
+- [x] 4. Wave 4 — `worker` (9 removals)
 
-  - [ ] 4.1 Remove the nine entries and their bindings
+  - [x] 4.1 Remove the nine entries and their bindings
 
     - Covers `_mirror_bridged_incr`, `_mirror_bridged_set`, `_VERDICT_RETRY_KEY_PREFIX`, `_VERDICT_RETRY_TTL_S`, `_enqueue_verdict_retry`, `_reconcile_registry_drift_cron`, `JOB_TTL`, `KILL_GRACE_SECONDS` and the remaining entry from manifest section B
     - **Keep `WorkerSettings`** — the container command `arq pageindex_mcp.worker.WorkerSettings` (`apps/pageindex-mcp/worker-deployment.yaml:27`) reaches it from outside any Python file
@@ -191,17 +191,16 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [R2.4](045-package-facade-surface#requirement-2-no-removal-may-split-a-semantic-group), [R3.2](045-package-facade-surface#requirement-3-the-external-contract-must-survive), [DP-D4](design-rfc045-package-facade-surface#d4-removal-scope-is-the-entry-and-the-binding)_
     - _Dependencies: 3.C_
 
-  - [ ] 4.2 Invariant checks and frozen-list update
+  - [x] 4.2 Invariant checks and frozen-list update
 
     - P2 / P3 / P4 as in 1.2
     - Update the `worker` literal; confirm the `WorkerSettings` external pin still passes
     - _Requirements: [Property 2](design-rfc045-package-facade-surface#property-2-a-removal-deletes-the-entry-and-the-binding), [Property 5](design-rfc045-package-facade-surface#property-5-the-external-contract-resolves), [Property 6](design-rfc045-package-facade-surface#property-6-the-frozen-surface-matches-after-each-wave)_
     - _Dependencies: 4.1_
 
-  - [ ] 4.C Checkpoint — `worker`
+  - [x] 4.C Checkpoint — `worker`
 
-    - `uv run pytest` green
-    - `uv run python -c "import pageindex_mcp.worker"` succeeds (`worker/lifecycle.py:60-63` runs `validate_feature_wirings()`)
+    - `uv run pytest` green (2058 passed, 13 skipped); server+worker import succeeds
     - Single commit
 
 - [ ] 5. Wave 5 — `helpers` (12 removals)
