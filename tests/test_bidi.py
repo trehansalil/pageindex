@@ -1960,30 +1960,30 @@ def test_200_node_depth2_marginal_depth_inadequate():
     tree = _make_tree(200, 2)
     verdict, reason = classify_verdict(tree, "hierarchical", None)
     assert verdict == "MARGINAL"
-    assert reason == "depth_inadequate:expected_min_depth=4,actual_depth=2"
+    assert reason == "depth_inadequate:expected_min_depth=3,actual_depth=2"
 
 
 def test_600_node_depth2_marginal():
     tree = _make_tree(600, 2)
     verdict, reason = classify_verdict(tree, "hierarchical", None)
     assert verdict == "MARGINAL"
-    assert reason == "depth_inadequate:expected_min_depth=5,actual_depth=2"
+    assert reason == "depth_inadequate:expected_min_depth=4,actual_depth=2"
 
 
-def test_boundary_100_nodes_expected_depth_3():
-    # At the 100-node threshold: expected_min_depth steps up to 3.
-    tree = _make_tree(100, 2)
+def test_boundary_100_nodes_expected_depth_2():
+    # At the 100-node threshold: expected_min_depth steps up to 2.
+    tree = _make_tree(100, 1)
     verdict, reason = classify_verdict(tree, "hierarchical", None)
     assert verdict == "MARGINAL"
-    assert reason == "depth_inadequate:expected_min_depth=3,actual_depth=2"
+    assert reason == "depth_inadequate:expected_min_depth=2,actual_depth=1"
 
-    tree = _make_tree(100, 3)
+    tree = _make_tree(100, 2)
     verdict, reason = classify_verdict(tree, "hierarchical", None)
     assert verdict == "PASS"
 
 
-def test_boundary_399_nodes_expected_depth_4():
-    # Just below the 400-node threshold: expected_min_depth still 4.
-    tree = _make_tree(399, 4)
+def test_boundary_399_nodes_expected_depth_3():
+    # Just below the 400-node threshold: expected_min_depth still 3.
+    tree = _make_tree(399, 3)
     verdict, reason = classify_verdict(tree, "hierarchical", None)
     assert verdict == "PASS"

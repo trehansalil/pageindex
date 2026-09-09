@@ -337,7 +337,7 @@ class TreeSignals:
             gr = 0.0
             effectively_garbled = False
         is_reordered = _tree_is_reordered(structure)
-        expected_min_depth = min(5, 2 + math.floor(math.log2(max(node_count, 1) / 50)))
+        expected_min_depth = min(4, 2 + math.floor(math.log2(max(node_count, 1) / 100)))
         return cls(
             node_count=node_count,
             depth=depth,
