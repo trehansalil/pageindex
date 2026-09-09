@@ -82,6 +82,17 @@ REMOVED_SURFACE: dict[str, tuple[str, ...]] = {
     "storage": (
         "SIDECAR_VERSION",
     ),
+    # wave 3 -- registry_backfill
+    "registry_backfill": (
+        "_is_fat",
+        "_load_meta",
+        "_preflight_checks",
+        "_prepare_metas",
+        "_record_reconcile_heartbeat",
+        "main",
+        "read_registry_fields",
+        "upsert_doc",
+    ),
 }
 
 FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
@@ -414,20 +425,12 @@ FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
         "_drain_verdict_retry_queue",
         "_enrich_one",
         "_heal_orphans",
-        "_is_fat",
         "_list_meta_entries",
         "_list_meta_keys",
-        "_load_meta",
-        "_preflight_checks",
-        "_prepare_metas",
-        "_record_reconcile_heartbeat",
         "_upsert_all",
         "cleanup_protect_empty_processed_at",
-        "main",
-        "read_registry_fields",
         "reconcile_registry_drift",
         "run_auto_backfill",
-        "upsert_doc",
     ),
     "storage": (
         "DEFAULT_PRESIGN_REGION",

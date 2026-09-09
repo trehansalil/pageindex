@@ -158,9 +158,9 @@ ships as a document for review first; no facade entry is touched before that.
 
     - `uv run pytest` green (2058 passed, 13 skipped); server import succeeds; single commit
 
-- [ ] 3. Wave 3 — `registry_backfill` (8 removals)
+- [x] 3. Wave 3 — `registry_backfill` (8 removals)
 
-  - [ ] 3.1 Remove the eight entries and their bindings
+  - [x] 3.1 Remove the eight entries and their bindings
 
     - Covers `main`, `_is_fat`, `_load_meta`, `_preflight_checks`, `_prepare_metas`, `_record_reconcile_heartbeat` and the remaining two from manifest section B
     - `main` stays reachable as a module entry point (`python -m` / console script); only the facade re-export goes
@@ -169,16 +169,16 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [R2.4](045-package-facade-surface#requirement-2-no-removal-may-split-a-semantic-group), [DP-D4](design-rfc045-package-facade-surface#d4-removal-scope-is-the-entry-and-the-binding)_
     - _Dependencies: 2.C_
 
-  - [ ] 3.2 Invariant checks and frozen-list update
+  - [x] 3.2 Invariant checks and frozen-list update
 
     - P2 / P3 / P4 as in 1.2
     - Update the `registry_backfill` literal
     - _Requirements: [Property 2](design-rfc045-package-facade-surface#property-2-a-removal-deletes-the-entry-and-the-binding), [Property 6](design-rfc045-package-facade-surface#property-6-the-frozen-surface-matches-after-each-wave)_
     - _Dependencies: 3.1_
 
-  - [ ] 3.C Checkpoint — `registry_backfill`
+  - [x] 3.C Checkpoint — `registry_backfill`
 
-    - `uv run pytest` green; server import succeeds; single commit
+    - `uv run pytest` green (2058 passed, 13 skipped); server import succeeds; single commit
 
 - [ ] 4. Wave 4 — `worker` (9 removals)
 

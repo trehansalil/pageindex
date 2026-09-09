@@ -64,17 +64,10 @@ from .backfill import (  # noqa: E402
     _backfill,
     _enrich_one,
     _heal_orphans,
-    _is_fat,
     _list_meta_entries,
     _list_meta_keys,
-    _load_meta,
-    _preflight_checks,
-    _prepare_metas,
     _upsert_all,
-    main,
-    read_registry_fields,
     run_auto_backfill,
-    upsert_doc,
 )
 from .cleanup import (  # noqa: E402
     _delete_stale_rows,
@@ -82,7 +75,6 @@ from .cleanup import (  # noqa: E402
 )
 from .reconcile import (  # noqa: E402
     _drain_verdict_retry_queue,
-    _record_reconcile_heartbeat,
     reconcile_registry_drift,
 )
 
@@ -93,17 +85,9 @@ __all__ = [
     "_drain_verdict_retry_queue",
     "_enrich_one",
     "_heal_orphans",
-    "_is_fat",
     "_list_meta_entries",
     "_list_meta_keys",
-    "_load_meta",
-    "_preflight_checks",
-    "_prepare_metas",
-    "_record_reconcile_heartbeat",
     "_upsert_all",
-    "main",
-    "read_registry_fields",
     "reconcile_registry_drift",
     "run_auto_backfill",
-    "upsert_doc",
 ]
