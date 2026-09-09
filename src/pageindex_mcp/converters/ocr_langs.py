@@ -125,23 +125,27 @@ def ensure_tessdata(langs: list[str]) -> list[str]:
                         f"(no TESSDATA_PREFIX, system check failed)"
                     )
                 continue
-            # Probe: ask tesseract for its tessdata-prefix and check the file
+            # Probe: ask tesseract for its tessdata dir and check the file.
+            # Tesseract 5.x dropped "tessdata_prefix" from --print-parameters
+            # output, so we parse --list-langs instead, whose first line is:
+            #   List of available languages in "/path/to/tessdata/" (N):
             _found = False
             tess_bin = shutil.which("tesseract")
             if tess_bin:
                 try:
                     result = subprocess.run(
-                        [tess_bin, "--print-parameters"],
+                        [tess_bin, "--list-langs"],
                         capture_output=True, text=True, timeout=5,
                     )
-                    for _line in result.stdout.splitlines():
-                        if _line.strip().startswith("tessdata_prefix"):
-                            _sys_prefix = _line.split(maxsplit=1)[-1].strip()
-                            if os.path.exists(
-                                os.path.join(_sys_prefix, f"{lang}.traineddata")
-                            ):
-                                _found = True
-                            break
+                    _probe_output = result.stdout + result.stderr
+                    import re as _re
+                    _m = _re.search(r'in "([^"]+)"', _probe_output)
+                    if _m:
+                        _sys_prefix = _m.group(1)
+                        if os.path.exists(
+                            os.path.join(_sys_prefix, f"{lang}.traineddata")
+                        ):
+                            _found = True
                 except (subprocess.TimeoutExpired, OSError):
                     pass
             _system_tessdata_cache[lang] = _found
