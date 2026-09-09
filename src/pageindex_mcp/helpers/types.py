@@ -133,8 +133,8 @@ class RecoveryOutcome:
     writes only provided fields back to *state*.  For ``rtl_decision``,
     ``_UNSET`` means *no change* and ``None`` means *clear to None*.
 
-    Replaces the positional-tuple ``ExtractionSnapshot.restore()``
-    pattern with explicit field-by-field apply.
+    Replaces the positional-tuple snapshot/restore pattern with
+    explicit field-by-field apply.
     """
 
     result: dict | _Unset = _UNSET  # type: ignore[assignment]
@@ -184,8 +184,6 @@ class RecoveryOutcome:
         finally:
             _guard_bypass.active = False
 
-
-ExtractionSnapshot = RecoveryOutcome
 
 _GUARDED_FIELDS = frozenset({"route", "ok", "reason", "first_defect", "gate_result"})
 _guard_bypass = threading.local()

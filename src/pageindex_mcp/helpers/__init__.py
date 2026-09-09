@@ -8,9 +8,6 @@ from __future__ import annotations
 
 # ── script.py re-exports (kept for backward compat) ─────────────────────────
 from ..script import (
-    _JOINING_TYPE as _JOINING_TYPE,
-)
-from ..script import (
     AR_RUN_RE,
     ARABIC_RANGES,
     PRESENTATION_RANGES,
@@ -48,7 +45,6 @@ from .types import (
     TreeGateResult,
     VerdictResult,
     VerdictThresholds,
-    _GateFn,
     _defect_from_reason_str,
     _ReasonPolicy,
     _Unset,
@@ -56,8 +52,6 @@ from .types import (
     finalize_gate_and_route,
     reset_verdict_thresholds,
 )
-
-ExtractionSnapshot = RecoveryOutcome
 
 # ── tree_validation ──────────────────────────────────────────────────────────
 # ── flat ─────────────────────────────────────────────────────────────────────
@@ -135,7 +129,6 @@ from .rag import (
     _parse_page_spec,
     _prefilter_docs,
     _rag,
-    _rag_inner,
     _search_one_doc,
     _strip_text,
 )
@@ -143,21 +136,15 @@ from .rag import (
 # ── table_stitch ─────────────────────────────────────────────────────────────
 from .table_stitch import (
     _is_continuation_table,
-    _looks_like_toc_page,
     _merge_continuation_table,
     _strip_toc_heading_nodes,
     _strip_toc_heading_nodes_guarded,
-    flag_empty_cells,
     stitch_continuation_tables,
 )
 
 # ── tables ───────────────────────────────────────────────────────────────────
 from .tables import (
-    _flat_is_pipe_row,
-    _flat_is_separator_row,
     _flat_parse_table,
-    _flat_split_pipe_row,
-    _flat_verbalize_rows,
     _forward_fill_leading_column,
 )
 
@@ -189,7 +176,6 @@ from .tree_split import (
 )
 from .tree_validation import (
     TreeSignals,
-    _count_empty_body_nodes,
     _flatten_tree_text,
     _node_char_count,
     _node_text_parts,
@@ -197,7 +183,6 @@ from .tree_validation import (
     _tree_is_reordered,
     _tree_max_leaf_ratio,
     _tree_node_count,
-    _walk_leaves,
     validate_tree,
 )
 
@@ -228,11 +213,8 @@ __all__ = [
     "HARD_FAIL_DEFECTS",
     "REASON_POLICY",
     "_GATE_PRIORITY",
-    # script re-exports
-    "_JOINING_TYPE",
     "_UNSET",
     "BlobKind",
-    "ExtractionSnapshot",
     "ExtractionState",
     "FeatureWiring",
     # garble
@@ -252,23 +234,17 @@ __all__ = [
     "TreeSignals",
     "VerdictResult",
     "VerdictThresholds",
-    "_GateFn",
     "_ReasonPolicy",
     "_Unset",
-    "_count_empty_body_nodes",
     "_extract_page_hits",
     # flat block measurement (D2/RFC-041: canonical API is block_text / doc_text)
     "BlockTextPurpose",
     "block_text",
     "doc_text",
     "_flat_block_primary_text",
-    "_flat_is_pipe_row",
-    "_flat_is_separator_row",
     # tables
     "_flat_parse_table",
     "_flat_search_text",
-    "_flat_split_pipe_row",
-    "_flat_verbalize_rows",
     "_flatten_tree_text",
     "_forward_fill_leading_column",
     "_garble_check_nodes",
@@ -281,10 +257,8 @@ __all__ = [
     "_node_text_parts",
     "_is_morphologically_nonsense",
     "_llm",
-    "_looks_like_toc_page",
     # rag
     "_rag",
-    "_rag_inner",
     "_script_from_filename",
     "_segment_table_nodes",
     "_strip_text",
@@ -297,7 +271,6 @@ __all__ = [
     "_try_flat_promotion",
     "_try_ocr_promotion",
     "_try_small_doc_promotion",
-    "_walk_leaves",
     "apply_promotions",
     "classify_verdict",
     "compute_image_enrichment_ratio",
@@ -309,7 +282,6 @@ __all__ = [
     # verdict
     "evaluate_gates",
     "finalize_gate_and_route",
-    "flag_empty_cells",
     "flat_doc_view",
     "hash_pipe_ratio",
     "normalize_dashes",
