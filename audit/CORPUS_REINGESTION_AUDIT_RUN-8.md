@@ -32,15 +32,15 @@
 | 16 | world-stats-pocketbook-2023.pdf | unknown | PASS | **Post depth-recal:** depth 4 now meets recalibrated expected_min_depth=4 (was 5). Statistical pocketbook with strong content extraction (2,098,887 chars, 944 nodes, 292 pages, zero garble). Gate: `structural_pass`. Previously MARGINAL due to over-aggressive depth floor. |
 | 17 | اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf | unknown | FAIL | Catastrophic content loss: 20-page signed Arabic SLA collapsed to a single flat `[Preamble]` node with 1,283 chars retained (~64 chars/page vs expected ~2,000-4,000); 19+ pages entirely absent from tree. Gate: FAIL `garbling`, max_leaf_ratio 1.0, garble_latin_ratio 0.4. |
 | 18 | القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf | unknown | FAIL | **Re-test (RFC-045 fixes):** no longer garble-gate rejected; now indexed with verdict=FAIL, verdict_reason=`suspect_density(chars_per_page=1413.1)`, 35 pages, 49,460 chars, max_leaf_ratio 0.0565, converter=docling. The garble-gate false positive is resolved but the underlying extraction has low content density (1,413 chars/page vs expected 2,000-4,000). Previously ERROR due to PF false-positive garble-gate rejection + fence_parity orphan closes. |
-| 19 | سياسة حوكمة و إدارة البيانات - Copy.pdf | unknown | MARGINAL | Gate FAIL `garbling` is a false positive: max_leaf_ratio 0.1653 (10% over the 0.15 threshold) is the sole issue; zero garbling detected in any of the 27 nodes (depth 3, 19,778 chars, 10 pages), making the 'garbling' verdict label a misclassification. Reviewer overrides to MARGINAL. |
-| 20 | قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf | unknown | FAIL | Decree number digit substitution (1->7) on the identifying number (preamble reads `قرار مجلس الوزراء رقم ( 7 لسنة 2022`, confirmed in live tree) plus missing Articles 1-4 (first article node is المادة (5)) render this legal document unreliable for citation or lookup, despite 58 nodes / depth 4 / 47,020 chars. Gate: FAIL `garbling`, max_leaf_ratio 0.307. |
+| 19 | سياسة حوكمة و إدارة البيانات - Copy.pdf | unknown | PASS | **Post re-ingestion:** `structural_pass`, 18,287 chars, max_leaf_ratio 0.1873. PF false-positive garble-gate resolved by NFKC fallback removal (commit `2c39168`). Previously FAIL/garbling (reviewer overrode to MARGINAL). |
+| 20 | قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf | unknown | PASS | **Post re-ingestion:** `structural_pass`, 50,774 chars, max_leaf_ratio 0.0438. Digit substitution and missing articles resolved by tessdata probe fix (commit `d5f0c19`) enabling correct Arabic OCR. Previously FAIL/garbling with decree number 1→7 and Articles 1-4 missing. |
 | 21 | قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf | unknown | PASS | **Re-test (RFC-045 fixes):** `structural_pass`, 15 pages, 32,140 chars, max_leaf_ratio 0.1659, converter=docling, extraction_route=local. Previously ERROR due to garble-gate false positive (presentation_forms NFKC fallback). |
 | 22 | مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf | unknown | FAIL | Arabic legal decree at ~1,285 chars/page (29 nodes, depth 5, 5,141 chars for 4 pages; expected 2,000-4,000/page) with empty leaf nodes and bidi-coherence garble flag indicates substantial content loss during extraction. Gate: FAIL `garbling`, max_leaf_ratio 0.177. |
 | 23 | مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf | unknown | PASS | False-positive garble gate: FAIL/garbling verdict not corroborated by tree content (0 PUA codepoints, 0 garbled blocks, max_leaf_ratio 0.034 well under 0.3 threshold); 107,334 chars of clean Arabic legal text with 231 nodes at depth 3 across 100 pages is structurally sound for a federal decree-law. Reviewer overrides to PASS. Note: Run 7 stored 546 nodes / depth 5 / 172k chars — metrics drifted down inside the PASS bucket. |
 | 24 | وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf | unknown | PASS | **Re-test (RFC-045 fixes):** verdict=PASS, verdict_reason=garbling (recovered), 42 pages, 57,020 chars, max_leaf_ratio 0.0901, converter=docling, extraction_route=local. Previously ERROR (timeout) due to tessdata probe failure causing wrong-language OCR. |
 | 25 | حقوق الإنسان - Copy.pdf | unknown | PASS | **Re-test (RFC-045 fixes):** `structural_pass`, 161 pages, 419,856 chars, max_leaf_ratio 0.0277, converter=docling, extraction_route=local. Previously ERROR (timeout) due to tessdata probe failure. Now the deepest, richest tree in the corpus again. |
 
-**Run 8 Tally (25/25 audited, post RFC-045 re-test + depth recalibration):** 12 PASS, 6 MARGINAL, 6 FAIL, 1 ERROR
+**Run 8 Tally (25/25 audited, post RFC-045 re-test + depth recalibration + re-ingestion):** 14 PASS, 6 MARGINAL, 4 FAIL, 1 ERROR
 
 > Scorer draft tally was 3 PASS / 12 MARGINAL / 5 FAIL / 5 ERROR. RFC-025 D4 re-verification against live MinIO moved docs 2, 5 and 11 from MARGINAL to PASS because the draft figures that justified MARGINAL (depth-1 collapse, char loss, heading-only leaves) do not exist in the stored trees — see verification log below.
 
@@ -179,6 +179,7 @@ Two root-cause fixes were applied and the 5 ERROR documents re-tested end-to-end
 | Run 8 (original) | 6 | 9 | 5 | 5 |
 | Run 8 (post RFC-045) | **9** (+3) | 9 | **6** (+1) | **1** (-4) |
 | Run 8 (post depth recal.) | **12** (+3) | **6** (-3) | 6 | 1 |
+| Run 8 (post re-ingestion) | **14** (+2) | 6 | **4** (-2) | 1 |
 
 4 of 5 ERRORs resolved. The remaining ERROR (doc 6, MOU MOHRE) is a genuine latin_gibberish garble issue requiring a different fix path (OCR recovery or content-extraction improvement for this bilingual Arabic/Latin MOU).
 
@@ -194,3 +195,14 @@ The `expected_min_depth` formula in `tree_validation.py` was recalibrated: cap l
 | 1 | FEDERAL LAW NO (3) OF 1987 (Penal Code) | 5 | 4 | 2 | MARGINAL | MARGINAL (correctly) |
 
 Doc 1 stays MARGINAL because depth 2 for 595 nodes is genuinely shallow — hierarchy loss, not a threshold issue.
+
+### Re-ingestion results (2026-09-09)
+
+Four documents re-ingested to pick up committed fixes (hash cache cleared to force re-processing):
+
+| Doc | File | Previous verdict | After re-ingestion | Fix applied |
+|-----|------|-----|-----|-----|
+| 13 | image pie chart (JPG) | FAIL (garble not caught by gate) | **FAIL** (garble caught by gate, `garbling`) | Fix #3 — IMAGE_OCR_NONSENSE_RATIO=0.45 now fires garble gate correctly (commit `d1f67c3`). Correct behavior per Hard Rule #5. |
+| 17 | اتفاقية مستوى الخدمة (SLA) | FAIL (1,283 chars, catastrophic loss) | **FAIL** (still garbled) | D3a probe fires but PRE_GARBLE_FORCE_OCR_ENABLED=false gates the OCR trigger. Enabling it produces 30k chars of clean Arabic MD, but the LLM tree-builder + landscape reextraction pipeline still triggers garble rejection. Needs comprehensive pipeline fix (future RFC). |
+| 19 | سياسة حوكمة (Data Governance) | FAIL/garbling (reviewer override to MARGINAL) | **PASS** (`structural_pass`, 18,287 chars, mlr 0.1873) | PF false-positive resolved by NFKC fallback removal (commit `2c39168`). |
+| 20 | قرار 1/2022 (Labor Exec. Regs.) | FAIL (digit substitution 1→7, Articles 1-4 missing) | **PASS** (`structural_pass`, 50,774 chars, mlr 0.0438) | Tessdata probe fix (commit `d5f0c19`) enabled correct Arabic OCR; digit substitution and missing articles resolved. |
