@@ -251,7 +251,7 @@ def _tree_is_reordered(structure: list) -> bool:
 # Redirected to the canonical garble.py copies to eliminate
 # fix-one-miss-the-other drift (RFC-013 D7).
 # ---------------------------------------------------------------------------
-from .garble import _garble_ratio  # noqa: F401  (used by from_tree below)
+from .garble import GarbleConfig, _garble_ratio  # noqa: F401  (used by from_tree below)
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +278,7 @@ class TreeSignals:
         structure: list,
         expected_script: str | None | ScriptContext = None,
         garble_threshold: float = 0.05,
+        garble_config: GarbleConfig | None = None,
     ) -> TreeSignals:
         from .garble import _garble_config, detect_garble
         from ..script import BlobKind
@@ -322,10 +323,11 @@ class TreeSignals:
             had_presentation_forms=_had_pf,
             source="tree_signals",
         )
+        _effective_garble_config = garble_config if garble_config is not None else _garble_config
         garbled = bool(structure) and bool(detect_garble(
             flat_text,
             script_context=_ctx,
-            config=_garble_config,
+            config=_effective_garble_config,
             blob_kind=BlobKind.TREE_TEXT,
         ))
         if garbled:
@@ -361,6 +363,7 @@ def validate_tree(
     page_count: int | None = None,
     *,
     rtl_decision: RtlDecision | None = None,
+    garble_config: GarbleConfig | None = None,
 ) -> TreeGateResult:
     """Gate a PageIndex tree before persistence (HR5 / WORKER-01-C2).
 
@@ -392,6 +395,7 @@ def validate_tree(
         structure,
         expected_script=expected_script,
         garble_threshold=th.garble_threshold,
+        garble_config=garble_config,
     )
 
     # Zone-4 + Zone-7 fix: build ScriptContext for gate dispatch AFTER

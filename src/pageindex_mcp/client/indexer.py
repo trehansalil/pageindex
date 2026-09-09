@@ -101,6 +101,21 @@ logger = logging.getLogger(__name__)
 
 _MAX_DESC_CHARS = 4000
 
+# D3a content-density heuristic: if page-0 extractable text is shorter than
+# this on a multi-page PDF, the document is likely scanned/image-based and
+# needs full-page OCR upfront.  Decouples the OCR trigger from garble-
+# detection sensitivity so that scanned Arabic PDFs with no presentation-form
+# codepoints still get OCR.  200 chars is roughly one short paragraph — well
+# above any header/footer-only text layer but low enough to catch genuinely
+# scanned pages (which typically yield 0 chars from fitz).
+D3A_SPARSE_PAGE_CHAR_FLOOR = 200
+
+# Standalone-image garble detection: image OCR is inherently noisier than
+# PDF text extraction, so we use a lower nonsense-ratio threshold (0.45
+# vs the default 0.70) to catch Latin-script OCR garble from misrecognised
+# non-Latin source images (e.g. Arabic pie charts OCR'd with eng tessdata).
+IMAGE_OCR_NONSENSE_RATIO = 0.45
+
 # RFC-034 D17: bilingual documents (>30% Latin interleaved with Arabic) skip
 # the D3 reconstruct_bidi_order re-normalization pass -- it collapses blocks
 # on mixed-script content instead of correcting stale-remote heading reversal.
@@ -516,6 +531,18 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                     "OCR upfront",
                                     filename,
                                 )
+                            elif (
+                                probe_pdf.page_count >= 2
+                                and len(raw_text.strip()) < D3A_SPARSE_PAGE_CHAR_FLOOR
+                            ):
+                                state.pre_garbled = True
+                                logger.info(
+                                    "D3a: page-0 text too sparse for %s (%d chars, "
+                                    "%d pages); treating as scanned/image-based",
+                                    filename,
+                                    len(raw_text.strip()),
+                                    probe_pdf.page_count,
+                                )
                 except Exception:
                     pass
 
@@ -930,11 +957,18 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             state.result.get("structure", []),
             orientation=_dominant_orientation(state.landscape_pages),
         )
+        _image_garble_cfg = None
+        if ext in _IMAGE_EXTS:
+            from ..helpers.garble import GarbleConfig
+            _image_garble_cfg = GarbleConfig(
+                garble_nonsense_ratio=IMAGE_OCR_NONSENSE_RATIO,
+            )
         _vt_raw = validate_tree(
             state.result.get("structure", []),
             expected_script=script_context if script_context is not None else expected_script,
             page_count=state.pdf_page_count if ext == ".pdf" else None,
             rtl_decision=state.rtl_decision,
+            garble_config=_image_garble_cfg,
         )
         finalize_gate_and_route(state, _vt_raw, settings.flat_doc_routing)
         if state.gate_result and state.gate_result.all_defects:
