@@ -811,8 +811,8 @@ class TestValidateTreeRtlReversal:
     def test_reversed_arabic_tree_flagged(self):
         ok, reason = validate_tree(_reversed_tree())
         assert ok is False
-        assert reason in ("rtl_reversal", "garbling"), (
-            f"Expected rtl_reversal or garbling (D10a PF fallback), got {reason}"
+        assert reason == "rtl_reversal", (
+            f"Expected rtl_reversal, got {reason}"
         )
 
     def test_logical_arabic_tree_not_flagged(self):
@@ -825,14 +825,14 @@ class TestRepairFirstFlow:
     `reconstruct_bidi_order` has been attempted."""
 
     def test_repair_converges_tree_accepted(self):
-        """D10a: with the PF fallback fix, the garble gate may fire for
-        Arabic trees before the rtl_reversal gate.  _repair_first only
-        handles rtl_reversal, so when garbling is the primary defect,
-        repair does not run and the tree stays failed."""
+        """RFC-027 D3: _repair_first detects rtl_reversal, runs bidi
+        repair, and re-validates.  With the PF false-positive fix
+        (garble.py presentation_forms fallback removed), the garble
+        gate no longer masks rtl_reversal for Arabic trees, so repair
+        runs and the tree is accepted."""
         ok, reason = _repair_first(_reversed_tree())
-        assert ok is False
-        assert reason in ("garbling", ""), (
-            f"Expected garbling (D10a PF fallback) or empty (repair succeeded), got {reason}"
+        assert ok is True, (
+            f"Expected repair to converge (ok=True), got ok={ok}, reason={reason}"
         )
 
     def test_repair_does_not_converge_falls_to_fail_path(self):

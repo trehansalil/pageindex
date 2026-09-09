@@ -2177,6 +2177,7 @@ class TestImageBranchTessdataDegradation:
 
         monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {})
         monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+        monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
         detected = ["ara"]
         with pytest.raises(TessdataUnavailableError):

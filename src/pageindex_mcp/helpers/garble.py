@@ -578,14 +578,12 @@ def detect_garble(
         _arc = sum(1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
         if _arc > 0 and (_pf / _arc) > 0.50:
             _had_pf = True
-        elif _arc > 0 and _pf == 0 and _effective_script == "Arab":
-            # Pipeline NFKC normalization decomposes presentation-form codepoints
-            # (U+FB50-FEFF) before text reaches detect_garble. When the dominant
-            # script is Arabic but zero presentation forms survive, assume the
-            # raw document had them — the ScriptContext.from_document path scans
-            # pre-normalization text and gets this right; this fallback covers
-            # callers that don't.
-            _had_pf = True
+        # Removed: the prior fallback here unconditionally set _had_pf=True
+        # for ANY Arabic text with zero presentation forms, assuming NFKC had
+        # decomposed them.  This was a false-positive factory — most Arabic
+        # documents never use presentation forms.  ScriptContext.from_document
+        # scans pre-NFKC text and sets had_presentation_forms correctly;
+        # callers without pre-NFKC access correctly default to False.
 
     _use_raw_md = blob_kind == BlobKind.RAW_MARKDOWN and config.garble_flat_markdown_normalize
     _norm_kind = BlobKind.RAW_MARKDOWN if _use_raw_md else BlobKind.TREE_TEXT

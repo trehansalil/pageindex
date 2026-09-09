@@ -416,16 +416,14 @@ class TestDetectGarbleWard597:
     def test_detect_garble_flags_latin_gibberish(self):
         assert check_garble(_GARBLED_LATIN, expected_script="Arab", profile=BULK_PROFILE) is True
 
-    def test_detect_garble_clean_arabic_with_pf_flag(self):
-        """D10a: with the 'Arab' fix, detect_garble's NFKC fallback now
-        correctly assumes PFs for Arabic text with zero surviving PFs.
-        When had_presentation_forms is NOT pre-set by the caller, the
-        fallback sets it for Arab-script text, firing the
-        presentation_forms prong.  This is the correct behavior --
-        callers with pre-NFKC context should set had_presentation_forms
-        via ScriptContext.from_document."""
+    def test_detect_garble_clean_arabic_not_flagged(self):
+        """Clean Arabic text without presentation forms must NOT be
+        flagged as garbled.  The old NFKC fallback unconditionally
+        assumed all Arabic text had presentation forms — that was a
+        false-positive factory.  ScriptContext.from_document detects
+        real presentation forms pre-NFKC; the fallback is removed."""
         text = _CLEAN_ARABIC * 5
-        assert check_garble(text, expected_script="Arab", profile=BULK_PROFILE) is True
+        assert check_garble(text, expected_script="Arab", profile=BULK_PROFILE) is False
 
 
 class TestPresentationForms:
@@ -1741,14 +1739,10 @@ class TestCleanArabicNotFlaggedRegression:
     presentation forms, no garble) must NOT be flagged as garbled after
     the ScriptContext fixes."""
 
-    def test_clean_arabic_insurance_prose_pf_fallback(self):
-        """D10a: clean Arabic with had_presentation_forms=False and
-        dominant_script='Arab' now triggers the NFKC PF fallback
-        (previously dead code due to 'Arabic' vs 'Arab' mismatch).
-        The presentation_forms prong fires because detect_garble
-        conservatively assumes PFs were present before NFKC.
-        Callers with pre-NFKC context should set had_presentation_forms
-        correctly via ScriptContext.from_document."""
+    def test_clean_arabic_insurance_prose_not_garbled(self):
+        """Clean Arabic insurance prose with had_presentation_forms=False
+        must NOT be flagged as garbled.  The old NFKC PF fallback that
+        forced had_pf=True for all Arabic text is removed."""
         clean_arabic = (
             "يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية المتفق عليه. "
             "يلتزم المؤمن له بالإبلاغ عن الضرر فورا. "
@@ -1768,14 +1762,13 @@ class TestCleanArabicNotFlaggedRegression:
             config=cfg,
             blob_kind=BlobKind.TREE_TEXT,
         )
-        assert "presentation_forms" in report.fired_prongs, (
-            "D10a: NFKC PF fallback should fire for Arab-script text "
-            f"with had_presentation_forms=False; got prongs={report.fired_prongs}"
+        assert not report.is_garbled, (
+            f"Clean Arabic should not be garbled; got prongs={report.fired_prongs}"
         )
 
-    def test_clean_arabic_with_none_script_pf_fallback(self):
-        """D10a: clean Arabic with dominant_script=None (inferred to 'Arab')
-        also hits the NFKC PF fallback now that the dead code is fixed."""
+    def test_clean_arabic_with_none_script_not_garbled(self):
+        """Clean Arabic text with dominant_script=None (inferred to 'Arab')
+        must NOT be flagged as garbled when no presentation forms exist."""
         clean_arabic = (
             "بسم الله الرحمن الرحيم "
             "هذه وثيقة تأمين صادرة وفقا للشروط والأحكام العامة. "
@@ -1794,8 +1787,8 @@ class TestCleanArabicNotFlaggedRegression:
             config=cfg,
             blob_kind=BlobKind.TREE_TEXT,
         )
-        assert "presentation_forms" in report.fired_prongs, (
-            "D10a: NFKC PF fallback should fire for inferred Arab-script text; "
+        assert not report.is_garbled, (
+            f"Clean Arabic (inferred script) should not be garbled; "
             f"got prongs={report.fired_prongs}"
         )
 

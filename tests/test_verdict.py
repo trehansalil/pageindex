@@ -1336,11 +1336,13 @@ class TestTryImageEnrichmentPresentationFormsRegression:
             f"{result!r}"
         )
 
-    def test_clean_arabic_without_presentation_forms_blocks_promotion(self):
-        """D10a: clean Arabic text with had_presentation_forms=False now
-        triggers the NFKC PF fallback in detect_garble, causing the
-        presentation_forms prong to fire.  Image enrichment promotion
-        is blocked because detect_garble returns garbled."""
+    def test_clean_arabic_without_presentation_forms_allows_promotion(self):
+        """Clean Arabic text with had_presentation_forms=False must NOT
+        trigger the presentation_forms prong.  The old NFKC PF fallback
+        unconditionally assumed all Arabic text had presentation forms —
+        that was a false-positive factory.  With the fallback removed,
+        clean Arabic text is correctly not garbled and image enrichment
+        promotion proceeds."""
         clean_arabic = (
             "يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية "
         ) * 20
@@ -1356,9 +1358,9 @@ class TestTryImageEnrichmentPresentationFormsRegression:
         result = _try_image_enrichment(
             sig, "flat_prose", 0.9, th, "Arab", None
         )
-        assert result is None, (
-            "D10a: PF fallback should block image enrichment for Arabic text "
-            f"with had_presentation_forms=False, got {result!r}"
+        assert result is not None, (
+            "Clean Arabic without presentation forms should allow image "
+            f"enrichment promotion, but got None"
         )
 
 

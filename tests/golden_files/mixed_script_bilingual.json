@@ -35,11 +35,11 @@
   },
   "expected": {
     "garble_detected": false,
-    "gate_ok": false,
-    "gate_defect": "node_garbling",
+    "gate_ok": true,
+    "gate_defect": "",
     "verdict": "MARGINAL",
     "verdict_reason_prefix": "leaf_concentration",
-    "recovery_eligible": true,
-    "recovery_method": "_recover_garble_ocr"
+    "recovery_eligible": false,
+    "recovery_method": null
   }
 }

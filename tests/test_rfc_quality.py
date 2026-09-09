@@ -278,19 +278,20 @@ _LATIN_GIBBERISH = " ".join(["xkjqz vbwm nfrl qpzx wblk"] * 60)
 
 
 class TestBilingualNotGarbled:
-    def test_is_garbled_blob_bilingual_pf_fallback(self):
-        """D10a: bilingual Arabic/English with expected_script='Arab' and
-        had_presentation_forms=False now triggers the NFKC PF fallback
-        (previously dead code). The presentation_forms prong fires."""
+    def test_is_garbled_blob_bilingual_not_garbled(self):
+        """Bilingual Arabic/English with expected_script='Arab' and
+        had_presentation_forms=False must NOT be flagged as garbled.
+        The old NFKC PF fallback that forced had_pf=True is removed."""
         assert (
             check_garble(_BILINGUAL_ARABIC_ENGLISH, expected_script="Arab", profile=BULK_PROFILE)
-            is True
+            is False
         )
 
-    def test_pure_arabic_pf_fallback(self):
-        """D10a: pure Arabic with expected_script='Arab' and
-        had_presentation_forms=False triggers the NFKC PF fallback."""
-        assert check_garble(_PURE_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is True
+    def test_pure_arabic_not_garbled(self):
+        """Pure Arabic with expected_script='Arab' and
+        had_presentation_forms=False must NOT be flagged as garbled.
+        The old NFKC PF fallback that forced had_pf=True is removed."""
+        assert check_garble(_PURE_ARABIC, expected_script="Arab", profile=BULK_PROFILE) is False
 
 
 class TestActualGarbledStillDetected:
@@ -351,5 +352,5 @@ class TestQF3RegressionExistingGarbleCases:
         nodes = [{"text": _PURE_ARABIC}]
         assert (
             check_garble(_flatten_tree_text(nodes), expected_script="Arab", profile=BULK_PROFILE)
-            is True  # D10a: NFKC PF fallback now fires for Arab-script text
+            is False  # PF fallback removed: clean Arabic is not garbled
         )
