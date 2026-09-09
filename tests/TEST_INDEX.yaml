@@ -629,3 +629,6 @@ standalone:
   scripts/rfc_lifecycle_lint.py:
     tests:
       - test_rfc_lifecycle_lint.py    # D8 RFC lifecycle CI gate
+  scripts/facade_surface_measure.py:
+    tests:
+      - test_rfc045_facade_measurement.py    # RFC-045 D6 disposition rule

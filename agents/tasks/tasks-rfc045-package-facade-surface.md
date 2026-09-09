@@ -126,7 +126,7 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [Property 2](design-rfc045-package-facade-surface#property-2-a-removal-deletes-the-entry-and-the-binding), [Property 3](design-rfc045-package-facade-surface#property-3-submodule-attributes-survive), [Property 4](design-rfc045-package-facade-surface#property-4-feature_wirings-resolves-at-startup)_
     - _Dependencies: 1.1_
 
-  - [ ] 1.3 Update the frozen list in the same commit
+  - [x] 1.3 Update the frozen list in the same commit
 
     - Update the `client` literal in `tests/test_facade_surface_guard.py` to match the new `__all__`
     - Do **not** touch the external-contract pin to make a failure go away — a pin failure means a real consumer broke
@@ -139,24 +139,24 @@ ships as a document for review first; no facade entry is touched before that.
     - `uv run python -c "import pageindex_mcp.server"` succeeds (startup validation runs `validate_feature_wirings()`)
     - One commit containing 1.1 + 1.3 together
 
-- [ ] 2. Wave 2 — `storage` (1 removal)
+- [x] 2. Wave 2 — `storage` (1 removal)
 
-  - [ ] 2.1 Remove `SIDECAR_VERSION` and its binding
+  - [x] 2.1 Remove `SIDECAR_VERSION` and its binding
 
     - Delete the `__all__` entry and the name from the `from .verdict import ...` block in `src/pageindex_mcp/storage/__init__.py`
     - _Requirements: [R2.4](045-package-facade-surface#requirement-2-no-removal-may-split-a-semantic-group), [DP-D4](design-rfc045-package-facade-surface#d4-removal-scope-is-the-entry-and-the-binding)_
     - _Dependencies: 1.C_
 
-  - [ ] 2.2 Invariant checks and frozen-list update
+  - [x] 2.2 Invariant checks and frozen-list update
 
     - P2 / P3 / P4 as in 1.2; P3 here covers `storage.minio_ops` (2 `setattr` sites)
     - Update the `storage` literal in `tests/test_facade_surface_guard.py`
     - _Requirements: [Property 2](design-rfc045-package-facade-surface#property-2-a-removal-deletes-the-entry-and-the-binding), [Property 3](design-rfc045-package-facade-surface#property-3-submodule-attributes-survive), [Property 6](design-rfc045-package-facade-surface#property-6-the-frozen-surface-matches-after-each-wave)_
     - _Dependencies: 2.1_
 
-  - [ ] 2.C Checkpoint — `storage`
+  - [x] 2.C Checkpoint — `storage`
 
-    - `uv run pytest` green; server import succeeds; single commit
+    - `uv run pytest` green (2058 passed, 13 skipped); server import succeeds; single commit
 
 - [ ] 3. Wave 3 — `registry_backfill` (8 removals)
 

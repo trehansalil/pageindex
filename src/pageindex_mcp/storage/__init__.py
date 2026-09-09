@@ -60,7 +60,6 @@ from .staging import (
 
 # verdict ──────────────────────────────────────────────────────────────────────
 from .verdict import (
-    SIDECAR_VERSION,
     _read_existing_sidecar,
     list_processed_docs,
     read_registry_fields,
@@ -72,7 +71,6 @@ __all__ = [
     "HASH_CACHE_KEY",
     "HASH_OBJECT",
     "RECONCILE_ETAG_KEY",
-    "SIDECAR_VERSION",
     "_WRITE_BARRIER_DELAYS",
     "PersistenceNotVisibleError",
     "_apply_route_prefix",

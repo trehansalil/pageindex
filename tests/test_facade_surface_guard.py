@@ -78,6 +78,10 @@ REMOVED_SURFACE: dict[str, tuple[str, ...]] = {
         "RecoveryMixin",
         "TREE_PATH_PICTURE_SPLICE_ENABLED",
     ),
+    # wave 2 -- storage
+    "storage": (
+        "SIDECAR_VERSION",
+    ),
 }
 
 FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
@@ -431,7 +435,6 @@ FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
         "HASH_OBJECT",
         "PersistenceNotVisibleError",
         "RECONCILE_ETAG_KEY",
-        "SIDECAR_VERSION",
         "_WRITE_BARRIER_DELAYS",
         "_apply_route_prefix",
         "_confirm_write_visible",
