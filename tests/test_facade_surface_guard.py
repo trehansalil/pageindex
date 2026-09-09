@@ -67,13 +67,23 @@ import pytest
 # NOTE: the RFC-045 measurement covered 8 packages / 407 entries and did not
 # include ``tools`` (5 entries, all consumed by attribute access from
 # ``server.py:29-33``). The freeze covers all 9.
+# RFC-045 removals, recorded per wave as each executes. Property 2 has two
+# halves: the entry leaves ``__all__`` (covered by the frozen-literal check
+# above) *and* the binding leaves the package namespace. Only the first half was
+# tested before RFC-045 wave 0; ``TestRemovedBindingsAreGone`` covers the second.
+REMOVED_SURFACE: dict[str, tuple[str, ...]] = {
+    # wave 1 -- client
+    "client": (
+        "MIN_STANDALONE_IMAGE_MD_CHARS",
+        "RecoveryMixin",
+        "TREE_PATH_PICTURE_SPLICE_ENABLED",
+    ),
+}
+
 FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
     "client": (
         "CustomPageIndexClient",
         "LLMTransientFailure",
-        "MIN_STANDALONE_IMAGE_MD_CHARS",
-        "RecoveryMixin",
-        "TREE_PATH_PICTURE_SPLICE_ENABLED",
         "_remote_image_to_markdown",
         "_remote_pdf_to_markdown",
         "apply_image_ext_content_class_override",
@@ -691,3 +701,48 @@ class TestConsumerReferencesResolve:
             "Either the symbol moved (import it from its submodule) or it was "
             "removed and this consumer was never updated."
         )
+
+
+class TestRemovedBindingsAreGone:
+    """RFC-045 Property 2, second half: a removal deletes the entry *and* the
+    binding.
+
+    Stripping a name from ``__all__`` while leaving ``from .mod import name`` in
+    place looks done and is not: ``pkg.name`` still resolves, so the barrel has
+    not actually shrunk and the name can drift back into ``__all__`` unnoticed.
+    Added by RFC-045 task 0.4.
+    """
+
+    def test_removed_names_are_not_package_attributes(self):
+        import importlib
+
+        stale: list[str] = []
+        for pkg_name, names in REMOVED_SURFACE.items():
+            pkg = importlib.import_module(f"pageindex_mcp.{pkg_name}")
+            for name in names:
+                if hasattr(pkg, name):
+                    stale.append(f"pageindex_mcp.{pkg_name}.{name}")
+        assert not stale, (
+            "RFC-045 Property 2: these names left __all__ but their bindings "
+            f"survive, so the facade did not actually shrink: {sorted(stale)}"
+        )
+
+    def test_removed_names_are_not_in_all(self):
+        import importlib
+
+        stale: list[str] = []
+        for pkg_name, names in REMOVED_SURFACE.items():
+            pkg = importlib.import_module(f"pageindex_mcp.{pkg_name}")
+            for name in names:
+                if name in getattr(pkg, "__all__", ()):
+                    stale.append(f"pageindex_mcp.{pkg_name}.{name}")
+        assert not stale, f"RFC-045 Property 2: still exported: {sorted(stale)}"
+
+    def test_removed_and_frozen_sets_are_disjoint(self):
+        """A name cannot be both retained and removed."""
+        for pkg_name, names in REMOVED_SURFACE.items():
+            overlap = set(names) & set(FROZEN_SURFACE.get(pkg_name, ()))
+            assert not overlap, (
+                f"{pkg_name}: {sorted(overlap)} appear in both FROZEN_SURFACE "
+                "and REMOVED_SURFACE"
+            )

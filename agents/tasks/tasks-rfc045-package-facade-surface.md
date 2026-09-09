@@ -69,7 +69,7 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [R1.2](045-package-facade-surface#requirement-1-the-deployment-repo-gate-must-clear-before-any-removal), [R1.3](045-package-facade-surface#requirement-1-the-deployment-repo-gate-must-clear-before-any-removal)_
     - _Dependencies: none (blocks every other task)_
 
-  - [ ] 0.2 Capture the pre-shrink baseline
+  - [x] 0.2 Capture the pre-shrink baseline
 
     - Run `uv run python scripts/facade_surface_measure.py --json audit/facade_measure_preshrink.json` and keep the JSON as the execution reference
     - Confirm it reports 48 of 59 under the Narrow_Rule and 10 of 59 under the Broad_Rule; a different number means the source drifted and the rulings need re-checking before anything is removed
@@ -89,7 +89,7 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [Property 1](design-rfc045-package-facade-surface#property-1-no-removed-name-has-a-breaking-channel-consumer), [DP-D7](design-rfc045-package-facade-surface#d7-verification-is-a-positive-controlled-ast-pass-not-a-grep)_
     - _Dependencies: 0.2_
 
-  - [ ] 0.4 Add the one invariant assertion that is not already mechanical
+  - [x] 0.4 Add the one invariant assertion that is not already mechanical
 
     - **(Added 2026-09-09. Narrowed 2026-09-09 in iteration 2 — this task previously specified a parameterized `tests/test_rfc045_wave_invariants.py` covering P2, P3 and P4. Two of the three are already enforced mechanically, so the module was ~2–3h of ceremony for a 10-line gap.)**
     - **Property 3 is already enforced**: 47 `monkeypatch.setattr(converters.pictures|converters.formats|converters.docling_conv, ...)` sites in `tests/` raise `AttributeError` the moment a submodule attribute disappears. **Property 4 is already enforced**: `validate_feature_wirings()` runs at `src/pageindex_mcp/server.py:83` and `lifecycle.py:63`, and every wave checkpoint imports the server
@@ -108,7 +108,7 @@ ships as a document for review first; no facade entry is touched before that.
 
 - [ ] 1. Wave 1 — `client` (3 removals)
 
-  - [ ] 1.1 Remove the three `client` entries and their bindings
+  - [x] 1.1 Remove the three `client` entries and their bindings
 
     - Delete each name's `__all__` string and its name in the `from .<mod> import (...)` block in `src/pageindex_mcp/client/__init__.py`
     - **Keep the `# recovery` comment in `__all__`** — it also heads `_remote_image_to_markdown`, which is not a candidate
@@ -117,7 +117,7 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [R2.4](045-package-facade-surface#requirement-2-no-removal-may-split-a-semantic-group), [DP-D4](design-rfc045-package-facade-surface#d4-removal-scope-is-the-entry-and-the-binding)_
     - _Dependencies: 0.2_
 
-  - [ ] 1.2 Run the three per-wave invariant checks
+  - [x] 1.2 Run the three per-wave invariant checks
 
     - Run `uv run pytest tests/test_facade_surface_guard.py` (built in 0.4). **(Amendment 2026-09-09: P2/P3/P4 are no longer hand-written per wave — 0.4 makes them one parameterized test driven off the frozen list. The prose below states what that test asserts for this wave, not what to type.)**
     - **P2:** for each removed name, `name not in pkg.__all__` **and** `not hasattr(pkg, name)` — the `__all__` half alone is exactly the failure this catches
@@ -133,7 +133,7 @@ ships as a document for review first; no facade entry is touched before that.
     - _Requirements: [R4.2](045-package-facade-surface#requirement-4-a-guard-must-prevent-regrowth), [Property 6](design-rfc045-package-facade-surface#property-6-the-frozen-surface-matches-after-each-wave)_
     - _Dependencies: 1.2_
 
-  - [ ] 1.C Checkpoint — `client`
+  - [x] 1.C Checkpoint — `client`
 
     - `uv run pytest` green
     - `uv run python -c "import pageindex_mcp.server"` succeeds (startup validation runs `validate_feature_wirings()`)

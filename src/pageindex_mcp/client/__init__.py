@@ -3,8 +3,6 @@
 
 from .images import (
     _IMAGE_EXTS,
-    MIN_STANDALONE_IMAGE_MD_CHARS,
-    TREE_PATH_PICTURE_SPLICE_ENABLED,
     _dominant_orientation,
     _enrich_image_blocks,
     _log_pic_splice_trace,
@@ -38,7 +36,6 @@ from .recovery import (
     _IMAGE_DOMINANT_OCR_ESCALATION_ENABLED,
     _VLM_TESSERACT_FALLBACK_ENABLED,
     LOW_CONTENT_OCR_CHAR_FLOOR,
-    RecoveryMixin,
 )
 from .remote import (
     _CLIENT_BUILD_SHA,
@@ -50,15 +47,11 @@ from .remote import (
 )
 
 __all__ = [
-    # images
-    "MIN_STANDALONE_IMAGE_MD_CHARS",
-    "TREE_PATH_PICTURE_SPLICE_ENABLED",
     # indexer
     "CustomPageIndexClient",
     # llm
     "LLMTransientFailure",
     # recovery
-    "RecoveryMixin",
     "_remote_image_to_markdown",
     # remote
     "_remote_pdf_to_markdown",
