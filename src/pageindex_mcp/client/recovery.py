@@ -174,16 +174,38 @@ def _keep_best_wins(
         _flatten_tree_text(post_result.get("structure", []))
     )
     _density_improved = _post_density < _pre_density * 0.80
-    if not _density_improved:
-        logger.warning(
-            "RFC-029 D4: post-retry repeating-token density (%.3f)"
-            " not substantially better than pre-retry (%.3f) for %s"
-            " — reverting to pre-retry result",
+    if _density_improved:
+        return True
+
+    # RFC-045: density didn't improve, but if post-retry is NOT garbled the
+    # increase is from legitimate content repetition (e.g. formal Arabic MOU
+    # text repeating ministry names vs random Latin OCR gibberish).
+    _post_text_cmp = _flatten_tree_text(post_result.get("structure", []))
+    _post_garble_flag = bool(detect_garble(
+        _post_text_cmp,
+        script_context=_kb_ctx,
+        config=_garble_config,
+        blob_kind=BlobKind.TREE_TEXT,
+    ))
+    if not _post_garble_flag:
+        logger.info(
+            "RFC-045: post-retry density (%.3f) not better than pre-retry"
+            " (%.3f) for %s, but post-retry is NOT garbled — keeping retry",
             _post_density,
             _pre_density,
             filename,
         )
-    return _density_improved
+        return True
+
+    logger.warning(
+        "RFC-029 D4: post-retry repeating-token density (%.3f)"
+        " not substantially better than pre-retry (%.3f) for %s"
+        " — reverting to pre-retry result",
+        _post_density,
+        _pre_density,
+        filename,
+    )
+    return False
 
 
 class RecoveryMixin:
@@ -638,6 +660,24 @@ class RecoveryMixin:
         defects list this method in ``recovery_fns``.
         """
         if not (not state.ok and ext == ".pdf" and settings.vlm_fallback):
+            return
+        # RFC-045: when full-page OCR was already applied and whole-tree
+        # GARBLING is resolved (only NODE_GARBLING on individual nodes or
+        # structural defects remain), VLM re-extraction of the entire
+        # document won't improve on Tesseract with correct language tessdata
+        # — it would overwrite the good OCR content.  When whole-tree
+        # GARBLING persists after OCR, VLM remains the escape hatch
+        # (RFC-044 D1/Property 1).
+        if (
+            state.full_page_already_applied
+            and state.first_defect != TreeDefect.GARBLING
+        ):
+            logger.info(
+                "VLM fallback skipped for %s: full-page OCR resolved "
+                "whole-tree garble (remaining primary defect: %s)",
+                filename,
+                state.first_defect.value if state.first_defect else "none",
+            )
             return
         try:
             from ..converters import vlm_extract_markdown

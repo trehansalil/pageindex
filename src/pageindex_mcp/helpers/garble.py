@@ -430,6 +430,20 @@ def _garble_prongs(
             if nonsense / len(latin_tokens) > _active_nonsense:
                 prongs.add("latin_gibberish")
 
+    # RFC-045: script-mismatch prong.  When expected script is Arabic but
+    # the text is overwhelmingly Latin (>80%), the extraction is garbled
+    # regardless of whether individual tokens are morphologically nonsense.
+    # This catches pure-image Arabic PDFs where Docling produces Latin
+    # gibberish that individually looks like plausible short words but
+    # collectively is wrong-script.  Strip HTML comments first — figure
+    # markers (<!-- image -->) contain the Latin word "image" which dilutes
+    # the ratio on image-heavy documents.
+    if _effective_script == "Arab" and cfg.garble_latin_gibberish_enabled:
+        _sm_stripped = re.sub(r"<!--.*?-->", "", norm)
+        _sm_ratio, _sm_tokens = _latin_token_ratio(_sm_stripped)
+        if _sm_ratio > 0.80 and len(_sm_tokens) >= 10:
+            prongs.add("script_mismatch")
+
     _sparse_text = original_text if original_text is not None else norm
     if len(_sparse_text) >= 100:
         _sparse_matches = _MIXED_SCRIPT_RE.findall(_sparse_text)

@@ -79,6 +79,38 @@ class TestKeepBestWins:
         assert result is True
 
 
+    def test_rfc045_density_worse_but_post_not_garbled_keeps_retry(self):
+        """RFC-045: when pre-retry is garbled and post-retry has higher density
+        but is NOT garbled, the density increase is from legitimate content
+        repetition — keep the retry."""
+        from pageindex_mcp.script import ScriptContext
+
+        garbled_latin = " ".join(
+            f"xk{i}qz elas Sie Cys de ABUL Lem oJ oiS" for i in range(25)
+        )
+        clean_arabic = " ".join(
+            ["وزارة الصناعة والتكنولوجيا المتقدمة وزارة الموارد البشرية"] * 25
+        )
+        ctx = ScriptContext(
+            dominant_script="Arab",
+            had_presentation_forms=False,
+            source="test",
+        )
+        result = _keep_best_wins(
+            pre_result=_tree(garbled_latin),
+            pre_total_chars=len(garbled_latin),
+            post_result=_tree(clean_arabic),
+            post_ok=True,
+            expected_script="Arab",
+            script_context=ctx,
+            filename="doc6_mohre.pdf",
+        )
+        assert result is True, (
+            "RFC-045: retry with clean Arabic should win over garbled Latin "
+            "even when repeating-token density is higher"
+        )
+
+
 class TestDecideOcrStrategyAcceptsForwardedParams:
 
     def test_accepts_garble_status_document_type_ocr_langs(self):

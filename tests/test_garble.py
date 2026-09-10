@@ -775,6 +775,7 @@ class TestGarbleProngsExhaustiveness:
         "latin_gibberish",
         "sparse_mojibake",
         "short_text_prior_garble",
+        "script_mismatch",
     })
 
     def test_no_unknown_prongs(self):
