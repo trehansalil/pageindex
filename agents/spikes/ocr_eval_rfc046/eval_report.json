@@ -1,0 +1,3012 @@
+{
+  "summary": {
+    "total_documents": 25,
+    "by_language": {
+      "ar": {
+        "document_count": 10,
+        "paddleocr_wins_by_chars": 0,
+        "tesseract_wins_by_chars": 0,
+        "avg_paddleocr_confidence": 0.0,
+        "low_confidence_documents": 0,
+        "documents": [
+          "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+          "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+          "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+          "سياسة حوكمة و إدارة البيانات - Copy.pdf",
+          "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+          "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+          "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+          "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+          "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+          "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf"
+        ]
+      },
+      "de": {
+        "document_count": 8,
+        "paddleocr_wins_by_chars": 0,
+        "tesseract_wins_by_chars": 0,
+        "avg_paddleocr_confidence": 0.0,
+        "low_confidence_documents": 0,
+        "documents": [
+          "GHV-TKV-Tarif.pdf",
+          "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+          "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+          "Ministerial Resolution No279 of 2022 Monitoring Mechanisms of Emiratisation Rates in the Private Sec - Copy.pdf",
+          "Reitlehrer - Schäden am Berittpferd.pdf",
+          "Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+          "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf",
+          "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf"
+        ]
+      },
+      "en": {
+        "document_count": 25,
+        "paddleocr_wins_by_chars": 0,
+        "tesseract_wins_by_chars": 0,
+        "avg_paddleocr_confidence": 0.0,
+        "low_confidence_documents": 0,
+        "documents": [
+          "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE  - Copy.pdf",
+          "Federal Decree-Law No. (47) of 2021 - Copy.pdf",
+          "GHV-TKV-Tarif.pdf",
+          "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+          "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+          "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+          "Ministerial Resolution No279 of 2022 Monitoring Mechanisms of Emiratisation Rates in the Private Sec - Copy.pdf",
+          "Reitlehrer - Schäden am Berittpferd.pdf",
+          "Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+          "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf",
+          "cabinet_resolution_no_96_of_2023_regarding_an_alternative_end_of_service_benefits_system - Copy.pdf",
+          "federal_decree_law_no_33_of_2021_regarding_the_regulation_of_employment_relationship_and_its_amendments - Copy.pdf",
+          "image pie chart about labor distribution in january 2025 - Copy.jpg",
+          "uae_numbers_english_page_16_17_landscape - Copy.pdf",
+          "uae_numbers_english_page_16_17_portrait - Copy.pdf",
+          "world-stats-pocketbook-2023.pdf",
+          "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+          "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+          "سياسة حوكمة و إدارة البيانات - Copy.pdf",
+          "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+          "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+          "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+          "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+          "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+          "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf"
+        ]
+      }
+    },
+    "overall": {
+      "paddleocr_wins": 0,
+      "tesseract_wins": 0,
+      "recommendation": "Tesseract holds advantage or results are mixed — further investigation needed"
+    },
+    "pdf_inspector": {
+      "text_based": 19,
+      "scanned": 4,
+      "mixed": 1,
+      "image": 1
+    },
+    "total_elapsed_s": 0.9
+  },
+  "documents": [
+    {
+      "filename": "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE  - Copy.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 77,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 8
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 5974,
+        "arabic_chars": 0,
+        "latin_chars": 4662,
+        "arabic_ratio": 0.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1197,
+          "elapsed_s": 0.883,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1197,
+            "word_count": 191,
+            "alpha_char_count": 920,
+            "digit_ratio": 0.0267,
+            "nonsense_ratio": 0.0326,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.21
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 2119,
+          "elapsed_s": 1.134,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2119,
+            "word_count": 333,
+            "alpha_char_count": 1706,
+            "digit_ratio": 0.0057,
+            "nonsense_ratio": 0.0307,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.29
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 2578,
+          "elapsed_s": 1.226,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2578,
+            "word_count": 437,
+            "alpha_char_count": 2035,
+            "digit_ratio": 0.0054,
+            "nonsense_ratio": 0.031,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.83
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "Federal Decree-Law No. (47) of 2021 - Copy.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 13,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 1
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 3677,
+        "arabic_chars": 0,
+        "latin_chars": 2841,
+        "arabic_ratio": 0.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 994,
+          "elapsed_s": 0.762,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 994,
+            "word_count": 161,
+            "alpha_char_count": 750,
+            "digit_ratio": 0.0302,
+            "nonsense_ratio": 0.0362,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.09
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1408,
+          "elapsed_s": 0.856,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1408,
+            "word_count": 220,
+            "alpha_char_count": 1157,
+            "digit_ratio": 0.0007,
+            "nonsense_ratio": 0.0199,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.39
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1165,
+          "elapsed_s": 0.712,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1165,
+            "word_count": 181,
+            "alpha_char_count": 934,
+            "digit_ratio": 0.006,
+            "nonsense_ratio": 0.03,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.38
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "GHV-TKV-Tarif.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 1,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 0
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "garbled_text_layer",
+        "text_layer_chars": 3798,
+        "alpha_ratio": 0.2272,
+        "junk_ratio": 0.4047
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 3707,
+          "elapsed_s": 2.034,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 3707,
+            "word_count": 674,
+            "alpha_char_count": 969,
+            "digit_ratio": 0.3323,
+            "nonsense_ratio": 0.0173,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.49
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 16,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 2
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 5548,
+        "arabic_chars": 0,
+        "latin_chars": 4272,
+        "arabic_ratio": 0.0,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 557,
+          "elapsed_s": 0.538,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 557,
+            "word_count": 49,
+            "alpha_char_count": 424,
+            "digit_ratio": 0.088,
+            "nonsense_ratio": 0.0377,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 10.22
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 2027,
+          "elapsed_s": 1.122,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2027,
+            "word_count": 249,
+            "alpha_char_count": 1580,
+            "digit_ratio": 0.0479,
+            "nonsense_ratio": 0.0824,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.91
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 2839,
+          "elapsed_s": 1.46,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2839,
+            "word_count": 343,
+            "alpha_char_count": 2352,
+            "digit_ratio": 0.013,
+            "nonsense_ratio": 0.0257,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 7.21
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 38,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 12
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 6528,
+        "arabic_chars": 0,
+        "latin_chars": 5144,
+        "arabic_ratio": 0.0,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 652,
+          "elapsed_s": 0.558,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 652,
+            "word_count": 60,
+            "alpha_char_count": 487,
+            "digit_ratio": 0.1058,
+            "nonsense_ratio": 0.0475,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 9.7
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 2186,
+          "elapsed_s": 1.211,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2186,
+            "word_count": 295,
+            "alpha_char_count": 1714,
+            "digit_ratio": 0.0526,
+            "nonsense_ratio": 0.0256,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.37
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 3587,
+          "elapsed_s": 1.732,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 3587,
+            "word_count": 435,
+            "alpha_char_count": 2995,
+            "digit_ratio": 0.012,
+            "nonsense_ratio": 0.0178,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 7.2
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "scanned",
+        "page_count": 9,
+        "pages_needing_ocr": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "ocr_page_count": 9,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.949999988079071,
+        "processing_time_ms": 1
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "no_text_layer",
+        "text_layer_chars": 0
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 422,
+          "elapsed_s": 0.648,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.6612,
+            "latin_ratio": 0.3388,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 422,
+            "word_count": 59,
+            "alpha_char_count": 307,
+            "digit_ratio": 0.0592,
+            "nonsense_ratio": 0.0782,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.02
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 935,
+          "elapsed_s": 1.044,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.7712,
+            "latin_ratio": 0.2288,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 1
+          },
+          "garble_signals": {
+            "char_count": 935,
+            "word_count": 132,
+            "alpha_char_count": 659,
+            "digit_ratio": 0.0567,
+            "nonsense_ratio": 0.0749,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.97
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1544,
+          "elapsed_s": 1.642,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.8908,
+            "latin_ratio": 0.1092,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1544,
+            "word_count": 219,
+            "alpha_char_count": 1232,
+            "digit_ratio": 0.0155,
+            "nonsense_ratio": 0.0382,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.0
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "Ministerial Resolution No279 of 2022 Monitoring Mechanisms of Emiratisation Rates in the Private Sec - Copy.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 5,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 0
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 5093,
+        "arabic_chars": 0,
+        "latin_chars": 3948,
+        "arabic_ratio": 0.0,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1548,
+          "elapsed_s": 1.011,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1548,
+            "word_count": 220,
+            "alpha_char_count": 1183,
+            "digit_ratio": 0.0484,
+            "nonsense_ratio": 0.0278,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.97
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1493,
+          "elapsed_s": 0.914,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1493,
+            "word_count": 228,
+            "alpha_char_count": 1180,
+            "digit_ratio": 0.0368,
+            "nonsense_ratio": 0.0214,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.52
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1951,
+          "elapsed_s": 1.065,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1951,
+            "word_count": 293,
+            "alpha_char_count": 1585,
+            "digit_ratio": 0.0128,
+            "nonsense_ratio": 0.0205,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.62
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "Reitlehrer - Schäden am Berittpferd.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 1,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 0
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 3025,
+        "arabic_chars": 0,
+        "latin_chars": 2204,
+        "arabic_ratio": 0.0,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 2816,
+          "elapsed_s": 1.353,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2816,
+            "word_count": 342,
+            "alpha_char_count": 2225,
+            "digit_ratio": 0.0401,
+            "nonsense_ratio": 0.043,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 7.12
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 3,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 1
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 4829,
+        "arabic_chars": 0,
+        "latin_chars": 3835,
+        "arabic_ratio": 0.0,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1637,
+          "elapsed_s": 0.96,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1637,
+            "word_count": 213,
+            "alpha_char_count": 1230,
+            "digit_ratio": 0.0715,
+            "nonsense_ratio": 0.025,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.67
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1377,
+          "elapsed_s": 0.909,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1377,
+            "word_count": 159,
+            "alpha_char_count": 1124,
+            "digit_ratio": 0.0182,
+            "nonsense_ratio": 0.0501,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 7.49
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1908,
+          "elapsed_s": 1.168,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1908,
+            "word_count": 269,
+            "alpha_char_count": 1458,
+            "digit_ratio": 0.0445,
+            "nonsense_ratio": 0.0252,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.07
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf",
+      "detected_langs": [
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 11,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 1
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 4036,
+        "arabic_chars": 0,
+        "latin_chars": 2991,
+        "arabic_ratio": 0.0,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1403,
+          "elapsed_s": 0.924,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1403,
+            "word_count": 198,
+            "alpha_char_count": 1104,
+            "digit_ratio": 0.0335,
+            "nonsense_ratio": 0.0292,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.02
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1228,
+          "elapsed_s": 0.81,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1228,
+            "word_count": 189,
+            "alpha_char_count": 980,
+            "digit_ratio": 0.0187,
+            "nonsense_ratio": 0.0399,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.42
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1246,
+          "elapsed_s": 0.91,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1246,
+            "word_count": 206,
+            "alpha_char_count": 911,
+            "digit_ratio": 0.053,
+            "nonsense_ratio": 0.0465,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.96
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "cabinet_resolution_no_96_of_2023_regarding_an_alternative_end_of_service_benefits_system - Copy.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 16,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 2
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 4413,
+        "arabic_chars": 0,
+        "latin_chars": 3484,
+        "arabic_ratio": 0.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1254,
+          "elapsed_s": 0.799,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1254,
+            "word_count": 188,
+            "alpha_char_count": 996,
+            "digit_ratio": 0.0231,
+            "nonsense_ratio": 0.0295,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.61
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1590,
+          "elapsed_s": 0.919,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1590,
+            "word_count": 249,
+            "alpha_char_count": 1310,
+            "digit_ratio": 0.0,
+            "nonsense_ratio": 0.0214,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.37
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1453,
+          "elapsed_s": 0.949,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1453,
+            "word_count": 223,
+            "alpha_char_count": 1178,
+            "digit_ratio": 0.0069,
+            "nonsense_ratio": 0.0241,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.48
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "federal_decree_law_no_33_of_2021_regarding_the_regulation_of_employment_relationship_and_its_amendments - Copy.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 58,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.75,
+        "processing_time_ms": 9
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 217,
+        "arabic_chars": 0,
+        "latin_chars": 166,
+        "arabic_ratio": 0.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 238,
+          "elapsed_s": 0.383,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 238,
+            "word_count": 42,
+            "alpha_char_count": 168,
+            "digit_ratio": 0.0336,
+            "nonsense_ratio": 0.0504,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.6
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 0,
+          "elapsed_s": 0.247,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 0.0,
+            "primary_script": "empty",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 0,
+            "nonsense_ratio": 0.0,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "digit_ratio": 0.0,
+            "avg_word_len": 0.0
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 0,
+          "elapsed_s": 0.192,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 0.0,
+            "primary_script": "empty",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 0,
+            "nonsense_ratio": 0.0,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "digit_ratio": 0.0,
+            "avg_word_len": 0.0
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "image pie chart about labor distribution in january 2025 - Copy.jpg",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "image",
+      "pdf_inspector": {
+        "available": false
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "not_pdf"
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 440,
+          "elapsed_s": 0.428,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 440,
+            "word_count": 100,
+            "alpha_char_count": 258,
+            "digit_ratio": 0.125,
+            "nonsense_ratio": 0.0341,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 3.36
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "uae_numbers_english_page_16_17_landscape - Copy.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 1,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 15
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 763,
+        "arabic_chars": 0,
+        "latin_chars": 308,
+        "arabic_ratio": 0.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 491,
+          "elapsed_s": 0.577,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 491,
+            "word_count": 85,
+            "alpha_char_count": 235,
+            "digit_ratio": 0.2525,
+            "nonsense_ratio": 0.1202,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.47
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "uae_numbers_english_page_16_17_portrait - Copy.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 1,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 15
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 763,
+        "arabic_chars": 0,
+        "latin_chars": 308,
+        "arabic_ratio": 0.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 594,
+          "elapsed_s": 0.7,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 594,
+            "word_count": 102,
+            "alpha_char_count": 356,
+            "digit_ratio": 0.1195,
+            "nonsense_ratio": 0.0859,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.61
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "world-stats-pocketbook-2023.pdf",
+      "detected_langs": [
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 292,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 322
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "garbled_text_layer",
+        "text_layer_chars": 9093,
+        "alpha_ratio": 0.3619,
+        "junk_ratio": 0.6108
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 199,
+          "elapsed_s": 0.235,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 199,
+            "word_count": 30,
+            "alpha_char_count": 146,
+            "digit_ratio": 0.0804,
+            "nonsense_ratio": 0.0704,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.53
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 2610,
+          "elapsed_s": 1.147,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2610,
+            "word_count": 380,
+            "alpha_char_count": 2044,
+            "digit_ratio": 0.0261,
+            "nonsense_ratio": 0.023,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.83
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1717,
+          "elapsed_s": 0.812,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "primary_script": "Latin",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1717,
+            "word_count": 256,
+            "alpha_char_count": 1197,
+            "digit_ratio": 0.0891,
+            "nonsense_ratio": 0.0309,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.7
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "scanned",
+        "page_count": 20,
+        "pages_needing_ocr": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "ocr_page_count": 20,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.949999988079071,
+        "processing_time_ms": 3
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "no_text_layer",
+        "text_layer_chars": 0
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 300,
+          "elapsed_s": 0.617,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.7787,
+            "latin_ratio": 0.2213,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 300,
+            "word_count": 44,
+            "alpha_char_count": 244,
+            "digit_ratio": 0.0067,
+            "nonsense_ratio": 0.0367,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.75
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 734,
+          "elapsed_s": 0.883,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.8619,
+            "latin_ratio": 0.1381,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 734,
+            "word_count": 113,
+            "alpha_char_count": 536,
+            "digit_ratio": 0.0422,
+            "nonsense_ratio": 0.0586,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.38
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1815,
+          "elapsed_s": 2.072,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9395,
+            "latin_ratio": 0.0605,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 1
+          },
+          "garble_signals": {
+            "char_count": 1815,
+            "word_count": 266,
+            "alpha_char_count": 1480,
+            "digit_ratio": 0.0017,
+            "nonsense_ratio": 0.0342,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.79
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+      "detected_langs": [
+        "ar",
+        "de",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 35,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 6
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "ar",
+          "de"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 4172,
+        "arabic_chars": 2169,
+        "latin_chars": 103,
+        "arabic_ratio": 0.9547,
+        "has_german_markers": true
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 960,
+          "elapsed_s": 1.121,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9092,
+            "latin_ratio": 0.0908,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 960,
+            "word_count": 160,
+            "alpha_char_count": 703,
+            "digit_ratio": 0.0365,
+            "nonsense_ratio": 0.0531,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.94
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1038,
+          "elapsed_s": 1.042,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9387,
+            "latin_ratio": 0.0613,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1038,
+            "word_count": 156,
+            "alpha_char_count": 815,
+            "digit_ratio": 0.0096,
+            "nonsense_ratio": 0.0549,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.58
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1733,
+          "elapsed_s": 1.601,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9595,
+            "latin_ratio": 0.0405,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1733,
+            "word_count": 253,
+            "alpha_char_count": 1400,
+            "digit_ratio": 0.0069,
+            "nonsense_ratio": 0.0317,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.81
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "سياسة حوكمة و إدارة البيانات - Copy.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 10,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 3
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "ar",
+          "en"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 2986,
+        "arabic_chars": 2100,
+        "latin_chars": 8,
+        "arabic_ratio": 0.9962,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 282,
+          "elapsed_s": 0.682,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.7389,
+            "latin_ratio": 0.2611,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 3
+          },
+          "garble_signals": {
+            "char_count": 282,
+            "word_count": 43,
+            "alpha_char_count": 200,
+            "digit_ratio": 0.039,
+            "nonsense_ratio": 0.0957,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.47
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1206,
+          "elapsed_s": 1.065,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9925,
+            "latin_ratio": 0.0075,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 1
+          },
+          "garble_signals": {
+            "char_count": 1206,
+            "word_count": 179,
+            "alpha_char_count": 933,
+            "digit_ratio": 0.0265,
+            "nonsense_ratio": 0.0655,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.58
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1012,
+          "elapsed_s": 0.916,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9758,
+            "latin_ratio": 0.0242,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1012,
+            "word_count": 146,
+            "alpha_char_count": 823,
+            "digit_ratio": 0.001,
+            "nonsense_ratio": 0.0474,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.83
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "scanned",
+        "page_count": 21,
+        "pages_needing_ocr": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21
+        ],
+        "ocr_page_count": 21,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.949999988079071,
+        "processing_time_ms": 4
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "no_text_layer",
+        "text_layer_chars": 0
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1403,
+          "elapsed_s": 1.463,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9639,
+            "latin_ratio": 0.0361,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1403,
+            "word_count": 225,
+            "alpha_char_count": 1078,
+            "digit_ratio": 0.0292,
+            "nonsense_ratio": 0.0278,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.23
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1693,
+          "elapsed_s": 1.732,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9663,
+            "latin_ratio": 0.0337,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1693,
+            "word_count": 274,
+            "alpha_char_count": 1333,
+            "digit_ratio": 0.003,
+            "nonsense_ratio": 0.0437,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.11
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1831,
+          "elapsed_s": 1.879,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.96,
+            "latin_ratio": 0.04,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1831,
+            "word_count": 327,
+            "alpha_char_count": 1421,
+            "digit_ratio": 0.0038,
+            "nonsense_ratio": 0.036,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.54
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "scanned",
+        "page_count": 15,
+        "pages_needing_ocr": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "ocr_page_count": 15,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.949999988079071,
+        "processing_time_ms": 2
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "no_text_layer",
+        "text_layer_chars": 0
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1587,
+          "elapsed_s": 1.566,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9475,
+            "latin_ratio": 0.0525,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1587,
+            "word_count": 257,
+            "alpha_char_count": 1176,
+            "digit_ratio": 0.0447,
+            "nonsense_ratio": 0.0334,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.15
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 2081,
+          "elapsed_s": 2.075,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9733,
+            "latin_ratio": 0.0267,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2081,
+            "word_count": 350,
+            "alpha_char_count": 1637,
+            "digit_ratio": 0.0091,
+            "nonsense_ratio": 0.025,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.92
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 2077,
+          "elapsed_s": 2.011,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.961,
+            "latin_ratio": 0.039,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 2077,
+            "word_count": 347,
+            "alpha_char_count": 1641,
+            "digit_ratio": 0.0053,
+            "nonsense_ratio": 0.0294,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.95
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "mixed",
+        "page_count": 4,
+        "pages_needing_ocr": [
+          2,
+          3,
+          4
+        ],
+        "ocr_page_count": 3,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.699999988079071,
+        "processing_time_ms": 1
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "garbled_text_layer",
+        "text_layer_chars": 1951,
+        "alpha_ratio": 0.183,
+        "junk_ratio": 0.7929
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1423,
+          "elapsed_s": 1.66,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9571,
+            "latin_ratio": 0.0429,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1423,
+            "word_count": 238,
+            "alpha_char_count": 1026,
+            "digit_ratio": 0.0401,
+            "nonsense_ratio": 0.0485,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.93
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1749,
+          "elapsed_s": 1.918,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.969,
+            "latin_ratio": 0.031,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 1
+          },
+          "garble_signals": {
+            "char_count": 1749,
+            "word_count": 285,
+            "alpha_char_count": 1382,
+            "digit_ratio": 0.0074,
+            "nonsense_ratio": 0.0475,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.08
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1624,
+          "elapsed_s": 1.78,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9693,
+            "latin_ratio": 0.0307,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 1
+          },
+          "garble_signals": {
+            "char_count": 1624,
+            "word_count": 275,
+            "alpha_char_count": 1225,
+            "digit_ratio": 0.0117,
+            "nonsense_ratio": 0.048,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.85
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "text_layer",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 100,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 0.75,
+        "processing_time_ms": 23
+      },
+      "text_layer_lang": {
+        "detected_langs": [
+          "ar"
+        ],
+        "source": "text_layer",
+        "text_layer_chars": 212,
+        "arabic_chars": 143,
+        "latin_chars": 0,
+        "arabic_ratio": 1.0,
+        "has_german_markers": false
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 221,
+          "elapsed_s": 0.423,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.6049,
+            "latin_ratio": 0.3951,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 1
+          },
+          "garble_signals": {
+            "char_count": 221,
+            "word_count": 34,
+            "alpha_char_count": 161,
+            "digit_ratio": 0.0679,
+            "nonsense_ratio": 0.0679,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.38
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 0,
+          "elapsed_s": 0.169,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 0.0,
+            "primary_script": "empty",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 0,
+            "nonsense_ratio": 0.0,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "digit_ratio": 0.0,
+            "avg_word_len": 0.0
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 0,
+          "elapsed_s": 0.227,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 0.0,
+            "primary_script": "empty",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 0,
+            "nonsense_ratio": 0.0,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "digit_ratio": 0.0,
+            "avg_word_len": 0.0
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 42,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 3
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "garbled_text_layer",
+        "text_layer_chars": 2885,
+        "alpha_ratio": 0.008,
+        "junk_ratio": 0.0998
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 1219,
+          "elapsed_s": 1.314,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.89,
+            "latin_ratio": 0.11,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1219,
+            "word_count": 174,
+            "alpha_char_count": 934,
+            "digit_ratio": 0.0402,
+            "nonsense_ratio": 0.0361,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.96
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 1000,
+          "elapsed_s": 1.107,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.933,
+            "latin_ratio": 0.067,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1000,
+            "word_count": 167,
+            "alpha_char_count": 789,
+            "digit_ratio": 0.008,
+            "nonsense_ratio": 0.034,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 4.98
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 1869,
+          "elapsed_s": 1.79,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.9795,
+            "latin_ratio": 0.0205,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 1869,
+            "word_count": 305,
+            "alpha_char_count": 1501,
+            "digit_ratio": 0.0032,
+            "nonsense_ratio": 0.0332,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.1
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    },
+    {
+      "filename": "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf",
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "lang_source": "filename",
+      "file_type": "pdf",
+      "pdf_inspector": {
+        "available": true,
+        "pdf_type": "text_based",
+        "page_count": 161,
+        "pages_needing_ocr": [],
+        "ocr_page_count": 0,
+        "has_encoding_issues": false,
+        "is_complex_layout": false,
+        "confidence": 1.0,
+        "processing_time_ms": 36
+      },
+      "text_layer_lang": {
+        "detected_lang": null,
+        "source": "garbled_text_layer",
+        "text_layer_chars": 1713,
+        "alpha_ratio": 0.5096,
+        "junk_ratio": 0.4699
+      },
+      "comparison": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_vl": {
+        "note": "one or both engines skipped/errored"
+      },
+      "comparison_surya": {
+        "note": "one or both engines skipped/errored"
+      },
+      "tesseract_page_summary": [
+        {
+          "page_index": 0,
+          "char_count": 35,
+          "elapsed_s": 0.34,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 1.0,
+            "latin_ratio": 0.0,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 35,
+            "word_count": 5,
+            "alpha_char_count": 31,
+            "digit_ratio": 0.0,
+            "nonsense_ratio": 0.0,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 6.2
+          }
+        },
+        {
+          "page_index": 1,
+          "char_count": 120,
+          "elapsed_s": 0.361,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 1.0,
+            "latin_ratio": 0.0,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 120,
+            "word_count": 19,
+            "alpha_char_count": 95,
+            "digit_ratio": 0.0167,
+            "nonsense_ratio": 0.075,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.26
+          }
+        },
+        {
+          "page_index": 2,
+          "char_count": 611,
+          "elapsed_s": 0.813,
+          "confidence": null,
+          "script": {
+            "arabic_ratio": 0.6879,
+            "latin_ratio": 0.3121,
+            "primary_script": "Arabic",
+            "has_presentation_forms": false,
+            "eastern_numeral_count": 0
+          },
+          "garble_signals": {
+            "char_count": 611,
+            "word_count": 94,
+            "alpha_char_count": 422,
+            "digit_ratio": 0.0704,
+            "nonsense_ratio": 0.0655,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "avg_word_len": 5.41
+          }
+        }
+      ],
+      "paddleocr_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "paddleocr_vl_page_summary": [
+        {
+          "skipped": true
+        }
+      ],
+      "surya_page_summary": [
+        {
+          "skipped": true
+        }
+      ]
+    }
+  ]
+}
