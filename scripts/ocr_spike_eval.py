@@ -40,6 +40,7 @@ except ImportError:
 
 PADDLEOCR_URL = os.environ.get("PADDLEOCR_SERVICE_URL", "http://localhost:8202")
 PADDLEOCR_VL_URL = os.environ.get("PADDLEOCR_VL_SERVICE_URL", "http://localhost:8204")
+SURYA_URL = os.environ.get("SURYA_SERVICE_URL", "http://localhost:8207")
 
 # --- Language classification ---------------------------------------------------
 
@@ -479,6 +480,74 @@ def _run_paddleocr_vl_for_doc(filepath: Path, max_pages: int) -> list[dict]:
     return run_paddleocr_vl_on_image(str(filepath))
 
 
+
+# --- Surya OCR runner (via service) --------------------------------------------
+
+
+def run_surya_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
+    """Send PDF to Surya OCR service, get per-page results with confidence."""
+    try:
+        with open(pdf_path, "rb") as fh:
+            resp = httpx.post(
+                f"{SURYA_URL}/ocr/pdf",
+                files={"file": (Path(pdf_path).name, fh, "application/pdf")},
+                params={"max_pages": max_pages},
+                timeout=1800,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        return [{"error": f"Surya service error: {exc}"}]
+
+    pages = []
+    for page_data in data.get("pages", []):
+        text = page_data.get("text", "")
+        pages.append({
+            "page_index": page_data.get("page_index", 0),
+            "text": text,
+            "char_count": len(text),
+            "elapsed_s": page_data.get("elapsed_s", 0),
+            "confidence": page_data.get("avg_confidence", 0.0),
+            "region_count": page_data.get("region_count", 0),
+            "script": classify_text_script(text),
+            "garble_signals": garble_signal_metrics(text),
+        })
+    return pages
+
+
+def run_surya_on_image(img_path: str) -> list[dict]:
+    """Send image to Surya OCR service."""
+    try:
+        with open(img_path, "rb") as fh:
+            resp = httpx.post(
+                f"{SURYA_URL}/ocr",
+                files={"file": (Path(img_path).name, fh, "image/jpeg")},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        return [{"error": f"Surya service error: {exc}"}]
+
+    text = data.get("text", "")
+    return [{
+        "page_index": 0,
+        "text": text,
+        "char_count": len(text),
+        "elapsed_s": data.get("elapsed_s", 0),
+        "confidence": data.get("confidence", 0.0),
+        "region_count": data.get("region_count", 0),
+        "script": classify_text_script(text),
+        "garble_signals": garble_signal_metrics(text),
+    }]
+
+
+def _run_surya_for_doc(filepath: Path, max_pages: int) -> list[dict]:
+    """Run Surya OCR on one document."""
+    if filepath.name.lower().endswith(".pdf"):
+        return run_surya_on_pdf(str(filepath), max_pages)
+    return run_surya_on_image(str(filepath))
+
 # --- Comparison and reporting --------------------------------------------------
 
 def compare_results(tess_pages: list[dict], paddle_pages: list[dict]) -> dict:
@@ -606,8 +675,8 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
         lines.append("")
 
     lines.append("\n## Per-Document Detail\n")
-    lines.append("| Document | Langs | PDF Type | Tess chars | Paddle chars | Paddle conf | VL chars | Winner | VL Winner |")
-    lines.append("|----------|-------|----------|-----------|-------------|-------------|---------|--------|-----------|")
+    lines.append("| Document | Langs | PDF Type | Tess chars | Paddle chars | Paddle conf | VL chars | Surya chars | Surya conf | Winner | VL Winner | Surya Winner |")
+    lines.append("|----------|-------|----------|-----------|-------------|-------------|---------|------------|------------|--------|-----------|--------------|")
 
     for doc in all_results:
         comp = doc.get("comparison", {})
@@ -618,6 +687,10 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
         langs_str = "+".join(doc.get("detected_langs", ["?"]))
         vl_chars = comp_vl.get("paddleocr_total_chars", "-")
         vl_winner = comp_vl.get("winner_by_chars", "-")
+        comp_surya = doc.get("comparison_surya", {})
+        surya_chars = comp_surya.get("paddleocr_total_chars", "-")
+        surya_conf = comp_surya.get("paddleocr_avg_confidence", 0)
+        surya_winner = comp_surya.get("winner_by_chars", "-")
         lines.append(
             f"| {short_name} | {langs_str} "
             f"| {pdf_type} "
@@ -625,8 +698,11 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
             f"| {comp.get('paddleocr_total_chars', '?')} "
             f"| {comp.get('paddleocr_avg_confidence', 0):.2%} "
             f"| {vl_chars} "
+            f"| {surya_chars} "
+            f"| {surya_conf:.2%} "
             f"| {comp.get('winner_by_chars', '?')} "
-            f"| {vl_winner} |"
+            f"| {vl_winner} "
+            f"| {surya_winner} |"
         )
 
     lines.append("\n## Garble Signal Analysis\n")
@@ -670,6 +746,9 @@ def main() -> None:
     parser.add_argument("--skip-tesseract", action="store_true", help="Skip Tesseract runs (PaddleOCR only)")
     parser.add_argument("--skip-paddleocr", action="store_true", help="Skip PaddleOCR runs (Tesseract only)")
     parser.add_argument("--skip-paddleocr-vl", action="store_true", help="Skip PaddleOCR-VL runs")
+    parser.add_argument("--skip-surya", action="store_true", help="Skip Surya OCR runs")
+    parser.add_argument("--load-prior", type=str, default=None,
+                        help="Load prior eval_full_detail.json to reuse cached engine results")
     parser.add_argument("--workers", type=int, default=0,
                         help="Concurrent document workers (0=auto: cpu_count//4, capped at 4)")
     args = parser.parse_args()
@@ -688,17 +767,14 @@ def main() -> None:
 
     if not args.skip_paddleocr:
         try:
-            health = httpx.get(f"{PADDLEOCR_URL}/health", timeout=5)
+            health = httpx.get(f"{PADDLEOCR_URL}/health", timeout=60)
             health.raise_for_status()
             print(f"PaddleOCR service healthy at {PADDLEOCR_URL}")
         except Exception as exc:
             print(f"WARNING: PaddleOCR service not reachable at {PADDLEOCR_URL}: {exc}")
             print("Run: cd services/paddleocr-service && uv run uvicorn app:app --port 8202")
-            if not args.skip_tesseract:
-                print("Continuing with Tesseract-only mode")
-                args.skip_paddleocr = True
-            else:
-                sys.exit(1)
+            print("Continuing without PaddleOCR")
+            args.skip_paddleocr = True
 
     if not args.skip_paddleocr_vl:
         try:
@@ -729,6 +805,21 @@ def main() -> None:
             print("Continuing without PaddleOCR-VL")
             args.skip_paddleocr_vl = True
 
+
+    if not args.skip_surya:
+        try:
+            health = httpx.get(f"{SURYA_URL}/health", timeout=10)
+            data = health.json()
+            if data.get("status") == "ok":
+                print(f"Surya OCR service healthy at {SURYA_URL}")
+            else:
+                raise ValueError(data.get("detail", "unhealthy"))
+        except Exception as exc:
+            print(f"WARNING: Surya OCR service not reachable at {SURYA_URL}: {exc}")
+            print("Run: cd services/surya-ocr-service && uv run uvicorn app:app --port 8207")
+            print("Continuing without Surya OCR")
+            args.skip_surya = True
+
     # Filter to processable files
     doc_files = [
         f for f in files if f.is_file() and
@@ -745,17 +836,30 @@ def main() -> None:
     total_start = time.monotonic()
 
     # Build result shells keyed by filename
+    prior_data: dict[str, dict] = {}
+    if args.load_prior:
+        prior_path = Path(args.load_prior)
+        if prior_path.exists():
+            prior_list = json.loads(prior_path.read_text(encoding="utf-8"))
+            for d in prior_list:
+                prior_data[d["filename"]] = d
+            print(f"  Loaded prior results for {len(prior_data)} documents from {prior_path}")
+        else:
+            print(f"  WARNING: --load-prior path not found: {prior_path}")
+
     results_by_name: dict[str, dict] = {}
     for fp in doc_files:
+        prior = prior_data.get(fp.name, {})
         results_by_name[fp.name] = {
             "filename": fp.name,
             "detected_langs": classify_document_langs(fp.name),
             "lang_source": "filename",
             "file_type": "pdf" if fp.name.lower().endswith(".pdf") else "image",
             "pdf_inspector": {},
-            "tesseract_pages": [{"skipped": True}],
-            "paddleocr_pages": [{"skipped": True}],
-            "paddleocr_vl_pages": [{"skipped": True}],
+            "tesseract_pages": prior.get("tesseract_pages", [{"skipped": True}]) if args.skip_tesseract else [{"skipped": True}],
+            "paddleocr_pages": prior.get("paddleocr_pages", [{"skipped": True}]) if args.skip_paddleocr else [{"skipped": True}],
+            "paddleocr_vl_pages": prior.get("paddleocr_vl_pages", [{"skipped": True}]) if args.skip_paddleocr_vl else [{"skipped": True}],
+            "surya_pages": prior.get("surya_pages", [{"skipped": True}]) if args.skip_surya else [{"skipped": True}],
         }
 
     # --- Phase 0: pre-classification (pdf_inspector + text-layer lang detect) ---
@@ -876,6 +980,23 @@ def main() -> None:
             pt = sum(p.get("elapsed_s", 0) for p in pages if "error" not in p)
             print(f" {pc}ch/{pt:.0f}s")
 
+
+    # --- Phase 4: Surya OCR (via service, sequential) ---
+    if not args.skip_surya:
+        print(f"\n--- Phase 4: Surya OCR (service at {SURYA_URL}) ---")
+        for i, fp in enumerate(doc_files, 1):
+            print(f"  [{i}/{len(doc_files)}] Surya: {fp.name[:55]}...", end="", flush=True)
+            try:
+                pages = _run_surya_for_doc(fp, max_pages)
+            except Exception as exc:
+                pages = [{"error": str(exc)}]
+            results_by_name[fp.name]["surya_pages"] = pages
+            pc = sum(p.get("char_count", 0) for p in pages if "error" not in p)
+            pt = sum(p.get("elapsed_s", 0) for p in pages if "error" not in p)
+            confs = [p["confidence"] for p in pages if "error" not in p and p.get("confidence")]
+            ac = sum(confs) / len(confs) if confs else 0.0
+            print(f"  {pc}ch/{pt:.0f}s/conf={ac:.0%}")
+
     # --- Assemble and compare ---
     all_results = []
     for fp in doc_files:
@@ -895,6 +1016,13 @@ def main() -> None:
             doc["comparison_vl"] = compare_results(tess, paddle_vl)
         else:
             doc["comparison_vl"] = {"note": "one or both engines skipped/errored"}
+        surya = doc["surya_pages"]
+        if (tess and surya
+                and "skipped" not in tess[0] and "skipped" not in surya[0]
+                and "error" not in tess[0] and "error" not in surya[0]):
+            doc["comparison_surya"] = compare_results(tess, surya)
+        else:
+            doc["comparison_surya"] = {"note": "one or both engines skipped/errored"}
         all_results.append(doc)
 
     total_elapsed = time.monotonic() - total_start
@@ -907,7 +1035,7 @@ def main() -> None:
     # Strip raw text from JSON to keep report manageable
     slim_results = []
     for doc in all_results:
-        slim = {k: v for k, v in doc.items() if k not in ("tesseract_pages", "paddleocr_pages", "paddleocr_vl_pages")}
+        slim = {k: v for k, v in doc.items() if k not in ("tesseract_pages", "paddleocr_pages", "paddleocr_vl_pages", "surya_pages")}
         slim["tesseract_page_summary"] = [
             {k: v for k, v in p.items() if k != "text"}
             for p in doc.get("tesseract_pages", [])
@@ -919,6 +1047,10 @@ def main() -> None:
         slim["paddleocr_vl_page_summary"] = [
             {k: v for k, v in p.items() if k != "text"}
             for p in doc.get("paddleocr_vl_pages", [])
+        ]
+        slim["surya_page_summary"] = [
+            {k: v for k, v in p.items() if k != "text"}
+            for p in doc.get("surya_pages", [])
         ]
         slim_results.append(slim)
 
@@ -951,6 +1083,15 @@ def main() -> None:
     print(f"  Tesseract wins: {summary['overall']['tesseract_wins']}")
     if vl_comparisons:
         print(f"  PaddleOCR-VL wins: {vl_wins}  (Tesseract wins vs VL: {vl_tess_wins})")
+
+    surya_comparisons = [d.get("comparison_surya", {}) for d in all_results
+                         if d.get("comparison_surya", {}).get("winner_by_chars")]
+    surya_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == "paddleocr")
+    surya_tess_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == "tesseract")
+    summary["overall"]["surya_wins"] = surya_wins
+    summary["overall"]["tesseract_wins_vs_surya"] = surya_tess_wins
+    if surya_comparisons:
+        print(f"  Surya wins: {surya_wins}  (Tesseract wins vs Surya: {surya_tess_wins})")
     for lang, info in summary.get("by_language", {}).items():
         lang_label = {"ar": "Arabic", "de": "German", "en": "English"}.get(lang, lang)
         print(f"  {lang_label}: PaddleOCR avg conf={info['avg_paddleocr_confidence']:.2%}, "
