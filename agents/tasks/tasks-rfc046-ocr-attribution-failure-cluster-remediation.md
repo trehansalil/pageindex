@@ -1,0 +1,409 @@
+---
+id: tasks-rfc046-ocr-attribution-failure-cluster-remediation
+title: "Tasks: OCR Attribution & Failure-Cluster Remediation"
+type: tasks
+status: draft
+date: 2026-09-12
+tags:
+  - tasks
+  - ocr-attribution
+  - garble-detection
+  - verdict-plumbing
+  - failure-clusters
+  - pre-surya
+aliases:
+  - tasks-rfc046-ocr-attribution-failure-cluster-remediation
+governs:
+  - "[[RFC-046]]"
+---
+# Implementation Plan: OCR Attribution & Failure-Cluster Remediation
+
+## Traceability
+
+| Artifact | Reference |
+|----------|-----------|
+| Governing RFC(s) | [[RFC-046]] |
+| Design Document | [[design-rfc046-ocr-attribution-failure-cluster-remediation]] |
+| Pre-RFC Plan | [[plan-rfc046-surya-quality-fallback]] |
+
+## Overview
+
+Nine deliverables across eight waves. **Wave 1** makes verdicts attributable (D2), corrects the graded baseline (D3), and adopts RFC-042 task 4.2 — then **gates on a corpus baseline run**. **Wave 2** (D1) reconstructs the evaluation evidence and is independent of everything else. **Waves 3–6** fix the six failure clusters, ordered by blast radius so each delta stays attributable: independent fixes (D5, D8), then flat-verdict plumbing alone (D6), then arbitration (D7), then language selection (D4, which depends on D7's N-candidate arbitration). **Wave 7** runs the attributed corpus validation. **Wave 8** decides whether RFC-047 is warranted.
+
+No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` keeps exactly one call site. Total estimated effort: **~51h**.
+
+**Wave 2 may be parallelised with Waves 1 and 3–6.** All other waves are strictly sequential — see [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour).
+
+## Tasks
+
+- [ ] 1. OCR Attribution & Baseline (D2, D3)
+
+  - [ ] 1.1 Introduce `OcrEngine` and thread it through `OcrDecision`
+
+    - Add `class OcrEngine(StrEnum)` to `picture_plane.py` with exactly one member, `TESSERACT = "tesseract"`. Add a comment that RFC-047 owns further members.
+    - Add `engine: OcrEngine = OcrEngine.TESSERACT` to the frozen `OcrDecision` dataclass (`picture_plane.py:35`), defaulted so existing constructors are unaffected.
+    - Do NOT add a `decide_ocr_strategy` call site. Do NOT change its cascade order or authority-scope docstring (`picture_plane.py:372-378`).
+    - Export `OcrEngine` per the package's `__all__` convention; `tests/test_facade_surface_guard.py:138` freezes `__all__` against a literal and must be updated in the same change.
+    - _Requirements: [R2.1](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [R2.2](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
+    - _Dependencies: none (foundation task)_
+
+  - [ ] 1.2 Label all five OCR invocation sites
+
+    - Site 1 — `converters/pictures.py:208` `_tesseract_ocr_image` (chokepoint for `pictures.py:657`, `pictures.py:892`, `formats.py:371`, `indexer.py:915`). **Preserve its never-raise contract** (`tests/test_converters.py:916-1005`) and its patchability by name (`:1623`).
+    - Site 2 — `converters/formats.py:339` `tesseract_ocr_pdf_pages`.
+    - Site 3 — `converters/docling_conv.py:98` `TesseractCliOcrOptions` (Docling-mediated; only reached when `do_ocr`).
+    - Site 4 — `client/recovery.py:725-738` VLM raster last resort.
+    - Site 5 — **`converters/pipeline.py:376` `_landscape_rasterize_rotate_reextract`** — consults no decision function; missed by every prior enumeration; implicated in Doc 17 per `RUN-8:207`.
+    - _Requirements: [R2.3](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
+    - _Dependencies: 1.1_
+
+  - [ ] 1.3 Stop hardcoding `state.used_converter`
+
+    - Replace the literal `state.used_converter = "docling"` at `recovery.py:341` with the converter actually used on that path.
+    - Verify the remote and local branches of `_execute_ocr_retry` (`recovery.py:319-338`) both record correctly.
+    - _Requirements: [R2.4](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
+    - _Dependencies: 1.1_
+
+  - [ ] 1.4 Persist `fired_prongs` on both persistence paths
+
+    - `GarbleReport.fired_prongs` (`garble.py:533-535`) is computed on every garble evaluation and discarded. `_persist_tree_result` writes only `all_defects` (`indexer.py:1322-1323`).
+    - Persist the fired prong set for any document reaching a garble verdict, on `_persist_tree_result` **and** `_persist_flat_result` — the two paths currently disagree on what they record.
+    - Thread the report rather than re-running `detect_garble` at persistence time.
+    - _Requirements: [R2.5](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [R2.6](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
+    - _Dependencies: 1.1_
+
+  - [ ] 1.5 Surface attribution in the sidecar and metrics
+
+    - Add configuration-valued attribution fields to `_SIDECAR_FIELDS` in `effective_config_snapshot()`; add observation-valued fields to the per-document sidecar.
+    - Add an engine label to `OCR_ESCALATION_TOTAL`.
+    - Hot-path constraint: `client/indexer.py` and `converters/pictures.py` must read config via `PipelineConfig`, not `os.environ` — enforced by `tests/test_architecture_guards.py:772-838`.
+    - _Requirements: [R2.7](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [R2.9](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
+    - _Dependencies: 1.2, 1.3, 1.4_
+
+  - [ ] 1.6 Architecture guards for attribution exhaustiveness
+
+    - Write a guard enumerating the five OCR sites by qualified name and asserting each labels its engine — so a sixth site added later fails rather than silently escaping attribution.
+    - Write a guard asserting no verdict is persisted without an engine label.
+    - Verify `tests/test_architecture_guards.py:1089-1114` (`decide_ocr_strategy` single call site, must be `converters/pictures.py`) still passes **unmodified**.
+    - _Requirements: [R2.8](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [Property 1](design-rfc046-ocr-attribution-failure-cluster-remediation#property-1-single-live-ocr-decision-call-site), [Property 2](design-rfc046-ocr-attribution-failure-cluster-remediation#property-2-ocr-site-attribution-exhaustiveness)_
+    - _Dependencies: 1.2, 1.5_
+
+  - [ ] 1.7 Adopt RFC-042 task 4.2 — config consistency property test
+
+    - Property test asserting every `PipelineConfig` boolean field parses by the same predicate, and that no hot-path module re-reads a variable already snapshotted.
+    - This is the guard that would have caught both the `PRE_GARBLE_FORCE_OCR_ENABLED` double-sourcing (B1) and its parse asymmetry (task 3.2).
+    - **Ownership decision required before starting** — see [[RFC-046]] Open Question 1. If the decision is to sequence behind RFC-042 instead, this task is removed and Wave 1 blocks on RFC-042 §4.
+    - _Requirements: [R9](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
+    - _Dependencies: none (parallel with 1.1–1.6)_
+
+  - [ ] 1.8 Correct the Run-8 baseline (D3)
+
+    - Recount the tally from the per-document scorecard rows of `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md`. The pre-RFC plan's recount gives 13 PASS / 6 MARGINAL / 6 FAIL against the stated 14/6/5, with Doc 18 omitted — **confirm or refute before amending; this is a verification task, not a foregone conclusion.**
+    - Correct `:5`, which records `Branch: ICR-97-rfc44-recovery-dispatch-wiring` for a run performed elsewhere.
+    - Record as a dated addendum, not a silent edit (RFC-025 D4 precedent).
+    - _Requirements: [R3.1](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [R3.2](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [R3.3](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [DP-D3](design-rfc046-ocr-attribution-failure-cluster-remediation#d3-corrected-run-8-baseline)_
+    - _Dependencies: none (parallel with 1.1–1.7)_
+
+  - [ ] 1.9 Bump `CURRENT_PIPELINE_VERSION` and re-baseline the remote image
+
+    - Bump `config.py:15` from 4 to 5 in the same commit as the first merged corpus-reclassifying change (RFC-014 D3).
+    - Re-baseline the remote Scaleway Docling image; `client/remote.py:62` compares versions and warns, or hard-blocks under `remote_version_enforce`.
+    - _Requirements: [R9.5](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
+    - _Dependencies: 1.5_
+
+  - [ ] 1.C **[GATE]** Checkpoint — Attributed corpus baseline
+
+    - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs.
+    - This run is the graded baseline for every subsequent wave. **No behavioural deliverable (Waves 3–6) may merge until this gate is checked.**
+    - Verify: `uv run pytest` green; architecture guards pass; sidecar schema test passes.
+    - _Requirements: [R9.1](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour)_
+    - _Dependencies: 1.1–1.9_
+
+- [ ] 2. Reproducible Evaluation Evidence (D1) — *parallelisable with all other waves*
+
+  - [ ] 2.1 Make unreachable engine endpoints a hard error
+
+    - `run_paddleocr_*` (`:339,:379`), `run_paddleocr_vl_*` (`:418,:449`), `run_surya_*` (`:487,:518`) currently swallow connection failures into empty results.
+    - A connection failure must raise; `main()` must exit non-zero naming the engine and endpoint.
+    - **This is the defect that voided the RFC-036 D7 negative** — every call in that spike was "Connection refused" and the spike was closed as a quality finding.
+    - _Requirements: [R1.3](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
+    - _Dependencies: none_
+
+  - [ ] 2.2 Use the production language path in the harness
+
+    - Replace the private map `_tess_langs_from_detected` (`:234`, `{"ar":"ara","de":"deu","en":"eng"}`) with `detect_ocr_langs` + `ensure_tessdata`.
+    - The harness already imports production internals (`:251,:299`), so this is consistency, not new coupling — and without it the harness does not measure the path where D4's defect lives.
+    - _Requirements: [R1.1](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
+    - _Dependencies: none_
+
+  - [ ] 2.3 Fix comparison key labelling
+
+    - `compare_results` (`:553`) emits `paddleocr_*` key names into the `comparison_surya` block, consumed at `:691`.
+    - _Requirements: [R1.2](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
+    - _Dependencies: none_
+
+  - [ ] 2.4 Mark the existing report unverified
+
+    - Add a header to `agents/spikes/ocr_eval_rfc046/eval_report.md` stating its numbers are not reproducible from committed artifacts, pending 2.5.
+    - Committed state: tesseract 84,733 chars / 25 docs; surya, paddleocr_vl, paddleocr each 0 chars / 0 docs; Tesseract truncated to 3 pages/doc against a reported 296,088.
+    - _Requirements: [R1.6](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
+    - _Dependencies: none (do first — it is a one-line honesty fix)_
+
+  - [ ] 2.5 Re-run at full page count and commit complete artifacts
+
+    - Remove the 10-page cap. Start every engine service and verify via 2.1 that none silently no-ops.
+    - Commit artifacts in which every enabled engine has non-zero data for every processed document.
+    - Regenerate `eval_report.md` from the committed artifacts; record engine versions, host, run date; state explicitly that it measures character yield, not accuracy, absent ground truth.
+    - Remove the 2.4 header only once this holds.
+    - _Requirements: [R1.4](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [R1.5](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
+    - _Dependencies: 2.1, 2.2, 2.3_
+
+  - [ ] 2.C Checkpoint — Evidence base
+
+    - Artifact completeness check passes. Harness self-test exits non-zero on an unreachable endpoint.
+    - Gates RFC-047's claims, not this RFC's deliverables.
+    - _Dependencies: 2.1–2.5_
+
+- [ ] 3. Independent Cluster Fixes (D5, D8)
+
+  - [ ] 3.1 Align the presentation-forms detectors onto one shared ratio
+
+    - Define `PF_SIGNAL_RATIO = 0.50` once in `helpers/garble.py`; consume it from all four detectors.
+    - Change `indexer.py:190` and `converters/normalize.py:159` from `any(...)` to the ratio predicate, **measured pre-NFKC** (NFKC destroys the codepoints being counted).
+    - **Separate the signal from its side effect:** NFKC normalization must still trigger on *any* presentation form; only the `RtlDecision.had_presentation_forms` signal becomes ratio-gated. Naively raising the threshold on the combined boolean silently stops normalizing lightly-affected documents — an extraction regression disguised as a detector fix.
+    - Leave `garble.py:388-389` (`if had_presentation_forms: prongs.add("presentation_forms")`) unchanged — D5 changes what *sets* the flag, not what the prong does.
+    - _Requirements: [R5.1](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.2](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.3](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [DP-D5](design-rfc046-ocr-attribution-failure-cluster-remediation#d5-presentation-forms-detector-alignment-c5)_
+    - _Dependencies: 1.C_
+
+  - [ ] 3.2 Tests for presentation-forms alignment
+
+    - One-ligature negative: a document with a single ﷲ or ﷺ among unshaped Arabic does not set `had_presentation_forms`, **and is still NFKC-normalized**.
+    - PF-dominated positive: >50% of Arabic characters as presentation forms still sets the flag and still fires the prong.
+    - Boundary tests either side of 0.50.
+    - Regression: Docs 19, 21, 23 — fixed by `2c39168` through the other path — unaffected.
+    - Architecture guard: no module defines an independent PF threshold or uses an `any(...)` presence test as a garble signal.
+    - _Requirements: [R5.4](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.5](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.6](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [Property 3](design-rfc046-ocr-attribution-failure-cluster-remediation#property-3-presentation-form-detector-uniformity), [Property 4](design-rfc046-ocr-attribution-failure-cluster-remediation#property-4-normalization-coverage-non-regression)_
+    - _Dependencies: 3.1_
+
+  - [ ] 3.3 Re-derive Doc 22 and record the surviving prong
+
+    - Re-ingest Doc 22 after 3.1 and record which prong, if any, condemns it.
+    - If `single_letter_fragments` (`garble.py:391-395`) fires, that is a genuine Arabic-shaping extraction defect — **document it as out of scope for this RFC rather than suppressing it.**
+    - _Requirements: [R5.7](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [DP-D5](design-rfc046-ocr-attribution-failure-cluster-remediation#d5-presentation-forms-detector-alignment-c5)_
+    - _Dependencies: 3.1, 1.4 (needs `fired_prongs` persisted to be answerable)_
+
+  - [ ] 3.4 Correct the density numerator
+
+    - `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count. The numerator from `_flatten_tree_text` (`tree_validation.py:137-158`) counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`.
+    - Count content that is genuinely stored and retrievable.
+    - **`RFC029_MIN_SCANNED_DENSITY_FLOOR` (`config.py:565`) does not change value.** This corrects what is measured, not where the line sits.
+    - Scope tension acknowledged at [[RFC-046]] Open Question 5 — resolve before starting.
+    - _Requirements: [R8.1](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [R8.2](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
+    - _Dependencies: 1.C_
+
+  - [ ] 3.5 Fix the `PRE_GARBLE_FORCE_OCR_ENABLED` parse asymmetry
+
+    - `config.py:505-508` uses `.lower() == "true"` — no `.strip()`, no `("1","true","yes")` — while its three siblings at `:492-504` all use the full predicate. `=1`, `=yes` and `=true ` are silent no-ops.
+    - Switch to `_envbool`. **Default stays `false`** — this RFC does not relitigate RFC-021 QF1's doctrine.
+    - Release note: after this, `=1` becomes truthy where it was previously ignored. Enabling the flag also disables the garble and low-content recovery rungs via `recovery.py:439,475`.
+    - Tests: `1`, `yes`, `true`, surrounding whitespace, `false`, unset.
+    - _Requirements: [R8.4](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [R8.5](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
+    - _Dependencies: 1.C_
+
+  - [ ] 3.6 Re-run the Doc-17 force-OCR experiment with a confirmed spelling
+
+    - `RUN-8:207` records "enabling it produces 30k chars of clean Arabic MD" from an uncommitted 2026-09-09 experiment. Given 3.5, the spelling used may have been a silent no-op.
+    - Re-run with a confirmed-truthy value and record the result. **This figure is a fixture input for task 5.4** and must not be carried on trust.
+    - _Requirements: [R8.6](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
+    - _Dependencies: 3.5_
+
+  - [ ] 3.7 Threshold-immutability guard
+
+    - Guard pinning every `VerdictThresholds` field, `RFC029_MIN_SCANNED_DENSITY_FLOOR`, `PASS_MAX_LEAF_RATIO` and `hard_fail_max_leaf_ratio` against pre-RFC values.
+    - Protects against the anti-pattern `audit/zones/_index.md` names — threshold widening masking extraction defects.
+    - _Requirements: [Non-Goal 2](046-ocr-attribution-failure-cluster-remediation#non-goals), [Property 8](design-rfc046-ocr-attribution-failure-cluster-remediation#property-8-threshold-immutability)_
+    - _Dependencies: none_
+
+  - [ ] 3.C **[GATE]** Checkpoint — Independent fixes attributed
+
+    - Corpus run. Per-document delta against the 1.C baseline, each change attributed to D5 or D8.
+    - Verify no threshold moved (3.7 green). `uv run pytest` green.
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 3.1–3.7_
+
+- [ ] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
+
+  - [ ] 4.1 Make the gate-signal source a caller-declared choice
+
+    - `evaluate_gates` takes `sig = validate_result.signals` (`verdict.py:151`) and consults `structure` only when `sig is None` (`:164-167`). Since `state.gate_result` is always a `TreeGateResult` on the flat route, `flat_structure` passed at `indexer.py:1122` is **dead on every flat-routed document**.
+    - Replace the implicit fallback with an explicit caller-declared source so a dead argument cannot be passed unknowingly.
+    - **Scope decision required first** — [[RFC-046]] Open Question 4: minimal (one call site) vs contract change (every caller). The minimal fix leaves the recurrence vector in place.
+    - _Requirements: [R6.1](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R6.2](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
+    - _Dependencies: 3.C_
+
+  - [ ] 4.2 Route the flat leaf ratio to the verdict, not only the sidecar
+
+    - `f_mlr` is computed at `indexer.py:1132` and written only to the sidecar (`:1183`, `:1215`), so the sidecar's `max_leaf_ratio` and its `verdict_reason` derive from two different structures.
+    - Make the flat value reach both.
+    - _Requirements: [R6.3](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [Property 6](design-rfc046-ocr-attribution-failure-cluster-remediation#property-6-verdict-sidecar-structural-consistency)_
+    - _Dependencies: 4.1_
+
+  - [ ] 4.3 Make image-block OCR text visible to the flat garble gate
+
+    - `_garble_check_flat_blocks` reads via `block_text(block, CHAR_COUNT)` (`garble.py:804`); for `role == "image"`, `block_text` returns OCR/description text only under `BlockTextPurpose.SEARCH` (`helpers/flat.py:247-256`), so under `CHAR_COUNT` it returns `""` and the block is skipped at `garble.py:805-806`.
+    - Consequence today: chart OCR noise is invisible to the gate, to `flat_char_count` (`indexer.py:1140`), and to `flat_structure` (filtered at `:1119`) — which is why Doc 14's 198 blocks yield 1,355 chars.
+    - _Requirements: [R6.4](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
+    - _Dependencies: 4.1_
+
+  - [ ] 4.4 Garble-check enrichment-mutated blocks
+
+    - The gate runs at `indexer.py:1026-1036`, before `_apply_picture_enrichment` at `:1092` — and enrichment writes `ocr_text` into image blocks (`client/images.py:261-315`). Blocks created or mutated by enrichment are never checked.
+    - Either move the gate after enrichment or re-run it over mutated blocks.
+    - _Requirements: [R6.5](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
+    - _Dependencies: 4.1, 4.3_
+
+  - [ ] 4.5 Feed flat signals to downstream predicates
+
+    - `_try_cat_b` (`verdict.py:313-336`) judges flat promotion on `sig.flat_text` = tree text. `_try_image_enrichment`'s `node_count >= 3` and character floor (`:242-249`) test tree node count.
+    - _Requirements: [R6.6](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3)_
+    - _Dependencies: 4.1_
+
+  - [ ] 4.6 Tests and guard for D6
+
+    - Unit test: a document whose tree ratio is 0.86 and whose flat blocks differ materially receives the flat value in both verdict and sidecar.
+    - Unit test: image-block `ocr_text` is counted by the flat garble gate and by `flat_char_count`.
+    - Unit test: enrichment-mutated blocks are garble-checked.
+    - Guard: no call site passes a structure that the resolved signal source discards.
+    - _Requirements: [R6.7](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [Property 5](design-rfc046-ocr-attribution-failure-cluster-remediation#property-5-no-dead-verdict-arguments)_
+    - _Dependencies: 4.1–4.5_
+
+  - [ ] 4.C **[GATE]** Checkpoint — Flat verdict plumbing attributed
+
+    - Corpus run. **Expect movement across the whole flat population, not only Doc 14.** Every change attributed to D6.
+    - An improvement with no identifiable cause blocks this gate — see [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation).
+    - _Requirements: [R6.8](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 4.1–4.6_
+
+- [ ] 5. Arbitrate on the Extraction (D7)
+
+  - [ ] 5.1 Quality-check recovered markdown before the tree rebuild
+
+    - `_execute_ocr_retry` (`recovery.py:236`) hands its output straight to `_reconvert_and_revalidate` (`indexer.py:423-450`), which re-runs the LLM tree builder before any comparison. **There is no garble check on the recovered markdown anywhere.**
+    - Evaluate the markdown for garble and content volume first.
+    - _Requirements: [R7.1](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
+    - _Dependencies: 4.C_
+
+  - [ ] 5.2 Retain a materially better extraction even when its tree fails
+
+    - When recovered markdown is not garbled and substantially higher in content, keep it rather than reverting at `recovery.py:389`.
+    - **Hard Rule #5:** the stored verdict stays a truthful FAIL or MARGINAL. What changes is which extraction the verdict is computed over — a FAIL over 30,000 correct characters rather than a FAIL over 1,283. **Ruling required before implementation** — [[RFC-046]] Open Question 3.
+    - _Requirements: [R7.2](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
+    - _Dependencies: 5.1_
+
+  - [ ] 5.3 Reconcile the two arbitrators onto one script-aware policy
+
+    - Two independent, unreconciled, script-blind arbitrators exist: `_keep_best_wins` (`recovery.py:92-208`, char count + `_repeating_token_density` at `:78`, reverts) and `client/images.py:296-309` (`_ocr_information_density` at `:252-258`, alnum+digit ratio, 1.5× rule, **concatenates** when it doesn't fire).
+    - Both have already ranked random Latin gibberish above correct formal Arabic on this corpus — the failure the RFC-045 escape at `recovery.py:184-198` patches around.
+    - Share one script-aware policy. Replace the concatenate-on-tie behaviour with an explicit decision.
+    - Drop the pairwise assumption: `_keep_best_wins` must accept N candidates, since task 6.2 introduces a third.
+    - **`tests/test_zone3_ocr_recovery.py` pins the current keyword signature exactly** and changes in the same commit.
+    - _Requirements: [R7.3](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.4](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.5](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.6](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [Property 7](design-rfc046-ocr-attribution-failure-cluster-remediation#property-7-arbitration-script-awareness)_
+    - _Dependencies: 5.1_
+
+  - [ ] 5.4 Tests for D7
+
+    - Doc 17 reproduction: recovery yields clean Arabic markdown, tree rebuild still fails, better extraction retained, verdict truthfully FAIL. **Fixture figure comes from task 3.6, not from `RUN-8:207` on trust.**
+    - Three-candidate arbitration test.
+    - Script-awareness test: formal Arabic must not lose to Latin gibberish on any scorer (Property 7).
+    - Confirm `PRE_GARBLE_FORCE_OCR_ENABLED` default is untouched.
+    - _Requirements: [R7.7](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.8](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4)_
+    - _Dependencies: 5.1, 5.2, 5.3, 3.6_
+
+  - [ ] 5.C **[GATE]** Checkpoint — Arbitration attributed
+
+    - Corpus run, delta attributed to D7. `uv run pytest` green including the rewritten `test_zone3_ocr_recovery.py`.
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 5.1–5.4_
+
+- [ ] 6. Content-Derived OCR Language Selection (D4)
+
+  - [ ] 6.1 Make garble recovery reachable for image inputs
+
+    - `_recover_garble_ocr` returns at `recovery.py:437` (`if state.ok or ext != ".pdf"`) and `_recover_vlm_fallback` at `:662`. **For a `.jpg` the entire recovery ladder is a no-op.**
+    - Widen eligibility to `_IMAGE_EXTS`, or add an image-specific rung to `GATES` (`helpers/gates.py:361-447`).
+    - Any new recovery method is auto-enrolled by the AST discovery at `tests/test_architecture_guards.py:996` and must carry an `if state.full_page_already_applied: return` guard lexically before its retry call (`:1063`), and use `_all_defects(state)` not `state.first_defect` (`:1134`).
+    - _Requirements: [R4.4](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.5](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [DP-D4](design-rfc046-ocr-attribution-failure-cluster-remediation#d4-content-derived-ocr-language-selection-c2)_
+    - _Dependencies: 5.C_
+
+  - [ ] 6.2 Replace filename-only language derivation with a bounded detect-correct-retry
+
+    - `indexer.py:893` uses `detect_ocr_langs(filename)`. For `"image pie chart … january 2025 - Copy.jpg"` that returns `["eng"]`, and the chart's Arabic labels are OCR'd with English tessdata — manufacturing the Latin noise the audit quotes.
+    - Mirror the union already used at `recovery.py:291-297`: OCR with the filename guess, re-examine the output with `detect_ocr_langs`, and if the detected script is not covered, re-OCR **once** with the corrected set; use that output when it is not garbled.
+    - Bound to at most one corrective re-OCR per document.
+    - The eval harness independently reinvented this — `reclassify_lang_from_content` (`ocr_spike_eval.py:70`) re-checks for >30% Arabic and injects `"ar"`.
+    - _Requirements: [R4.1](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.2](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.3](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [DP-D4](design-rfc046-ocr-attribution-failure-cluster-remediation#d4-content-derived-ocr-language-selection-c2)_
+    - _Dependencies: 6.1, 5.3 (needs N-candidate arbitration — the corrective pass is a third candidate)_
+
+  - [ ] 6.3 Tests for D4
+
+    - Latin-filename / ≥30%-Arabic-content image is OCR'd with an Arabic-capable set on the second pass.
+    - Bounded-retry test: at most one corrective pass.
+    - Doc 13 reproduction: filename-derived `["eng"]` on Arabic content no longer terminates in a persisted `garbling` verdict without a corrective pass having been attempted.
+    - AST guard conformance for any new recovery method.
+    - _Requirements: [R4.6](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.7](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2)_
+    - _Dependencies: 6.1, 6.2_
+
+  - [ ] 6.C **[GATE]** Checkpoint — Language selection attributed
+
+    - Corpus run, delta attributed to D4. Architecture guards green.
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 6.1–6.3_
+
+- [ ] 7. Attributed Corpus Validation (D9)
+
+  - [ ] 7.1 Full corpus run with complete attribution
+
+    - Run the full corpus on the post-Wave-6 pipeline. Every verdict names its engine and fired prongs.
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 6.C_
+
+  - [ ] 7.2 Per-document attributed delta table
+
+    - For every verdict change against the 1.C baseline, name the responsible deliverable.
+    - **Report both directions.** FAIL → PASS and PASS → FAIL are both outcomes of interest; neither may be omitted.
+    - **A document that improves with no identifiable responsible deliverable blocks acceptance pending explanation** — an unexplained improvement signals a measurement defect as surely as an unexplained regression.
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.3](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 7.1_
+
+  - [ ] 7.3 Coordinate with RFC-041 task 3.5a
+
+    - RFC-041 3.5a owns the full-corpus verdict-diff baseline this gate depends on. Reconcile before publishing 7.2.
+    - _Requirements: [R9.6](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 7.2_
+
+  - [ ] 7.4 Resolve zone ownership
+
+    - D5 closes the threaded-flag half of Zone 2 (`garble-detection-nfkc-signal-destruction`), currently owned by RFC-040 with successor RFC-041 D10c in `audit/zones/ZONE_OWNERSHIP.yaml`.
+    - Record RFC-046 as successor or partial contributor as decided — the lint script's orphaned-zone rule depends on this field. See [[RFC-046]] Open Question 2.
+    - _Requirements: [RFC Consequences](046-ocr-attribution-failure-cluster-remediation#consequences)_
+    - _Dependencies: 3.C_
+
+  - [ ] 7.C **[GATE]** Checkpoint — RFC-046 acceptance
+
+    - Attributed delta table complete, both directions, no unexplained movement. Pipeline version bumped, remote re-baselined. Zone ownership recorded. `uv run pytest` green. `uv run python scripts/rfc_lifecycle_lint.py` shows no new blocking violations.
+    - _Dependencies: 7.1–7.4_
+
+- [ ] 8. RFC-047 Decision Point
+
+  - [ ] 8.1 Characterise the surviving failures
+
+    - Against the 7.2 table, identify which of the six clusters still produce FAIL verdicts and why.
+    - _Dependencies: 7.C_
+
+  - [ ] 8.2 Decide whether RFC-047 is warranted
+
+    - With correct language selection, correct arbitration, correct flat verdicts and a correct PF detector in place, determine whether a second OCR engine addresses anything that remains.
+    - Inputs: the 8.1 residue, and the reproducible evidence base from 2.C.
+    - **A legitimate outcome is that RFC-047 is not written.** Record the decision either way, and close `audit/RECONCILIATION_REPORT.md:148-156` "Items Requiring Human Decision #2" (Option A non-Granite VLM / Option B secondary engine / Option C Tesseract-only permanently).
+    - If RFC-047 proceeds, carry forward the unresolved blockers the pre-RFC plan raised: HR3/ZDR self-hosted endpoint (A4), AGPL for a PyMuPDF-dependent network service (B5), and the reaped-shadow-flag precedent (`c3ad1c8` → `13c38cf`, fenced by `tests/test_architecture_guards.py:1089-1131`).
+    - _Dependencies: 8.1, 2.C_
