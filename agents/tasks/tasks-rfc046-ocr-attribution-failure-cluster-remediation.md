@@ -297,17 +297,25 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.4](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1_
 
+  - [ ] 4.3b Give the flat path the image-specific garble threshold
+
+    - `indexer.py:960-972` builds `_image_garble_cfg = GarbleConfig(garble_nonsense_ratio=IMAGE_OCR_NONSENSE_RATIO)` for `ext in _IMAGE_EXTS` and passes it to `validate_tree`. The flat gate at `indexer.py:1032-1036` passes the plain module-level `_garble_config`.
+    - **Measured 2026-09-15:** this makes commit `d1f67c3` route-dependent. That commit added `IMAGE_OCR_NONSENSE_RATIO = 0.45` *specifically* so the garble gate would catch Doc 13; on the flat route the fix is inert twice over — the threshold is not passed, and image blocks are skipped before any threshold could apply.
+    - A smoke-test re-ingest produced `MARGINAL / image_enrichment_partial(ratio=0.33)` on content still reading `"2025 et: - At galls all gus (98 Allen! an jgi"`. Garbled content persisted as MARGINAL is a **Hard Rule #5** surface.
+    - _Requirements: [R6.5](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
+    - _Dependencies: 4.1, 4.3_
+
   - [ ] 4.4 Garble-check enrichment-mutated blocks
 
     - The gate runs at `indexer.py:1026-1036`, before `_apply_picture_enrichment` at `:1092` — and enrichment writes `ocr_text` into image blocks (`client/images.py:261-315`). Blocks created or mutated by enrichment are never checked.
     - Either move the gate after enrichment or re-run it over mutated blocks.
-    - _Requirements: [R6.5](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
+    - _Requirements: [R6.6](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1, 4.3_
 
   - [ ] 4.5 Feed flat signals to downstream predicates
 
     - `_try_cat_b` (`verdict.py:313-336`) judges flat promotion on `sig.flat_text` = tree text. `_try_image_enrichment`'s `node_count >= 3` and character floor (`:242-249`) test tree node count.
-    - _Requirements: [R6.6](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3)_
+    - _Requirements: [R6.7](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1_
 
   - [ ] 4.6 Tests and guard for D6
@@ -316,14 +324,14 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Unit test: image-block `ocr_text` is counted by the flat garble gate and by `flat_char_count`.
     - Unit test: enrichment-mutated blocks are garble-checked.
     - Guard: no call site passes a structure that the resolved signal source discards.
-    - _Requirements: [R6.7](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [Property 5](design-rfc046-ocr-attribution-failure-cluster-remediation#property-5-no-dead-verdict-arguments)_
+    - _Requirements: [R6.8](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [Property 5](design-rfc046-ocr-attribution-failure-cluster-remediation#property-5-no-dead-verdict-arguments)_
     - _Dependencies: 4.1–4.5_
 
   - [ ] 4.C **[GATE]** Checkpoint — Flat verdict plumbing attributed
 
     - Corpus run. **Expect movement across the whole flat population, not only Doc 14.** Every change attributed to D6.
     - An improvement with no identifiable cause blocks this gate — see [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation).
-    - _Requirements: [R6.8](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Requirements: [R6.9](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 4.1–4.6_
 
 - [ ] 5. Arbitrate on the Extraction (D7)

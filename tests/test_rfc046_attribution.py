@@ -249,3 +249,49 @@ class TestSidecarCarriesAttribution:
 
     def test_flat_path_records_ocr_engine(self):
         assert 'flat_meta["ocr_engine"]' in self._src()
+
+
+class TestImagePathRecordsItsEngine:
+    """D2 / R2.3 — gap found by the 2026-09-15 smoke test.
+
+    Doc 13 (pie chart) demonstrably ran OCR -- its stored blocks contain
+    Latin-transliteration output -- yet no ``ocr_engine`` reached the sidecar,
+    because only the *recovery* paths set ``state.ocr_engine``. "No engine in
+    the sidecar" therefore meant "no OCR retry ran", not "no OCR ran", which
+    would have made the Wave 1 baseline actively misleading.
+    """
+
+    @staticmethod
+    def _src(rel: str) -> str:
+        import pathlib
+
+        import pageindex_mcp
+
+        return (pathlib.Path(pageindex_mcp.__file__).parent / rel).read_text(encoding="utf-8")
+
+    def test_standalone_image_path_sets_state_ocr_engine(self):
+        # Must be set *at the OCR call site*, not merely mentioned by the
+        # persistence code -- otherwise the assertion passes vacuously.
+        src = self._src("client/indexer.py")
+        # rfind, not find: the first occurrence is the import at the top of
+        # the module, which would make this assertion vacuous.
+        idx = src.rfind("_tesseract_ocr_image")
+        assert idx != -1, "standalone-image OCR call site vanished -- update this test"
+        window = src[max(0, idx - 1500) : idx + 500]
+        assert "state.ocr_engine" in window, (
+            "the standalone-image OCR path runs tesseract (indexer.py:915) and "
+            "must record the engine at the call site, or its verdict is unattributable"
+        )
+
+    def test_raster_recovery_is_attributed_by_its_caller(self):
+        # _attempt_tesseract_raster_recovery (images.py) has no `state`, so
+        # attribution is owned by its caller in recovery.py, which sets the
+        # engine before invoking it. Assert that, not something images.py
+        # cannot do.
+        src = self._src("client/recovery.py")
+        idx = src.find("_attempt_tesseract_raster_recovery(")
+        assert idx != -1, "raster-recovery call site vanished -- update this test"
+        window = src[max(0, idx - 600) : idx]
+        assert "state.ocr_engine" in window, (
+            "the caller of _attempt_tesseract_raster_recovery must attribute the engine"
+        )

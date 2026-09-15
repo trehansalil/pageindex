@@ -131,6 +131,8 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 #### Acceptance Criteria
 
 1. The standalone-image path (`indexer.py:893`) SHALL NOT derive OCR languages from the filename alone.
+
+> **Prior art (2026-06-30).** `issue/data2_fixes_validation_report.md` recommendation #4 reads: *"Wire the Tesseract route for image input (currently dead — Docling handles images but the OCR path Fix-5 gates never fires)."* That is this requirement, recommended five months earlier and never implemented. The same report records the class on a **PDF** as well (Doc 22, *"eng-only OCR over Arabic script"*), so wrong-language OCR is **not image-only**. This deliverable scopes the image path; whether the PDF paths need the same treatment SHALL be decided from the Wave 1 baseline's persisted `fired_prongs`, not assumed.
 2. After a first OCR pass on an image, the output text SHALL be re-examined with `detect_ocr_langs`. When the detected script set is not covered by the languages used, a second OCR pass SHALL run with the corrected set, and its output SHALL be used when it is not garbled.
 3. The re-examination SHALL be bounded to at most one corrective re-OCR per document.
 4. Garble recovery SHALL be reachable for image inputs. `_recover_garble_ocr` (`recovery.py:437`) and `_recover_vlm_fallback` (`recovery.py:662`) currently return immediately for any `ext != ".pdf"`; the eligibility condition SHALL be widened to cover `_IMAGE_EXTS`, or an image-specific recovery rung SHALL be added to `GATES`.
@@ -150,7 +152,10 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 4. A unit test SHALL verify: a document containing one ﷲ or ﷺ among otherwise unshaped Arabic does not set `had_presentation_forms`, and is still NFKC-normalized.
 5. A unit test SHALL verify: a document genuinely dominated by presentation forms (>50% of Arabic characters) still sets the flag and still fires the `presentation_forms` prong.
 6. A regression test SHALL verify Docs 19, 21 and 23 — fixed by `2c39168` through the other path — remain unaffected.
-7. Doc 22's verdict SHALL be re-derived after the change and the surviving prong recorded. If `single_letter_fragments` (`garble.py:391-395`) fires instead, that is a genuine extraction defect and SHALL be documented as out of scope for this RFC rather than suppressed.
+7. Doc 22's verdict SHALL be re-derived after the change and the surviving prong recorded. Three candidate causes are on the table and the RFC does not presume which holds:
+   - `presentation_forms` — a verdict defect, fixed by this deliverable;
+   - `single_letter_fragments` (`garble.py:391-395`) — genuine Arabic shaping loss, out of scope, to be documented rather than suppressed;
+   - **wrong-language OCR** — `issue/data2_fixes_validation_report.md` (2026-06-30) attributes this document's failure to a corrupt CMap plus `ara` tessdata being absent or unselected, producing *"Latin mojibake"* from English OCR over Arabic script. That predates the `d5f0c19` tessdata-probe fix, so it may already be resolved — but it SHALL be ruled in or out from the persisted `fired_prongs` (D2) rather than assumed.
 
 ### Requirement 6: Flat Verdicts From Flat Signals (C3)
 
@@ -161,11 +166,17 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 1. `compute_verdict` SHALL NOT silently ignore its `structure` argument. When called from the flat path (`indexer.py:1122`), the gate signals used SHALL be derived from `flat_structure`, not from the tree `TreeGateResult` carried in `state.gate_result`.
 2. The mechanism SHALL be explicit rather than implicit: `evaluate_gates`' current behaviour of preferring `validate_result.signals` and falling back to `structure` only when `sig is None` (`verdict.py:151,164-167`) SHALL be replaced by a caller-declared choice, so no future call site can pass a dead argument unknowingly.
 3. The flat leaf ratio already computed at `indexer.py:1132` SHALL be the value that reaches both the verdict and the sidecar. The sidecar's `max_leaf_ratio` and its `verdict_reason` SHALL be derived from the same structure.
-4. Image blocks SHALL be visible to the flat garble gate. `block_text(block, CHAR_COUNT)` returns `""` for `role == "image"` (`helpers/flat.py:247-256`), so chart and figure OCR text is excluded from `_garble_check_flat_blocks` (`indexer.py:1026-1036`) and from `flat_char_count` (`indexer.py:1140`). The garble check SHALL see that text.
-5. The flat garble gate SHALL run after `_apply_picture_enrichment` (`indexer.py:1092`), or run again over enrichment-mutated blocks, so that blocks created or modified by enrichment are checked. *(Enrichment writes `ocr_text` into image blocks at `client/images.py:261-315`.)*
-6. Downstream predicates SHALL receive flat signals on the flat path: `_try_cat_b` (`verdict.py:313-336`) and `_try_image_enrichment`'s `node_count` and character-floor checks (`verdict.py:242-249`).
-7. Unit tests SHALL verify that a flat document whose tree had `max_leaf_ratio=0.86` and whose flat blocks have a materially different ratio receives the flat value.
-8. This deliverable SHALL be treated as verdict-distribution-affecting and gated accordingly (Requirement 9).
+4. Image blocks SHALL be visible to the flat garble gate. `block_text(block, CHAR_COUNT)` returns `""` for `role == "image"` (`helpers/flat.py:247-256`) — it ignores `block["text"]` entirely — so the block is skipped at `garble.py:805-806` before `detect_garble` is ever called. Chart and figure OCR text is therefore excluded from `_garble_check_flat_blocks` (`indexer.py:1032-1036`) and from `flat_char_count` (`indexer.py:1140`). The garble check SHALL see that text.
+
+   > **Measured 2026-09-15 — this is a garble *escape*, not merely undercounting.** A smoke-test re-ingest of Doc 13 produced `MARGINAL / image_enrichment_partial(ratio=0.33)` while its stored blocks still read `"2025 et: - At galls all gus (98 Allen! an jgi"` — the same Latin-transliteration gibberish Run 8 failed it for. Garbled content is being persisted as MARGINAL, which is a **Hard Rule #5 surface**. A verdict moving FAIL → MARGINAL on this document is a masking, not a repair, and any corpus diff must read it that way.
+
+5. The flat path SHALL apply the same image-specific garble threshold the tree path applies. `indexer.py:960-972` builds `_image_garble_cfg = GarbleConfig(garble_nonsense_ratio=IMAGE_OCR_NONSENSE_RATIO)` when `ext in _IMAGE_EXTS` and passes it to `validate_tree`; the flat gate at `indexer.py:1032-1036` passes the plain module-level `_garble_config` instead.
+
+   > **This makes `d1f67c3` route-dependent.** That commit introduced `IMAGE_OCR_NONSENSE_RATIO = 0.45` *specifically* so the garble gate would catch Doc 13 (RUN-8 addendum: "Fix #3 — IMAGE_OCR_NONSENSE_RATIO=0.45 now fires garble gate correctly"). On the flat route the fix is inert — twice over: the threshold is not passed, and image blocks are skipped before any threshold could apply. A fix that only holds on one of two routes is not a fix.
+6. The flat garble gate SHALL run after `_apply_picture_enrichment` (`indexer.py:1092`), or run again over enrichment-mutated blocks, so that blocks created or modified by enrichment are checked. *(Enrichment writes `ocr_text` into image blocks at `client/images.py:261-315`.)*
+7. Downstream predicates SHALL receive flat signals on the flat path: `_try_cat_b` (`verdict.py:313-336`) and `_try_image_enrichment`'s `node_count` and character-floor checks (`verdict.py:242-249`).
+8. Unit tests SHALL verify that a flat document whose tree had `max_leaf_ratio=0.86` and whose flat blocks have a materially different ratio receives the flat value.
+9. This deliverable SHALL be treated as verdict-distribution-affecting and gated accordingly (Requirement 9).
 
 ### Requirement 7: Arbitrate on the Extraction, Not the Tree (C4)
 

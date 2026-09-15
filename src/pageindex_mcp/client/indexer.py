@@ -84,7 +84,7 @@ from ..metrics import (
     REMOTE_MD_RENORMALIZED,
     VLM_FALLBACK_TOTAL,
 )
-from ..picture_plane import strip_unresolved_image_markers
+from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import BlobKind, RtlDecision, ScriptContext
 from ..storage import (
     hash_cache_get,
@@ -907,6 +907,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     "degrading to %s — pre-bake traineddata in worker image",
                     filename, detected, img_langs,
                 )
+            # RFC-046 D2: this path OCRs the image via tesseract (both
+            # image_to_markdown and the _tesseract_ocr_image fallback below).
+            # Found missing by the 2026-09-15 smoke test: Doc 13 ran OCR and
+            # produced Latin gibberish, yet no engine reached the sidecar.
+            state.ocr_engine = str(OcrEngine.TESSERACT)
             md_content = await asyncio.to_thread(image_to_markdown, file_path, img_langs)
             img_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
             standalone_ocr_text = ""
