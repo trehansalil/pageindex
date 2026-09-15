@@ -21,6 +21,9 @@ class PictureResult(TypedDict, total=False):
     bbox: dict
     description: str
     skipped_reason: str  # RFC-019 D3: deliberate-skip tag (e.g. "page_coverage")
+    # RFC-046 D2: which engine produced ``ocr_text``. Optional (total=False) so
+    # every existing construction stays valid; absent means "not OCR'd here".
+    ocr_engine: str
 
 
 @dataclasses.dataclass

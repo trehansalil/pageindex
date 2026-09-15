@@ -32,6 +32,22 @@ class OcrMode(StrEnum):
     PER_PICTURE = "per_picture"
 
 
+class OcrEngine(StrEnum):
+    """RFC-046 D2: which OCR engine produced (or would produce) a document's text.
+
+    Before this existed there was no engine identity anywhere in the system --
+    ``grep -rn "ocr_engine" src/`` returned nothing, and ``state.used_converter``
+    was a hardcoded literal.  A verdict therefore could not be attributed to the
+    engine behind it, which is what made corpus diffs unexplainable.
+
+    This ships with exactly ONE member on purpose.  RFC-046 introduces no engine
+    (Non-Goal 1); it only makes the existing one nameable, so that a later RFC
+    can measure whether a second engine helps.  RFC-047 adds members here.
+    """
+
+    TESSERACT = "tesseract"
+
+
 @dataclass(frozen=True)
 class OcrDecision:
     """Zone-2: sealed OCR-strategy instruction produced once by ``decide_ocr_strategy``.
@@ -39,6 +55,11 @@ class OcrDecision:
     Frozen: once the decision is made it cannot be mutated.  This replaces
     the dual independent ``decide_ocr_mode`` calls with a single authoritative
     instruction encoding exactly one of: no-OCR, full-page-OCR, per-picture-OCR.
+
+    RFC-046 D2: ``engine`` names the OCR engine the decision applies to.  It is
+    threaded as *data*, not as a new decision -- ``decide_ocr_strategy`` keeps
+    exactly one call site (Property 1, pinned by
+    ``test_decide_ocr_strategy_single_call_site``).
     """
 
     mode: OcrMode
@@ -48,6 +69,8 @@ class OcrDecision:
     # Zone-8: OCR language list and splice requirement for unified decision.
     ocr_langs: list[str] = field(default_factory=lambda: ["deu", "eng"])
     splice_required: bool = False
+    # RFC-046 D2: defaulted so every existing constructor keeps working.
+    engine: OcrEngine = OcrEngine.TESSERACT
 
 
 # ---------------------------------------------------------------------------

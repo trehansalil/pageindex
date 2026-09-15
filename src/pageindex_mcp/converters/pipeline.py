@@ -15,7 +15,7 @@ from collections.abc import Callable
 from enum import StrEnum
 
 from ..config import MAX_DOCLING_PAGES, pipeline_config
-from ..picture_plane import strip_unresolved_image_markers
+from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import RtlDecision
 from .docling_conv import (
     _docling_converter,
@@ -373,6 +373,13 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         # RFC-035 D2 Phase 2: rasterize-rotate-reextract fallback. Never fatal —
         # a failure here falls through to the original (degraded) extraction and
         # classify_verdict surfaces the resulting MARGINAL/FAIL verdict naturally.
+        # RFC-046 D2 -- OCR site 5 of 5. This path consults no decision
+        # function at all and was missed by every prior enumeration; it is
+        # implicated in the Doc 17 failure (RUN-8:207).
+        logger.debug(
+            "landscape rasterize-reextract OCR engine=%s pages=%s",
+            OcrEngine.TESSERACT, landscape_below_threshold,
+        )
         landscape_fallback_pages = _landscape_rasterize_rotate_reextract(
             pdf_path, landscape_below_threshold, ocr_lang_override=ocr_lang_override
         )

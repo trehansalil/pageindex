@@ -42,7 +42,7 @@ from ..metrics import (
     OCR_ESCALATION_TOTAL,
     VLM_FALLBACK_TOTAL,
 )
-from ..picture_plane import SkipReason, skip_reason_from_str
+from ..picture_plane import OcrEngine, SkipReason, skip_reason_from_str
 from ..script import BlobKind, ScriptContext, decide_rtl
 
 if TYPE_CHECKING:
@@ -725,6 +725,8 @@ class RecoveryMixin:
         if _try_tesseract_raster:
             from .images import _attempt_tesseract_raster_recovery
 
+            # RFC-046 D2 -- OCR site 4 of 5.
+            state.ocr_engine = str(OcrEngine.TESSERACT)
             recovered_md = await _attempt_tesseract_raster_recovery(
                 file_path, expected_script, filename,
                 script_context=script_context,

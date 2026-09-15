@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
+from ..picture_plane import OcrEngine
 from ..script import is_arabic_char as _is_arabic_char
 from .types import PictureResult
 
@@ -95,6 +96,14 @@ def _build_pdf_pipeline_options(
             s.strip() for s in os.getenv("DOCLING_OCR_LANG", "deu,eng").split(",") if s.strip()
         ]
         # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
+        # RFC-046 D2 -- OCR site 3 of 5: this is where all Docling-mediated
+        # OCR is bound to an engine. Note do_ocr defaults to "0", so on the
+        # default configuration this line is never reached and Docling
+        # performs no OCR at all on the primary pass.
+        logger.debug(
+            "docling OCR bound to engine=%s langs=%s force_full_page=%s",
+            OcrEngine.TESSERACT, langs, force_ocr,
+        )
         opts.ocr_options = TesseractCliOcrOptions(lang=langs, force_full_page_ocr=force_ocr)
     opts.accelerator_options = AcceleratorOptions(device=device, num_threads=num_threads)
     # Use pre-baked model artifacts when available (set in the container image so

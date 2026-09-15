@@ -24,6 +24,7 @@ from ..helpers.garble import _infer_presentation_forms as _infer_pf
 _OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
 from ..metrics import TESSERACT_OCR_FAILURE_TOTAL
 from ..picture_plane import (
+    OcrEngine,
     OcrMode,
     PictureGateConfig,
     RegionClassification,
@@ -203,6 +204,12 @@ def _bbox_to_fitz_rect(bbox, page_height: float, fitz):
         return fitz.Rect(x0, y0, x1, y1)
     except Exception:
         return None
+
+
+#: RFC-046 D2 -- OCR site 1 of 5. The engine this module's OCR calls are bound
+#: to. Chokepoint for pictures.py:657, pictures.py:892, formats.py:371 and
+#: indexer.py:915, so labelling here covers all four callers.
+_OCR_ENGINE = OcrEngine.TESSERACT
 
 
 def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
@@ -828,6 +835,7 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 if disp == RegionDisposition.CAPTURE_CLIP_TEXT:
                     clip_captures[i] = {
                         "ocr_text": " ".join(clip_text.split()),
+                        "ocr_engine": str(_OCR_ENGINE),  # RFC-046 D2
                         "region": region,
                     }
                     logger.info(

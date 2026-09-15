@@ -229,6 +229,10 @@ class ExtractionState:
     rtl_decision: RtlDecision | None = None
     landscape_pages: list | None = None
     full_page_already_applied: bool = False
+    # RFC-046 D2: document-level OCR engine attribution. None means no OCR
+    # path ran for this document -- which on the default configuration is the
+    # common case, since Docling does no OCR on the primary pass.
+    ocr_engine: str | None = None
     supports_ocr: bool = False
 
     def __post_init__(self) -> None:

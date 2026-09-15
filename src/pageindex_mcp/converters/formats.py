@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 
+from ..picture_plane import OcrEngine
 from ..script import normalize_dashes
 from .docling_conv import _docling_converter, _repair_docling_tables
 
@@ -334,6 +335,10 @@ def rasterize_pdf_pages_fitz(pdf_path: str, dpi: int = 200) -> list[str]:
 # ---------------------------------------------------------------------------
 # tesseract_ocr_pdf_pages (lines 4048-4083)
 # ---------------------------------------------------------------------------
+
+
+#: RFC-046 D2 -- OCR site 2 of 5.
+_OCR_ENGINE = OcrEngine.TESSERACT
 
 
 async def tesseract_ocr_pdf_pages(pdf_path: str, langs: list[str]) -> str:
