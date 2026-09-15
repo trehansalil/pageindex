@@ -219,7 +219,11 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 4. A document whose verdict improves without an identifiable responsible deliverable SHALL block acceptance pending explanation — an unexplained improvement is as much a signal of a measurement defect as an unexplained regression.
 5. `CURRENT_PIPELINE_VERSION` (`config.py:15`) SHALL be bumped from 4 to 5 in the same commit as the first merged change that can reclassify the corpus, per RFC-014 D3. Remote Docling re-baselining does not apply (see Environment). *(2026-09-15: Wave 1 contains no such change — all of it is additive attribution — so the bump moves to the first Wave 3 deliverable. See task 1.9.)*
 6. The corpus gate SHALL be coordinated with RFC-041 task 3.5a, which owns the full-corpus verdict-diff baseline.
-7. The baseline run of criterion 1 SHALL be taken with `VERDICT_DOWNGRADE_ENABLED=true`, and each document's registry verdict SHALL be reconciled against its freshly written sidecar afterwards. *(Added 2026-09-15.)* The registry upsert is a max-verdict-priority CAS (`registry/queries.py:95-113`) that can only upgrade a verdict; `preprocess_client.py:177` and the MinIO write-through (`worker/registry_mirror.py:88`) both inherit it, and the flag that bypasses it defaults to false. Without this, a document Run 8 stored at PASS and the baseline scores FAIL keeps its PASS row, and criterion 3 above — movements reported in both directions, neither omitted — cannot be satisfied.
+7. Every before/after comparison in criteria 2–4 SHALL resolve a document's prior verdict by `doc_name` **and latest `processed_at`**, never by assuming one row per document, and the baseline report SHALL state how many superseded rows each document had. *(Added 2026-09-15; mechanism corrected same day — see below.)*
+
+   **Corrected.** This criterion was first written as "set `VERDICT_DOWNGRADE_ENABLED=true` so the verdict CAS cannot suppress a downgrade". That rationale is wrong. `doc_id` is a fresh `uuid.uuid4()` per ingestion (`client/indexer.py:1272`) and the upsert is `ON CONFLICT (doc_id)` (`registry/queries.py:53`), so a re-ingestion always INSERTs a new row and the verdict CAS never executes on this path. The CAS governs only the reconcile and retry paths, which re-upsert an existing `doc_id`. The flag is set for the baseline anyway — harmless, and correct for those paths — but it is not what protects criterion 3.
+
+   The real hazard is identity, and it is worse. The registry has no per-filename key: each ingestion adds a row and a full set of `processed/{doc_id}.*` objects, and nothing supersedes the old ones. `سياسة حوكمة و إدارة البيانات - Copy.pdf` already holds **four** rows in the working bucket. A naive "previous verdict for this file" lookup can therefore return any of them, and a naive count of corpus verdicts double-counts.
 
 ### Requirement 10: Zone 2 Closure — post-NFKC ScriptContext call sites (D10)
 
@@ -364,6 +368,20 @@ In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus v
 - The density gate will count content it previously ignored, moving some `suspect_density` verdicts without the floor having moved.
 - **The engine question becomes decidable.** After the Phase 5 corpus run we will know which failures survive correct language selection, correct arbitration, correct flat verdicts, and a correct PF detector. RFC-047 is written against that residue, or not written at all.
 - Zone 2 (`normalize-before-detect null-detector lattice`, owned by RFC-040, successor RFC-041 D10c) overlaps D5. Ownership must be coordinated rather than silently claimed — see OQ2.
+
+### Out-of-scope defect found while preparing the 1.C baseline (2026-09-15)
+
+**Re-ingestion orphans a full copy of every derived artifact, and HR2 erasure cannot reach it.** Not RFC-046's to fix; recorded because it is a Hard Rule surface and it distorts any corpus measurement taken from the registry.
+
+`doc_id` is a fresh `uuid.uuid4()` per ingestion (`client/indexer.py:1272`). The hash cache normally prevents a second ingestion of an unchanged file by returning the existing `doc_id` (`indexer.py:1472-1481`), so duplicates appear only when that cache misses for a file already in the store — a cleared or evicted Redis `pageindex:hashes`, or a changed filename. When it does miss, the run writes a new row plus a complete new set of `processed/{doc_id}.json`, `.flat.json`, `.meta.json` and `figures/{doc_id}/*`, and **nothing supersedes or removes the previous set**.
+
+`delete_doc` is keyed on a single `doc_id` (`storage/documents.py:180`), so erasing "the document" purges only the newest copy. Every earlier copy retains the full document text and remains addressable. The working bucket currently holds **four** copies of `سياسة حوكمة و إدارة البيانات - Copy.pdf`; the 1.C run adds one more copy for each of the 25 corpus documents, because the hash cache was deliberately cleared for it.
+
+Two consequences:
+1. **HR2 (right-to-erasure must cascade across every derived store) is not satisfied for any re-ingested document.** A DSR honoured through `delete_doc` leaves the orphans behind.
+2. Any corpus tally read from `doc_registry` or from `processed/*.meta.json` double-counts re-ingested documents. This is why [R9.7](#requirement-9-attribution-gated-corpus-validation) requires resolving by `doc_name` + latest `processed_at`.
+
+Suggested owner: a follow-up RFC that either derives `doc_id` deterministically from `sha256`, or supersedes prior `doc_id`s for the same `doc_name` at persist time, or extends the erasure manifest to sweep by `doc_name`.
 
 ## Open Questions
 
