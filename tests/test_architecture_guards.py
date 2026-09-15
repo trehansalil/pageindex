@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+from typing import ClassVar
 
 import pytest
 
@@ -1265,4 +1266,267 @@ class TestEligibilityPredicateSymmetry:
             "_recover_rtl_repair and _recover_rtl_flat_compare must use "
             "TreeDefect.RTL_REVERSAL in _all_defects(state) for the "
             f"RTL_REVERSAL membership check. Violations: {violations}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 task 1.6 -- OCR attribution exhaustiveness (R2.8 / Property 2)
+# ---------------------------------------------------------------------------
+
+
+class TestOcrAttributionExhaustiveness:
+    """R2.8/Property 2 (RFC-046): OCR reachability is a closed world.
+
+    ``tests/test_rfc046_attribution.py`` checks that each of the five *known*
+    OCR invocation sites declares an engine. That is an open-world check: it
+    cannot fail when a sixth site appears. These guards close the world -- any
+    new module that reaches Tesseract, by calling one of the five entry points
+    or by resolving the binary itself, fails here until it is attributed.
+
+    Every prior enumeration of these sites found four and missed
+    ``_landscape_rasterize_rotate_reextract``, which consults no decision
+    function at all. That is the failure mode being guarded against.
+    """
+
+    #: Entry point symbol -> module (relative to src/) that defines it.
+    OCR_ENTRY_POINTS: ClassVar[dict[str, str]] = {
+        "_tesseract_ocr_image": "pageindex_mcp/converters/pictures.py",
+        "tesseract_ocr_pdf_pages": "pageindex_mcp/converters/formats.py",
+        "_attempt_tesseract_raster_recovery": "pageindex_mcp/client/images.py",
+        "_landscape_rasterize_rotate_reextract": "pageindex_mcp/converters/pictures.py",
+        # Docling-mediated: constructed, not defined by us.
+        "TesseractCliOcrOptions": "pageindex_mcp/converters/docling_conv.py",
+    }
+
+    #: Modules permitted to call an OCR entry point. Adding a module here is
+    #: the deliberate act that must be paired with attributing its engine.
+    OCR_REACHING_MODULES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "pageindex_mcp/converters/pictures.py",
+            "pageindex_mcp/converters/formats.py",
+            "pageindex_mcp/converters/docling_conv.py",
+            "pageindex_mcp/converters/pipeline.py",
+            "pageindex_mcp/client/images.py",
+            "pageindex_mcp/client/recovery.py",
+        }
+    )
+
+    @staticmethod
+    def _src_files() -> list[pathlib.Path]:
+        return sorted((PROJECT_ROOT / "src").rglob("*.py"))
+
+    @staticmethod
+    def _rel(path: pathlib.Path) -> str:
+        return path.relative_to(PROJECT_ROOT / "src").as_posix()
+
+    def test_every_ocr_entry_point_is_where_this_guard_expects_it(self):
+        """A renamed or relocated entry point must break this test loudly
+        rather than quietly shrinking the set of sites being guarded."""
+        misplaced = []
+        for symbol, module in self.OCR_ENTRY_POINTS.items():
+            src = (PROJECT_ROOT / "src" / module).read_text(encoding="utf-8")
+            if symbol not in src:
+                misplaced.append(f"{symbol} not found in {module}")
+
+        assert not misplaced, (
+            "R2.8/Property 2 (RFC-046): an OCR entry point moved or was "
+            "renamed. Update OCR_ENTRY_POINTS *and* the site table in "
+            "tests/test_rfc046_attribution.py together, or the attribution "
+            f"guard silently stops guarding it. {misplaced}"
+        )
+
+    def test_no_unattributed_module_reaches_an_ocr_entry_point(self):
+        """Closed-world: the set of modules calling into Tesseract is frozen."""
+        callers: dict[str, list[str]] = {}
+        for py_file in self._src_files():
+            rel = self._rel(py_file)
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else func.attr
+                    if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name in self.OCR_ENTRY_POINTS:
+                    callers.setdefault(rel, []).append(f"{name}:{node.lineno}")
+
+        unexpected = {k: v for k, v in callers.items() if k not in self.OCR_REACHING_MODULES}
+        assert not unexpected, (
+            "R2.8/Property 2 (RFC-046): a module not on the attribution "
+            "allowlist now reaches an OCR entry point. Every OCR path must "
+            "record which engine produced its text, or the verdict it "
+            f"produces is unattributable (HR5). New call sites: {unexpected}"
+        )
+
+    def test_tesseract_binary_is_resolved_only_by_allowlisted_modules(self):
+        """A module that shells out to ``tesseract`` directly bypasses the
+        entry points above entirely -- catch that separately."""
+        offenders: list[str] = []
+        allowed = self.OCR_REACHING_MODULES | {"pageindex_mcp/converters/ocr_langs.py"}
+        for py_file in self._src_files():
+            rel = self._rel(py_file)
+            if rel in allowed:
+                continue
+            for lineno, line in enumerate(py_file.read_text(encoding="utf-8").splitlines(), 1):
+                if 'which("tesseract")' in line or "which('tesseract')" in line:
+                    offenders.append(f"{rel}:{lineno}")
+
+        assert not offenders, (
+            "R2.8/Property 2 (RFC-046): these modules resolve the tesseract "
+            f"binary without being on the attribution allowlist: {offenders}"
+        )
+
+
+class TestNoVerdictPersistedWithoutAttribution:
+    """R2.8/Property 2 (RFC-046): both persistence paths attribute.
+
+    The tree and flat persistence paths have repeatedly disagreed about what
+    they record -- ``fired_prongs`` reached neither before this RFC, and the
+    image-specific ``GarbleConfig`` still reaches only the tree path. Assert
+    the attribution write in both, so the next divergence fails here.
+    """
+
+    PERSISTENCE_METHODS: ClassVar[tuple[str, ...]] = (
+        "_persist_tree_result",
+        "_persist_flat_result",
+    )
+
+    @staticmethod
+    def _method_source(name: str) -> str:
+        from pageindex_mcp.client.indexer import CustomPageIndexClient
+
+        return textwrap.dedent(inspect.getsource(getattr(CustomPageIndexClient, name)))
+
+    @pytest.mark.parametrize("method", PERSISTENCE_METHODS)
+    def test_persistence_path_records_the_ocr_engine(self, method):
+        src = self._method_source(method)
+        assert "state.ocr_engine" in src, (
+            f"R2.8 (RFC-046): {method} persists a verdict without recording "
+            "which OCR engine produced the text it judged. An unattributed "
+            "verdict cannot be compared across engines, which is the whole "
+            "premise of the RFC-047 fallback gate."
+        )
+
+    @pytest.mark.parametrize("method", PERSISTENCE_METHODS)
+    def test_persistence_path_records_the_fired_garble_prongs(self, method):
+        src = self._method_source(method)
+        assert "garble_prongs" in src, (
+            f"R2.6 (RFC-046): {method} must persist the fired prong set. "
+            "Without it a stored 'garbling' verdict cannot be explained "
+            "without re-running the pipeline."
+        )
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 task 1.7 (adopted from RFC-042 task 4.2) -- no config double-sourcing
+# ---------------------------------------------------------------------------
+
+
+class TestNoConfigDoubleSourcing:
+    """R9/D9 (RFC-046): a variable snapshotted by PipelineConfig must not also
+    be read from the environment elsewhere.
+
+    ``TestHotPathConfigAccessGuard`` (RFC-042 D4) scans six named files. That
+    named-file design is what let ``client/images.py`` -- not on the list --
+    keep two import-time reads of variables PipelineConfig already owns. This
+    guard is closed-world instead: it derives the owned set from ``from_env``
+    and scans all of ``src/``, so the next such read fails wherever it lands.
+
+    Why double-sourcing is a defect and not a style preference: a module-level
+    read happens once at import, before ``reset_pipeline_config()`` can refresh
+    anything. The snapshot and the constant then disagree for the life of the
+    process, and which one wins depends on which call path you are on.
+    """
+
+    #: Pre-existing violations, recorded rather than silently tolerated.
+    #: Both are module-level constants re-exported into ``indexer.py`` and
+    #: ``recovery.py`` and monkeypatched per-module by roughly eight tests
+    #: (``tests/test_image_blocks.py:901-902`` patches two modules at once to
+    #: work around exactly this). Routing them through PipelineConfig is a
+    #: real refactor, not a line edit, and no RFC-046 task owns it -- so it is
+    #: pinned here where it is visible instead of hidden behind a file list.
+    KNOWN_DOUBLE_SOURCED: ClassVar[frozenset[tuple[str, str]]] = frozenset(
+        {
+            ("client/images.py", "TREE_PATH_PICTURE_SPLICE_ENABLED"),
+            ("client/images.py", "IMAGE_STANDALONE_PIPELINE_ENABLED"),
+        }
+    )
+
+    @staticmethod
+    def _pipeline_config_owned_env_vars() -> set[str]:
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        tree = ast.parse((src_root / "config.py").read_text(encoding="utf-8"))
+        from_env = next(
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "from_env"
+        )
+        ctor = next(
+            n
+            for n in ast.walk(from_env)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "cls"
+        )
+        owned: set[str] = set()
+        for kw in ctor.keywords:
+            for node in ast.walk(kw.value):
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and node.value.isupper()
+                    and "_" in node.value
+                ):
+                    owned.add(node.value)
+        return owned
+
+    @classmethod
+    def _external_reads(cls) -> dict[tuple[str, str], int]:
+        owned = cls._pipeline_config_owned_env_vars()
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        found: dict[tuple[str, str], int] = {}
+        for py_file in sorted(src_root.rglob("*.py")):
+            rel = py_file.relative_to(src_root).as_posix()
+            if rel == "config.py":
+                continue
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                    continue
+                if node.func.attr not in ("getenv", "get"):
+                    continue
+                target = node.func.value
+                reads_env = (
+                    isinstance(target, ast.Attribute) and target.attr == "environ"
+                ) or (isinstance(target, ast.Name) and target.id in ("os", "environ"))
+                if not reads_env or not node.args:
+                    continue
+                arg = node.args[0]
+                if isinstance(arg, ast.Constant) and arg.value in owned:
+                    found[(rel, arg.value)] = node.lineno
+        return found
+
+    def test_owned_env_vars_are_not_read_outside_pipeline_config(self):
+        new = {
+            f"{rel}:{lineno} reads {var}"
+            for (rel, var), lineno in self._external_reads().items()
+            if (rel, var) not in self.KNOWN_DOUBLE_SOURCED
+        }
+        assert not new, (
+            "R9/D9 (RFC-046): these modules read an environment variable that "
+            "PipelineConfig already snapshots. Read it from the config object "
+            "instead -- a second read cannot be refreshed by "
+            f"reset_pipeline_config() and will drift from the snapshot. {sorted(new)}"
+        )
+
+    def test_known_double_sourced_reads_still_exist(self):
+        """Keep the exemption honest: once a pinned read is removed, it must
+        leave this list rather than sitting here implying a defect that is
+        already fixed."""
+        current = set(self._external_reads())
+        stale = self.KNOWN_DOUBLE_SOURCED - current
+        assert not stale, (
+            "R9/D9 (RFC-046): these entries are no longer double-sourced and "
+            f"must be deleted from KNOWN_DOUBLE_SOURCED: {sorted(stale)}"
         )

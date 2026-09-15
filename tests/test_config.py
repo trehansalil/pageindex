@@ -322,3 +322,135 @@ def test_new_zone_flags_are_declared_fields():
     names = {f.name for f in dataclasses.fields(PipelineConfig)}
     assert "agpl_structural_fallback_enabled" in names
     assert "remote_version_enforce" in names
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 task 1.7 (adopted from RFC-042 task 4.2) -- config consistency
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_config_bool_env_map() -> dict[str, str]:
+    """Map every ``bool`` field of PipelineConfig to the env var it reads.
+
+    Derived from the AST of ``PipelineConfig.from_env`` rather than hand-listed,
+    so a boolean field added later is covered by the property test below without
+    anyone remembering to extend a literal. That is the point: the parse
+    asymmetry this test exists to catch survived precisely because each new flag
+    was written by copying a neighbour, and nothing compared them.
+    """
+    import ast
+    import dataclasses
+    import inspect
+    import pathlib
+
+    from pageindex_mcp.config import PipelineConfig
+
+    tree = ast.parse(pathlib.Path(inspect.getfile(PipelineConfig)).read_text(encoding="utf-8"))
+    from_env = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "from_env"
+    )
+    ctor = next(
+        n
+        for n in ast.walk(from_env)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "cls"
+    )
+    bool_fields = {f.name for f in dataclasses.fields(PipelineConfig) if f.type in ("bool", bool)}
+
+    mapping: dict[str, str] = {}
+    for kw in ctor.keywords:
+        if kw.arg not in bool_fields:
+            continue
+        env_names = [
+            n.value
+            for n in ast.walk(kw.value)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.isupper()
+        ]
+        if env_names:
+            # First literal is the field's own var; later ones are fallbacks
+            # (ocr_escalation_low_content falls back to OCR_ESCALATION_GARBLE).
+            mapping[kw.arg] = env_names[0]
+    return mapping
+
+
+_BOOL_ENV_MAP = _pipeline_config_bool_env_map()
+
+#: Fields whose parse predicate diverges from ``_envbool``. RFC-046 task 3.5
+#: fixes PRE_GARBLE_FORCE_OCR_ENABLED; the other two were found by this test
+#: and are recorded here so the divergence is visible rather than implied.
+#: Each is ``strict``, so fixing one turns its xfail into a failure that
+#: forces this list to shrink.
+_KNOWN_PARSE_DIVERGENCES = frozenset(
+    {
+        "pre_garble_force_ocr_enabled",
+        "garble_short_text_default",
+        "garble_flat_markdown_normalize",
+    }
+)
+
+
+def _bool_field_params():
+    for field, var in sorted(_BOOL_ENV_MAP.items()):
+        marks = (
+            [
+                pytest.mark.xfail(
+                    strict=True,
+                    reason=(
+                        f"{var} parses with `.lower() == 'true'` instead of "
+                        "`_envbool`, so `=1`, `=yes` and padded values are "
+                        "silent no-ops (RFC-046 D8 / task 3.5)"
+                    ),
+                )
+            ]
+            if field in _KNOWN_PARSE_DIVERGENCES
+            else []
+        )
+        yield pytest.param(field, var, marks=marks, id=field)
+
+
+def test_every_bool_field_is_covered_by_the_parse_property():
+    """Guard the guard: no boolean field may escape the property test below.
+
+    If ``from_env`` stops passing a boolean field through a literal env-var
+    name -- or a new field is added by another route -- the parametrisation
+    would silently shrink and the property would stop being a property.
+    """
+    import dataclasses
+
+    from pageindex_mcp.config import PipelineConfig
+
+    bool_fields = {f.name for f in dataclasses.fields(PipelineConfig) if f.type in ("bool", bool)}
+    uncovered = bool_fields - set(_BOOL_ENV_MAP)
+    assert not uncovered, (
+        "R9/D9 (RFC-046): these PipelineConfig boolean fields are not reachable "
+        f"from a literal env var in from_env, so their parse is unguarded: {sorted(uncovered)}"
+    )
+
+
+@pytest.mark.parametrize("field,var", _bool_field_params())
+def test_bool_fields_share_one_parse_predicate(monkeypatch, field, var):
+    """Property (RFC-042 4.2 / RFC-046 R9): every PipelineConfig boolean
+    answers to the same spellings.
+
+    An operator who writes ``FLAG=1`` reasonably expects the flag on. Where a
+    field's default is ``true``, a divergent parse is worse than inert -- it
+    reads ``1`` as falsy and *disables* the feature the operator was enabling.
+    """
+    from pageindex_mcp.config import PipelineConfig
+
+    truthy = ("1", "true", "TRUE", "True", "yes", " true ")
+    falsy = ("0", "false", "no", "")
+
+    divergent = []
+    for raw in truthy:
+        monkeypatch.setenv(var, raw)
+        if getattr(PipelineConfig.from_env(), field) is not True:
+            divergent.append(f"{var}={raw!r} -> False, expected True")
+    for raw in falsy:
+        monkeypatch.setenv(var, raw)
+        if getattr(PipelineConfig.from_env(), field) is not False:
+            divergent.append(f"{var}={raw!r} -> True, expected False")
+
+    assert not divergent, (
+        f"R9/D8 (RFC-046): {field} does not use the shared `_envbool` "
+        f"predicate. Divergences: {divergent}"
+    )
