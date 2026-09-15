@@ -1170,6 +1170,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         }
         if _effective_config_at_job_start is not None:
             flat_meta["effective_config_at_job_start"] = _effective_config_at_job_start
+        # RFC-046 D2: attribution. Without these, a verdict cannot be tied to
+        # the engine that produced its text or the prong that condemned it,
+        # which is what makes corpus diffs unexplainable.
+        if state.ocr_engine:
+            flat_meta["ocr_engine"] = state.ocr_engine
+        if state.gate_result is not None and state.gate_result.signals is not None:
+            _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
+            if _prongs:
+                flat_meta["garble_prongs"] = sorted(_prongs)
         await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
         FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
 
@@ -1321,6 +1330,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             meta["promotion_paths_matched"] = promotion_paths
         if state.gate_result is not None and state.gate_result.all_defects:
             meta["all_defects"] = sorted(d.value for d in state.gate_result.all_defects)
+        # RFC-046 D2: attribution. Without these, a verdict cannot be tied to
+        # the engine that produced its text or the prong that condemned it,
+        # which is what makes corpus diffs unexplainable.
+        if state.ocr_engine:
+            meta["ocr_engine"] = state.ocr_engine
+        if state.gate_result is not None and state.gate_result.signals is not None:
+            _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
+            if _prongs:
+                meta["garble_prongs"] = sorted(_prongs)
         if _effective_config_at_job_start is not None:
             meta["effective_config_at_job_start"] = _effective_config_at_job_start
         if ext == ".pdf":

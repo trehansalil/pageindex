@@ -271,6 +271,10 @@ class TreeSignals:
     is_reordered: bool
     expected_min_depth: int
     primary_text: str = ""
+    # RFC-046 D2/R2.5: which garble prongs fired. Computed on every evaluation
+    # and previously discarded by the surrounding bool(), leaving no stored
+    # record of WHY a document was called garbled.
+    garble_prongs: frozenset[str] = frozenset()
 
     @classmethod
     def from_tree(
@@ -324,12 +328,18 @@ class TreeSignals:
             source="tree_signals",
         )
         _effective_garble_config = garble_config if garble_config is not None else _garble_config
-        garbled = bool(structure) and bool(detect_garble(
-            flat_text,
-            script_context=_ctx,
-            config=_effective_garble_config,
-            blob_kind=BlobKind.TREE_TEXT,
-        ))
+        _garble_report = (
+            detect_garble(
+                flat_text,
+                script_context=_ctx,
+                config=_effective_garble_config,
+                blob_kind=BlobKind.TREE_TEXT,
+            )
+            if structure
+            else None
+        )
+        garbled = bool(_garble_report)
+        garble_prongs = _garble_report.fired_prongs if _garble_report is not None else frozenset()
         if garbled:
             gr = _garble_ratio(flat_text, expected_script=_eff_script, script_context=_ctx)
             effectively_garbled = gr >= garble_threshold
@@ -349,6 +359,7 @@ class TreeSignals:
             is_reordered=is_reordered,
             expected_min_depth=expected_min_depth,
             primary_text=flat_text,
+            garble_prongs=garble_prongs,
         )
 
 

@@ -177,3 +177,75 @@ class TestConverterNameIsSourcedNotRestated:
         assert "state.ocr_engine" in src, (
             "the OCR retry path must record state.ocr_engine (R2.3)"
         )
+
+
+class TestGarbleProngsSurviveToTheSidecar:
+    """D2 / R2.5: `fired_prongs` is computed on every garble evaluation and thrown away.
+
+    `detect_garble` returns a `GarbleReport` naming which of thirteen prongs
+    condemned a document, but `TreeSignals.from_tree` wrapped the call in
+    `bool(...)` and `_persist_tree_result` writes only `all_defects`. So no
+    stored artifact says *why* a document was called garbled.
+
+    That is why Doc 22 cannot be diagnosed from the store: `presentation_forms`
+    (a verdict defect, fixed by D5) and `single_letter_fragments` (genuine
+    Arabic shaping loss, out of scope) are indistinguishable after the fact,
+    and they have opposite fixes.
+    """
+
+    def test_tree_signals_carries_the_fired_prongs(self):
+        import dataclasses
+
+        from pageindex_mcp.helpers.tree_validation import TreeSignals
+
+        names = {f.name for f in dataclasses.fields(TreeSignals)}
+        assert "garble_prongs" in names
+
+    def test_clean_text_reports_no_prongs(self):
+        from pageindex_mcp.helpers.tree_validation import TreeSignals
+
+        structure = [{"title": "Introduction", "text": "This is clean English prose. " * 20}]
+        sig = TreeSignals.from_tree(structure)
+        assert sig.garbled is False
+        assert sig.garble_prongs == frozenset()
+
+    def test_garbled_text_names_the_prong_that_fired(self):
+        from pageindex_mcp.helpers.tree_validation import TreeSignals
+
+        # PUA codepoints are an unambiguous, script-independent garble signal.
+        structure = [{"title": "X", "text": " " * 200}]
+        sig = TreeSignals.from_tree(structure)
+        assert sig.garbled is True
+        assert sig.garble_prongs, "a garbled document must name at least one prong"
+        assert all(isinstance(p, str) for p in sig.garble_prongs)
+
+
+class TestSidecarCarriesAttribution:
+    """D2 / R2.5-R2.7: both persistence paths must record engine and prongs.
+
+    `_persist_tree_result` and `_persist_flat_result` did not agree on what
+    they recorded. Wave 1 makes both carry the same attribution fields, so a
+    corpus diff is explainable regardless of which route a document took.
+    """
+
+    @staticmethod
+    def _src() -> str:
+        import pathlib
+
+        import pageindex_mcp
+
+        return (pathlib.Path(pageindex_mcp.__file__).parent / "client" / "indexer.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_tree_path_records_garble_prongs(self):
+        assert 'meta["garble_prongs"]' in self._src()
+
+    def test_tree_path_records_ocr_engine(self):
+        assert 'meta["ocr_engine"]' in self._src()
+
+    def test_flat_path_records_garble_prongs(self):
+        assert 'flat_meta["garble_prongs"]' in self._src()
+
+    def test_flat_path_records_ocr_engine(self):
+        assert 'flat_meta["ocr_engine"]' in self._src()
