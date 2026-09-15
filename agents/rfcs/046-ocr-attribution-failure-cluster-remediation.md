@@ -269,6 +269,24 @@ This is the **third** distinct instance of one pattern — RFC-040 D6, RFC-045 `
 
 ## Implementation Plan
 
+
+### Phase naming across the three artifacts
+
+Three vocabularies are in use and they describe the same work. This table is the translation; it appears identically in the plan, the RFC and the tasks file.
+
+| Plan (§6) | RFC (Implementation Plan) | Tasks | Deliverables |
+|---|---|---|---|
+| **P0** · Baseline truth | Phase 0 — Baseline | **Wave 1** | D2, D3, RFC-042 4.2 |
+| **P0** (evidence arm) | Phase 1 — Evidence | **Wave 2** | D1 |
+| **P0.5** · Cluster fixes | Phase 2 | **Wave 3** | D5, D8, D10 |
+| **P0.5** | Phase 3 | **Wave 4** | D6 |
+| **P0.5** | Phase 4 | **Wave 5** | D7 |
+| **P0.5** | Phase 4 | **Wave 6** | D4 |
+| *(beyond plan §6)* | Phase 5 | **Wave 7** | D9 |
+| *(beyond plan §6)* | — | **Wave 8** | RFC-047 go/no-go |
+
+In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus validation and the RFC-047 decision, which the plan's §6 framing did not cover. RFC-046 scopes P0 and P0.5 only; the plan's P1–P4 belong to RFC-047 if it is written.
+
 ### Sequencing
 
 1. **Phase 0 — Baseline** (D2, D3, and RFC-042 4.2 per D9). Attribution must exist before anything can move, or movements cannot be explained. Corpus run at the end of this phase is the graded baseline.

@@ -353,6 +353,23 @@ The RFC-036 D7 clause is a **pre-authorised trigger** for reopening the multi-en
 | **P3 · Shadow** | Surya behind the existing `services/` pattern, with `/version` extended to carry `commit_sha`/`pipeline_version` for `remote.py:53-69` skew enforcement, plus auth and a `docker-compose` entry. Triggers U1/U4/U7 in shadow. Record yield, confidence, latency, agreement per doc. No routing decisions | Real distributions, full corpus, full page counts |
 | **P4 · Activate** | Confidence-gated fallback (U3), scoped to scanned/image pages and picture regions, **excluded from table regions** (B4). Region-class routing (U5) | Corpus run with a conservative per-doc projection table |
 
+### Phase naming across the three artifacts
+
+Three vocabularies are in use and they describe the same work. This table is the translation; it appears identically in the plan, the RFC and the tasks file.
+
+| Plan (§6) | RFC (Implementation Plan) | Tasks | Deliverables |
+|---|---|---|---|
+| **P0** · Baseline truth | Phase 0 — Baseline | **Wave 1** | D2, D3, RFC-042 4.2 |
+| **P0** (evidence arm) | Phase 1 — Evidence | **Wave 2** | D1 |
+| **P0.5** · Cluster fixes | Phase 2 | **Wave 3** | D5, D8, D10 |
+| **P0.5** | Phase 3 | **Wave 4** | D6 |
+| **P0.5** | Phase 4 | **Wave 5** | D7 |
+| **P0.5** | Phase 4 | **Wave 6** | D4 |
+| *(beyond plan §6)* | Phase 5 | **Wave 7** | D9 |
+| *(beyond plan §6)* | — | **Wave 8** | RFC-047 go/no-go |
+
+In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus validation and the RFC-047 decision, which the plan's §6 framing did not cover. RFC-046 scopes P0 and P0.5 only; the plan's P1–P4 belong to RFC-047 if it is written.
+
 **[R2] Scope note.** v1 put Docs 17 and 14 out of scope as downstream problems. Having traced them, **both are now in scope — in P0.5, not P4**, because both are defects in code RFC-046 must touch anyway (the arbitration artifact, and the flat verdict path). What stays out of scope is *chart-region classification* for Doc 14's underlying extraction weakness, which is genuinely a Docling capability gap.
 
 **[R2] One process item:** `CURRENT_PIPELINE_VERSION` (`config.py:15`) must be bumped in the same commit as any OCR or garble change that could reclassify the corpus — RFC-014 D3 — and `remote.py:62` compares it against the remote service.
