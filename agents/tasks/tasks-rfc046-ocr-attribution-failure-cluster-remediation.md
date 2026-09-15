@@ -64,7 +64,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 - [ ] 1. OCR Attribution & Baseline (D2, D3)
 
-  - [ ] 1.1 Introduce `OcrEngine` and thread it through `OcrDecision`
+  - [x] 1.1 Introduce `OcrEngine` and thread it through `OcrDecision`
 
     - Add `class OcrEngine(StrEnum)` to `picture_plane.py` with exactly one member, `TESSERACT = "tesseract"`. Add a comment that RFC-047 owns further members.
     - Add `engine: OcrEngine = OcrEngine.TESSERACT` to the frozen `OcrDecision` dataclass (`picture_plane.py:35`), defaulted so existing constructors are unaffected.
@@ -73,7 +73,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R2.1](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [R2.2](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
     - _Dependencies: none (foundation task)_
 
-  - [ ] 1.2 Label all five OCR invocation sites
+  - [x] 1.2 Label all five OCR invocation sites
 
     - Site 1 — `converters/pictures.py:208` `_tesseract_ocr_image` (chokepoint for `pictures.py:657`, `pictures.py:892`, `formats.py:371`, `indexer.py:915`). **Preserve its never-raise contract** (`tests/test_converters.py:916-1005`) and its patchability by name (`:1623`).
     - Site 2 — `converters/formats.py:339` `tesseract_ocr_pdf_pages`.
@@ -83,14 +83,14 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R2.3](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
     - _Dependencies: 1.1_
 
-  - [ ] 1.3 Stop hardcoding `state.used_converter`
+  - [x] 1.3 Stop hardcoding `state.used_converter`
 
     - Replace the literal `state.used_converter = "docling"` at `recovery.py:341` with the converter actually used on that path.
     - Verify the remote and local branches of `_execute_ocr_retry` (`recovery.py:319-338`) both record correctly.
     - _Requirements: [R2.4](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
     - _Dependencies: 1.1_
 
-  - [ ] 1.4 Persist `fired_prongs` on both persistence paths
+  - [x] 1.4 Persist `fired_prongs` on both persistence paths
 
     - `GarbleReport.fired_prongs` (`garble.py:533-535`) is computed on every garble evaluation and discarded. `_persist_tree_result` writes only `all_defects` (`indexer.py:1322-1323`).
     - Persist the fired prong set for any document reaching a garble verdict, on `_persist_tree_result` **and** `_persist_flat_result` — the two paths currently disagree on what they record.
@@ -98,7 +98,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R2.5](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [R2.6](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
     - _Dependencies: 1.1_
 
-  - [ ] 1.5 Surface attribution in the sidecar and metrics
+  - [x] 1.5 Surface attribution in the sidecar and metrics
 
     - Add configuration-valued attribution fields to `_SIDECAR_FIELDS` in `effective_config_snapshot()`; add observation-valued fields to the per-document sidecar.
     - Add an engine label to `OCR_ESCALATION_TOTAL`.
@@ -106,7 +106,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R2.7](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [R2.9](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [DP-D2](design-rfc046-ocr-attribution-failure-cluster-remediation#d2-end-to-end-ocr-attribution)_
     - _Dependencies: 1.2, 1.3, 1.4_
 
-  - [ ] 1.6 Architecture guards for attribution exhaustiveness
+  - [x] 1.6 Architecture guards for attribution exhaustiveness
 
     - Write a guard enumerating the five OCR sites by qualified name and asserting each labels its engine — so a sixth site added later fails rather than silently escaping attribution.
     - Write a guard asserting no verdict is persisted without an engine label.
@@ -114,7 +114,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R2.8](046-ocr-attribution-failure-cluster-remediation#requirement-2-end-to-end-ocr-attribution), [Property 1](design-rfc046-ocr-attribution-failure-cluster-remediation#property-1-single-live-ocr-decision-call-site), [Property 2](design-rfc046-ocr-attribution-failure-cluster-remediation#property-2-ocr-site-attribution-exhaustiveness)_
     - _Dependencies: 1.2, 1.5_
 
-  - [ ] 1.7 Adopt RFC-042 task 4.2 — config consistency property test
+  - [x] 1.7 Adopt RFC-042 task 4.2 — config consistency property test
 
     - Property test asserting every `PipelineConfig` boolean field parses by the same predicate, and that no hot-path module re-reads a variable already snapshotted.
     - This is the guard that would have caught both the `PRE_GARBLE_FORCE_OCR_ENABLED` double-sourcing (B1) and its parse asymmetry (task 3.2).
@@ -122,9 +122,10 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
     - _Dependencies: none (parallel with 1.1–1.6)_
 
-  - [ ] 1.8 Correct the Run-8 baseline (D3)
+  - [x] 1.8 Correct the Run-8 baseline (D3)
 
     - Recount the tally from the per-document scorecard rows of `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md`. The pre-RFC plan's recount gives 13 PASS / 6 MARGINAL / 6 FAIL against the stated 14/6/5, with Doc 18 omitted — **confirm or refute before amending; this is a verification task, not a foregone conclusion.**
+    - **Done 2026-09-15.** Count confirmed (13/6/6); "Doc 18 omitted" refuted — all 25 rows present. Cause located in the `:175` ledger (post-RFC-045 row is one FAIL short with a phantom ERROR; final row double-counts Doc 6's ERROR→FAIL). Two further findings: the Regressions table carries superseded verdicts for docs 12, 16, 19, 20; the `:5` branch field is defensible (shared tip `3c7eda1`) and was annotated, not changed.
     - Correct `:5`, which records `Branch: ICR-97-rfc44-recovery-dispatch-wiring` for a run performed elsewhere.
     - Record as a dated addendum, not a silent edit (RFC-025 D4 precedent).
     - _Requirements: [R3.1](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [R3.2](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [R3.3](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [DP-D3](design-rfc046-ocr-attribution-failure-cluster-remediation#d3-corrected-run-8-baseline)_
@@ -134,6 +135,8 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
     - Bump `config.py:15` from 4 to 5 in the same commit as the first merged corpus-reclassifying change (RFC-014 D3).
     - **Remote re-baselining does not apply (2026-09-15)** — Docling runs in-process, so the `client/remote.py:62` handshake is out of the loop.
+    - **Deferred out of Wave 1 (2026-09-15), by the rule this task cites.** Wave 1 lands no change that can reclassify the corpus: `OcrEngine`, the engine and prong fields, and the sidecar writes are all additive, and `DOCLING_CONVERTER_NAME` is byte-identical to the literal it replaces (frozen by `tests/test_rfc046_attribution.py::test_canonical_converter_name_exists`), so `_converter_contract` receives the same input as before. Bumping now would falsely mark every Run-8 row stale to `_SWEEP_CANDIDATES_SQL` (`registry/queries.py:232`) while no behaviour had changed. **Bump in the commit that lands the first Wave 3 deliverable instead.**
+    - Note for whoever does bump it: the comment at `client/indexer.py:1250,1412` says the override applies "when VERDICT_DOWNGRADE_ENABLED **and pipeline_version is strictly newer**", but the code tests only the flag. The version half was never implemented. Either implement it or correct the comment when bumping — do not assume the version guard is live.
     - _Requirements: [R9.5](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
     - _Dependencies: 1.5_
 
@@ -142,6 +145,9 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs.
     - This run is the graded baseline for every subsequent wave. **No behavioural deliverable (Waves 3–6) may merge until this gate is checked.**
     - Verify: `uv run pytest` green; architecture guards pass; sidecar schema test passes.
+    - **PREREQUISITE — set `VERDICT_DOWNGRADE_ENABLED=true` for the baseline run (found 2026-09-15, task 1.9).** The registry upsert is a max-verdict-priority CAS (`registry/queries.py:95-113`, `VERDICT_PRIORITY` PASS=3 > MARGINAL=2 > FAIL=1 > ERROR=0): a verdict can only be upgraded, never downgraded, across re-ingestion cycles. `preprocess_client.py:177` writes through that same CAS, and `worker/registry_mirror.py:88` mirrors it onto the MinIO sidecar. `VERDICT_DOWNGRADE_ENABLED` defaults to **false** (`config.py`), and it is the only thing that sets `force_verdict_override` (`indexer.py:1254,1415`).
+    - Consequence if left unset: a document that Run 8 stored at PASS and that the attributed baseline scores FAIL **keeps its PASS row**. The baseline would record improvements and silently suppress regressions — inverting [R9.3](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), which requires movements in both directions and forbids omitting either. Wiping `hashes/processed_hashes.json` does not help: that forces re-processing, not re-recording.
+    - Verify after the run: for each of the 25 documents, the registry row's `verdict` matches the verdict in the freshly written sidecar. Any mismatch means the CAS suppressed a downgrade and the baseline is not usable.
     - _Requirements: [R9.1](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour)_
     - _Dependencies: 1.1–1.9_
 

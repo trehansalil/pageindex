@@ -156,7 +156,9 @@ Persistence gains the attribution fields on **both** paths — `_persist_tree_re
 
 #### D3: Corrected Run-8 Baseline
 
-**Problem:** `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md` states a tally of 14 PASS / 6 MARGINAL / 5 FAIL. Recounting the per-document scorecard rows in the pre-RFC plan gives 13 / 6 / 6, with Doc 18 (`suspect_density`, 1,413 chars/page) as the omitted failure. Separately, `:5` records `Branch: ICR-97-rfc44-recovery-dispatch-wiring` for a run performed elsewhere.
+**Problem:** `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md` states a tally of 14 PASS / 6 MARGINAL / 5 FAIL. Recounting the per-document scorecard rows gives 13 / 6 / 6.
+
+**Resolved 2026-09-15 (task 1.8).** The count is confirmed; the pre-RFC plan's explanation is refuted. No row is omitted — all 25 are present and numbered without gaps, Doc 18 among them at `:34` scored FAIL. The divergence originates in the "Updated tally" ledger: its post-RFC-045 row records 9 / 9 / 6 / 1 where the re-test it summarises (21, 24, 25 → PASS; 6, 18 → FAIL) yields 9 / 9 / 7 / 0, and its final row then resolves the resulting phantom ERROR by moving Doc 6 from ERROR to FAIL a second time. Every row sums to 25, so the defect survives an arithmetic check. Also found: the "Regressions requiring investigation" table still carries pre-recalibration verdicts for docs 12, 16, 19 and 20, contradicting the Summary Scorecard. `:5`'s `Branch: ICR-97-rfc44-recovery-dispatch-wiring` proved defensible rather than wrong — that name and `ICR-97-rfc45-arabic-ocr-garble-fix` both pointed at `3c7eda1` during the 08:59–09:15Z run — so it was annotated with the commit SHA and the per-pass branch history rather than changed. Recorded as a dated addendum, per RFC-025 D4.
 
 **Change:** recount from the rows; confirm or refute the Doc 18 omission before amending; correct the branch header; record as a dated addendum rather than a silent edit, per the RFC-025 D4 precedent that exists because of exactly this error class.
 

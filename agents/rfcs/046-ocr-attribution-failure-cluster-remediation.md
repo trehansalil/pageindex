@@ -217,8 +217,9 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 2. After Requirements 4–8, a full corpus run SHALL produce a per-document table naming, for every verdict change, the deliverable responsible.
 3. Verdict movements SHALL be reported in both directions. A document moving FAIL → PASS and a document moving PASS → FAIL are both outcomes of interest; neither SHALL be omitted.
 4. A document whose verdict improves without an identifiable responsible deliverable SHALL block acceptance pending explanation — an unexplained improvement is as much a signal of a measurement defect as an unexplained regression.
-5. `CURRENT_PIPELINE_VERSION` (`config.py:15`) SHALL be bumped from 4 to 5 in the same commit as the first merged change that can reclassify the corpus, per RFC-014 D3. Remote Docling re-baselining does not apply (see Environment).
+5. `CURRENT_PIPELINE_VERSION` (`config.py:15`) SHALL be bumped from 4 to 5 in the same commit as the first merged change that can reclassify the corpus, per RFC-014 D3. Remote Docling re-baselining does not apply (see Environment). *(2026-09-15: Wave 1 contains no such change — all of it is additive attribution — so the bump moves to the first Wave 3 deliverable. See task 1.9.)*
 6. The corpus gate SHALL be coordinated with RFC-041 task 3.5a, which owns the full-corpus verdict-diff baseline.
+7. The baseline run of criterion 1 SHALL be taken with `VERDICT_DOWNGRADE_ENABLED=true`, and each document's registry verdict SHALL be reconciled against its freshly written sidecar afterwards. *(Added 2026-09-15.)* The registry upsert is a max-verdict-priority CAS (`registry/queries.py:95-113`) that can only upgrade a verdict; `preprocess_client.py:177` and the MinIO write-through (`worker/registry_mirror.py:88`) both inherit it, and the flag that bypasses it defaults to false. Without this, a document Run 8 stored at PASS and the baseline scores FAIL keeps its PASS row, and criterion 3 above — movements reported in both directions, neither omitted — cannot be satisfied.
 
 ### Requirement 10: Zone 2 Closure — post-NFKC ScriptContext call sites (D10)
 

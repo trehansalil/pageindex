@@ -2,7 +2,10 @@
 
 ## Environment
 
-- Branch: ICR-97-rfc44-recovery-dispatch-wiring
+- Branch: ICR-97-rfc44-recovery-dispatch-wiring (code state `3c7eda1`; at the time of the
+  run this commit was the tip of both `ICR-97-rfc44-recovery-dispatch-wiring` and
+  `ICR-97-rfc45-arabic-ocr-garble-fix`. Every later pass in this report was made on the
+  latter — see "Tally Correction Addendum" Finding 5.)
 - Date: 2026-09-09
 - Prior run: /Users/saliltrehan/Documents/Python_n_R/Personal/pageindex/audit/CORPUS_REINGESTION_AUDIT_RUN-7.md
 - Methodology: Incremental ingest+score pipeline (each doc scored immediately after processing)
@@ -41,6 +44,11 @@
 | 25 | حقوق الإنسان - Copy.pdf | unknown | PASS | **Re-test (RFC-045 fixes):** `structural_pass`, 161 pages, 419,856 chars, max_leaf_ratio 0.0277, converter=docling, extraction_route=local. Previously ERROR (timeout) due to tessdata probe failure. Now the deepest, richest tree in the corpus again. |
 
 **Run 8 Tally (25/25 audited, post RFC-045 garble fix chain + depth recalibration + re-ingestion):** 14 PASS, 6 MARGINAL, 5 FAIL, 0 ERROR
+
+> **Superseded 2026-09-15 — see "Tally Correction Addendum" at the end of this report.**
+> A recount of the 25 rows above gives **13 PASS, 6 MARGINAL, 6 FAIL, 0 ERROR**. The
+> per-document rows are authoritative and unchanged; this summary line was never
+> RFC-025 D4 verified against the store.
 
 > Scorer draft tally was 3 PASS / 12 MARGINAL / 5 FAIL / 5 ERROR. RFC-025 D4 re-verification against live MinIO moved docs 2, 5 and 11 from MARGINAL to PASS because the draft figures that justified MARGINAL (depth-1 collapse, char loss, heading-only leaves) do not exist in the stored trees — see verification log below.
 
@@ -207,3 +215,91 @@ Four documents re-ingested to pick up committed fixes (hash cache cleared to for
 | 17 | اتفاقية مستوى الخدمة (SLA) | FAIL (1,283 chars, catastrophic loss) | **FAIL** (still garbled) | D3a probe fires but PRE_GARBLE_FORCE_OCR_ENABLED=false gates the OCR trigger. Enabling it produces 30k chars of clean Arabic MD, but the LLM tree-builder + landscape reextraction pipeline still triggers garble rejection. Needs comprehensive pipeline fix (future RFC). |
 | 19 | سياسة حوكمة (Data Governance) | FAIL/garbling (reviewer override to MARGINAL) | **PASS** (`structural_pass`, 18,287 chars, mlr 0.1873) | PF false-positive resolved by NFKC fallback removal (commit `2c39168`). |
 | 20 | قرار 1/2022 (Labor Exec. Regs.) | FAIL (digit substitution 1→7, Articles 1-4 missing) | **PASS** (`structural_pass`, 50,774 chars, mlr 0.0438) | Tessdata probe fix (commit `d5f0c19`) enabled correct Arabic OCR; digit substitution and missing articles resolved. |
+
+---
+
+## Tally Correction Addendum (2026-09-15, RFC-046 task 1.8)
+
+Recorded as a dated addendum rather than a silent edit, per the RFC-025 D4 precedent this
+report itself follows. Nothing above this line has been rewritten; the per-document rows
+remain as published.
+
+### Finding 1 — the stated tally is wrong by one document
+
+The Summary Scorecard's 25 rows were re-counted programmatically from the table source:
+
+| | PASS | MARGINAL | FAIL | ERROR | Total |
+|---|---|---|---|---|---|
+| Stated at `:43` | 14 | 6 | 5 | 0 | 25 |
+| **Recount of the 25 rows** | **13** | **6** | **6** | **0** | **25** |
+
+- PASS: 2, 5, 7, 8, 11, 12, 16, 19, 20, 21, 23, 24, 25 (13)
+- MARGINAL: 1, 3, 4, 9, 10, 15 (6)
+- FAIL: 6, 13, 14, 17, 18, 22 (6)
+
+**The per-document rows are authoritative and stand unchanged.** Every one of them was
+re-pulled from live MinIO before publication under RFC-025 D4; the summary line was not.
+Any downstream artifact quoting "14 PASS / 6 MARGINAL / 5 FAIL" should quote 13 / 6 / 6.
+
+### Finding 2 — the pre-RFC plan's stated cause is refuted
+
+`agents/plans/plan-rfc046-surya-quality-fallback.md` attributed the discrepancy to "Doc 18
+omitted". That is not the cause. All 25 rows are present, numbered 1–25 with no gaps, and
+Doc 18 is among them at `:34` scored FAIL. The recount arrives at the same 13 / 6 / 6 the
+plan predicted, but by a different route, so the *number* is confirmed and the *explanation*
+is corrected.
+
+### Finding 3 — where the divergence actually originates
+
+The "Updated tally" ledger at `:175` does not reconcile with the re-test it summarises. Its
+first transition is the defect; every later row inherits it.
+
+The RFC-045 re-test at `:165` moves five ERROR documents: 21, 24, 25 → PASS and 6, 18 → FAIL.
+Applied to the original 6 / 9 / 5 / 5, that yields **9 / 9 / 7 / 0**. The ledger records
+**9 / 9 / 6 / 1** — one FAIL short, with a residual ERROR that the re-test had already
+cleared. The final row then resolves that phantom ERROR by moving Doc 6 from ERROR to FAIL
+a *second* time, having already moved it once in the re-test table. Each row sums to 25, so
+the error survives an arithmetic check; only reconciling each row against the transition it
+claims to summarise exposes it.
+
+### Finding 4 — the Regressions table contradicts the Scorecard
+
+`### Regressions requiring investigation` (`:105`) was not updated after the depth
+recalibration and re-ingestion passes. Four rows still carry superseded verdicts:
+
+| Doc | Regressions table (`:105`) | Summary Scorecard | Superseded by |
+|---|---|---|---|
+| 12 | PASS → MARGINAL | PASS | depth recalibration (`7e5156c`) |
+| 16 | PASS → MARGINAL | PASS | depth recalibration (`7e5156c`) |
+| 19 | PASS → MARGINAL, 19,778 chars | PASS, 18,287 chars | re-ingestion (`2c39168`) |
+| 20 | PASS → FAIL, digit substitution | PASS, 50,774 chars | re-ingestion (`d5f0c19`) |
+
+Read that table as a snapshot of the original run, not as the report's conclusion.
+
+### Finding 5 — the Branch field describes only the first of six passes
+
+`:5` records `Branch: ICR-97-rfc44-recovery-dispatch-wiring`. That is defensible for the
+original run but incomplete for the document as a whole: the corpus was processed
+2026-09-09T08:59–09:15Z when `ICR-97-rfc44-recovery-dispatch-wiring` and
+`ICR-97-rfc45-arabic-ocr-garble-fix` both pointed at `3c7eda1`, so the code state is
+unambiguous even though the branch name is not. Every subsequent pass was made on
+`ICR-97-rfc45-arabic-ocr-garble-fix`. Commit state per pass:
+
+| Pass | Code state | Recorded at |
+|---|---|---|
+| Original run | `3c7eda1` (2026-09-09 06:10) | `:17`–`:41` draft figures |
+| RFC-045 re-test | `d5f0c19`, `2c39168` (15:49) | `:154` |
+| Depth recalibration | `7e5156c` (18:23) | `:191` |
+| Re-ingestion | `d1f67c3` (17:52) | `:203` |
+| Doc 6 garble chain | `217a835` (2026-09-10 07:15) | `:175` final row |
+
+A single `Branch:` field cannot describe a report spanning two branch names and five
+re-scoring passes. Future audit reports should record the commit SHA per scoring pass.
+
+### Bearing on RFC-046
+
+Run 8 remains this RFC's declared baseline, and the six FAIL documents (6, 13, 14, 17, 18, 22)
+are the corpus it addresses. The correction changes the headline tally, not the failure set.
+The smoke test of 2026-09-15 has already shown Doc 22 no longer failing and Doc 13 failing
+differently (`image_enrichment_partial` rather than `garbling`) at RFC-046 HEAD — a further
+reason the 1.C gate re-baselines rather than reuses these numbers.
