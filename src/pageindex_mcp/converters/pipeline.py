@@ -52,6 +52,10 @@ from .types import Candidate, PictureResult, StageRecord
 
 logger = logging.getLogger(__name__)
 
+#: RFC-046 D2/R2.4: canonical converter name. Previously restated as a bare
+#: literal here and in client/recovery.py, which allowed the two to drift.
+DOCLING_CONVERTER_NAME = "docling"
+
 
 # ---------------------------------------------------------------------------
 # ConverterFailurePolicy — encodes the chain-walker's decision for a
@@ -770,12 +774,12 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
         ))
     if have_docling:
         docling_entry = ConverterChainEntry(
-            name="docling",
+            name=DOCLING_CONVERTER_NAME,
             fn=pdf_to_markdown_docling,
             supports_ocr=True,
             is_agpl=False,
         )
-        if primary == "docling":
+        if primary == DOCLING_CONVERTER_NAME:
             chain.insert(0, docling_entry)
         else:
             chain.append(docling_entry)
@@ -783,7 +787,7 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
                 from ..metrics import AGPL_FALLBACK_TOTAL
 
                 AGPL_FALLBACK_TOTAL.labels(reason="operator_configured").inc()
-    elif primary == "docling":
+    elif primary == DOCLING_CONVERTER_NAME:
         logger.warning(
             "PDF_CONVERTER=docling but docling is not installed; install the "
             "'docling' extra (uv sync --extra docling). Falling back to pymupdf4llm."

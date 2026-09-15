@@ -42,6 +42,7 @@ from ..metrics import (
     OCR_ESCALATION_TOTAL,
     VLM_FALLBACK_TOTAL,
 )
+from ..converters.pipeline import DOCLING_CONVERTER_NAME
 from ..picture_plane import OcrEngine, SkipReason, skip_reason_from_str
 from ..script import BlobKind, ScriptContext, decide_rtl
 
@@ -338,7 +339,11 @@ class RecoveryMixin:
                 )
                 if stages_out:
                     state.extraction_stages_captured = stages_out
-            state.used_converter = "docling"
+            # RFC-046 D2/R2.4: sourced from the converter definition, not
+            # restated. This path forces full-page OCR, so it is an OCR path
+            # and must attribute its engine.
+            state.used_converter = DOCLING_CONVERTER_NAME
+            state.ocr_engine = str(OcrEngine.TESSERACT)
             # Zone-2: full-page OCR successfully applied.  The return value
             # signals callers to set state.full_page_already_applied = True
             # explicitly, replacing the former direct mutation that made the

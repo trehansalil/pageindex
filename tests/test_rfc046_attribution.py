@@ -141,3 +141,39 @@ class TestAllOcrSitesDeclareTheirEngine:
             "these OCR invocation sites do not declare an OcrEngine, so a verdict "
             f"produced through them cannot be attributed: {missing}"
         )
+
+
+class TestConverterNameIsSourcedNotRestated:
+    """D2 / R2.4: ``state.used_converter`` must not be a bare hardcoded literal.
+
+    ``recovery.py`` assigned ``state.used_converter = "docling"`` directly while
+    ``pipeline.py`` independently named the same converter in four places. The
+    name is now defined once and imported, so the two cannot drift.
+    """
+
+    @staticmethod
+    def _src(rel: str) -> str:
+        import pathlib
+
+        import pageindex_mcp
+
+        return (pathlib.Path(pageindex_mcp.__file__).parent / rel).read_text(encoding="utf-8")
+
+    def test_canonical_converter_name_exists(self):
+        from pageindex_mcp.converters.pipeline import DOCLING_CONVERTER_NAME
+
+        assert DOCLING_CONVERTER_NAME == "docling"
+
+    def test_recovery_does_not_hardcode_the_converter_name(self):
+        src = self._src("client/recovery.py")
+        assert 'used_converter = "docling"' not in src, (
+            "recovery.py must source the converter name, not restate it (R2.4)"
+        )
+
+    def test_ocr_retry_path_records_the_engine(self):
+        # The retry path forces full-page OCR, so it is an OCR path and must
+        # attribute an engine -- otherwise its verdict is unattributable.
+        src = self._src("client/recovery.py")
+        assert "state.ocr_engine" in src, (
+            "the OCR retry path must record state.ocr_engine (R2.3)"
+        )
