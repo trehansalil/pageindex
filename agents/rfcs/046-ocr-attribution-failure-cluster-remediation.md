@@ -122,6 +122,7 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 1. The Run-8 summary tally SHALL be recounted from the per-document scorecard rows and corrected if it disagrees. The pre-RFC plan's recount gives 13 PASS / 6 MARGINAL / 6 FAIL against the stated 14 / 6 / 5, with Doc 18 (`suspect_density` 1,413 chars/page) as the omitted failure; this SHALL be confirmed before amendment, not assumed.
 2. `audit/CORPUS_REINGESTION_AUDIT_RUN-8.md:5` SHALL record the branch the run was actually performed on. It currently reads `ICR-97-rfc44-recovery-dispatch-wiring`.
 3. The correction SHALL be recorded as a dated addendum, not a silent edit, consistent with the RFC-025 D4 precedent.
+4. **Documentation-only (2026-09-15).** Run-8's stored artifacts are not recoverable — it claims 20 meta objects at `processed_at` 2026-09-09; the bucket holds 17, newest 2026-08-07, at an unchanged endpoint. The tally SHALL therefore be recounted from the audit's own scorecard rows and **SHALL NOT** be re-derived from MinIO. Every gate anchors to the fresh attributed baseline of Requirement 9, not to Run 8.
 
 ### Requirement 4: Content-Derived OCR Language Selection (C2)
 
@@ -189,10 +190,11 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 
 1. `_flatten_tree_text` (`tree_validation.py:137-158`), as consumed by `_gate_suspect_density` (`gates.py:239-255`), SHALL count content that is genuinely stored and retrievable — including node `summary` and image-block `ocr_text` — or the density gate SHALL use a numerator that does.
 2. `RFC029_MIN_SCANNED_DENSITY_FLOOR` SHALL NOT change value. This deliverable corrects what is measured, not where the line sits.
-3. The change SHALL be measured against the corpus and reported as a per-document delta before it is accepted (Requirement 9).
-4. `config.py:505-508` SHALL parse `PRE_GARBLE_FORCE_OCR_ENABLED` with the same predicate as its siblings at `:492-504` — `.strip().lower() in ("1","true","yes")` — so that `=1`, `=yes`, and values with surrounding whitespace are no longer silent no-ops. The default SHALL remain `false`.
-5. A unit test SHALL verify `PRE_GARBLE_FORCE_OCR_ENABLED=1` and `=yes` are truthy and `=false`/unset are falsy.
-6. Given criterion 4, the 2026-09-09 Doc-17 experiment recorded at `RUN-8:207` SHALL be re-run and its spelling confirmed before its result is relied upon anywhere.
+3. **Measure-first (OQ5, resolved 2026-09-15).** The corrected numerator SHALL first run in **report-only mode**: it computes both the old and new figure for every document and emits a per-document table showing which verdicts would change and by how much. It SHALL NOT alter any verdict in that mode.
+4. Activation SHALL be a separate, explicit decision taken on that table. Until activated, the corrected numerator is observational only and the density gate behaves exactly as it does today.
+5. `config.py:505-508` SHALL parse `PRE_GARBLE_FORCE_OCR_ENABLED` with the same predicate as its siblings at `:492-504` — `.strip().lower() in ("1","true","yes")` — so that `=1`, `=yes`, and values with surrounding whitespace are no longer silent no-ops. The default SHALL remain `false`.
+6. A unit test SHALL verify `PRE_GARBLE_FORCE_OCR_ENABLED=1` and `=yes` are truthy and `=false`/unset are falsy.
+7. Given criterion 5, the 2026-09-09 Doc-17 experiment recorded at `RUN-8:207` SHALL be re-run and its spelling confirmed before its result is relied upon anywhere.
 
 ### Requirement 9: Attribution-Gated Corpus Validation
 
@@ -204,8 +206,22 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 2. After Requirements 4–8, a full corpus run SHALL produce a per-document table naming, for every verdict change, the deliverable responsible.
 3. Verdict movements SHALL be reported in both directions. A document moving FAIL → PASS and a document moving PASS → FAIL are both outcomes of interest; neither SHALL be omitted.
 4. A document whose verdict improves without an identifiable responsible deliverable SHALL block acceptance pending explanation — an unexplained improvement is as much a signal of a measurement defect as an unexplained regression.
-5. `CURRENT_PIPELINE_VERSION` (`config.py:15`) SHALL be bumped from 4 to 5 in the same commit as the first merged change that can reclassify the corpus, per RFC-014 D3. `client/remote.py:62` compares it against the remote Docling service, so the remote image SHALL be re-baselined in the same window.
+5. `CURRENT_PIPELINE_VERSION` (`config.py:15`) SHALL be bumped from 4 to 5 in the same commit as the first merged change that can reclassify the corpus, per RFC-014 D3. Remote Docling re-baselining does not apply (see Environment).
 6. The corpus gate SHALL be coordinated with RFC-041 task 3.5a, which owns the full-corpus verdict-diff baseline.
+
+### Requirement 10: Zone 2 Closure — post-NFKC ScriptContext call sites (D10)
+
+**User Story:** As the garble detector, I want every `ScriptContext` I am given to have been constructed before NFKC destroyed the evidence, so that my verdicts are based on signals that still exist.
+
+Adopted with Zone 2 ownership (OQ2). RFC-040 D6 reordered NFKC-before-bidi only in `_pre_inference_normalize`, leaving seven post-NFKC `ScriptContext` construction sites broken — the "RFC-040 Zone 2 pattern" the ownership manifest exists to catch.
+
+#### Acceptance Criteria
+
+1. Each of the seven post-NFKC `ScriptContext` call sites SHALL be enumerated by file and line, and each SHALL be either corrected to construct its context pre-NFKC or documented as genuinely unaffected with the reason recorded.
+2. No `ScriptContext` used for garble or bidi decisions SHALL be constructed from text that has already been NFKC-normalized, unless the signal it carries is provably NFKC-invariant.
+3. An architecture guard SHALL enforce criterion 2 so the pattern cannot silently reappear — this is its third recurrence (RFC-040 D6, RFC-045 `2c39168`, and D5 of this RFC all addressed different instances of it).
+4. `audit/zones/ZONE_OWNERSHIP.yaml` `zone_2.successor_rfc` SHALL be set to RFC-046, and `zone_2.resolved` SHALL be set true only when criteria 1–3 hold.
+5. D10 SHALL land in Wave 3 alongside D5, which shares its subsystem.
 
 ## Decision Summary
 
@@ -243,7 +259,13 @@ Correct the density numerator to count stored-and-retrievable content; leave the
 
 ### D9: Attribution-Gated Corpus Validation (Requirement 9)
 
-Baseline first, then remediate, then attribute every movement in both directions. Bump the pipeline version; re-baseline the remote image; coordinate with RFC-041 3.5a. **Adopt RFC-042 task 4.2 (config consistency property test) into this RFC** — D2 and D8 both add or change config surface, and 4.2 is the guard that prevents repeating the `PRE_GARBLE_FORCE_OCR_ENABLED` double-sourcing and parse-asymmetry defects (see OQ1).
+Baseline first, then remediate, then attribute every movement in both directions. Bump the pipeline version; coordinate with RFC-041 3.5a. **Remote Docling re-baselining does not apply** — Docling runs in-process (see Environment), so the `client/remote.py:62` version handshake is out of the loop. **Adopt RFC-042 task 4.2 (config consistency property test) into this RFC** — D2 and D8 both add or change config surface, and 4.2 is the guard that prevents repeating the `PRE_GARBLE_FORCE_OCR_ENABLED` double-sourcing and parse-asymmetry defects (see OQ1).
+
+### D10: Zone 2 Closure — post-NFKC ScriptContext sites (Requirement 10)
+
+Enumerate and correct the seven post-NFKC `ScriptContext` construction sites RFC-040 D6 left behind, and add an architecture guard so the pattern cannot recur. Adopted together with Zone 2 successor ownership (OQ2). Lands in Wave 3 alongside D5, which shares its subsystem.
+
+This is the **third** distinct instance of one pattern — RFC-040 D6, RFC-045 `2c39168`, and D5 each fixed a different site where a signal was read after NFKC had destroyed the evidence. The guard, not the seven fixes, is the durable deliverable.
 
 ## Implementation Plan
 
@@ -251,7 +273,7 @@ Baseline first, then remediate, then attribute every movement in both directions
 
 1. **Phase 0 — Baseline** (D2, D3, and RFC-042 4.2 per D9). Attribution must exist before anything can move, or movements cannot be explained. Corpus run at the end of this phase is the graded baseline.
 2. **Phase 1 — Evidence** (D1). Independent of the code work; parallelizable with Phase 0. Gates any RFC-047 claim, not this RFC's own deliverables.
-3. **Phase 2 — Independent cluster fixes** (D5, D8). Self-contained, low blast radius, no shared surface with each other.
+3. **Phase 2 — Independent cluster fixes** (D5, D8, D10). D5 and D10 share the garble/normalization subsystem and land together; D8 is independent and runs report-only (OQ5).
 4. **Phase 3 — Verdict plumbing** (D6). Touches `evaluate_gates`' signal-selection contract; must land alone so its corpus delta is attributable.
 5. **Phase 4 — Recovery arbitration** (D4, D7). D7's arbitration reconciliation is a prerequisite for D4's corrective re-OCR, since that introduces a third candidate. Land D7 then D4.
 6. **Phase 5 — Corpus validation** (D9). Full run, attributed per-document delta table, pipeline-version bump, remote re-baseline.
@@ -269,8 +291,9 @@ Baseline first, then remediate, then attribute every movement in both directions
 | 3 | D6: Flat verdict signal selection + image-block visibility | ~8h | **High** — changes verdict inputs for every flat-routed document |
 | 4 | D7: Markdown-level arbitration + arbitrator reconciliation | ~8h | **High** — rewrites the keep-best contract; pinned by tests |
 | 4 | D4: Content-derived language selection + image recovery rung | ~6h | Medium — new recovery method must satisfy two AST guards |
+| 2 | D10: Zone 2 closure — 7 post-NFKC ScriptContext sites + guard | ~8h | Medium — third recurrence of one pattern; guard is the durable part |
 | 5 | D9: Corpus validation, attribution table, version bump | ~6h | Medium — long-running; coordination with RFC-041 3.5a |
-| **Total** | | **~51h** | |
+| **Total** | | **~59h** | **(revised 2026-09-15 from ~51h: +D10 via Zone 2 ownership, OQ2)** |
 
 ## Test Strategy
 
@@ -278,6 +301,7 @@ Baseline first, then remediate, then attribute every movement in both directions
 - **D3:** No automated test; verified by recount against the scorecard rows.
 - **D1:** Harness self-test asserting a non-zero exit on an unreachable endpoint. Artifact completeness check: every enabled engine has non-zero data for every processed document.
 - **D5:** Boundary tests either side of the 0.50 ratio; a one-ligature negative case; a PF-dominated positive case; regression tests pinning Docs 19/21/23. A test asserting NFKC still runs when any presentation form is present — the separation in criterion 3 is the subtle part and needs its own test.
+- **D10:** Per-site test for each of the seven post-NFKC `ScriptContext` constructions, or a recorded justification where a site is provably NFKC-invariant. Architecture guard asserting no `ScriptContext` used for a garble or bidi decision is built from NFKC-normalized text.
 - **D6:** Unit test with divergent tree and flat leaf ratios asserting the flat value reaches both verdict and sidecar. Test that image-block `ocr_text` is counted by the flat garble gate and by `flat_char_count`. Test that enrichment-mutated blocks are garble-checked. A guard test that `compute_verdict`'s `structure` argument cannot be silently ignored.
 - **D7:** Doc 17 reproduction — recovery yields clean markdown, tree rebuild fails, better extraction retained. Arbitration tests with three candidates. A script-awareness test: formal Arabic must not lose to Latin gibberish on any scorer. `tests/test_zone3_ocr_recovery.py` updated in the same change.
 - **D4:** Latin-filename/Arabic-content image test. Bounded-retry test (at most one corrective pass). AST guard conformance for any new recovery method (`full_page_already_applied` guard, `_all_defects` predicate).
@@ -313,11 +337,36 @@ Baseline first, then remediate, then attribute every movement in both directions
 
 ## Open Questions
 
-1. **Should RFC-042 task 4.2 be adopted here, or should RFC-046 sequence behind RFC-042?** D9 proposes adoption, because D2 and D8 both add or change config surface and 4.2 is the guard against repeating the defect class this RFC is fixing. The alternative is to block RFC-046 on RFC-042's remaining 14 tasks, which include the `PROMOTION_ORDER` work (§3) that this RFC does not need. Adoption is the recommendation; it needs an explicit owner decision because it moves a task between RFCs.
-2. **Who owns Zone 2 after D5?** Zone 2 is owned by RFC-040 with successor RFC-041 D10c recorded in `audit/zones/ZONE_OWNERSHIP.yaml`. D5 closes part of it — the threaded-flag half that RFC-040 D6 left broken. Whether `successor_rfc` should transfer to RFC-046, or RFC-046 be recorded as a partial contributor, is an ownership decision the lint script's orphaned-zone rule depends on.
-3. **Does Requirement 7 criterion 2 need a Hard Rule #5 ruling?** Retaining a better extraction whose rebuilt tree still fails validation means storing a FAIL verdict over better content rather than reverting to worse content. This is read here as consistent with Hard Rule #5 — the tree is not being called good — but it changes what a FAIL document contains, and that reading should be confirmed rather than assumed.
-4. **How far should D6's contract change go?** Criterion 2 asks for a caller-declared signal source so no future call site can pass a dead argument. The minimal fix is to derive signals from `flat_structure` at the one flat call site. The broader fix changes `evaluate_gates`' signature and touches every caller. The broader fix prevents recurrence; the minimal fix has a smaller blast radius in an RFC that already carries two high-risk deliverables.
-5. **Is the density numerator (D8) in scope, or is it threshold work by another name?** It is included here as a correctness fix — the gate should count content that is stored and retrievable — and Non-Goal 2 keeps the floor fixed. But it moves the same verdicts a threshold change would move, and reasonable reviewers may prefer it deferred to the same place as other density work.
+All five original open questions were put to the owner on 2026-09-15 and answered. They are retained with their resolutions rather than deleted, so the reasoning behind each decision stays on the record.
+
+1. **Should RFC-042 task 4.2 be adopted here, or should RFC-046 sequence behind RFC-042?** — **RESOLVED (2026-09-15): adopt it here.** D2 and D8 both add config surface, and 4.2 is the guard against repeating the double-sourcing and parse-asymmetry defect class this RFC is fixing. Blocking on RFC-042's other 13 tasks — including the `PROMOTION_ORDER` work this RFC does not need — was rejected. Task 1.7 stays in Wave 1.
+2. **Who owns Zone 2 after D5?** — **RESOLVED (2026-09-15): RFC-046 takes full successor ownership.** `successor_rfc` transfers from RFC-041 to RFC-046 in `audit/zones/ZONE_OWNERSHIP.yaml`. This deliberately grows scope: RFC-046 becomes accountable for the seven post-NFKC `ScriptContext` call sites RFC-040 D6 left broken, which are now **Requirement 10 / D10**, landing in Wave 3 alongside D5.
+3. **Does Requirement 7 criterion 2 need a Hard Rule #5 ruling?** — **RESOLVED (2026-09-15): yes, keep the better extraction.** Storing ~30,000 correct characters under an honest FAIL is consistent with Hard Rule #5, because the tree is still called bad; only the text underneath improves. Task 5.2 proceeds as specified. No additional sidecar divergence marker was required.
+4. **How far should D6's contract change go?** — **RESOLVED (2026-09-15): the thorough path.** `evaluate_gates` gains a caller-declared signal source so a dead argument becomes impossible to pass, and a guard test enforces it. This touches every caller, accepted deliberately to prevent recurrence rather than to minimise blast radius.
+5. **Is the density numerator (D8) in scope, or is it threshold work by another name?** — **RESOLVED (2026-09-15): in scope, but measure-first.** The corrected counter is built and run in **report-only mode**; it produces a per-document table showing exactly which documents would move and by how much, and activation is a separate decision taken on those real numbers. Task 3.4 is restructured accordingly. This removes the RFC author's estimate from the decision entirely and is a better shape than the original proposal.
+
+### Still open
+
+6. **Where do the 25 corpus documents come from?** The Run-8 artifacts and four of the six failing documents are not in the shared bucket (see Environment below). The owner is supplying the corpus. Until it arrives, D5 and D7 are validatable against Docs 17 and 22; D4, D6 and D8 have unit coverage only.
+
+## Environment
+
+**Resolved 2026-09-15.** All corpus runs execute with Docling **in-process** on the working host, against remote MinIO, Redis and Postgres. There is no remote Docling service in the loop.
+
+| Component | State |
+|---|---|
+| Tesseract | 5.3.4 with `ara`, `deu`, `eng`, `osd` |
+| Docling | in-process (`DOCLING_SERVICE_URL` empty → `use_remote=False`); models cached locally |
+| MinIO | remote, bucket `pageindex` — reachable, read/write/presign verified |
+| Redis | remote — reachable |
+| Postgres | remote — reachable (a stale pod IP in a five-week-old `env/remote.env` was the earlier timeout; `make env-remote` fixed it) |
+| Processing path | `preprocess_client.py` — a fresh `converters_cli` child, **no arq queue** |
+
+Three environment facts that bear on the RFC:
+
+1. **Fidelity is established.** A trial ingest of Doc 19 (سياسة حوكمة) reproduced Run 8 to within 2 characters: PASS/`structural_pass`, `max_leaf_ratio` **0.1873 exactly**, 18,289 chars vs 18,287. The local in-process route faithfully reproduces Run-8's pipeline for local-route documents.
+2. **The arq queue must not be used.** Containerised workers from a separate `/app` deployment are live on the *same* Redis db and the *same* bucket, configured against the **remote** Docling service. Enqueuing work risks those workers processing it with different code, silently invalidating results. `preprocess_client.py` bypasses the queue entirely and is the required path.
+3. **The Run-8 baseline is unrecoverable.** Run 8 claims verification against "20 meta objects, all `processed_at` 2026-09-09"; the bucket holds 17, newest 2026-08-07, at an unchanged endpoint. **D3's tally correction therefore becomes a documentation deliverable only** — it cannot be re-derived from stored artifacts — and every gate anchors to a fresh attributed baseline taken under Requirement 9, not to Run 8.
 
 ## Traceability
 
@@ -328,7 +377,7 @@ Baseline first, then remediate, then attribute every movement in both directions
 | Pre-RFC plan | [[plan-rfc046-surya-quality-fallback]] (§2 clusters, §3 blockers, §6 P0/P0.5) |
 | Successor | RFC-047 (OCR engine tier) — to be written against the Phase 5 residue |
 | Supersedes | N/A |
-| Zone Specs | [[garble-detection-nfkc-signal-destruction]] (Zone 2 overlap, see OQ2), [[ocr-pipeline-decision-recovery-cascade]] (Zone 1), [[verdict-promotion-hard-rule-5-bypass]] (Zone 4 anti-pattern) |
+| Zone Specs | [[garble-detection-nfkc-signal-destruction]] (**Zone 2 — RFC-046 is successor owner as of 2026-09-15; closed by D5 + D10**), [[ocr-pipeline-decision-recovery-cascade]] (Zone 1), [[verdict-promotion-hard-rule-5-bypass]] (Zone 4 anti-pattern) |
 | Prior Art | [[RFC-045]] (`2c39168` PF fix, completed by D5), [[RFC-044]] (authority inversion, Phase B explicitly not attempted), [[RFC-043]], [[RFC-042]] (task 4.2 adopted per D9), [[RFC-041]] (task 3.5a corpus baseline), [[RFC-021]] (QF1 deferral doctrine, unchanged by D8) |
 | Evidence: default no primary-pass OCR | `converters/docling_conv.py:77-80`; dark inputs `config.py:505`, `config.py:42,486` |
 | Evidence: no engine identity | `grep -rn "ocr_engine\|OCR_ENGINE" src/` → empty; `recovery.py:341` hardcoded |

@@ -28,9 +28,17 @@ governs:
 
 ## Overview
 
-Nine deliverables across eight waves. **Wave 1** makes verdicts attributable (D2), corrects the graded baseline (D3), and adopts RFC-042 task 4.2 — then **gates on a corpus baseline run**. **Wave 2** (D1) reconstructs the evaluation evidence and is independent of everything else. **Waves 3–6** fix the six failure clusters, ordered by blast radius so each delta stays attributable: independent fixes (D5, D8), then flat-verdict plumbing alone (D6), then arbitration (D7), then language selection (D4, which depends on D7's N-candidate arbitration). **Wave 7** runs the attributed corpus validation. **Wave 8** decides whether RFC-047 is warranted.
+Ten deliverables across eight waves. **(Revised 2026-09-15: owner decisions folded in — see each task's note.)** **Wave 1** makes verdicts attributable (D2), corrects the graded baseline (D3), and adopts RFC-042 task 4.2 — then **gates on a corpus baseline run**. **Wave 2** (D1) reconstructs the evaluation evidence and is independent of everything else. **Waves 3–6** fix the six failure clusters, ordered by blast radius so each delta stays attributable: independent fixes (D5, D8), then flat-verdict plumbing alone (D6), then arbitration (D7), then language selection (D4, which depends on D7's N-candidate arbitration). **Wave 7** runs the attributed corpus validation. **Wave 8** decides whether RFC-047 is warranted.
 
-No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` keeps exactly one call site. Total estimated effort: **~51h**.
+No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` keeps exactly one call site. Total estimated effort: **~59h** (revised from ~51h: +D10 via Zone 2 ownership).
+
+### Environment (resolved 2026-09-15)
+
+Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3.4 with `ara`/`deu`/`eng`/`osd` is installed locally. Three standing constraints:
+
+- **Never use the arq queue.** Containerised `/app` workers are live on the same Redis db and bucket, pointed at the *remote* Docling service; they would process our jobs with different code. All corpus work goes through `preprocess_client.py`, which creates no Redis job.
+- **Source `.env.active` explicitly** when invoking `preprocess_client.py` directly — `load_dotenv()` otherwise falls back to `.env` (localhost).
+- **The Run-8 baseline is unrecoverable.** Gates anchor to the fresh attributed baseline from task 1.C. A trial ingest reproduced Run 8 to within 2 characters, so local-route fidelity is established.
 
 **Wave 2 may be parallelised with Waves 1 and 3–6.** All other waves are strictly sequential — see [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour).
 
@@ -92,7 +100,7 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
 
     - Property test asserting every `PipelineConfig` boolean field parses by the same predicate, and that no hot-path module re-reads a variable already snapshotted.
     - This is the guard that would have caught both the `PRE_GARBLE_FORCE_OCR_ENABLED` double-sourcing (B1) and its parse asymmetry (task 3.2).
-    - **Ownership decision required before starting** — see [[RFC-046]] Open Question 1. If the decision is to sequence behind RFC-042 instead, this task is removed and Wave 1 blocks on RFC-042 §4.
+    - **RESOLVED (2026-09-15, OQ1): adopted into this RFC.** Sequencing behind RFC-042's other 13 tasks was rejected.
     - _Requirements: [R9](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
     - _Dependencies: none (parallel with 1.1–1.6)_
 
@@ -107,7 +115,7 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
   - [ ] 1.9 Bump `CURRENT_PIPELINE_VERSION` and re-baseline the remote image
 
     - Bump `config.py:15` from 4 to 5 in the same commit as the first merged corpus-reclassifying change (RFC-014 D3).
-    - Re-baseline the remote Scaleway Docling image; `client/remote.py:62` compares versions and warns, or hard-blocks under `remote_version_enforce`.
+    - **Remote re-baselining does not apply (2026-09-15)** — Docling runs in-process, so the `client/remote.py:62` handshake is out of the loop.
     - _Requirements: [R9.5](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
     - _Dependencies: 1.5_
 
@@ -197,7 +205,7 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
     - `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count. The numerator from `_flatten_tree_text` (`tree_validation.py:137-158`) counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`.
     - Count content that is genuinely stored and retrievable.
     - **`RFC029_MIN_SCANNED_DENSITY_FLOOR` (`config.py:565`) does not change value.** This corrects what is measured, not where the line sits.
-    - Scope tension acknowledged at [[RFC-046]] Open Question 5 — resolve before starting.
+    - **RESOLVED (2026-09-15, OQ5): measure-first.** Ship the corrected numerator in **report-only mode** — compute old and new figures for every document, emit a per-document table of what would change, and alter no verdict. Activation is a separate decision taken on those numbers.
     - _Requirements: [R8.1](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [R8.2](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
     - _Dependencies: 1.C_
 
@@ -224,12 +232,28 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
     - _Requirements: [Non-Goal 2](046-ocr-attribution-failure-cluster-remediation#non-goals), [Property 8](design-rfc046-ocr-attribution-failure-cluster-remediation#property-8-threshold-immutability)_
     - _Dependencies: none_
 
+  - [ ] 3.8 Enumerate and correct the seven post-NFKC ScriptContext sites (D10)
+
+    - RFC-040 D6 reordered NFKC-before-bidi only inside `_pre_inference_normalize`. Seven further `ScriptContext` construction sites still build their context from text that has **already been NFKC-normalized** — after the codepoints carrying the signal are gone.
+    - Enumerate all seven by file and line. Correct each to construct pre-NFKC, **or** record at the site why its signal is provably NFKC-invariant.
+    - This is the third distinct instance of one pattern (RFC-040 D6, RFC-045 `2c39168`, and D5 each fixed a different site).
+    - _Requirements: [R10.1](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.2](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [DP-D10](design-rfc046-ocr-attribution-failure-cluster-remediation#d10-zone-2-closure-post-nfkc-scriptcontext-sites)_
+    - _Dependencies: 3.1 (shares the garble/normalization subsystem)_
+
+  - [ ] 3.9 Architecture guard against post-NFKC script contexts (D10)
+
+    - Guard asserting no `ScriptContext` feeding a garble or bidi decision is built from NFKC-normalized text.
+    - **The guard is the durable deliverable** — the seven fixes close today's instances; only the guard prevents a fourth.
+    - Set `zone_2.successor_rfc: RFC-046` in `audit/zones/ZONE_OWNERSHIP.yaml`. Set `zone_2.resolved: true` only when 3.8 and 3.9 both hold.
+    - _Requirements: [R10.3](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.4](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.5](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [Property 10](design-rfc046-ocr-attribution-failure-cluster-remediation#property-10-no-post-nfkc-script-context)_
+    - _Dependencies: 3.8_
+
   - [ ] 3.C **[GATE]** Checkpoint — Independent fixes attributed
 
-    - Corpus run. Per-document delta against the 1.C baseline, each change attributed to D5 or D8.
+    - Corpus run. Per-document delta against the 1.C baseline, each change attributed to D5, D8 or D10.
     - Verify no threshold moved (3.7 green). `uv run pytest` green.
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
-    - _Dependencies: 3.1–3.7_
+    - _Dependencies: 3.1–3.9_
 
 - [ ] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
 
@@ -237,7 +261,7 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
 
     - `evaluate_gates` takes `sig = validate_result.signals` (`verdict.py:151`) and consults `structure` only when `sig is None` (`:164-167`). Since `state.gate_result` is always a `TreeGateResult` on the flat route, `flat_structure` passed at `indexer.py:1122` is **dead on every flat-routed document**.
     - Replace the implicit fallback with an explicit caller-declared source so a dead argument cannot be passed unknowingly.
-    - **Scope decision required first** — [[RFC-046]] Open Question 4: minimal (one call site) vs contract change (every caller). The minimal fix leaves the recurrence vector in place.
+    - **RESOLVED (2026-09-15, OQ4): the thorough path.** Change the contract and touch every caller, so a dead argument becomes impossible to pass.
     - _Requirements: [R6.1](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R6.2](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 3.C_
 
@@ -296,7 +320,7 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
   - [ ] 5.2 Retain a materially better extraction even when its tree fails
 
     - When recovered markdown is not garbled and substantially higher in content, keep it rather than reverting at `recovery.py:389`.
-    - **Hard Rule #5:** the stored verdict stays a truthful FAIL or MARGINAL. What changes is which extraction the verdict is computed over — a FAIL over 30,000 correct characters rather than a FAIL over 1,283. **Ruling required before implementation** — [[RFC-046]] Open Question 3.
+    - **Hard Rule #5 — RULED (2026-09-15, OQ3): proceed.** The stored verdict stays a truthful FAIL or MARGINAL. What changes is which extraction the verdict is computed over — a FAIL over 30,000 correct characters rather than a FAIL over 1,283. No extra sidecar divergence marker required.
     - _Requirements: [R7.2](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 5.1_
 
@@ -384,7 +408,7 @@ No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` k
   - [ ] 7.4 Resolve zone ownership
 
     - D5 closes the threaded-flag half of Zone 2 (`garble-detection-nfkc-signal-destruction`), currently owned by RFC-040 with successor RFC-041 D10c in `audit/zones/ZONE_OWNERSHIP.yaml`.
-    - Record RFC-046 as successor or partial contributor as decided — the lint script's orphaned-zone rule depends on this field. See [[RFC-046]] Open Question 2.
+    - **RESOLVED (2026-09-15, OQ2): full transfer.** Set `zone_2.successor_rfc: RFC-046`. Set `zone_2.resolved: true` only once D5 **and** D10 criteria all hold — partial closure must not be recorded as complete.
     - _Requirements: [RFC Consequences](046-ocr-attribution-failure-cluster-remediation#consequences)_
     - _Dependencies: 3.C_
 
