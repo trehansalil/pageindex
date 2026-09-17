@@ -238,7 +238,7 @@ treat. Blocking on it would leave the behavioural work with no before-measuremen
    Docling's internal OCR. Without both, Waves 4–6 cannot demonstrate their own improvement.
 6. **Flat sidecar schema parity (S3)**, scoped as a Hard-Rule-2 compliance item.
 7. **Build discriminating fixtures for C4 and C5** before claiming either.
-8. **Repair the dynamic child timeout** (tasks 3.10–3.13). Infrastructure only; gates no quality
+8. **Repair the dynamic child timeout** — adopted 2026-09-17 as **D11 / Requirement 11**, tasks 3.10–3.13. Infrastructure only; gates no quality
    finding, but it gates coverage and it invalidates timeout-sensitive comparisons until fixed.
    Three distinct defects, verified against source:
    - **The dynamic budget is unreachable by construction.** `subprocess_mgr.py:163` takes
@@ -269,7 +269,7 @@ treat. Blocking on it would leave the behavioural work with no before-measuremen
    the arq worker wraps the same call in `job_timeout = 3630`. The two callers share the
    primitive but not the policy. No document that *completed* was affected — all 24 finished well
    inside both bounds — but **any Wave 3–6 comparison that touches timeouts is invalid against
-   this baseline until task 3.12 lands and the figures are re-taken through the worker path.**
+   this baseline until D11 (task 3.12) lands and the figures are re-taken through the worker path.**
 3. **Garble behaviour is not observable from storage at all.** Any before/after must come from
    run logs, which are ephemeral and were not archived as part of this baseline.
 4. Only 3 documents took the flat route and all 3 are chart- or image-heavy statistics pages.

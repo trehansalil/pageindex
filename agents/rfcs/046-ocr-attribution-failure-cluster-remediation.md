@@ -225,6 +225,8 @@ This RFC therefore scopes **P0 (baseline truth) and P0.5 (cluster remediation)**
 
    The real hazard is identity, and it is worse. The registry has no per-filename key: each ingestion adds a row and a full set of `processed/{doc_id}.*` objects, and nothing supersedes the old ones. `سياسة حوكمة و إدارة البيانات - Copy.pdf` already holds **four** rows in the working bucket. A naive "previous verdict for this file" lookup can therefore return any of them, and a naive count of corpus verdicts double-counts.
 
+8. **A coverage change is not a verdict movement.** A document that had no scored row in the attributed baseline and reaches a verdict later has *gained coverage*; criteria 3 and 4 do not apply to it, because there is no prior verdict for it to have moved from. Such a document SHALL be reported in its own section of the delta table together with the reason it was uncovered at baseline. As of the 1.C baseline exactly one document qualifies — `world-stats-pocketbook`, which did not complete, for the reason D11 addresses. Without this criterion R9.4 would block acceptance on the very outcome D11 exists to produce. *(Added 2026-09-17.)*
+
 ### Requirement 10: Zone 2 Closure — post-NFKC ScriptContext call sites (D10)
 
 **User Story:** As the garble detector, I want every `ScriptContext` I am given to have been constructed before NFKC destroyed the evidence, so that my verdicts are based on signals that still exist.
@@ -238,6 +240,22 @@ Adopted with Zone 2 ownership (OQ2). RFC-040 D6 reordered NFKC-before-bidi only 
 3. An architecture guard SHALL enforce criterion 2 so the pattern cannot silently reappear — this is its third recurrence (RFC-040 D6, RFC-045 `2c39168`, and D5 of this RFC all addressed different instances of it).
 4. `audit/zones/ZONE_OWNERSHIP.yaml` `zone_2.successor_rfc` SHALL be set to RFC-046, and `zone_2.resolved` SHALL be set true only when criteria 1–3 hold.
 5. D10 SHALL land in Wave 3 alongside D5, which shares its subsystem.
+
+### Requirement 11: Reachable Dynamic Child Timeout (D11)
+
+**User Story:** As the corpus run that has to finish, I want the page-count-derived budget the pipeline computes for a large document to be the budget that document actually gets, and when a child dies I want to know why.
+
+Found 2026-09-17 while diagnosing why `world-stats-pocketbook` (292pp) never reached a verdict in the 1.C baseline. Three defects in one subsystem.
+
+#### Acceptance Criteria
+
+1. `effective_timeout` SHALL exceed the dynamic budget whenever the dynamic budget exceeds the static floor. Today `CHILD_TIMEOUT = JOB_TIMEOUT - CHILD_GRACE_SECONDS`, and `JOB_TIMEOUT` is itself sized as *max dynamic child timeout + buffer + grace* (`worker/constants.py:5-43`). The floor in `max(CHILD_TIMEOUT, chunked_docling_timeout_s(n))` (`worker/subprocess_mgr.py:163`) is therefore derived from a ceiling built to contain the dynamic value, and the `max()` can never select the dynamic branch — for any page count up to `MAX_DOCLING_PAGES`. A 292-page document computes a 3300s budget and is handed 3600s of a floor that was sized to hold it.
+2. A property test SHALL assert criterion 1 across the whole domain of `chunk_count` and SHALL **fail against HEAD** before any fix lands. `tests/test_worker.py:330` and `:526` currently both pass while asserting contradictory things about this boundary; neither is a regression test for it.
+3. The outer bound applied by every caller of `_run_converter_subprocess` SHALL be consistent with the inner bound it wraps. There are exactly two callers — `preprocess_client._process_one` (no outer bound at all) and `worker.job.process_document_job` (arq `job_timeout=3630`, `worker/lifecycle.py:143`, applied at `arq/worker.py:570`) — and a bound fixed before the document is seen cannot track one derived after the page count is known. The arq bound SHALL be set per-function, from the same derivation the child uses.
+4. `MAX_EFFECTIVE_TIMEOUT` SHALL be re-derived rather than retained at its present `54000`, which carries no recorded derivation. Once arq's bound stops binding, that 15-hour rail becomes reachable, and with `MAX_JOBS_DEFAULT = 1` a single hung document holds the queue for all of it.
+5. An architecture guard SHALL enforce criterion 3, so a third caller of `_run_converter_subprocess` cannot be introduced without an outer bound.
+6. The child's stderr SHALL be retained on the timeout path. `subprocess_mgr.py` kills the process group and re-raises **before** `proc.communicate()`, so `stderr_bytes` stays `b""` and a timeout is indistinguishable from a hang. This is why the originating question — was `world-stats-pocketbook` slow or non-terminating? — is still unanswered.
+7. D11 SHALL produce **no verdict movement** on any document the 1.C baseline scored. It changes how long a conversion may run, never what is measured. A movement attributed to D11 is a measurement defect under R9.4, not a result.
 
 ## Decision Summary
 
@@ -283,6 +301,12 @@ Enumerate and correct the seven post-NFKC `ScriptContext` construction sites RFC
 
 This is the **third** distinct instance of one pattern — RFC-040 D6, RFC-045 `2c39168`, and D5 each fixed a different site where a signal was read after NFKC had destroyed the evidence. The guard, not the seven fixes, is the durable deliverable.
 
+### D11: Reachable Dynamic Child Timeout (Requirement 11)
+
+Break the floor/ceiling derivation so `max(CHILD_TIMEOUT, chunked_docling_timeout_s(n))` can select the dynamic branch; set arq's per-function timeout from that same derivation via `func(process_document_job, timeout=...)` so the batch CLI and the worker stop disagreeing; re-derive `MAX_EFFECTIVE_TIMEOUT`; retain child stderr on the timeout path. Infrastructure, not behaviour — no signal, threshold or verdict input changes. Lands in Wave 3 as tasks 3.10-3.13, failing property test first.
+
+**A second deliberate scope expansion**, after D10. A follow-up RFC was the alternative and was rejected: the 1.C baseline was taken through the batch CLI, which applies no outer bound, while production runs under arq's. The two do not share timeout semantics, so until D11 lands **every Wave 3-6 comparison that touches timeouts is invalid against that baseline**. See R9.8 and the 1.C blind spots.
+
 ## Implementation Plan
 
 
@@ -294,7 +318,7 @@ Three vocabularies are in use and they describe the same work. This table is the
 |---|---|---|---|
 | **P0** · Baseline truth | Phase 0 — Baseline | **Wave 1** | D2, D3, RFC-042 4.2 |
 | **P0** (evidence arm) | Phase 1 — Evidence | **Wave 2** | D1 |
-| **P0.5** · Cluster fixes | Phase 2 | **Wave 3** | D5, D8, D10 |
+| **P0.5** · Cluster fixes | Phase 2 | **Wave 3** | D5, D8, D10, D11 |
 | **P0.5** | Phase 3 | **Wave 4** | D6 |
 | **P0.5** | Phase 4 | **Wave 5** | D7 |
 | **P0.5** | Phase 4 | **Wave 6** | D4 |
@@ -307,7 +331,7 @@ In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus v
 
 1. **Phase 0 — Baseline** (D2, D3, and RFC-042 4.2 per D9). Attribution must exist before anything can move, or movements cannot be explained. Corpus run at the end of this phase is the graded baseline.
 2. **Phase 1 — Evidence** (D1). Independent of the code work; parallelizable with Phase 0. Gates any RFC-047 claim, not this RFC's own deliverables.
-3. **Phase 2 — Independent cluster fixes** (D5, D8, D10). D5 and D10 share the garble/normalization subsystem and land together; D8 is independent and runs report-only (OQ5).
+3. **Phase 2 — Independent cluster fixes** (D5, D8, D10, D11). D5 and D10 share the garble/normalization subsystem and land together; D8 is independent and runs report-only (OQ5). D11 is infrastructure and touches none of their subsystems, so it can land at any point in the wave — but its stderr-retention criterion (R11.6) is the only item that yields a diagnosis rather than a larger budget, and should land first if the wave is cut short.
 4. **Phase 3 — Verdict plumbing** (D6). Touches `evaluate_gates`' signal-selection contract; must land alone so its corpus delta is attributable.
 5. **Phase 4 — Recovery arbitration** (D4, D7). D7's arbitration reconciliation is a prerequisite for D4's corrective re-OCR, since that introduces a third candidate. Land D7 then D4.
 6. **Phase 5 — Corpus validation** (D9). Full run, attributed per-document delta table, pipeline-version bump, remote re-baseline.
@@ -327,7 +351,8 @@ In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus v
 | 4 | D4: Content-derived language selection + image recovery rung | ~6h | Medium — new recovery method must satisfy two AST guards |
 | 2 | D10: Zone 2 closure — 7 post-NFKC ScriptContext sites + guard | ~8h | Medium — third recurrence of one pattern; guard is the durable part |
 | 5 | D9: Corpus validation, attribution table, version bump | ~6h | Medium — long-running; coordination with RFC-041 3.5a |
-| **Total** | | **~59h** | **(revised 2026-09-15 from ~51h: +D10 via Zone 2 ownership, OQ2)** |
+| 2 | D11: Timeout floor/ceiling fix + arq per-function bound + stderr retention + guard | ~6h | Medium — widens a production timeout rail; property test pins the invariant |
+| **Total** | | **~65h** | **(revised 2026-09-17 from ~59h: +D11, Requirement 11. Previously revised 2026-09-15 from ~51h: +D10 via Zone 2 ownership, OQ2)** |
 
 ## Test Strategy
 
@@ -340,7 +365,8 @@ In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus v
 - **D7:** Doc 17 reproduction — recovery yields clean markdown, tree rebuild fails, better extraction retained. Arbitration tests with three candidates. A script-awareness test: formal Arabic must not lose to Latin gibberish on any scorer. `tests/test_zone3_ocr_recovery.py` updated in the same change.
 - **D4:** Latin-filename/Arabic-content image test. Bounded-retry test (at most one corrective pass). AST guard conformance for any new recovery method (`full_page_already_applied` guard, `_all_defects` predicate).
 - **D8:** Density numerator unit tests over summaries and image OCR text. Env parse tests for `1`, `yes`, `true`, whitespace, `false`, unset.
-- **Corpus:** Attributed per-document delta table, both directions, after Phase 4. Baseline taken after Phase 0.
+- **D11:** A property test over the full `chunk_count` domain asserting `effective_timeout` exceeds the dynamic budget and does not exceed the caller's outer bound — written to fail against HEAD (R11.2). Reconcile `test_worker.py:330` against `:526`, which contradict each other today. Architecture guard enumerating `_run_converter_subprocess`'s callers and asserting each declares an outer bound. A unit test asserting stderr survives the timeout path.
+- **Corpus:** Attributed per-document delta table, both directions, after Phase 4. Baseline taken after Phase 0. Coverage gains reported separately from verdict movements per R9.8.
 
 ## Risks
 
@@ -393,9 +419,11 @@ All five original open questions were put to the owner on 2026-09-15 and answere
 4. **How far should D6's contract change go?** — **RESOLVED (2026-09-15): the thorough path.** `evaluate_gates` gains a caller-declared signal source so a dead argument becomes impossible to pass, and a guard test enforces it. This touches every caller, accepted deliberately to prevent recurrence rather than to minimise blast radius.
 5. **Is the density numerator (D8) in scope, or is it threshold work by another name?** — **RESOLVED (2026-09-15): in scope, but measure-first.** The corrected counter is built and run in **report-only mode**; it produces a per-document table showing exactly which documents would move and by how much, and activation is a separate decision taken on those real numbers. Task 3.4 is restructured accordingly. This removes the RFC author's estimate from the decision entirely and is a better shape than the original proposal.
 
+6. **Where do the 25 corpus documents come from?** — **RESOLVED (2026-09-17): the owner supplied them and they are ingested.** The 1.C attributed baseline scored **24 of 25**; `world-stats-pocketbook` did not complete, for the reason D11 addresses. D4, D6 and D8 are no longer unit-coverage-only. See [[rfc046-wave1-attributed-baseline]].
+
 ### Still open
 
-6. **Where do the 25 corpus documents come from?** The Run-8 artifacts and four of the six failing documents are not in the shared bucket (see Environment below). The owner is supplying the corpus. Until it arrives, D5 and D7 are validatable against Docs 17 and 22; D4, D6 and D8 have unit coverage only.
+None. All six questions are resolved; the entries above are retained with their resolutions rather than deleted.
 
 ## Environment
 
@@ -414,6 +442,8 @@ Three environment facts that bear on the RFC:
 
 1. **Fidelity is established.** A trial ingest of Doc 19 (سياسة حوكمة) reproduced Run 8 to within 2 characters: PASS/`structural_pass`, `max_leaf_ratio` **0.1873 exactly**, 18,289 chars vs 18,287. The local in-process route faithfully reproduces Run-8's pipeline for local-route documents.
 2. **The arq queue must not be used.** Containerised workers from a separate `/app` deployment are live on the *same* Redis db and the *same* bucket, configured against the **remote** Docling service. Enqueuing work risks those workers processing it with different code, silently invalidating results. `preprocess_client.py` bypasses the queue entirely and is the required path.
+
+   **Consequence for every baseline taken this way (2026-09-17).** `preprocess_client._process_one` applies **no outer timeout bound**; `worker.job.process_document_job` runs under arq `job_timeout=3630`. The 1.C baseline and production therefore do not share timeout semantics. No document that completed was affected — all 24 finished well inside both bounds — but the one that did not complete, `world-stats-pocketbook`, cannot be compared across the two paths, and neither can any Wave 3-6 result that touches timeouts, until D11 lands and the figures are re-taken through the worker path.
 3. **The Run-8 baseline is unrecoverable.** Run 8 claims verification against "20 meta objects, all `processed_at` 2026-09-09"; the bucket holds 17, newest 2026-08-07, at an unchanged endpoint. **D3's tally correction therefore becomes a documentation deliverable only** — it cannot be re-derived from stored artifacts — and every gate anchors to a fresh attributed baseline taken under Requirement 9, not to Run 8.
 
 ## Traceability
@@ -441,4 +471,9 @@ Three environment facts that bear on the RFC:
 | Evidence: `fired_prongs` dropped | produced `garble.py:533-535`; persisted set `indexer.py:1322-1323` |
 | Constraints: architecture guards | `tests/test_architecture_guards.py:996,1035,1063` (OCR-retry AST guard), `:1089-1114` (single call site), `:1116-1131` (no unreachable flag), `:772-838` (hot-path env reads), `:1134` (eligibility symmetry) |
 | Constraints: pinned contracts | `tests/test_zone3_ocr_recovery.py` (keep-best signature), `tests/test_converters.py:916-1005,1623` (`_tesseract_ocr_image`), `tests/test_facade_surface_guard.py:138` (frozen `__all__`) |
+| Evidence: D11 floor/ceiling inversion | `worker/constants.py:5-43` (the self-describing derivation), `worker/subprocess_mgr.py:163` (`max(CHILD_TIMEOUT, ...)`), `chunked_docling_timeout_s` = `300 + n*1500`, `MAX_DOCLING_PAGES=150` |
+| Evidence: D11 caller divergence | `_run_converter_subprocess` callers — `preprocess_client._process_one` (unbounded), `worker/job.py::process_document_job` under `worker/lifecycle.py:143` `job_timeout=3630`, applied `arq/worker.py:570` |
+| Evidence: D11 discarded stderr | `worker/subprocess_mgr.py` timeout path kills the group and re-raises before `proc.communicate()`; `stderr_bytes` stays `b""` |
+| Evidence: D11 contradictory tests | `tests/test_worker.py:330` vs `:526` — both pass, both cannot be right |
+| Baseline | [[rfc046-wave1-attributed-baseline]] — 1.C gate, pass-with-caveats, 24/25 documents |
 | Process: pipeline version | `config.py:12-15`; compared `client/remote.py:62` |
