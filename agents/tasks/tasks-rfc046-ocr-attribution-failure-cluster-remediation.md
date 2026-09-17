@@ -272,12 +272,50 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R10.3](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.4](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.5](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [Property 10](design-rfc046-ocr-attribution-failure-cluster-remediation#property-10-no-post-nfkc-script-context)_
     - _Dependencies: 3.8_
 
+  - [ ] 3.10 Failing property test for the timeout invariant — **land this first**
+
+    - The current tests verify each half in isolation and both pass while contradicting each other: `tests/test_worker.py:330` asserts `effective_timeout` can reach `MAX_EFFECTIVE_TIMEOUT` (54000); `tests/test_worker.py:526` asserts the persisted deadline cannot exceed `JOB_TIMEOUT + REAP_GRACE` (3750). Nothing tests the relationship, which is why the two halves drifted.
+    - Add the property that is actually broken: for any `chunk_count`, `effective_timeout` MUST exceed the sum of the inner per-chunk budgets (`chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S`, `converters/docling_conv.py:714`) plus a non-conversion overhead allowance, AND MUST NOT exceed the outer bound its caller imposes.
+    - This fails today at `chunk_count = 2`: `max(CHILD_TIMEOUT=3600, 300 + 2*1500=3300) = 3600`, against 3000s of inner chunk budget — 600s left for model load, OCR, tree build and every LLM call.
+    - _Requirements: [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 1.C_
+
+  - [ ] 3.11 Fix the floor/ceiling inversion in the dynamic child timeout
+
+    - `subprocess_mgr.py:163` computes `effective_timeout = max(CHILD_TIMEOUT, chunked_docling_timeout_s(n))`, but `CHILD_TIMEOUT = JOB_TIMEOUT - 30 = 3600` and `JOB_TIMEOUT = 3630` was itself sized (`worker/constants.py:11`) as *"max_dynamic_child_timeout 3300 + 300 buffer + CHILD_GRACE_SECONDS 30"*. **The floor is derived from a ceiling sized to hold the dynamic budget, so the floor is always >= the dynamic budget and `max()` can never select it.** RFC-028 D0 built the size-proportional timeout and made it unreachable in the same change.
+    - `max()` is the wrong combinator once `is_docling_route` and `chunk_count > 1`: the single-pass floor exists to cover non-conversion overhead, so the chunked budget should *add to* it, not compete with it.
+    - Empirically: `world-stats-pocketbook-2023.pdf` is 292 pages, `MAX_DOCLING_PAGES=150` -> `chunk_count=2` -> 3300 discarded -> 3600 applied. Four consecutive failures. The run-3 log records `ERROR: converter child timed out` (`preprocess_client.py:154`), i.e. the inner `asyncio.timeout`, confirming the 16.5x inspector multiplier did not apply.
+    - _Requirements: [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 3.10_
+
+  - [ ] 3.12 Collapse the batch-CLI / arq-worker timeout divergence
+
+    - `_run_converter_subprocess` has exactly two callers (verified via call graph): `preprocess_client._process_one` and `worker.job.process_document_job`. They share the primitive but **not the policy** — arq wraps the worker path in a worker-level `job_timeout = JOB_TIMEOUT = 3630` (`worker/lifecycle.py:143`, applied at `arq/worker.py:570`); the batch CLI has no outer bound at all.
+    - Consequence: `MAX_EFFECTIVE_TIMEOUT` (54000) and the 16.5x inspector multiplier are **dead in the worker path** — arq cancels at 3630 first — while both are live via the batch CLI. The 1.C baseline was taken through the CLI, so **the baseline and production do not share timeout semantics.**
+    - A static, pre-document bound can never track a dynamic, post-handshake one. Do not try to match the numbers — pick an authority. The codebase has already half-committed to the dynamic one (`_persist_effective_timeout` + `reap_stale_jobs` maintain a per-document deadline in Redis); arq's static bound is the vestige fighting it.
+    - Make arq's bound a non-binding backstop via its per-function timeout: `func(process_document_job, timeout=MAX_EFFECTIVE_TIMEOUT + REAP_GRACE)` (`arq.worker.func`; the kwarg is `timeout`, and it sets the `Function.timeout_s` that `arq/worker.py:570` branches on). Cron jobs keep their own 30s / 300s timeouts, untouched.
+    - **Then re-derive `MAX_EFFECTIVE_TIMEOUT`, which currently has no stated derivation.** With the backstop non-binding and `MAX_JOBS_DEFAULT = 1` (`worker/lifecycle.py:30`), a 15-hour rail means one genuinely hung document blocks the queue for 15 hours. Size it from the worst *legitimate* document, or cap `chunk_count`.
+    - Add an architecture guard asserting every caller of `_run_converter_subprocess` is subject to the same outer bound — same pattern task 3.9 uses for Zone 2.
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 3.11_
+
+  - [ ] 3.13 Retain child stderr on the timeout path
+
+    - `_run_converter_subprocess` calls `_kill_group(proc)` and re-raises before `proc.communicate()` returns, so `stderr_bytes` is never populated and **child stderr is discarded on every timeout**. This is why "how far did it get?" is unanswerable for `world-stats-pocketbook` after four failures, and why a 60s handshake stall is indistinguishable from a full-conversion overrun.
+    - Drain whatever stderr is buffered before killing the group, and surface it on the `TimeoutError` the way `ConverterChildError` already carries `stderr_tail`.
+    - Smallest and most independent item here, and the only one that produces a *diagnosis* rather than a larger budget. Land it even if 3.11/3.12 slip.
+    - _Requirements: [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: none_
+
   - [ ] 3.C **[GATE]** Checkpoint — Independent fixes attributed
 
     - Corpus run. Per-document delta against the 1.C baseline, each change attributed to D5, D8 or D10.
+    - **3.10–3.13 are infrastructure and attribute to no D-deliverable.** They must not produce a verdict movement on any of the 24 documents the 1.C baseline already scored — if one appears, that is an unexplained change and R9.4 blocks acceptance pending explanation.
+    - `world-stats-pocketbook-2023.pdf` reaching a verdict for the first time is a **coverage** change, not a verdict movement: it has no 1.C row to move from. Record it as coverage 25/25 and score it as a new baseline row; do not count it toward any before/after rate.
+    - Re-run the 1.C attribution figures through the **worker** path once 3.12 lands, not only the batch CLI. Until then the baseline's timeout semantics differ from production's (see 3.12) and any timeout-sensitive comparison is invalid.
     - Verify no threshold moved (3.7 green). `uv run pytest` green.
-    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
-    - _Dependencies: 3.1–3.9_
+    - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
+    - _Dependencies: 3.1–3.13_
 
 - [ ] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
 

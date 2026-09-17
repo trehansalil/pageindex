@@ -238,10 +238,23 @@ treat. Blocking on it would leave the behavioural work with no before-measuremen
    Docling's internal OCR. Without both, Waves 4–6 cannot demonstrate their own improvement.
 6. **Flat sidecar schema parity (S3)**, scoped as a Hard-Rule-2 compliance item.
 7. **Build discriminating fixtures for C4 and C5** before claiming either.
-8. **Re-run `world-stats-pocketbook` under a corrected timeout.** The dynamic budget (3300 s)
-   falls below the `CHILD_TIMEOUT` floor (3600 s) and is discarded by `max()`, so the largest
-   document in the corpus receives the same budget as a one-page document. Infrastructure only;
-   gates no quality finding.
+8. **Repair the dynamic child timeout** (tasks 3.10–3.13). Infrastructure only; gates no quality
+   finding, but it gates coverage and it invalidates timeout-sensitive comparisons until fixed.
+   Three distinct defects, verified against source:
+   - **The dynamic budget is unreachable by construction.** `subprocess_mgr.py:163` takes
+     `max(CHILD_TIMEOUT, chunked_docling_timeout_s(n))`, but `CHILD_TIMEOUT = JOB_TIMEOUT − 30 =
+     3600` and `JOB_TIMEOUT = 3630` was itself sized (`worker/constants.py:11`) as *"max_dynamic
+     _child_timeout 3300 + 300 buffer + 30"*. The floor is derived from a ceiling sized to hold
+     the dynamic budget, so `max()` can never select the dynamic value. RFC-028 D0 built the
+     size-proportional timeout and made it unreachable in the same change. `world-stats` at 292
+     pages yields `chunk_count=2` → 3300 discarded → 3600 applied, of which
+     `docling_conv.py:714` already spends 3000 s on the two chunk passes.
+   - **`MAX_EFFECTIVE_TIMEOUT` and the 16.5× inspector multiplier are dead in the worker path.**
+     Both exceed arq's worker-level `job_timeout = 3630` (`worker/lifecycle.py:143`, applied at
+     `arq/worker.py:570`), so arq cancels first. They are live only via the batch CLI.
+   - **Child stderr is discarded on every timeout.** `_run_converter_subprocess` calls
+     `_kill_group` and re-raises before `proc.communicate()` returns. This is the cheapest fix
+     and the only one that yields a *diagnosis* rather than a bigger budget.
 
 ---
 
@@ -251,6 +264,12 @@ treat. Blocking on it would leave the behavioural work with no before-measuremen
    prong, so even a document that triggered the flag would leave no stored trace.
 2. `world-stats-pocketbook` was never measured — the only document above `MAX_DOCLING_PAGES`,
    and `extraction_stages` is empty by construction for that route regardless.
+2b. **This baseline and production do not share timeout semantics.** The run was taken through
+   `preprocess_client`, which calls `_run_converter_subprocess` directly with no outer bound;
+   the arq worker wraps the same call in `job_timeout = 3630`. The two callers share the
+   primitive but not the policy. No document that *completed* was affected — all 24 finished well
+   inside both bounds — but **any Wave 3–6 comparison that touches timeouts is invalid against
+   this baseline until task 3.12 lands and the figures are re-taken through the worker path.**
 3. **Garble behaviour is not observable from storage at all.** Any before/after must come from
    run logs, which are ephemeral and were not archived as part of this baseline.
 4. Only 3 documents took the flat route and all 3 are chart- or image-heavy statistics pages.
