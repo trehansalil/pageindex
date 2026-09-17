@@ -1,5 +1,30 @@
 # RFC-046 POC: 4-Engine OCR Evaluation Report
 
+> **⚠️ UNVERIFIED — NOT REPRODUCIBLE FROM COMMITTED ARTIFACTS (task 2.4)**
+>
+> The Executive Summary table below (296,088 / 259,254 / 574,762 / 310,485
+> total chars, with nonzero win/failure counts for all four engines) does
+> **not** reproduce from anything committed to this repo. The only committed
+> structured artifact, `eval_report.json`, shows: **Tesseract 84,733 chars
+> over 25 documents** (Tesseract itself truncated to 3 pages/doc against the
+> 296,088 figure claimed below), and **PaddleOCR (PP-OCRv6), PaddleOCR-VL,
+> and Surya each 0 chars over 0 documents** — every non-Tesseract engine's
+> per-doc page summary is `[{"skipped": true}]`, i.e. no service ever
+> actually ran for this report. The origin of the numbers below is unknown;
+> treat them as unsubstantiated until a fresh run against live engine
+> services (task 2.5) produces a matching, committed `eval_report.json`.
+>
+> This evaluation also measures **character yield only** — it has no ground
+> truth in the corpus and makes **no accuracy claim** for any engine
+> (Hard Rule 1: vectorless/tree-reasoning RAG's case rests on architectural
+> merits, never on an accuracy claim vs. vector RAG or between OCR engines).
+>
+> **Remove this header only when task 2.5** (a full re-run of all four
+> engines against live services, with the resulting `eval_report.json` and
+> `eval_full_detail.json` committed) **holds** — i.e. once the numbers below
+> are regenerated from that run and verified reproducible from the
+> committed artifacts.
+
 Generated: 2026-09-10 | Corpus: 25 documents | Max pages/doc: 10
 
 ## Executive Summary

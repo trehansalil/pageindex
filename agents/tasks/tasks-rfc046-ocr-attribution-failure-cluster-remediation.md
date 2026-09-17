@@ -140,7 +140,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.5](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
     - _Dependencies: 1.5_
 
-  - [ ] 1.C **[GATE]** Checkpoint — Attributed corpus baseline
+  - [x] 1.C **[GATE]** Checkpoint — Attributed corpus baseline
 
     - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs.
     - This run is the graded baseline for every subsequent wave. **No behavioural deliverable (Waves 3–6) may merge until this gate is checked.**
@@ -148,36 +148,51 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - **PREREQUISITE — set `VERDICT_DOWNGRADE_ENABLED=true` for the baseline run (found 2026-09-15, task 1.9).** The registry upsert is a max-verdict-priority CAS (`registry/queries.py:95-113`, `VERDICT_PRIORITY` PASS=3 > MARGINAL=2 > FAIL=1 > ERROR=0): a verdict can only be upgraded, never downgraded, across re-ingestion cycles. `preprocess_client.py:177` writes through that same CAS, and `worker/registry_mirror.py:88` mirrors it onto the MinIO sidecar. `VERDICT_DOWNGRADE_ENABLED` defaults to **false** (`config.py`), and it is the only thing that sets `force_verdict_override` (`indexer.py:1254,1415`).
     - Consequence if left unset: a document that Run 8 stored at PASS and that the attributed baseline scores FAIL **keeps its PASS row**. The baseline would record improvements and silently suppress regressions — inverting [R9.3](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), which requires movements in both directions and forbids omitting either. Wiping `hashes/processed_hashes.json` does not help: that forces re-processing, not re-recording.
     - Verify after the run: for each of the 25 documents, the registry row's `verdict` matches the verdict in the freshly written sidecar. Any mismatch means the CAS suppressed a downgrade and the baseline is not usable.
-    - _Requirements: [R9.1](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour)_
-    - _Dependencies: 1.1–1.9_
+    - **PASSED WITH CAVEATS (2026-09-16).** Deliverable: [[rfc046-wave1-attributed-baseline]]. Waves 3-6 are unblocked.
+      - Coverage **24 of 25**. `world-stats-pocketbook-2023.pdf` did not complete; that is D11's subject and a coverage gap, not a verdict, per R9.8.
+      - `VERDICT_DOWNGRADE_ENABLED=true` was set for the run. The post-run check held: **0 registry-vs-sidecar verdict mismatches of 22**, so the CAS suppressed no downgrade.
+      - Identity resolved by `doc_name` + latest `processed_at` per R9.7. **7 superseded copies across 4 documents** were excluded; see the re-ingestion orphan note in the RFC.
+      - Attribution coverage is thin and honestly so: `ocr_engine` is present on **1 of 22** stored artifacts, `garble_prongs` on **0 of 22**. `null` means no Tesseract retry fired, which is the schema behaving correctly, not a gap. Docling's internal OCR is never attributed — that limit is now on the record rather than discovered later.
+      - **Caveat carried forward:** the run went through `preprocess_client.py`, which applies no outer timeout bound, while production runs under arq's 3630s. No completed document was affected, but timeout-sensitive comparisons against this baseline are invalid until D11 lands (R11.3, task 3.12, and blind spot 2b of the baseline).
+      - 1.9 is intentionally NOT done: the version bump moves to the first Wave 3 deliverable because Wave 1 landed nothing that can reclassify the corpus. The dependency below reads 1.1-1.9 for that reason and is discharged by the deferral, not by the bump.
+    - _Requirements: [R9.1](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.7](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.8](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour)_
+    - _Dependencies: 1.1–1.9 (1.9 deferred to Wave 3 by decision — see task 1.9)_
 
 - [ ] 2. Reproducible Evaluation Evidence (D1) — *parallelisable with all other waves*
 
-  - [ ] 2.1 Make unreachable engine endpoints a hard error
+  - [x] 2.1 Make unreachable engine endpoints a hard error
 
     - `run_paddleocr_*` (`:339,:379`), `run_paddleocr_vl_*` (`:418,:449`), `run_surya_*` (`:487,:518`) currently swallow connection failures into empty results.
     - A connection failure must raise; `main()` must exit non-zero naming the engine and endpoint.
     - **This is the defect that voided the RFC-036 D7 negative** — every call in that spike was "Connection refused" and the spike was closed as a quality finding.
+    - **DONE 2026-09-17.** `EngineUnreachableError(RuntimeError)` carries engine + endpoint (`:71`); all six `httpx.post` sites raise it; `_check_engine_health` (`:851`) covers the health probes; `main()` prints `ERROR: <engine> engine unreachable at <endpoint>` plus a start hint and exits 1. The phase loops re-raise it ahead of their generic handler, so a mid-run engine death propagates instead of becoming a per-document error. Tesseract's local per-page handling is untouched — one corrupt document still does not abort the run.
+    - **Widened during review:** the first cut caught `httpx.HTTPError` only, but `resp.json()` is inside the same `try` and `json.JSONDecodeError` is a `ValueError`. A crashed engine answering 200 with a truncated body — or a proxy answering 200 for a dead upstream — escaped and was recorded as `[{"error": ...}]`, the exact shape this task exists to delete, with the run still exiting 0. All six sites now catch `(httpx.HTTPError, ValueError)`, matching `_check_engine_health`. **Unreachable was never the whole failure mode; reachable-but-broken is the one that looks like evidence.**
     - _Requirements: [R1.3](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
     - _Dependencies: none_
 
-  - [ ] 2.2 Use the production language path in the harness
+  - [x] 2.2 Use the production language path in the harness
 
     - Replace the private map `_tess_langs_from_detected` (`:234`, `{"ar":"ara","de":"deu","en":"eng"}`) with `detect_ocr_langs` + `ensure_tessdata`.
     - The harness already imports production internals (`:251,:299`), so this is consistency, not new coupling — and without it the harness does not measure the path where D4's defect lives.
+    - **DONE 2026-09-17.** `_tess_langs_from_detected` is deleted; `_select_tesseract_langs` (`:275`) calls `detect_ocr_langs` + `ensure_tessdata` with production's `TessdataUnavailableError` fallback.
+    - **The sample is part of the path, not a detail.** The first cut passed the filename alone, which reproduces only half of production and loses `deu` on 6 German documents and `eng` on 5 Arabic ones — 12 of 25 corpus documents differ. Production has **two** shapes and the harness now reproduces both: documents with extracted text union filename + text (`pictures.py:1088-1094`, `recovery.py:293-294`); image inputs use the filename alone (`images.py:134`, `indexer.py:893`). The distinction is load-bearing — `detect_ocr_langs("")` returns `['deu','eng']` as an *empty-input fallback*, so unioning an absent sample injects German into every Arabic-only selection.
+    - Phase 0 already extracted this text and discarded it, keeping only ISO codes, while still threading a now-unused `detected_langs` into the runner. `detect_lang_from_text_layer` now returns `text_sample` and it is threaded through to language selection.
     - _Requirements: [R1.1](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
     - _Dependencies: none_
 
-  - [ ] 2.3 Fix comparison key labelling
+  - [x] 2.3 Fix comparison key labelling
 
     - `compare_results` (`:553`) emits `paddleocr_*` key names into the `comparison_surya` block, consumed at `:691`.
+    - **DONE 2026-09-17.** `compare_results` emits engine-neutral keys (`other_total_chars`, `other_total_time_s`, `other_avg_confidence`, `other_low_conf_pages`) and every consumer moved in lockstep — `generate_summary`, `write_human_report`, and the VL/Surya win counters. No artifact migration needed: every `comparison_surya` / `comparison_vl` block in the committed `eval_report.json` is a bare `{"note": ...}` stub.
     - _Requirements: [R1.2](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
     - _Dependencies: none_
 
-  - [ ] 2.4 Mark the existing report unverified
+  - [x] 2.4 Mark the existing report unverified
 
     - Add a header to `agents/spikes/ocr_eval_rfc046/eval_report.md` stating its numbers are not reproducible from committed artifacts, pending 2.5.
     - Committed state: tesseract 84,733 chars / 25 docs; surya, paddleocr_vl, paddleocr each 0 chars / 0 docs; Tesseract truncated to 3 pages/doc against a reported 296,088.
+    - **DONE 2026-09-17.** Header at `eval_report.md:3-26`, written from the artifacts rather than from this task's restatement of them. States the committed reality, that the origin of the table's numbers is unknown, that the measure is character yield and **not** accuracy (HR1), and ties its own removal to 2.5 producing a matching committed `eval_report.json`.
+    - Found while writing it: the existing report's own `Max pages/doc: 10` line is wrong — the run used `--max-pages 3`.
     - _Requirements: [R1.6](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
     - _Dependencies: none (do first — it is a one-line honesty fix)_
 
@@ -187,6 +202,10 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Commit artifacts in which every enabled engine has non-zero data for every processed document.
     - Regenerate `eval_report.md` from the committed artifacts; record engine versions, host, run date; state explicitly that it measures character yield, not accuracy, absent ground truth.
     - Remove the 2.4 header only once this holds.
+    - **BLOCKED — needs the owner's authorisation to start three services** (2026-09-17). Ports and start commands, from `scripts/ocr_spike_eval.py:44-46,60-68`: paddleocr `:8202` (`services/paddleocr-service`, 60s health timeout), paddleocr_vl `:8204` (`services/paddleocr-vl-service`, 5s, also requires `status == "ok"`), surya `:8207` (`services/surya-ocr-service`, 10s). Tesseract is local and already present with `ara`/`deu`/`eng`.
+    - The cap is `--max-pages`, `default=10`, at `:875`; `:893` maps `0` to **9999**, so "remove the cap" is `--max-pages 0` and is a high bound, not literally unlimited. Say so in the regenerated report. Largest corpus `page_count` observed is 77, so 9999 binds nothing here.
+    - **The artifact completeness check does not exist.** Nothing in `_run_pipeline` asserts it and `main()` has no exit path for it. It must be built as part of this task: a gate before `eval_report.json` is written (`:1181`) asserting that, for each non-skipped engine, every document has at least one page with no `error`/`skipped` key and `char_count > 0`; failure exits non-zero naming the engine and the offending documents. Without it, a 200-with-empty-body produces an artifact that looks complete.
+    - Land 2.2's text-sample union **before** this run or the German yield figures will be wrong for a reason nobody records. *(Done — see 2.2.)*
     - _Requirements: [R1.4](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [R1.5](046-ocr-attribution-failure-cluster-remediation#requirement-1-reproducible-ocr-evaluation-evidence), [DP-D1](design-rfc046-ocr-attribution-failure-cluster-remediation#d1-reproducible-evaluation-evidence)_
     - _Dependencies: 2.1, 2.2, 2.3_
 

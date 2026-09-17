@@ -32,6 +32,9 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from pageindex_mcp.converters.ocr_langs import detect_ocr_langs, ensure_tessdata
+from pageindex_mcp.converters.types import TessdataUnavailableError
+
 try:
     from pdf_inspector import detect_pdf as _detect_pdf
     HAS_PDF_INSPECTOR = True
@@ -41,6 +44,44 @@ except ImportError:
 PADDLEOCR_URL = os.environ.get("PADDLEOCR_SERVICE_URL", "http://localhost:8202")
 PADDLEOCR_VL_URL = os.environ.get("PADDLEOCR_VL_SERVICE_URL", "http://localhost:8204")
 SURYA_URL = os.environ.get("SURYA_SERVICE_URL", "http://localhost:8207")
+
+# --- Engine identity + hard-failure contract (task 2.1) ------------------------
+#
+# A connection failure to a remote OCR engine must be a hard, named error, not
+# a silently-empty result — this exact defect (a bare `except Exception`
+# swallowing httpx.ConnectError into an empty page list) voided the RFC-036 D7
+# negative result: every call in that spike was "Connection refused", and the
+# spike was closed as a *quality* finding instead of an infrastructure one.
+
+_ENGINE_PADDLEOCR = "paddleocr"
+_ENGINE_PADDLEOCR_VL = "paddleocr_vl"
+_ENGINE_SURYA = "surya"
+
+_ENGINE_START_HINTS = {
+    _ENGINE_PADDLEOCR: "cd services/paddleocr-service && uv run uvicorn app:app --port 8202",
+    _ENGINE_PADDLEOCR_VL: "cd services/paddleocr-vl-service && uv run uvicorn app:app --port 8204",
+    _ENGINE_SURYA: "cd services/surya-ocr-service && uv run uvicorn app:app --port 8207",
+}
+
+_PADDLEOCR_HEALTH_TIMEOUT_S = 60
+_PADDLEOCR_VL_HEALTH_TIMEOUT_S = 5
+_SURYA_HEALTH_TIMEOUT_S = 10
+
+
+class EngineUnreachableError(RuntimeError):
+    """Raised when an OCR engine's HTTP endpoint cannot be reached or is unhealthy.
+
+    Must propagate all the way out of a run and cause a non-zero exit naming
+    the engine and endpoint — an unreachable engine must never be silently
+    coerced into "the user asked to skip it" (that coercion is exactly the
+    defect this task closes).
+    """
+
+    def __init__(self, engine: str, endpoint: str, cause: BaseException) -> None:
+        self.engine = engine
+        self.endpoint = endpoint
+        super().__init__(f"{engine} engine unreachable at {endpoint}: {cause}")
+
 
 # --- Language classification ---------------------------------------------------
 
@@ -85,6 +126,12 @@ def reclassify_lang_from_content(tess_pages: list[dict], filename_lang: str) -> 
     if script["arabic_ratio"] > 0.3:
         return "ar"
     return filename_lang
+
+
+# Characters of extracted text handed back for language selection. Enough for
+# detect_ocr_langs' script and marker analysis; short enough to keep in memory
+# for every document in the corpus at once.
+_LANG_SAMPLE_CHARS = 4000
 
 
 def detect_lang_from_text_layer(filepath: Path, max_sample_pages: int = 3) -> dict:
@@ -149,6 +196,10 @@ def detect_lang_from_text_layer(filepath: Path, max_sample_pages: int = 3) -> di
 
     return {
         "detected_langs": langs,
+        # The raw sample, not only the ISO codes derived from it: production
+        # selects OCR languages from the TEXT (pictures.py:1089), so a caller
+        # that only gets codes back cannot reproduce production's union.
+        "text_sample": text[:_LANG_SAMPLE_CHARS],
         "source": "text_layer",
         "text_layer_chars": text_len,
         "arabic_chars": ar_count,
@@ -231,17 +282,60 @@ def garble_signal_metrics(text: str) -> dict:
 
 # --- Tesseract runner (local) --------------------------------------------------
 
-def _tess_langs_from_detected(detected_langs: list[str]) -> list[str]:
-    """Build Tesseract language list from detected language set."""
-    tess_map = {"ar": "ara", "de": "deu", "en": "eng"}
-    tess_langs = list(dict.fromkeys(tess_map.get(l, "eng") for l in detected_langs))
-    if "eng" not in tess_langs:
-        tess_langs.append("eng")
-    return tess_langs
+def _select_tesseract_langs(filename: str, text_sample: str | None = None) -> list[str]:
+    """Select Tesseract languages via production's language path (task 2.2).
+
+    Uses ``detect_ocr_langs`` + ``ensure_tessdata`` (``pageindex_mcp.converters
+    .ocr_langs``) — the same functions production calls at its OCR escalation
+    sites (pictures.py, indexer.py, images.py) — instead of the harness's old
+    private ar/de/en -> ara/deu/eng map (``_tess_langs_from_detected``), so the
+    harness measures the language-selection code path production actually
+    uses, including production's Arabic-dominant behaviour of NOT always
+    appending 'eng'.
+
+    Production has **two** shapes here and the harness reproduces both:
+
+    * Documents with extracted text union the filename's languages with the
+      text's — ``pictures.py:1088-1094`` and ``recovery.py:293-294``. Feeding
+      the filename alone loses 'deu' on German documents carrying Latin
+      filenames, which is most of the German insurance corpus.
+    * Image inputs, which have no text to union, use the filename alone —
+      ``images.py:134`` and ``indexer.py:893``.
+
+    So ``text_sample`` is unioned when there is one and skipped when there is
+    not. The distinction is load-bearing rather than cosmetic:
+    ``detect_ocr_langs("")`` returns ``['deu','eng']`` as an *empty-input
+    fallback*, so unioning an absent sample would inject German into every
+    Arabic-only selection.
+
+    Falls back to ['deu', 'eng'] if the requested non-Latin tessdata is
+    unavailable, mirroring production's ``TessdataUnavailableError`` handling.
+    """
+    sources = [filename] if not (text_sample or "").strip() else [filename, text_sample]
+    langs: list[str] = []
+    for source in sources:
+        for lang in detect_ocr_langs(source):
+            if lang not in langs:
+                langs.append(lang)
+    try:
+        return ensure_tessdata(langs)
+    except TessdataUnavailableError:
+        return ["deu", "eng"]
 
 
-def run_tesseract_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str] | None = None) -> list[dict]:
-    """Render PDF pages and run Tesseract on each, returning per-page results."""
+def run_tesseract_on_pdf(
+    pdf_path: str,
+    max_pages: int,
+    detected_langs: list[str] | None = None,
+    text_sample: str | None = None,
+) -> list[dict]:
+    """Render PDF pages and run Tesseract on each, returning per-page results.
+
+    ``detected_langs`` is accepted for call-site compatibility (main() still
+    threads its text-layer-based ar/de/en classification through for report
+    metadata) but is no longer used to pick Tesseract languages — that now
+    goes through ``_select_tesseract_langs`` (task 2.2).
+    """
     try:
         import fitz
     except ImportError:
@@ -255,6 +349,7 @@ def run_tesseract_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str
     doc = fitz.open(pdf_path)
     pages = []
     page_limit = min(max_pages, doc.page_count)
+    langs = _select_tesseract_langs(Path(pdf_path).name, text_sample)
 
     for page_idx in range(page_limit):
         import tempfile
@@ -262,8 +357,6 @@ def run_tesseract_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         pix.save(tmp.name)
         tmp.close()
-
-        langs = _tess_langs_from_detected(detected_langs or classify_document_langs(Path(pdf_path).name))
 
         start = time.monotonic()
         try:
@@ -293,14 +386,22 @@ def run_tesseract_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str
     return pages
 
 
-def run_tesseract_on_image(img_path: str, detected_langs: list[str] | None = None) -> list[dict]:
-    """Run Tesseract on a single image file."""
+def run_tesseract_on_image(
+    img_path: str,
+    detected_langs: list[str] | None = None,
+    text_sample: str | None = None,
+) -> list[dict]:
+    """Run Tesseract on a single image file.
+
+    See ``run_tesseract_on_pdf`` docstring: ``detected_langs`` is kept for
+    call-site compatibility only (task 2.2).
+    """
     try:
         from pageindex_mcp.converters.pictures import _tesseract_ocr_image
     except ImportError:
         return [{"error": "_tesseract_ocr_image not importable"}]
 
-    langs = _tess_langs_from_detected(detected_langs or classify_document_langs(Path(img_path).name))
+    langs = _select_tesseract_langs(Path(img_path).name, text_sample)
 
     start = time.monotonic()
     try:
@@ -337,22 +438,33 @@ def _confidence_distribution(confidences: list[float]) -> dict:
     }
 
 def run_paddleocr_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str] | None = None) -> list[dict]:
-    """Send PDF to PaddleOCR service, get per-page results with confidence."""
+    """Send PDF to PaddleOCR service, get per-page results with confidence.
+
+    A connection failure (or a non-2xx response) is a hard error (task 2.1):
+    it must not be swallowed into an empty/error-flavoured page list, since
+    that shape is numerically indistinguishable from "the page genuinely had
+    zero characters" once it reaches aggregation.
+    """
     langs = detected_langs or classify_document_langs(Path(pdf_path).name)
     paddle_lang = "ar" if "ar" in langs else "en"
+    endpoint = f"{PADDLEOCR_URL}/ocr/pdf"
 
     try:
         with open(pdf_path, "rb") as fh:
             resp = httpx.post(
-                f"{PADDLEOCR_URL}/ocr/pdf",
+                endpoint,
                 files={"file": (Path(pdf_path).name, fh, "application/pdf")},
                 params={"lang": paddle_lang, "max_pages": max_pages},
                 timeout=1800,
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as exc:
-        return [{"error": f"PaddleOCR service error: {exc}"}]
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError: a crashed engine answering 200
+        # with a truncated body, or a proxy answering for a dead upstream, is
+        # just as unusable as a refused connection and must not be recorded as
+        # a per-document error. Same contract as _check_engine_health.
+        raise EngineUnreachableError(_ENGINE_PADDLEOCR, endpoint, exc) from exc
 
     pages = []
     for page_data in data.get("pages", []):
@@ -377,22 +489,30 @@ def run_paddleocr_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str
 
 
 def run_paddleocr_on_image(img_path: str, detected_langs: list[str] | None = None) -> list[dict]:
-    """Send image to PaddleOCR service, get results with per-region confidence."""
+    """Send image to PaddleOCR service, get results with per-region confidence.
+
+    See ``run_paddleocr_on_pdf`` — a connection failure is a hard error (2.1).
+    """
     langs = detected_langs or classify_document_langs(Path(img_path).name)
     paddle_lang = "ar" if "ar" in langs else "en"
+    endpoint = f"{PADDLEOCR_URL}/ocr"
 
     try:
         with open(img_path, "rb") as fh:
             resp = httpx.post(
-                f"{PADDLEOCR_URL}/ocr",
+                endpoint,
                 files={"file": (Path(img_path).name, fh, "image/jpeg")},
                 params={"lang": paddle_lang},
                 timeout=120,
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as exc:
-        return [{"error": f"PaddleOCR service error: {exc}"}]
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError: a crashed engine answering 200
+        # with a truncated body, or a proxy answering for a dead upstream, is
+        # just as unusable as a refused connection and must not be recorded as
+        # a per-document error. Same contract as _check_engine_health.
+        raise EngineUnreachableError(_ENGINE_PADDLEOCR, endpoint, exc) from exc
 
     text = data.get("text", "")
     regions = data.get("regions", [])
@@ -416,19 +536,27 @@ def run_paddleocr_on_image(img_path: str, detected_langs: list[str] | None = Non
 
 
 def run_paddleocr_vl_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
-    """Send PDF to PaddleOCR-VL service, get per-page VL OCR results."""
+    """Send PDF to PaddleOCR-VL service, get per-page VL OCR results.
+
+    See ``run_paddleocr_on_pdf`` — a connection failure is a hard error (2.1).
+    """
+    endpoint = f"{PADDLEOCR_VL_URL}/ocr/pdf"
     try:
         with open(pdf_path, "rb") as fh:
             resp = httpx.post(
-                f"{PADDLEOCR_VL_URL}/ocr/pdf",
+                endpoint,
                 files={"file": (Path(pdf_path).name, fh, "application/pdf")},
                 params={"max_pages": max_pages},
                 timeout=1800,
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as exc:
-        return [{"error": f"PaddleOCR-VL service error: {exc}"}]
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError: a crashed engine answering 200
+        # with a truncated body, or a proxy answering for a dead upstream, is
+        # just as unusable as a refused connection and must not be recorded as
+        # a per-document error. Same contract as _check_engine_health.
+        raise EngineUnreachableError(_ENGINE_PADDLEOCR_VL, endpoint, exc) from exc
 
     pages = []
     for page_data in data.get("pages", []):
@@ -447,18 +575,26 @@ def run_paddleocr_vl_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
 
 
 def run_paddleocr_vl_on_image(img_path: str) -> list[dict]:
-    """Send image to PaddleOCR-VL service."""
+    """Send image to PaddleOCR-VL service.
+
+    See ``run_paddleocr_on_pdf`` — a connection failure is a hard error (2.1).
+    """
+    endpoint = f"{PADDLEOCR_VL_URL}/ocr"
     try:
         with open(img_path, "rb") as fh:
             resp = httpx.post(
-                f"{PADDLEOCR_VL_URL}/ocr",
+                endpoint,
                 files={"file": (Path(img_path).name, fh, "image/jpeg")},
                 timeout=120,
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as exc:
-        return [{"error": f"PaddleOCR-VL service error: {exc}"}]
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError: a crashed engine answering 200
+        # with a truncated body, or a proxy answering for a dead upstream, is
+        # just as unusable as a refused connection and must not be recorded as
+        # a per-document error. Same contract as _check_engine_health.
+        raise EngineUnreachableError(_ENGINE_PADDLEOCR_VL, endpoint, exc) from exc
 
     text = data.get("text", "")
     return [{
@@ -485,19 +621,27 @@ def _run_paddleocr_vl_for_doc(filepath: Path, max_pages: int) -> list[dict]:
 
 
 def run_surya_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
-    """Send PDF to Surya OCR service, get per-page results with confidence."""
+    """Send PDF to Surya OCR service, get per-page results with confidence.
+
+    See ``run_paddleocr_on_pdf`` — a connection failure is a hard error (2.1).
+    """
+    endpoint = f"{SURYA_URL}/ocr/pdf"
     try:
         with open(pdf_path, "rb") as fh:
             resp = httpx.post(
-                f"{SURYA_URL}/ocr/pdf",
+                endpoint,
                 files={"file": (Path(pdf_path).name, fh, "application/pdf")},
                 params={"max_pages": max_pages},
                 timeout=1800,
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as exc:
-        return [{"error": f"Surya service error: {exc}"}]
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError: a crashed engine answering 200
+        # with a truncated body, or a proxy answering for a dead upstream, is
+        # just as unusable as a refused connection and must not be recorded as
+        # a per-document error. Same contract as _check_engine_health.
+        raise EngineUnreachableError(_ENGINE_SURYA, endpoint, exc) from exc
 
     pages = []
     for page_data in data.get("pages", []):
@@ -516,18 +660,26 @@ def run_surya_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
 
 
 def run_surya_on_image(img_path: str) -> list[dict]:
-    """Send image to Surya OCR service."""
+    """Send image to Surya OCR service.
+
+    See ``run_paddleocr_on_pdf`` — a connection failure is a hard error (2.1).
+    """
+    endpoint = f"{SURYA_URL}/ocr"
     try:
         with open(img_path, "rb") as fh:
             resp = httpx.post(
-                f"{SURYA_URL}/ocr",
+                endpoint,
                 files={"file": (Path(img_path).name, fh, "image/jpeg")},
                 timeout=120,
             )
             resp.raise_for_status()
             data = resp.json()
-    except Exception as exc:
-        return [{"error": f"Surya service error: {exc}"}]
+    except (httpx.HTTPError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError: a crashed engine answering 200
+        # with a truncated body, or a proxy answering for a dead upstream, is
+        # just as unusable as a refused connection and must not be recorded as
+        # a per-document error. Same contract as _check_engine_health.
+        raise EngineUnreachableError(_ENGINE_SURYA, endpoint, exc) from exc
 
     text = data.get("text", "")
     return [{
@@ -550,36 +702,54 @@ def _run_surya_for_doc(filepath: Path, max_pages: int) -> list[dict]:
 
 # --- Comparison and reporting --------------------------------------------------
 
-def compare_results(tess_pages: list[dict], paddle_pages: list[dict]) -> dict:
-    """Compare Tesseract vs PaddleOCR results for one document."""
-    tess_total_chars = sum(p.get("char_count", 0) for p in tess_pages if "error" not in p)
-    paddle_total_chars = sum(p.get("char_count", 0) for p in paddle_pages if "error" not in p)
-    tess_total_time = sum(p.get("elapsed_s", 0) for p in tess_pages if "error" not in p)
-    paddle_total_time = sum(p.get("elapsed_s", 0) for p in paddle_pages if "error" not in p)
+# Generic label for "the non-Tesseract engine being compared" (task 2.3):
+# compare_results is shared across the paddleocr / paddleocr-vl / surya
+# comparisons, so its keys/values must not hardcode any one engine's name.
+_OTHER_ENGINE_LABEL = "other"
 
-    paddle_confs = [
-        p["confidence"] for p in paddle_pages
+
+def compare_results(tess_pages: list[dict], other_pages: list[dict]) -> dict:
+    """Compare Tesseract vs another OCR engine's results for one document.
+
+    Task 2.3: this function is reused for THREE different comparisons
+    (Tesseract vs paddleocr, vs paddleocr-vl, vs surya). It used to hardcode
+    'paddleocr_*' key names and a literal 'paddleocr' winner string
+    regardless of which engine's pages were actually passed as
+    ``other_pages`` — so ``comparison_surya``'s data was reported under
+    PaddleOCR's name. Key names and winner values are now engine-neutral
+    ('other_*' / 'other'); callers that want an engine-specific label attach
+    it via the dict key they store the result under (e.g. 'comparison_surya').
+    """
+    tess_total_chars = sum(p.get("char_count", 0) for p in tess_pages if "error" not in p)
+    other_total_chars = sum(p.get("char_count", 0) for p in other_pages if "error" not in p)
+    tess_total_time = sum(p.get("elapsed_s", 0) for p in tess_pages if "error" not in p)
+    other_total_time = sum(p.get("elapsed_s", 0) for p in other_pages if "error" not in p)
+
+    other_confs = [
+        p["confidence"] for p in other_pages
         if "error" not in p and p.get("confidence") is not None
     ]
-    paddle_avg_conf = sum(paddle_confs) / len(paddle_confs) if paddle_confs else 0.0
+    other_avg_conf = sum(other_confs) / len(other_confs) if other_confs else 0.0
 
-    char_diff = paddle_total_chars - tess_total_chars
-    char_ratio = (paddle_total_chars / tess_total_chars) if tess_total_chars > 0 else float("inf")
+    char_diff = other_total_chars - tess_total_chars
+    char_ratio = (other_total_chars / tess_total_chars) if tess_total_chars > 0 else float("inf")
 
     return {
         "tesseract_total_chars": tess_total_chars,
-        "paddleocr_total_chars": paddle_total_chars,
+        "other_total_chars": other_total_chars,
         "char_diff": char_diff,
         "char_ratio": round(char_ratio, 3),
         "tesseract_total_time_s": round(tess_total_time, 3),
-        "paddleocr_total_time_s": round(paddle_total_time, 3),
-        "paddleocr_avg_confidence": round(paddle_avg_conf, 4),
-        "paddleocr_low_conf_pages": sum(
-            1 for p in paddle_pages
+        "other_total_time_s": round(other_total_time, 3),
+        "other_avg_confidence": round(other_avg_conf, 4),
+        "other_low_conf_pages": sum(
+            1 for p in other_pages
             if "error" not in p and p.get("confidence", 1.0) < 0.5
         ),
-        "winner_by_chars": "paddleocr" if char_diff > 0 else "tesseract" if char_diff < 0 else "tie",
-        "winner_by_speed": "paddleocr" if paddle_total_time < tess_total_time else "tesseract",
+        "winner_by_chars": (
+            _OTHER_ENGINE_LABEL if char_diff > 0 else "tesseract" if char_diff < 0 else "tie"
+        ),
+        "winner_by_speed": _OTHER_ENGINE_LABEL if other_total_time < tess_total_time else "tesseract",
     }
 
 
@@ -596,13 +766,13 @@ def generate_summary(all_results: list[dict]) -> dict:
         if not docs:
             continue
         comparisons = [d["comparison"] for d in docs if "comparison" in d and "winner_by_chars" in d["comparison"]]
-        paddle_wins = sum(1 for c in comparisons if c["winner_by_chars"] == "paddleocr")
+        paddle_wins = sum(1 for c in comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
         tess_wins = sum(1 for c in comparisons if c["winner_by_chars"] == "tesseract")
         avg_paddle_conf = (
-            sum(c["paddleocr_avg_confidence"] for c in comparisons) / len(comparisons)
+            sum(c["other_avg_confidence"] for c in comparisons) / len(comparisons)
             if comparisons else 0.0
         )
-        low_conf_docs = sum(1 for c in comparisons if c["paddleocr_avg_confidence"] < 0.5)
+        low_conf_docs = sum(1 for c in comparisons if c["other_avg_confidence"] < 0.5)
 
         summary["by_language"][lang] = {
             "document_count": len(docs),
@@ -614,7 +784,7 @@ def generate_summary(all_results: list[dict]) -> dict:
         }
 
     all_comparisons = [d["comparison"] for d in all_results if "comparison" in d and "winner_by_chars" in d["comparison"]]
-    total_paddle_wins = sum(1 for c in all_comparisons if c["winner_by_chars"] == "paddleocr")
+    total_paddle_wins = sum(1 for c in all_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
     total_tess_wins = sum(1 for c in all_comparisons if c["winner_by_chars"] == "tesseract")
 
     summary["overall"] = {
@@ -685,18 +855,18 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
         pdf_info = doc.get("pdf_inspector", {})
         pdf_type = pdf_info.get("pdf_type", "image" if doc.get("file_type") == "image" else "n/a")
         langs_str = "+".join(doc.get("detected_langs", ["?"]))
-        vl_chars = comp_vl.get("paddleocr_total_chars", "-")
+        vl_chars = comp_vl.get("other_total_chars", "-")
         vl_winner = comp_vl.get("winner_by_chars", "-")
         comp_surya = doc.get("comparison_surya", {})
-        surya_chars = comp_surya.get("paddleocr_total_chars", "-")
-        surya_conf = comp_surya.get("paddleocr_avg_confidence", 0)
+        surya_chars = comp_surya.get("other_total_chars", "-")
+        surya_conf = comp_surya.get("other_avg_confidence", 0)
         surya_winner = comp_surya.get("winner_by_chars", "-")
         lines.append(
             f"| {short_name} | {langs_str} "
             f"| {pdf_type} "
             f"| {comp.get('tesseract_total_chars', '?')} "
-            f"| {comp.get('paddleocr_total_chars', '?')} "
-            f"| {comp.get('paddleocr_avg_confidence', 0):.2%} "
+            f"| {comp.get('other_total_chars', '?')} "
+            f"| {comp.get('other_avg_confidence', 0):.2%} "
             f"| {vl_chars} "
             f"| {surya_chars} "
             f"| {surya_conf:.2%} "
@@ -710,8 +880,8 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
 
     for doc in all_results:
         comp = doc.get("comparison", {})
-        if comp.get("paddleocr_avg_confidence", 1.0) < 0.5:
-            lines.append(f"- **{doc['filename']}** — avg conf {comp['paddleocr_avg_confidence']:.2%}")
+        if comp.get("other_avg_confidence", 1.0) < 0.5:
+            lines.append(f"- **{doc['filename']}** — avg conf {comp['other_avg_confidence']:.2%}")
             for pp in doc.get("paddleocr_pages", []):
                 if pp.get("confidence", 1.0) < 0.5 and "error" not in pp:
                     lines.append(f"  - Page {pp['page_index']}: conf={pp['confidence']:.2%}, "
@@ -724,11 +894,20 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
 # --- Main orchestrator ---------------------------------------------------------
 
 
-def _run_tesseract_for_doc(filepath: Path, max_pages: int, detected_langs: list[str] | None = None) -> list[dict]:
+def _run_tesseract_for_doc(
+    filepath: Path,
+    max_pages: int,
+    detected_langs: list[str] | None = None,
+    text_sample: str | None = None,
+) -> list[dict]:
     """Run Tesseract on one document. Thread-safe (Tesseract is process-isolated)."""
     if filepath.name.lower().endswith(".pdf"):
-        return run_tesseract_on_pdf(str(filepath), max_pages, detected_langs=detected_langs)
-    return run_tesseract_on_image(str(filepath), detected_langs=detected_langs)
+        return run_tesseract_on_pdf(
+            str(filepath), max_pages, detected_langs=detected_langs, text_sample=text_sample
+        )
+    return run_tesseract_on_image(
+        str(filepath), detected_langs=detected_langs, text_sample=text_sample
+    )
 
 
 def _run_paddleocr_for_doc(filepath: Path, max_pages: int, detected_langs: list[str] | None = None) -> list[dict]:
@@ -738,7 +917,27 @@ def _run_paddleocr_for_doc(filepath: Path, max_pages: int, detected_langs: list[
     return run_paddleocr_on_image(str(filepath), detected_langs=detected_langs)
 
 
-def main() -> None:
+def _check_engine_health(engine: str, url: str, timeout: float, expect_status_ok: bool = False) -> None:
+    """GET an engine's /health endpoint; raise EngineUnreachableError on failure (task 2.1).
+
+    Both a connection failure and a reachable-but-unhealthy response
+    (``status`` != "ok", when ``expect_status_ok``) are hard failures here:
+    the caller only reaches this function when the user did NOT pass the
+    corresponding --skip-* flag, so neither condition may be silently
+    downgraded to "skipped".
+    """
+    try:
+        resp = httpx.get(url, timeout=timeout)
+        resp.raise_for_status()
+        if expect_status_ok:
+            data = resp.json()
+            if data.get("status") != "ok":
+                raise ValueError(data.get("detail", "unhealthy"))
+    except (httpx.HTTPError, ValueError) as exc:
+        raise EngineUnreachableError(engine, url, exc) from exc
+
+
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RFC-046 PaddleOCR vs Tesseract full-corpus evaluation")
     parser.add_argument("--doc-store", default="doc_store", help="Path to corpus directory")
     parser.add_argument("--out-dir", default="agents/spikes/ocr_eval_rfc046", help="Output directory")
@@ -751,7 +950,11 @@ def main() -> None:
                         help="Load prior eval_full_detail.json to reuse cached engine results")
     parser.add_argument("--workers", type=int, default=0,
                         help="Concurrent document workers (0=auto: cpu_count//4, capped at 4)")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
 
     doc_store = Path(args.doc_store)
     out_dir = Path(args.out_dir)
@@ -762,63 +965,47 @@ def main() -> None:
         print(f"ERROR: doc_store not found: {doc_store}", file=sys.stderr)
         sys.exit(1)
 
+    try:
+        _run_pipeline(args, doc_store, out_dir, max_pages)
+    except EngineUnreachableError as exc:
+        print(
+            f"ERROR: {exc.engine} engine unreachable at {exc.endpoint}: {exc}",
+            file=sys.stderr,
+        )
+        hint = _ENGINE_START_HINTS.get(exc.engine)
+        if hint:
+            print(f"Run: {hint}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_pages: int) -> None:
+    """The full corpus evaluation pipeline (health checks -> phases -> report).
+
+    Split out of main() so an ``EngineUnreachableError`` raised anywhere in
+    here (a health check, or an httpx.post call mid-run after health checks
+    passed) has one place to propagate to: main()'s except block, which
+    exits non-zero naming the engine and endpoint (task 2.1).
+    """
     files = sorted(doc_store.iterdir())
     print(f"Found {len(files)} documents in {doc_store}")
 
     if not args.skip_paddleocr:
-        try:
-            health = httpx.get(f"{PADDLEOCR_URL}/health", timeout=60)
-            health.raise_for_status()
-            print(f"PaddleOCR service healthy at {PADDLEOCR_URL}")
-        except Exception as exc:
-            print(f"WARNING: PaddleOCR service not reachable at {PADDLEOCR_URL}: {exc}")
-            print("Run: cd services/paddleocr-service && uv run uvicorn app:app --port 8202")
-            print("Continuing without PaddleOCR")
-            args.skip_paddleocr = True
+        _check_engine_health(_ENGINE_PADDLEOCR, f"{PADDLEOCR_URL}/health", _PADDLEOCR_HEALTH_TIMEOUT_S)
+        print(f"PaddleOCR service healthy at {PADDLEOCR_URL}")
 
     if not args.skip_paddleocr_vl:
-        try:
-            health = httpx.get(f"{PADDLEOCR_VL_URL}/health", timeout=5)
-            data = health.json()
-            if data.get("status") == "ok":
-                print(f"PaddleOCR-VL service healthy at {PADDLEOCR_VL_URL}")
-            else:
-                raise ValueError(data.get("detail", "unhealthy"))
-        except Exception as exc:
-            print(f"WARNING: PaddleOCR-VL service not reachable at {PADDLEOCR_VL_URL}: {exc}")
-            print("Run: cd services/paddleocr-vl-service && uv run uvicorn app:app --port 8204")
-            print("Continuing without PaddleOCR-VL")
-            args.skip_paddleocr_vl = True
-
-    # PaddleOCR-VL health check
-    if not args.skip_paddleocr_vl:
-        try:
-            vl_health = httpx.get(f"{PADDLEOCR_VL_URL}/health", timeout=5)
-            vl_data = vl_health.json()
-            if vl_data.get("status") == "ok":
-                print(f"PaddleOCR-VL service healthy at {PADDLEOCR_VL_URL}")
-            else:
-                raise ValueError(vl_data.get("detail", "unhealthy"))
-        except Exception as exc:
-            print(f"WARNING: PaddleOCR-VL service not reachable at {PADDLEOCR_VL_URL}: {exc}")
-            print("Run: cd services/paddleocr-vl-service && uv run uvicorn app:app --port 8204")
-            print("Continuing without PaddleOCR-VL")
-            args.skip_paddleocr_vl = True
-
+        _check_engine_health(
+            _ENGINE_PADDLEOCR_VL, f"{PADDLEOCR_VL_URL}/health",
+            _PADDLEOCR_VL_HEALTH_TIMEOUT_S, expect_status_ok=True,
+        )
+        print(f"PaddleOCR-VL service healthy at {PADDLEOCR_VL_URL}")
 
     if not args.skip_surya:
-        try:
-            health = httpx.get(f"{SURYA_URL}/health", timeout=10)
-            data = health.json()
-            if data.get("status") == "ok":
-                print(f"Surya OCR service healthy at {SURYA_URL}")
-            else:
-                raise ValueError(data.get("detail", "unhealthy"))
-        except Exception as exc:
-            print(f"WARNING: Surya OCR service not reachable at {SURYA_URL}: {exc}")
-            print("Run: cd services/surya-ocr-service && uv run uvicorn app:app --port 8207")
-            print("Continuing without Surya OCR")
-            args.skip_surya = True
+        _check_engine_health(
+            _ENGINE_SURYA, f"{SURYA_URL}/health",
+            _SURYA_HEALTH_TIMEOUT_S, expect_status_ok=True,
+        )
+        print(f"Surya OCR service healthy at {SURYA_URL}")
 
     # Filter to processable files
     doc_files = [
@@ -892,6 +1079,7 @@ def main() -> None:
         # 0b. Text-layer language detection (PyMuPDF)
         lang_info = detect_lang_from_text_layer(fp)
         entry["text_layer_lang"] = lang_info
+        entry["text_sample"] = lang_info.get("text_sample")
         filename_langs = entry["detected_langs"]
         detected_langs = lang_info.get("detected_langs")
 
@@ -924,7 +1112,8 @@ def main() -> None:
         with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="tess") as pool:
             fut_map = {
                 pool.submit(_run_tesseract_for_doc, fp, max_pages,
-                            detected_langs=results_by_name[fp.name]["detected_langs"]): fp
+                            detected_langs=results_by_name[fp.name]["detected_langs"],
+                            text_sample=results_by_name[fp.name].get("text_sample")): fp
                 for fp in doc_files
             }
             for i, fut in enumerate(as_completed(fut_map), 1):
@@ -957,6 +1146,8 @@ def main() -> None:
             print(f"  [{i}/{len(doc_files)}] PaddleOCR: {fp.name[:55]}...", end="", flush=True)
             try:
                 pages = _run_paddleocr_for_doc(fp, max_pages, detected_langs=doc_langs)
+            except EngineUnreachableError:
+                raise
             except Exception as exc:
                 pages = [{"error": str(exc)}]
             results_by_name[fp.name]["paddleocr_pages"] = pages
@@ -973,6 +1164,8 @@ def main() -> None:
             print(f"  [{i}/{len(doc_files)}] PaddleOCR-VL: {fp.name[:55]}...", end="", flush=True)
             try:
                 pages = _run_paddleocr_vl_for_doc(fp, max_pages)
+            except EngineUnreachableError:
+                raise
             except Exception as exc:
                 pages = [{"error": str(exc)}]
             results_by_name[fp.name]["paddleocr_vl_pages"] = pages
@@ -988,6 +1181,8 @@ def main() -> None:
             print(f"  [{i}/{len(doc_files)}] Surya: {fp.name[:55]}...", end="", flush=True)
             try:
                 pages = _run_surya_for_doc(fp, max_pages)
+            except EngineUnreachableError:
+                raise
             except Exception as exc:
                 pages = [{"error": str(exc)}]
             results_by_name[fp.name]["surya_pages"] = pages
@@ -1072,7 +1267,7 @@ def main() -> None:
     # VL summary
     vl_comparisons = [d.get("comparison_vl", {}) for d in all_results
                       if d.get("comparison_vl", {}).get("winner_by_chars")]
-    vl_wins = sum(1 for c in vl_comparisons if c["winner_by_chars"] == "paddleocr")
+    vl_wins = sum(1 for c in vl_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
     vl_tess_wins = sum(1 for c in vl_comparisons if c["winner_by_chars"] == "tesseract")
     summary["overall"]["paddleocr_vl_wins"] = vl_wins
     summary["overall"]["tesseract_wins_vs_vl"] = vl_tess_wins
@@ -1086,7 +1281,7 @@ def main() -> None:
 
     surya_comparisons = [d.get("comparison_surya", {}) for d in all_results
                          if d.get("comparison_surya", {}).get("winner_by_chars")]
-    surya_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == "paddleocr")
+    surya_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
     surya_tess_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == "tesseract")
     summary["overall"]["surya_wins"] = surya_wins
     summary["overall"]["tesseract_wins_vs_surya"] = surya_tess_wins
