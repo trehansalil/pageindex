@@ -15,9 +15,12 @@ RUN uv sync --frozen --no-dev 2>/dev/null || uv sync --no-dev
 
 COPY app.py .
 
-ENV LLAMA_SERVER_URL=http://host.docker.internal:8203
-ENV VL_MODEL_NAME=PaddleOCR-VL-1.6
-ENV VL_TASK=OCR:
+# app.py proxies to an Ollama server — it never reads LLAMA_SERVER_URL/
+# VL_MODEL_NAME/VL_TASK (those named the dead llama.cpp path and are gone;
+# see README.md). host.docker.internal requires the container to be run
+# with `--add-host=host.docker.internal:host-gateway` on Linux Docker.
+ENV OLLAMA_BASE_URL=http://host.docker.internal:11434
+ENV PADDLEOCR_VL_MODEL=hf.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF
 ENV VL_TIMEOUT=120
 ENV PATH="/app/.venv/bin:$PATH"
 

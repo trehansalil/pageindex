@@ -263,7 +263,60 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # app.py proxies OCR requests to an Ollama server — Ollama is NOT part of
+  # this compose file and is deliberately not added here (it is a shared,
+  # already-running dependency on the host or elsewhere). OLLAMA_BASE_URL
+  # just points at wherever that is; host.docker.internal is the Dockerfile
+  # default for "Ollama running on the Docker host" and needs the
+  # extra_hosts entry below on Linux to resolve.
+  paddleocr-vl-service:
+    build:
+      context: services/paddleocr-vl-service
+      dockerfile: Dockerfile
+    container_name: pageindex-paddleocr-vl-service
+    profiles: ["ocr-spike"]
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      PADDLEOCR_VL_MODEL: ${PADDLEOCR_VL_MODEL:-hf.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8204:8204"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8204/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # Surya downloads its model weights via huggingface_hub at first request,
+  # not at build time (unlike docling-service, which bakes them into the
+  # image). HF_HOME + the named volume below keep that download on disk
+  # across container restarts instead of re-fetching every time.
+  surya-ocr-service:
+    build:
+      context: services/surya-ocr-service
+      dockerfile: Dockerfile
+    container_name: pageindex-surya-ocr-service
+    profiles: ["ocr-spike"]
+    environment:
+      SURYA_DPI: ${SURYA_DPI:-150}
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - surya_model_cache:/root/.cache/huggingface
+    ports:
+      - "8207:8207"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8207/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
 volumes:
   redis_data:
   minio_data:
   postgres_data:
+  surya_model_cache:

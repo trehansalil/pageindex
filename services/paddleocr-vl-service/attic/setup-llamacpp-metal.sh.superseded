@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# SUPERSEDED 2026-09-17 (RFC-046 task 2.5 remediation) — do not run.
+#
+# This macOS/Metal llama.cpp path was never wired to app.py, which talks
+# to Ollama's /api/chat instead (see ../README.md). It also served the
+# built-in llama-server on port 8203, colliding with docling-ocr-service
+# (docker-compose.yml). Kept here for reference only, in case the
+# llama.cpp-direct approach is revisited; PORT and model-download details
+# below are still accurate if that happens. See ../README.md for the
+# supported (Ollama) setup.
+#
+# --- original header ---------------------------------------------------
 # PaddleOCR-VL 1.6 local setup via llama.cpp (GGUF + Metal on macOS)
 #
 # Downloads and builds llama.cpp with Metal acceleration, then fetches

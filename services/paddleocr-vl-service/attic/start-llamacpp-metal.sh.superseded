@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# SUPERSEDED 2026-09-17 (RFC-046 task 2.5 remediation) — do not run.
+#
+# Pairs with setup-llamacpp-metal.sh.superseded. app.py (the running
+# service) talks to Ollama, not to a locally built llama-server, and this
+# script's default port (8203) collides with docling-ocr-service. See
+# ../README.md for the supported (Ollama) setup.
+#
+# --- original header ---------------------------------------------------
 # Start PaddleOCR-VL 1.6 via llama-server (OpenAI-compatible API)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

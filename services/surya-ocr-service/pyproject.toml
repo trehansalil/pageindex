@@ -3,10 +3,38 @@ name = "surya-ocr-service"
 version = "0.1.0"
 description = "Surya OCR service for RFC-046 POC evaluation"
 requires-python = ">=3.12"
+# RFC-046 task 2.5: this host (and the intended eval hosts) have no GPU.
+# surya-ocr depends on torch/torchvision but does not pin a version, and
+# torch's default Linux wheels drag in cuda-bindings, cuda-toolkit, and 15+
+# nvidia-cu* wheels (~GBs) that a CPU-only host can never use.
+#
+# [tool.uv.sources] below only reroutes DECLARED dependencies of this
+# project (uv does not apply source overrides to a package that is purely
+# transitive) — see the root pyproject.toml's own comment on this. So torch
+# and torchvision are declared here explicitly, even though surya-ocr would
+# pull them in anyway, purely to give the CPU-index override something to
+# attach to. Do NOT remove this pin, and do NOT remove these two explicit
+# dependency lines, without confirming the target host actually has a GPU
+# driver stack to use the CUDA build.
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",
     "pymupdf>=1.25.0",
     "surya-ocr>=0.22.1",
     "python-multipart>=0.0.32",
+    "torch>=2.14.0",
+    "torchvision>=0.29.0",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
