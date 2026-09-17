@@ -409,6 +409,18 @@ Two consequences:
 
 Suggested owner: a follow-up RFC that either derives `doc_id` deterministically from `sha256`, or supersedes prior `doc_id`s for the same `doc_name` at persist time, or extends the erasure manifest to sweep by `doc_name`.
 
+### Observations recorded while landing Wave 2 (2026-09-17)
+
+Found while repairing the eval harness (D1, tasks 2.1-2.4). None is a D1 defect; each is recorded here rather than fixed, so it is not rediscovered as news.
+
+1. **`detect_ocr_langs` returns `['ara']` alone — without `eng` — for five corpus documents.** By design: `ocr_langs.py` appends `eng` to an Arabic-dominant sample only when Latin is *materially* present (`_MIXED_SCRIPT_MIN_RATIO`). If those five documents carry embedded Latin or numeric content below that ratio, **production is already dropping it today**, at every escalation site, not only in the harness. This belongs to **D4's wave (Wave 6)** and should be settled with a measurement over the five documents, not an argument about the threshold. Note the interaction with D4's own criterion: content-derived selection changes the sample this ratio is computed over.
+
+2. **`detect_ocr_langs("")` returns `['deu','eng']` as an empty-input fallback, and production unions that fallback into real detections.** `pictures.py:1089` and `recovery.py:293-294` union `detect_ocr_langs(filename)` with `detect_ocr_langs(md or "")`. When the markdown export is genuinely empty — a scanned Arabic PDF, the exact case the docstring at `pictures.py:1066` describes — the union injects `deu` and `eng` into what would otherwise be an Arabic-only selection. The harness deliberately does **not** reproduce this (see task 2.2), because unioning a fallback into a detection is not a language decision. Whether production should keep doing it is a D4 question.
+
+3. **`scripts/ocr_spike_eval.py::_run_pipeline` is a single ~270-line function** (`:912-1183`) carrying health checks, four processing phases, result assembly and report writing. It inherited that shape from the original `main()` and was deliberately left alone in Wave 2 to keep D1's diff attributable. It violates the project's 50-line guidance and is the reason the file had almost no seams to test against — the 30 tests added in Wave 2 mostly reach the runners directly rather than the pipeline. A D1-adjacent cleanup task, to be taken before task 2.5 grows it further with the artifact completeness gate.
+
+4. **`winner_by_speed` is not a like-for-like comparison.** It sums `elapsed_s` across local in-process Tesseract and remote GPU-backed services on entirely different hardware paths. Any regenerated report that surfaces it must say so explicitly, or it reads as a benchmark it is not. Adjacent to Hard Rule 1's concern — an unqualified speed ranking invites the same category of claim the rule forbids on accuracy.
+
 ## Open Questions
 
 All five original open questions were put to the owner on 2026-09-15 and answered. They are retained with their resolutions rather than deleted, so the reasoning behind each decision stays on the record.
