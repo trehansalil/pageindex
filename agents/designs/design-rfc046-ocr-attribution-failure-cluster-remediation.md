@@ -33,7 +33,7 @@ governs:
 
 ## Overview
 
-Eleven deliverables in two phases. **(D10 added 2026-09-15 with Zone 2 ownership; D11 added 2026-09-17 from the 1.C baseline's timeout finding.)** **P0** makes verdicts attributable (D2), corrects the graded baseline (D3), and reconstructs a citable evidence base (D1). **P0.5** fixes the six failure clusters traced in [[RFC-046]] Context at their root causes: content-derived OCR language selection (D4), presentation-forms detector alignment (D5), flat verdicts computed from flat signals (D6), arbitration on the extraction rather than the rebuilt tree (D7), and density-numerator plus flag-parse correctness (D8). D9 gates the whole thing behind attributed corpus measurement. D11 is the odd one out: pure infrastructure, in no cluster, changing how long a conversion may run and nothing about what is measured.
+Twelve deliverables. **(D10 added 2026-09-15 with Zone 2 ownership; D11 and D12 added 2026-09-17 — D11 from the 1.C baseline's timeout finding, D12 at the owner's request.)** **P0** makes verdicts attributable (D2), corrects the graded baseline (D3), and reconstructs a citable evidence base (D1). **P0.5** fixes the six failure clusters traced in [[RFC-046]] Context at their root causes: content-derived OCR language selection (D4), presentation-forms detector alignment (D5), flat verdicts computed from flat signals (D6), arbitration on the extraction rather than the rebuilt tree (D7), and density-numerator plus flag-parse correctness (D8). D9 gates the whole thing behind attributed corpus measurement. D11 and D12 are the odd ones out: pure infrastructure, in no cluster, changing how long a conversion may run and what can be seen while it runs — never what is measured.
 
 No OCR engine is introduced. No verdict threshold moves. `decide_ocr_strategy` keeps exactly one call site. The RFC-044 authority inversion is documented, not restructured.
 
@@ -61,6 +61,8 @@ The organising insight is that **five of the six clusters are defects in what th
 - **Environment fidelity is established.** A trial ingest of Doc 19 reproduced Run 8 to within 2 characters (`max_leaf_ratio` 0.1873 exactly). The local in-process route faithfully reproduces Run-8's pipeline for local-route documents.
 - **The Run-8 baseline is unrecoverable**, so D3 is documentation-only and every gate anchors to a fresh attributed baseline.
 - **Architecture guards constrain the shape of D2 and D4**, not just their correctness. See [Correctness Properties](#correctness-properties).
+- **D12's child-stderr passthrough is a gating task, not a detail.** The whole per-document pipeline runs inside the `converters_cli` child; `subprocess_mgr.py:203` reads it with `proc.communicate()` and discards `stderr_tail` on success. Until that streams, every log line the decision layer emits is thrown away — so no other part of D12 is testable end to end before it lands. It also **subsumes D11's task 3.13**, which retains stderr only on the timeout path.
+- **D12 touches five of the six files `TestHotPathConfigAccessGuard` constrains.** `helpers/gates.py`, `converters/pictures.py`, `client/indexer.py`, `helpers/garble.py` and `helpers/verdict.py` all receive decision records. Any inline env read in them fails the suite, so logging configuration resolves once at import in its own module — and deliberately stays out of `PipelineConfig.from_env`, which `TestNoConfigDoubleSourcing` treats as closed-world.
 - **D11 widens a production timeout rail.** Once arq's `job_timeout` stops binding the child (R11.3), `MAX_EFFECTIVE_TIMEOUT = 54000` becomes reachable for the first time. With `MAX_JOBS_DEFAULT = 1`, a single non-terminating document would then hold the queue for fifteen hours. Re-deriving that ceiling (R11.4) is part of the deliverable, not a follow-up.
 - **The 1.C baseline and production do not share timeout semantics.** `preprocess_client._process_one` applies no outer bound; the arq worker applies 3630s. Until D11 lands and the attribution figures are re-taken through the worker path, no timeout-sensitive Wave 3-6 comparison is valid against that baseline.
 - **D1 is independent of the code work** and gates only RFC-047's claims, not this RFC's deliverables. It can run in parallel throughout.
@@ -82,6 +84,8 @@ The organising insight is that **five of the six clusters are defects in what th
 | D9 | corpus run, `config.py:15` | Validation |
 | D10 | `client/indexer.py`, `converters/normalize.py`, `helpers/garble.py` + 5 further sites | Behaviour |
 | D11 | `worker/constants.py`, `worker/subprocess_mgr.py`, `worker/lifecycle.py`, `preprocess_client.py`, `tests/test_worker.py` | Infrastructure |
+| D12 core | new `obs/` package, `worker/subprocess_mgr.py`, `converters_cli.py`, `worker/job.py`, `preprocess_client.py`, `client/indexer.py`, `scripts/logtrace.py` | Observability |
+| D12 instrumentation | `helpers/{types,gates,garble,tree_validation,verdict}.py`, `client/{indexer,recovery}.py`, `converters/{pictures,ocr_langs,pipeline}.py`, `server.py`, `hash_cache_migrate.py` | Observability |
 
 ### Architecture Decisions
 
@@ -430,6 +434,15 @@ No `.strip()`, no `("1","true","yes")`. So `=1`, `=yes`, and `=true ` all evalua
 - **Unchanged:** `chunked_docling_timeout_s`'s shape (`300 + n * 1500`), `MAX_DOCLING_PAGES`, the chunking strategy, and every signal the converter produces. D11 alters no extraction output.
 - **Breaking:** `tests/test_worker.py:330` and `:526` assert contradictory things about this boundary. Both are touched.
 
+### 11. Observability — new `obs/` package
+
+- **Adds** `JsonFormatter` (one JSON object per line, `v: 1`, stderr only), `ContextFilter` (contextvars to every record, installed on the root *handler* so library loggers are covered), `configure()`, `bind_log_context()`, a `Phase` enum with `phase()`, and a `DECISION_POINTS` registry with `decision()`.
+- **Adds** `obs/log_config.py`, which reads `PAGEINDEX_LOG_*` **once at import**. Deliberately not part of `PipelineConfig.from_env` — see Launch Constraints.
+- **Changes** `subprocess_mgr._run_converter_subprocess` from `communicate()` to a streamed read of the child's stderr, forwarded to the parent's stderr with a bounded ring buffer retained for `stderr_tail`.
+- **Changes** the three divergent `logging.basicConfig` sites (`server.py:18`, `converters_cli.py:31`, `hash_cache_migrate.py:45`) to one `configure()`, and gives the arq worker an explicit configuration via `WorkerSettings.on_startup` — it has none today and inherits whatever arq installs.
+- **Unchanged:** all 34 Prometheus metrics, Langfuse tracing, and every existing log *message string*. The 48 `getLogger` modules gain the JSON envelope and correlation without being edited. The overlap with metrics is intentional — metrics answer "how often, system-wide", logs answer "what happened to *this* document", and neither channel answers the second today.
+- **Contract:** `decision()` and `phase()` never raise, never write to `ExtractionState`, and never emit inside `finalize_gate_and_route`'s `_guard_bypass` window.
+
 ## Correctness Properties
 
 ### Property 1: Single Live OCR Decision Call Site
@@ -476,6 +489,14 @@ No behavioural deliverable (D4–D8) merges before D2 and D3 have landed and a c
 
 For every `chunk_count` in the supported domain, `dynamic_budget(n) < effective_timeout(n) <= caller_outer_bound`. The inner bound is never silently overridden by a floor derived from a ceiling built to contain it, and it never exceeds the bound the caller will enforce anyway. Enforced by a property test written to fail against HEAD, plus an architecture guard enumerating `_run_converter_subprocess`'s callers so a third one cannot be added without declaring an outer bound.
 
+### Property 12: No Document Content in Logs
+
+No log record, at any level, carries document text, node text, summaries, table cell content, OCR output, LLM prompts or completions, or node titles. Strings in `attrs` over a bounded length are replaced by `{sha8, len}`. Absolute paths are reduced to a basename. Enforced by an AST guard scanning every emitter call site for banned `attrs` keys, and by a gate that reconstructs two real documents and confirms no text or title string appears. Hard Rule 3 is the reason; `tracing.py::_mask` is the precedent.
+
+### Property 13: One Line, One Record, On stderr
+
+Every emitted record is a single line of JSON on `sys.stderr`. Tracebacks are escaped into `exc.stack` rather than spanning lines. `converters_cli` reserves stdout for exactly two JSON lines, so a handler on stdout would fail every job. Enforced by a guard test asserting the configured handler's stream, and by one asserting no `logging.basicConfig` call exists outside the observability module.
+
 ## Risk Mitigation
 
 | Risk | Mitigation |
@@ -493,4 +514,7 @@ For every `chunk_count` in the supported domain, `dynamic_budget(n) < effective_
 | D10 grows scope via Zone 2 ownership | Accepted deliberately (OQ2). Bounded to seven enumerated sites plus one guard; lands with D5 in the same subsystem. `zone_2.resolved` gates on all three criteria, so partial closure cannot be recorded as complete |
 | D11 widens the rail and a hung document blocks the queue for 15h | `MAX_EFFECTIVE_TIMEOUT` re-derived as part of the deliverable (R11.4), not deferred; `MAX_JOBS_DEFAULT = 1` makes this a queue-availability issue, not merely a latency one; stderr retention (R11.6) turns a hang into a diagnosable event |
 | D11 moves a verdict and is mistaken for a result | R11.7 makes zero verdict movement an acceptance criterion; a movement attributed to D11 is a measurement defect under R9.4. D11 changes duration, never a measured signal |
+| D12's streamed child stderr grows parent memory and trips OOM detection | The current `communicate()` already buffers the child's whole stderr in the parent — at DEBUG on a 292-page document that is tens of MB on a host with 310 MiB free. Streaming with a bounded ring buffer is the mitigation, not a larger tail. `CONVERTER_CHILD_OOM_TOTAL` fires on `SIGKILL`, so a parent OOM would be misread as a converter OOM |
+| D12's emitters cost hot-path wall-clock | Every emitter is guarded by `isEnabledFor` before its `attrs` dict is built — the dict is the cost. Per-node records are DEBUG-only and capped by `PAGEINDEX_LOG_NODE_SAMPLE`; `PAGEINDEX_LOG_DECISIONS=off` bisects a regression without a revert |
+| contextvar leakage misattributes records across documents | Bind a new frozen mapping, never mutate in place; bind **inside** `preprocess_client`'s semaphore, not outside, or every concurrent document shares one `doc_name`; always the context manager with `reset(token)`, since the arq worker is long-lived. `asyncio.to_thread` propagates context, `loop.run_in_executor` does not — 12.2 audits for the latter before relying on it |
 | Corpus work is invalidated by a foreign worker | All processing via `preprocess_client.py`, which creates no Redis job. Never the arq queue while the `/app` containers are live on the same db |

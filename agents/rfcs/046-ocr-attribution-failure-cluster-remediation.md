@@ -257,6 +257,32 @@ Found 2026-09-17 while diagnosing why `world-stats-pocketbook` (292pp) never rea
 6. The child's stderr SHALL be retained on the timeout path. `subprocess_mgr.py` kills the process group and re-raises **before** `proc.communicate()`, so `stderr_bytes` stays `b""` and a timeout is indistinguishable from a hang. This is why the originating question — was `world-stats-pocketbook` slow or non-terminating? — is still unanswered.
 7. D11 SHALL produce **no verdict movement** on any document the 1.C baseline scored. It changes how long a conversion may run, never what is measured. A movement attributed to D11 is a measurement defect under R9.4, not a result.
 
+### Requirement 12: Phase and Decision-Layer Logging (D12)
+
+**User Story:** As the maintainer watching a corpus run, I want to see which document is in which phase and which branch the pipeline took to reach its result — reconstructable for a single document, from logs alone.
+
+Requested by the owner on 2026-09-17. The Grafana/Loki shipping connection is **deferred to a later RFC**; the log *format* is designed here so that deferral is a configuration file rather than a rewrite.
+
+**The finding that shapes this deliverable.** The entire per-document pipeline — `index()`, every gate, every route decision, every recovery rung — runs inside the `converters_cli` **child process**, on both real routes (the arq worker and `preprocess_client.py:149`, which the corpus work mandates). `worker/subprocess_mgr.py:203` reads that child with `proc.communicate()`, and `stderr_tail` is never referenced again when the return code is 0. **Child stderr is buffered whole in the parent and discarded on success**; on failure only the last 4000 bytes survive inside an exception message, and nothing at all is visible until the document finishes. So today, at every log level, every line the decision layer would emit is thrown away. Child-stderr passthrough is therefore the gating task of D12, not a detail of it — and **it subsumes D11's task 3.13**, which retains stderr only on the timeout path.
+
+#### Acceptance Criteria
+
+1. Log records SHALL be one JSON object per line on **stderr**, with a frozen `v: 1` schema, snake_case keys, no dots in key names, and `attrs` exactly one level deep. A record SHALL NEVER span two lines — tracebacks live in `exc.stack` as a single escaped string.
+2. The child process's stderr SHALL reach the parent's stderr **as it is produced**, streamed rather than buffered, while preserving the handshake read, the timeout budget, OOM detection (`CONVERTER_CHILD_OOM_TOTAL` fires on `SIGKILL` and must not be triggered by parent memory growth), and `ConverterChildError`'s `error_class` extraction. A bounded ring buffer SHALL retain `stderr_tail`.
+3. Correlation SHALL be carried by a `contextvars`-backed `logging.Filter` installed on the root **handler**, so library loggers are covered and none of the 48 existing `getLogger` modules is modified. `doc_sha8` SHALL bridge the window before `doc_id` exists. The context SHALL cross the process boundary by environment variable, following the `PAGEINDEX_JOB_START_CONFIG` precedent at `subprocess_mgr.py:125`.
+4. A single `Phase` enum SHALL name the phases a document passes through, derived from the code rather than invented, with a `phase_seq` that disambiguates phases re-entered across recovery passes.
+5. Every decision point in the enumerated `DECISION_POINTS` registry SHALL emit `event`, `choice`, `reason` and bounded `attrs` sufficient to reconstruct the branch. Where a decision is *overridden*, the record SHALL carry both the computed outcome and the forced one — `force_route` currently overwrites `decide_route`'s answer with no trace of either.
+6. Decision records SHALL be emitted at **INFO**, not DEBUG. A normal corpus run must answer "what flow did this document take"; a level that hides it fails the requirement.
+7. **No document text SHALL be logged at any level.** Default-deny, per Hard Rule 3 and the `tracing.py::_mask` doctrine: no `md_content`, node text, summaries, table cells, OCR output, LLM prompts or completions, and **no node titles** — a German insurance heading can name an insured party. Lengths, ratios, `node_path`, and 8-hex digests instead. Absolute filesystem paths SHALL be reduced to a basename. Enforced by an AST guard over every emitter call site's `attrs` keys.
+8. `decision()` and `phase()` SHALL NEVER raise — the posture `tracing.py:168` already takes ("tracing must never break the tool"). In particular they SHALL be emitted outside `finalize_gate_and_route`'s `_guard_bypass` window, and SHALL NOT write to `ExtractionState`, whose `__setattr__` single-writer guard (`types.py:241-251`) would reject it.
+9. Every emitter SHALL be guarded by `logger.isEnabledFor(...)` before its `attrs` dict is built — constructing the dict is the cost, not the emit. Per-node records SHALL be DEBUG-only and capped.
+10. Logging configuration SHALL read the environment **once at import** in its own module, and SHALL NOT be added to `PipelineConfig.from_env`. Both halves are load-bearing: `TestHotPathConfigAccessGuard` (`test_architecture_guards.py:772-838`) forbids inline env reads in five of the six files that receive decision records, and `TestNoConfigDoubleSourcing` (`:1430`) is closed-world over `src/`, so registering these vars in `from_env` would make the logging module's own read a violation.
+11. The configured handler's stream SHALL be `sys.stderr`. `converters_cli` reserves stdout for exactly two JSON lines (`:31`, `:56-62`); a handler defaulting to stdout would fail every job with `invalid JSON on stdout`. Enforced by a guard test.
+12. D12 SHALL be **behaviour-neutral**: it reclassifies no document and moves no verdict. Like D11, a verdict movement attributed to D12 is a measurement defect under R9.4.
+13. A read-only `scripts/logtrace.py` SHALL reconstruct one document's ordered record sequence from a captured log file, proving criterion 5 without any Loki dependency.
+
+**Out of scope, explicitly:** Loki, promtail, Alloy, Grafana dashboards or alerts; log retention policy; migration of the 48 modules' message strings to event names; structlog; an OpenTelemetry logs bridge; any metric change; logging inside the five OCR sidecar services. **Named for the deferred shipping RFC:** the moment logs leave the host, HR2's erasure cascade acquires a new derived store. That must be addressed there.
+
 ## Decision Summary
 
 ### D1: Reproducible Evaluation Evidence (Requirement 1)
@@ -307,6 +333,17 @@ Break the floor/ceiling derivation so `max(CHILD_TIMEOUT, chunked_docling_timeou
 
 **A second deliberate scope expansion**, after D10. A follow-up RFC was the alternative and was rejected: the 1.C baseline was taken through the batch CLI, which applies no outer bound, while production runs under arq's. The two do not share timeout semantics, so until D11 lands **every Wave 3-6 comparison that touches timeouts is invalid against that baseline**. See R9.8 and the 1.C blind spots.
 
+### D12: Phase and Decision-Layer Logging (Requirement 12)
+
+Stdlib `logging` plus `extra=`, a JSON `Formatter`, and a `contextvars`-backed `Filter`. **No structlog, no new dependency.** The argument is not cost-aversion: structlog's bound context does not reach a `logging.getLogger` module, so correlation across the 48 existing modules needs a stdlib filter either way — which leaves structlog paying only for rendering that sixty lines of `Formatter` already does. It would start to pay if the five OCR sidecar services needed the same pipeline, or if per-logger processor chains became a requirement; neither is in scope.
+
+Lands as **Wave 2.5**, in two tranches, by owner decision on 2026-09-17:
+
+- **Core (tasks 12.1-12.4, 12.10, gate 12.C-core)** — formatter, correlation, child-stderr passthrough, phase model, and the reconstruction tool. This alone makes a run observable end to end and discharges D11's 3.13. **Wave 3 waits for the core and nothing more.**
+- **Instrumentation (tasks 12.5-12.9)** — the `DECISION_POINTS` registry across ten modules, redaction guard, config module, guard tests, and the `basicConfig` unification. Lands as a second tranche, parallelisable with Wave 3.
+
+Behaviour-neutral, so it perturbs neither the 1.C baseline nor task 1.9's deferred version bump. Estimated ~35h total, of which the core is ~17h — larger than D5 and D8 combined, and stated rather than sold.
+
 ## Implementation Plan
 
 
@@ -318,6 +355,7 @@ Three vocabularies are in use and they describe the same work. This table is the
 |---|---|---|---|
 | **P0** · Baseline truth | Phase 0 — Baseline | **Wave 1** | D2, D3, RFC-042 4.2 |
 | **P0** (evidence arm) | Phase 1 — Evidence | **Wave 2** | D1 |
+| *(beyond plan §6)* | Phase 1.5 — Observability | **Wave 2.5** | D12 |
 | **P0.5** · Cluster fixes | Phase 2 | **Wave 3** | D5, D8, D10, D11 |
 | **P0.5** | Phase 3 | **Wave 4** | D6 |
 | **P0.5** | Phase 4 | **Wave 5** | D7 |
@@ -352,7 +390,9 @@ In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus v
 | 2 | D10: Zone 2 closure — 7 post-NFKC ScriptContext sites + guard | ~8h | Medium — third recurrence of one pattern; guard is the durable part |
 | 5 | D9: Corpus validation, attribution table, version bump | ~6h | Medium — long-running; coordination with RFC-041 3.5a |
 | 2 | D11: Timeout floor/ceiling fix + arq per-function bound + stderr retention + guard | ~6h | Medium — widens a production timeout rail; property test pins the invariant |
-| **Total** | | **~65h** | **(revised 2026-09-17 from ~59h: +D11, Requirement 11. Previously revised 2026-09-15 from ~51h: +D10 via Zone 2 ownership, OQ2)** |
+| 1.5 | D12 core: JSON formatter, correlation, child-stderr passthrough, phase model, logtrace | ~17h | Medium — the passthrough touches the converter child boundary |
+| 1.5 | D12 instrumentation: 19 decision points across 10 modules, redaction, guards | ~18h | **High** — five of the ten files are hot-path and guard-constrained |
+| **Total** | | **~100h** | **(revised 2026-09-17 from ~65h: +D12, Requirement 12, at owner request. Same day from ~59h: +D11, Requirement 11. Previously revised 2026-09-15 from ~51h: +D10 via Zone 2 ownership, OQ2)** |
 
 ## Test Strategy
 
@@ -365,6 +405,7 @@ In short: **P0 = Waves 1–2, P0.5 = Waves 3–6.** Waves 7–8 are the corpus v
 - **D7:** Doc 17 reproduction — recovery yields clean markdown, tree rebuild fails, better extraction retained. Arbitration tests with three candidates. A script-awareness test: formal Arabic must not lose to Latin gibberish on any scorer. `tests/test_zone3_ocr_recovery.py` updated in the same change.
 - **D4:** Latin-filename/Arabic-content image test. Bounded-retry test (at most one corrective pass). AST guard conformance for any new recovery method (`full_page_already_applied` guard, `_all_defects` predicate).
 - **D8:** Density numerator unit tests over summaries and image OCR text. Env parse tests for `1`, `yes`, `true`, whitespace, `false`, unset.
+- **D12:** Guard tests are the deliverable's spine, not its trim: every `DECISION_POINTS` entry actually emits; one line per record; the handler stream is `sys.stderr`; no `logging.basicConfig` outside the observability module; the six hot-path files still pass `TestHotPathConfigAccessGuard`; an AST scan of every emitter call site for banned `attrs` keys. Plus a two-document reconstruction through `scripts/logtrace.py` — one clean Latin, one Arabic that garbles — confirming the flow is recoverable and that no text or title string appears in the output.
 - **D11:** A property test over the full `chunk_count` domain asserting `effective_timeout` exceeds the dynamic budget and does not exceed the caller's outer bound — written to fail against HEAD (R11.2). Reconcile `test_worker.py:330` against `:526`, which contradict each other today. Architecture guard enumerating `_run_converter_subprocess`'s callers and asserting each declares an outer bound. A unit test asserting stderr survives the timeout path.
 - **Corpus:** Attributed per-document delta table, both directions, after Phase 4. Baseline taken after Phase 0. Coverage gains reported separately from verdict movements per R9.8.
 
