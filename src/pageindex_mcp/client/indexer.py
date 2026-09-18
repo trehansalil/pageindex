@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import os
 import re
-import dataclasses
 import shutil
 import tempfile
 import uuid
@@ -27,20 +27,18 @@ from ..config import (
     pipeline_config,
     settings,
 )
-from ..obs import bind_log_context
-from ..obs.decisions import decision
 from ..converters import (
     ConverterFailurePolicy,
     PictureResult,
     TessdataUnavailableError,
     _tesseract_ocr_image,
+    as_chain_entry,
     detect_ocr_langs,
     docx_to_markdown,
     ensure_tessdata,
     html_to_markdown_with_images,
     image_to_markdown,
     libreoffice_to_pdf,
-    as_chain_entry,
     pdf_markdown_converters,
     pptx_to_markdown,
     reconstruct_bidi_order,
@@ -61,7 +59,6 @@ from ..helpers import (
     _garble_check_flat_blocks,
     _garble_config,
     _infer_presentation_forms,
-    route_and_extract_flat,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
@@ -71,6 +68,7 @@ from ..helpers import (
     detect_garble,
     finalize_gate_and_route,
     prepare_tree,
+    route_and_extract_flat,
     validate_tree,
 )
 from ..metrics import (
@@ -86,6 +84,8 @@ from ..metrics import (
     REMOTE_MD_RENORMALIZED,
     VLM_FALLBACK_TOTAL,
 )
+from ..obs import bind_log_context
+from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import BlobKind, RtlDecision, ScriptContext
 from ..storage import (
@@ -211,7 +211,9 @@ def _renormalize_bidi_guarded(
     decision(
         event="bidi_presentation_form_canonicalization",
         choice="nfkc_applied" if had_pres_forms else "not_needed",
-        reason="presentation-form codepoints found" if had_pres_forms else "no presentation-form codepoints",
+        reason="presentation-form codepoints found"
+        if had_pres_forms
+        else "no presentation-form codepoints",
         attrs={"had_presentation_forms": had_pres_forms},
     )
 
@@ -228,7 +230,9 @@ def _detect_config_drift(job_start_config: dict | None, effective_cfg: dict) -> 
     decision(
         event="config_drift_detected",
         choice="drift_detected" if drift else "no_drift",
-        reason="job_start_config differs from effective config" if drift else "configs match or no job_start_config",
+        reason="job_start_config differs from effective config"
+        if drift
+        else "configs match or no job_start_config",
         attrs={"drift_present": drift},
     )
     if drift:
@@ -281,6 +285,7 @@ def _generate_flat_doc_description(text: str, model: str | None = None, *, doc_i
 # MIN_STANDALONE_IMAGE_MD_CHARS are now imported from images.py (canonical source)
 # to eliminate constant duplication across two files.
 from .images import _IMAGE_EXTS, MIN_STANDALONE_IMAGE_MD_CHARS  # noqa: E402
+
 _SUPPORTED = {".pdf", ".md", ".markdown", ".txt", ".docx", ".pptx", ".html", ".xlsx"} | _IMAGE_EXTS
 # Zone-4: legacy _OCR_ESCALATION removed; split flags _OCR_ESCALATION_GARBLE /
 # _OCR_ESCALATION_PER_PICTURE imported from config.py (canonical source).
@@ -505,10 +510,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             decision(
                 event="pdf_inspector_force_ocr",
                 choice="forced_by_inspector" if inspector_force_ocr else "not_forced",
-                reason="inspector preclassify triggered" if inspector_force_ocr else "inspector gate not met",
+                reason="inspector preclassify triggered"
+                if inspector_force_ocr
+                else "inspector gate not met",
                 attrs={
                     "pdf_type": pdf_classification.get("pdf_type") if pdf_classification else None,
-                    "confidence": pdf_classification.get("confidence", 0) if pdf_classification else 0,
+                    "confidence": pdf_classification.get("confidence", 0)
+                    if pdf_classification
+                    else 0,
                     "inspector_confidence_threshold": INSPECTOR_CONFIDENCE_THRESHOLD,
                 },
             )
@@ -551,7 +560,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
                         if probe_pdf.page_count > 0:
                             raw_text = probe_pdf[0].get_text()
-                            _probe_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=_infer_presentation_forms(raw_text), source="pre_garble_probe")
+                            _probe_ctx = (
+                                script_context
+                                if script_context is not None
+                                else ScriptContext(
+                                    dominant_script=expected_script,
+                                    had_presentation_forms=_infer_presentation_forms(raw_text),
+                                    source="pre_garble_probe",
+                                )
+                            )
                             _p0_chars = len(raw_text.strip())
                             if raw_text.strip() and detect_garble(
                                 raw_text,
@@ -572,8 +589,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                     },
                                 )
                             elif (
-                                probe_pdf.page_count >= 2
-                                and _p0_chars < D3A_SPARSE_PAGE_CHAR_FLOOR
+                                probe_pdf.page_count >= 2 and _p0_chars < D3A_SPARSE_PAGE_CHAR_FLOOR
                             ):
                                 state.pre_garbled = True
                                 decision(
@@ -638,13 +654,17 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 state.pre_garbled and PRE_GARBLE_FORCE_OCR_ENABLED
             )
             if force_full_page:
-                _ffp_choice = "forced_by_inspector" if inspector_force_ocr else "forced_by_pre_garble"
+                _ffp_choice = (
+                    "forced_by_inspector" if inspector_force_ocr else "forced_by_pre_garble"
+                )
             else:
                 _ffp_choice = "not_forced"
             decision(
                 event="force_full_page_ocr_decision",
                 choice=_ffp_choice,
-                reason="inspector or pre-garble triggered" if force_full_page else "no force trigger",
+                reason="inspector or pre-garble triggered"
+                if force_full_page
+                else "no force trigger",
                 attrs={
                     "inspector_force_ocr": inspector_force_ocr,
                     "pre_garbled": state.pre_garbled,
@@ -662,7 +682,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             decision(
                 event="pdf_route_remote_or_local",
                 choice="remote_docling" if state.use_remote else "local_converter_chain",
-                reason="remote service configured" if state.use_remote else "no remote service or staging key",
+                reason="remote service configured"
+                if state.use_remote
+                else "no remote service or staging key",
                 attrs={
                     "docling_service_url_set": bool(getattr(settings, "docling_service_url", None)),
                     "staging_key_set": bool(self._staging_key),
@@ -676,12 +698,18 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 try:
                     logger.info("Extracting PDF to markdown via %s: %s", conv_name, filename)
                     if state.use_remote and _conv_supports_ocr:
-                        _dispatch_mode = "remote_supports_ocr" if _conv_supports_ocr else "remote_plain"
+                        _dispatch_mode = (
+                            "remote_supports_ocr" if _conv_supports_ocr else "remote_plain"
+                        )
                         decision(
                             event="pdf_converter_dispatch_mode",
                             choice=_dispatch_mode,
                             reason="remote converter selected",
-                            attrs={"converter_name": conv_name, "supports_ocr": _conv_supports_ocr, "force_full_page": force_full_page},
+                            attrs={
+                                "converter_name": conv_name,
+                                "supports_ocr": _conv_supports_ocr,
+                                "force_full_page": force_full_page,
+                            },
                         )
                         if force_full_page:
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
@@ -706,7 +734,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             event="pdf_converter_dispatch_mode",
                             choice="local_force_full_page",
                             reason="local converter with forced full-page OCR",
-                            attrs={"converter_name": conv_name, "supports_ocr": _conv_supports_ocr, "force_full_page": force_full_page},
+                            attrs={
+                                "converter_name": conv_name,
+                                "supports_ocr": _conv_supports_ocr,
+                                "force_full_page": force_full_page,
+                            },
                         )
                         md_content, state.pic_results, stages_out = _split_converter_output(
                             await asyncio.to_thread(
@@ -724,7 +756,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             event="pdf_converter_dispatch_mode",
                             choice="local_normal",
                             reason="local converter, normal mode",
-                            attrs={"converter_name": conv_name, "supports_ocr": _conv_supports_ocr, "force_full_page": force_full_page},
+                            attrs={
+                                "converter_name": conv_name,
+                                "supports_ocr": _conv_supports_ocr,
+                                "force_full_page": force_full_page,
+                            },
                         )
                         if state.pre_garbled and _conv_supports_ocr:
                             logger.info(
@@ -787,9 +823,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     # Determine the ConverterFailurePolicy for this failure.
                     # -------------------------------------------------------
                     next_idx = idx + 1
-                    next_is_agpl = (
-                        next_idx < len(chain) and chain[next_idx].is_agpl
-                    )
+                    next_is_agpl = next_idx < len(chain) and chain[next_idx].is_agpl
 
                     # Ordering is load-bearing: the AGPL branches must be
                     # classified BEFORE the generic end-of-chain/WALK branches,
@@ -806,6 +840,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     else:
                         _failure_policy = ConverterFailurePolicy.WALK
 
+                    _agpl_fallback_on = pipeline_config.agpl_structural_fallback_enabled
                     _cfp_choice_map = {
                         ConverterFailurePolicy.RETRY: "retry",
                         ConverterFailurePolicy.BLOCK_AGPL: "block_agpl",
@@ -813,7 +848,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         ConverterFailurePolicy.WALK: "walk",
                         ConverterFailurePolicy.GATE_AGPL_STRUCTURAL: (
                             "gate_agpl_structural_blocked"
-                            if not pipeline_config.agpl_structural_fallback_enabled
+                            if not _agpl_fallback_on
                             else "gate_agpl_structural_walk"
                         ),
                     }
@@ -828,7 +863,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             "transient_attempts": _transient_attempts,
                             "converter_transient_retry_count": CONVERTER_TRANSIENT_RETRY_COUNT,
                             "next_is_agpl": next_is_agpl,
-                            "agpl_structural_fallback_enabled": pipeline_config.agpl_structural_fallback_enabled,
+                            "agpl_structural_fallback_enabled": _agpl_fallback_on,
                         },
                     )
 
@@ -846,9 +881,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         continue
 
                     if _failure_policy is ConverterFailurePolicy.BLOCK_AGPL:
-                        AGPL_FALLBACK_TOTAL.labels(
-                            reason="transient_blocked"
-                        ).inc()
+                        AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked").inc()
                         logger.warning(
                             "Transient failure on '%s' for %s would fall "
                             "through to AGPL converter '%s'; blocking "
@@ -914,7 +947,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             chain[next_idx].name if next_idx < len(chain) else "<none>",
                         )
             if md_content is not None:
-                _fallback_from_primary = primary_name is not None and state.used_converter != primary_name
+                _fallback_from_primary = (
+                    primary_name is not None and state.used_converter != primary_name
+                )
                 decision(
                     event="pdf_conversion_outcome",
                     choice="converter_succeeded",
@@ -923,7 +958,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         "used_converter": state.used_converter,
                         "primary_converter": primary_name,
                         "fallback_from_primary": _fallback_from_primary,
-                        "fallback_converter_is_agpl": state.used_converter == "pymupdf4llm" if _fallback_from_primary else False,
+                        "fallback_converter_is_agpl": state.used_converter == "pymupdf4llm"
+                        if _fallback_from_primary
+                        else False,
                     },
                 )
                 # Zone-2: stamp full_page_already_applied when the initial
@@ -958,21 +995,32 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         event="pdf_picture_splice_or_strip",
                         choice="stripped_residual_markers",
                         reason="no pic results but residual image markers found",
-                        attrs={"pic_result_count": 0, "splice_enabled": TREE_PATH_PICTURE_SPLICE_ENABLED},
+                        attrs={
+                            "pic_result_count": 0,
+                            "splice_enabled": TREE_PATH_PICTURE_SPLICE_ENABLED,
+                        },
                     )
                 else:
                     decision(
                         event="pdf_picture_splice_or_strip",
                         choice="no_action",
                         reason="no splice or strip needed",
-                        attrs={"pic_result_count": len(state.pic_results) if state.pic_results else 0, "splice_enabled": TREE_PATH_PICTURE_SPLICE_ENABLED},
+                        attrs={
+                            "pic_result_count": len(state.pic_results) if state.pic_results else 0,
+                            "splice_enabled": TREE_PATH_PICTURE_SPLICE_ENABLED,
+                        },
                     )
                 _do_renorm = state.use_remote and pipeline_config.remote_md_renormalize
                 decision(
                     event="pdf_remote_bidi_renorm_gate",
                     choice="renorm_attempted" if _do_renorm else "skipped_local_or_disabled",
-                    reason="remote route with renormalize enabled" if _do_renorm else "local route or renormalize disabled",
-                    attrs={"use_remote": state.use_remote, "remote_md_renormalize": pipeline_config.remote_md_renormalize},
+                    reason="remote route with renormalize enabled"
+                    if _do_renorm
+                    else "local route or renormalize disabled",
+                    attrs={
+                        "use_remote": state.use_remote,
+                        "remote_md_renormalize": pipeline_config.remote_md_renormalize,
+                    },
                 )
                 if _do_renorm:
                     md_content, state.rtl_decision = _renormalize_bidi_guarded(
@@ -1062,8 +1110,13 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             decision(
                 event="standalone_image_tessdata_availability",
                 choice="degraded_to_deu_eng" if _tessdata_degraded else "tessdata_available",
-                reason="tessdata unavailable, degraded" if _tessdata_degraded else "tessdata available",
-                attrs={"detected_langs_count": len(detected), "degraded_langs": img_langs if _tessdata_degraded else None},
+                reason="tessdata unavailable, degraded"
+                if _tessdata_degraded
+                else "tessdata available",
+                attrs={
+                    "detected_langs_count": len(detected),
+                    "degraded_langs": img_langs if _tessdata_degraded else None,
+                },
             )
             # RFC-046 D2: this path OCRs the image via tesseract (both
             # image_to_markdown and the _tesseract_ocr_image fallback below).
@@ -1082,7 +1135,10 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     event="standalone_image_ocr_source_choice",
                     choice="full_tesseract_retry",
                     reason="image_to_markdown output too sparse",
-                    attrs={"md_content_chars": _md_chars, "min_standalone_image_md_chars": MIN_STANDALONE_IMAGE_MD_CHARS},
+                    attrs={
+                        "md_content_chars": _md_chars,
+                        "min_standalone_image_md_chars": MIN_STANDALONE_IMAGE_MD_CHARS,
+                    },
                 )
             else:
                 standalone_ocr_text = md_content
@@ -1090,7 +1146,10 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     event="standalone_image_ocr_source_choice",
                     choice="reuse_image_to_markdown_text",
                     reason="image_to_markdown output sufficient",
-                    attrs={"md_content_chars": _md_chars, "min_standalone_image_md_chars": MIN_STANDALONE_IMAGE_MD_CHARS},
+                    attrs={
+                        "md_content_chars": _md_chars,
+                        "min_standalone_image_md_chars": MIN_STANDALONE_IMAGE_MD_CHARS,
+                    },
                 )
             md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", md_content)
             marker_count = md_content.count("<!-- image -->")
@@ -1136,6 +1195,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         _image_garble_cfg = None
         if ext in _IMAGE_EXTS:
             from ..helpers.garble import GarbleConfig
+
             _image_garble_cfg = GarbleConfig(
                 garble_nonsense_ratio=IMAGE_OCR_NONSENSE_RATIO,
             )
@@ -1212,10 +1272,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         # table amid clean prose passes the whole-blob threshold.
         _garble_blocks: list[dict]
         _, _garble_blocks = await asyncio.to_thread(route_and_extract_flat, flat_md)
-        _flat_garble_ctx = script_context if script_context is not None else ScriptContext(
-            dominant_script=expected_script,
-            had_presentation_forms=_infer_presentation_forms(flat_md),
-            source="flat_garble_gate",
+        _flat_garble_ctx = (
+            script_context
+            if script_context is not None
+            else ScriptContext(
+                dominant_script=expected_script,
+                had_presentation_forms=_infer_presentation_forms(flat_md),
+                source="flat_garble_gate",
+            )
         )
         _flat_garble_report = _garble_check_flat_blocks(
             _garble_blocks,
@@ -1225,6 +1289,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         if _flat_garble_report:
             state.flat_garble_unrecovered = True
             from ..helpers.types import _guard_bypass
+
             _guard_bypass.active = True
             try:
                 state.reason = "garbling"
@@ -1235,8 +1300,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 choice="garbled_reject",
                 reason="per-block garble gate triggered",
                 attrs={
-                    "fired_prongs": list(_flat_garble_report.fired_prongs) if _flat_garble_report.fired_prongs else [],
-                    "fired_prongs_count": len(_flat_garble_report.fired_prongs) if _flat_garble_report.fired_prongs else 0,
+                    "fired_prongs": list(_flat_garble_report.fired_prongs)
+                    if _flat_garble_report.fired_prongs
+                    else [],
+                    "fired_prongs_count": len(_flat_garble_report.fired_prongs)
+                    if _flat_garble_report.fired_prongs
+                    else 0,
                 },
             )
             if ext == ".pdf" and settings.vlm_fallback:
@@ -1244,7 +1313,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     from ..converters import vlm_extract_markdown
 
                     vlm_md = await vlm_extract_markdown(file_path, settings.vlm_model)
-                    _vlm_ctx = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=_infer_presentation_forms(vlm_md), source="vlm_fallback_garble")
+                    _vlm_ctx = (
+                        script_context
+                        if script_context is not None
+                        else ScriptContext(
+                            dominant_script=expected_script,
+                            had_presentation_forms=_infer_presentation_forms(vlm_md),
+                            source="vlm_fallback_garble",
+                        )
+                    )
                     _, _vlm_blocks = await asyncio.to_thread(route_and_extract_flat, vlm_md)
                     if not _garble_check_flat_blocks(
                         _vlm_blocks,
@@ -1470,9 +1547,16 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             }
             decision(
                 event="verdict_downgrade_override_flat",
-                choice="force_verdict_override_enabled" if VERDICT_DOWNGRADE_ENABLED else "normal_cas",
-                reason="verdict downgrade override" if VERDICT_DOWNGRADE_ENABLED else "normal CAS verdict",
-                attrs={"verdict_downgrade_enabled": VERDICT_DOWNGRADE_ENABLED, "pipeline_version": CURRENT_PIPELINE_VERSION},
+                choice="force_verdict_override_enabled"
+                if VERDICT_DOWNGRADE_ENABLED
+                else "normal_cas",
+                reason="verdict downgrade override"
+                if VERDICT_DOWNGRADE_ENABLED
+                else "normal CAS verdict",
+                attrs={
+                    "verdict_downgrade_enabled": VERDICT_DOWNGRADE_ENABLED,
+                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                },
             )
             if VERDICT_DOWNGRADE_ENABLED:
                 self.last_verdict_fields["force_verdict_override"] = True
@@ -1509,7 +1593,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 structure,
                 "",
                 state.gate_result,
-                inspector_class=(pdf_classification.get("pdf_type") if pdf_classification else None),
+                inspector_class=(
+                    pdf_classification.get("pdf_type") if pdf_classification else None
+                ),
                 expected_script=script_context if script_context is not None else expected_script,
             )
             verdict, verdict_reason = _vr.verdict, _vr.reason
@@ -1635,9 +1721,16 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             }
             decision(
                 event="verdict_downgrade_override_tree",
-                choice="force_verdict_override_enabled" if VERDICT_DOWNGRADE_ENABLED else "normal_cas",
-                reason="verdict downgrade override" if VERDICT_DOWNGRADE_ENABLED else "normal CAS verdict",
-                attrs={"verdict_downgrade_enabled": VERDICT_DOWNGRADE_ENABLED, "pipeline_version": CURRENT_PIPELINE_VERSION},
+                choice="force_verdict_override_enabled"
+                if VERDICT_DOWNGRADE_ENABLED
+                else "normal_cas",
+                reason="verdict downgrade override"
+                if VERDICT_DOWNGRADE_ENABLED
+                else "normal CAS verdict",
+                attrs={
+                    "verdict_downgrade_enabled": VERDICT_DOWNGRADE_ENABLED,
+                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                },
             )
             if VERDICT_DOWNGRADE_ENABLED:
                 self.last_verdict_fields["force_verdict_override"] = True
@@ -1742,7 +1835,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         with bind_log_context(doc_sha8=sha256[:8]):
             try:
                 await self._convert_to_tree(
-                    state, file_path, filename, ext, expected_script, pdf_classification,
+                    state,
+                    file_path,
+                    filename,
+                    ext,
+                    expected_script,
+                    pdf_classification,
                     script_context=script_context,
                 )
 
@@ -1757,7 +1855,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     script_context = ScriptContext.from_document(
                         filename, raw_text=state.md_content
                     )
-                    _pf_pre = getattr(state.rtl_decision, "had_presentation_forms", False) if state.rtl_decision else False
+                    _pf_pre = (
+                        getattr(state.rtl_decision, "had_presentation_forms", False)
+                        if state.rtl_decision
+                        else False
+                    )
                     _pf_post = script_context.had_presentation_forms
                     _needs_carryover = _pf_pre and not _pf_post
                     if _needs_carryover:
@@ -1766,8 +1868,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         )
                     decision(
                         event="script_context_pf_carryover",
-                        choice="pf_signal_carried_over" if _needs_carryover else "no_carryover_needed",
-                        reason="NFKC destroyed PF codepoints, recovering from rtl_decision" if _needs_carryover else "PF signal consistent or absent",
+                        choice="pf_signal_carried_over"
+                        if _needs_carryover
+                        else "no_carryover_needed",
+                        reason="NFKC destroyed PF codepoints, recovering from rtl_decision"
+                        if _needs_carryover
+                        else "PF signal consistent or absent",
                         attrs={
                             "had_presentation_forms_pre_nfkc": _pf_pre,
                             "had_presentation_forms_post_nfkc": _pf_post,
@@ -1799,7 +1905,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             reason=f"gate {_gate.defect.value} eligible, dispatching {_fn_name}",
                             attrs={"gate_defect": _gate.defect.value, "already_fired_skip": False},
                         )
-                        await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script, script_context=script_context)
+                        await getattr(self, _fn_name)(
+                            state,
+                            file_path,
+                            filename,
+                            ext,
+                            expected_script,
+                            script_context=script_context,
+                        )
                     # Zone-3: finalize_gate_and_route() is now called inside
                     # each recovery method (_reconvert_and_revalidate,
                     # _recover_rtl_repair) so gate_result/ok/reason/first_defect/
@@ -1829,8 +1942,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 # the (ok, route) combination.
                 decision(
                     event="flat_garble_unrecovered_reject",
-                    choice="reject_flat_garble_unrecovered" if state.flat_garble_unrecovered else "proceed_to_route_dispatch",
-                    reason="flat garble unrecovered" if state.flat_garble_unrecovered else "no flat garble reject",
+                    choice="reject_flat_garble_unrecovered"
+                    if state.flat_garble_unrecovered
+                    else "proceed_to_route_dispatch",
+                    reason="flat garble unrecovered"
+                    if state.flat_garble_unrecovered
+                    else "no flat garble reject",
                     attrs={"flat_garble_unrecovered": state.flat_garble_unrecovered},
                 )
                 if state.flat_garble_unrecovered:
@@ -1850,7 +1967,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 }
                 decision(
                     event="persistence_route_dispatch",
-                    choice=_route_choice_map.get((state.ok, state.route), "unexpected_fallback_persist_tree"),
+                    choice=_route_choice_map.get(
+                        (state.ok, state.route), "unexpected_fallback_persist_tree"
+                    ),
                     reason=f"ok={state.ok}, route={state.route.value}",
                     attrs={
                         "ok": state.ok,
@@ -1880,7 +1999,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             return doc_id
                         # Flat persist failed — re-emit as reject.
                         _reject_reason = (
-                            "garbling" if state.flat_garble_unrecovered else state.first_defect.value
+                            "garbling"
+                            if state.flat_garble_unrecovered
+                            else state.first_defect.value
                         )
                         LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
                         logger.warning(

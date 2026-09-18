@@ -18,9 +18,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..config import pipeline_config
 from ..helpers import _garble_config, detect_garble
+from ..helpers.garble import _infer_presentation_forms as _infer_pf
 from ..obs.context import propagate
 from ..obs.decisions import decision
-from ..helpers.garble import _infer_presentation_forms as _infer_pf
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr.
 _OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
@@ -178,7 +178,11 @@ def zdr_egress_gate(purpose: str, doc_id: str = "") -> tuple[bool, str | None]:
         event="vlm_egress_gate",
         choice="allowed",
         reason="ZDR compliance check passed",
-        attrs={"purpose": purpose, "api_base_host": api_base or "", "pii_corpus": settings.pii_corpus},
+        attrs={
+            "purpose": purpose,
+            "api_base_host": api_base or "",
+            "pii_corpus": settings.pii_corpus,
+        },
     )
     return True, api_base
 
@@ -244,7 +248,12 @@ def _tesseract_ocr_image(png_path: str, langs: list[str]) -> str:
             timeout=60,
         )
         return proc.stdout.strip()
-    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+    except (
+        subprocess.TimeoutExpired,
+        subprocess.SubprocessError,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
         TESSERACT_OCR_FAILURE_TOTAL.labels(reason=type(exc).__name__).inc()
         logger.warning("per-picture tesseract OCR failed (%s: %s)", type(exc).__name__, exc)
         return ""
@@ -280,10 +289,14 @@ def _text_layer_has_content(
     # Zone-7 fix: scan text for presentation forms instead of hardcoding
     # False -- closes the ScriptContext threading gap where NFKC-destroyed
     # presentation-form codepoints went undetected.
-    _ctx = script_context if script_context is not None else ScriptContext(
-        dominant_script=expected_script,
-        had_presentation_forms=_infer_pf(text),
-        source="picture_text_probe",
+    _ctx = (
+        script_context
+        if script_context is not None
+        else ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=_infer_pf(text),
+            source="picture_text_probe",
+        )
     )
     return not detect_garble(text, script_context=_ctx, config=_garble_config)
 
@@ -440,10 +453,14 @@ def _document_level_text_fallback(
     # layer — never append a garbled text layer as supplementary content (HR5).
     # Zone-3: detect_garble with ScriptContext + GarbleConfig (unified API)
     # Zone-7 fix: scan full_text for presentation forms instead of hardcoding False.
-    _ctx = script_context if script_context is not None else ScriptContext(
-        dominant_script=expected_script,
-        had_presentation_forms=_infer_pf(full_text),
-        source="doc_text_fallback",
+    _ctx = (
+        script_context
+        if script_context is not None
+        else ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=_infer_pf(full_text),
+            source="doc_text_fallback",
+        )
     )
     _garble_report = detect_garble(full_text, script_context=_ctx, config=_garble_config)
     if _garble_report:
@@ -542,7 +559,11 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
             event="pdf_rotation_normalization",
             choice="disabled_by_flag",
             reason="page_rotation_detection_enabled is false",
-            attrs={"pages_corrected_count": 0, "allow_agpl_fallback": pipeline_config.allow_agpl_fallback, "error_type": ""},
+            attrs={
+                "pages_corrected_count": 0,
+                "allow_agpl_fallback": pipeline_config.allow_agpl_fallback,
+                "error_type": "",
+            },
         )
         return pdf_path
     if not pipeline_config.allow_agpl_fallback:
@@ -579,7 +600,11 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
                     event="pdf_rotation_normalization",
                     choice="no_change_needed",
                     reason="no page needed rotation correction",
-                    attrs={"pages_corrected_count": 0, "allow_agpl_fallback": True, "error_type": ""},
+                    attrs={
+                        "pages_corrected_count": 0,
+                        "allow_agpl_fallback": True,
+                        "error_type": "",
+                    },
                 )
                 return pdf_path
             # SIM115 rationale: the temp FILE must outlive this scope -- its path is
@@ -592,7 +617,11 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
                 event="pdf_rotation_normalization",
                 choice="corrected",
                 reason="pages with rotation corrections saved",
-                attrs={"pages_corrected_count": pages_corrected_count, "allow_agpl_fallback": True, "error_type": ""},
+                attrs={
+                    "pages_corrected_count": pages_corrected_count,
+                    "allow_agpl_fallback": True,
+                    "error_type": "",
+                },
             )
             return tmp.name
         finally:
@@ -605,7 +634,11 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
             event="pdf_rotation_normalization",
             choice="failed",
             reason=f"rotation normalization failed: {type(exc).__name__}",
-            attrs={"pages_corrected_count": 0, "allow_agpl_fallback": True, "error_type": type(exc).__name__},
+            attrs={
+                "pages_corrected_count": 0,
+                "allow_agpl_fallback": True,
+                "error_type": type(exc).__name__,
+            },
         )
         return pdf_path
 
@@ -666,7 +699,11 @@ def _tag_landscape_pages_for_fallback(pdf_path: str) -> list[dict]:
             event="landscape_probe_outcome",
             choice="probe_failed",
             reason=f"probe failed: {type(exc).__name__}",
-            attrs={"landscape_page_count": 0, "total_page_count": 0, "error_type": type(exc).__name__},
+            attrs={
+                "landscape_page_count": 0,
+                "total_page_count": 0,
+                "error_type": type(exc).__name__,
+            },
         )
         return []
 
@@ -685,7 +722,13 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
             event="landscape_page_flagged_for_reextract",
             choice="no_landscape_pages_at_all",
             reason="no landscape pages in the probe",
-            attrs={"page_no": 0, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": False, "has_picture_region": False},
+            attrs={
+                "page_no": 0,
+                "char_count": 0,
+                "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD,
+                "is_landscape": False,
+                "has_picture_region": False,
+            },
         )
         return []
     picture_pages = {r["page"] for r in _collect_picture_regions(document)}
@@ -696,7 +739,13 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
                 event="landscape_page_flagged_for_reextract",
                 choice="not_landscape",
                 reason="page is not landscape",
-                attrs={"page_no": p["page_no"] + 1, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": False, "has_picture_region": False},
+                attrs={
+                    "page_no": p["page_no"] + 1,
+                    "char_count": 0,
+                    "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD,
+                    "is_landscape": False,
+                    "has_picture_region": False,
+                },
             )
             continue
         page_no = p["page_no"] + 1
@@ -705,7 +754,13 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
                 event="landscape_page_flagged_for_reextract",
                 choice="no_picture_region",
                 reason="landscape page has no picture region",
-                attrs={"page_no": page_no, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": False},
+                attrs={
+                    "page_no": page_no,
+                    "char_count": 0,
+                    "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD,
+                    "is_landscape": True,
+                    "has_picture_region": False,
+                },
             )
             continue
         char_count = 0
@@ -719,7 +774,13 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
                 event="landscape_page_flagged_for_reextract",
                 choice="char_count_probe_failed",
                 reason=f"char count probe failed: {type(exc).__name__}",
-                attrs={"page_no": page_no, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": True},
+                attrs={
+                    "page_no": page_no,
+                    "char_count": 0,
+                    "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD,
+                    "is_landscape": True,
+                    "has_picture_region": True,
+                },
             )
             continue
         if char_count < LANDSCAPE_CHAR_THRESHOLD:
@@ -727,7 +788,13 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
                 event="landscape_page_flagged_for_reextract",
                 choice="flagged",
                 reason="char count below landscape threshold",
-                attrs={"page_no": page_no, "char_count": char_count, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": True},
+                attrs={
+                    "page_no": page_no,
+                    "char_count": char_count,
+                    "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD,
+                    "is_landscape": True,
+                    "has_picture_region": True,
+                },
             )
             below.append({**p, "char_count": char_count})
         else:
@@ -735,7 +802,13 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
                 event="landscape_page_flagged_for_reextract",
                 choice="above_threshold",
                 reason="char count above landscape threshold",
-                attrs={"page_no": page_no, "char_count": char_count, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": True},
+                attrs={
+                    "page_no": page_no,
+                    "char_count": char_count,
+                    "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD,
+                    "is_landscape": True,
+                    "has_picture_region": True,
+                },
             )
     return below
 
@@ -791,7 +864,9 @@ def _landscape_rasterize_rotate_reextract(
     deadline = time.monotonic() + LANDSCAPE_REEXTRACT_DEADLINE_SECONDS
     for p in pages:
         if len(results) >= MAX_LANDSCAPE_PAGES or time.monotonic() >= deadline:
-            bail_reason = "bail_deadline_reached" if time.monotonic() >= deadline else "bail_cap_reached"
+            bail_reason = (
+                "bail_deadline_reached" if time.monotonic() >= deadline else "bail_cap_reached"
+            )
             logger.warning(
                 "landscape reextraction bailing early (%d/%d pages, deadline=%s) for %s",
                 len(results),
@@ -803,7 +878,11 @@ def _landscape_rasterize_rotate_reextract(
                 event="landscape_reextract_bail",
                 choice=bail_reason,
                 reason=f"landscape reextraction bailing: {bail_reason}",
-                attrs={"pages_recovered_so_far": len(results), "max_landscape_pages": MAX_LANDSCAPE_PAGES, "deadline_seconds": LANDSCAPE_REEXTRACT_DEADLINE_SECONDS},
+                attrs={
+                    "pages_recovered_so_far": len(results),
+                    "max_landscape_pages": MAX_LANDSCAPE_PAGES,
+                    "deadline_seconds": LANDSCAPE_REEXTRACT_DEADLINE_SECONDS,
+                },
             )
             break
         page_no = p["page_no"]
@@ -811,7 +890,11 @@ def _landscape_rasterize_rotate_reextract(
             event="landscape_reextract_bail",
             choice="continue",
             reason="within cap and deadline",
-            attrs={"pages_recovered_so_far": len(results), "max_landscape_pages": MAX_LANDSCAPE_PAGES, "deadline_seconds": LANDSCAPE_REEXTRACT_DEADLINE_SECONDS},
+            attrs={
+                "pages_recovered_so_far": len(results),
+                "max_landscape_pages": MAX_LANDSCAPE_PAGES,
+                "deadline_seconds": LANDSCAPE_REEXTRACT_DEADLINE_SECONDS,
+            },
         )
         try:
             png_path = _rasterize_rotate_page(pdf_path, page_no, dpi=300)
@@ -827,7 +910,12 @@ def _landscape_rasterize_rotate_reextract(
                 event="landscape_reextract_engine",
                 choice="rasterize_failed",
                 reason=f"rasterize/rotate failed: {type(exc).__name__}",
-                attrs={"page_no": page_no, "has_pictures": False, "ocr_langs": ocr_lang_override or [], "md_chars": 0},
+                attrs={
+                    "page_no": page_no,
+                    "has_pictures": False,
+                    "ocr_langs": ocr_lang_override or [],
+                    "md_chars": 0,
+                },
             )
             continue
         try:
@@ -854,7 +942,12 @@ def _landscape_rasterize_rotate_reextract(
                     event="landscape_reextract_engine",
                     choice="tesseract_fallback_recovered" if md.strip() else "reextract_failed",
                     reason=f"Docling failed ({type(exc).__name__}), tesseract fallback",
-                    attrs={"page_no": page_no, "has_pictures": False, "ocr_langs": ocr_lang_override or ["eng"], "md_chars": len(md.strip())},
+                    attrs={
+                        "page_no": page_no,
+                        "has_pictures": False,
+                        "ocr_langs": ocr_lang_override or ["eng"],
+                        "md_chars": len(md.strip()),
+                    },
                 )
         except Exception as exc:
             logger.warning(
@@ -868,7 +961,12 @@ def _landscape_rasterize_rotate_reextract(
                 event="landscape_reextract_engine",
                 choice="reextract_failed",
                 reason=f"re-extraction failed: {type(exc).__name__}",
-                attrs={"page_no": page_no, "has_pictures": False, "ocr_langs": ocr_lang_override or [], "md_chars": 0},
+                attrs={
+                    "page_no": page_no,
+                    "has_pictures": False,
+                    "ocr_langs": ocr_lang_override or [],
+                    "md_chars": 0,
+                },
             )
             continue
         finally:
@@ -879,7 +977,12 @@ def _landscape_rasterize_rotate_reextract(
                 event="landscape_reextract_engine",
                 choice="docling_recovered",
                 reason="Docling re-extraction succeeded",
-                attrs={"page_no": page_no, "has_pictures": has_pictures, "ocr_langs": ocr_lang_override or [], "md_chars": len(md.strip())},
+                attrs={
+                    "page_no": page_no,
+                    "has_pictures": has_pictures,
+                    "ocr_langs": ocr_lang_override or [],
+                    "md_chars": len(md.strip()),
+                },
             )
             results.append({"page_no": page_no, "markdown": md, "has_pictures": has_pictures})
         else:
@@ -887,7 +990,12 @@ def _landscape_rasterize_rotate_reextract(
                 event="landscape_reextract_engine",
                 choice="empty_dropped",
                 reason="re-extraction yielded empty markdown",
-                attrs={"page_no": page_no, "has_pictures": has_pictures, "ocr_langs": ocr_lang_override or [], "md_chars": 0},
+                attrs={
+                    "page_no": page_no,
+                    "has_pictures": has_pictures,
+                    "ocr_langs": ocr_lang_override or [],
+                    "md_chars": 0,
+                },
             )
     return results
 
@@ -1088,14 +1196,22 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         event="picture_coverage_exemption",
                         choice="exempt",
                         reason="page has no text layer, picture IS the content",
-                        attrs={"page": page_index + 1, "coverage_pct": round(coverage * 100, 1), "fullpage_ocr_region_count_after": fullpage_ocr_region_count},
+                        attrs={
+                            "page": page_index + 1,
+                            "coverage_pct": round(coverage * 100, 1),
+                            "fullpage_ocr_region_count_after": fullpage_ocr_region_count,
+                        },
                     )
                 else:
                     decision(
                         event="picture_coverage_exemption",
                         choice="not_exempt",
                         reason="coverage exemption not needed",
-                        attrs={"page": page_index + 1, "coverage_pct": round(coverage * 100, 1), "fullpage_ocr_region_count_after": fullpage_ocr_region_count},
+                        attrs={
+                            "page": page_index + 1,
+                            "coverage_pct": round(coverage * 100, 1),
+                            "fullpage_ocr_region_count_after": fullpage_ocr_region_count,
+                        },
                     )
 
                 if disp == RegionDisposition.CAPTURE_CLIP_TEXT:
@@ -1196,14 +1312,22 @@ def _recover_picture_text(  # noqa: PLR0915, C901
             event="picture_ocr_phase2_skipped",
             choice="skipped_no_crops",
             reason="no crops to OCR",
-            attrs={"region_count": len(regions), "clip_capture_count": len(clip_captures), "retained_skip_count": len(retained_skips)},
+            attrs={
+                "region_count": len(regions),
+                "clip_capture_count": len(clip_captures),
+                "retained_skip_count": len(retained_skips),
+            },
         )
         return recovered, skip_reasons
     decision(
         event="picture_ocr_phase2_skipped",
         choice="ran",
         reason="crops available for OCR",
-        attrs={"region_count": len(regions), "clip_capture_count": len(clip_captures), "retained_skip_count": len(retained_skips)},
+        attrs={
+            "region_count": len(regions),
+            "clip_capture_count": len(clip_captures),
+            "retained_skip_count": len(retained_skips),
+        },
     )
 
     def _ocr_one(png_bytes: bytes) -> str:
@@ -1253,14 +1377,24 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 event="picture_ocr_min_chars_outcome",
                 choice="decorative_ocr_min_chars",
                 reason="OCR yield below minimum chars threshold",
-                attrs={"region_index": i, "ocr_text_len": 0, "vlm_describe_images_enabled": keep_silent_png, "png_kept": bool(result.get("png_bytes"))},
+                attrs={
+                    "region_index": i,
+                    "ocr_text_len": 0,
+                    "vlm_describe_images_enabled": keep_silent_png,
+                    "png_kept": bool(result.get("png_bytes")),
+                },
             )
         else:
             decision(
                 event="picture_ocr_min_chars_outcome",
                 choice="content",
                 reason="OCR yielded content above threshold",
-                attrs={"region_index": i, "ocr_text_len": len(ocr_text), "vlm_describe_images_enabled": keep_silent_png, "png_kept": True},
+                attrs={
+                    "region_index": i,
+                    "ocr_text_len": len(ocr_text),
+                    "vlm_describe_images_enabled": keep_silent_png,
+                    "png_kept": True,
+                },
             )
         recovered[i] = result
     return recovered, skip_reasons
@@ -1329,12 +1463,22 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         k = counter["i"]
         counter["i"] += 1
         if k >= len(real_pics):
-            _choice = "excess_stripped" if pipeline_config.strip_skipped_image_markers else "excess_neutral"
+            _choice = (
+                "excess_stripped"
+                if pipeline_config.strip_skipped_image_markers
+                else "excess_neutral"
+            )
             decision(
                 event="figure_marker_disposition",
                 choice=_choice,
                 reason="marker index exceeds real_pics count",
-                attrs={"picture_index": k, "has_ocr": False, "has_desc": False, "has_png": False, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+                attrs={
+                    "picture_index": k,
+                    "has_ocr": False,
+                    "has_desc": False,
+                    "has_png": False,
+                    "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers,
+                },
             )
             if pipeline_config.strip_skipped_image_markers:
                 return ""
@@ -1345,12 +1489,22 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         has_png = bool(result.get("png_bytes"))
         if not (ocr or desc or has_png):
             if result.get("skipped_reason"):
-                _choice = "skipped_stripped" if pipeline_config.strip_skipped_image_markers else "skipped_neutral"
+                _choice = (
+                    "skipped_stripped"
+                    if pipeline_config.strip_skipped_image_markers
+                    else "skipped_neutral"
+                )
                 decision(
                     event="figure_marker_disposition",
                     choice=_choice,
                     reason=f"skipped: {result.get('skipped_reason', 'unknown')}",
-                    attrs={"picture_index": k, "has_ocr": False, "has_desc": False, "has_png": False, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+                    attrs={
+                        "picture_index": k,
+                        "has_ocr": False,
+                        "has_desc": False,
+                        "has_png": False,
+                        "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers,
+                    },
                 )
                 if pipeline_config.strip_skipped_image_markers:
                     return ""
@@ -1359,7 +1513,13 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
                     event="figure_marker_disposition",
                     choice="figure_marker_only",
                     reason="no ocr, description or png",
-                    attrs={"picture_index": k, "has_ocr": False, "has_desc": False, "has_png": False, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+                    attrs={
+                        "picture_index": k,
+                        "has_ocr": False,
+                        "has_desc": False,
+                        "has_png": False,
+                        "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers,
+                    },
                 )
             return m.group(0)
         if desc:
@@ -1367,10 +1527,7 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         else:
             marker = f"[Figure: fig-{k}]"
         if ocr:
-            if desc:
-                _choice = "figure_with_desc_and_ocr"
-            else:
-                _choice = "figure_with_ocr_only"
+            _choice = "figure_with_desc_and_ocr" if desc else "figure_with_ocr_only"
         elif desc:
             _choice = "figure_with_desc_only"
         else:
@@ -1379,7 +1536,13 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
             event="figure_marker_disposition",
             choice=_choice,
             reason="figure spliced",
-            attrs={"picture_index": k, "has_ocr": bool(ocr), "has_desc": bool(desc), "has_png": has_png, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+            attrs={
+                "picture_index": k,
+                "has_ocr": bool(ocr),
+                "has_desc": bool(desc),
+                "has_png": has_png,
+                "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers,
+            },
         )
         if ocr:
             _spliced_indices.add(k)
@@ -1483,7 +1646,9 @@ def _recover_picture_results(  # noqa: PLR0913
             logger.warning(
                 "tessdata unavailable for %s (detected %s); "
                 "degrading to %s — pre-bake traineddata in worker image",
-                filename, lang_sources, langs,
+                filename,
+                lang_sources,
+                langs,
             )
             decision(
                 event="picture_ocr_lang_tessdata_degrade",

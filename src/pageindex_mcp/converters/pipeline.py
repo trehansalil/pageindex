@@ -155,7 +155,7 @@ class ConverterChainEntry:
         yield self.supports_ocr
 
 
-def as_chain_entry(entry: "ConverterChainEntry | tuple") -> "ConverterChainEntry":
+def as_chain_entry(entry: ConverterChainEntry | tuple) -> ConverterChainEntry:
     """Coerce *entry* to a :class:`ConverterChainEntry`.
 
     ``pdf_markdown_converters`` returns typed entries, but the chain is a
@@ -425,7 +425,11 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
                 if landscape_below_threshold
                 else "no landscape pages below threshold"
             ),
-            attrs={"pages_below_threshold_count": len(landscape_below_threshold) if landscape_below_threshold else 0},
+            attrs={
+                "pages_below_threshold_count": len(landscape_below_threshold)
+                if landscape_below_threshold
+                else 0
+            },
         )
     if landscape_below_threshold:
         logger.info(
@@ -442,7 +446,8 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         # implicated in the Doc 17 failure (RUN-8:207).
         logger.debug(
             "landscape rasterize-reextract OCR engine=%s pages=%s",
-            OcrEngine.TESSERACT, landscape_below_threshold,
+            OcrEngine.TESSERACT,
+            landscape_below_threshold,
         )
         landscape_fallback_pages = _landscape_rasterize_rotate_reextract(
             pdf_path, landscape_below_threshold, ocr_lang_override=ocr_lang_override
@@ -544,7 +549,9 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             decision(
                 event="heading_repromotion_status",
                 choice="applied" if n_promo > 0 else "no_op",
-                reason=f"re-promoted {n_promo} headings" if n_promo > 0 else "no demoted headings found",
+                reason=f"re-promoted {n_promo} headings"
+                if n_promo > 0
+                else "no demoted headings found",
                 attrs={"n_promoted": n_promo, "error_type": None},
             )
     except Exception as exc:
@@ -674,8 +681,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             event="markdown_source_selection",
             choice=_source_choice,
             reason=(
-                "post-add-on selected" if _source_choice == "post_add_on"
-                else "raw rescued over-pruned post" if _source_choice == "raw_over_prune_rescue"
+                "post-add-on selected"
+                if _source_choice == "post_add_on"
+                else "raw rescued over-pruned post"
+                if _source_choice == "raw_over_prune_rescue"
                 else "raw verdict better than post"
             ),
             attrs={
@@ -938,12 +947,14 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
 
     chain: list[ConverterChainEntry] = []
     if pipeline_config.allow_agpl_fallback:
-        chain.append(ConverterChainEntry(
-            name="pymupdf4llm",
-            fn=_pdf_to_markdown_no_pics,
-            supports_ocr=False,
-            is_agpl=True,
-        ))
+        chain.append(
+            ConverterChainEntry(
+                name="pymupdf4llm",
+                fn=_pdf_to_markdown_no_pics,
+                supports_ocr=False,
+                is_agpl=True,
+            )
+        )
     if have_docling:
         docling_entry = ConverterChainEntry(
             name=DOCLING_CONVERTER_NAME,

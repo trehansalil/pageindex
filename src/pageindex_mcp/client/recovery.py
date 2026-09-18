@@ -13,7 +13,6 @@ from ..config import (
     pipeline_config,
     settings,
 )
-from ..helpers.heuristic_registry import registry as _heuristic_registry
 from ..converters import (
     TessdataUnavailableError,
     detect_ocr_langs,
@@ -22,6 +21,7 @@ from ..converters import (
     reconstruct_bidi_order,
     splice_picture_text_for_tree,
 )
+from ..converters.pipeline import DOCLING_CONVERTER_NAME
 from ..helpers import (
     ExtractionState,
     RecoveryOutcome,
@@ -37,13 +37,13 @@ from ..helpers import (
 )
 from ..helpers.garble import _infer_presentation_forms as _infer_pf
 from ..helpers.gates import _all_defects
+from ..helpers.heuristic_registry import registry as _heuristic_registry
 from ..metrics import (
     HR3_EGRESS_BLOCKED_TOTAL,
     OCR_ESCALATION_TOTAL,
     VLM_FALLBACK_TOTAL,
 )
 from ..obs.decisions import decision
-from ..converters.pipeline import DOCLING_CONVERTER_NAME
 from ..picture_plane import OcrEngine, SkipReason, skip_reason_from_str
 from ..script import BlobKind, ScriptContext, decide_rtl
 
@@ -137,8 +137,14 @@ def _keep_best_wins(
             event="ocr_retry_keep_best",
             choice="zero_char_shortcut_retry_wins",
             reason="pre had no text, post has text",
-            attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-                   "pre_garbled": None, "post_garbled": None, "pre_density": None, "post_density": None},
+            attrs={
+                "pre_total_chars": pre_total_chars,
+                "post_retry_chars": post_retry_chars,
+                "pre_garbled": None,
+                "post_garbled": None,
+                "pre_density": None,
+                "post_density": None,
+            },
         )
         return True
 
@@ -148,8 +154,14 @@ def _keep_best_wins(
             event="ocr_retry_keep_best",
             choice="char_count_regression_revert",
             reason="post has fewer chars than pre",
-            attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-                   "pre_garbled": None, "post_garbled": None, "pre_density": None, "post_density": None},
+            attrs={
+                "pre_total_chars": pre_total_chars,
+                "post_retry_chars": post_retry_chars,
+                "pre_garbled": None,
+                "post_garbled": None,
+                "pre_density": None,
+                "post_density": None,
+            },
         )
         return False
 
@@ -158,12 +170,14 @@ def _keep_best_wins(
         _pre_text = _flatten_tree_text(pre_result.get("structure", []))
         _post_text = _flatten_tree_text(post_result.get("structure", []))
         _retry_wins_tb = post_ok or (
-            bool(detect_garble(
-                _pre_text,
-                script_context=_kb_ctx,
-                config=_garble_config,
-                blob_kind=BlobKind.TREE_TEXT,
-            ))
+            bool(
+                detect_garble(
+                    _pre_text,
+                    script_context=_kb_ctx,
+                    config=_garble_config,
+                    blob_kind=BlobKind.TREE_TEXT,
+                )
+            )
             and not detect_garble(
                 _post_text,
                 script_context=_kb_ctx,
@@ -173,45 +187,63 @@ def _keep_best_wins(
         )
         decision(
             event="ocr_retry_keep_best",
-            choice="equal_count_tiebreak_retry_wins" if _retry_wins_tb else "equal_count_tiebreak_revert",
+            choice="equal_count_tiebreak_retry_wins"
+            if _retry_wins_tb
+            else "equal_count_tiebreak_revert",
             reason="equal char count garble tiebreak",
-            attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-                   "pre_garbled": None, "post_garbled": None, "pre_density": None, "post_density": None},
+            attrs={
+                "pre_total_chars": pre_total_chars,
+                "post_retry_chars": post_retry_chars,
+                "pre_garbled": None,
+                "post_garbled": None,
+                "pre_density": None,
+                "post_density": None,
+            },
         )
         return _retry_wins_tb
 
     # Stage 4: char-count increase — check pre-garble + RFC-029 D4 density.
     _pre_text_cmp = _flatten_tree_text(pre_result.get("structure", []))
-    _pre_garble_flag = bool(detect_garble(
-        _pre_text_cmp,
-        script_context=_kb_ctx,
-        config=_garble_config,
-        blob_kind=BlobKind.TREE_TEXT,
-    ))
+    _pre_garble_flag = bool(
+        detect_garble(
+            _pre_text_cmp,
+            script_context=_kb_ctx,
+            config=_garble_config,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+    )
     if not _pre_garble_flag:
         decision(
             event="ocr_retry_keep_best",
             choice="density_improved_retry_wins",
             reason="pre was not garbled, more chars -> retry wins",
-            attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-                   "pre_garbled": False, "post_garbled": None, "pre_density": None, "post_density": None},
+            attrs={
+                "pre_total_chars": pre_total_chars,
+                "post_retry_chars": post_retry_chars,
+                "pre_garbled": False,
+                "post_garbled": None,
+                "pre_density": None,
+                "post_density": None,
+            },
         )
         return True
 
-    _pre_density = _repeating_token_density(
-        _flatten_tree_text(pre_result.get("structure", []))
-    )
-    _post_density = _repeating_token_density(
-        _flatten_tree_text(post_result.get("structure", []))
-    )
+    _pre_density = _repeating_token_density(_flatten_tree_text(pre_result.get("structure", [])))
+    _post_density = _repeating_token_density(_flatten_tree_text(post_result.get("structure", [])))
     _density_improved = _post_density < _pre_density * 0.80
     if _density_improved:
         decision(
             event="ocr_retry_keep_best",
             choice="density_improved_retry_wins",
             reason="density improved by >20%",
-            attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-                   "pre_garbled": True, "post_garbled": None, "pre_density": _pre_density, "post_density": _post_density},
+            attrs={
+                "pre_total_chars": pre_total_chars,
+                "post_retry_chars": post_retry_chars,
+                "pre_garbled": True,
+                "post_garbled": None,
+                "pre_density": _pre_density,
+                "post_density": _post_density,
+            },
         )
         return True
 
@@ -219,12 +251,14 @@ def _keep_best_wins(
     # increase is from legitimate content repetition (e.g. formal Arabic MOU
     # text repeating ministry names vs random Latin OCR gibberish).
     _post_text_cmp = _flatten_tree_text(post_result.get("structure", []))
-    _post_garble_flag = bool(detect_garble(
-        _post_text_cmp,
-        script_context=_kb_ctx,
-        config=_garble_config,
-        blob_kind=BlobKind.TREE_TEXT,
-    ))
+    _post_garble_flag = bool(
+        detect_garble(
+            _post_text_cmp,
+            script_context=_kb_ctx,
+            config=_garble_config,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+    )
     if not _post_garble_flag:
         logger.info(
             "RFC-045: post-retry density (%.3f) not better than pre-retry"
@@ -237,8 +271,14 @@ def _keep_best_wins(
             event="ocr_retry_keep_best",
             choice="post_not_garbled_retry_wins",
             reason="density not improved but post is not garbled",
-            attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-                   "pre_garbled": True, "post_garbled": False, "pre_density": _pre_density, "post_density": _post_density},
+            attrs={
+                "pre_total_chars": pre_total_chars,
+                "post_retry_chars": post_retry_chars,
+                "pre_garbled": True,
+                "post_garbled": False,
+                "pre_density": _pre_density,
+                "post_density": _post_density,
+            },
         )
         return True
 
@@ -254,8 +294,14 @@ def _keep_best_wins(
         event="ocr_retry_keep_best",
         choice="density_not_improved_revert",
         reason="density not improved and post still garbled",
-        attrs={"pre_total_chars": pre_total_chars, "post_retry_chars": post_retry_chars,
-               "pre_garbled": True, "post_garbled": True, "pre_density": _pre_density, "post_density": _post_density},
+        attrs={
+            "pre_total_chars": pre_total_chars,
+            "post_retry_chars": post_retry_chars,
+            "pre_garbled": True,
+            "post_garbled": True,
+            "pre_density": _pre_density,
+            "post_density": _post_density,
+        },
     )
     return False
 
@@ -360,7 +406,9 @@ class RecoveryMixin:
                 logger.warning(
                     "tessdata unavailable for %s (detected %s); "
                     "degrading to %s — pre-bake traineddata in worker image",
-                    filename, escalation_langs, langs,
+                    filename,
+                    escalation_langs,
+                    langs,
                 )
                 decision(
                     event="ocr_retry_lang_degrade",
@@ -387,9 +435,7 @@ class RecoveryMixin:
                 attrs={"use_remote": state.use_remote},
             )
             if state.use_remote:
-                assert self._staging_key is not None, (
-                    "use_remote=True but _staging_key is None"
-                )
+                assert self._staging_key is not None, "use_remote=True but _staging_key is None"
                 state.md_content, state.pic_results = await _remote_pdf_to_markdown(
                     self._staging_key,
                     force_full_page_ocr=True,
@@ -439,7 +485,9 @@ class RecoveryMixin:
                 state.rtl_decision = None
 
             await self._reconvert_and_revalidate(
-                state, state.md_content, expected_script=expected_script,
+                state,
+                state.md_content,
+                expected_script=expected_script,
                 script_context=script_context,
             )
 
@@ -464,8 +512,12 @@ class RecoveryMixin:
                     event="ocr_retry_keep_best_apply",
                     choice="retry_kept" if retry_wins else "reverted_to_pre_retry",
                     reason=reason_label,
-                    attrs={"use_keep_best": use_keep_best, "reason_label": reason_label,
-                           "post_retry_chars": _post_chars, "pre_total_chars": pre_retry.total_chars},
+                    attrs={
+                        "use_keep_best": use_keep_best,
+                        "reason_label": reason_label,
+                        "post_retry_chars": _post_chars,
+                        "pre_total_chars": pre_retry.total_chars,
+                    },
                 )
                 if not retry_wins:
                     pre_retry.apply(state)
@@ -491,7 +543,11 @@ class RecoveryMixin:
                 event="ocr_retry_escalation_outcome",
                 choice="recovered" if state.ok else "still_failed",
                 reason=reason_label,
-                attrs={"metric_fail_label": metric_fail_label, "reason_label": reason_label, "exception_type": None},
+                attrs={
+                    "metric_fail_label": metric_fail_label,
+                    "reason_label": reason_label,
+                    "exception_type": None,
+                },
             )
             return _ocr_applied
         except Exception as ocr_exc:
@@ -507,8 +563,11 @@ class RecoveryMixin:
                 event="ocr_retry_escalation_outcome",
                 choice="error",
                 reason=reason_label,
-                attrs={"metric_fail_label": metric_fail_label, "reason_label": reason_label,
-                       "exception_type": type(ocr_exc).__name__},
+                attrs={
+                    "metric_fail_label": metric_fail_label,
+                    "reason_label": reason_label,
+                    "exception_type": type(ocr_exc).__name__,
+                },
             )
             return False
 
@@ -576,14 +635,20 @@ class RecoveryMixin:
                 event="low_content_ocr_eligibility",
                 choice="skip_sufficient_content",
                 reason="total chars above floor",
-                attrs={"total_chars": state.total_chars, "low_content_ocr_char_floor": pipeline_config.low_content_ocr_char_floor},
+                attrs={
+                    "total_chars": state.total_chars,
+                    "low_content_ocr_char_floor": pipeline_config.low_content_ocr_char_floor,
+                },
             )
             return
         decision(
             event="low_content_ocr_eligibility",
             choice="escalate_below_floor",
             reason="total chars below floor",
-            attrs={"total_chars": state.total_chars, "low_content_ocr_char_floor": pipeline_config.low_content_ocr_char_floor},
+            attrs={
+                "total_chars": state.total_chars,
+                "low_content_ocr_char_floor": pipeline_config.low_content_ocr_char_floor,
+            },
         )
         applied = await self._execute_ocr_retry(
             state,
@@ -632,16 +697,24 @@ class RecoveryMixin:
                 event="image_dominant_ocr_eligibility",
                 choice="skip_insufficient_image_ratio",
                 reason="image line ratio <= 50%",
-                attrs={"image_lines": image_lines, "non_empty_lines_count": len(non_empty_lines),
-                       "image_line_ratio": image_lines / len(non_empty_lines) if non_empty_lines else 0.0},
+                attrs={
+                    "image_lines": image_lines,
+                    "non_empty_lines_count": len(non_empty_lines),
+                    "image_line_ratio": image_lines / len(non_empty_lines)
+                    if non_empty_lines
+                    else 0.0,
+                },
             )
             return
         decision(
             event="image_dominant_ocr_eligibility",
             choice="escalate_image_dominant",
             reason="image line ratio > 50%",
-            attrs={"image_lines": image_lines, "non_empty_lines_count": len(non_empty_lines),
-                   "image_line_ratio": image_lines / len(non_empty_lines)},
+            attrs={
+                "image_lines": image_lines,
+                "non_empty_lines_count": len(non_empty_lines),
+                "image_line_ratio": image_lines / len(non_empty_lines),
+            },
         )
         applied = await self._execute_ocr_retry(
             state,
@@ -771,9 +844,13 @@ class RecoveryMixin:
                     "preferring flat result",
                     filename,
                 )
-                _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                _vt_existing = (
+                    state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                )
                 finalize_gate_and_route(
-                    state, _vt_existing, settings.flat_doc_routing,
+                    state,
+                    _vt_existing,
+                    settings.flat_doc_routing,
                     recovery_method="rtl_comparison",
                     recovery_succeeded=True,
                     force_route=Route.FLAT,
@@ -782,16 +859,24 @@ class RecoveryMixin:
                     event="rtl_flat_compare_override",
                     choice="override_to_flat_tree_still_reversed",
                     reason="tree reversed, flat not reversed",
-                    attrs={"computed_route": "tree", "final_route": "flat",
-                           "flat_reversed": _flat_reversed, "tree_reversed": _tree_reversed},
+                    attrs={
+                        "computed_route": "tree",
+                        "final_route": "flat",
+                        "flat_reversed": _flat_reversed,
+                        "tree_reversed": _tree_reversed,
+                    },
                 )
             else:
                 decision(
                     event="rtl_flat_compare_override",
                     choice="no_override_kept_tree",
                     reason="both reversed or flat reversed",
-                    attrs={"computed_route": "tree", "final_route": "tree",
-                           "flat_reversed": _flat_reversed, "tree_reversed": _tree_reversed},
+                    attrs={
+                        "computed_route": "tree",
+                        "final_route": "tree",
+                        "flat_reversed": _flat_reversed,
+                        "tree_reversed": _tree_reversed,
+                    },
                 )
         except Exception as _flat_cmp_exc:
             logger.warning(
@@ -824,10 +909,7 @@ class RecoveryMixin:
         # — it would overwrite the good OCR content.  When whole-tree
         # GARBLING persists after OCR, VLM remains the escape hatch
         # (RFC-044 D1/Property 1).
-        if (
-            state.full_page_already_applied
-            and state.first_defect != TreeDefect.GARBLING
-        ):
+        if state.full_page_already_applied and state.first_defect != TreeDefect.GARBLING:
             logger.info(
                 "VLM fallback skipped for %s: full-page OCR resolved "
                 "whole-tree garble (remaining primary defect: %s)",
@@ -838,16 +920,20 @@ class RecoveryMixin:
                 event="vlm_fallback_eligibility",
                 choice="skip_full_page_ocr_already_resolved_garble",
                 reason="full-page OCR resolved whole-tree garble",
-                attrs={"full_page_already_applied": True,
-                       "first_defect": state.first_defect.value if state.first_defect else None},
+                attrs={
+                    "full_page_already_applied": True,
+                    "first_defect": state.first_defect.value if state.first_defect else None,
+                },
             )
             return
         decision(
             event="vlm_fallback_eligibility",
             choice="proceed_to_vlm",
             reason="garble persists after OCR or no prior OCR",
-            attrs={"full_page_already_applied": state.full_page_already_applied,
-                   "first_defect": state.first_defect.value if state.first_defect else None},
+            attrs={
+                "full_page_already_applied": state.full_page_already_applied,
+                "first_defect": state.first_defect.value if state.first_defect else None,
+            },
         )
         try:
             from ..converters import vlm_extract_markdown
@@ -863,7 +949,9 @@ class RecoveryMixin:
             # clear stale rtl_decision so validate_tree recomputes.
             state.rtl_decision = None
             await self._reconvert_and_revalidate(
-                state, state.md_content, expected_script=expected_script,
+                state,
+                state.md_content,
+                expected_script=expected_script,
                 script_context=script_context,
             )
             VLM_FALLBACK_TOTAL.labels(result="recovered" if state.ok else "still_garbled").inc()
@@ -914,9 +1002,11 @@ class RecoveryMixin:
             event="vlm_tesseract_raster_attempt_gate",
             choice="attempt_raster_recovery" if _try_tesseract_raster else "skip",
             reason="garble persists and d7 enabled" if _try_tesseract_raster else "not eligible",
-            attrs={"vlm_tesseract_fallback_enabled": pipeline_config.vlm_tesseract_fallback_enabled,
-                   "d7_garble_recovery_enabled": pipeline_config.d7_garble_recovery_enabled,
-                   "first_defect": state.first_defect.value if state.first_defect else None},
+            attrs={
+                "vlm_tesseract_fallback_enabled": pipeline_config.vlm_tesseract_fallback_enabled,
+                "d7_garble_recovery_enabled": pipeline_config.d7_garble_recovery_enabled,
+                "first_defect": state.first_defect.value if state.first_defect else None,
+            },
         )
         if _try_tesseract_raster:
             from .images import _attempt_tesseract_raster_recovery
@@ -924,15 +1014,21 @@ class RecoveryMixin:
             # RFC-046 D2 -- OCR site 4 of 5.
             state.ocr_engine = str(OcrEngine.TESSERACT)
             recovered_md = await _attempt_tesseract_raster_recovery(
-                file_path, expected_script, filename,
+                file_path,
+                expected_script,
+                filename,
                 script_context=script_context,
             )
             if recovered_md:
                 state.md_content = recovered_md
                 state.pic_results = []
-                _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                _vt_existing = (
+                    state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                )
                 finalize_gate_and_route(
-                    state, _vt_existing, settings.flat_doc_routing,
+                    state,
+                    _vt_existing,
+                    settings.flat_doc_routing,
                     recovery_method="vlm_tesseract_raster",
                     recovery_succeeded=True,
                     force_route=Route.FLAT,
@@ -941,16 +1037,22 @@ class RecoveryMixin:
                     event="vlm_tesseract_raster_override",
                     choice="override_to_flat_raster_recovered",
                     reason="tesseract raster recovered markdown",
-                    attrs={"computed_route": "tree", "final_route": "flat",
-                           "recovered_md_chars": len(recovered_md)},
+                    attrs={
+                        "computed_route": "tree",
+                        "final_route": "flat",
+                        "recovered_md_chars": len(recovered_md),
+                    },
                 )
             else:
                 decision(
                     event="vlm_tesseract_raster_override",
                     choice="no_recovery_no_override",
                     reason="tesseract raster did not recover",
-                    attrs={"computed_route": "tree", "final_route": "tree",
-                           "recovered_md_chars": 0},
+                    attrs={
+                        "computed_route": "tree",
+                        "final_route": "tree",
+                        "recovered_md_chars": 0,
+                    },
                 )
 
     async def _recover_flat_prefer(
@@ -1001,9 +1103,13 @@ class RecoveryMixin:
                     filename,
                     expected_script,
                 )
-                _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                _vt_existing = (
+                    state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+                )
                 finalize_gate_and_route(
-                    state, _vt_existing, settings.flat_doc_routing,
+                    state,
+                    _vt_existing,
+                    settings.flat_doc_routing,
                     recovery_method="flat_prefer_density",
                     recovery_succeeded=True,
                     force_route=Route.FLAT,
@@ -1013,18 +1119,26 @@ class RecoveryMixin:
                     event="flat_prefer_density_override",
                     choice="override_to_flat_density_win",
                     reason="flat char count exceeds multiplier * tree",
-                    attrs={"computed_route": "tree", "final_route": "flat",
-                           "flat_char_count": _flat_char_count, "tree_char_count": _tree_char_count,
-                           "multiplier": _multiplier},
+                    attrs={
+                        "computed_route": "tree",
+                        "final_route": "flat",
+                        "flat_char_count": _flat_char_count,
+                        "tree_char_count": _tree_char_count,
+                        "multiplier": _multiplier,
+                    },
                 )
             else:
                 decision(
                     event="flat_prefer_density_override",
                     choice="no_override_kept_tree",
                     reason="flat char count does not exceed threshold",
-                    attrs={"computed_route": "tree", "final_route": "tree",
-                           "flat_char_count": _flat_char_count, "tree_char_count": _tree_char_count,
-                           "multiplier": _multiplier},
+                    attrs={
+                        "computed_route": "tree",
+                        "final_route": "tree",
+                        "flat_char_count": _flat_char_count,
+                        "tree_char_count": _tree_char_count,
+                        "multiplier": _multiplier,
+                    },
                 )
         except Exception as _flat_exc:
             logger.warning(
@@ -1055,9 +1169,13 @@ class RecoveryMixin:
                 "detection for %s — re-routing tree pass to flat-mixed",
                 filename,
             )
-            _vt_existing = state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+            _vt_existing = (
+                state.gate_result if state.gate_result is not None else (state.ok, state.reason)
+            )
             finalize_gate_and_route(
-                state, _vt_existing, settings.flat_doc_routing,
+                state,
+                _vt_existing,
+                settings.flat_doc_routing,
                 recovery_method="landscape_reroute",
                 recovery_succeeded=True,
                 force_route=Route.FLAT,
@@ -1067,14 +1185,20 @@ class RecoveryMixin:
                 event="landscape_reroute_override",
                 choice="override_to_flat_landscape_fallback",
                 reason="landscape fallback triggered picture detection",
-                attrs={"computed_route": "tree", "final_route": "flat",
-                       "pic_results_count": len(state.pic_results)},
+                attrs={
+                    "computed_route": "tree",
+                    "final_route": "flat",
+                    "pic_results_count": len(state.pic_results),
+                },
             )
         else:
             decision(
                 event="landscape_reroute_override",
                 choice="no_override",
                 reason="no landscape fallback in pic results",
-                attrs={"computed_route": "tree", "final_route": "tree",
-                       "pic_results_count": len(state.pic_results)},
+                attrs={
+                    "computed_route": "tree",
+                    "final_route": "tree",
+                    "pic_results_count": len(state.pic_results),
+                },
             )
