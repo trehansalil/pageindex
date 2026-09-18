@@ -188,3 +188,37 @@ sync-claude:
 	# --chmod normalises modes: rsync -a otherwise preserves the source machine's
 	# 0600/uid-501 bits, leaving the files unwritable (and sometimes unreadable) on the server.
 	rsync -avz --chmod=Du+rwx,go+rx,Fu+rw,go+r .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)
+
+# ─── Capped test runs ───────────────────────────────────────────────────────
+# On 2026-09-17 an unbounded background `uv run pytest -q` grew to 9.7 GiB
+# (4.1 GiB resident + 5.8 GiB swap) on this 7.6 GiB host, exhausted the whole
+# 8 GiB swapfile (free swap bottomed out at 108 kB) and drove the kernel into
+# a 44-minute thrash. The OOM killer then took traefik, the webhook and
+# postgres twice — because kubelet assigns pods oom_score_adj 992-1000 while a
+# plain dev process sits at 0, so the kernel sacrificed the cluster and never
+# touched the process actually responsible. The host could not self-recover.
+#
+# `make test` runs the suite inside its own cgroup scope:
+#   MemoryMax      — a runaway dies in its own scope; the host never notices.
+#   MemorySwapMax=0 — no swap for tests, so a leak fails fast and loudly
+#                     instead of thrashing the box for three quarters of an hour.
+#   oom_score_adj  — written directly into /proc/self before exec (systemd's
+#                    OOMScoreAdjust= is a *service* property and is rejected on
+#                    a --scope), and inherited by every child. Makes THIS the
+#                    kernel's preferred victim ahead of k3s.
+#                    Pod scores are set by kubelet per QoS class and are reset
+#                    on restart, so raising the dev process's score is the
+#                    durable half of that trade, not lowering the pods'.
+TEST_MEM_MAX ?= 3G
+PYTEST_ARGS ?= -q
+
+.PHONY: test test-uncapped
+test:
+	@command -v systemd-run >/dev/null || { echo "systemd-run absent; use 'make test-uncapped' and watch memory yourself"; exit 1; }
+	systemd-run --scope --quiet --collect \
+		-p MemoryMax=$(TEST_MEM_MAX) -p MemorySwapMax=0 \
+		sh -c 'echo 900 > /proc/self/oom_score_adj; exec timeout 1800 uv run pytest $(PYTEST_ARGS)'
+
+# Escape hatch. Only for a host with no systemd, and never in the background.
+test-uncapped:
+	timeout 1800 uv run pytest $(PYTEST_ARGS)
