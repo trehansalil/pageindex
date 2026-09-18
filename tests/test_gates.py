@@ -1304,7 +1304,9 @@ class TestGateFunctionDecisionRecords:
         caplog.set_level("INFO", logger="pageindex_mcp.obs")
         sig = _tree_signals(flat_text="x" * 10)
 
-        fires, _ = _gate_suspect_density(sig, [], _script_context(), None, page_count=100)
+        # signature is (sig, structure, expected_script, page_count, rtl_decision) --
+        # page_count is the 4th POSITIONAL, so it cannot also be passed by keyword.
+        fires, _ = _gate_suspect_density(sig, [], _script_context(), 100, None)
 
         assert fires is True
         rec = _decision_records(caplog, "suspect_density_gate")[0]
