@@ -946,3 +946,282 @@ def test_hostile_field_still_reaches_the_stream_as_one_json_line(capsys):
     # Assert
     assert len(captured) == 1
     assert json.loads(captured[0])["msg"] == "hello"
+
+
+# ── RFC-046 D12 (task 12.7): the env surface, read once at import ────────────
+class TestLogConfigEnvSurface:
+    """R12.10: level, node sample, decisions on/off and content widening are
+    resolved ONCE at import, in ``obs/log_config.py`` alone, so the six
+    hot-path files can import a resolved constant instead of reading
+    ``os.environ`` per call (``TestHotPathConfigAccessGuard`` forbids that)."""
+
+    def test_defaults_when_nothing_is_set(self, monkeypatch):
+        import importlib
+
+        from pageindex_mcp.obs import log_config
+
+        for var in (
+            "PAGEINDEX_LOG_LEVEL",
+            "PAGEINDEX_LOG_NODE_SAMPLE",
+            "PAGEINDEX_LOG_DECISIONS",
+            "PAGEINDEX_LOG_CONTENT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        mod = importlib.reload(log_config)
+        try:
+            assert mod.LOG_LEVEL == logging.INFO
+            assert mod.LOG_DECISIONS_ENABLED is True
+            assert mod.LOG_NODE_SAMPLE == 0
+            assert mod.LOG_CONTENT_WIDENED is False
+        finally:
+            importlib.reload(log_config)
+
+    def test_env_values_are_honoured_at_import(self, monkeypatch):
+        import importlib
+
+        from pageindex_mcp.obs import log_config
+
+        monkeypatch.setenv("PAGEINDEX_LOG_LEVEL", "debug")
+        monkeypatch.setenv("PAGEINDEX_LOG_NODE_SAMPLE", "25")
+        monkeypatch.setenv("PAGEINDEX_LOG_DECISIONS", "off")
+        monkeypatch.setenv("PAGEINDEX_LOG_CONTENT", "true")
+        mod = importlib.reload(log_config)
+        try:
+            assert mod.LOG_LEVEL == logging.DEBUG
+            assert mod.LOG_NODE_SAMPLE == 25
+            assert mod.LOG_DECISIONS_ENABLED is False
+            assert mod.LOG_CONTENT_WIDENED is True
+        finally:
+            importlib.reload(log_config)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("on", True),
+            ("ON", True),
+            ("1", True),
+            ("true", True),
+            ("yes", True),
+            ("off", False),
+            ("0", False),
+            ("false", False),
+            ("no", False),
+            ("", True),
+            ("nonsense", True),
+        ],
+    )
+    def test_decisions_flag_parsing(self, raw, expected):
+        from pageindex_mcp.obs.log_config import _parse_switch
+
+        assert _parse_switch(raw, default=True) is expected
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [("0", 0), ("25", 25), ("-4", 0), ("abc", 0), ("", 0), (None, 0)],
+    )
+    def test_node_sample_parsing_never_raises(self, raw, expected):
+        from pageindex_mcp.obs.log_config import _parse_count
+
+        assert _parse_count(raw, default=0) == expected
+
+    def test_content_widening_only_widens_a_bound(self):
+        """R12.7: PAGEINDEX_LOG_CONTENT must never unmask full text -- it only
+        raises a truncation length, and the widened bound is still finite."""
+        from pageindex_mcp.obs.log_config import (
+            CONTENT_TRUNCATION_CHARS,
+            CONTENT_TRUNCATION_CHARS_WIDE,
+        )
+
+        assert 0 < CONTENT_TRUNCATION_CHARS < CONTENT_TRUNCATION_CHARS_WIDE
+        assert CONTENT_TRUNCATION_CHARS_WIDE < 10_000
+
+
+class TestDecisionsKillSwitch:
+    """PAGEINDEX_LOG_DECISIONS=off silences the decision layer without
+    touching ordinary log records."""
+
+    def test_decision_is_suppressed_when_switched_off(self, monkeypatch, caplog):
+        from pageindex_mcp.obs import decisions
+
+        monkeypatch.setattr(decisions, "LOG_DECISIONS_ENABLED", False)
+        with caplog.at_level(logging.INFO, logger="pageindex_mcp.obs"):
+            decisions.decision(event="route_selected", choice="tree", reason="test")
+        assert caplog.records == []
+
+    def test_decision_is_emitted_when_switched_on(self, monkeypatch, caplog):
+        from pageindex_mcp.obs import decisions
+
+        monkeypatch.setattr(decisions, "LOG_DECISIONS_ENABLED", True)
+        with caplog.at_level(logging.INFO, logger="pageindex_mcp.obs"):
+            decisions.decision(event="route_selected", choice="tree", reason="test")
+        assert [r.event for r in caplog.records] == ["route_selected"]
+
+
+# ── RFC-046 D12 (task 12.6): redaction ───────────────────────────────────────
+class TestPathRedaction:
+    """R12.7: an absolute path reduces to its basename. Directory layout can
+    carry a client or matter name (``/srv/corpora/acme-insurance/...``), and
+    the path adds nothing a basename does not."""
+
+    def test_absolute_path_reduces_to_basename(self):
+        from pageindex_mcp.obs.redact import scrub_message
+
+        assert (
+            scrub_message("Running page_index on /srv/acme-insurance/2024/police.pdf")
+            == "Running page_index on police.pdf"
+        )
+
+    def test_every_path_in_one_message_is_reduced(self):
+        from pageindex_mcp.obs.redact import scrub_message
+
+        out = scrub_message("copied /a/b/in.pdf -> /c/d/out.pdf")
+        assert out == "copied in.pdf -> out.pdf"
+
+    def test_urls_are_left_alone(self):
+        """A MinIO or API URL is infrastructure, not document content, and
+        mangling it destroys the diagnostic value of the line."""
+        from pageindex_mcp.obs.redact import scrub_message
+
+        msg = "PUT https://minio.internal:9000/uploads/staging/job-1/x.pdf failed"
+        assert scrub_message(msg) == msg
+
+    def test_message_without_a_path_is_returned_unchanged(self):
+        from pageindex_mcp.obs.redact import scrub_message
+
+        msg = "tree gate FAIL: garble ratio 0.42"
+        assert scrub_message(msg) is msg
+
+    def test_trailing_slash_directory_keeps_its_name(self):
+        from pageindex_mcp.obs.redact import scrub_message
+
+        assert scrub_message("scanning /srv/acme/doc_store/") == "scanning doc_store/"
+
+    def test_scrub_never_raises_on_odd_input(self):
+        from pageindex_mcp.obs.redact import scrub_message
+
+        for value in ("", "/", "//", "/a", "\\/weird\\", "/x/" * 500):
+            assert isinstance(scrub_message(value), str)
+
+
+class TestExcerptRedaction:
+    def test_excerpt_is_truncated_and_reports_what_it_dropped(self):
+        from pageindex_mcp.obs.log_config import TRUNCATION_CHARS
+        from pageindex_mcp.obs.redact import redact_excerpt
+
+        out = redact_excerpt("x" * 1000)
+        assert out.startswith("x" * TRUNCATION_CHARS)
+        assert len(out) < 1000
+        assert "1000" in out or "+" in out
+
+    def test_short_excerpt_is_untouched(self):
+        from pageindex_mcp.obs.redact import redact_excerpt
+
+        assert redact_excerpt("short") == "short"
+
+    def test_non_string_degrades_rather_than_raising(self):
+        from pageindex_mcp.obs.redact import redact_excerpt
+
+        assert isinstance(redact_excerpt(object()), str)
+
+
+class TestFormatterScrubsPaths:
+    def test_rendered_message_has_no_absolute_path(self):
+        from pageindex_mcp.obs.formatter import JsonFormatter
+
+        record = logging.LogRecord(
+            "t",
+            logging.INFO,
+            "f.py",
+            1,
+            "Running page_index on converted PDF: %s",
+            ("/srv/acme/x.pdf",),
+            None,
+        )
+        payload = json.loads(JsonFormatter().format(record))
+        assert payload["msg"] == "Running page_index on converted PDF: x.pdf"
+        assert "/srv/acme" not in json.dumps(payload)
+
+
+class TestForwardedChildStderrIsScrubbed:
+    """The AST guard over decision() call sites cannot see this channel: the
+    child's stderr is forwarded through verbatim, and docling/pymupdf print
+    absolute paths of their own."""
+
+    async def test_forwarded_line_is_scrubbed(self, capsys):
+        from pageindex_mcp.worker.subprocess_mgr import _forward_child_stderr, _StderrTail
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"docling: converting /srv/acme-insurance/police.pdf\n")
+        reader.feed_eof()
+        tail = _StderrTail()
+        await _forward_child_stderr(reader, tail)
+
+        captured = capsys.readouterr().err
+        assert "police.pdf" in captured
+        assert "/srv/acme-insurance" not in captured
+        assert "/srv/acme-insurance" not in tail.text()
+
+
+# ── RFC-046 D12 (task 12.8): the 64 KiB line, against a real pipe ────────────
+class TestOversizedChildStderrLineRealSubprocess:
+    """A real ``asyncio`` subprocess pipe, not a fake reader.
+
+    This is the one guard the existing doubles cannot provide. The defect it
+    locks was mine: ``_forward_child_stderr`` briefly used
+    ``StreamReader.readline()``, which raises ``ValueError`` ("Separator is
+    not found, and chunk exceed the limit") on any line past the stream's
+    64 KiB limit -- a limit the *child* controls, and one that
+    ``proc.communicate()`` (what it replaced) never had. The ValueError
+    escaped past ``_run_converter_subprocess``'s ``except (TimeoutError,
+    CancelledError)`` with the child still alive, leaking a ~1.7 GB converter
+    process. A fake reader has no such limit and reproduces none of it.
+    """
+
+    async def test_line_far_over_the_stream_limit_is_forwarded_not_raised(self, capsys):
+        from pageindex_mcp.worker.subprocess_mgr import _forward_child_stderr, _StderrTail
+
+        payload_len = 200_000  # well past asyncio's 64 KiB default
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            f"import sys; sys.stderr.write('E' * {payload_len} + '\\n'); sys.stderr.flush()",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tail = _StderrTail()
+        try:
+            # The assertion is simply that this returns: readline() raised here.
+            await asyncio.wait_for(_forward_child_stderr(proc.stderr, tail), timeout=30)
+        finally:
+            await proc.wait()
+
+        forwarded = capsys.readouterr().err
+        assert forwarded.count("E") == payload_len, (
+            "the whole oversized line must reach the parent's stderr, not a truncated prefix"
+        )
+        assert tail.text(), "the bounded tail must still capture something from the line"
+
+    async def test_tail_stays_bounded_under_an_oversized_line(self):
+        """The tail is a diagnostic excerpt, not a buffer: a child that writes
+        200 KB on one line must not cost the parent 200 KB of retained memory
+        on a host that has already been OOM-killed once."""
+        from pageindex_mcp.worker.subprocess_mgr import (
+            STDERR_TAIL_MAX_BYTES,
+            _forward_child_stderr,
+            _StderrTail,
+        )
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('E' * 200000 + '\\n'); sys.stderr.flush()",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tail = _StderrTail()
+        try:
+            await asyncio.wait_for(_forward_child_stderr(proc.stderr, tail), timeout=30)
+        finally:
+            await proc.wait()
+
+        assert len(tail.text().encode()) <= STDERR_TAIL_MAX_BYTES * 2

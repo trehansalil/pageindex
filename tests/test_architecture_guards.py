@@ -1540,3 +1540,164 @@ class TestTimeoutAuthorityConvergence:
             f"MAX_EFFECTIVE_TIMEOUT ({MAX_EFFECTIVE_TIMEOUT}s) — arq will cancel "
             f"before the dynamic effective_timeout fires"
         )
+
+
+# ── RFC-046 D12 (tasks 12.6 + 12.8): decision-layer guards ───────────────────
+class TestDecisionCallSiteGuards:
+    """Static guards over every ``decision(...)`` call site in ``src/``.
+
+    These are the enforcement half of task 12.5: the registry describes what
+    should be emitted, and these assert the code agrees with it. They are
+    static (AST) rather than runtime so they hold without a corpus run.
+    """
+
+    @staticmethod
+    def _call_sites():
+        import ast
+
+        sites = []
+        for path in (PROJECT_ROOT / "src" / "pageindex_mcp").rglob("*.py"):
+            if path.name in ("decisions.py", "decision_points.py"):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:  # pragma: no cover - src/ must always parse
+                continue
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call) and getattr(node.func, "id", None) == "decision"
+                ):
+                    continue
+                kw = {k.arg: k.value for k in node.keywords}
+                event = kw.get("event")
+                attrs = kw.get("attrs")
+                keys = (
+                    [k.value for k in attrs.keys if isinstance(k, ast.Constant)]
+                    if isinstance(attrs, ast.Dict)
+                    else []
+                )
+                sites.append(
+                    {
+                        "where": f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}",
+                        "event": event.value
+                        if isinstance(event, ast.Constant) and isinstance(event.value, str)
+                        else None,
+                        "attr_keys": keys,
+                    }
+                )
+        return sites
+
+    def test_there_are_call_sites_at_all(self):
+        """A guard that silently scans nothing passes forever."""
+        assert len(self._call_sites()) >= 100
+
+    def test_every_event_name_is_a_literal(self):
+        """A computed event name defeats every static guard here, and makes
+        the registry unverifiable against the code."""
+        dynamic = [s["where"] for s in self._call_sites() if s["event"] is None]
+        assert not dynamic, f"decision(event=...) must be a literal string at: {dynamic}"
+
+    def test_no_call_site_invents_an_event(self):
+        from pageindex_mcp.obs import DECISION_EVENTS
+
+        unknown = [
+            (s["where"], s["event"])
+            for s in self._call_sites()
+            if s["event"] not in DECISION_EVENTS
+        ]
+        assert not unknown, f"events emitted but absent from DECISION_POINTS: {unknown}"
+
+    def test_every_registered_point_has_a_call_site(self):
+        """R12.8. The registry is a contract, not documentation: an entry with
+        no emitter is a decision logtrace will never show."""
+        from pageindex_mcp.obs import DECISION_EVENTS
+
+        emitted = {s["event"] for s in self._call_sites()}
+        missing = sorted(DECISION_EVENTS - emitted)
+        assert not missing, f"registered decision points that nothing emits: {missing}"
+
+    def test_no_call_site_passes_a_content_bearing_attr(self):
+        """R12.7 / Hard Rule 3, default-deny. A node title can name an insured
+        party, so this is a content leak, not a style preference."""
+        from pageindex_mcp.obs import is_content_attr
+
+        leaks = [
+            (s["where"], s["event"], key)
+            for s in self._call_sites()
+            for key in s["attr_keys"]
+            if is_content_attr(key)
+        ]
+        assert not leaks, f"content-bearing attrs keys at decision() call sites: {leaks}"
+
+    def test_no_call_site_passes_an_undeclared_attr(self):
+        """The registry's ``attrs`` tuple is what a reviewer reads to decide a
+        point is safe. A key that bypasses it bypasses that review."""
+        from pageindex_mcp.obs import point_for
+
+        undeclared = []
+        for site in self._call_sites():
+            point = point_for(site["event"])
+            if point is None:
+                continue
+            extra = [k for k in site["attr_keys"] if k not in point.attrs]
+            if extra:
+                undeclared.append((site["where"], site["event"], extra))
+        assert not undeclared, f"attrs keys not declared in DECISION_POINTS: {undeclared}"
+
+
+class TestLoggingConfigurationIsCentral:
+    """R12.1 / task 12.9: ``obs.configure()`` is the only logging setup."""
+
+    def test_no_basic_config_is_called_anywhere(self):
+        """AST, not a substring scan: ``log_config.py``'s own docstring names
+        ``logging.basicConfig`` while explaining why it replaced it, and a
+        ``from logging import basicConfig`` would slip past a text match
+        entirely. Those are precisely the two cases a text guard gets wrong --
+        one false positive, one false negative.
+        """
+        import ast
+
+        files = list((PROJECT_ROOT / "src" / "pageindex_mcp").rglob("*.py"))
+        files += sorted(PROJECT_ROOT.glob("*.py"))
+        offenders = []
+        for path in files:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:  # pragma: no cover - the tree must always parse
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if name == "basicConfig":
+                    offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}")
+        assert not offenders, (
+            "logging.basicConfig must not be called -- obs.configure() is the only "
+            f"logging setup (R12.1, task 12.9). Called at: {offenders}"
+        )
+
+    def test_configured_handler_writes_to_stderr(self):
+        """R12.11: ``converters_cli`` reserves stdout for exactly two JSON
+        lines. A handler defaulting to stdout fails every job with
+        'invalid JSON on stdout'."""
+        import logging
+        import sys
+
+        from pageindex_mcp.obs import configure
+        from pageindex_mcp.obs.constants import HANDLER_MARKER
+
+        previous = list(logging.getLogger().handlers)
+        try:
+            configure()
+            handlers = [
+                h for h in logging.getLogger().handlers if getattr(h, HANDLER_MARKER, False)
+            ]
+            assert len(handlers) == 1, "configure() must install exactly one handler"
+            assert handlers[0].stream is sys.stderr
+        finally:
+            root = logging.getLogger()
+            for h in list(root.handlers):
+                root.removeHandler(h)
+            for h in previous:
+                root.addHandler(h)
