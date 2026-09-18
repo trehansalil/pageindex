@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..config import pipeline_config
 from ..helpers import _garble_config, detect_garble
+from ..obs.context import propagate
 from ..obs.decisions import decision
 from ..helpers.garble import _infer_presentation_forms as _infer_pf
 
@@ -1616,4 +1617,9 @@ def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
                 )
 
     with ThreadPoolExecutor(max_workers=min(_IMAGE_ENRICH_CONCURRENCY, len(targets))) as pool:
-        list(pool.map(_describe_one, targets))
+        # RFC-046 D12 (task 12.5): propagate() re-binds the caller's correlation
+        # context inside each pool thread. Without it every ContextVar reads back
+        # its default, so _describe_one's vlm_description_outcome records carry no
+        # run_id/job_id/doc_name at all and logtrace drops them silently -- no
+        # error, just missing rows for the VLM fallback decisions.
+        list(pool.map(propagate(_describe_one), targets))
