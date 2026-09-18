@@ -224,7 +224,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   **Tranche 1 — core (12.1-12.4, 12.10, 12.C-core). Wave 3 waits for this and nothing more.**
 
-  - [ ] 12.1 The `obs/` package — JSON formatter, context filter, `configure()`
+  - [x] 12.1 The `obs/` package — JSON formatter, context filter, `configure()`
 
     - One JSON object per line on **stderr**. Frozen `v: 1`, snake_case keys, no dots in key names, `attrs` exactly one level deep, scalars and short scalar arrays only.
     - Envelope: `v, ts, level, kind, proc, logger, msg, run_id, job_id, doc_sha8, doc_id, doc_name, phase, phase_seq, event, choice, reason, attrs, dur_ms, exc`. `ts` is RFC3339 UTC with ms from `record.created` — authoritative over any later ingest time. `exc.stack` is a single escaped string; a record NEVER spans two lines.
@@ -233,26 +233,31 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.1](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 13](design-rfc046-ocr-attribution-failure-cluster-remediation#property-13-one-line-one-record-on-stderr)_
     - _Dependencies: none_
 
-  - [ ] 12.2 Correlation via contextvars, across the process boundary
+  - [~] 12.2 Correlation via contextvars, across the process boundary
 
     - `bind_log_context()` binds a **new frozen mapping** each time — never mutate in place. Always a context manager with `reset(token)`: the arq worker is long-lived and a bare `set()` leaves the previous document's `doc_id` bound for the next job.
     - Five bind sites: `worker/job.py::process_document_job` entry (`run_id`, `job_id`); `preprocess_client._process_one` **inside the semaphore** (binding outside gives every concurrent document the same `doc_name`); `subprocess_mgr` writes `PAGEINDEX_LOG_CONTEXT` into `child_env`, following the `PAGEINDEX_JOB_START_CONFIG` precedent at `:125`; `converters_cli.main()` reads it back; `indexer.index()` binds `doc_sha8` after the sha256 and `doc_id` at persist.
-    - `doc_sha8` bridges the window before `doc_id` exists — `doc_id` is not assigned until persist.
+    - `doc_sha8` bridges the window before `doc_id` exists — `doc_id` is not assigned until persist. **Corrected 2026-09-18:** only *inside the child*. `sha256` is computed at `indexer.py:1501`, downstream of every parent-side bind, so the parent-side window is bridged by the route's own secondary key, not by `doc_sha8`.
+    - **Corrected 2026-09-18 — the worker route also binds `doc_name`.** As first written this bullet specified `run_id` + `job_id` there, which left `doc_name` (the one identifier a human actually has) unable to address the worker route at all, and forced `logtrace` to carry a permanent route branch. `filename` is derived from `staging_key` either way; it is now derived before the bind rather than thirteen lines into it.
+    - **Done:** all five bind sites plus the `run_in_executor` audit (zero call sites in `src/`). **Not done:** the Langfuse `trace_id` bind in `trace_tool` (`tracing.py:149` does not import `obs`) — carried into tranche 2.
     - **Audit for `loop.run_in_executor` before relying on propagation.** `asyncio.to_thread` propagates context in 3.12; `run_in_executor` does not. The recon pass did not establish its absence.
     - Bind the Langfuse `trace_id` into the same mapping inside `trace_tool` (`tracing.py:149`) when enabled, so the log plane and the trace plane cross-reference. Langfuse itself is unchanged.
     - _Requirements: [R12.3](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
 
-  - [ ] 12.3 Stream the converter child's stderr to the parent — **the gating task**
+  - [x] 12.3 Stream the converter child's stderr to the parent — **the gating task**
 
     - Replace `proc.communicate()` in `_run_converter_subprocess` with a concurrent line-by-line read of `proc.stderr`, forwarded to the parent's stderr as it is produced, retaining a **bounded ring buffer** for `stderr_tail`.
     - Must not break: the handshake read (`:143`), the timeout budget (`:203`), OOM detection (`:258`), or `ConverterChildError`'s `error_class` extraction.
     - **Bounded, not bigger.** `communicate()` already accumulates the child's entire stderr in parent memory; at DEBUG on a 292-page document that is tens of MB on a host with 310 MiB free. Since `CONVERTER_CHILD_OOM_TOTAL` fires on `SIGKILL`, a parent OOM would be misattributed to the converter.
     - **This discharges D11 task 3.13**, which retains stderr only on the timeout path. Do not implement 3.13 separately.
+    - **Review follow-ups, 2026-09-18 (all landed):**
+      - The reader must **not** use `readline()`. `asyncio.StreamReader.readline()` raises `ValueError` on a line over the stream's 64 KiB limit — a limit the *child* controls — and that `ValueError` escapes `_run_converter_subprocess` past the `except (TimeoutError, CancelledError)` clause with the child still alive, leaking a converter process. `proc.communicate()` used `read()` and had no such limit, so this was a regression introduced by the fix, not a pre-existing hazard. Both pipe readers now read fixed-size chunks and split on newlines themselves.
+      - The stderr reader now starts **before** the handshake read, not after. Starting it after left a 60-second window with nothing draining `proc.stderr`, so a handshake stall killed the child correctly but lost everything it had written — which is exactly the case 3.13 names. 3.13 was only *partially* discharged until this landed.
     - _Requirements: [R12.2](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.1](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
 
-  - [ ] 12.4 The `Phase` enum and the `phase()` context manager
+  - [x] 12.4 The `Phase` enum and the `phase()` context manager
 
     - One enum, one place, **derived from the code** — route selection, converter chain, OCR strategy, language selection, recovery cascade, garble detection, tree build and validation, verdict, persistence. Do not invent a phase that no branch corresponds to.
     - `phase_seq` is monotonic per document and disambiguates phases re-entered across recovery passes. Without it a recovery pass's records are indistinguishable from the first attempt's.
@@ -260,10 +265,11 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.4](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
 
-  - [ ] 12.10 `scripts/logtrace.py` — reconstruct one document's flow
+  - [x] 12.10 `scripts/logtrace.py` — reconstruct one document's flow
 
     - Read-only. Given a captured log file and a `doc_name` or `doc_id`, print that document's ordered record sequence.
     - This is what proves "reconstructable from logs alone" with no Loki, no Grafana and no shipping. It is the acceptance instrument for 12.C-core, so it lands with the core rather than after it.
+    - **Review follow-up, 2026-09-18:** `--job-id` alone resolved nothing — `_resolve_by_explicit_key` compared `record["run_id"]` against `None` unconditionally, contradicting the tool's own `--help`, which offers `--run-id` as a disambiguator rather than a requirement. `run_id` now narrows only when supplied.
     - _Requirements: [R12.13](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.2, 12.4_
 
@@ -273,8 +279,10 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Confirm child records reach the parent **as they are produced**, not at the end.
     - Confirm the handler stream is `sys.stderr` and no record spans two lines.
     - Confirm **zero** document text, node text and node titles in the output ([Property 12](design-rfc046-ocr-attribution-failure-cluster-remediation#property-12-no-document-content-in-logs)).
-    - `uv run pytest` green. D12 is behaviour-neutral: no verdict may move ([R12.12](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)).
-    - _Dependencies: 12.1-12.4, 12.10_
+    - `make test` green (**not** bare `uv run pytest` — see CLAUDE.md, "Running Tests"). D12 is behaviour-neutral: no verdict may move ([R12.12](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)).
+    - **Dependency corrected 2026-09-18: this gate cannot be satisfied without 12.9.** The gate's central claim is that the *child's* flow is reconstructable, and `converters_cli.py:34` still calls `logging.basicConfig()` rather than `obs.configure()` — so every child record, including the `doc_sha8` and `doc_id` binds that only exist there, is plain text and unparseable by `logtrace`. Today D12 delivers JSON correlation for the worker **parent** only. 12.9 was scheduled into tranche 2 on the assumption it was cosmetic; it is load-bearing for this gate.
+    - Likewise the gate says "reconstruct both flows", but with 12.5 deferred there are no phase or decision records to reconstruct. Either land enough of 12.5 first or narrow the gate to assert correlation continuity alone.
+    - _Dependencies: 12.1-12.4, **12.9**, 12.10_
 
   **Tranche 2 — instrumentation (12.5-12.9). Parallelisable with Wave 3.**
 
@@ -287,6 +295,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Never write to `ExtractionState`: its `__setattr__` single-writer guard (`types.py:241-251`) rejects it. Emitters take values as arguments.
     - Emit **after** `finalize_gate_and_route`'s `finally`, never inside the `_guard_bypass` window — an exception from a formatter inside that window would abort the document from within the single writer.
     - `decision()` and `phase()` **never raise**, the posture `tracing.py:168` already takes.
+    - **Correlation does not reach the OCR pool threads.** `converters/pictures.py:910` and `:1203` use `ThreadPoolExecutor.map`, which does not propagate contextvars — and those are precisely the decision points that matter for 12.C-core's Arabic document. Records emitted inside those workers will carry no `run_id`/`job_id`/`doc_name`/`doc_sha8`/`doc_id` and `logtrace` will silently omit them: no error, just missing rows. Wrap the submitted callables in `contextvars.copy_context().run(...)` or pass correlation explicitly. Decide before instrumenting.
     - _Requirements: [R12.5](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.6](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.8](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.9](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.2, 12.4_
 
@@ -295,6 +304,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Default-deny, per Hard Rule 3 and the `tracing.py::_mask` precedent. Never logged: `md_content`, node text, summaries, table cells, OCR output, LLM prompts and completions, and **node titles** — a German insurance heading can name an insured party.
     - Log instead: `*_len`, `*_chars`, ratios, `node_path`, `title_sha8`, `title_script`, `doc_sha8`. Absolute paths (`pipeline.py:412` logs `pdf_path` today) reduce to a basename.
     - AST guard scanning every `decision(...)` call site for banned `attrs` keys.
+    - **The AST guard is not sufficient on its own.** Since 12.3 landed, the only content-bearing path to the log stream is `_forward_child_stderr` passing library output through verbatim — including `converters/pipeline.py:412`'s absolute `pdf_path`, which R12.7 requires reduced to a basename. A guard over emitter call sites will never see it. Cover the forwarded-stderr channel too.
     - `doc_name` **is** logged at INFO — it is already in the log lines, the registry and the sidecar — but as one named field, so a shipping pipeline can hash or drop it in configuration. **Flag this for explicit owner sign-off** rather than deciding it silently.
     - _Requirements: [R12.7](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 12](design-rfc046-ocr-attribution-failure-cluster-remediation#property-12-no-document-content-in-logs)_
     - _Dependencies: 12.5_
@@ -309,13 +319,16 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   - [ ] 12.8 Guard tests
 
+    - **Add the four guard tests the 2026-09-18 review exposed** (all four defects are fixed; these lock them): a real-subprocess test for a child stderr line over 64 KiB; a hostile-`__str__` test covering **correlation and decision fields**, not only `attrs`; a test that the configured handler's stream survives `preprocess_client`'s `_FilteredStderr` wrapper; and a `logtrace --job-id`-alone test.
     - Every `DECISION_POINTS` entry actually emits. One line per record. The configured handler's stream is `sys.stderr` (R12.11 — `converters_cli` reserves stdout for two JSON lines at `:31,:56-62`; a stdout handler fails every job with `invalid JSON on stdout`). No `logging.basicConfig` outside `obs`. The six hot-path files still pass `TestHotPathConfigAccessGuard`. `decision()`/`phase()` never raise.
     - _Requirements: [R12.8](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.11](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 13](design-rfc046-ocr-attribution-failure-cluster-remediation#property-13-one-line-one-record-on-stderr)_
     - _Dependencies: 12.5, 12.7_
 
   - [ ] 12.9 Unify the divergent logging configuration
 
+    - **Promoted into tranche 1 on 2026-09-18: 12.C-core cannot be satisfied without at least `converters_cli.py`.** See that gate's corrected dependency list.
     - Replace `logging.basicConfig` at `server.py:18`, `converters_cli.py:31` and `hash_cache_migrate.py:45` with `obs.configure()`.
+    - **Two sites are missing from that list:** `registry_backfill/__init__.py:47` and `promotion_sweep.py:143`. `registry_backfill` is imported lazily from `worker/lifecycle.py:87`, *after* `configure_obs()` at `:57`, so its `basicConfig` no-ops today only because root already has a handler — luck, not design. Any reordering silently installs a second root handler and doubles every worker line, because `configure()` only removes handlers it marked itself.
     - Give the **arq worker** an explicit configuration via `WorkerSettings.on_startup` — it has none today and inherits whatever arq installs.
     - _Requirements: [R12.1](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
