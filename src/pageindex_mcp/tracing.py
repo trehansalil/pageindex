@@ -37,6 +37,7 @@ import os
 from contextlib import asynccontextmanager
 
 from .config import settings
+from .obs.context import bind_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -176,12 +177,32 @@ async def trace_tool(name: str):
     # @asynccontextmanager forbids. A failure inside __exit__ is itself contained
     # so closing the span can't break the tool either.
     try:
-        yield
+        with bind_log_context(trace_id=_current_trace_id()):
+            yield
     except BaseException as exc:
         if not _close_span(span_cm, name, exc):
             raise
     else:
         _close_span(span_cm, name, None)
+
+
+def _current_trace_id() -> str | None:
+    """The Langfuse trace id for the span just opened, or ``None``.
+
+    RFC-046 task 12.2: binding this puts the trace id on every log record
+    emitted inside the tool call, so a Langfuse trace and the JSON log stream
+    can be joined on one key. ``bind_log_context`` ignores a ``None``, so a
+    lookup failure costs the correlation field and nothing else -- the
+    ``tracing.py`` posture throughout is that tracing must never break the
+    tool.
+    """
+    try:
+        from langfuse import get_client
+
+        return get_client().get_current_trace_id()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("trace id unavailable; records will carry no trace_id: %s", exc)
+        return None
 
 
 def _close_span(span_cm, name: str, exc: BaseException | None) -> bool:

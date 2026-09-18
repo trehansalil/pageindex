@@ -18,6 +18,11 @@ CORRELATION_FIELDS: tuple[str, ...] = (
     "doc_sha8",
     "doc_id",
     "doc_name",
+    # RFC-046 task 12.2: the Langfuse trace id for the enclosing tool call,
+    # bound by tracing.trace_tool(). It is what joins the two observability
+    # surfaces -- without it Langfuse knows the trace, the logs know the
+    # document, and nothing knows both.
+    "trace_id",
     "phase",
     "phase_seq",
 )

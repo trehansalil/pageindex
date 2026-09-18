@@ -1298,3 +1298,89 @@ async def test_server_lifespan_starts_and_stops_scrape_task(monkeypatch):
 
     # Assert: task was cancelled on shutdown
     assert stopped["cancelled"] is True
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 D12 (task 12.2, remainder): the Langfuse trace_id joins the log stream
+# ---------------------------------------------------------------------------
+async def test_trace_tool_binds_trace_id_into_the_log_context(monkeypatch):
+    """R12.3: a traced tool call's log records carry its Langfuse trace_id.
+
+    Without this the two observability surfaces cannot be joined: Langfuse
+    knows the trace, the logs know run_id/job_id/doc_name, and nothing knows
+    both. tracing.py did not import obs at all before this.
+    """
+    from pageindex_mcp.obs.context import current_context
+
+    seen: dict = {}
+
+    class _FakeSpanCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeClient:
+        def start_as_current_span(self, name):
+            return _FakeSpanCM()
+
+        def get_current_trace_id(self):
+            return "abc123trace"
+
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = True
+    monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+    async with tracing.trace_tool("find_relevant_documents"):
+        seen.update(current_context())
+
+    assert seen.get("trace_id") == "abc123trace"
+    # ...and it is unbound again afterwards: the server process is long-lived,
+    # so a leaked trace_id would tag every later tool call with the first one.
+    assert "trace_id" not in current_context()
+
+
+async def test_trace_tool_runs_the_tool_when_trace_id_lookup_fails(monkeypatch):
+    """tracing.py:168's posture: tracing must never break the tool. A langfuse
+    client that raises on trace-id lookup must cost the correlation field, not
+    the tool call."""
+
+    class _FakeSpanCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeClient:
+        def start_as_current_span(self, name):
+            return _FakeSpanCM()
+
+        def get_current_trace_id(self):
+            raise RuntimeError("langfuse exploded")
+
+    monkeypatch.setattr(
+        tracing,
+        "settings",
+        _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x"),
+    )
+    tracing._initialized = True
+    monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+    ran = False
+    async with tracing.trace_tool("find_relevant_documents"):
+        ran = True
+    assert ran is True
+
+
+def test_trace_id_is_a_declared_correlation_field():
+    """The filter only attaches fields CORRELATION_FIELDS names; binding a
+    field the envelope does not declare would drop it silently."""
+    from pageindex_mcp.obs.constants import CORRELATION_FIELDS
+
+    assert "trace_id" in CORRELATION_FIELDS
