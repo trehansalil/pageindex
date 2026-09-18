@@ -51,3 +51,17 @@ INSPECTOR_CONFIDENCE_THRESHOLD: float = 0.90
 # Safety rail, not a tuning knob. Env-configurable for deployments with
 # exceptionally large documents.
 MAX_EFFECTIVE_TIMEOUT: int = int(os.environ.get("MAX_EFFECTIVE_TIMEOUT", "54000"))
+
+# RFC-032 D9: the timeout multiplier applied when the PDF inspector classifies a
+# document as scanned/image-based with confidence >= INSPECTOR_CONFIDENCE_THRESHOLD.
+# 3x was the unmeasured lower-end estimate; wall-clock calibration on 4 scanned
+# corpus docs (2026-08-06) measured OCR-pass vs text-layer-pass ratios of
+# 2.32x-11.00x (mean 6.16x, max 11.00x), exceeding D9's 5x recalibration
+# threshold. Recalibrated per D9's formula: max(observed_ratio * 1.5, 3.0).
+#
+# NOTE (RFC-046 D11): this is applied BEFORE MAX_EFFECTIVE_TIMEOUT, and
+# 16.5 * CHILD_TIMEOUT (59400s) already exceeds the 54000s cap at chunk_count=1
+# -- so every inspector-detected scanned PDF receives exactly the cap and the
+# chunk-proportional budget has no effect on that route. See
+# test_inspector_multiplier_pins_every_scanned_pdf_to_the_cap.
+INSPECTOR_OCR_MULTIPLIER: float = 16.5

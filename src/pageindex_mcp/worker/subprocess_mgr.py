@@ -12,10 +12,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..config import pipeline_config, settings
-from ..converters import chunked_docling_timeout_s
-from ..converters.docling_conv import _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
 from ..obs.constants import ENV_LOG_CONTEXT
 from ..obs.context import current_context
+from .timeouts import effective_child_timeout
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr/patch.
 # New code should read ``pipeline_config.pdf_inspector_preclassify`` directly.
@@ -24,7 +23,7 @@ from ..metrics import (
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
 )
-from .constants import CHILD_TIMEOUT, INSPECTOR_CONFIDENCE_THRESHOLD, MAX_EFFECTIVE_TIMEOUT
+from .constants import INSPECTOR_CONFIDENCE_THRESHOLD, INSPECTOR_OCR_MULTIPLIER
 
 logger = logging.getLogger(__name__)
 
@@ -329,8 +328,10 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
 
-    effective_timeout = CHILD_TIMEOUT
     leftover_stdout = handshake_line + over_read
+    chunk_count = 1
+    is_docling_route = False
+    ocr_multiplier = 1.0
     try:
         handshake = json.loads(handshake_line.decode(errors="replace").strip())
     except (json.JSONDecodeError, AttributeError):
@@ -338,19 +339,11 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     if isinstance(handshake, dict) and handshake.get("handshake"):
         leftover_stdout = over_read
         if handshake.get("is_docling_route"):
+            is_docling_route = True
             try:
                 chunk_count = int(handshake.get("chunk_count", 1))
             except (ValueError, TypeError):
                 chunk_count = 1
-            dynamic_timeout = chunked_docling_timeout_s(chunk_count)
-            # RFC-046 D11 (task 3.11): the single-pass floor covers
-            # non-conversion overhead; the per-chunk budget adds to it,
-            # not competes with it.  max() made the floor swallow the
-            # dynamic budget at chunk_count >= 2.
-            if chunk_count > 1:
-                effective_timeout = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
-            else:
-                effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
         pdf_class = handshake.get("pdf_classification")
         if pdf_class:
             logger.info(
@@ -365,25 +358,26 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 and pdf_class.get("pdf_type") in ("scanned", "image_based")
                 and pdf_class.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD
             ):
-                # RFC-032 D9: 3x was the unmeasured lower-end estimate. Wall-clock
-                # calibration on 4 scanned corpus docs (2026-08-06) measured OCR-pass
-                # vs text-layer-pass ratios of 2.32x-11.00x (mean 6.16x, max 11.00x),
-                # exceeding the D9 5x recalibration threshold. Multiplier recalibrated
-                # per D9's formula: max(observed_ratio * 1.5, 3.0) = max(11.00*1.5, 3.0).
-                effective_timeout *= 16.5
-                logger.info(
-                    "pdf-inspector: 16.5x timeout for %s PDF (%ss)",
-                    pdf_class.get("pdf_type"),
-                    effective_timeout,
-                )
+                ocr_multiplier = INSPECTOR_OCR_MULTIPLIER
 
-    if effective_timeout > MAX_EFFECTIVE_TIMEOUT:
+    budget = effective_child_timeout(
+        chunk_count=chunk_count,
+        is_docling_route=is_docling_route,
+        ocr_multiplier=ocr_multiplier,
+    )
+    effective_timeout = budget.effective
+    if ocr_multiplier != 1.0:
+        logger.info(
+            "pdf-inspector: %sx timeout for scanned PDF (%ss)",
+            ocr_multiplier,
+            effective_timeout,
+        )
+    if budget.capped:
         logger.warning(
             "effective_timeout %ss exceeds MAX_EFFECTIVE_TIMEOUT %ss; capping",
+            budget.requested,
             effective_timeout,
-            MAX_EFFECTIVE_TIMEOUT,
         )
-        effective_timeout = min(effective_timeout, MAX_EFFECTIVE_TIMEOUT)
 
     # RFC-038 D2: surface effective_timeout to the caller immediately after the
     # handshake parse, before awaiting subprocess completion, so job.py can

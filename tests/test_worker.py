@@ -38,6 +38,7 @@ from pageindex_mcp.worker import (
 )
 from pageindex_mcp.worker.constants import (
     CHILD_TIMEOUT,
+    INSPECTOR_OCR_MULTIPLIER,
     INSPECTOR_CONFIDENCE_THRESHOLD,
     JOB_TIMEOUT,
     MAX_EFFECTIVE_TIMEOUT,
@@ -438,7 +439,9 @@ async def test_timeout_cap_configurable_via_env(monkeypatch):
         ),
         _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
-        patch("pageindex_mcp.worker.subprocess_mgr.MAX_EFFECTIVE_TIMEOUT", 100),
+        # The cap now lives in worker/timeouts.py, the single seam both
+        # production and the property tests go through (RFC-046 D11, task 3.10).
+        patch("pageindex_mcp.worker.timeouts.MAX_EFFECTIVE_TIMEOUT", 100),
     ):
         result = await _run_converter_subprocess("/tmp/x.pdf")
     assert result["_effective_timeout"] == 100
@@ -521,63 +524,110 @@ async def test_handshake_parse_failure_preserves_conservative_deadline():
 
 
 # ── RFC-046 D11 (task 3.10): timeout bound ordering property ─────────────────
-@given(chunk_count=st.integers(min_value=1, max_value=200))
+#
+# These properties call the PRODUCTION function. An earlier cut of task 3.10
+# re-implemented the formula inside the test body; a mutation run (reverting
+# subprocess_mgr.py to the pre-3.11 ``max()``) left all of them green, because
+# they were asserting a property of the test file. Anything added here must go
+# through ``effective_child_timeout()`` for the same reason.
+
+
+@given(chunk_count=st.integers(min_value=2, max_value=200))
 @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_effective_timeout_exceeds_inner_chunk_budget(chunk_count):
-    """Property 11 (RFC-046 D11, task 3.10): for any chunk_count, the
-    effective_timeout granted to the child process MUST exceed the sum of
-    the inner per-chunk budgets that Docling will actually consume, plus a
-    non-trivial overhead allowance for model load, OCR, tree build, and LLM
-    calls.
+def test_chunked_timeout_reserves_full_overhead_floor(chunk_count):
+    """Property 11 (RFC-046 D11): a chunked conversion's budget is the inner
+    per-chunk budget PLUS the single-pass floor, never the larger of the two.
+
+    ``CHILD_TIMEOUT`` is the allowance for everything that is not Docling
+    conversion -- model load, OCR, tree build, LLM calls. The pre-3.11
+    ``max(CHILD_TIMEOUT, dynamic_timeout)`` let the per-chunk budget *swallow*
+    that allowance: at chunk_count=3 it granted 4800s of which 4500s was chunk
+    budget, leaving 300s for everything else. This asserts the floor survives.
     """
-    from pageindex_mcp.converters.docling_conv import (
-        _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
-        chunked_docling_timeout_s,
-    )
+    from pageindex_mcp.converters.docling_conv import _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+    from pageindex_mcp.worker.timeouts import effective_child_timeout
 
+    result = effective_child_timeout(chunk_count=chunk_count, is_docling_route=True)
     inner_chunk_budget = chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
-    dynamic_timeout = chunked_docling_timeout_s(chunk_count)
-    if chunk_count > 1:
-        effective = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
-    else:
-        effective = max(CHILD_TIMEOUT, dynamic_timeout)
-    effective = min(effective, MAX_EFFECTIVE_TIMEOUT)
+    headroom = result.requested - inner_chunk_budget
 
-    # The effective timeout must exceed the inner chunk budget by at least
-    # a minimum overhead allowance (300s base timeout is the design intent),
-    # unless the MAX_EFFECTIVE_TIMEOUT cap applies — the cap is a deliberate
-    # safety rail (RFC-038 D4) and overrides the overhead guarantee.
-    MIN_OVERHEAD_S = 300
-    if effective < MAX_EFFECTIVE_TIMEOUT:
-        assert effective >= inner_chunk_budget + MIN_OVERHEAD_S, (
-            f"chunk_count={chunk_count}: effective_timeout={effective}s but "
-            f"inner_chunk_budget={inner_chunk_budget}s + {MIN_OVERHEAD_S}s overhead "
-            f"= {inner_chunk_budget + MIN_OVERHEAD_S}s — only "
-            f"{effective - inner_chunk_budget}s headroom for model load, OCR, "
-            f"tree build and LLM calls"
-        )
-    else:
-        assert effective == MAX_EFFECTIVE_TIMEOUT
-
-
-@given(chunk_count=st.integers(min_value=1, max_value=200))
-@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_effective_timeout_does_not_exceed_outer_bound(chunk_count):
-    """Property 11 (RFC-046 D11, task 3.10): effective_timeout must never
-    exceed MAX_EFFECTIVE_TIMEOUT, regardless of chunk_count."""
-    from pageindex_mcp.converters.docling_conv import (
-        _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
-        chunked_docling_timeout_s,
+    assert headroom >= CHILD_TIMEOUT, (
+        f"chunk_count={chunk_count}: requested={result.requested}s leaves only "
+        f"{headroom}s above the {inner_chunk_budget}s inner chunk budget, but the "
+        f"single-pass floor CHILD_TIMEOUT={CHILD_TIMEOUT}s must survive intact for "
+        f"model load, OCR, tree build and LLM calls"
     )
 
-    dynamic_timeout = chunked_docling_timeout_s(chunk_count)
-    if chunk_count > 1:
-        effective = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
-    else:
-        effective = max(CHILD_TIMEOUT, dynamic_timeout)
-    effective = min(effective, MAX_EFFECTIVE_TIMEOUT)
-    assert effective <= MAX_EFFECTIVE_TIMEOUT
 
+def test_single_chunk_timeout_is_the_unchanged_floor():
+    """chunk_count=1 is the single-pass case: exactly CHILD_TIMEOUT, the
+    behaviour that predates chunking. 3.11 must not have moved it."""
+    from pageindex_mcp.worker.timeouts import effective_child_timeout
+
+    assert effective_child_timeout(chunk_count=1, is_docling_route=True).requested == CHILD_TIMEOUT
+
+
+def test_non_docling_route_gets_the_bare_floor():
+    """A non-Docling route has no chunks, so no per-chunk budget applies."""
+    from pageindex_mcp.worker.timeouts import effective_child_timeout
+
+    assert effective_child_timeout(chunk_count=7, is_docling_route=False).requested == CHILD_TIMEOUT
+
+
+@given(
+    chunk_count=st.integers(min_value=1, max_value=500),
+    multiplier=st.sampled_from([1.0, INSPECTOR_OCR_MULTIPLIER]),
+)
+@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_effective_timeout_never_exceeds_the_outer_cap(chunk_count, multiplier):
+    """Property 11 (RFC-046 D11): however many multipliers compound, the value
+    handed to the child is bounded by MAX_EFFECTIVE_TIMEOUT."""
+    from pageindex_mcp.worker.timeouts import effective_child_timeout
+
+    result = effective_child_timeout(
+        chunk_count=chunk_count, is_docling_route=True, ocr_multiplier=multiplier
+    )
+    assert result.effective <= MAX_EFFECTIVE_TIMEOUT
+    assert result.effective == min(result.requested, MAX_EFFECTIVE_TIMEOUT)
+    assert result.capped is (result.requested > MAX_EFFECTIVE_TIMEOUT)
+
+
+@given(chunk_count=st.integers(min_value=1, max_value=500))
+@settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_inspector_multiplier_pins_every_scanned_pdf_to_the_cap(chunk_count):
+    """Documented consequence, not an aspiration: the 16.5x inspector
+    multiplier is applied BEFORE the cap, and 16.5 * CHILD_TIMEOUT already
+    exceeds MAX_EFFECTIVE_TIMEOUT at chunk_count=1. So every inspector-detected
+    scanned PDF receives exactly the cap, and the chunk-proportional budget has
+    no effect whatsoever on that route.
+
+    This test exists so that changing the cap, the multiplier or CHILD_TIMEOUT
+    surfaces the interaction instead of silently re-tuning the OCR route.
+    """
+    from pageindex_mcp.worker.timeouts import effective_child_timeout
+
+    result = effective_child_timeout(
+        chunk_count=chunk_count,
+        is_docling_route=True,
+        ocr_multiplier=INSPECTOR_OCR_MULTIPLIER,
+    )
+    assert result.capped
+    assert result.effective == MAX_EFFECTIVE_TIMEOUT
+
+
+def test_production_uses_the_extracted_function():
+    """subprocess_mgr must not re-derive the formula inline: the mutation that
+    fooled the first cut of these tests was only possible because the
+    computation lived in a coroutine body with no callable seam."""
+    import inspect
+
+    from pageindex_mcp.worker import subprocess_mgr
+
+    source = inspect.getsource(subprocess_mgr._run_converter_subprocess)
+    assert "effective_child_timeout(" in source, (
+        "_run_converter_subprocess must call effective_child_timeout() rather "
+        "than computing the budget inline"
+    )
 
 # ── RFC-038 Task 3.1: integration tests (D1+D2+D4) ───────────────────────────
 def _fake_subprocess_e2e(handshake: dict, stdout: bytes, *, communicate_delay: float = 0):
