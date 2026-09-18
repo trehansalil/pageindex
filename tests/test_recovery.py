@@ -36,6 +36,8 @@ from pageindex_mcp.helpers import (
     validate_tree,
 )
 from pageindex_mcp.helpers.types import _defect_from_reason_str, _guard_bypass
+from pageindex_mcp.worker.constants import MAX_EFFECTIVE_TIMEOUT
+from pageindex_mcp.worker.timeouts import effective_child_timeout
 from pageindex_mcp.worker import (
     CHILD_TIMEOUT,
     _run_converter_subprocess,
@@ -325,9 +327,15 @@ def _fake_proc(handshake: dict | None, result: dict, returncode: int = 0):
 class TestDynamicTimeoutWiring:
     """Property 1: effective_timeout = CHILD_TIMEOUT + chunk_count * PER_CHUNK
     on a chunked Docling route (chunk_count > 1); max(CHILD_TIMEOUT, dynamic)
-    for chunk_count <= 1; CHILD_TIMEOUT unconditionally on non-Docling."""
+    for chunk_count <= 1; CHILD_TIMEOUT unconditionally on non-Docling.
 
-    async def test_docling_route_dynamic_timeout_exceeds_child_timeout(self):
+    All of it subject to MAX_EFFECTIVE_TIMEOUT, which since 2026-09-18 is
+    3600s == CHILD_TIMEOUT -- so on this deployment the chunked branch is
+    always capped back to the floor. The formula is still asserted here (via
+    ChildTimeout.requested); what the child is *granted* is the capped value.
+    """
+
+    async def test_docling_route_dynamic_timeout_is_capped_to_the_ceiling(self):
         from pageindex_mcp.converters.docling_conv import _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
 
         chunk_count = 3
@@ -343,9 +351,17 @@ class TestDynamicTimeoutWiring:
             patch("pageindex_mcp.worker.subprocess_mgr.asyncio.timeout", _RecordingTimeout(sink)),
         ):
             await _run_converter_subprocess("/tmp/bigger.pdf")
-        expected = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
-        assert expected - 5 <= sink[1] <= expected
-        assert sink[1] > CHILD_TIMEOUT
+        # The formula still asks for the full chunk-proportional budget...
+        budget = effective_child_timeout(chunk_count=chunk_count, is_docling_route=True)
+        assert budget.requested == CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+        assert budget.requested > CHILD_TIMEOUT
+
+        # ...and the cap is what the child actually gets. Under the 60-minute
+        # ceiling these differ; if MAX_EFFECTIVE_TIMEOUT is ever raised above
+        # the requested value this asserts the uncapped budget instead, with no
+        # edit needed.
+        assert budget.capped is (budget.requested > MAX_EFFECTIVE_TIMEOUT)
+        assert budget.effective - 5 <= sink[1] <= budget.effective
 
     async def test_non_docling_route_falls_back_to_child_timeout_unconditionally(self):
         handshake = {"handshake": True, "chunk_count": 5, "is_docling_route": False}
@@ -386,10 +402,12 @@ class TestProbeConversionRoute:
 # lines separate consecutive مادة articles, and one article title runs past
 # the old 60-char limit (66-76+ chars is the RFC's own observed range).
 
+
 class TestCharLimitRaisedTo100:
     @pytest.fixture(autouse=True)
     def _disable_density_guard(self, monkeypatch):
         import pageindex_mcp.converters.headings as _h
+
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_75_char_marker_title_line_is_promoted(self):
@@ -458,6 +476,7 @@ class TestPresentationFormsGarbleDetection:
 # presentation-form check. A character-reversed base-Arabic word (like a
 # genuine visual-order OCR/Docling artifact) is the fixture that exercises it.
 _REVERSED_WORD = "رارق"  # "قرار" (decision) reversed at the character level
+
 
 class TestMorphologicalReversalCheck:
     def test_character_reversed_word_flagged_reversed(self):
@@ -738,6 +757,7 @@ class TestKillSwitchDeconflation:
     def _restore_cfg(self):
         yield
         from pageindex_mcp.config import reset_pipeline_config
+
         reset_pipeline_config()
 
     def _patch_config(self, monkeypatch, *, garble: bool, low_content: bool):
@@ -746,7 +766,9 @@ class TestKillSwitchDeconflation:
         from pageindex_mcp.config import pipeline_config as _orig, reset_pipeline_config
         import pageindex_mcp.client.recovery as recovery_mod
 
-        new_cfg = dc.replace(_orig, ocr_escalation_garble=garble, ocr_escalation_low_content=low_content)
+        new_cfg = dc.replace(
+            _orig, ocr_escalation_garble=garble, ocr_escalation_low_content=low_content
+        )
         monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
         return new_cfg
 
@@ -795,9 +817,11 @@ class TestKillSwitchDeconflation:
         state = self._make_low_content_state()
         mixin = RecoveryMixin()
         called = []
+
         async def fake_execute(*a, **kw):
             called.append(True)
             return False
+
         mixin._execute_ocr_retry = fake_execute
         await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
         assert len(called) == 1, "low-content recovery should have fired"
@@ -811,9 +835,11 @@ class TestKillSwitchDeconflation:
         state = self._make_low_content_state()
         mixin = RecoveryMixin()
         called = []
+
         async def fake_execute(*a, **kw):
             called.append(True)
             return False
+
         mixin._execute_ocr_retry = fake_execute
         await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
         assert len(called) == 1
@@ -846,6 +872,7 @@ class TestZeroContentRecoveryFlow:
     def _restore_cfg(self):
         yield
         from pageindex_mcp.config import reset_pipeline_config
+
         reset_pipeline_config()
 
     def _make_zero_content_state(self) -> ExtractionState:
@@ -1010,6 +1037,7 @@ class TestRecoveryDispatchCrossTupleDedup:
         async def _tracking_method(name):
             async def _impl(self_inner, *args, **kwargs):
                 call_counts[name] = call_counts.get(name, 0) + 1
+
             return _impl
 
         client = CustomPageIndexClient.__new__(CustomPageIndexClient)
@@ -1045,7 +1073,11 @@ class TestRecoveryDispatchCrossTupleDedup:
                     continue
                 _fired_methods.add(_fn_name)
                 await getattr(client, _fn_name)(
-                    state, "/tmp/test.pdf", "test.pdf", ".pdf", None,
+                    state,
+                    "/tmp/test.pdf",
+                    "test.pdf",
+                    ".pdf",
+                    None,
                     script_context=None,
                 )
 
@@ -1077,7 +1109,11 @@ class TestRecoveryDispatchCrossTupleDedup:
 
         mixin = RecoveryMixin.__new__(RecoveryMixin)
         result = await mixin._recover_image_dominant_ocr(
-            state, "/tmp/test.pdf", "test.pdf", ".pdf", None,
+            state,
+            "/tmp/test.pdf",
+            "test.pdf",
+            ".pdf",
+            None,
         )
         assert result is None
 
@@ -1153,11 +1189,13 @@ class TestVLMFallbackSingleTesseractBlock:
 
         import dataclasses as dc
         from pageindex_mcp.config import pipeline_config as _orig
+
         new_cfg = dc.replace(_orig, vlm_tesseract_fallback_enabled=True)
         monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
 
         async def _vlm_raise(*a, **kw):
             raise ZDRComplianceError("test")
+
         monkeypatch.setattr(
             "pageindex_mcp.converters.vlm_extract_markdown",
             _vlm_raise,
@@ -1171,6 +1209,7 @@ class TestVLMFallbackSingleTesseractBlock:
             return "# recovered"
 
         from pageindex_mcp.client import images as images_mod
+
         monkeypatch.setattr(
             images_mod,
             "_attempt_tesseract_raster_recovery",
@@ -1179,7 +1218,11 @@ class TestVLMFallbackSingleTesseractBlock:
 
         mixin = RecoveryMixin.__new__(RecoveryMixin)
         await mixin._recover_vlm_fallback(
-            state, "/tmp/test.pdf", "test.pdf", ".pdf", None,
+            state,
+            "/tmp/test.pdf",
+            "test.pdf",
+            ".pdf",
+            None,
         )
 
         assert tesseract_call_count == 1
@@ -1207,7 +1250,8 @@ class TestD3GuardedFieldProtection:
     def test_finalize_gate_and_route_bypasses_guard(self):
         state = _make_state()
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         finalize_gate_and_route(state, gate)
         assert state.ok is True
@@ -1242,7 +1286,8 @@ class TestD3ForceRouteOverride:
     def test_force_route_overrides_decide_route(self):
         state = _make_state()
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         finalize_gate_and_route(state, gate, force_route=Route.FLAT)
         assert state.route == Route.FLAT
@@ -1251,7 +1296,8 @@ class TestD3ForceRouteOverride:
     def test_force_ok_overrides_gate_ok(self):
         state = _make_state()
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         finalize_gate_and_route(state, gate, force_ok=False)
         assert state.ok is False
@@ -1260,7 +1306,8 @@ class TestD3ForceRouteOverride:
     def test_force_route_and_force_ok_together(self):
         state = _make_state()
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         finalize_gate_and_route(state, gate, force_route=Route.FLAT, force_ok=False)
         assert state.route == Route.FLAT
@@ -1269,11 +1316,13 @@ class TestD3ForceRouteOverride:
     def test_rtl_comparison_site_produces_flat(self):
         state = _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.RTL_REVERSAL)
         gate = TreeGateResult(
-            ok=False, defect=TreeDefect.RTL_REVERSAL,
+            ok=False,
+            defect=TreeDefect.RTL_REVERSAL,
             detail="rtl_reversal",
         )
         finalize_gate_and_route(
-            state, gate,
+            state,
+            gate,
             recovery_method="rtl_comparison",
             recovery_succeeded=True,
             force_route=Route.FLAT,
@@ -1284,11 +1333,13 @@ class TestD3ForceRouteOverride:
     def test_vlm_tesseract_site_produces_flat(self):
         state = _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.GARBLING)
         gate = TreeGateResult(
-            ok=False, defect=TreeDefect.GARBLING,
+            ok=False,
+            defect=TreeDefect.GARBLING,
             detail="garbling",
         )
         finalize_gate_and_route(
-            state, gate,
+            state,
+            gate,
             recovery_method="vlm_tesseract_raster",
             recovery_succeeded=True,
             force_route=Route.FLAT,
@@ -1298,10 +1349,12 @@ class TestD3ForceRouteOverride:
     def test_flat_prefer_density_site(self):
         state = _make_state(ok=True, route=Route.TREE)
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         finalize_gate_and_route(
-            state, gate,
+            state,
+            gate,
             recovery_method="flat_prefer_density",
             recovery_succeeded=True,
             force_route=Route.FLAT,
@@ -1313,10 +1366,12 @@ class TestD3ForceRouteOverride:
     def test_landscape_reroute_site(self):
         state = _make_state(ok=True, route=Route.TREE)
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         finalize_gate_and_route(
-            state, gate,
+            state,
+            gate,
             recovery_method="landscape_reroute",
             recovery_succeeded=True,
             force_route=Route.FLAT,
@@ -1334,9 +1389,11 @@ class TestD3DeprecationWarning:
 
     def test_tree_gate_result_no_deprecation(self):
         import warnings
+
         state = _make_state()
         gate = TreeGateResult(
-            ok=True, defect=TreeDefect.OK,
+            ok=True,
+            defect=TreeDefect.OK,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
