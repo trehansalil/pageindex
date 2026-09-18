@@ -233,7 +233,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.1](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 13](design-rfc046-ocr-attribution-failure-cluster-remediation#property-13-one-line-one-record-on-stderr)_
     - _Dependencies: none_
 
-  - [~] 12.2 Correlation via contextvars, across the process boundary
+  - [x] 12.2 Correlation via contextvars, across the process boundary
 
     - `bind_log_context()` binds a **new frozen mapping** each time — never mutate in place. Always a context manager with `reset(token)`: the arq worker is long-lived and a bare `set()` leaves the previous document's `doc_id` bound for the next job.
     - Five bind sites: `worker/job.py::process_document_job` entry (`run_id`, `job_id`); `preprocess_client._process_one` **inside the semaphore** (binding outside gives every concurrent document the same `doc_name`); `subprocess_mgr` writes `PAGEINDEX_LOG_CONTEXT` into `child_env`, following the `PAGEINDEX_JOB_START_CONFIG` precedent at `:125`; `converters_cli.main()` reads it back; `indexer.index()` binds `doc_sha8` after the sha256 and `doc_id` at persist.
@@ -300,28 +300,32 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.5](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.6](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.8](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.9](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.2, 12.4_
 
-  - [ ] 12.6 `redact()` and the banned-key AST guard
+  - [x] 12.6 `redact()` and the banned-key AST guard
 
     - Default-deny, per Hard Rule 3 and the `tracing.py::_mask` precedent. Never logged: `md_content`, node text, summaries, table cells, OCR output, LLM prompts and completions, and **node titles** — a German insurance heading can name an insured party.
     - Log instead: `*_len`, `*_chars`, ratios, `node_path`, `title_sha8`, `title_script`, `doc_sha8`. Absolute paths (`pipeline.py:412` logs `pdf_path` today) reduce to a basename.
     - AST guard scanning every `decision(...)` call site for banned `attrs` keys.
     - **The AST guard is not sufficient on its own.** Since 12.3 landed, the only content-bearing path to the log stream is `_forward_child_stderr` passing library output through verbatim — including `converters/pipeline.py:412`'s absolute `pdf_path`, which R12.7 requires reduced to a basename. A guard over emitter call sites will never see it. Cover the forwarded-stderr channel too.
     - `doc_name` **is** logged at INFO — it is already in the log lines, the registry and the sidecar — but as one named field, so a shipping pipeline can hash or drop it in configuration. **Flag this for explicit owner sign-off** rather than deciding it silently.
+    - **DONE 2026-09-18** (`c38701e`). `obs/redact.py`: `scrub_message()` reduces absolute paths to a basename in the formatter (covering the ~48 pre-existing call sites at once) **and** in `_forward_child_stderr` (covering docling/pymupdf output, which no call-site guard can see). URLs are deliberately preserved — a MinIO endpoint is infrastructure, not content. `redact_excerpt()` is the sanctioned bounded-excerpt helper; it is a truncation, not a mask, so 12.7's `PAGEINDEX_LOG_CONTENT` has something to widen. The banned-key AST guard is `TestDecisionCallSiteGuards` (task 12.8), mutation-verified against an injected `node_title`.
+    - **OPEN — owner sign-off still required:** `doc_name` is logged at INFO as one named field. Flagged, not decided.
     - _Requirements: [R12.7](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 12](design-rfc046-ocr-attribution-failure-cluster-remediation#property-12-no-document-content-in-logs)_
     - _Dependencies: 12.5_
 
-  - [ ] 12.7 `obs/log_config.py` — one env read, at import
+  - [x] 12.7 `obs/log_config.py` — one env read, at import
 
     - Level, `PAGEINDEX_LOG_NODE_SAMPLE`, `PAGEINDEX_LOG_DECISIONS=on|off`, `PAGEINDEX_LOG_CONTENT` (default false; true only widens a truncation bound, it never unmasks full text).
     - **Read once at import; hot-path files import the resolved constant.** `TestHotPathConfigAccessGuard` (`test_architecture_guards.py:772-838`) forbids inline env reads in five of the six files 12.5 touches.
     - **Deliberately NOT registered in `PipelineConfig.from_env`.** `TestNoConfigDoubleSourcing` (`:1430`) derives its owned set from `from_env` and is closed-world over `src/`; registering these vars there would make this module's own read a violation. This is a design choice and belongs in the code comment, not in a reviewer's head.
+    - **DONE 2026-09-18** (`a8fae1f`). All four vars resolve once at import in `log_config.py`: `LOG_LEVEL`, `LOG_NODE_SAMPLE`, `LOG_DECISIONS_ENABLED`, `LOG_CONTENT_WIDENED`, plus the derived `TRUNCATION_CHARS`. Parsing never raises out of module import. `PAGEINDEX_LOG_DECISIONS=off` is wired into `decision()` as a kill switch for the decision layer alone. `PAGEINDEX_LOG_CONTENT` swaps one finite bound for a larger finite one (120 → 512) and unmasks nothing.
     - _Requirements: [R12.10](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
 
-  - [ ] 12.8 Guard tests
+  - [x] 12.8 Guard tests
 
     - **Add the four guard tests the 2026-09-18 review exposed** (all four defects are fixed; these lock them): a real-subprocess test for a child stderr line over 64 KiB; a hostile-`__str__` test covering **correlation and decision fields**, not only `attrs`; a test that the configured handler's stream survives `preprocess_client`'s `_FilteredStderr` wrapper; and a `logtrace --job-id`-alone test.
     - Every `DECISION_POINTS` entry actually emits. One line per record. The configured handler's stream is `sys.stderr` (R12.11 — `converters_cli` reserves stdout for two JSON lines at `:31,:56-62`; a stdout handler fails every job with `invalid JSON on stdout`). No `logging.basicConfig` outside `obs`. The six hot-path files still pass `TestHotPathConfigAccessGuard`. `decision()`/`phase()` never raise.
+    - **DONE 2026-09-18** (`24d5c93`). `TestDecisionCallSiteGuards` (6 static guards: every event literal, no invented event, every registered point emitted, no content-bearing attr, no undeclared attr, and a non-empty scan) + `TestLoggingConfigurationIsCentral` (AST `basicConfig` guard — a substring scan gets this wrong in both directions; `configure()` installs exactly one handler on `sys.stderr`). The oversized-line guard drives a **real** asyncio subprocess pipe: a fake reader has no 64 KiB limit and reproduces none of the defect. Each guard was mutation-verified, not assumed green.
     - _Requirements: [R12.8](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.11](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 13](design-rfc046-ocr-attribution-failure-cluster-remediation#property-13-one-line-one-record-on-stderr)_
     - _Dependencies: 12.5, 12.7_
 
