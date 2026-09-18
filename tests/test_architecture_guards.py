@@ -95,9 +95,7 @@ class TestPersistFlatResultOrdering:
             "_garble_check_flat_blocks",
             "_apply_picture_enrichment",
         ]
-        assert seen == expected_order, (
-            f"Expected call ordering {expected_order}, got {seen}"
-        )
+        assert seen == expected_order, f"Expected call ordering {expected_order}, got {seen}"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +110,7 @@ class TestApplyVerdictHysteresisRemoved:
     def test_not_exported_from_helpers_init(self):
         """helpers.__init__.__all__ must NOT include apply_verdict_hysteresis."""
         import pageindex_mcp.helpers as helpers_mod
+
         assert not hasattr(helpers_mod, "apply_verdict_hysteresis")
         assert "apply_verdict_hysteresis" not in helpers_mod.__all__
 
@@ -124,26 +123,26 @@ class TestApplyVerdictHysteresisRemoved:
         """indexer.py _persist_flat_result must NOT reference
         apply_verdict_hysteresis."""
         import pageindex_mcp.client.indexer as indexer_mod
-        src = inspect.getsource(
-            indexer_mod.CustomPageIndexClient._persist_flat_result
-        )
+
+        src = inspect.getsource(indexer_mod.CustomPageIndexClient._persist_flat_result)
         assert "apply_verdict_hysteresis" not in src
 
     def test_indexer_tree_path_no_hysteresis(self):
         """indexer.py _persist_tree_result must NOT reference
         apply_verdict_hysteresis."""
         import pageindex_mcp.client.indexer as indexer_mod
-        src = inspect.getsource(
-            indexer_mod.CustomPageIndexClient._persist_tree_result
-        )
+
+        src = inspect.getsource(indexer_mod.CustomPageIndexClient._persist_tree_result)
         assert "apply_verdict_hysteresis" not in src
 
     def test_not_importable_from_helpers_verdict(self):
         from pageindex_mcp.helpers import verdict as mod
+
         assert not hasattr(mod, "apply_verdict_hysteresis")
 
     def test_not_in_helpers_all(self):
         import pageindex_mcp.helpers as helpers_mod
+
         assert "apply_verdict_hysteresis" not in helpers_mod.__all__
 
     def test_not_importable_from_helpers_package(self):
@@ -169,8 +168,10 @@ class TestEvaluateGatesSignature:
         structure, validate_result, expected_script, th."""
         sig = inspect.signature(evaluate_gates)
         positional = [
-            p for p in sig.parameters.values()
-            if p.kind in (
+            p
+            for p in sig.parameters.values()
+            if p.kind
+            in (
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
             )
@@ -197,17 +198,16 @@ class TestApplyPromotionsSignature:
         th, expected_script. Plus keyword-only source_selection."""
         sig = inspect.signature(apply_promotions)
         positional = [
-            p for p in sig.parameters.values()
-            if p.kind in (
+            p
+            for p in sig.parameters.values()
+            if p.kind
+            in (
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
             )
         ]
         assert len(positional) == 6
-        kw_only = [
-            p for p in sig.parameters.values()
-            if p.kind == inspect.Parameter.KEYWORD_ONLY
-        ]
+        kw_only = [p for p in sig.parameters.values() if p.kind == inspect.Parameter.KEYWORD_ONLY]
         assert any(p.name == "source_selection" for p in kw_only)
 
 
@@ -224,9 +224,8 @@ class TestGateResultThreading:
         """_persist_flat_result must pass state.gate_result to
         compute_verdict (as the validate_result positional arg)."""
         import pageindex_mcp.client.indexer as indexer_mod
-        src = inspect.getsource(
-            indexer_mod.CustomPageIndexClient._persist_flat_result
-        )
+
+        src = inspect.getsource(indexer_mod.CustomPageIndexClient._persist_flat_result)
         assert "state.gate_result" in src
         # Must appear as arg to compute_verdict, not just in any context
         assert "compute_verdict" in src
@@ -235,9 +234,8 @@ class TestGateResultThreading:
         """_persist_tree_result must pass state.gate_result to
         compute_verdict."""
         import pageindex_mcp.client.indexer as indexer_mod
-        src = inspect.getsource(
-            indexer_mod.CustomPageIndexClient._persist_tree_result
-        )
+
+        src = inspect.getsource(indexer_mod.CustomPageIndexClient._persist_tree_result)
         assert "state.gate_result" in src
         assert "compute_verdict" in src
 
@@ -285,7 +283,8 @@ class TestDecomposedVerdictDeadCode:
             source = test_file.read_text()
             lines = source.splitlines()
             call_refs = [
-                i for i, line in enumerate(lines, 1)
+                i
+                for i, line in enumerate(lines, 1)
                 if "_decomposed_verdict" in line
                 and not line.strip().startswith("def _decomposed_verdict")
             ]
@@ -314,7 +313,8 @@ class TestGateSpecFieldsZone1:
         """No individual gate in GATES should carry flat_applicable."""
         for gate in GATES:
             assert not hasattr(gate, "flat_applicable") or "flat_applicable" not in {
-                f.name for f in gate.__dataclass_fields__.values()  # type: ignore[attr-defined]
+                f.name
+                for f in gate.__dataclass_fields__.values()  # type: ignore[attr-defined]
             }
 
 
@@ -355,6 +355,7 @@ class TestStructuralOkSourceContract:
         """Source code must contain the unified isdisjoint expression
         (in _try_structural_pass, called by apply_promotions)."""
         from pageindex_mcp.helpers.verdict import _try_structural_pass
+
         src = inspect.getsource(_try_structural_pass)
         assert "isdisjoint" in src
         assert "NODE_COUNT_LOW" in src
@@ -367,9 +368,7 @@ class TestStructuralOkSourceContract:
         lines = src.splitlines()
         for line in lines:
             if "_structural_ok" in line and "sig.node_count" in line:
-                pytest.fail(
-                    f"_structural_ok still uses sig-based heuristic: {line.strip()}"
-                )
+                pytest.fail(f"_structural_ok still uses sig-based heuristic: {line.strip()}")
 
 
 # ---------------------------------------------------------------------------
@@ -440,14 +439,16 @@ class TestSidecarPassivityGuards:
     def test_verdict_cas_guard_not_importable(self):
         """_verdict_cas_guard must not exist in storage.verdict."""
         mod = importlib.import_module("pageindex_mcp.storage.verdict")
-        assert not hasattr(mod, "_verdict_cas_guard"), \
+        assert not hasattr(mod, "_verdict_cas_guard"), (
             "_verdict_cas_guard should be deleted (D5: sidecar is passive archive)"
+        )
 
     def test_verdict_cas_fields_not_importable(self):
         """_VERDICT_CAS_FIELDS must not exist in storage.verdict."""
         mod = importlib.import_module("pageindex_mcp.storage.verdict")
-        assert not hasattr(mod, "_VERDICT_CAS_FIELDS"), \
+        assert not hasattr(mod, "_VERDICT_CAS_FIELDS"), (
             "_VERDICT_CAS_FIELDS should be deleted (D5: sidecar is passive archive)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -565,9 +566,7 @@ class TestPresentationFormsNotHardcoded:
                         and isinstance(kw.value, ast.Constant)
                         and kw.value.value is False
                     ):
-                        hits.setdefault(str(path.relative_to(src_root)), []).append(
-                            kw.value.lineno
-                        )
+                        hits.setdefault(str(path.relative_to(src_root)), []).append(kw.value.lineno)
         return hits
 
     def test_no_hardcoded_false_outside_the_no_information_constructor(self):
@@ -645,9 +644,7 @@ class TestNoDirectGarbleProngsOutsideGarblePy:
                     elif isinstance(func, _ast.Attribute):
                         name = func.attr
                     if name in ("_garble_prongs", "garble_prongs"):
-                        violations.append(
-                            f"  {rel}:{node.lineno}: direct {name}() call"
-                        )
+                        violations.append(f"  {rel}:{node.lineno}: direct {name}() call")
 
         assert not violations, (
             "D1 (RFC-041): direct _garble_prongs/_garble_prongs calls found "
@@ -657,6 +654,7 @@ class TestNoDirectGarbleProngsOutsideGarblePy:
 
     def test_garble_prongs_not_exported_from_helpers_init(self):
         import pageindex_mcp.helpers as helpers_mod
+
         assert not hasattr(helpers_mod, "garble_prongs"), (
             "garble_prongs must not be exported from helpers/__init__.py"
         )
@@ -746,7 +744,7 @@ class TestNoDirectStateMutationInRecovery:
         pattern = re.compile(r"^\s+state\.(route|ok)\s*=\s*", re.MULTILINE)
         violations: list[str] = []
         for match in pattern.finditer(source):
-            line_no = source[:match.start()].count("\n") + 1
+            line_no = source[: match.start()].count("\n") + 1
             field = match.group(1)
             violations.append(f"  recovery.py:{line_no}: direct state.{field} = assignment")
 
@@ -807,9 +805,7 @@ class TestHotPathConfigAccessGuard:
                     and node.value.id == "os"
                     and node.attr in ("environ", "getenv")
                 ):
-                    violations.append(
-                        f"  {rel_path}:{node.lineno}: os.{node.attr}"
-                    )
+                    violations.append(f"  {rel_path}:{node.lineno}: os.{node.attr}")
             # Catch `from os import environ` / `from os import getenv`
             elif isinstance(node, ast.ImportFrom) and node.module == "os":
                 for alias in node.names:
@@ -833,11 +829,7 @@ class TestHotPathConfigAccessGuard:
         -- guard the exemption itself so it can't silently drift from the
         actual startup-only files on disk."""
         src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
-        missing = [
-            name
-            for name in self.STARTUP_ONLY_ALLOWLIST
-            if not any(src_root.rglob(name))
-        ]
+        missing = [name for name in self.STARTUP_ONLY_ALLOWLIST if not any(src_root.rglob(name))]
         assert not missing, f"allowlisted startup-only file(s) not found in src/: {missing}"
 
 
@@ -908,8 +900,7 @@ class TestSaveDocMetaSingleWriter:
                 continue
             if rel not in self.ALLOWED_CALLER_FILES:
                 violations.extend(
-                    f"  {rel}:{lineno}: save_doc_meta() called outside the "
-                    "single-writer path"
+                    f"  {rel}:{lineno}: save_doc_meta() called outside the single-writer path"
                     for _enclosing, lineno in visitor.calls
                 )
             elif rel == "client/indexer.py":
@@ -1025,8 +1016,7 @@ class TestRFC044RecoveryDispatchGuards:
             if not isinstance(node, ast.If):
                 continue
             references_flag = any(
-                isinstance(sub, ast.Attribute)
-                and sub.attr == "full_page_already_applied"
+                isinstance(sub, ast.Attribute) and sub.attr == "full_page_already_applied"
                 for sub in ast.walk(node.test)
             )
             if not references_flag:
@@ -1070,8 +1060,7 @@ class TestRFC044RecoveryDispatchGuards:
 
             if guard_line is None:
                 violations.append(
-                    f"{method_name}: no early-return guard on "
-                    "state.full_page_already_applied"
+                    f"{method_name}: no early-return guard on state.full_page_already_applied"
                 )
             elif retry_line is not None and guard_line > retry_line:
                 violations.append(
@@ -1083,8 +1072,7 @@ class TestRFC044RecoveryDispatchGuards:
         assert not violations, (
             "R1.4/Property 1 (RFC-044): every RecoveryMixin method calling "
             "_execute_ocr_retry must early-return on "
-            "state.full_page_already_applied before that call. Violations: "
-            + "; ".join(violations)
+            "state.full_page_already_applied before that call. Violations: " + "; ".join(violations)
         )
 
     def test_decide_ocr_strategy_single_call_site(self):
@@ -1107,9 +1095,7 @@ class TestRFC044RecoveryDispatchGuards:
             "R3.3/Property 3 (RFC-044): decide_ocr_strategy must have "
             f"exactly one call site in src/. Found: {call_sites}"
         )
-        assert call_sites[0].startswith(
-            "src/pageindex_mcp/converters/pictures.py:"
-        ), (
+        assert call_sites[0].startswith("src/pageindex_mcp/converters/pictures.py:"), (
             "R3.3/Property 3 (RFC-044): the single live call site must be "
             f"in converters/pictures.py. Found: {call_sites[0]}"
         )
@@ -1120,9 +1106,7 @@ class TestRFC044RecoveryDispatchGuards:
         src_dir = PROJECT_ROOT / "src"
         hits: list[str] = []
         for py_file in src_dir.rglob("*.py"):
-            for lineno, line in enumerate(
-                py_file.read_text().splitlines(), 1
-            ):
+            for lineno, line in enumerate(py_file.read_text().splitlines(), 1):
                 if "UNIFIED_OCR_PLAN_ENABLED" in line:
                     hits.append(f"{py_file.relative_to(PROJECT_ROOT)}:{lineno}")
 
@@ -1197,9 +1181,7 @@ class TestEligibilityPredicateSymmetry:
         )
 
     def test_grep_first_defect_absent_from_gates_eligible_functions(self):
-        gates_path = (
-            PROJECT_ROOT / "src" / "pageindex_mcp" / "helpers" / "gates.py"
-        )
+        gates_path = PROJECT_ROOT / "src" / "pageindex_mcp" / "helpers" / "gates.py"
         source = gates_path.read_text()
         tree = ast.parse(source)
 
@@ -1237,8 +1219,7 @@ class TestEligibilityPredicateSymmetry:
                         and cmp_node.left.attr == "first_defect"
                     )
                     compares_to_rtl_reversal = any(
-                        isinstance(comparator, ast.Attribute)
-                        and comparator.attr == "RTL_REVERSAL"
+                        isinstance(comparator, ast.Attribute) and comparator.attr == "RTL_REVERSAL"
                         for comparator in cmp_node.comparators
                     )
                     if left_is_first_defect and compares_to_rtl_reversal:
@@ -1497,9 +1478,9 @@ class TestNoConfigDoubleSourcing:
                 if node.func.attr not in ("getenv", "get"):
                     continue
                 target = node.func.value
-                reads_env = (
-                    isinstance(target, ast.Attribute) and target.attr == "environ"
-                ) or (isinstance(target, ast.Name) and target.id in ("os", "environ"))
+                reads_env = (isinstance(target, ast.Attribute) and target.attr == "environ") or (
+                    isinstance(target, ast.Name) and target.id in ("os", "environ")
+                )
                 if not reads_env or not node.args:
                     continue
                 arg = node.args[0]

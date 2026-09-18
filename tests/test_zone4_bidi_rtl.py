@@ -15,18 +15,17 @@ from pageindex_mcp.script import RtlDecision, ScriptContext
 
 
 class TestBidiNormVersion:
-
     def test_version_is_int(self):
         assert isinstance(BIDI_NORM_VERSION, int)
         assert BIDI_NORM_VERSION >= 2
 
     def test_exported_from_converters_init(self):
         from pageindex_mcp.converters import BIDI_NORM_VERSION as exported
+
         assert exported == BIDI_NORM_VERSION
 
 
 class TestPreInferenceNormalizeDelegation:
-
     def test_arabic_presentation_forms_detected(self):
         from pageindex_mcp.converters.pictures import _pre_inference_normalize
 
@@ -51,10 +50,10 @@ class TestPreInferenceNormalizeDelegation:
 
 
 class TestGateBidiDegradedPresentationForms:
-
     @pytest.fixture()
     def dummy_sig(self):
         from pageindex_mcp.helpers.tree_validation import TreeSignals
+
         return TreeSignals(
             node_count=5,
             depth=3,
@@ -83,9 +82,7 @@ class TestGateBidiDegradedPresentationForms:
             method="test",
             had_presentation_forms=True,
         )
-        fires, detail = _gate_bidi_degraded(
-            dummy_sig, [], dummy_script_ctx, None, rtl
-        )
+        fires, detail = _gate_bidi_degraded(dummy_sig, [], dummy_script_ctx, None, rtl)
         assert fires is True
         assert "had_presentation_forms=True" in detail
 
@@ -97,9 +94,7 @@ class TestGateBidiDegradedPresentationForms:
             method="test",
             had_presentation_forms=False,
         )
-        fires, detail = _gate_bidi_degraded(
-            dummy_sig, [], dummy_script_ctx, None, rtl
-        )
+        fires, detail = _gate_bidi_degraded(dummy_sig, [], dummy_script_ctx, None, rtl)
         assert fires is True
         assert "reversed=True" in detail
 
@@ -111,15 +106,11 @@ class TestGateBidiDegradedPresentationForms:
             method="test",
             had_presentation_forms=False,
         )
-        fires, _ = _gate_bidi_degraded(
-            dummy_sig, [], dummy_script_ctx, None, rtl
-        )
+        fires, _ = _gate_bidi_degraded(dummy_sig, [], dummy_script_ctx, None, rtl)
         assert fires is False
 
     def test_does_not_fire_when_rtl_none(self, dummy_sig, dummy_script_ctx):
-        fires, _ = _gate_bidi_degraded(
-            dummy_sig, [], dummy_script_ctx, None, None
-        )
+        fires, _ = _gate_bidi_degraded(dummy_sig, [], dummy_script_ctx, None, None)
         assert fires is False
 
     def test_disabled_by_env(self, dummy_sig, dummy_script_ctx, monkeypatch):
@@ -135,9 +126,7 @@ class TestGateBidiDegradedPresentationForms:
                 method="test",
                 had_presentation_forms=True,
             )
-            fires, _ = _gate_bidi_degraded(
-                dummy_sig, [], dummy_script_ctx, None, rtl
-            )
+            fires, _ = _gate_bidi_degraded(dummy_sig, [], dummy_script_ctx, None, rtl)
             assert fires is False
         finally:
             monkeypatch.undo()

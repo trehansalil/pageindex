@@ -8,6 +8,7 @@ golden-file tests cannot cover exhaustively.
 CI configuration: max_examples=200
 # Nightly configuration: max_examples=10000
 """
+
 from __future__ import annotations
 
 import math

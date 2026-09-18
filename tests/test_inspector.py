@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """PDF inspector, RFC inspector, and VLM fallback tests."""
+
 from __future__ import annotations
 
 import logging
@@ -296,7 +297,6 @@ def _pdi_fake_settings(**overrides):
     return SimpleNamespace(**base)
 
 
-
 def _pdi_wire_index(monkeypatch, *, preclassify, validate_tree=None):
     """Patch every collaborator client.index() touches on the PDF -> markdown
     route, and capture the args the (single) converter chain entry is called
@@ -307,7 +307,11 @@ def _pdi_wire_index(monkeypatch, *, preclassify, validate_tree=None):
     # pipeline_config is now the canonical source (indexer.py reads
     # pipeline_config.pdf_inspector_preclassify live rather than importing a
     # frozen module-level constant), so patch the config object itself.
-    monkeypatch.setattr(_idx, "pipeline_config", replace(_idx.pipeline_config, pdf_inspector_preclassify=preclassify))
+    monkeypatch.setattr(
+        _idx,
+        "pipeline_config",
+        replace(_idx.pipeline_config, pdf_inspector_preclassify=preclassify),
+    )
     monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
     monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
@@ -371,7 +375,9 @@ def _pdi_wire_index(monkeypatch, *, preclassify, validate_tree=None):
     return mocks
 
 
-async def _pdi_run_index(monkeypatch, pdf_file, *, preclassify, pdf_classification, validate_tree=None):
+async def _pdi_run_index(
+    monkeypatch, pdf_file, *, preclassify, pdf_classification, validate_tree=None
+):
     mocks = _pdi_wire_index(monkeypatch, preclassify=preclassify, validate_tree=validate_tree)
     c = _make_client()
     monkeypatch.setattr(
@@ -895,7 +901,6 @@ def _rfi_fake_settings(**overrides):
     return SimpleNamespace(**base)
 
 
-
 def _rfi_wire_index(monkeypatch, *, pic_results, flat_return):
     fake_settings = _rfi_fake_settings()
     monkeypatch.setattr(_idx, "settings", fake_settings)
@@ -905,7 +910,9 @@ def _rfi_wire_index(monkeypatch, *, pic_results, flat_return):
     # pipeline_config is now the canonical source (indexer.py reads
     # pipeline_config.pdf_inspector_preclassify live), so patch the config
     # object rather than a frozen module-level constant.
-    monkeypatch.setattr(_idx, "pipeline_config", replace(_idx.pipeline_config, pdf_inspector_preclassify=False))
+    monkeypatch.setattr(
+        _idx, "pipeline_config", replace(_idx.pipeline_config, pdf_inspector_preclassify=False)
+    )
     monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
     monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
     monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
@@ -1058,7 +1065,6 @@ def _tree_result():
     }
 
 
-
 def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallback=True):
     """Wire index() so the garble retry always fails and the VLM path fires."""
     fake_settings = _vlm_fake_settings(vlm_fallback=vlm_fallback)
@@ -1114,7 +1120,9 @@ def _wire_vlm(monkeypatch, *, validate_side_effect, vlm_raises=False, vlm_fallba
         "OCR_ESCALATION_TOTAL": MagicMock(),
         "VLM_FALLBACK_TOTAL": vlm_total,
         "route_and_extract_flat": route_flat,
-        "detect_garble": MagicMock(return_value=GarbleReport(is_garbled=False, fired_prongs=frozenset())),
+        "detect_garble": MagicMock(
+            return_value=GarbleReport(is_garbled=False, fired_prongs=frozenset())
+        ),
     }
     for name, m in rec_mocks.items():
         monkeypatch.setattr(_rec, name, m)
@@ -1285,12 +1293,15 @@ async def test_VLM_C6_flat_path_garble_recovered(monkeypatch, pdf_file):
 
     def _fake_flat_garble(text, **kw):
         is_garbled = "VLM recovered" not in text
-        return GarbleReport(is_garbled=is_garbled, fired_prongs=frozenset({"test"}) if is_garbled else frozenset())
+        return GarbleReport(
+            is_garbled=is_garbled, fired_prongs=frozenset({"test"}) if is_garbled else frozenset()
+        )
 
     monkeypatch.setattr(_idx, "detect_garble", _fake_detect_garble)
     monkeypatch.setattr(_rec, "detect_garble", _fake_flat_garble)
 
     flat_garble_calls = []
+
     def _fake_flat_block_garble(blocks, **kw):
         flat_garble_calls.append(len(blocks))
         is_first = len(flat_garble_calls) == 1

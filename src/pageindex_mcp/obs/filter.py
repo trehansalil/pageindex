@@ -5,6 +5,7 @@ Installed on the root **handler**, never on an individual logger, so
 docling/litellm/httpx records and all 48 existing ``getLogger`` modules are
 covered without a single call-site edit.
 """
+
 from __future__ import annotations
 
 import logging

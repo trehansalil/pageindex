@@ -181,9 +181,7 @@ def _inject_arabic_structural_headings(md: str) -> str:
         if _non_empty > 0 and (_injected_count / _non_empty) > _AR_HEADING_DENSITY_RATIO:
             # Check content chars excluding injected heading lines
             _content_chars = sum(
-                len(ln.strip())
-                for ln in out
-                if ln.strip() and not _HEADING_RE.match(ln.strip())
+                len(ln.strip()) for ln in out if ln.strip() and not _HEADING_RE.match(ln.strip())
             )
             if _content_chars < _AR_HEADING_MIN_CONTENT_CHARS:
                 logger.info(
@@ -198,6 +196,7 @@ def _inject_arabic_structural_headings(md: str) -> str:
                 )
                 # lazy import to avoid circular dependency
                 from ..metrics import ARABIC_HEADING_INJECTION_REVERTED
+
                 ARABIC_HEADING_INJECTION_REVERTED.inc()
                 return md  # revert: return original unmodified markdown
 

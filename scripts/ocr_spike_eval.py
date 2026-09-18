@@ -37,6 +37,7 @@ from pageindex_mcp.converters.types import TessdataUnavailableError
 
 try:
     from pdf_inspector import detect_pdf as _detect_pdf
+
     HAS_PDF_INSPECTOR = True
 except ImportError:
     HAS_PDF_INSPECTOR = False
@@ -92,15 +93,23 @@ _PRESENTATION_FORMS = re.compile(r"[ﭐ-﷿ﹰ-﻿]")
 _ARABIC_NUMERALS_EASTERN = re.compile(r"[٠-٩۰-۹]")
 
 
-
 def classify_document_langs(filename: str) -> list[str]:
     """Heuristic language set from filename. Returns all plausible languages."""
     langs: list[str] = []
     if _ARABIC_RANGE.search(filename):
         langs.append("ar")
     name = filename.lower()
-    german_kw = ["haftpflicht", "versicherung", "tarif", "leistung", "unfall",
-                 "reitlehrer", "schäden", "bedingungen", "ghv"]
+    german_kw = [
+        "haftpflicht",
+        "versicherung",
+        "tarif",
+        "leistung",
+        "unfall",
+        "reitlehrer",
+        "schäden",
+        "bedingungen",
+        "ghv",
+    ]
     if any(kw in name for kw in german_kw):
         langs.append("de")
     if _LATIN_RANGE.search(filename):
@@ -117,8 +126,7 @@ def reclassify_lang_from_content(tess_pages: list[dict], filename_lang: str) -> 
     if filename_lang == "ar":
         return "ar"
     all_text = " ".join(
-        p.get("text", "") for p in tess_pages
-        if "error" not in p and "skipped" not in p
+        p.get("text", "") for p in tess_pages if "error" not in p and "skipped" not in p
     )
     if not all_text.strip():
         return filename_lang
@@ -170,7 +178,11 @@ def detect_lang_from_text_layer(filepath: Path, max_sample_pages: int = 3) -> di
 
     alpha_chars = ar_count + la_count
     alpha_ratio = alpha_chars / text_len if text_len > 0 else 0.0
-    control_and_special = sum(1 for c in text if unicodedata.category(c).startswith(("C", "Z", "S", "P")) or c in "·;><{}[]\\|")
+    control_and_special = sum(
+        1
+        for c in text
+        if unicodedata.category(c).startswith(("C", "Z", "S", "P")) or c in "·;><{}[]\\|"
+    )
     junk_ratio = control_and_special / text_len if text_len > 0 else 0.0
     if alpha_ratio < 0.1 or junk_ratio > 0.4:
         return {
@@ -242,8 +254,13 @@ _REPLACEMENT_CHAR = re.compile(r"�")
 def classify_text_script(text: str) -> dict:
     """Analyse script composition of OCR output text."""
     if not text:
-        return {"arabic_ratio": 0.0, "latin_ratio": 0.0, "primary_script": "empty",
-                "has_presentation_forms": False, "eastern_numeral_count": 0}
+        return {
+            "arabic_ratio": 0.0,
+            "latin_ratio": 0.0,
+            "primary_script": "empty",
+            "has_presentation_forms": False,
+            "eastern_numeral_count": 0,
+        }
     arabic = len(_ARABIC_RANGE.findall(text))
     latin = len(_LATIN_RANGE.findall(text))
     total = arabic + latin or 1
@@ -259,8 +276,14 @@ def classify_text_script(text: str) -> dict:
 def garble_signal_metrics(text: str) -> dict:
     """Compute garble-related metrics that feed into the garble gate."""
     if not text:
-        return {"char_count": 0, "nonsense_ratio": 0.0, "control_char_ratio": 0.0,
-                "replacement_char_count": 0, "digit_ratio": 0.0, "avg_word_len": 0.0}
+        return {
+            "char_count": 0,
+            "nonsense_ratio": 0.0,
+            "control_char_ratio": 0.0,
+            "replacement_char_count": 0,
+            "digit_ratio": 0.0,
+            "avg_word_len": 0.0,
+        }
     n = len(text)
     words = text.split()
     alpha_chars = sum(1 for c in text if c.isalpha())
@@ -281,6 +304,7 @@ def garble_signal_metrics(text: str) -> dict:
 
 
 # --- Tesseract runner (local) --------------------------------------------------
+
 
 def _select_tesseract_langs(filename: str, text_sample: str | None = None) -> list[str]:
     """Select Tesseract languages via production's language path (task 2.2).
@@ -353,6 +377,7 @@ def run_tesseract_on_pdf(
 
     for page_idx in range(page_limit):
         import tempfile
+
         pix = doc[page_idx].get_pixmap(dpi=300)
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         pix.save(tmp.name)
@@ -372,15 +397,17 @@ def run_tesseract_on_pdf(
         script_info = classify_text_script(text)
         garble_info = garble_signal_metrics(text)
 
-        pages.append({
-            "page_index": page_idx,
-            "text": text,
-            "char_count": len(text),
-            "elapsed_s": round(elapsed, 3),
-            "confidence": None,
-            "script": script_info,
-            "garble_signals": garble_info,
-        })
+        pages.append(
+            {
+                "page_index": page_idx,
+                "text": text,
+                "char_count": len(text),
+                "elapsed_s": round(elapsed, 3),
+                "confidence": None,
+                "script": script_info,
+                "garble_signals": garble_info,
+            }
+        )
 
     doc.close()
     return pages
@@ -410,15 +437,17 @@ def run_tesseract_on_image(
         return [{"page_index": 0, "error": str(exc), "elapsed_s": 0}]
     elapsed = time.monotonic() - start
 
-    return [{
-        "page_index": 0,
-        "text": text,
-        "char_count": len(text),
-        "elapsed_s": round(elapsed, 3),
-        "confidence": None,
-        "script": classify_text_script(text),
-        "garble_signals": garble_signal_metrics(text),
-    }]
+    return [
+        {
+            "page_index": 0,
+            "text": text,
+            "char_count": len(text),
+            "elapsed_s": round(elapsed, 3),
+            "confidence": None,
+            "script": classify_text_script(text),
+            "garble_signals": garble_signal_metrics(text),
+        }
+    ]
 
 
 # --- PaddleOCR runner (via service) --------------------------------------------
@@ -437,7 +466,10 @@ def _confidence_distribution(confidences: list[float]) -> dict:
         "below_80pct": sum(1 for c in s if c < 0.8),
     }
 
-def run_paddleocr_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str] | None = None) -> list[dict]:
+
+def run_paddleocr_on_pdf(
+    pdf_path: str, max_pages: int, detected_langs: list[str] | None = None
+) -> list[dict]:
     """Send PDF to PaddleOCR service, get per-page results with confidence.
 
     A connection failure (or a non-2xx response) is a hard error (task 2.1):
@@ -473,17 +505,19 @@ def run_paddleocr_on_pdf(pdf_path: str, max_pages: int, detected_langs: list[str
         confidences = [r["confidence"] for r in regions]
         avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
-        pages.append({
-            "page_index": page_data.get("page_index", 0),
-            "text": text,
-            "char_count": len(text),
-            "elapsed_s": page_data.get("elapsed_s", 0),
-            "confidence": round(avg_conf, 4),
-            "region_count": len(regions),
-            "confidence_distribution": _confidence_distribution(confidences),
-            "script": classify_text_script(text),
-            "garble_signals": garble_signal_metrics(text),
-        })
+        pages.append(
+            {
+                "page_index": page_data.get("page_index", 0),
+                "text": text,
+                "char_count": len(text),
+                "elapsed_s": page_data.get("elapsed_s", 0),
+                "confidence": round(avg_conf, 4),
+                "region_count": len(regions),
+                "confidence_distribution": _confidence_distribution(confidences),
+                "script": classify_text_script(text),
+                "garble_signals": garble_signal_metrics(text),
+            }
+        )
 
     return pages
 
@@ -519,17 +553,19 @@ def run_paddleocr_on_image(img_path: str, detected_langs: list[str] | None = Non
     confidences = [r["confidence"] for r in regions]
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
-    return [{
-        "page_index": 0,
-        "text": text,
-        "char_count": len(text),
-        "elapsed_s": data.get("elapsed_s", 0),
-        "confidence": round(avg_conf, 4),
-        "region_count": len(regions),
-        "confidence_distribution": _confidence_distribution(confidences),
-        "script": classify_text_script(text),
-        "garble_signals": garble_signal_metrics(text),
-    }]
+    return [
+        {
+            "page_index": 0,
+            "text": text,
+            "char_count": len(text),
+            "elapsed_s": data.get("elapsed_s", 0),
+            "confidence": round(avg_conf, 4),
+            "region_count": len(regions),
+            "confidence_distribution": _confidence_distribution(confidences),
+            "script": classify_text_script(text),
+            "garble_signals": garble_signal_metrics(text),
+        }
+    ]
 
 
 # --- PaddleOCR-VL runner (via llama-server service) ----------------------------
@@ -561,16 +597,18 @@ def run_paddleocr_vl_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
     pages = []
     for page_data in data.get("pages", []):
         text = page_data.get("text", "")
-        pages.append({
-            "page_index": page_data.get("page_index", 0),
-            "text": text,
-            "char_count": len(text),
-            "elapsed_s": page_data.get("elapsed_s", 0),
-            "confidence": page_data.get("avg_confidence", 1.0),
-            "region_count": page_data.get("region_count", 1),
-            "script": classify_text_script(text),
-            "garble_signals": garble_signal_metrics(text),
-        })
+        pages.append(
+            {
+                "page_index": page_data.get("page_index", 0),
+                "text": text,
+                "char_count": len(text),
+                "elapsed_s": page_data.get("elapsed_s", 0),
+                "confidence": page_data.get("avg_confidence", 1.0),
+                "region_count": page_data.get("region_count", 1),
+                "script": classify_text_script(text),
+                "garble_signals": garble_signal_metrics(text),
+            }
+        )
     return pages
 
 
@@ -597,16 +635,18 @@ def run_paddleocr_vl_on_image(img_path: str) -> list[dict]:
         raise EngineUnreachableError(_ENGINE_PADDLEOCR_VL, endpoint, exc) from exc
 
     text = data.get("text", "")
-    return [{
-        "page_index": 0,
-        "text": text,
-        "char_count": len(text),
-        "elapsed_s": data.get("elapsed_s", 0),
-        "confidence": data.get("confidence", 1.0),
-        "region_count": data.get("region_count", 1),
-        "script": classify_text_script(text),
-        "garble_signals": garble_signal_metrics(text),
-    }]
+    return [
+        {
+            "page_index": 0,
+            "text": text,
+            "char_count": len(text),
+            "elapsed_s": data.get("elapsed_s", 0),
+            "confidence": data.get("confidence", 1.0),
+            "region_count": data.get("region_count", 1),
+            "script": classify_text_script(text),
+            "garble_signals": garble_signal_metrics(text),
+        }
+    ]
 
 
 def _run_paddleocr_vl_for_doc(filepath: Path, max_pages: int) -> list[dict]:
@@ -614,7 +654,6 @@ def _run_paddleocr_vl_for_doc(filepath: Path, max_pages: int) -> list[dict]:
     if filepath.name.lower().endswith(".pdf"):
         return run_paddleocr_vl_on_pdf(str(filepath), max_pages)
     return run_paddleocr_vl_on_image(str(filepath))
-
 
 
 # --- Surya OCR runner (via service) --------------------------------------------
@@ -646,16 +685,18 @@ def run_surya_on_pdf(pdf_path: str, max_pages: int) -> list[dict]:
     pages = []
     for page_data in data.get("pages", []):
         text = page_data.get("text", "")
-        pages.append({
-            "page_index": page_data.get("page_index", 0),
-            "text": text,
-            "char_count": len(text),
-            "elapsed_s": page_data.get("elapsed_s", 0),
-            "confidence": page_data.get("avg_confidence", 0.0),
-            "region_count": page_data.get("region_count", 0),
-            "script": classify_text_script(text),
-            "garble_signals": garble_signal_metrics(text),
-        })
+        pages.append(
+            {
+                "page_index": page_data.get("page_index", 0),
+                "text": text,
+                "char_count": len(text),
+                "elapsed_s": page_data.get("elapsed_s", 0),
+                "confidence": page_data.get("avg_confidence", 0.0),
+                "region_count": page_data.get("region_count", 0),
+                "script": classify_text_script(text),
+                "garble_signals": garble_signal_metrics(text),
+            }
+        )
     return pages
 
 
@@ -682,16 +723,18 @@ def run_surya_on_image(img_path: str) -> list[dict]:
         raise EngineUnreachableError(_ENGINE_SURYA, endpoint, exc) from exc
 
     text = data.get("text", "")
-    return [{
-        "page_index": 0,
-        "text": text,
-        "char_count": len(text),
-        "elapsed_s": data.get("elapsed_s", 0),
-        "confidence": data.get("confidence", 0.0),
-        "region_count": data.get("region_count", 0),
-        "script": classify_text_script(text),
-        "garble_signals": garble_signal_metrics(text),
-    }]
+    return [
+        {
+            "page_index": 0,
+            "text": text,
+            "char_count": len(text),
+            "elapsed_s": data.get("elapsed_s", 0),
+            "confidence": data.get("confidence", 0.0),
+            "region_count": data.get("region_count", 0),
+            "script": classify_text_script(text),
+            "garble_signals": garble_signal_metrics(text),
+        }
+    ]
 
 
 def _run_surya_for_doc(filepath: Path, max_pages: int) -> list[dict]:
@@ -699,6 +742,7 @@ def _run_surya_for_doc(filepath: Path, max_pages: int) -> list[dict]:
     if filepath.name.lower().endswith(".pdf"):
         return run_surya_on_pdf(str(filepath), max_pages)
     return run_surya_on_image(str(filepath))
+
 
 # --- Comparison and reporting --------------------------------------------------
 
@@ -726,8 +770,7 @@ def compare_results(tess_pages: list[dict], other_pages: list[dict]) -> dict:
     other_total_time = sum(p.get("elapsed_s", 0) for p in other_pages if "error" not in p)
 
     other_confs = [
-        p["confidence"] for p in other_pages
-        if "error" not in p and p.get("confidence") is not None
+        p["confidence"] for p in other_pages if "error" not in p and p.get("confidence") is not None
     ]
     other_avg_conf = sum(other_confs) / len(other_confs) if other_confs else 0.0
 
@@ -743,13 +786,14 @@ def compare_results(tess_pages: list[dict], other_pages: list[dict]) -> dict:
         "other_total_time_s": round(other_total_time, 3),
         "other_avg_confidence": round(other_avg_conf, 4),
         "other_low_conf_pages": sum(
-            1 for p in other_pages
-            if "error" not in p and p.get("confidence", 1.0) < 0.5
+            1 for p in other_pages if "error" not in p and p.get("confidence", 1.0) < 0.5
         ),
         "winner_by_chars": (
             _OTHER_ENGINE_LABEL if char_diff > 0 else "tesseract" if char_diff < 0 else "tie"
         ),
-        "winner_by_speed": _OTHER_ENGINE_LABEL if other_total_time < tess_total_time else "tesseract",
+        "winner_by_speed": _OTHER_ENGINE_LABEL
+        if other_total_time < tess_total_time
+        else "tesseract",
     }
 
 
@@ -765,12 +809,17 @@ def generate_summary(all_results: list[dict]) -> dict:
     for lang, docs in by_lang.items():
         if not docs:
             continue
-        comparisons = [d["comparison"] for d in docs if "comparison" in d and "winner_by_chars" in d["comparison"]]
+        comparisons = [
+            d["comparison"]
+            for d in docs
+            if "comparison" in d and "winner_by_chars" in d["comparison"]
+        ]
         paddle_wins = sum(1 for c in comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
         tess_wins = sum(1 for c in comparisons if c["winner_by_chars"] == "tesseract")
         avg_paddle_conf = (
             sum(c["other_avg_confidence"] for c in comparisons) / len(comparisons)
-            if comparisons else 0.0
+            if comparisons
+            else 0.0
         )
         low_conf_docs = sum(1 for c in comparisons if c["other_avg_confidence"] < 0.5)
 
@@ -783,8 +832,14 @@ def generate_summary(all_results: list[dict]) -> dict:
             "documents": [d["filename"] for d in docs],
         }
 
-    all_comparisons = [d["comparison"] for d in all_results if "comparison" in d and "winner_by_chars" in d["comparison"]]
-    total_paddle_wins = sum(1 for c in all_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
+    all_comparisons = [
+        d["comparison"]
+        for d in all_results
+        if "comparison" in d and "winner_by_chars" in d["comparison"]
+    ]
+    total_paddle_wins = sum(
+        1 for c in all_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL
+    )
     total_tess_wins = sum(1 for c in all_comparisons if c["winner_by_chars"] == "tesseract")
 
     summary["overall"] = {
@@ -845,8 +900,12 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
         lines.append("")
 
     lines.append("\n## Per-Document Detail\n")
-    lines.append("| Document | Langs | PDF Type | Tess chars | Paddle chars | Paddle conf | VL chars | Surya chars | Surya conf | Winner | VL Winner | Surya Winner |")
-    lines.append("|----------|-------|----------|-----------|-------------|-------------|---------|------------|------------|--------|-----------|--------------|")
+    lines.append(
+        "| Document | Langs | PDF Type | Tess chars | Paddle chars | Paddle conf | VL chars | Surya chars | Surya conf | Winner | VL Winner | Surya Winner |"
+    )
+    lines.append(
+        "|----------|-------|----------|-----------|-------------|-------------|---------|------------|------------|--------|-----------|--------------|"
+    )
 
     for doc in all_results:
         comp = doc.get("comparison", {})
@@ -884,9 +943,11 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
             lines.append(f"- **{doc['filename']}** — avg conf {comp['other_avg_confidence']:.2%}")
             for pp in doc.get("paddleocr_pages", []):
                 if pp.get("confidence", 1.0) < 0.5 and "error" not in pp:
-                    lines.append(f"  - Page {pp['page_index']}: conf={pp['confidence']:.2%}, "
-                                 f"chars={pp['char_count']}, "
-                                 f"script={pp.get('script', {}).get('primary_script', '?')}")
+                    lines.append(
+                        f"  - Page {pp['page_index']}: conf={pp['confidence']:.2%}, "
+                        f"chars={pp['char_count']}, "
+                        f"script={pp.get('script', {}).get('primary_script', '?')}"
+                    )
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -910,14 +971,18 @@ def _run_tesseract_for_doc(
     )
 
 
-def _run_paddleocr_for_doc(filepath: Path, max_pages: int, detected_langs: list[str] | None = None) -> list[dict]:
+def _run_paddleocr_for_doc(
+    filepath: Path, max_pages: int, detected_langs: list[str] | None = None
+) -> list[dict]:
     """Run PaddleOCR on one document via HTTP service."""
     if filepath.name.lower().endswith(".pdf"):
         return run_paddleocr_on_pdf(str(filepath), max_pages, detected_langs=detected_langs)
     return run_paddleocr_on_image(str(filepath), detected_langs=detected_langs)
 
 
-def _check_engine_health(engine: str, url: str, timeout: float, expect_status_ok: bool = False) -> None:
+def _check_engine_health(
+    engine: str, url: str, timeout: float, expect_status_ok: bool = False
+) -> None:
     """GET an engine's /health endpoint; raise EngineUnreachableError on failure (task 2.1).
 
     Both a connection failure and a reachable-but-unhealthy response
@@ -938,18 +1003,34 @@ def _check_engine_health(engine: str, url: str, timeout: float, expect_status_ok
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="RFC-046 PaddleOCR vs Tesseract full-corpus evaluation")
+    parser = argparse.ArgumentParser(
+        description="RFC-046 PaddleOCR vs Tesseract full-corpus evaluation"
+    )
     parser.add_argument("--doc-store", default="doc_store", help="Path to corpus directory")
-    parser.add_argument("--out-dir", default="agents/spikes/ocr_eval_rfc046", help="Output directory")
+    parser.add_argument(
+        "--out-dir", default="agents/spikes/ocr_eval_rfc046", help="Output directory"
+    )
     parser.add_argument("--max-pages", type=int, default=10, help="Max pages per PDF (0=unlimited)")
-    parser.add_argument("--skip-tesseract", action="store_true", help="Skip Tesseract runs (PaddleOCR only)")
-    parser.add_argument("--skip-paddleocr", action="store_true", help="Skip PaddleOCR runs (Tesseract only)")
+    parser.add_argument(
+        "--skip-tesseract", action="store_true", help="Skip Tesseract runs (PaddleOCR only)"
+    )
+    parser.add_argument(
+        "--skip-paddleocr", action="store_true", help="Skip PaddleOCR runs (Tesseract only)"
+    )
     parser.add_argument("--skip-paddleocr-vl", action="store_true", help="Skip PaddleOCR-VL runs")
     parser.add_argument("--skip-surya", action="store_true", help="Skip Surya OCR runs")
-    parser.add_argument("--load-prior", type=str, default=None,
-                        help="Load prior eval_full_detail.json to reuse cached engine results")
-    parser.add_argument("--workers", type=int, default=0,
-                        help="Concurrent document workers (0=auto: cpu_count//4, capped at 4)")
+    parser.add_argument(
+        "--load-prior",
+        type=str,
+        default=None,
+        help="Load prior eval_full_detail.json to reuse cached engine results",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Concurrent document workers (0=auto: cpu_count//4, capped at 4)",
+    )
     return parser.parse_args()
 
 
@@ -990,27 +1071,35 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
     print(f"Found {len(files)} documents in {doc_store}")
 
     if not args.skip_paddleocr:
-        _check_engine_health(_ENGINE_PADDLEOCR, f"{PADDLEOCR_URL}/health", _PADDLEOCR_HEALTH_TIMEOUT_S)
+        _check_engine_health(
+            _ENGINE_PADDLEOCR, f"{PADDLEOCR_URL}/health", _PADDLEOCR_HEALTH_TIMEOUT_S
+        )
         print(f"PaddleOCR service healthy at {PADDLEOCR_URL}")
 
     if not args.skip_paddleocr_vl:
         _check_engine_health(
-            _ENGINE_PADDLEOCR_VL, f"{PADDLEOCR_VL_URL}/health",
-            _PADDLEOCR_VL_HEALTH_TIMEOUT_S, expect_status_ok=True,
+            _ENGINE_PADDLEOCR_VL,
+            f"{PADDLEOCR_VL_URL}/health",
+            _PADDLEOCR_VL_HEALTH_TIMEOUT_S,
+            expect_status_ok=True,
         )
         print(f"PaddleOCR-VL service healthy at {PADDLEOCR_VL_URL}")
 
     if not args.skip_surya:
         _check_engine_health(
-            _ENGINE_SURYA, f"{SURYA_URL}/health",
-            _SURYA_HEALTH_TIMEOUT_S, expect_status_ok=True,
+            _ENGINE_SURYA,
+            f"{SURYA_URL}/health",
+            _SURYA_HEALTH_TIMEOUT_S,
+            expect_status_ok=True,
         )
         print(f"Surya OCR service healthy at {SURYA_URL}")
 
     # Filter to processable files
     doc_files = [
-        f for f in files if f.is_file() and
-        f.name.lower().endswith((".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif"))
+        f
+        for f in files
+        if f.is_file()
+        and f.name.lower().endswith((".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif"))
     ]
     skipped = len(files) - len(doc_files)
     if skipped:
@@ -1043,10 +1132,18 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
             "lang_source": "filename",
             "file_type": "pdf" if fp.name.lower().endswith(".pdf") else "image",
             "pdf_inspector": {},
-            "tesseract_pages": prior.get("tesseract_pages", [{"skipped": True}]) if args.skip_tesseract else [{"skipped": True}],
-            "paddleocr_pages": prior.get("paddleocr_pages", [{"skipped": True}]) if args.skip_paddleocr else [{"skipped": True}],
-            "paddleocr_vl_pages": prior.get("paddleocr_vl_pages", [{"skipped": True}]) if args.skip_paddleocr_vl else [{"skipped": True}],
-            "surya_pages": prior.get("surya_pages", [{"skipped": True}]) if args.skip_surya else [{"skipped": True}],
+            "tesseract_pages": prior.get("tesseract_pages", [{"skipped": True}])
+            if args.skip_tesseract
+            else [{"skipped": True}],
+            "paddleocr_pages": prior.get("paddleocr_pages", [{"skipped": True}])
+            if args.skip_paddleocr
+            else [{"skipped": True}],
+            "paddleocr_vl_pages": prior.get("paddleocr_vl_pages", [{"skipped": True}])
+            if args.skip_paddleocr_vl
+            else [{"skipped": True}],
+            "surya_pages": prior.get("surya_pages", [{"skipped": True}])
+            if args.skip_surya
+            else [{"skipped": True}],
         }
 
     # --- Phase 0: pre-classification (pdf_inspector + text-layer lang detect) ---
@@ -1099,21 +1196,27 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
         langs_str = "+".join(entry["detected_langs"])
         source = entry["lang_source"]
         enc = " ENC-ISSUES" if info.get("has_encoding_issues") else ""
-        print(f"  {fp.name[:50]:50s} {pt_label:12s} ocr={ocr_n}/{total_n:3d} langs={langs_str} ({source}){enc}")
+        print(
+            f"  {fp.name[:50]:50s} {pt_label:12s} ocr={ocr_n}/{total_n:3d} langs={langs_str} ({source}){enc}"
+        )
 
     phase0_elapsed = time.monotonic() - phase0_start
     print(f"  Type: {text_based} text-based, {scanned} scanned, {mixed} mixed, {images} images")
     print(f"  Lang reclassified from text layer: {lang_reclassified}")
-    print(f"  Time: {phase0_elapsed*1000:.0f}ms")
+    print(f"  Time: {phase0_elapsed * 1000:.0f}ms")
 
     # --- Phase 1: Tesseract (local CPU, parallelise across documents) ---
     if not args.skip_tesseract:
         print(f"\n--- Phase 1: Tesseract ({n_workers} workers) ---")
         with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="tess") as pool:
             fut_map = {
-                pool.submit(_run_tesseract_for_doc, fp, max_pages,
-                            detected_langs=results_by_name[fp.name]["detected_langs"],
-                            text_sample=results_by_name[fp.name].get("text_sample")): fp
+                pool.submit(
+                    _run_tesseract_for_doc,
+                    fp,
+                    max_pages,
+                    detected_langs=results_by_name[fp.name]["detected_langs"],
+                    text_sample=results_by_name[fp.name].get("text_sample"),
+                ): fp
                 for fp in doc_files
             }
             for i, fut in enumerate(as_completed(fut_map), 1):
@@ -1141,7 +1244,9 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
             if tess_lang == "ar" and "ar" not in doc_langs:
                 doc_langs = list(dict.fromkeys(["ar"] + doc_langs))
                 entry["detected_langs"] = doc_langs
-                print(f"  [{i}/{len(doc_files)}] Arabic detected in Tesseract output, added to langs: {'+'.join(doc_langs)}")
+                print(
+                    f"  [{i}/{len(doc_files)}] Arabic detected in Tesseract output, added to langs: {'+'.join(doc_langs)}"
+                )
 
             print(f"  [{i}/{len(doc_files)}] PaddleOCR: {fp.name[:55]}...", end="", flush=True)
             try:
@@ -1173,7 +1278,6 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
             pt = sum(p.get("elapsed_s", 0) for p in pages if "error" not in p)
             print(f" {pc}ch/{pt:.0f}s")
 
-
     # --- Phase 4: Surya OCR (via service, sequential) ---
     if not args.skip_surya:
         print(f"\n--- Phase 4: Surya OCR (service at {SURYA_URL}) ---")
@@ -1199,22 +1303,37 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
         tess = doc["tesseract_pages"]
         paddle = doc["paddleocr_pages"]
         paddle_vl = doc["paddleocr_vl_pages"]
-        if (tess and paddle
-                and "skipped" not in tess[0] and "skipped" not in paddle[0]
-                and "error" not in tess[0] and "error" not in paddle[0]):
+        if (
+            tess
+            and paddle
+            and "skipped" not in tess[0]
+            and "skipped" not in paddle[0]
+            and "error" not in tess[0]
+            and "error" not in paddle[0]
+        ):
             doc["comparison"] = compare_results(tess, paddle)
         else:
             doc["comparison"] = {"note": "one or both engines skipped/errored"}
-        if (tess and paddle_vl
-                and "skipped" not in tess[0] and "skipped" not in paddle_vl[0]
-                and "error" not in tess[0] and "error" not in paddle_vl[0]):
+        if (
+            tess
+            and paddle_vl
+            and "skipped" not in tess[0]
+            and "skipped" not in paddle_vl[0]
+            and "error" not in tess[0]
+            and "error" not in paddle_vl[0]
+        ):
             doc["comparison_vl"] = compare_results(tess, paddle_vl)
         else:
             doc["comparison_vl"] = {"note": "one or both engines skipped/errored"}
         surya = doc["surya_pages"]
-        if (tess and surya
-                and "skipped" not in tess[0] and "skipped" not in surya[0]
-                and "error" not in tess[0] and "error" not in surya[0]):
+        if (
+            tess
+            and surya
+            and "skipped" not in tess[0]
+            and "skipped" not in surya[0]
+            and "error" not in tess[0]
+            and "error" not in surya[0]
+        ):
             doc["comparison_surya"] = compare_results(tess, surya)
         else:
             doc["comparison_surya"] = {"note": "one or both engines skipped/errored"}
@@ -1230,22 +1349,22 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
     # Strip raw text from JSON to keep report manageable
     slim_results = []
     for doc in all_results:
-        slim = {k: v for k, v in doc.items() if k not in ("tesseract_pages", "paddleocr_pages", "paddleocr_vl_pages", "surya_pages")}
+        slim = {
+            k: v
+            for k, v in doc.items()
+            if k not in ("tesseract_pages", "paddleocr_pages", "paddleocr_vl_pages", "surya_pages")
+        }
         slim["tesseract_page_summary"] = [
-            {k: v for k, v in p.items() if k != "text"}
-            for p in doc.get("tesseract_pages", [])
+            {k: v for k, v in p.items() if k != "text"} for p in doc.get("tesseract_pages", [])
         ]
         slim["paddleocr_page_summary"] = [
-            {k: v for k, v in p.items() if k != "text"}
-            for p in doc.get("paddleocr_pages", [])
+            {k: v for k, v in p.items() if k != "text"} for p in doc.get("paddleocr_pages", [])
         ]
         slim["paddleocr_vl_page_summary"] = [
-            {k: v for k, v in p.items() if k != "text"}
-            for p in doc.get("paddleocr_vl_pages", [])
+            {k: v for k, v in p.items() if k != "text"} for p in doc.get("paddleocr_vl_pages", [])
         ]
         slim["surya_page_summary"] = [
-            {k: v for k, v in p.items() if k != "text"}
-            for p in doc.get("surya_pages", [])
+            {k: v for k, v in p.items() if k != "text"} for p in doc.get("surya_pages", [])
         ]
         slim_results.append(slim)
 
@@ -1265,22 +1384,28 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
     print(f"Full detail (with text): {full_path}")
 
     # VL summary
-    vl_comparisons = [d.get("comparison_vl", {}) for d in all_results
-                      if d.get("comparison_vl", {}).get("winner_by_chars")]
+    vl_comparisons = [
+        d.get("comparison_vl", {})
+        for d in all_results
+        if d.get("comparison_vl", {}).get("winner_by_chars")
+    ]
     vl_wins = sum(1 for c in vl_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
     vl_tess_wins = sum(1 for c in vl_comparisons if c["winner_by_chars"] == "tesseract")
     summary["overall"]["paddleocr_vl_wins"] = vl_wins
     summary["overall"]["tesseract_wins_vs_vl"] = vl_tess_wins
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"SUMMARY: {summary['overall']['recommendation']}")
     print(f"  PaddleOCR (PP-OCRv5) wins: {summary['overall']['paddleocr_wins']}")
     print(f"  Tesseract wins: {summary['overall']['tesseract_wins']}")
     if vl_comparisons:
         print(f"  PaddleOCR-VL wins: {vl_wins}  (Tesseract wins vs VL: {vl_tess_wins})")
 
-    surya_comparisons = [d.get("comparison_surya", {}) for d in all_results
-                         if d.get("comparison_surya", {}).get("winner_by_chars")]
+    surya_comparisons = [
+        d.get("comparison_surya", {})
+        for d in all_results
+        if d.get("comparison_surya", {}).get("winner_by_chars")
+    ]
     surya_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == _OTHER_ENGINE_LABEL)
     surya_tess_wins = sum(1 for c in surya_comparisons if c["winner_by_chars"] == "tesseract")
     summary["overall"]["surya_wins"] = surya_wins
@@ -1289,9 +1414,11 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
         print(f"  Surya wins: {surya_wins}  (Tesseract wins vs Surya: {surya_tess_wins})")
     for lang, info in summary.get("by_language", {}).items():
         lang_label = {"ar": "Arabic", "de": "German", "en": "English"}.get(lang, lang)
-        print(f"  {lang_label}: PaddleOCR avg conf={info['avg_paddleocr_confidence']:.2%}, "
-              f"low-conf={info['low_confidence_documents']}/{info['document_count']}")
-    print(f"{'='*60}")
+        print(
+            f"  {lang_label}: PaddleOCR avg conf={info['avg_paddleocr_confidence']:.2%}, "
+            f"low-conf={info['low_confidence_documents']}/{info['document_count']}"
+        )
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

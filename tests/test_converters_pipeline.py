@@ -635,6 +635,7 @@ class TestDocumentLevelTextLayerFallback:
         garbled = "þÿ\x02\x01 ¤¤¤ \x03\x04 ÿþ" * 20
         fake_pdfium_garbled = self._fake_pdfium_module([garbled])
         from pageindex_mcp.helpers import GarbleReport
+
         _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
         monkeypatch.setattr(helpers, "detect_garble", lambda text, **kw: _garbled)
         with patch.dict(sys.modules, {"pypdfium2": fake_pdfium_garbled}):

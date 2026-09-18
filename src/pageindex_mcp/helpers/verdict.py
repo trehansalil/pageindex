@@ -614,9 +614,7 @@ def apply_promotions(
                 },
             )
             _heuristic_registry.fire("_try_image_enrichment")
-            return _apply_clamp(
-                _ie, _is_image_enrichment=True, paths=("image_enrichment",)
-            )
+            return _apply_clamp(_ie, _is_image_enrichment=True, paths=("image_enrichment",))
         decision(
             event="structural_hard_fail_gate",
             choice="hard_fail",

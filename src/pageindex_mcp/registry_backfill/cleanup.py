@@ -29,8 +29,10 @@ def cleanup_protect_empty_processed_at(processed_at_str: str | None) -> bool:
     """
     if not processed_at_str:
         from ..config import settings
+
         return settings.cleanup_protect_empty_processed_at
     return False
+
 
 # A stale-row purge is only trusted when it wouldn't wipe out most of the
 # registry — an untrustworthy/partial MinIO listing (e.g. list-API glitch,

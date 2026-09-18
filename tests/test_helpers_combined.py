@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 from __future__ import annotations
+
 """Tree validation, structural hardening, and helper utility tests."""
 
 from unittest.mock import AsyncMock, MagicMock, patch

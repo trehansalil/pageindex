@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Converter chain, OCR chain, picture gating, and content recovery tests."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -255,6 +256,7 @@ class TestArabicReversalRepairCorrectness:
     @pytest.fixture(autouse=True)
     def _disable_density_guard(self, monkeypatch):
         import pageindex_mcp.converters.headings as _h
+
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_reversed_document_recovers_corrected_heading_structure(self):
@@ -368,6 +370,7 @@ def test_ensure_tessdata_no_prefix_returns_input_unchanged(monkeypatch):
     monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
     # Zone-7: non-Latin langs now verified via subprocess; mock the cache
     from pageindex_mcp.converters import ocr_langs
+
     monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {"ara": True})
     result = ensure_tessdata(["ara", "eng"])
     assert result == ["ara", "eng"]
@@ -589,6 +592,7 @@ class TestConverterChainEntryMetadata:
         monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
         reset_pipeline_config()
         from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+
         return pdf_markdown_converters()
 
     def test_entries_are_converter_chain_entry_instances(self, monkeypatch):
@@ -605,9 +609,7 @@ class TestConverterChainEntryMetadata:
         docling_entries = [e for e in chain if e.name == "docling"]
         assert len(docling_entries) > 0, "docling entry should be in chain"
         for entry in docling_entries:
-            assert entry.is_agpl is False, (
-                f"docling should have is_agpl=False, got {entry.is_agpl}"
-            )
+            assert entry.is_agpl is False, f"docling should have is_agpl=False, got {entry.is_agpl}"
 
     def test_pymupdf4llm_entry_is_agpl(self, monkeypatch):
         """pymupdf4llm entry has is_agpl=True (AGPL-3.0-licensed)."""
@@ -929,8 +931,10 @@ class TestTesseractOcrFailureContract:
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
         with (
-            patch("pageindex_mcp.converters.pictures.subprocess.run",
-                  side_effect=subprocess.TimeoutExpired(cmd="tesseract", timeout=60)),
+            patch(
+                "pageindex_mcp.converters.pictures.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="tesseract", timeout=60),
+            ),
             patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
         ):
             result = _tesseract_ocr_image("/fake.png", ["eng"])
@@ -946,8 +950,10 @@ class TestTesseractOcrFailureContract:
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
         with (
-            patch("pageindex_mcp.converters.pictures.subprocess.run",
-                  side_effect=subprocess.SubprocessError("boom")),
+            patch(
+                "pageindex_mcp.converters.pictures.subprocess.run",
+                side_effect=subprocess.SubprocessError("boom"),
+            ),
             patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
         ):
             result = _tesseract_ocr_image("/fake.png", ["eng"])
@@ -962,8 +968,10 @@ class TestTesseractOcrFailureContract:
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
         with (
-            patch("pageindex_mcp.converters.pictures.subprocess.run",
-                  side_effect=FileNotFoundError("tesseract not found")),
+            patch(
+                "pageindex_mcp.converters.pictures.subprocess.run",
+                side_effect=FileNotFoundError("tesseract not found"),
+            ),
             patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
         ):
             result = _tesseract_ocr_image("/fake.png", ["eng"])
@@ -978,8 +986,10 @@ class TestTesseractOcrFailureContract:
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
         with (
-            patch("pageindex_mcp.converters.pictures.subprocess.run",
-                  side_effect=OSError("disk error")),
+            patch(
+                "pageindex_mcp.converters.pictures.subprocess.run",
+                side_effect=OSError("disk error"),
+            ),
             patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
         ):
             result = _tesseract_ocr_image("/fake.png", ["eng"])
@@ -996,8 +1006,9 @@ class TestTesseractOcrFailureContract:
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
         with (
-            patch("pageindex_mcp.converters.pictures.subprocess.run",
-                  side_effect=KeyboardInterrupt),
+            patch(
+                "pageindex_mcp.converters.pictures.subprocess.run", side_effect=KeyboardInterrupt
+            ),
             pytest.raises(KeyboardInterrupt),
         ):
             _tesseract_ocr_image("/fake.png", ["eng"])
@@ -1025,11 +1036,14 @@ class TestConverterChainShape:
                 if not agpl:
                     with pytest.raises(RuntimeError):
                         from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+
                         pdf_markdown_converters()
                     return None
                 from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+
                 return pdf_markdown_converters()
         from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+
         return pdf_markdown_converters()
 
     def test_returns_3_tuples(self, monkeypatch):
@@ -1118,6 +1132,7 @@ class TestOcrGatingWiring:
     def test_supports_ocr_field_on_extraction_state(self):
         """ExtractionState has a supports_ocr field (threaded from chain loop)."""
         import dataclasses
+
         field_names = [f.name for f in dataclasses.fields(ExtractionState)]
         assert "supports_ocr" in field_names
 
@@ -1243,7 +1258,9 @@ class TestTransientFailureChainBlock:
 
         chain = [
             ConverterChainEntry(name="docling", fn=docling_fn, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True),
+            ConverterChainEntry(
+                name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True
+            ),
         ]
 
         # Simulate the chain walk logic from _convert_to_tree
@@ -1289,7 +1306,9 @@ class TestTransientFailureChainBlock:
 
         chain = [
             ConverterChainEntry(name="docling", fn=docling_fn, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True),
+            ConverterChainEntry(
+                name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True
+            ),
         ]
 
         # Simulate the chain walk logic from _convert_to_tree
@@ -1383,7 +1402,9 @@ class TestAgplFallbackMetric:
 
         chain = [
             ConverterChainEntry(name="docling", fn=docling_fn, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True),
+            ConverterChainEntry(
+                name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True
+            ),
         ]
 
         for idx, entry in enumerate(chain):
@@ -2316,7 +2337,11 @@ def _would_escalate(reason: str, md_content: str, *, ext: str = ".pdf") -> bool:
     failures + image-dominant), gated on the module flags."""
     if reason not in ("node_count<3", "depth<2"):
         return False
-    if ext != ".pdf" or not OCR_ESCALATION_GARBLE or not pipeline_config.image_dominant_ocr_escalation_enabled:
+    if (
+        ext != ".pdf"
+        or not OCR_ESCALATION_GARBLE
+        or not pipeline_config.image_dominant_ocr_escalation_enabled
+    ):
         return False
     dominant, _, _ = _image_dominant(md_content)
     return dominant
@@ -2420,10 +2445,10 @@ class TestIndexerMarkerCleanupFallback:
             "indexer.py must call strip_unresolved_image_markers as a safety net"
         )
         # Verify the guard condition pattern
-        assert 'not state.pic_results and "<!-- image -->" in md_content' in source or \
-               'not state.pic_results' in source, (
-            "indexer.py must check for empty pic_results before stripping markers"
-        )
+        assert (
+            'not state.pic_results and "<!-- image -->" in md_content' in source
+            or "not state.pic_results" in source
+        ), "indexer.py must check for empty pic_results before stripping markers"
 
 
 class TestDecideOcrModeRemoved:
@@ -2434,6 +2459,7 @@ class TestDecideOcrModeRemoved:
     def test_decide_ocr_mode_not_importable_from_picture_plane(self):
         """decide_ocr_mode must not be importable from picture_plane."""
         from pageindex_mcp import picture_plane
+
         assert not hasattr(picture_plane, "decide_ocr_mode"), (
             "decide_ocr_mode should have been deleted from picture_plane"
         )
@@ -2441,6 +2467,7 @@ class TestDecideOcrModeRemoved:
     def test_decide_ocr_mode_not_importable_from_converters(self):
         """decide_ocr_mode must not be importable from converters."""
         from pageindex_mcp import converters
+
         assert not hasattr(converters, "decide_ocr_mode"), (
             "decide_ocr_mode should not be re-exported from converters"
         )
@@ -2448,6 +2475,7 @@ class TestDecideOcrModeRemoved:
     def test_decide_ocr_strategy_is_importable(self):
         """decide_ocr_strategy is the canonical replacement — must be importable."""
         from pageindex_mcp.picture_plane import decide_ocr_strategy as fn
+
         assert callable(fn)
 
     def test_decide_ocr_mode_not_in_converters_pictures_source(self):
@@ -2477,9 +2505,7 @@ _GATE_TREE = {
             "node_id": "0001",
             "title": "Root",
             "text": "content " * 60,
-            "nodes": [
-                {"node_id": "0002", "title": "Child", "text": "child " * 60, "nodes": []}
-            ],
+            "nodes": [{"node_id": "0002", "title": "Child", "text": "child " * 60, "nodes": []}],
         }
     ]
 }

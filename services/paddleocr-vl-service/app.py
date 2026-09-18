@@ -34,9 +34,7 @@ logger = logging.getLogger(__name__)
 # --- Configuration -----------------------------------------------------------
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get(
-    "PADDLEOCR_VL_MODEL", "hf.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
-)
+OLLAMA_MODEL = os.environ.get("PADDLEOCR_VL_MODEL", "hf.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF")
 VL_TIMEOUT = int(os.environ.get("VL_TIMEOUT", "300"))
 VL_DPI = int(os.environ.get("VL_DPI", "150"))
 
@@ -102,9 +100,7 @@ def _ocr_image_bytes(img_bytes: bytes) -> tuple[str, float]:
         f"{OLLAMA_BASE_URL}/api/chat",
         json={
             "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "user", "content": "OCR:", "images": [b64]}
-            ],
+            "messages": [{"role": "user", "content": "OCR:", "images": [b64]}],
             "stream": False,
             "options": {"temperature": 0},
         },
@@ -151,9 +147,7 @@ async def lifespan(app: FastAPI):
         OLLAMA_BASE_URL,
     )
     try:
-        resp = http_requests.get(
-            f"{OLLAMA_BASE_URL}/api/tags", timeout=10
-        )
+        resp = http_requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
         models = [m["name"] for m in resp.json().get("models", [])]
         if not any(OLLAMA_MODEL in m for m in models):
             logger.warning(

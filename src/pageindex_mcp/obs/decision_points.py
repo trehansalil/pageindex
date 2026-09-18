@@ -45,6 +45,7 @@ This registry describes branches that already exist. It reclassifies no
 document and moves no verdict. If instrumenting one of these points would
 require changing the branch, phase 3 must STOP and report it.
 """
+
 from __future__ import annotations
 
 import logging
@@ -689,8 +690,7 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
             "clean_not_pre_garbled",
             "probe_error",
         ),
-        attrs=("page0_text_chars", "page_count", "d3a_sparse_page_char_floor",
-               "error_type"),
+        attrs=("page0_text_chars", "page_count", "d3a_sparse_page_char_floor", "error_type"),
         note=(
             "The bare `except Exception: pass` at 547-548 currently erases a "
             "probe crash; `probe_error` records it. Pure addition -- do not "
@@ -724,8 +724,7 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         phase=Phase.CONVERT,
         module=_C_INDEXER,
         function="_convert_to_tree",
-        choices=("remote_supports_ocr", "remote_plain", "local_force_full_page",
-                 "local_normal"),
+        choices=("remote_supports_ocr", "remote_plain", "local_force_full_page", "local_normal"),
         attrs=("converter_name", "supports_ocr", "force_full_page"),
         cap=4,
         note="Once per converter-chain entry attempted.",
@@ -1731,9 +1730,7 @@ SAFE_ATTR_SUFFIXES: tuple[str, ...] = (
 #: Keys whose stem trips a forbidden substring but which carry no content:
 #: a list of promotion-path LABELS, and a boolean saying whether a service
 #: URL is configured (never the URL itself).
-SAFE_ATTR_EXCEPTIONS: frozenset[str] = frozenset(
-    {"matched_paths", "docling_service_url_set"}
-)
+SAFE_ATTR_EXCEPTIONS: frozenset[str] = frozenset({"matched_paths", "docling_service_url_set"})
 
 
 def is_content_attr(key: str) -> bool:

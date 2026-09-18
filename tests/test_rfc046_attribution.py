@@ -174,9 +174,7 @@ class TestConverterNameIsSourcedNotRestated:
         # The retry path forces full-page OCR, so it is an OCR path and must
         # attribute an engine -- otherwise its verdict is unattributable.
         src = self._src("client/recovery.py")
-        assert "state.ocr_engine" in src, (
-            "the OCR retry path must record state.ocr_engine (R2.3)"
-        )
+        assert "state.ocr_engine" in src, "the OCR retry path must record state.ocr_engine (R2.3)"
 
 
 class TestGarbleProngsSurviveToTheSidecar:

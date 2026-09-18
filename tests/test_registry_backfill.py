@@ -72,21 +72,25 @@ class TestDrainVerdictRetryQueueWiring:
     async def test_force_override_true_popped_and_passed(self):
         """When verdict_fields contains force_verdict_override=True, it is
         popped from the meta dict and forwarded as kwarg to upsert_doc."""
-        redis = _make_redis({
-            "pageindex:verdict_retry:doc-fvo": {
+        redis = _make_redis(
+            {
+                "pageindex:verdict_retry:doc-fvo": {
+                    "verdict": "FAIL",
+                    "pipeline_version": 5,
+                    "force_verdict_override": True,
+                },
+            }
+        )
+
+        mock_upsert = AsyncMock(
+            return_value={
+                "doc_id": "doc-fvo",
                 "verdict": "FAIL",
                 "pipeline_version": 5,
-                "force_verdict_override": True,
-            },
-        })
-
-        mock_upsert = AsyncMock(return_value={
-            "doc_id": "doc-fvo",
-            "verdict": "FAIL",
-            "pipeline_version": 5,
-            "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-25T00:00:00Z",
-        })
+                "permanent_marginal": False,
+                "verdict_computed_at": "2026-08-25T00:00:00Z",
+            }
+        )
 
         with (
             patch(
@@ -113,20 +117,24 @@ class TestDrainVerdictRetryQueueWiring:
     @pytest.mark.asyncio
     async def test_force_override_absent_defaults_to_false(self):
         """When verdict_fields lacks force_verdict_override, default is False."""
-        redis = _make_redis({
-            "pageindex:verdict_retry:doc-nofvo": {
+        redis = _make_redis(
+            {
+                "pageindex:verdict_retry:doc-nofvo": {
+                    "verdict": "PASS",
+                    "pipeline_version": 4,
+                },
+            }
+        )
+
+        mock_upsert = AsyncMock(
+            return_value={
+                "doc_id": "doc-nofvo",
                 "verdict": "PASS",
                 "pipeline_version": 4,
-            },
-        })
-
-        mock_upsert = AsyncMock(return_value={
-            "doc_id": "doc-nofvo",
-            "verdict": "PASS",
-            "pipeline_version": 4,
-            "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-25T00:00:00Z",
-        })
+                "permanent_marginal": False,
+                "verdict_computed_at": "2026-08-25T00:00:00Z",
+            }
+        )
 
         with (
             patch(
@@ -149,20 +157,24 @@ class TestDrainVerdictRetryQueueWiring:
     async def test_meta_dict_contains_doc_id(self):
         """The meta dict passed to upsert_doc must contain doc_id extracted
         from the Redis key, plus the verdict_fields values."""
-        redis = _make_redis({
-            "pageindex:verdict_retry:doc-meta": {
+        redis = _make_redis(
+            {
+                "pageindex:verdict_retry:doc-meta": {
+                    "verdict": "MARGINAL",
+                    "pipeline_version": 3,
+                },
+            }
+        )
+
+        mock_upsert = AsyncMock(
+            return_value={
+                "doc_id": "doc-meta",
                 "verdict": "MARGINAL",
                 "pipeline_version": 3,
-            },
-        })
-
-        mock_upsert = AsyncMock(return_value={
-            "doc_id": "doc-meta",
-            "verdict": "MARGINAL",
-            "pipeline_version": 3,
-            "permanent_marginal": False,
-            "verdict_computed_at": "",
-        })
+                "permanent_marginal": False,
+                "verdict_computed_at": "",
+            }
+        )
 
         with (
             patch(
@@ -186,17 +198,23 @@ class TestDrainVerdictRetryQueueWiring:
     @pytest.mark.asyncio
     async def test_key_deleted_after_successful_upsert(self):
         """After a successful upsert, the Redis retry key must be deleted."""
-        redis = _make_redis({
-            "pageindex:verdict_retry:doc-del": {
-                "verdict": "PASS",
-            },
-        })
+        redis = _make_redis(
+            {
+                "pageindex:verdict_retry:doc-del": {
+                    "verdict": "PASS",
+                },
+            }
+        )
 
-        mock_upsert = AsyncMock(return_value={
-            "doc_id": "doc-del", "verdict": "PASS",
-            "pipeline_version": 4, "permanent_marginal": False,
-            "verdict_computed_at": "",
-        })
+        mock_upsert = AsyncMock(
+            return_value={
+                "doc_id": "doc-del",
+                "verdict": "PASS",
+                "pipeline_version": 4,
+                "permanent_marginal": False,
+                "verdict_computed_at": "",
+            }
+        )
 
         with (
             patch(
@@ -223,11 +241,13 @@ class TestDrainVerdictRetryQueueWiring:
         """RFC-042 R3.2: when _upsert_registry_row cannot reach Postgres
         (degraded path returns False), the retry key must NOT be deleted --
         the next sweep retries instead of silently dropping the verdict."""
-        redis = _make_redis({
-            "pageindex:verdict_retry:doc-keep": {
-                "verdict": "PASS",
-            },
-        })
+        redis = _make_redis(
+            {
+                "pageindex:verdict_retry:doc-keep": {
+                    "verdict": "PASS",
+                },
+            }
+        )
 
         with (
             # registry disabled → _upsert_registry_row degraded early return.
@@ -250,16 +270,20 @@ class TestDrainVerdictRetryQueueWiring:
     async def test_sidecar_written_with_winning_values(self):
         """After upsert_doc returns winning values, save_doc_meta is called
         with doc_id and the winning dict."""
-        redis = _make_redis({
-            "pageindex:verdict_retry:doc-sc": {
-                "verdict": "PASS",
-                "force_verdict_override": True,
-            },
-        })
+        redis = _make_redis(
+            {
+                "pageindex:verdict_retry:doc-sc": {
+                    "verdict": "PASS",
+                    "force_verdict_override": True,
+                },
+            }
+        )
 
         winning = {
-            "doc_id": "doc-sc", "verdict": "PASS",
-            "pipeline_version": 5, "permanent_marginal": False,
+            "doc_id": "doc-sc",
+            "verdict": "PASS",
+            "pipeline_version": 5,
+            "permanent_marginal": False,
             "verdict_computed_at": "2026-08-25T12:00:00Z",
         }
         mock_upsert = AsyncMock(return_value=winning)

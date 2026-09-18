@@ -79,9 +79,7 @@ REMOVED_SURFACE: dict[str, tuple[str, ...]] = {
         "TREE_PATH_PICTURE_SPLICE_ENABLED",
     ),
     # wave 2 -- storage
-    "storage": (
-        "SIDECAR_VERSION",
-    ),
+    "storage": ("SIDECAR_VERSION",),
     # wave 3 -- registry_backfill
     "registry_backfill": (
         "_is_fat",
@@ -755,6 +753,5 @@ class TestRemovedBindingsAreGone:
         for pkg_name, names in REMOVED_SURFACE.items():
             overlap = set(names) & set(FROZEN_SURFACE.get(pkg_name, ()))
             assert not overlap, (
-                f"{pkg_name}: {sorted(overlap)} appear in both FROZEN_SURFACE "
-                "and REMOVED_SURFACE"
+                f"{pkg_name}: {sorted(overlap)} appear in both FROZEN_SURFACE and REMOVED_SURFACE"
             )

@@ -3,6 +3,7 @@
 No magic numbers/strings in the rest of the package -- everything that names
 a schema field, a record ``kind``, or a cross-process env var lives here.
 """
+
 from __future__ import annotations
 
 #: Frozen envelope schema version (RFC-046 R12.1). Never changes silently --

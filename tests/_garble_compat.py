@@ -39,7 +39,9 @@ def check_garble(
     original_defect=None,
 ) -> bool:
     """Backward-compat test helper — delegates to detect_garble."""
-    _blob = BlobKind.RAW_MARKDOWN if (profile and profile.normalize_markdown) else BlobKind.TREE_TEXT
+    _blob = (
+        BlobKind.RAW_MARKDOWN if (profile and profile.normalize_markdown) else BlobKind.TREE_TEXT
+    )
     _ctx = ScriptContext(
         dominant_script=expected_script,
         had_presentation_forms=had_presentation_forms,

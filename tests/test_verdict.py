@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Verdict classification, promotions, compute, CAS, and zone-1 wiring tests."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -119,7 +120,9 @@ def _single_leaf(size: int = 1000) -> list:
 def _shallow_many_nodes() -> list:
     nodes = [{"node_id": "1", "title": "Big", "text": filler_text(6000, 0), "nodes": []}]
     for i in range(2, 12):
-        nodes.append({"node_id": str(i), "title": f"N{i}", "text": filler_text(400, i), "nodes": []})
+        nodes.append(
+            {"node_id": str(i), "title": f"N{i}", "text": filler_text(400, i), "nodes": []}
+        )
     return nodes
 
 
@@ -751,9 +754,7 @@ class TestComputeVerdictSourceSelection:
             }
         ]
         gate = TreeGateResult(ok=False, defect=TreeDefect.BIDI_DEGRADED)
-        result_normal = compute_verdict(
-            tree, "flat_prose", gate, image_enrichment_ratio=0.9
-        )
+        result_normal = compute_verdict(tree, "flat_prose", gate, image_enrichment_ratio=0.9)
         result_ss = compute_verdict(
             tree, "flat_prose", gate, image_enrichment_ratio=0.9, source_selection=True
         )
@@ -1070,16 +1071,12 @@ class TestTryStructuralPass:
 
     def test_node_count_low_defect_returns_none(self):
         sig = _make_sig(max_leaf_ratio=0.10)
-        result = _try_structural_pass(
-            sig, frozenset({TreeDefect.NODE_COUNT_LOW}), _default_th()
-        )
+        result = _try_structural_pass(sig, frozenset({TreeDefect.NODE_COUNT_LOW}), _default_th())
         assert result is None
 
     def test_depth_low_defect_returns_none(self):
         sig = _make_sig(max_leaf_ratio=0.10)
-        result = _try_structural_pass(
-            sig, frozenset({TreeDefect.DEPTH_LOW}), _default_th()
-        )
+        result = _try_structural_pass(sig, frozenset({TreeDefect.DEPTH_LOW}), _default_th())
         assert result is None
 
     def test_garbled_returns_none(self):
@@ -1234,64 +1231,51 @@ class TestTryImageEnrichment:
     def test_high_ratio_with_enough_chars_returns_pass(self):
         sig = _make_sig(flat_text="a" * 600, primary_text="a" * 600, effectively_garbled=False)
         th = _default_th(min_image_promoted_chars=500)
-        with patch(
-            "pageindex_mcp.helpers.verdict.detect_garble", return_value=False
-        ):
-            result = _try_image_enrichment(
-                sig, "flat_prose", 0.9, th, None, None
-            )
+        with patch("pageindex_mcp.helpers.verdict.detect_garble", return_value=False):
+            result = _try_image_enrichment(sig, "flat_prose", 0.9, th, None, None)
         assert result is not None
         assert result == "image_enrichment_promoted"
 
     def test_low_ratio_returns_none(self):
         sig = _make_sig()
-        result = _try_image_enrichment(
-            sig, "flat_prose", 0.5, _default_th(), None, None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", 0.5, _default_th(), None, None)
         assert result is None
 
     def test_none_ratio_returns_none(self):
         sig = _make_sig()
-        result = _try_image_enrichment(
-            sig, "flat_prose", None, _default_th(), None, None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", None, _default_th(), None, None)
         assert result is None
 
     def test_wrong_content_class_returns_none(self):
         sig = _make_sig()
-        result = _try_image_enrichment(
-            sig, "ocr_scanned", 0.9, _default_th(), None, None
-        )
+        result = _try_image_enrichment(sig, "ocr_scanned", 0.9, _default_th(), None, None)
         assert result is None
 
     def test_below_char_floor_returns_none(self):
         sig = _make_sig(flat_text="short", primary_text="short")
         th = _default_th(min_image_promoted_chars=500)
-        result = _try_image_enrichment(
-            sig, "flat_prose", 0.9, th, None, None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", 0.9, th, None, None)
         assert result is None
 
     def test_low_node_count_returns_none(self):
         """D1: node_count < 3 blocks image enrichment."""
         sig = _make_sig(
-            node_count=1, flat_text="a" * 600, primary_text="a" * 600,
+            node_count=1,
+            flat_text="a" * 600,
+            primary_text="a" * 600,
             effectively_garbled=False,
         )
-        result = _try_image_enrichment(
-            sig, "flat_prose", 0.9, _default_th(), None, None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", 0.9, _default_th(), None, None)
         assert result is None
 
     def test_garbled_returns_none(self):
         """D1: effectively_garbled blocks image enrichment."""
         sig = _make_sig(
-            flat_text="a" * 600, primary_text="a" * 600,
+            flat_text="a" * 600,
+            primary_text="a" * 600,
             effectively_garbled=True,
         )
-        result = _try_image_enrichment(
-            sig, "flat_prose", 0.9, _default_th(), None, None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", 0.9, _default_th(), None, None)
         assert result is None
 
 
@@ -1327,9 +1311,7 @@ class TestTryImageEnrichmentPresentationFormsRegression:
         th = _default_th(min_image_promoted_chars=500)
         # Pass script_context=None to trigger the fallback path that now
         # uses _infer_presentation_forms instead of hardcoded False
-        result = _try_image_enrichment(
-            sig, "flat_prose", 0.9, th, "Arab", None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", 0.9, th, "Arab", None)
         assert result is None, (
             "_try_image_enrichment should block promotion for garbled Arabic "
             "text with presentation-form codepoints, but returned "
@@ -1343,9 +1325,7 @@ class TestTryImageEnrichmentPresentationFormsRegression:
         that was a false-positive factory.  With the fallback removed,
         clean Arabic text is correctly not garbled and image enrichment
         promotion proceeds."""
-        clean_arabic = (
-            "يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية "
-        ) * 20
+        clean_arabic = ("يغطي التأمين الأضرار التي تلحق بالغير في حدود مبلغ التغطية ") * 20
         assert len(clean_arabic) >= 500
 
         sig = _make_sig(
@@ -1355,9 +1335,7 @@ class TestTryImageEnrichmentPresentationFormsRegression:
             effectively_garbled=False,
         )
         th = _default_th(min_image_promoted_chars=500)
-        result = _try_image_enrichment(
-            sig, "flat_prose", 0.9, th, "Arab", None
-        )
+        result = _try_image_enrichment(sig, "flat_prose", 0.9, th, "Arab", None)
         assert result is not None, (
             "Clean Arabic without presentation forms should allow image "
             f"enrichment promotion, but got None"
@@ -1383,12 +1361,8 @@ class TestApplyPromotionsOrderedPipeline:
         )
         outcome = _make_outcome(sig)
         th = _default_th()
-        with patch(
-            "pageindex_mcp.helpers.verdict.detect_garble", return_value=False
-        ):
-            result = apply_promotions(
-                outcome, "flat_prose", 0.9, None, th, None
-            )
+        with patch("pageindex_mcp.helpers.verdict.detect_garble", return_value=False):
+            result = apply_promotions(outcome, "flat_prose", 0.9, None, th, None)
         assert result.verdict == "PASS"
         assert result.reason == "image_enrichment_promoted"
 
@@ -1442,7 +1416,10 @@ class TestApplyPromotionsOrderedPipeline:
 class TestRFCRegressionFixtures:
     def test_rfc025_clean_tree_produces_pass(self):
         sig = _make_sig(
-            node_count=20, depth=4, max_leaf_ratio=0.08, effectively_garbled=False,
+            node_count=20,
+            depth=4,
+            max_leaf_ratio=0.08,
+            effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
         result = apply_promotions(outcome, "", None, None, _default_th(), None)
@@ -1451,7 +1428,10 @@ class TestRFCRegressionFixtures:
     def test_rfc023_ocr_cat_a_produces_pass(self):
         clean_text = "Dies ist ein sauberer Text ohne Rauschen und ohne Sonderzeichen " * 50
         sig = _make_sig(
-            node_count=10, max_leaf_ratio=0.10, flat_text=clean_text, effectively_garbled=False,
+            node_count=10,
+            max_leaf_ratio=0.10,
+            flat_text=clean_text,
+            effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
         result = apply_promotions(outcome, "ocr_scanned", None, None, _default_th(), None)
@@ -1460,7 +1440,9 @@ class TestRFCRegressionFixtures:
 
     def test_rfc036_flat_cat_b_produces_pass(self):
         sig = _make_sig(
-            node_count=5, max_leaf_ratio=0.10, flat_text="paragraph text\n" * 200,
+            node_count=5,
+            max_leaf_ratio=0.10,
+            flat_text="paragraph text\n" * 200,
             effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
@@ -1469,7 +1451,10 @@ class TestRFCRegressionFixtures:
 
     def test_rfc036_small_doc_produces_pass(self):
         sig = _make_sig(
-            node_count=3, max_leaf_ratio=0.25, flat_text="a" * 500, effectively_garbled=False,
+            node_count=3,
+            max_leaf_ratio=0.25,
+            flat_text="a" * 500,
+            effectively_garbled=False,
         )
         outcome = _make_outcome(sig, all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}))
         result = apply_promotions(outcome, "flat_prose", None, None, _default_th(), None)
@@ -1494,14 +1479,14 @@ class TestRFCRegressionFixtures:
         """RFC-022 B2 / RFC-040 D1: image enrichment exception overrides
         max_leaf_ratio hard-fail for flat image-dominant docs."""
         sig = _make_sig(
-            max_leaf_ratio=1.0, flat_text="a" * 600, primary_text="a" * 600,
+            max_leaf_ratio=1.0,
+            flat_text="a" * 600,
+            primary_text="a" * 600,
             effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
         th = _default_th(hard_fail_max_leaf_ratio=0.75)
-        with patch(
-            "pageindex_mcp.helpers.verdict.detect_garble", return_value=False
-        ):
+        with patch("pageindex_mcp.helpers.verdict.detect_garble", return_value=False):
             result = apply_promotions(outcome, "flat_prose", 0.9, None, th, None)
         assert result.verdict == "PASS"
         assert result.reason == "image_enrichment_promoted"
@@ -1535,8 +1520,11 @@ class TestRFC040UnconditionalHardFail:
     def test_image_enrichment_exception_requires_all_guards(self):
         """D1: image enrichment but node_count=1 -> FAIL (node_count guard)."""
         sig = _make_sig(
-            node_count=1, max_leaf_ratio=1.0, flat_text="a" * 600,
-            primary_text="a" * 600, effectively_garbled=False,
+            node_count=1,
+            max_leaf_ratio=1.0,
+            flat_text="a" * 600,
+            primary_text="a" * 600,
+            effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
         th = _default_th(hard_fail_max_leaf_ratio=0.75)
@@ -1546,7 +1534,9 @@ class TestRFC040UnconditionalHardFail:
     def test_image_enrichment_exception_with_garble(self):
         """D1: image enrichment but garbled -> FAIL."""
         sig = _make_sig(
-            max_leaf_ratio=1.0, flat_text="a" * 600, primary_text="a" * 600,
+            max_leaf_ratio=1.0,
+            flat_text="a" * 600,
+            primary_text="a" * 600,
             effectively_garbled=True,
         )
         outcome = _make_outcome(sig)
@@ -1557,14 +1547,15 @@ class TestRFC040UnconditionalHardFail:
     def test_image_enrichment_legitimate_exception(self):
         """D1: flat_prose, ratio=0.9, 5000 chars, 5 nodes, not garbled -> PASS."""
         sig = _make_sig(
-            node_count=5, max_leaf_ratio=1.0, flat_text="a" * 5000,
-            primary_text="a" * 5000, effectively_garbled=False,
+            node_count=5,
+            max_leaf_ratio=1.0,
+            flat_text="a" * 5000,
+            primary_text="a" * 5000,
+            effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
         th = _default_th(hard_fail_max_leaf_ratio=0.75)
-        with patch(
-            "pageindex_mcp.helpers.verdict.detect_garble", return_value=False
-        ):
+        with patch("pageindex_mcp.helpers.verdict.detect_garble", return_value=False):
             result = apply_promotions(outcome, "flat_prose", 0.9, None, th, None)
         assert result.verdict == "PASS"
         assert result.reason == "image_enrichment_promoted"
@@ -1599,9 +1590,7 @@ class TestFlatRoutedHardFailEndToEnd:
             all_defects=frozenset({defect}),
         )
         result = compute_verdict(_single_leaf(), "flat_prose", gate)
-        assert result.verdict == "FAIL", (
-            f"Expected FAIL for {defect.name}, got {result.verdict}"
-        )
+        assert result.verdict == "FAIL", f"Expected FAIL for {defect.name}, got {result.verdict}"
 
     def test_empty_node_contamination_end_to_end(self):
         """Explicit e2e test for EMPTY_NODE_CONTAMINATION on a flat-prose
@@ -1644,10 +1633,12 @@ class TestFlatRoutedHardFailEndToEnd:
         gate = TreeGateResult(
             ok=False,
             defect=TreeDefect.GARBLING,
-            all_defects=frozenset({
-                TreeDefect.GARBLING,
-                TreeDefect.EMPTY_NODE_CONTAMINATION,
-            }),
+            all_defects=frozenset(
+                {
+                    TreeDefect.GARBLING,
+                    TreeDefect.EMPTY_NODE_CONTAMINATION,
+                }
+            ),
         )
         result = compute_verdict(_single_leaf(), "flat_prose", gate)
         assert result.verdict == "FAIL"
@@ -1668,9 +1659,7 @@ class TestStructuralOkUnification:
         """When NODE_COUNT_LOW is in all_defects, _structural_ok=False,
         preventing the early PASS path in apply_promotions."""
         th = _make_th()
-        sig = TreeSignals.from_tree(
-            _well_formed(), garble_threshold=th.garble_threshold
-        )
+        sig = TreeSignals.from_tree(_well_formed(), garble_threshold=th.garble_threshold)
         # Construct an outcome with NODE_COUNT_LOW in all_defects but
         # no hard-fail (NODE_COUNT_LOW is NOT a hard_fail defect)
         outcome = GateOutcome(
@@ -1681,18 +1670,26 @@ class TestStructuralOkUnification:
             hard_fail_verdict=None,
         )
         result = apply_promotions(
-            outcome, "flat_prose", None, None, th, None,
+            outcome,
+            "flat_prose",
+            None,
+            None,
+            th,
+            None,
         )
         # With _structural_ok=False, the early PASS via
         # max_leaf_ratio < pass_max_leaf_ratio should NOT fire
-        assert result.verdict != "PASS" or "promoted" in result.reason or "clamp" in result.reason or result.reason != ""
+        assert (
+            result.verdict != "PASS"
+            or "promoted" in result.reason
+            or "clamp" in result.reason
+            or result.reason != ""
+        )
 
     def test_depth_low_in_all_defects_blocks_structural_ok(self):
         """When DEPTH_LOW is in all_defects, _structural_ok=False."""
         th = _make_th()
-        sig = TreeSignals.from_tree(
-            _well_formed(), garble_threshold=th.garble_threshold
-        )
+        sig = TreeSignals.from_tree(_well_formed(), garble_threshold=th.garble_threshold)
         outcome = GateOutcome(
             defect=TreeDefect.DEPTH_LOW,
             validate_reason="depth_low",
@@ -1701,7 +1698,12 @@ class TestStructuralOkUnification:
             hard_fail_verdict=None,
         )
         result = apply_promotions(
-            outcome, "flat_prose", None, None, th, None,
+            outcome,
+            "flat_prose",
+            None,
+            None,
+            th,
+            None,
         )
         # Must not produce unconditional PASS from the structural path
         # (may still get PASS from a promotion, but not from the bare
@@ -1712,9 +1714,7 @@ class TestStructuralOkUnification:
         """When neither NODE_COUNT_LOW nor DEPTH_LOW is in all_defects,
         _structural_ok=True and the structure-based PASS path is available."""
         th = _make_th()
-        sig = TreeSignals.from_tree(
-            _well_formed(), garble_threshold=th.garble_threshold
-        )
+        sig = TreeSignals.from_tree(_well_formed(), garble_threshold=th.garble_threshold)
         outcome = GateOutcome(
             defect=TreeDefect.OK,
             validate_reason=None,
@@ -1723,7 +1723,12 @@ class TestStructuralOkUnification:
             hard_fail_verdict=None,
         )
         result = apply_promotions(
-            outcome, "flat_prose", None, None, th, None,
+            outcome,
+            "flat_prose",
+            None,
+            None,
+            th,
+            None,
         )
         # A well-formed tree with no defects should be able to PASS
         assert result.verdict == "PASS"
@@ -1738,7 +1743,12 @@ class TestStructuralOkUnification:
         # the tree is reordered, which _well_formed() is not)
         assert outcome.hard_fail_verdict is None
         result = apply_promotions(
-            outcome, "flat_prose", None, None, th, None,
+            outcome,
+            "flat_prose",
+            None,
+            None,
+            th,
+            None,
         )
         assert result.verdict == "PASS"
 
@@ -1759,10 +1769,12 @@ class TestGateCountUniformity:
         """evaluate_gates must propagate all_defects from the passed
         TreeGateResult, not re-derive a subset."""
         th = _make_th()
-        all_defs = frozenset({
-            TreeDefect.GARBLING,
-            TreeDefect.EMPTY_NODE_CONTAMINATION,
-        })
+        all_defs = frozenset(
+            {
+                TreeDefect.GARBLING,
+                TreeDefect.EMPTY_NODE_CONTAMINATION,
+            }
+        )
         gate = TreeGateResult(
             ok=False,
             defect=TreeDefect.GARBLING,
@@ -2144,7 +2156,9 @@ class TestGarbledTitleWithCleanTextDetected:
 
         garbled = _garble_check_nodes(
             [node],
-            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script=None, had_presentation_forms=False, source="test"
+            ),
             config=GarbleConfig(),
         )
 
@@ -2155,7 +2169,9 @@ class TestGarbledTitleWithCleanTextDetected:
 
         garbled = _garble_check_nodes(
             [node],
-            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script=None, had_presentation_forms=False, source="test"
+            ),
             config=GarbleConfig(),
         )
 
@@ -2171,7 +2187,9 @@ class TestRTLReversedTitleDetected:
 
         garbled = _garble_check_nodes(
             [node],
-            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script=None, had_presentation_forms=False, source="test"
+            ),
             config=GarbleConfig(),
         )
 
@@ -2218,14 +2236,22 @@ class TestRecoverImageDominantOcrKeepBest:
         )
 
         # Override _execute_ocr_retry to simulate a retry that produces less content
-        async def _fake_execute(self_mixin, state, file_path, filename, ext,
-                                expected_script, script_context=None, *,
-                                reason_label, splice_label, use_keep_best,
-                                metric_fail_label):
+        async def _fake_execute(
+            self_mixin,
+            state,
+            file_path,
+            filename,
+            ext,
+            expected_script,
+            script_context=None,
+            *,
+            reason_label,
+            splice_label,
+            use_keep_best,
+            metric_fail_label,
+        ):
             # Verify use_keep_best is True for image-dominant
-            assert use_keep_best is True, (
-                "_recover_image_dominant_ocr must pass use_keep_best=True"
-            )
+            assert use_keep_best is True, "_recover_image_dominant_ocr must pass use_keep_best=True"
 
         mixin = RecoveryMixin()
         # Set the attributes that the mixin method checks
@@ -2240,9 +2266,7 @@ class TestRecoverImageDominantOcrKeepBest:
         # Patch _execute_ocr_retry to verify the keep-best parameter
         monkeypatch.setattr(RecoveryMixin, "_execute_ocr_retry", _fake_execute)
 
-        await mixin._recover_image_dominant_ocr(
-            state, "/fake.pdf", "test.pdf", ".pdf", None
-        )
+        await mixin._recover_image_dominant_ocr(state, "/fake.pdf", "test.pdf", ".pdf", None)
 
 
 # --- from test_rfc037_verdict_cas.py ---
@@ -2258,8 +2282,6 @@ PRIORITY = {"PASS": 3, "MARGINAL": 2, "FAIL": 1, "ERROR": 0}
 
 def _nosuchkey() -> S3Error:
     return S3Error(MagicMock(), "NoSuchKey", "missing", "res", "req", "host")
-
-
 
 
 def _meta_response(sha256: str) -> MagicMock:
@@ -2280,12 +2302,7 @@ class TestMaxPriorityWinsSQL:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "existing_verdict,incoming_verdict",
-        [
-            (e, i)
-            for e in VERDICTS
-            for i in VERDICTS
-            if PRIORITY[i] >= PRIORITY[e]
-        ],
+        [(e, i) for e in VERDICTS for i in VERDICTS if PRIORITY[i] >= PRIORITY[e]],
         ids=lambda p: p if isinstance(p, str) else None,
     )
     async def test_upgrade_or_equal_accepted(self, existing_verdict, incoming_verdict):
@@ -2302,23 +2319,20 @@ class TestMaxPriorityWinsSQL:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=winning_row)
         with patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool):
-            result = await upsert_doc({
-                "doc_id": "d1",
-                "verdict": incoming_verdict,
-                "verdict_computed_at": "2026-08-24T12:00:00Z",
-            })
+            result = await upsert_doc(
+                {
+                    "doc_id": "d1",
+                    "verdict": incoming_verdict,
+                    "verdict_computed_at": "2026-08-24T12:00:00Z",
+                }
+            )
         assert result is not None
         assert result["verdict"] == incoming_verdict
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "existing_verdict,incoming_verdict",
-        [
-            (e, i)
-            for e in VERDICTS
-            for i in VERDICTS
-            if PRIORITY[i] < PRIORITY[e]
-        ],
+        [(e, i) for e in VERDICTS for i in VERDICTS if PRIORITY[i] < PRIORITY[e]],
     )
     async def test_downgrade_blocked(self, existing_verdict, incoming_verdict):
         """When incoming priority < existing, RETURNING preserves the existing verdict.
@@ -2337,11 +2351,13 @@ class TestMaxPriorityWinsSQL:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=preserved_row)
         with patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool):
-            result = await upsert_doc({
-                "doc_id": "d1",
-                "verdict": incoming_verdict,
-                "verdict_computed_at": "2026-08-24T12:00:00Z",
-            })
+            result = await upsert_doc(
+                {
+                    "doc_id": "d1",
+                    "verdict": incoming_verdict,
+                    "verdict_computed_at": "2026-08-24T12:00:00Z",
+                }
+            )
         assert result is not None
         assert result["verdict"] == existing_verdict
 
@@ -2477,7 +2493,6 @@ class TestPriorityConstantUniqueness:
         assert VERDICT_PRIORITY["FAIL"] > VERDICT_PRIORITY["ERROR"]
 
 
-
 # ===========================================================================
 # Property 5: sidecar passivity (D5) — _verdict_cas_guard removed
 # ===========================================================================
@@ -2491,24 +2506,31 @@ class TestSidecarPassivity:
         """save_doc_meta writes the incoming verdict without CAS comparison."""
         from pageindex_mcp.storage.verdict import save_doc_meta
 
-        existing_sidecar = json.dumps({
-            "doc_id": "d1", "verdict": "PASS",
-            "verdict_computed_at": "2026-12-31T23:59:59Z",
-        }).encode()
+        existing_sidecar = json.dumps(
+            {
+                "doc_id": "d1",
+                "verdict": "PASS",
+                "verdict_computed_at": "2026-12-31T23:59:59Z",
+            }
+        ).encode()
         resp = MagicMock()
         resp.read.return_value = existing_sidecar
         mock_minio.get_object.return_value = resp
 
-        save_doc_meta("d1", {
-            "verdict": "MARGINAL",
-            "verdict_computed_at": "2026-01-01T00:00:00Z",
-        })
+        save_doc_meta(
+            "d1",
+            {
+                "verdict": "MARGINAL",
+                "verdict_computed_at": "2026-01-01T00:00:00Z",
+            },
+        )
 
         call_args = mock_minio.put_object.call_args
         data_arg = call_args[0][2]  # positional: bucket, key, data
         written = json.loads(data_arg.read())
-        assert written["verdict"] == "MARGINAL", \
+        assert written["verdict"] == "MARGINAL", (
             "Sidecar should passively accept the Postgres-arbitrated verdict"
+        )
 
 
 # ===========================================================================
@@ -2555,11 +2577,15 @@ class TestForceVerdictOverride:
         from pageindex_mcp.registry.queries import upsert_doc
 
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value={
-            "doc_id": "d1", "verdict": "PASS",
-            "pipeline_version": 4, "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-20T00:00:00Z",
-        })
+        mock_pool.fetchrow = AsyncMock(
+            return_value={
+                "doc_id": "d1",
+                "verdict": "PASS",
+                "pipeline_version": 4,
+                "permanent_marginal": False,
+                "verdict_computed_at": "2026-08-20T00:00:00Z",
+            }
+        )
         with patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool):
             await upsert_doc({"doc_id": "d1", "verdict": "FAIL"})
         sql_used = mock_pool.fetchrow.await_args.args[0]
@@ -2572,11 +2598,15 @@ class TestForceVerdictOverride:
         from pageindex_mcp.registry.queries import upsert_doc
 
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value={
-            "doc_id": "d1", "verdict": "FAIL",
-            "pipeline_version": 5, "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-25T00:00:00Z",
-        })
+        mock_pool.fetchrow = AsyncMock(
+            return_value={
+                "doc_id": "d1",
+                "verdict": "FAIL",
+                "pipeline_version": 5,
+                "permanent_marginal": False,
+                "verdict_computed_at": "2026-08-25T00:00:00Z",
+            }
+        )
         with (
             patch("pageindex_mcp.registry.queries._schema.get_pool", return_value=mock_pool),
             caplog.at_level(logging.INFO),
@@ -2707,9 +2737,11 @@ class TestPromotionLiteralsAreThresholdSourced:
             if not isinstance(node, ast.Compare):
                 continue
             for operand in [node.left, *node.comparators]:
-                if isinstance(operand, ast.Constant) and isinstance(
-                    operand.value, (int, float)
-                ) and not isinstance(operand.value, bool):
+                if (
+                    isinstance(operand, ast.Constant)
+                    and isinstance(operand.value, (int, float))
+                    and not isinstance(operand.value, bool)
+                ):
                     found.add(operand.value)
         return found
 
@@ -2728,8 +2760,7 @@ class TestPromotionLiteralsAreThresholdSourced:
     def test_vg2_vg3_literals_are_gone(self, name: str):
         found = self._compare_constants(name)
         assert not (found & self._FORBIDDEN), (
-            f"{name} still hardcodes a VG-2/VG-3 threshold: "
-            f"{sorted(found & self._FORBIDDEN)}"
+            f"{name} still hardcodes a VG-2/VG-3 threshold: {sorted(found & self._FORBIDDEN)}"
         )
 
     def test_cat_a_reads_both_bounds_from_thresholds(self):
@@ -2855,9 +2886,7 @@ class TestVerdictGateThresholdConfigContract:
     def test_small_doc_min_below_marginal_floor_fires_at_import(self):
         """VG-3: SMALL_DOC_MIN_CHARS < MIN_MARGINAL_CHARS would let
         _try_small_doc promote a doc apply_promotions already FAILed."""
-        proc = self._import_config_with(
-            {"SMALL_DOC_MIN_CHARS": "10", "MIN_MARGINAL_CHARS": "50"}
-        )
+        proc = self._import_config_with({"SMALL_DOC_MIN_CHARS": "10", "MIN_MARGINAL_CHARS": "50"})
         assert proc.returncode != 0
         assert "MIN_MARGINAL_CHARS" in proc.stderr
         assert "AssertionError" in proc.stderr

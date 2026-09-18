@@ -139,12 +139,24 @@ async def _attempt_tesseract_raster_recovery(
             logger.warning(
                 "tessdata unavailable for %s (detected %s); "
                 "degrading to %s — pre-bake traineddata in worker image",
-                filename, detected, tess_langs,
+                filename,
+                detected,
+                tess_langs,
             )
         ocr_text = await tesseract_ocr_pdf_pages(file_path, tess_langs)
-        _sc = script_context if script_context is not None else ScriptContext(dominant_script=expected_script, had_presentation_forms=_infer_presentation_forms(ocr_text), source="tesseract_raster_recovery")
+        _sc = (
+            script_context
+            if script_context is not None
+            else ScriptContext(
+                dominant_script=expected_script,
+                had_presentation_forms=_infer_presentation_forms(ocr_text),
+                source="tesseract_raster_recovery",
+            )
+        )
         _blob = BlobKind.RAW_MARKDOWN if profile.normalize_markdown else BlobKind.TREE_TEXT
-        garbled = bool(detect_garble(ocr_text, script_context=_sc, config=_garble_config, blob_kind=_blob))
+        garbled = bool(
+            detect_garble(ocr_text, script_context=_sc, config=_garble_config, blob_kind=_blob)
+        )
         if ocr_text and not garbled:
             logger.warning(
                 "Tesseract-on-raster fallback recovered %s; overriding reason to node_count<3",

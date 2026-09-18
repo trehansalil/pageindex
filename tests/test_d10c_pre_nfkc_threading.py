@@ -83,9 +83,11 @@ class TestScriptContextPreNfkcThreading:
     # -- Site 10: verdict.py compute_verdict --
     def test_compute_verdict_accepts_script_context(self, pre_nfkc_ctx):
         structure = [
-            {"heading": "root", "content": "", "children": [
-                {"heading": "child", "content": _ARABIC_PF_NFKC, "children": []}
-            ]}
+            {
+                "heading": "root",
+                "content": "",
+                "children": [{"heading": "child", "content": _ARABIC_PF_NFKC, "children": []}],
+            }
         ]
         vr = compute_verdict(structure, "", expected_script=pre_nfkc_ctx)
         assert vr.verdict is not None

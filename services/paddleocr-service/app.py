@@ -40,7 +40,9 @@ PADDLEOCR_DET_THRESH = float(os.environ.get("PADDLEOCR_DET_THRESH", "0.3"))
 PADDLEOCR_DET_BOX_THRESH = float(os.environ.get("PADDLEOCR_DET_BOX_THRESH", "0.6"))
 PADDLEOCR_REC_SCORE_THRESH = float(os.environ.get("PADDLEOCR_REC_SCORE_THRESH", "0.0"))
 BEARER_TOKEN = os.environ.get("PADDLEOCR_BEARER_TOKEN", "")
-OCR_PAGE_WORKERS = int(os.environ.get("OCR_PAGE_WORKERS", str(min(max(1, (os.cpu_count() or 4) // 4), 4))))
+OCR_PAGE_WORKERS = int(
+    os.environ.get("OCR_PAGE_WORKERS", str(min(max(1, (os.cpu_count() or 4) // 4), 4)))
+)
 _page_pool: ThreadPoolExecutor | None = None
 
 # Two engines: "en" covers English + German + all Latin scripts,
@@ -69,8 +71,12 @@ def _get_engine(lang: str = DEFAULT_LANG):
 
         is_arabic = canonical == "ar"
         version = PADDLEOCR_ARABIC_VERSION if is_arabic else PADDLEOCR_VERSION
-        logger.info("Initialising PaddleOCR engine for lang=%s version=%s gpu=%s",
-                     canonical, version, PADDLEOCR_USE_GPU)
+        logger.info(
+            "Initialising PaddleOCR engine for lang=%s version=%s gpu=%s",
+            canonical,
+            version,
+            PADDLEOCR_USE_GPU,
+        )
         if is_arabic:
             _engines[canonical] = PaddleOCR(
                 lang="ar",
@@ -102,7 +108,9 @@ def _get_engine(lang: str = DEFAULT_LANG):
 class RegionResult(BaseModel):
     text: str
     confidence: float
-    bbox: list[list[float]] = Field(description="Polygon vertices [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]")
+    bbox: list[list[float]] = Field(
+        description="Polygon vertices [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]"
+    )
 
 
 class OcrPageResult(BaseModel):
@@ -170,10 +178,12 @@ async def lifespan(app: FastAPI):
             _get_engine(lang)
             logger.info("PaddleOCR engine lang=%s warmed successfully", lang)
         except Exception:
-            logger.warning("Failed to warm PaddleOCR engine lang=%s; first request will be slow",
-                           lang, exc_info=True)
-    _page_pool = ThreadPoolExecutor(max_workers=OCR_PAGE_WORKERS,
-                                     thread_name_prefix="ocr-page")
+            logger.warning(
+                "Failed to warm PaddleOCR engine lang=%s; first request will be slow",
+                lang,
+                exc_info=True,
+            )
+    _page_pool = ThreadPoolExecutor(max_workers=OCR_PAGE_WORKERS, thread_name_prefix="ocr-page")
     logger.info("Page-parallel pool: %d workers (cpu_count=%s)", OCR_PAGE_WORKERS, os.cpu_count())
     yield
     _page_pool.shutdown(wait=False)
@@ -213,6 +223,7 @@ def _ocr_image(img_array: np.ndarray, lang: str) -> tuple[list[RegionResult], st
 
 def _ocr_one_page(doc_bytes: bytes, page_idx: int, lang: str, dpi: int = 300) -> OcrPageResult:
     import fitz
+
     doc = fitz.open(stream=doc_bytes, filetype="pdf")
     pix = doc[page_idx].get_pixmap(dpi=dpi)
     img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
@@ -252,6 +263,7 @@ async def health():
 async def version():
     try:
         import paddleocr
+
         ver = getattr(paddleocr, "__version__", "unknown")
     except ImportError:
         ver = "not installed"
@@ -351,24 +363,33 @@ async def ocr_batch(req: BatchRequest):
             raw = base64.b64decode(item.image_b64)
             img_array = _image_from_upload(raw)
         except Exception as exc:
-            results.append(OcrResponse(
-                text="", confidence=0.0, lang=effective_lang,
-                regions=[], region_count=0, char_count=0, elapsed_s=0.0,
-            ))
+            results.append(
+                OcrResponse(
+                    text="",
+                    confidence=0.0,
+                    lang=effective_lang,
+                    regions=[],
+                    region_count=0,
+                    char_count=0,
+                    elapsed_s=0.0,
+                )
+            )
             logger.warning("Batch item %s failed: %s", item.filename, exc)
             continue
 
         regions, text, elapsed = _ocr_image(img_array, effective_lang)
         confidences = [r.confidence for r in regions]
         avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
-        results.append(OcrResponse(
-            text=text,
-            confidence=avg_conf,
-            lang=effective_lang,
-            regions=regions,
-            region_count=len(regions),
-            char_count=len(text),
-            elapsed_s=round(elapsed, 3),
-        ))
+        results.append(
+            OcrResponse(
+                text=text,
+                confidence=avg_conf,
+                lang=effective_lang,
+                regions=regions,
+                region_count=len(regions),
+                char_count=len(text),
+                elapsed_s=round(elapsed, 3),
+            )
+        )
 
     return BatchResponse(results=results)

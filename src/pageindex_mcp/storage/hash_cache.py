@@ -85,9 +85,7 @@ def _purge_legacy_hash_entry(filename: str) -> None:
         mc = _minio_ops.get_minio()
         cache = _load_legacy_minio_hash_cache()
     except Exception:
-        logger.debug(
-            "Legacy hash-cache purge: could not load blob for %s", filename, exc_info=True
-        )
+        logger.debug("Legacy hash-cache purge: could not load blob for %s", filename, exc_info=True)
         return
     if filename not in cache:
         return

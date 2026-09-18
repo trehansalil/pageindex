@@ -97,7 +97,9 @@ async def main() -> int:  # noqa: PLR0915
                 prog="converters_cli",
                 description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
             )
-            parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
+            parser.add_argument(
+                "input_path", help="Path to the input PDF (or other supported format)."
+            )
             parser.add_argument(
                 "--staging-key",
                 default=None,
@@ -126,7 +128,9 @@ async def main() -> int:  # noqa: PLR0915
             # re-derive page count itself (avoids worker/child disagreement).
             from pageindex_mcp.converters import probe_conversion_route
 
-            chunk_count, is_docling_route, pdf_classification = probe_conversion_route(args.input_path)
+            chunk_count, is_docling_route, pdf_classification = probe_conversion_route(
+                args.input_path
+            )
             handshake_payload = {
                 "handshake": True,
                 "chunk_count": chunk_count,

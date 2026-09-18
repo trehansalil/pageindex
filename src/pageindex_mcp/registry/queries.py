@@ -286,9 +286,7 @@ async def delete_doc(doc_id: str) -> None:
     timeout_ms = int(timeout_s * 1000)
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                f"SET LOCAL statement_timeout = '{timeout_ms}';"
-            )
+            await conn.execute(f"SET LOCAL statement_timeout = '{timeout_ms}';")
             await conn.execute(_DELETE_SQL, doc_id, timeout=timeout_s)
     logger.info("registry: deleted doc_id=%s", doc_id)
 

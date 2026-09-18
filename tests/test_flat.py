@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Flat document view, block text consolidation, and RFC block tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -188,7 +189,14 @@ class TestFlatDocViewBoundary:
         data = _make_flat_data(blocks=[{"role": "prose", "text": "hi"}])
         result = flat_doc_view(data)
         assert result is not None
-        expected_keys = {"doc_name", "content_class", "blocks", "row_records", "structure", "doc_description"}
+        expected_keys = {
+            "doc_name",
+            "content_class",
+            "blocks",
+            "row_records",
+            "structure",
+            "doc_description",
+        }
         assert set(result.keys()) == expected_keys
 
     def test_structure_is_empty_list(self):
@@ -375,7 +383,6 @@ class TestFlatSearchTextEnrichment:
         assert result == ""
 
 
-
 # --- from test_rfc_blocks.py ---
 
 
@@ -512,7 +519,6 @@ class TestSynthesizeFlatStructure:
         assert verdict != "FAIL"
 
 
-
 class TestImageExtensionRouting:
     """Property 3 (B2): a file whose extension is in _IMAGE_EXTS gets
     content_class="image_standalone" regardless of block-role composition."""
@@ -646,7 +652,6 @@ class TestFlatBlockPrimaryTextHeaderOnly:
         )
 
 
-
 # ---------------------------------------------------------------------------
 # Contract: _flat_search_text role-aware retrieval text
 # ---------------------------------------------------------------------------
@@ -748,9 +753,7 @@ class TestIndexerFlatCharCountWiring:
             {"role": "table", "headers": ["Name", "Value"], "row_records": []},
         ]
         flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
-        assert flat_char_count > 0, (
-            "Header-only table must contribute to flat_char_count"
-        )
+        assert flat_char_count > 0, "Header-only table must contribute to flat_char_count"
 
     def test_flat_structure_synthesis_uses_primary_text(self):
         """Simulate the flat_structure synthesis from
@@ -783,7 +786,6 @@ class TestIndexerFlatCharCountWiring:
         correct_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
         assert naive_count == 0, "Naive access should see zero for table blocks"
         assert correct_count > 0, "Role-aware access should see table content"
-
 
 
 # ===========================================================================
@@ -820,7 +822,11 @@ class TestBlockTextPurposes:
 
     def test_image_block_non_search_excludes_enrichment(self):
         block = {"role": "image", "ocr_text": "scanned text", "description": "a photo"}
-        for purpose in (BlockTextPurpose.GARBLE_CHECK, BlockTextPurpose.CHAR_COUNT, BlockTextPurpose.DISPLAY):
+        for purpose in (
+            BlockTextPurpose.GARBLE_CHECK,
+            BlockTextPurpose.CHAR_COUNT,
+            BlockTextPurpose.DISPLAY,
+        ):
             assert block_text(block, purpose) == ""
 
     def test_table_with_dict_row_records(self):
@@ -942,16 +948,16 @@ class TestGarbleScoreRegression:
         )
 
         blocks = [
-            {"role": "table", "row_records": [
-                "Name | Premium | Deductible",
-                "Liability | 5000 | 500",
-                "Comprehensive | 3000 | 250",
-            ]},
+            {
+                "role": "table",
+                "row_records": [
+                    "Name | Premium | Deductible",
+                    "Liability | 5000 | 500",
+                    "Comprehensive | 3000 | 250",
+                ],
+            },
         ]
         ctx = ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test")
         cfg = GarbleConfig()
         report = _garble_check_flat_blocks(blocks, script_context=ctx, config=cfg)
         assert report is None
-
-
-

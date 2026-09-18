@@ -397,9 +397,7 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
             }
             if content_class:
                 registry_meta["content_class"] = content_class
-            await _upsert_registry_row(
-                did, content_class or None, registry_fields=registry_meta
-            )
+            await _upsert_registry_row(did, content_class or None, registry_fields=registry_meta)
             updated += 1
             print(f"  {did}: {verdict} ({verdict_reason or 'clean'})", flush=True)
         except Exception as e:

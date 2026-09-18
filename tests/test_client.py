@@ -410,7 +410,6 @@ def jpg_file():
         os.unlink(path)
 
 
-
 async def test_bare_jpg_extension_overrides_flat_mixed_to_image_standalone(monkeypatch, jpg_file):
     """D7: a .jpg whose OCR markdown route_and_extract_flat classifies as
     flat_mixed (an image block spliced together with prose) is force-overridden

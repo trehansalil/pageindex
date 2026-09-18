@@ -318,9 +318,17 @@ async def test_registry_fields_surfaced_when_last_registry_fields_set(tmp_pdf: P
     assert "registry_fields" in payload
     rf = payload["registry_fields"]
     # All _REGISTRY_FIELDS keys must be present
-    for key in ("doc_name", "source_url", "processed_at", "sha256",
-                "doc_description", "product", "tier", "doc_family",
-                "effective_date"):
+    for key in (
+        "doc_name",
+        "source_url",
+        "processed_at",
+        "sha256",
+        "doc_description",
+        "product",
+        "tier",
+        "doc_family",
+        "effective_date",
+    ):
         assert key in rf, f"Missing registry field: {key}"
     assert "node_count" in rf
 

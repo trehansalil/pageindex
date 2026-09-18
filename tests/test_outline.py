@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 from __future__ import annotations
+
 """Outline extraction, inference, and depth tests."""
 import re
 
@@ -21,6 +22,7 @@ from pageindex_mcp.helpers import split_oversized_leaf_nodes
 
 
 # --- from test_read_pdf_outline.py ---
+
 
 def _pdf_with_outline(tmp_path, entries, n_pages=6):
     """Write a PDF with ``n_pages`` blank pages and a nested outline.
@@ -342,6 +344,7 @@ def test_heading_without_page_provenance_is_left_unchanged():
 
 
 # --- from test_depth_inference.py ---
+
 
 @pytest.mark.parametrize(
     "title,expected",

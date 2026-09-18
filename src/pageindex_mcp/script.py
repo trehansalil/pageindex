@@ -899,11 +899,7 @@ class ScriptContext:
         #    this closes the gap where Arabic PDFs with Latin filenames
         #    were mis-routed through the Latin pipeline.
         if fn_script is not None:
-            if (
-                raw_text
-                and text_script == "Arab"
-                and fn_script != "Arab"
-            ):
+            if raw_text and text_script == "Arab" and fn_script != "Arab":
                 # Content-aware override: Arabic content trumps Latin/None
                 # filename inference.
                 dominant = "Arab"

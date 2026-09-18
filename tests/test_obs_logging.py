@@ -14,6 +14,7 @@ the *existing* ``_run_converter_subprocess`` and is expected to fail on a
 behavioural assertion, since child stderr is buffered via ``communicate()``
 today and never forwarded to the parent's real stderr as it is produced.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,9 +29,7 @@ import pytest
 
 from pageindex_mcp.worker.subprocess_mgr import _run_converter_subprocess
 
-RFC3339_MS_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
-)
+RFC3339_MS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
 REQUIRED_ENVELOPE_KEYS = {
     "v",
@@ -126,7 +125,9 @@ class TestJsonEnvelope:
         record = json.loads(stream.getvalue().strip())
 
         ts = record["ts"]
-        assert RFC3339_MS_RE.match(ts), f"ts {ts!r} is not RFC3339 UTC with ms (e.g. 2026-09-17T12:00:00.123Z)"
+        assert RFC3339_MS_RE.match(ts), (
+            f"ts {ts!r} is not RFC3339 UTC with ms (e.g. 2026-09-17T12:00:00.123Z)"
+        )
 
         parsed_dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
         parsed_epoch = parsed_dt.timestamp()
@@ -218,7 +219,9 @@ class TestHandlerTargetsStderrNotStdout:
             if isinstance(h, stdlib_logging.StreamHandler)
         ]
         assert any(s is sys.stderr for s in streams), f"no handler targets sys.stderr: {streams!r}"
-        assert not any(s is sys.stdout for s in streams), f"a handler targets sys.stdout: {streams!r}"
+        assert not any(s is sys.stdout for s in streams), (
+            f"a handler targets sys.stdout: {streams!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +340,7 @@ class TestContextCorrelation:
         first, second = records[0], records[1]
         assert first["doc_id"] == "doc-from-first-job"
         assert second["doc_id"] != "doc-from-first-job", (
-            "doc_id bled into the next document's record after the context "
-            "manager exited"
+            "doc_id bled into the next document's record after the context manager exited"
         )
 
 
@@ -429,8 +431,7 @@ class TestPhaseTracking:
         first_pass_seq = ocr_records[0]["phase_seq"]
         second_pass_seq = ocr_records[2]["phase_seq"]
         assert first_pass_seq != second_pass_seq, (
-            "phase_seq did not distinguish the re-entered OCR phase from its "
-            "first pass"
+            "phase_seq did not distinguish the re-entered OCR phase from its first pass"
         )
         # entry/exit of the same pass must share the same phase_seq
         assert ocr_records[0]["phase_seq"] == ocr_records[1]["phase_seq"]
@@ -747,9 +748,7 @@ class TestPreprocessClientBindsInsideSemaphore:
         sem = _asyncio.Semaphore(2)
         from pathlib import Path
 
-        with patch(
-            "pageindex_mcp.worker._run_converter_subprocess", fake_subprocess, create=True
-        ):
+        with patch("pageindex_mcp.worker._run_converter_subprocess", fake_subprocess, create=True):
             await _asyncio.gather(
                 preprocess_client._process_one(sem, Path("first.pdf"), "run-x"),
                 preprocess_client._process_one(sem, Path("second.pdf"), "run-x"),
@@ -771,9 +770,7 @@ class TestConvertersCliBindsLogContextFromEnv:
         from pageindex_mcp.converters_cli import _log_context_from_env
         from pageindex_mcp.obs.constants import ENV_LOG_CONTEXT
 
-        monkeypatch.setenv(
-            ENV_LOG_CONTEXT, _json.dumps({"run_id": "r1", "job_id": "j1"})
-        )
+        monkeypatch.setenv(ENV_LOG_CONTEXT, _json.dumps({"run_id": "r1", "job_id": "j1"}))
         assert _log_context_from_env() == {"run_id": "r1", "job_id": "j1"}
 
     def test_missing_env_var_returns_empty_mapping(self, monkeypatch):

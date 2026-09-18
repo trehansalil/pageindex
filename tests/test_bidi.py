@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """RTL detection, Arabic pipeline, bidi processing, AGPL bidi, and RFC Arabic tests."""
+
 from __future__ import annotations
 
 import inspect
@@ -263,6 +264,7 @@ class TestPictureAlignment:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_table_block(headers: list[str], rows: list[list[str]]) -> dict:
     """Create a minimal table block dict."""
     return {
@@ -277,7 +279,7 @@ def _arabic_table_block() -> dict:
     headers = ["البند", "2023", "2024"]  # البند
     rows = [
         ["الإيرادات", "100", "200"],  # الإيرادات
-        ["المصروفات", "50", "80"],   # المصروفات
+        ["المصروفات", "50", "80"],  # المصروفات
     ]
     return _make_table_block(headers, rows)
 
@@ -301,6 +303,7 @@ def _continuation_block(headers: list[str], rows: list[list[str]]) -> dict:
 # Test 1 (regression): Script-aware flat-prefer guard
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestScriptAwareFlatPreferGuard:
     """Arabic docs use a 1.5x multiplier; Latin docs use 3.0x."""
 
@@ -312,6 +315,7 @@ class TestScriptAwareFlatPreferGuard:
             _ARABIC_FLAT_PREFER_MULTIPLIER,
             _RFC029_FLAT_PREFER_MULTIPLIER,
         )
+
         assert _ARABIC_FLAT_PREFER_MULTIPLIER < _RFC029_FLAT_PREFER_MULTIPLIER, (
             f"Arabic multiplier ({_ARABIC_FLAT_PREFER_MULTIPLIER}) must be "
             f"< Latin multiplier ({_RFC029_FLAT_PREFER_MULTIPLIER})"
@@ -320,11 +324,13 @@ class TestScriptAwareFlatPreferGuard:
     def test_arabic_multiplier_default_is_1_5(self):
         """Default Arabic flat-prefer multiplier must be 1.5."""
         from pageindex_mcp.client.recovery import _ARABIC_FLAT_PREFER_MULTIPLIER
+
         assert _ARABIC_FLAT_PREFER_MULTIPLIER == 1.5
 
     def test_latin_multiplier_default_is_3_0(self):
         """Default Latin flat-prefer multiplier must be 3.0."""
         from pageindex_mcp.client.recovery import _RFC029_FLAT_PREFER_MULTIPLIER
+
         assert _RFC029_FLAT_PREFER_MULTIPLIER == 3.0
 
     def test_flat_prefer_selects_arabic_multiplier_for_arab_script(self):
@@ -334,6 +340,7 @@ class TestScriptAwareFlatPreferGuard:
         # Verify the method body references _ARABIC_FLAT_PREFER_MULTIPLIER
         # when expected_script == "Arab" by inspecting the source.
         from pageindex_mcp.client.recovery import RecoveryMixin
+
         src = inspect.getsource(RecoveryMixin._recover_flat_prefer)
         assert "_ARABIC_FLAT_PREFER_MULTIPLIER" in src, (
             "_recover_flat_prefer must reference _ARABIC_FLAT_PREFER_MULTIPLIER"
@@ -347,6 +354,7 @@ class TestScriptAwareFlatPreferGuard:
 # Test 2 (contract): Content-enriched ScriptContext
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestContentEnrichedScriptContext:
     """ScriptContext.from_document must detect Arabic from content text
     even when the filename suggests Latin or is script-neutral."""
@@ -357,8 +365,7 @@ class TestContentEnrichedScriptContext:
         arabic_text = "المادة " * 50  # المادة repeated
         ctx = ScriptContext.from_document("document.pdf", raw_text=arabic_text)
         assert ctx.dominant_script == "Arab", (
-            f"Expected 'Arab', got '{ctx.dominant_script}' "
-            f"(source={ctx.source})"
+            f"Expected 'Arab', got '{ctx.dominant_script}' (source={ctx.source})"
         )
 
     def test_english_filename_arabic_content_source_is_content_override(self):
@@ -373,9 +380,7 @@ class TestContentEnrichedScriptContext:
     def test_arabic_filename_arabic_content_stays_arab(self):
         """Arabic filename + Arabic content: dominant_script stays 'Arab'."""
         arabic_text = "المادة " * 50
-        ctx = ScriptContext.from_document(
-            "مرسوم_13.pdf", raw_text=arabic_text
-        )
+        ctx = ScriptContext.from_document("مرسوم_13.pdf", raw_text=arabic_text)
         assert ctx.dominant_script == "Arab"
 
     def test_latin_filename_latin_content_stays_latin(self):
@@ -383,9 +388,7 @@ class TestContentEnrichedScriptContext:
         (regression guard for Latin documents)."""
         latin_text = "This is a standard English document about insurance terms. " * 50
         ctx = ScriptContext.from_document("terms_and_conditions.pdf", raw_text=latin_text)
-        assert ctx.dominant_script != "Arab", (
-            "Latin content must not trigger Arabic override"
-        )
+        assert ctx.dominant_script != "Arab", "Latin content must not trigger Arabic override"
 
     def test_empty_content_preserves_filename_inference(self):
         """When raw_text is empty, ScriptContext relies on filename only."""
@@ -399,6 +402,7 @@ class TestContentEnrichedScriptContext:
 # ═══════════════════════════════════════════════════════════════════════════
 # Test 3 (contract): ensure_tessdata non-Latin verification
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestEnsureTessdataNonLatinVerification:
     """ensure_tessdata must not silently assume non-Latin tessdata exists
@@ -484,6 +488,7 @@ class TestTessdataLatinSubstitutionClosure:
 # Test 4 (regression): table_is_rtl stability
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestTableIsRtlStability:
     """table_is_rtl must be computed once on the original anchor and
     threaded through the entire merge chain, not recomputed per-merge."""
@@ -502,9 +507,7 @@ class TestTableIsRtlStability:
         """_merge_continuation_table must accept an is_rtl keyword arg
         that overrides internal table_is_rtl recomputation."""
         sig = inspect.signature(_merge_continuation_table)
-        assert "is_rtl" in sig.parameters, (
-            "_merge_continuation_table must have is_rtl parameter"
-        )
+        assert "is_rtl" in sig.parameters, "_merge_continuation_table must have is_rtl parameter"
 
     def test_stitch_continuation_tables_passes_anchor_is_rtl(self):
         """stitch_continuation_tables must compute table_is_rtl on the
@@ -512,12 +515,9 @@ class TestTableIsRtlStability:
         RTL decision does not drift across merges."""
         src = inspect.getsource(stitch_continuation_tables)
         # The function should compute anchor_is_rtl before the merge loop
-        assert "table_is_rtl" in src, (
-            "stitch_continuation_tables must call table_is_rtl"
-        )
+        assert "table_is_rtl" in src, "stitch_continuation_tables must call table_is_rtl"
         assert "is_rtl=" in src, (
-            "stitch_continuation_tables must pass is_rtl= to "
-            "_merge_continuation_table"
+            "stitch_continuation_tables must pass is_rtl= to _merge_continuation_table"
         )
 
     def test_merge_with_explicit_is_rtl_overrides_heuristic(self):
@@ -551,14 +551,13 @@ class TestTableIsRtlStability:
         blocks = [anchor, cont1, cont2]
         result = stitch_continuation_tables(blocks)
         # Should produce a single merged table (all continuations stitched)
-        assert len(result) == 1, (
-            f"Expected 1 merged table, got {len(result)} blocks"
-        )
+        assert len(result) == 1, f"Expected 1 merged table, got {len(result)} blocks"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Test 5 (contract): Arabic heading injection revert guard
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TestArabicHeadingInjectionRevertGuard:
     """Thin documents (<2000 content chars) with sparse Arabic markers
@@ -570,16 +569,14 @@ class TestArabicHeadingInjectionRevertGuard:
         # Build a thin Arabic doc: a few marker lines + minimal content
         lines = []
         for i in range(1, 6):
-            lines.append(f"مادة ({i})")       # مادة (N) -- marker
+            lines.append(f"مادة ({i})")  # مادة (N) -- marker
             lines.append(f"نص قصير {i}")  # نص قصير N
         md = "\n".join(lines)
         # Content is very short (<2000 chars), heading ratio >30%
         assert len(md) < 2000, f"Test setup: md must be <2000 chars, got {len(md)}"
         result = _inject_arabic_structural_headings(md)
         # Reverted: result equals original (no headings injected)
-        assert "# " not in result or result == md, (
-            "Thin doc heading injection should be reverted"
-        )
+        assert "# " not in result or result == md, "Thin doc heading injection should be reverted"
 
     def test_substantial_doc_heading_injection_kept(self):
         """A document with >5000 content chars keeps the injected headings."""
@@ -594,9 +591,7 @@ class TestArabicHeadingInjectionRevertGuard:
         result = _inject_arabic_structural_headings(md)
         # At least some headings should be injected (## markers)
         heading_lines = [ln for ln in result.split("\n") if ln.startswith("## ")]
-        assert len(heading_lines) > 0, (
-            "Substantial doc should keep injected headings"
-        )
+        assert len(heading_lines) > 0, "Substantial doc should keep injected headings"
 
     def test_non_arabic_doc_unaffected(self):
         """A Latin-only document should pass through without any heading
@@ -610,6 +605,7 @@ class TestArabicHeadingInjectionRevertGuard:
 # Test 6 (wiring): _recover_flat_prefer accepts expected_script
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class TestRecoverFlatPreferWiring:
     """_recover_flat_prefer must accept expected_script parameter and
     be called with it from indexer.py."""
@@ -617,45 +613,41 @@ class TestRecoverFlatPreferWiring:
     def test_signature_includes_expected_script(self):
         """_recover_flat_prefer must have expected_script in its signature."""
         from pageindex_mcp.client.recovery import RecoveryMixin
+
         sig = inspect.signature(RecoveryMixin._recover_flat_prefer)
         params = list(sig.parameters.keys())
         assert "expected_script" in params, (
-            f"_recover_flat_prefer signature must include expected_script. "
-            f"Found params: {params}"
+            f"_recover_flat_prefer signature must include expected_script. Found params: {params}"
         )
 
     def test_expected_script_has_default_none(self):
         """expected_script should default to None for backward compat."""
         from pageindex_mcp.client.recovery import RecoveryMixin
+
         sig = inspect.signature(RecoveryMixin._recover_flat_prefer)
         param = sig.parameters["expected_script"]
-        assert param.default is None, (
-            f"expected_script default must be None, got {param.default}"
-        )
+        assert param.default is None, f"expected_script default must be None, got {param.default}"
 
     def test_call_site_passes_expected_script(self):
         """indexer.py must pass expected_script when calling
         _recover_flat_prefer (wiring check)."""
         from pageindex_mcp.client import indexer as _idx_mod
+
         src = inspect.getsource(_idx_mod)
         # The call site should include expected_script in the invocation
-        assert "_recover_flat_prefer" in src, (
-            "indexer.py must call _recover_flat_prefer"
-        )
+        assert "_recover_flat_prefer" in src, "indexer.py must call _recover_flat_prefer"
         # Find the line that calls _recover_flat_prefer and verify it
         # passes expected_script
         lines = src.split("\n")
-        call_lines = [
-            ln for ln in lines if "_recover_flat_prefer" in ln and "def " not in ln
-        ]
+        call_lines = [ln for ln in lines if "_recover_flat_prefer" in ln and "def " not in ln]
         assert any("expected_script" in ln for ln in call_lines), (
-            "_recover_flat_prefer call site in indexer.py must pass "
-            "expected_script"
+            "_recover_flat_prefer call site in indexer.py must pass expected_script"
         )
 
     def test_arabic_flat_prefer_multiplier_imported_in_recovery(self):
         """_ARABIC_FLAT_PREFER_MULTIPLIER must be defined in recovery.py."""
         from pageindex_mcp.client import recovery as _rec_mod
+
         assert hasattr(_rec_mod, "_ARABIC_FLAT_PREFER_MULTIPLIER"), (
             "recovery.py must define _ARABIC_FLAT_PREFER_MULTIPLIER"
         )
@@ -666,6 +658,7 @@ class TestRecoverFlatPreferWiring:
 
 
 # --- from test_rfc_bidi.py ---
+
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -701,8 +694,7 @@ class TestImageEnrichmentPromotedGarbleGate:
         """A legitimate low-digit-ratio blob above the floor is not a
         false-positive -- PASS is still reachable."""
         structure = [
-            {"node_id": str(i), "title": "", "text": "x" * 200, "nodes": []}
-            for i in range(3)
+            {"node_id": str(i), "title": "", "text": "x" * 200, "nodes": []} for i in range(3)
         ]
         verdict, reason = classify_verdict(
             structure, "flat_mixed", None, image_enrichment_ratio=0.85
@@ -811,9 +803,7 @@ class TestValidateTreeRtlReversal:
     def test_reversed_arabic_tree_flagged(self):
         ok, reason = validate_tree(_reversed_tree())
         assert ok is False
-        assert reason == "rtl_reversal", (
-            f"Expected rtl_reversal, got {reason}"
-        )
+        assert reason == "rtl_reversal", f"Expected rtl_reversal, got {reason}"
 
     def test_logical_arabic_tree_not_flagged(self):
         ok, reason = validate_tree(_logical_tree())
@@ -831,9 +821,7 @@ class TestRepairFirstFlow:
         gate no longer masks rtl_reversal for Arabic trees, so repair
         runs and the tree is accepted."""
         ok, reason = _repair_first(_reversed_tree())
-        assert ok is True, (
-            f"Expected repair to converge (ok=True), got ok={ok}, reason={reason}"
-        )
+        assert ok is True, f"Expected repair to converge (ok=True), got ok={ok}, reason={reason}"
 
     def test_repair_does_not_converge_falls_to_fail_path(self):
         # A no-op repair (mirrors reconstruct_bidi_order failing to converge)
@@ -886,6 +874,7 @@ class TestInjectArabicStructuralHeadingsBlockStart:
     @pytest.fixture(autouse=True)
     def _disable_density_guard(self, monkeypatch):
         import pageindex_mcp.converters.headings as _h
+
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_bab_at_block_start_promoted_to_h1(self):
@@ -908,6 +897,7 @@ class TestDepthRecoveryOnInjectedHeadings:
     @pytest.fixture(autouse=True)
     def _disable_density_guard(self, monkeypatch):
         import pageindex_mcp.converters.headings as _h
+
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_synthetic_marsoom_biqanoon_reaches_depth_two(self):
@@ -972,7 +962,6 @@ class TestMarkerDedupRegex:
     def test_directly_adjacent_markers_collapse(self):
         md = "<!-- image --><!-- image -->"
         assert _DEDUP_RE.sub("", md).count("<!-- image -->") == 1
-
 
 
 # --- from test_rfc_bidi_agpl.py ---
@@ -1626,7 +1615,6 @@ def _wire_index(monkeypatch, *, validate_tree, flat_md: str):
     return mocks
 
 
-
 def _rtl_tree():
     """A tree that fails validate_tree with 'rtl_reversal' on every call --
     simulating a repair that never converges."""
@@ -1659,6 +1647,7 @@ class TestRtlReversalFlatFallback:
         # to trigger.  The test documents the new behavior: either flat
         # routing succeeds or garbling raises LowQualityTreeError.
         from pageindex_mcp.helpers.types import LowQualityTreeError
+
         validate = MagicMock(return_value=TreeGateResult(ok=False, defect=TreeDefect.RTL_REVERSAL))
         mocks = _wire_index(monkeypatch, validate_tree=validate, flat_md=_CLEAN_ARABIC_FLAT_MD)
         c = CustomPageIndexClient(api_key="test-key")
@@ -1757,10 +1746,7 @@ class TestClassifyVerdictImageEnrichmentPromotedSuppressed:
 
     def _tree_with_text(self, chars: int, nodes: int = 3) -> list:
         per_node = chars // nodes
-        return [
-            {"title": "", "text": "x" * per_node, "nodes": []}
-            for _ in range(nodes)
-        ]
+        return [{"title": "", "text": "x" * per_node, "nodes": []} for _ in range(nodes)]
 
     def test_genuinely_enriched_blocks_still_promote_verdict(self):
         """Sanity check: the suppression is targeted -- a document whose
@@ -1804,6 +1790,7 @@ class TestInjectArabicStructuralHeadingsNewMarkers:
     @pytest.fixture(autouse=True)
     def _disable_density_guard(self, monkeypatch):
         import pageindex_mcp.converters.headings as _h
+
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     @pytest.mark.parametrize(
@@ -1892,6 +1879,7 @@ class TestRegressionFixtures:
     @pytest.fixture(autouse=True)
     def _disable_density_guard(self, monkeypatch):
         import pageindex_mcp.converters.headings as _h
+
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
     def test_marsoom_biqanoon_13_2022_recovers_part_level_heading(self):

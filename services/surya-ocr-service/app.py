@@ -135,6 +135,7 @@ def _ocr_image(pil_img: Image.Image) -> tuple[str, list[RegionResult], float]:
 
 def _page_to_pil(pdf_bytes: bytes, page_idx: int, dpi: int = 150) -> Image.Image:
     import fitz
+
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pix = doc[page_idx].get_pixmap(dpi=dpi)
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
@@ -167,6 +168,7 @@ async def health():
 @app.get("/version", response_model=VersionResponse)
 async def version():
     import surya
+
     ver = getattr(surya, "__version__", "unknown")
     return VersionResponse(
         model="surya-ocr-vlm-650M",

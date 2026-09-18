@@ -16,6 +16,7 @@ correlation inside an executor-submitted callable must wrap it in
 ``propagate()`` (below), which task 12.5 applies to the per-picture OCR
 ``ThreadPoolExecutor.map`` sites in ``converters/pictures.py``.
 """
+
 from __future__ import annotations
 
 import functools

@@ -118,6 +118,7 @@ class TestPresentationFormsDetectedBeforeNFKC:
 
     def test_presentation_forms_detected_before_nfkc(self):
         import unicodedata
+
         # U+FB50 (ALEF WASLA ISOLATED FORM) decomposes under NFKC to U+0671
         pf_char = "ﭐ"
         regular = "".join(chr(c) for c in range(0x0620, 0x0640))

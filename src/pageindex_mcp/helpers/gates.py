@@ -188,10 +188,7 @@ def _gate_bidi_degraded(
     fires = reversed_signal or pres_forms_signal
     detail = ""
     if fires:
-        detail = (
-            f"reversed={reversed_signal}"
-            f",had_presentation_forms={pres_forms_signal}"
-        )
+        detail = f"reversed={reversed_signal},had_presentation_forms={pres_forms_signal}"
     decision(
         event="bidi_degraded_gate",
         choice="fires" if fires else "clear",
@@ -729,9 +726,7 @@ FLAT_GATE_COVERAGE: dict[TreeDefect, str] = {
 }
 
 _flat_routing_defects = {
-    g.defect
-    for g in GATES
-    if g.gate_fn is not None and decide_route(g.defect) == Route.FLAT
+    g.defect for g in GATES if g.gate_fn is not None and decide_route(g.defect) == Route.FLAT
 }
 assert _flat_routing_defects <= set(FLAT_GATE_COVERAGE), (
     f"FLAT_GATE_COVERAGE missing entries for FLAT-routing defects: "

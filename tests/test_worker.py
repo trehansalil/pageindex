@@ -1,4 +1,5 @@
 """Worker pipeline and LLM retry tests."""
+
 from __future__ import annotations
 
 import asyncio
@@ -261,6 +262,7 @@ class _ReadlineFeed:
         chunk = self._chunks[self._idx]
         self._idx += 1
         return chunk
+
     async def read(self, n: int = -1):
         """The production readers use ``read(n)``, not ``readline()``: a real
         ``asyncio.StreamReader.readline()`` raises ValueError on a line over
@@ -279,7 +281,6 @@ class _ReadlineFeed:
             if chunk:
                 return chunk
         return b""
-
 
 
 def _fake_subprocess(returncode, stdout=b"", stderr=b""):
@@ -628,6 +629,7 @@ def test_production_uses_the_extracted_function():
         "_run_converter_subprocess must call effective_child_timeout() rather "
         "than computing the budget inline"
     )
+
 
 # ── RFC-038 Task 3.1: integration tests (D1+D2+D4) ───────────────────────────
 def _fake_subprocess_e2e(handshake: dict, stdout: bytes, *, communicate_delay: float = 0):

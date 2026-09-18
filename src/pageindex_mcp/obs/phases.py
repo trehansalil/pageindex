@@ -6,6 +6,7 @@ detection, the recovery cascade, tree build + validation, verdict, and
 persistence. ``phase_seq`` (from ``obs.context.next_phase_seq``) -- not the
 enum member -- disambiguates a phase re-entered across a recovery pass.
 """
+
 from __future__ import annotations
 
 import logging

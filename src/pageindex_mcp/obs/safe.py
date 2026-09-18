@@ -6,6 +6,7 @@ value whose own ``__str__``/``__repr__`` also raise degrades to a fixed
 placeholder -- the posture ``tracing.py:168`` already takes ("tracing must
 never break the tool").
 """
+
 from __future__ import annotations
 
 import json

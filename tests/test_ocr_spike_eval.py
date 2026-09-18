@@ -89,14 +89,17 @@ def test_image_runner_raises_when_engine_connection_is_refused(
     assert not isinstance(exc_info.value, (TypeError, FileNotFoundError))
 
 
-@pytest.mark.parametrize("fn_name, extra_kwargs", [
-    ("run_paddleocr_on_pdf", {"max_pages": 3}),
-    ("run_paddleocr_on_image", {}),
-    ("run_paddleocr_vl_on_pdf", {"max_pages": 3}),
-    ("run_paddleocr_vl_on_image", {}),
-    ("run_surya_on_pdf", {"max_pages": 3}),
-    ("run_surya_on_image", {}),
-])
+@pytest.mark.parametrize(
+    "fn_name, extra_kwargs",
+    [
+        ("run_paddleocr_on_pdf", {"max_pages": 3}),
+        ("run_paddleocr_on_image", {}),
+        ("run_paddleocr_vl_on_pdf", {"max_pages": 3}),
+        ("run_paddleocr_vl_on_image", {}),
+        ("run_surya_on_pdf", {"max_pages": 3}),
+        ("run_surya_on_image", {}),
+    ],
+)
 def test_runner_no_longer_returns_swallowed_error_dict_on_connection_failure(
     tmp_path, fn_name, extra_kwargs
 ):
@@ -138,8 +141,10 @@ def test_main_exits_nonzero_when_paddleocr_endpoint_is_unreachable(tmp_path, cap
     out_dir = tmp_path / "out"
     argv = [
         "ocr_spike_eval.py",
-        "--doc-store", str(doc_store),
-        "--out-dir", str(out_dir),
+        "--doc-store",
+        str(doc_store),
+        "--out-dir",
+        str(out_dir),
         # deliberately do NOT pass --skip-paddleocr: the endpoint is simply down
     ]
     refused = httpx.ConnectError("Connection refused")
@@ -164,8 +169,10 @@ def test_main_exits_nonzero_when_surya_endpoint_is_unreachable(tmp_path, capsys)
     out_dir = tmp_path / "out"
     argv = [
         "ocr_spike_eval.py",
-        "--doc-store", str(doc_store),
-        "--out-dir", str(out_dir),
+        "--doc-store",
+        str(doc_store),
+        "--out-dir",
+        str(out_dir),
         "--skip-paddleocr",
         "--skip-paddleocr-vl",
         # deliberately do NOT pass --skip-surya
@@ -198,8 +205,10 @@ def test_main_does_not_hard_fail_when_engine_is_explicitly_skipped(tmp_path):
     out_dir = tmp_path / "out"
     argv = [
         "ocr_spike_eval.py",
-        "--doc-store", str(doc_store),
-        "--out-dir", str(out_dir),
+        "--doc-store",
+        str(doc_store),
+        "--out-dir",
+        str(out_dir),
         "--skip-paddleocr",
         "--skip-paddleocr-vl",
         "--skip-surya",
@@ -207,7 +216,10 @@ def test_main_does_not_hard_fail_when_engine_is_explicitly_skipped(tmp_path):
 
     # Act — httpx.get should not even be needed since every engine is skipped,
     # but patch it to raise anyway so this fails loudly if skip is ignored.
-    with patch.object(sys, "argv", argv), patch("httpx.get", side_effect=httpx.ConnectError("refused")):
+    with (
+        patch.object(sys, "argv", argv),
+        patch("httpx.get", side_effect=httpx.ConnectError("refused")),
+    ):
         try:
             ocr_eval.main()
         except SystemExit as exc:
@@ -232,8 +244,10 @@ def test_per_document_local_failure_does_not_abort_the_whole_run(tmp_path):
     out_dir = tmp_path / "out"
     argv = [
         "ocr_spike_eval.py",
-        "--doc-store", str(doc_store),
-        "--out-dir", str(out_dir),
+        "--doc-store",
+        str(doc_store),
+        "--out-dir",
+        str(out_dir),
         "--skip-paddleocr",
         "--skip-paddleocr-vl",
         "--skip-surya",
@@ -265,9 +279,7 @@ def test_per_document_local_failure_does_not_abort_the_whole_run(tmp_path):
 #   classify_document_langs(name)        -> ['ar', 'en']
 #   _tess_langs_from_detected(['ar','en']) -> ['ara', 'eng']   (harness, today)
 #   detect_ocr_langs(name)                 -> ['ara']           (production)
-_ARABIC_DOMINANT_FILENAME = (
-    "شهادة_ميلاد_وثيقة_رسمية_صادرة_من_وزارة_الداخلية_للمواطن.jpg"
-)
+_ARABIC_DOMINANT_FILENAME = "شهادة_ميلاد_وثيقة_رسمية_صادرة_من_وزارة_الداخلية_للمواطن.jpg"
 
 
 def _old_tess_langs_from_detected(detected_langs: list[str]) -> list[str]:

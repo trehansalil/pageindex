@@ -22,7 +22,6 @@ def _fresh_registry() -> HeuristicRegistry:
 
 
 class TestHeuristicRegistryCore:
-
     def test_register_returns_entry(self):
         r = _fresh_registry()
         entry = r.register("test_h", "RFC-099", created=date(2026, 9, 1), expiry=date(2026, 12, 1))
@@ -50,7 +49,10 @@ class TestHeuristicRegistryCore:
         r.register("expired_h", "RFC-099", created=date(2025, 1, 1), expiry=date(2025, 6, 1))
         with caplog.at_level(logging.WARNING, logger="pageindex_mcp.helpers.heuristic_registry"):
             r.fire("expired_h", ref_date=date(2026, 9, 1))
-        assert any("expired heuristic" in rec.message and "expired_h" in rec.message for rec in caplog.records)
+        assert any(
+            "expired heuristic" in rec.message and "expired_h" in rec.message
+            for rec in caplog.records
+        )
 
     def test_is_expired_true(self):
         r = _fresh_registry()
@@ -98,7 +100,6 @@ class TestHeuristicRegistryCore:
 
 
 class TestKnownHeuristicRegistrations:
-
     _KNOWN = [
         "source_selection_bypass",
         "_ARABIC_FLAT_PREFER_MULTIPLIER",

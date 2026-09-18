@@ -445,7 +445,6 @@ def _fake_client_settings(vlm_describe_images=False):
     )
 
 
-
 async def _tree_coro():
     return {"structure": [], "doc_description": ""}
 
@@ -462,7 +461,9 @@ def _wire_flat_branch(monkeypatch, *, chain_md, pics, vlm_describe_images=False)
     monkeypatch.setattr(_rec, "_OCR_ESCALATION_GARBLE", False)
     # indexer.py now reads pipeline_config.ocr_escalation_per_picture live
     # rather than importing a frozen module-level constant.
-    monkeypatch.setattr(_idx, "pipeline_config", replace(_idx.pipeline_config, ocr_escalation_per_picture=False))
+    monkeypatch.setattr(
+        _idx, "pipeline_config", replace(_idx.pipeline_config, ocr_escalation_per_picture=False)
+    )
     monkeypatch.setattr(
         _idx,
         "pdf_markdown_converters",
@@ -630,6 +631,7 @@ class TestStandaloneImageEnrichment:
             vlm_describe_images=False,
             pii_corpus=False,
         )
+
 
 def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
     """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
@@ -806,12 +808,11 @@ class TestStandaloneImageSplice:
             monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
             monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
             # Return markdown with an image marker and some OCR text
-            monkeypatch.setattr(
-                _idx, "image_to_markdown", lambda path, langs: "<!-- image -->"
-            )
+            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
             # _tesseract_ocr_image returns substantial OCR text
             monkeypatch.setattr(
-                _idx, "_tesseract_ocr_image",
+                _idx,
+                "_tesseract_ocr_image",
                 lambda path, langs: "OCR recovered text from standalone image",
             )
 
@@ -823,6 +824,7 @@ class TestStandaloneImageSplice:
 
             async def _fake_tree(md_path):
                 import pathlib
+
                 content = pathlib.Path(md_path).read_text(encoding="utf-8")
                 captured_md.append(content)
                 return {
@@ -887,11 +889,10 @@ class TestStandaloneImageSplice:
             monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
             monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
             monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
             monkeypatch.setattr(
-                _idx, "image_to_markdown", lambda path, langs: "<!-- image -->"
-            )
-            monkeypatch.setattr(
-                _idx, "_tesseract_ocr_image",
+                _idx,
+                "_tesseract_ocr_image",
                 lambda path, langs: "OCR recovered text from standalone image",
             )
 
@@ -905,6 +906,7 @@ class TestStandaloneImageSplice:
 
             async def _fake_tree(md_path):
                 import pathlib
+
                 content = pathlib.Path(md_path).read_text(encoding="utf-8")
                 captured_md.append(content)
                 return {
@@ -940,6 +942,7 @@ class TestStandaloneImageDetectOcrLangs:
         source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
         # Create a temp file with Arabic characters in the name
         import tempfile as _tf
+
         tmp_dir = _tf.mkdtemp()
         arabic_path = os.path.join(tmp_dir, "قرار_وزاري.jpg")
         try:
@@ -989,12 +992,8 @@ class TestStandaloneImageDetectOcrLangs:
                 return langs
 
             monkeypatch.setattr(_idx, "ensure_tessdata", spy_ensure)
-            monkeypatch.setattr(
-                _idx, "image_to_markdown", lambda path, langs: "<!-- image -->"
-            )
-            monkeypatch.setattr(
-                _idx, "_tesseract_ocr_image", lambda path, langs: ""
-            )
+            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
+            monkeypatch.setattr(_idx, "_tesseract_ocr_image", lambda path, langs: "")
 
             c = CustomPageIndexClient(api_key="test-key")
 
@@ -1015,4 +1014,5 @@ class TestStandaloneImageDetectOcrLangs:
             )
         finally:
             import shutil
+
             shutil.rmtree(tmp_dir, ignore_errors=True)

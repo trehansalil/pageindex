@@ -67,9 +67,7 @@ class HeuristicRegistry:
             graduation_criteria=graduation_criteria,
         )
         self._entries[name] = entry
-        _HEURISTIC_EXPIRED_GAUGE.labels(heuristic=name).set(
-            1.0 if self.is_expired(name) else 0.0
-        )
+        _HEURISTIC_EXPIRED_GAUGE.labels(heuristic=name).set(1.0 if self.is_expired(name) else 0.0)
         return entry
 
     def fire(self, name: str, *, ref_date: date | None = None) -> None:

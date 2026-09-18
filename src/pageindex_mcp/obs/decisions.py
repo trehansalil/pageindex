@@ -7,6 +7,7 @@ registry and instrumenting the 19 enumerated decision points across
 pipeline}.py`` is task 12.5 -- a separate tranche, not built here. Nothing
 in ``src/`` calls ``decision()`` yet.
 """
+
 from __future__ import annotations
 
 import logging

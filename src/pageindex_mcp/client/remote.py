@@ -50,7 +50,9 @@ async def _check_remote_docling_version(httpx_client) -> None:
     global _remote_docling_version, _remote_pipeline_version_behind
     if _remote_docling_version is None:
         try:
-            ver_resp = await httpx_client.get(f"{settings.docling_service_url}/version", timeout=5.0)
+            ver_resp = await httpx_client.get(
+                f"{settings.docling_service_url}/version", timeout=5.0
+            )
             _remote_docling_version = ver_resp.json()
             remote_sha = _remote_docling_version.get("commit_sha", "unknown")
             remote_pv = _remote_docling_version.get("pipeline_version", 0)

@@ -102,15 +102,19 @@ async def test_reads_return_none_when_pool_absent(no_pool):
 async def test_delete_doc_passes_statement_timeout():
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value="DELETE 1")
-    conn.transaction = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=None),
-        __aexit__=AsyncMock(return_value=False),
-    ))
+    conn.transaction = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     pool = _mock_pool()
-    pool.acquire = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=conn),
-        __aexit__=AsyncMock(return_value=False),
-    ))
+    pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=conn),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         await registry.delete_doc("test-doc-id")
     assert conn.execute.await_count == 2
@@ -414,8 +418,13 @@ async def test_upsert_doc_uses_fetchrow_not_execute():
     return the RETURNING row as a dict."""
     pool = _mock_pool()
     pool.fetchrow = AsyncMock(
-        return_value={"doc_id": "fr-1", "verdict": "PASS", "pipeline_version": 3,
-                      "permanent_marginal": False, "verdict_computed_at": "2026-08-01"}
+        return_value={
+            "doc_id": "fr-1",
+            "verdict": "PASS",
+            "pipeline_version": 3,
+            "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-01",
+        }
     )
     with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         result = await registry.upsert_doc({"doc_id": "fr-1", "verdict": "PASS"})
@@ -440,17 +449,21 @@ async def test_upsert_verdict_deprecated_wrapper_delegates_to_upsert_doc():
     """Zone-4 Phase 3: upsert_verdict is a thin deprecated wrapper that
     delegates to upsert_doc with a minimal meta dict."""
     pool = _mock_pool()
-    pool.fetchrow = AsyncMock(return_value={"doc_id": "dep-1", "verdict": "PASS",
-                                            "pipeline_version": 2, "permanent_marginal": False,
-                                            "verdict_computed_at": "2026-08-01"})
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "doc_id": "dep-1",
+            "verdict": "PASS",
+            "pipeline_version": 2,
+            "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-01",
+        }
+    )
     with (
         patch("pageindex_mcp.registry.schema.get_pool", return_value=pool),
         warnings.catch_warnings(record=True) as w,
     ):
         warnings.simplefilter("always")
-        result = await registry.upsert_verdict(
-            "dep-1", {"verdict": "PASS", "pipeline_version": 2}
-        )
+        result = await registry.upsert_verdict("dep-1", {"verdict": "PASS", "pipeline_version": 2})
 
     assert result is not None
     assert result["doc_id"] == "dep-1"
@@ -484,8 +497,7 @@ def test_settings_has_no_verdict_authority_env_var():
     # The string should not appear in any executable line (comments are OK).
     # Filter out comment lines.
     executable_lines = [
-        line for line in source.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+        line for line in source.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
     for line in executable_lines:
         assert "REGISTRY_VERDICT_AUTHORITY" not in line, (
@@ -504,28 +516,45 @@ async def test_upsert_doc_returns_dict_type():
     pool = _mock_pool()
     # Simulate an asyncpg Record-like object that supports dict()
     mock_row = MagicMock()
-    mock_row.__iter__ = MagicMock(return_value=iter([
-        ("doc_id", "dt-1"), ("verdict", "PASS"),
-        ("pipeline_version", 3), ("permanent_marginal", False),
-        ("verdict_computed_at", "2026-08-01"),
-    ]))
-    mock_row.keys = MagicMock(return_value=[
-        "doc_id", "verdict", "pipeline_version",
-        "permanent_marginal", "verdict_computed_at",
-    ])
+    mock_row.__iter__ = MagicMock(
+        return_value=iter(
+            [
+                ("doc_id", "dt-1"),
+                ("verdict", "PASS"),
+                ("pipeline_version", 3),
+                ("permanent_marginal", False),
+                ("verdict_computed_at", "2026-08-01"),
+            ]
+        )
+    )
+    mock_row.keys = MagicMock(
+        return_value=[
+            "doc_id",
+            "verdict",
+            "pipeline_version",
+            "permanent_marginal",
+            "verdict_computed_at",
+        ]
+    )
     mock_row.__getitem__ = lambda self, k: {
-        "doc_id": "dt-1", "verdict": "PASS",
-        "pipeline_version": 3, "permanent_marginal": False,
+        "doc_id": "dt-1",
+        "verdict": "PASS",
+        "pipeline_version": 3,
+        "permanent_marginal": False,
         "verdict_computed_at": "2026-08-01",
     }[k]
 
     # dict(mock_row) needs to work -- simulate by making fetchrow return
     # something that dict() can convert
-    pool.fetchrow = AsyncMock(return_value={
-        "doc_id": "dt-1", "verdict": "PASS",
-        "pipeline_version": 3, "permanent_marginal": False,
-        "verdict_computed_at": "2026-08-01",
-    })
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "doc_id": "dt-1",
+            "verdict": "PASS",
+            "pipeline_version": 3,
+            "permanent_marginal": False,
+            "verdict_computed_at": "2026-08-01",
+        }
+    )
     with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
         result = await registry.upsert_doc({"doc_id": "dt-1", "verdict": "PASS"})
 
@@ -547,31 +576,45 @@ class TestForceVerdictOverrideWiring:
     async def test_force_override_popped_and_passed_to_upsert_doc(self):
         """force_verdict_override=True in verdict_fields is popped and
         forwarded as kwarg to upsert_doc."""
-        mock_upsert = AsyncMock(return_value={
-            "doc_id": "w1", "verdict": "FAIL",
-            "pipeline_version": 5, "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-25T00:00:00Z",
-        })
+        mock_upsert = AsyncMock(
+            return_value={
+                "doc_id": "w1",
+                "verdict": "FAIL",
+                "pipeline_version": 5,
+                "permanent_marginal": False,
+                "verdict_computed_at": "2026-08-25T00:00:00Z",
+            }
+        )
         mock_fields = {
-            "doc_id": "w1", "verdict": "FAIL",
-            "pipeline_version": 5, "content_class": "flat_prose",
+            "doc_id": "w1",
+            "verdict": "FAIL",
+            "pipeline_version": 5,
+            "content_class": "flat_prose",
         }
 
         with (
-            patch("pageindex_mcp.worker.registry_mirror.settings",
-                  MagicMock(registry_enabled=True, postgres_dsn="postgresql://x")),
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                MagicMock(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
             patch("pageindex_mcp.registry.get_pool", return_value=MagicMock()),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
-            patch("pageindex_mcp.worker.registry_mirror.read_registry_fields",
-                  return_value=mock_fields),
+            patch(
+                "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+                return_value=mock_fields,
+            ),
             patch("pageindex_mcp.storage.verdict.save_doc_meta"),
-            patch("pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
-                  MagicMock()),
-            patch("pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                  AsyncMock()),
+            patch(
+                "pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
+                MagicMock(),
+            ),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()
+            ),
         ):
             await _upsert_registry_row(
-                "w1", "flat_prose",
+                "w1",
+                "flat_prose",
                 verdict_fields={"verdict": "FAIL", "force_verdict_override": True},
             )
 
@@ -585,31 +628,45 @@ class TestForceVerdictOverrideWiring:
     @pytest.mark.asyncio
     async def test_default_override_false_when_not_in_fields(self):
         """When verdict_fields lacks force_verdict_override, default is False."""
-        mock_upsert = AsyncMock(return_value={
-            "doc_id": "w2", "verdict": "PASS",
-            "pipeline_version": 4, "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-25T00:00:00Z",
-        })
+        mock_upsert = AsyncMock(
+            return_value={
+                "doc_id": "w2",
+                "verdict": "PASS",
+                "pipeline_version": 4,
+                "permanent_marginal": False,
+                "verdict_computed_at": "2026-08-25T00:00:00Z",
+            }
+        )
         mock_fields = {
-            "doc_id": "w2", "verdict": "PASS",
-            "pipeline_version": 4, "content_class": "flat_prose",
+            "doc_id": "w2",
+            "verdict": "PASS",
+            "pipeline_version": 4,
+            "content_class": "flat_prose",
         }
 
         with (
-            patch("pageindex_mcp.worker.registry_mirror.settings",
-                  MagicMock(registry_enabled=True, postgres_dsn="postgresql://x")),
+            patch(
+                "pageindex_mcp.worker.registry_mirror.settings",
+                MagicMock(registry_enabled=True, postgres_dsn="postgresql://x"),
+            ),
             patch("pageindex_mcp.registry.get_pool", return_value=MagicMock()),
             patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
-            patch("pageindex_mcp.worker.registry_mirror.read_registry_fields",
-                  return_value=mock_fields),
+            patch(
+                "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+                return_value=mock_fields,
+            ),
             patch("pageindex_mcp.storage.verdict.save_doc_meta"),
-            patch("pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
-                  MagicMock()),
-            patch("pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                  AsyncMock()),
+            patch(
+                "pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
+                MagicMock(),
+            ),
+            patch(
+                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()
+            ),
         ):
             await _upsert_registry_row(
-                "w2", "flat_prose",
+                "w2",
+                "flat_prose",
                 verdict_fields={"verdict": "PASS"},
             )
 
@@ -852,7 +909,9 @@ async def test_upsert_registry_row_registry_fields_skips_minio_read():
         ),
     ):
         await _upsert_registry_row(
-            "rf-1", None, registry_fields=registry_fields,
+            "rf-1",
+            None,
+            registry_fields=registry_fields,
         )
 
     # read_registry_fields must NOT be called when registry_fields is provided
@@ -941,7 +1000,8 @@ async def test_upsert_registry_row_verdict_fields_override_registry_fields():
         ),
     ):
         await _upsert_registry_row(
-            "overlay-1", None,
+            "overlay-1",
+            None,
             verdict_fields=verdict_fields,
             registry_fields=registry_fields,
         )
@@ -995,12 +1055,9 @@ async def test_upsert_registry_row_disabled_logs_degraded_consistency(caplog):
     ):
         await _upsert_registry_row("doc-degraded", None)
 
-    degraded_msgs = [
-        r.message for r in caplog.records if "degraded consistency" in r.message
-    ]
+    degraded_msgs = [r.message for r in caplog.records if "degraded consistency" in r.message]
     assert len(degraded_msgs) >= 1, (
-        f"Expected 'degraded consistency' log but got: "
-        f"{[r.message for r in caplog.records]}"
+        f"Expected 'degraded consistency' log but got: {[r.message for r in caplog.records]}"
     )
     # The message should mention the doc_id for traceability
     assert "doc-degraded" in degraded_msgs[0]
@@ -1021,12 +1078,9 @@ async def test_upsert_registry_row_pool_not_ready_logs_degraded_consistency(capl
     ):
         await _upsert_registry_row("doc-pooldown", None)
 
-    degraded_msgs = [
-        r.message for r in caplog.records if "degraded consistency" in r.message
-    ]
+    degraded_msgs = [r.message for r in caplog.records if "degraded consistency" in r.message]
     assert len(degraded_msgs) >= 1, (
-        f"Expected 'degraded consistency' log but got: "
-        f"{[r.message for r in caplog.records]}"
+        f"Expected 'degraded consistency' log but got: {[r.message for r in caplog.records]}"
     )
 
 
@@ -1243,7 +1297,7 @@ class TestTreeResultRegistryFieldsStash:
         # Between last_registry_fields and the closing brace, _tree_node_count
         # should appear (not a hardcoded 0).
         rf_idx = tree_src.index("last_registry_fields")
-        rf_block = tree_src[rf_idx:rf_idx + 600]
+        rf_block = tree_src[rf_idx : rf_idx + 600]
         assert "_tree_node_count" in rf_block
 
     def test_tree_stash_verdict_fields_also_set(self):
@@ -1304,7 +1358,7 @@ class TestFlatResultRegistryFieldsStash:
             next_def = len(src)
         flat_src = src[persist_flat_idx:next_def]
         rf_idx = flat_src.index("last_registry_fields")
-        block = flat_src[rf_idx:rf_idx + 600]
+        block = flat_src[rf_idx : rf_idx + 600]
         assert '"node_count": 0' in block
 
 
@@ -1371,7 +1425,7 @@ class TestJobVerdictFieldsWiring:
         (ready for when job.py wires it from the child result)."""
         src = _read_src("worker/registry_mirror.py")
         fn_idx = src.index("async def _upsert_registry_row")
-        sig_block = src[fn_idx:fn_idx + 300]
+        sig_block = src[fn_idx : fn_idx + 300]
         assert "registry_fields" in sig_block
 
 
@@ -1423,7 +1477,8 @@ class TestRegistryMirrorSkipMinioReread:
             ),
         ):
             await _upsert_registry_row(
-                "doc-1", None,
+                "doc-1",
+                None,
                 registry_fields=registry_fields,
             )
 
@@ -1478,7 +1533,8 @@ class TestRegistryMirrorSkipMinioReread:
             ),
         ):
             await _upsert_registry_row(
-                "doc-cc", "flat_table",
+                "doc-cc",
+                "flat_table",
                 registry_fields=registry_fields,
             )
 
@@ -1505,7 +1561,8 @@ class TestRegistryMirrorSkipMinioReread:
             ),
         ):
             await _upsert_registry_row(
-                "doc-both", None,
+                "doc-both",
+                None,
                 verdict_fields=verdict_fields,
                 registry_fields=registry_fields,
             )
@@ -1536,7 +1593,8 @@ class TestRegistryMirrorSkipMinioReread:
             ),
         ):
             await _upsert_registry_row(
-                "doc-copy", "flat_table",
+                "doc-copy",
+                "flat_table",
                 registry_fields=registry_fields,
             )
 
@@ -1615,7 +1673,7 @@ class TestDeleteDocCascadeOrdering:
         src = _read_src("storage/documents.py")
         # Find the delete_doc function's docstring
         fn_idx = src.index("async def delete_doc")
-        docstring_block = src[fn_idx:fn_idx + 600]
+        docstring_block = src[fn_idx : fn_idx + 600]
         # Step numbers mentioned in the docstring
         for step in ["1.", "2.", "3.", "4.", "5.", "6.", "7."]:
             assert step in docstring_block, f"Step {step} not in delete_doc docstring"
@@ -1624,7 +1682,7 @@ class TestDeleteDocCascadeOrdering:
         """delete_doc must be idempotent: missing objects tolerated."""
         src = _read_src("storage/documents.py")
         fn_idx = src.index("async def delete_doc")
-        fn_src = src[fn_idx:fn_idx + 3000]
+        fn_src = src[fn_idx : fn_idx + 3000]
         # NoSuchKey must be tolerated in multiple steps
         assert "NoSuchKey" in fn_src
 
@@ -2092,15 +2150,19 @@ async def test_delete_doc_statement_timeout_precedes_delete_with_correct_value()
 
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value="DELETE 1")
-    conn.transaction = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=None),
-        __aexit__=AsyncMock(return_value=False),
-    ))
+    conn.transaction = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     pool = _mock_pool()
-    pool.acquire = MagicMock(return_value=AsyncMock(
-        __aenter__=AsyncMock(return_value=conn),
-        __aexit__=AsyncMock(return_value=False),
-    ))
+    pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=conn),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
 
     with (
         patch("pageindex_mcp.registry.schema.get_pool", return_value=pool),

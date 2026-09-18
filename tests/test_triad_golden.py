@@ -5,6 +5,7 @@ RFC-041 D6: 10 canonical document archetypes with full pipeline snapshots.
 Any code change shifting a verdict produces a visible diff.  Use
 ``scripts/update_golden_files.py`` for intentional snapshot regeneration.
 """
+
 from __future__ import annotations
 
 import json
@@ -127,8 +128,7 @@ class TestTriadGoldenFiles:
         observed = _run_triad_pipeline(golden)
         expected = golden["expected"]
         assert observed["gate_ok"] == expected["gate_ok"], (
-            f"[{name}] gate_ok mismatch: "
-            f"expected={expected['gate_ok']}, got={observed['gate_ok']}"
+            f"[{name}] gate_ok mismatch: expected={expected['gate_ok']}, got={observed['gate_ok']}"
         )
         if "gate_defect" in expected:
             assert observed["gate_defect"] == expected["gate_defect"], (
@@ -185,9 +185,7 @@ class TestTriadGoldenFiles:
                 failures.append(f"  {key}: expected={expected[key]}, got={observed[key]}")
 
         if "verdict" in expected and observed["verdict"] != expected["verdict"]:
-            failures.append(
-                f"  verdict: expected={expected['verdict']}, got={observed['verdict']}"
-            )
+            failures.append(f"  verdict: expected={expected['verdict']}, got={observed['verdict']}")
         if "verdict_in" in expected and observed["verdict"] not in expected["verdict_in"]:
             failures.append(
                 f"  verdict: expected one of {expected['verdict_in']}, got={observed['verdict']}"
@@ -199,9 +197,7 @@ class TestTriadGoldenFiles:
             )
 
         if failures:
-            pytest.fail(
-                f"Golden-file snapshot diff for [{name}]:\n" + "\n".join(failures)
-            )
+            pytest.fail(f"Golden-file snapshot diff for [{name}]:\n" + "\n".join(failures))
 
 
 class TestGoldenFileIntegrity:

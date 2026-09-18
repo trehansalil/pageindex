@@ -49,6 +49,8 @@ from tests._garble_compat import check_garble
 
 _RETRY_POLICIES = frozenset({_ReasonPolicy.RETRY_OCR, _ReasonPolicy.RETRY_RTL})
 _GATES_BY_DEFECT: dict[TreeDefect, GateSpec] = {g.defect: g for g in GATES}
+
+
 def _make_state(
     ok: bool = False,
     route: Route = Route.REJECT,
@@ -292,6 +294,7 @@ class _ReadlineFeed:
         chunk = self._chunks[self._idx]
         self._idx += 1
         return chunk
+
     async def read(self, n: int = -1):
         """The production readers use ``read(n)``, not ``readline()``: a real
         ``asyncio.StreamReader.readline()`` raises ValueError on a line over
@@ -353,7 +356,9 @@ class TestDynamicTimeoutWiring:
             await _run_converter_subprocess("/tmp/bigger.pdf")
         # The formula still asks for the full chunk-proportional budget...
         budget = effective_child_timeout(chunk_count=chunk_count, is_docling_route=True)
-        assert budget.requested == CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+        assert (
+            budget.requested == CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+        )
         assert budget.requested > CHILD_TIMEOUT
 
         # ...and the cap is what the child actually gets. Under the 60-minute

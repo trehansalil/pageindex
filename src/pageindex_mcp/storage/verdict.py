@@ -34,6 +34,7 @@ SIDECAR_VERSION = 4
 # listed here so the fat path stays lossless the moment they appear in `meta`.
 _FACET_FIELDS = ("product", "tier", "doc_family", "effective_date")
 
+
 def _read_existing_sidecar(mc: Minio, doc_id: str) -> dict:
     """Best-effort read of the existing sidecar for merge semantics."""
     key = f"processed/{doc_id}.meta.json"

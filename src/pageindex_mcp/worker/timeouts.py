@@ -9,6 +9,7 @@ module exists so production and its tests read the same code.
 free of circular dependencies, and the per-chunk budget lives in
 ``converters.docling_conv``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

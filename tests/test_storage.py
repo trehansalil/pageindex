@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """Storage operations: MinIO path prefix, presign public route, and core storage tests."""
+
 from __future__ import annotations
 
 import importlib
@@ -578,11 +579,16 @@ def test_per_node_garble_catches_pua_node():
     garbled_node = {"title": "Bad", "text": _pua_heavy_text()}
     tree = [garbled_node] + [_clean_node(i) for i in range(99)]
 
-    assert _garble_check_nodes(
-        tree,
-        script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
-        config=GarbleConfig(),
-    ) == 1
+    assert (
+        _garble_check_nodes(
+            tree,
+            script_context=ScriptContext(
+                dominant_script=None, had_presentation_forms=False, source="test"
+            ),
+            config=GarbleConfig(),
+        )
+        == 1
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -651,9 +657,7 @@ def test_save_doc_meta_does_not_call_confirm_write_visible(mock_minio):
         "source_url": "",
         "processed_at": "2026-08-21T00:00:00+00:00",
     }
-    with patch(
-        "pageindex_mcp.storage.minio_ops._confirm_write_visible"
-    ) as mock_barrier:
+    with patch("pageindex_mcp.storage.minio_ops._confirm_write_visible") as mock_barrier:
         save_doc_meta("barrier-1", meta)
 
     mock_barrier.assert_not_called()
@@ -711,9 +715,7 @@ def test_save_doc_still_calls_confirm_write_visible(mock_minio):
     }
     with (
         patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch(
-            "pageindex_mcp.storage.minio_ops._confirm_write_visible"
-        ) as mock_barrier,
+        patch("pageindex_mcp.storage.minio_ops._confirm_write_visible") as mock_barrier,
     ):
         save_doc("barrier-keep-1", tree)
 
@@ -732,9 +734,7 @@ def test_hash_cache_delete_issues_redis_hdel_and_legacy_purge(fake_cache_redis):
     hash_cache_set("purge.pdf", "hash-purge")
     assert hash_cache_get("purge.pdf") == "hash-purge"
 
-    with patch(
-        "pageindex_mcp.storage.hash_cache._purge_legacy_hash_entry"
-    ) as mock_legacy:
+    with patch("pageindex_mcp.storage.hash_cache._purge_legacy_hash_entry") as mock_legacy:
         hash_cache_delete("purge.pdf")
 
     # Redis entry removed
@@ -802,9 +802,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
 
     # All entries are ErasureStep instances
     for entry in _ERASURE_MANIFEST:
-        assert isinstance(entry, ErasureStep), (
-            f"Expected ErasureStep, got {type(entry).__name__}"
-        )
+        assert isinstance(entry, ErasureStep), f"Expected ErasureStep, got {type(entry).__name__}"
 
     # Step numbers must be non-decreasing (manifest is ordered by step)
     step_numbers = [e.step for e in _ERASURE_MANIFEST]
@@ -814,9 +812,17 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
 
     # All required step names must be present
     expected_names = {
-        "uploads", "processed_json", "processed_flat_json", "figures",
-        "verdicts", "meta_json", "redis_cache", "reconcile_etag",
-        "hash_cache", "registry", "preloaded",
+        "uploads",
+        "processed_json",
+        "processed_flat_json",
+        "figures",
+        "verdicts",
+        "meta_json",
+        "redis_cache",
+        "reconcile_etag",
+        "hash_cache",
+        "registry",
+        "preloaded",
     }
     actual_names = {e.name for e in _ERASURE_MANIFEST}
     assert actual_names == expected_names, (
@@ -1286,11 +1292,14 @@ def test_save_doc_meta_preserves_consistency_regime_on_verdict_update(mock_minio
     mock_minio.get_object.return_value = response
 
     # Call save_doc_meta with verdict-only update (no consistency_regime)
-    save_doc_meta("regime-preserve-1", {
-        "verdict": "PASS",
-        "pipeline_version": 5,
-        "verdict_computed_at": "2026-08-28T01:00:00+00:00",
-    })
+    save_doc_meta(
+        "regime-preserve-1",
+        {
+            "verdict": "PASS",
+            "pipeline_version": 5,
+            "verdict_computed_at": "2026-08-28T01:00:00+00:00",
+        },
+    )
 
     # Verify the written sidecar preserved consistency_regime
     written = mock_minio.put_object.call_args[0][2].read()

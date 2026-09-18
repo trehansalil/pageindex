@@ -127,11 +127,21 @@ def test_reset_pipeline_config_refreshes_singleton(monkeypatch):
 
 _FORMERLY_FROZEN_FIELDS = {
     # (env_var, pipeline_config_attr, module_alias_name, non_default_env_value, expected_python_value)
-    "PDF_INSPECTOR_PRECLASSIFY": ("pdf_inspector_preclassify", "PDF_INSPECTOR_PRECLASSIFY", "1", True),
+    "PDF_INSPECTOR_PRECLASSIFY": (
+        "pdf_inspector_preclassify",
+        "PDF_INSPECTOR_PRECLASSIFY",
+        "1",
+        True,
+    ),
     "REMOTE_MD_RENORMALIZE": ("remote_md_renormalize", "REMOTE_MD_RENORMALIZE", "0", False),
     "ALLOW_AGPL_FALLBACK": ("allow_agpl_fallback", "ALLOW_AGPL_FALLBACK", "0", False),
     "OCR_ESCALATION_GARBLE": ("ocr_escalation_garble", "OCR_ESCALATION_GARBLE", "0", False),
-    "OCR_ESCALATION_PER_PICTURE": ("ocr_escalation_per_picture", "OCR_ESCALATION_PER_PICTURE", "0", False),
+    "OCR_ESCALATION_PER_PICTURE": (
+        "ocr_escalation_per_picture",
+        "OCR_ESCALATION_PER_PICTURE",
+        "0",
+        False,
+    ),
     "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED": (
         "image_dominant_ocr_escalation_enabled",
         "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED",
@@ -155,6 +165,7 @@ def test_reset_pipeline_config_rereads_formerly_frozen_field(monkeypatch, env_va
     monkeypatch.setenv(env_var, env_value)
 
     import pageindex_mcp.config as cfg_mod
+
     cfg_mod.reset_pipeline_config()
 
     # pipeline_config attribute must reflect the env override
@@ -196,6 +207,7 @@ def test_garble_config_from_config_threads_garble_digit_floor(monkeypatch):
     monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "1000")
 
     import pageindex_mcp.config as cfg_mod
+
     cfg_mod.reset_pipeline_config()
 
     from pageindex_mcp.helpers.garble import GarbleConfig
@@ -217,6 +229,7 @@ def test_effective_config_snapshot_includes_garble_digit_floor(monkeypatch):
     monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "777")
 
     import pageindex_mcp.config as cfg_mod
+
     cfg_mod.reset_pipeline_config()
 
     snap = cfg_mod.effective_config_snapshot()
@@ -246,6 +259,7 @@ def test_pdf_markdown_converters_consistent_with_pipeline_config(monkeypatch):
     monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "0")
 
     import pageindex_mcp.config as cfg_mod
+
     cfg_mod.reset_pipeline_config()
 
     assert cfg_mod.pipeline_config.pdf_converter == "pymupdf4llm"

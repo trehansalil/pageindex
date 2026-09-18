@@ -71,9 +71,7 @@ class _StderrTail:
         return bytes(self._buf).decode(errors="replace")
 
 
-async def _forward_child_stderr(
-    stderr_reader: asyncio.StreamReader, tail: _StderrTail
-) -> None:
+async def _forward_child_stderr(stderr_reader: asyncio.StreamReader, tail: _StderrTail) -> None:
     """Stream the child's stderr to the parent's own stderr as it is produced.
 
     Runs concurrently with ``_drain_remaining_stdout`` and ``proc.wait()``

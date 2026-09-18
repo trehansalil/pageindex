@@ -50,7 +50,6 @@ assert sorted(VERDICT_PRIORITY.values(), reverse=True) == list(VERDICT_PRIORITY.
 )
 
 
-
 @dataclass(frozen=True)
 class TreeGateResult:
     ok: bool
@@ -440,6 +439,7 @@ def finalize_gate_and_route(
             state.reason = str(vt_raw)
         else:
             import warnings
+
             warnings.warn(
                 "finalize_gate_and_route: legacy (ok, reason) tuple input is "
                 "deprecated; pass a TreeGateResult instead",

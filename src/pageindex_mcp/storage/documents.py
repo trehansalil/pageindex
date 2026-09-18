@@ -53,8 +53,6 @@ register_storage_prefix("preloaded/")
 register_storage_prefix("verdicts/")
 
 
-
-
 # ---------------------------------------------------------------------------
 # Processed document CRUD  (MinIO: processed/<doc_id>.json)
 # ---------------------------------------------------------------------------
@@ -258,9 +256,7 @@ async def delete_doc(doc_id: str) -> dict:
             )
         partial_purge = bool(missed_optional)
 
-        required_ok = len(
-            [s for s in _ERASURE_MANIFEST if s.required and s.name in ctx.completed]
-        )
+        required_ok = len([s for s in _ERASURE_MANIFEST if s.required and s.name in ctx.completed])
         if ctx.errors:
             logger.error("ERASE %s partial failure across stores: %s", doc_id, ctx.errors)
         else:
@@ -431,9 +427,7 @@ async def _erase_verdicts(ctx: ErasureContext) -> bool:
     keys the ledger lives only in processed/<doc_id>.meta.json.
     """
     try:
-        response = ctx.mc.get_object(
-            settings.minio_bucket, f"processed/{ctx.doc_id}.meta.json"
-        )
+        response = ctx.mc.get_object(settings.minio_bucket, f"processed/{ctx.doc_id}.meta.json")
         try:
             ctx.sha256 = json.loads(response.read()).get("sha256")
         finally:
@@ -554,9 +548,7 @@ async def _erase_registry(ctx: ErasureContext) -> bool:
         logger.info("ERASE %s step6: removed from Postgres registry", ctx.doc_id)
         return True
     except TimeoutError:
-        ctx.errors.append(
-            f"registry: delete timed out after {settings.registry_delete_timeout_s}s"
-        )
+        ctx.errors.append(f"registry: delete timed out after {settings.registry_delete_timeout_s}s")
         return False
     except Exception as e:
         ctx.errors.append(f"registry: {e}")
@@ -718,8 +710,7 @@ def validate_erasure_manifest() -> None:
     if missing:
         raise ImportError(
             "HR2 erasure-manifest completeness check failed -- storage "
-            "prefixes exist without corresponding erasure steps:\n  "
-            + "\n  ".join(missing)
+            "prefixes exist without corresponding erasure steps:\n  " + "\n  ".join(missing)
         )
 
     # D4: two-layer ordering validation -- a step's dependencies must be

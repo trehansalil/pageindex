@@ -714,10 +714,7 @@ def detect_garble(
         decision(
             event="garble_verdict",
             choice="garbled" if prongs else "clean",
-            reason=(
-                "short_text_prior_forced" if (_short_text_prior and prongs)
-                else "prong_scan"
-            ),
+            reason=("short_text_prior_forced" if (_short_text_prior and prongs) else "prong_scan"),
             attrs={
                 "fired_prongs": sorted(prongs),
                 "blob_kind": blob_kind.value,
@@ -734,7 +731,6 @@ def detect_garble(
         fired_prongs=prongs,
         garble_ratio=1.0 if prongs else 0.0,
     )
-
 
 
 # Zone-4: _rebuild_garble_config_compat and check_garble deleted — detect_garble
@@ -1041,17 +1037,23 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
     had_presentation_forms threading; falls back to building one from
     ``expected_script`` when not provided (backward compat).
     """
-    _ctx = script_context if script_context is not None else ScriptContext(
-        dominant_script=expected_script,
-        had_presentation_forms=_infer_presentation_forms(text),
-        source="garble_ratio",
+    _ctx = (
+        script_context
+        if script_context is not None
+        else ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=_infer_presentation_forms(text),
+            source="garble_ratio",
+        )
     )
     window = 2000
     if len(text) <= window:
         return (
             1.0
             if detect_garble(
-                text, script_context=_ctx, config=_garble_config,
+                text,
+                script_context=_ctx,
+                config=_garble_config,
                 blob_kind=BlobKind.TREE_TEXT,
             )
             else 0.0
@@ -1061,7 +1063,9 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
         1
         for c in chunks
         if detect_garble(
-            c, script_context=_ctx, config=_garble_config,
+            c,
+            script_context=_ctx,
+            config=_garble_config,
             blob_kind=BlobKind.TREE_TEXT,
         )
     )

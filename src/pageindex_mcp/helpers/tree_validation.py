@@ -304,14 +304,20 @@ class TreeSignals:
             # tree text is still pre-NFKC the scan detects Arabic
             # Presentation Forms; post-NFKC the ratio is 0 (same as the
             # prior False default).
-            _pf_count = sum(
-                1 for c in flat_text
-                if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
-            ) if flat_text else 0
-            _ar_count = sum(
-                1 for c in flat_text
-                if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
-            ) if flat_text else 0
+            _pf_count = (
+                sum(
+                    1
+                    for c in flat_text
+                    if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
+                )
+                if flat_text
+                else 0
+            )
+            _ar_count = (
+                sum(1 for c in flat_text if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
+                if flat_text
+                else 0
+            )
             _had_pf = _ar_count > 0 and (_pf_count / _ar_count) > 0.50
             if not _had_pf:
                 logger.debug(
@@ -407,8 +413,7 @@ def _emit_gate_primary_defect_selection(
         event="gate_primary_defect_selection",
         choice="garble_override" if garble_co_fired else "first_fired_wins",
         reason=(
-            "garble_defect_promoted_to_primary" if garble_co_fired
-            else "first_fired_defect_kept"
+            "garble_defect_promoted_to_primary" if garble_co_fired else "first_fired_defect_kept"
         ),
         attrs={
             "computed_primary_defect": computed_primary_defect.value,
@@ -509,7 +514,9 @@ def validate_tree(
             _eff_script = (
                 expected_script
                 if expected_script is not None
-                else _infer_script(sig.flat_text) if sig.flat_text else None
+                else _infer_script(sig.flat_text)
+                if sig.flat_text
+                else None
             )
             _script_ctx = ScriptContext(
                 dominant_script=_eff_script,
@@ -557,21 +564,15 @@ def validate_tree(
         _warnings: list[str] = []
         _warning_labels: list[str] = []
         if sig.garble_ratio > 0.0:
-            _warnings.append(
-                f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}"
-            )
+            _warnings.append(f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}")
             _warning_labels.append("sub_threshold_garble")
         # Near-firing checks for structural gates (cheap — uses pre-computed
         # signals; advisory only, no behavioral change).
         if sig.node_count <= 5:
-            _warnings.append(
-                f"near_gate_node_count: count={sig.node_count} (gate fires <3)"
-            )
+            _warnings.append(f"near_gate_node_count: count={sig.node_count} (gate fires <3)")
             _warning_labels.append("near_gate_node_count")
         if sig.depth == 2:
-            _warnings.append(
-                f"near_gate_depth: depth={sig.depth} (gate fires <2)"
-            )
+            _warnings.append(f"near_gate_depth: depth={sig.depth} (gate fires <2)")
             _warning_labels.append("near_gate_depth")
         if sig.max_leaf_ratio > th.pass_max_leaf_ratio * 0.8:
             _warnings.append(

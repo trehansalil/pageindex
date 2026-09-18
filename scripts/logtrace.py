@@ -48,6 +48,7 @@ every candidate, never silently merged or silently picked.
 Malformed lines (a library writing straight to stderr, mid-file) are
 normal, not fatal: skipped and counted.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -157,10 +158,7 @@ def _candidate_keys(
 def _record_matches_key(
     record: dict[str, Any], run_id: str | None, secondary_field: str, secondary_value: str | None
 ) -> bool:
-    return (
-        record.get("run_id") == run_id
-        and record.get(secondary_field) == secondary_value
-    )
+    return record.get("run_id") == run_id and record.get(secondary_field) == secondary_value
 
 
 def _resolve_by_identifier(
@@ -187,9 +185,7 @@ def _resolve_by_identifier(
                 "doc_name (the key was run_id + job_id) -- for those, query "
                 "by --job-id, --doc-id or --doc-sha8 instead."
             )
-        raise IdentifierNotFoundError(
-            f"no record carries {identifier_field}={identifier_value!r}"
-        )
+        raise IdentifierNotFoundError(f"no record carries {identifier_field}={identifier_value!r}")
 
     if len(candidates) > 1:
         described = ", ".join(
@@ -226,8 +222,7 @@ def _resolve_by_explicit_key(
     matched = [
         record
         for record in records
-        if (run_id is None or record.get("run_id") == run_id)
-        and record.get("job_id") == job_id
+        if (run_id is None or record.get("run_id") == run_id) and record.get("job_id") == job_id
     ]
     if not matched:
         described = f"job_id={job_id!r}"
@@ -280,8 +275,7 @@ def resolve_trace(
 
     ordered = sorted(matched, key=lambda record: record["_line_number"])
     cleaned = [
-        {key: value for key, value in record.items() if key != "_line_number"}
-        for record in ordered
+        {key: value for key, value in record.items() if key != "_line_number"} for record in ordered
     ]
     return TraceResult(records=cleaned, malformed_line_count=malformed)
 

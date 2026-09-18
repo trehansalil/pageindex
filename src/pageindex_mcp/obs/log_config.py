@@ -10,6 +10,7 @@ closed-world, so registering ``PAGEINDEX_LOG_*`` there would make this
 module's own read a violation of the very guard meant to prevent double
 sourcing.
 """
+
 from __future__ import annotations
 
 import logging

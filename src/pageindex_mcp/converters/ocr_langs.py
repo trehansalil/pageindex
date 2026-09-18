@@ -148,7 +148,9 @@ def detect_ocr_langs(sample: str) -> list[str]:
     return ["eng"]
 
 
-def _emit_no_prefix_decision(choice: str, reason: str, *, lang: str, cache_hit, probe_found) -> None:
+def _emit_no_prefix_decision(
+    choice: str, reason: str, *, lang: str, cache_hit, probe_found
+) -> None:
     """One INFO record for an `ensure_tessdata` no-prefix-branch outcome.
 
     Extracted out of ``ensure_tessdata`` so each of its 5 call sites is a
@@ -190,7 +192,9 @@ def _emit_with_prefix_decision(
     )
 
 
-def _emit_final_fallback_decision(choice: str, reason: str, *, langs: list[str], had_non_latin: bool) -> None:
+def _emit_final_fallback_decision(
+    choice: str, reason: str, *, langs: list[str], had_non_latin: bool
+) -> None:
     """One INFO record for `ensure_tessdata`'s end-of-request fallback (see
     :func:`_emit_no_prefix_decision` for why this is split out)."""
     decision(
@@ -213,7 +217,9 @@ def _probe_system_tessdata(lang: str) -> bool:
     try:
         result = subprocess.run(
             [tess_bin, "--list-langs"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         _probe_output = result.stdout + result.stderr
         _m = re.search(r'in "([^"]+)"', _probe_output)
@@ -264,22 +270,31 @@ def _ensure_lang_no_prefix(lang: str, available: list[str]) -> None:
     """
     if lang in _LATIN_LANGS:
         _emit_no_prefix_decision(
-            "latin_trusted", "latin_script_trusts_system_install",
-            lang=lang, cache_hit=None, probe_found=None,
+            "latin_trusted",
+            "latin_script_trusts_system_install",
+            lang=lang,
+            cache_hit=None,
+            probe_found=None,
         )
         available.append(lang)
         return
     if lang in _system_tessdata_cache:
         if _system_tessdata_cache[lang]:
             _emit_no_prefix_decision(
-                "non_latin_cached_available", "cache_hit_available",
-                lang=lang, cache_hit=True, probe_found=True,
+                "non_latin_cached_available",
+                "cache_hit_available",
+                lang=lang,
+                cache_hit=True,
+                probe_found=True,
             )
             available.append(lang)
             return
         _emit_no_prefix_decision(
-            "non_latin_cached_raise", "cache_hit_unavailable",
-            lang=lang, cache_hit=True, probe_found=False,
+            "non_latin_cached_raise",
+            "cache_hit_unavailable",
+            lang=lang,
+            cache_hit=True,
+            probe_found=False,
         )
         raise TessdataUnavailableError(
             f"non-Latin tessdata missing: {lang} (no TESSDATA_PREFIX, system check failed)"
@@ -289,17 +304,24 @@ def _ensure_lang_no_prefix(lang: str, available: list[str]) -> None:
     _system_tessdata_cache[lang] = _found
     # lazy import to avoid circular dependency
     from ..metrics import TESSDATA_SYSTEM_CHECK_TOTAL
+
     TESSDATA_SYSTEM_CHECK_TOTAL.labels(lang=lang, result="found" if _found else "missing").inc()
     if _found:
         _emit_no_prefix_decision(
-            "non_latin_probed_found", "subprocess_probe_found",
-            lang=lang, cache_hit=False, probe_found=True,
+            "non_latin_probed_found",
+            "subprocess_probe_found",
+            lang=lang,
+            cache_hit=False,
+            probe_found=True,
         )
         available.append(lang)
         return
     _emit_no_prefix_decision(
-        "non_latin_probed_missing_raise", "subprocess_probe_missing",
-        lang=lang, cache_hit=False, probe_found=False,
+        "non_latin_probed_missing_raise",
+        "subprocess_probe_missing",
+        lang=lang,
+        cache_hit=False,
+        probe_found=False,
     )
     logger.warning(
         "non-Latin tessdata '%s' not found via system tesseract "
@@ -317,33 +339,47 @@ def _ensure_lang_with_prefix(lang: str, prefix: str, allow_dl: bool, available: 
     path = os.path.join(prefix, f"{lang}.traineddata")
     if os.path.exists(path):
         _emit_with_prefix_decision(
-            "prefix_path_exists", "traineddata_present_under_prefix",
-            lang=lang, allow_dl=allow_dl, traineddata_present=True,
+            "prefix_path_exists",
+            "traineddata_present_under_prefix",
+            lang=lang,
+            allow_dl=allow_dl,
+            traineddata_present=True,
         )
         available.append(lang)
         return
     if allow_dl and _try_download_tessdata(lang, prefix):
         _emit_with_prefix_decision(
-            "prefix_download_success", "download_succeeded",
-            lang=lang, allow_dl=allow_dl, traineddata_present=True,
+            "prefix_download_success",
+            "download_succeeded",
+            lang=lang,
+            allow_dl=allow_dl,
+            traineddata_present=True,
         )
         available.append(lang)
         return
     if lang not in _LATIN_LANGS:
         _emit_with_prefix_decision(
-            "prefix_missing_non_latin_raise", "non_latin_unavailable_under_prefix",
-            lang=lang, allow_dl=allow_dl, traineddata_present=False,
+            "prefix_missing_non_latin_raise",
+            "non_latin_unavailable_under_prefix",
+            lang=lang,
+            allow_dl=allow_dl,
+            traineddata_present=False,
         )
         raise TessdataUnavailableError(
             f"non-Latin tessdata missing: {lang} (prefix={prefix}, download={allow_dl})"
         )
     _emit_with_prefix_decision(
-        "prefix_missing_latin_dropped", "latin_unavailable_dropped",
-        lang=lang, allow_dl=allow_dl, traineddata_present=False,
+        "prefix_missing_latin_dropped",
+        "latin_unavailable_dropped",
+        lang=lang,
+        allow_dl=allow_dl,
+        traineddata_present=False,
     )
     logger.warning(
         "tessdata for '%s' missing under %s (download=%s); dropping language",
-        lang, prefix, allow_dl,
+        lang,
+        prefix,
+        allow_dl,
     )
 
 
@@ -355,16 +391,20 @@ def _ensure_tessdata_empty_fallback(langs: list[str]) -> list[str]:
     if _had_non_latin:
         _non_latin_langs = [lang for lang in langs if lang not in _LATIN_LANGS]
         _emit_final_fallback_decision(
-            "raise_non_latin_requested", "no_available_langs_non_latin_requested",
-            langs=langs, had_non_latin=True,
+            "raise_non_latin_requested",
+            "no_available_langs_non_latin_requested",
+            langs=langs,
+            had_non_latin=True,
         )
         raise TessdataUnavailableError(
             f"no OCR languages available and request included non-Latin "
             f"scripts {_non_latin_langs}; refusing Latin-only fallback"
         )
     _emit_final_fallback_decision(
-        "fallback_deu_eng", "no_available_langs_latin_only",
-        langs=langs, had_non_latin=False,
+        "fallback_deu_eng",
+        "no_available_langs_latin_only",
+        langs=langs,
+        had_non_latin=False,
     )
     logger.warning("no requested OCR languages available; falling back to deu,eng")
     from ..metrics import TESSDATA_LATIN_FALLBACK_TOTAL  # lazy to avoid circular import

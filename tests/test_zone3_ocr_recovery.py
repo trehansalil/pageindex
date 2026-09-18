@@ -11,7 +11,6 @@ from pageindex_mcp.client.recovery import _keep_best_wins, _repeating_token_dens
 
 
 class TestRepeatingTokenDensity:
-
     def test_short_text_returns_max(self):
         assert _repeating_token_density("hello world") == 1.0
 
@@ -39,7 +38,6 @@ def _tree(text: str) -> dict:
 
 
 class TestKeepBestWins:
-
     def test_zero_chars_pre_any_post_wins(self):
         result = _keep_best_wins(
             pre_result=_tree(""),
@@ -78,19 +76,14 @@ class TestKeepBestWins:
         )
         assert result is True
 
-
     def test_rfc045_density_worse_but_post_not_garbled_keeps_retry(self):
         """RFC-045: when pre-retry is garbled and post-retry has higher density
         but is NOT garbled, the density increase is from legitimate content
         repetition — keep the retry."""
         from pageindex_mcp.script import ScriptContext
 
-        garbled_latin = " ".join(
-            f"xk{i}qz elas Sie Cys de ABUL Lem oJ oiS" for i in range(25)
-        )
-        clean_arabic = " ".join(
-            ["وزارة الصناعة والتكنولوجيا المتقدمة وزارة الموارد البشرية"] * 25
-        )
+        garbled_latin = " ".join(f"xk{i}qz elas Sie Cys de ABUL Lem oJ oiS" for i in range(25))
+        clean_arabic = " ".join(["وزارة الصناعة والتكنولوجيا المتقدمة وزارة الموارد البشرية"] * 25)
         ctx = ScriptContext(
             dominant_script="Arab",
             had_presentation_forms=False,
@@ -112,7 +105,6 @@ class TestKeepBestWins:
 
 
 class TestDecideOcrStrategyAcceptsForwardedParams:
-
     def test_accepts_garble_status_document_type_ocr_langs(self):
         from pageindex_mcp.picture_plane import OcrDecision, OcrMode, decide_ocr_strategy
 

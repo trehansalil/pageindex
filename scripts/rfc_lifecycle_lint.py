@@ -157,8 +157,7 @@ def detect_all_done_draft(rfc: RfcMeta, items: list[TaskItem], path: Path) -> li
                 severity="advisory",
                 rule="all-tasks-done-draft",
                 message=(
-                    f"RFC-{rfc.rfc_id} status is 'draft' but every task in "
-                    f"{path.name} is checked"
+                    f"RFC-{rfc.rfc_id} status is 'draft' but every task in {path.name} is checked"
                 ),
                 path=rfc.path,
             )
@@ -256,9 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RFC lifecycle CI gate")
     parser.add_argument("--rfcs-dir", type=Path, default=Path("agents/rfcs"))
     parser.add_argument("--tasks-dir", type=Path, default=Path("agents/tasks"))
-    parser.add_argument(
-        "--zone-file", type=Path, default=Path("audit/zones/ZONE_OWNERSHIP.yaml")
-    )
+    parser.add_argument("--zone-file", type=Path, default=Path("audit/zones/ZONE_OWNERSHIP.yaml"))
     args = parser.parse_args(argv)
 
     violations = lint(args.rfcs_dir, args.tasks_dir, args.zone_file)

@@ -82,6 +82,7 @@ _LATIN_GIBBERISH = " ".join(["xkjqz vbwm nfrl qpzx wblk"] * 60)
 # Helpers from test_rfc_garble_gate.py
 # ---------------------------------------------------------------------------
 
+
 def _pic(ocr_text: str = "", **kwargs) -> PictureResult:
     result: PictureResult = {"ocr_text": ocr_text}
     result.update(kwargs)
@@ -154,6 +155,7 @@ def _long_text(n=60):
 # ---------------------------------------------------------------------------
 # Helpers from test_zone1_flat_gate_asymmetry.py
 # ---------------------------------------------------------------------------
+
 
 def _default_ctx(
     dominant_script: str | None = None,
@@ -477,7 +479,9 @@ class TestGarbleCheckNodes:
         ]
         garbled_count = _garble_check_nodes(
             tree,
-            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script=None, had_presentation_forms=False, source="test"
+            ),
             config=GarbleConfig(),
         )
         assert garbled_count > 0
@@ -496,7 +500,9 @@ class TestGarbleCheckNodes:
         ]
         garbled_count = _garble_check_nodes(
             tree,
-            script_context=ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script="Latn", had_presentation_forms=False, source="test"
+            ),
             config=GarbleConfig(),
         )
         assert garbled_count == 0
@@ -668,9 +674,7 @@ class TestTreeGateResultWarnings:
         # Directly construct the result as validate_tree would
         _warnings: list[str] = []
         if fake_sig.garble_ratio > 0.0:
-            _warnings.append(
-                f"sub_threshold_garble: ratio={fake_sig.garble_ratio:.3f}"
-            )
+            _warnings.append(f"sub_threshold_garble: ratio={fake_sig.garble_ratio:.3f}")
         result = TreeGateResult(
             ok=True,
             defect=TreeDefect.OK,
@@ -724,11 +728,12 @@ class TestConcatenatedFallback:
         ]
         garbled_count = _garble_check_nodes(
             tree,
-            script_context=ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script="Latn", had_presentation_forms=False, source="test"
+            ),
             config=config,
         )
         assert garbled_count > 0
-
 
     def test_fallback_delegates_floor_to__garble_prongs(self):
         """D3: below-floor aggregate text is handled by _garble_prongs' own
@@ -761,22 +766,24 @@ class TestGarbleProngsExhaustiveness:
     """Exhaustiveness: every prong name returned by _garble_prongs is in a
     known valid set. No silent additions."""
 
-    KNOWN_PRONGS = frozenset({
-        "empty",
-        "null_replacement_bytes",
-        "glyph_marker",
-        "control_chars",
-        "pua_chars",
-        "presentation_forms",
-        "single_letter_fragments",
-        "digit_ratio",
-        "numeric_junk_short",
-        "token_repetition",
-        "latin_gibberish",
-        "sparse_mojibake",
-        "short_text_prior_garble",
-        "script_mismatch",
-    })
+    KNOWN_PRONGS = frozenset(
+        {
+            "empty",
+            "null_replacement_bytes",
+            "glyph_marker",
+            "control_chars",
+            "pua_chars",
+            "presentation_forms",
+            "single_letter_fragments",
+            "digit_ratio",
+            "numeric_junk_short",
+            "token_repetition",
+            "latin_gibberish",
+            "sparse_mojibake",
+            "short_text_prior_garble",
+            "script_mismatch",
+        }
+    )
 
     def test_no_unknown_prongs(self):
         """Run _garble_prongs with various inputs and verify all returned
@@ -800,8 +807,7 @@ class TestGarbleProngsExhaustiveness:
             )
             unknown = prongs - self.KNOWN_PRONGS
             assert not unknown, (
-                f"Unknown prong(s) {unknown} returned for input "
-                f"(first 40 chars): {text[:40]!r}"
+                f"Unknown prong(s) {unknown} returned for input (first 40 chars): {text[:40]!r}"
             )
 
     def test_presentation_forms_prong_in_known_set(self):
@@ -1068,10 +1074,12 @@ class TestExpectedScriptThreading:
         nodes = [{"text": latin_text, "nodes": []}]
         with caplog.at_level(logging.WARNING):
             count = _garble_check_nodes(
-            nodes,
-            script_context=ScriptContext(dominant_script="Arab", had_presentation_forms=False, source="test"),
-            config=GarbleConfig(),
-        )
+                nodes,
+                script_context=ScriptContext(
+                    dominant_script="Arab", had_presentation_forms=False, source="test"
+                ),
+                config=GarbleConfig(),
+            )
         assert isinstance(count, int)
         assert any("mismatch" in rec.message.lower() for rec in caplog.records)
 
@@ -1083,7 +1091,9 @@ class TestExpectedScriptThreading:
         assert _infer_script(latin_text) in ("Latn", None)
         count = _garble_check_nodes(
             nodes,
-            script_context=ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
+            script_context=ScriptContext(
+                dominant_script=None, had_presentation_forms=False, source="test"
+            ),
             config=GarbleConfig(),
         )
         assert isinstance(count, int)
@@ -1105,6 +1115,7 @@ class TestOcrLangOverride:
 
 # ── Garbled TABLE block amid clean prose ──────────────────────────
 
+
 class TestPerBlockGarbleCatchesGarbledTable:
     """Contract: per-block check catches a garbled TABLE block even when
     the surrounding prose is clean."""
@@ -1112,9 +1123,15 @@ class TestPerBlockGarbleCatchesGarbledTable:
     def test_garbled_table_among_clean_prose(self):
         garbled_digits = "1234567890" * 60
         blocks = [
-            {"role": "prose", "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen. "},
+            {
+                "role": "prose",
+                "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen. ",
+            },
             {"role": "table", "text": garbled_digits, "row_records": []},
-            {"role": "prose", "text": "Cars drive along the highway while pedestrians cross at marked intersections safely. Mountains rise above the valley floor creating beautiful landscape views. "},
+            {
+                "role": "prose",
+                "text": "Cars drive along the highway while pedestrians cross at marked intersections safely. Mountains rise above the valley floor creating beautiful landscape views. ",
+            },
         ]
         report = _garble_check_flat_blocks(
             blocks,
@@ -1127,8 +1144,14 @@ class TestPerBlockGarbleCatchesGarbledTable:
 
     def test_all_clean_blocks_pass(self):
         blocks = [
-            {"role": "prose", "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen. "},
-            {"role": "prose", "text": "Cars drive along the highway while pedestrians cross at marked intersections safely. Mountains rise above the valley floor creating beautiful views. "},
+            {
+                "role": "prose",
+                "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen. ",
+            },
+            {
+                "role": "prose",
+                "text": "Cars drive along the highway while pedestrians cross at marked intersections safely. Mountains rise above the valley floor creating beautiful views. ",
+            },
         ]
         report = _garble_check_flat_blocks(
             blocks,
@@ -1139,6 +1162,7 @@ class TestPerBlockGarbleCatchesGarbledTable:
 
 
 # ── Dilution immunity ─────────────────────────────────────────────
+
 
 class TestDilutionImmunity:
     """Regression (RFC-027 #5330 / RFC-026): whole-blob digit-ratio passes
@@ -1165,6 +1189,7 @@ class TestDilutionImmunity:
 
 # ── had_presentation_forms threading ──────────────────────────────
 
+
 class TestPresentationFormsThreading:
     """Regression (RFC-019 D2 / RFC-028 D2): had_presentation_forms must
     thread through to the per-block detect_garble calls."""
@@ -1179,7 +1204,10 @@ class TestPresentationFormsThreading:
 
         with patch("pageindex_mcp.helpers.garble.detect_garble", side_effect=spy_detect):
             blocks = [
-                {"role": "prose", "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen as sunlight streams through windows. Cars drive along the highway while pedestrians cross at marked intersections. "},
+                {
+                    "role": "prose",
+                    "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen as sunlight streams through windows. Cars drive along the highway while pedestrians cross at marked intersections. ",
+                },
             ]
             ctx_with_forms = _default_ctx(had_presentation_forms=True)
             _garble_check_flat_blocks(
@@ -1193,6 +1221,7 @@ class TestPresentationFormsThreading:
 
 
 # ── FLAT_GATE_COVERAGE exhaustiveness ─────────────────────────────
+
 
 class TestFlatGateCoverageExhaustiveness:
     """Exhaustiveness: every FLAT-routing TreeDefect has a coverage entry."""
@@ -1217,6 +1246,7 @@ class TestFlatGateCoverageExhaustiveness:
 
 # ── short_text_prior_garble at block granularity ──────────────────
 
+
 class TestShortTextBlockGranularity:
     """Regression (RFC-025 D2): short_text_prior_garble short-circuit
     fires at block granularity."""
@@ -1236,6 +1266,7 @@ class TestShortTextBlockGranularity:
 
 # ── Empty / whitespace blocks ─────────────────────────────────────
 
+
 class TestEmptyAndWhitespaceBlocks:
     """Contract: empty or whitespace-only blocks are skipped, not counted
     as garbled."""
@@ -1244,7 +1275,10 @@ class TestEmptyAndWhitespaceBlocks:
         blocks = [
             {"role": "prose", "text": ""},
             {"role": "prose", "text": "   \n  "},
-            {"role": "prose", "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen as sunlight streams through windows. Cars drive along the highway while pedestrians cross at marked intersections safely. "},
+            {
+                "role": "prose",
+                "text": "The quick brown fox jumps over the lazy dog near the river bank. Birds sing loudly in tall oak trees during warm summer mornings. Fresh coffee aroma fills the kitchen as sunlight streams through windows. Cars drive along the highway while pedestrians cross at marked intersections safely. ",
+            },
         ]
         report = _garble_check_flat_blocks(
             blocks,
@@ -1267,6 +1301,7 @@ class TestEmptyAndWhitespaceBlocks:
 
 
 # ── _flat_block_primary_text for table role ───────────────────────
+
 
 class TestFlatBlockPrimaryTextTable:
     """Contract: table blocks use row_records for primary text."""
@@ -1323,8 +1358,7 @@ class TestScriptContextThreadsThroughValidateTree:
 
         # At least one call should have had_presentation_forms=True
         assert any(c is True for c in calls), (
-            f"No detect_garble call received had_presentation_forms=True; "
-            f"values seen: {calls}"
+            f"No detect_garble call received had_presentation_forms=True; values seen: {calls}"
         )
 
 
@@ -1483,9 +1517,7 @@ class TestGarbleCheckNodesTableBlockDetection:
             ),
             config=GarbleConfig(),
         )
-        assert garbled_count >= 1, (
-            "table node with garbled row_records not detected per-node"
-        )
+        assert garbled_count >= 1, "table node with garbled row_records not detected per-node"
 
     def test_garbled_headers_detected_per_node(self):
         """A table node with garbled headers but empty 'text' must be caught."""
@@ -1514,9 +1546,7 @@ class TestGarbleCheckNodesTableBlockDetection:
             ),
             config=GarbleConfig(),
         )
-        assert garbled_count >= 1, (
-            "table node with garbled headers not detected per-node"
-        )
+        assert garbled_count >= 1, "table node with garbled headers not detected per-node"
 
     def test_garbled_rows_detected_per_node(self):
         """A table node with garbled rows (list-of-lists) but empty 'text'."""
@@ -1596,6 +1626,7 @@ class TestNumericJunkShortProng:
     def test_numeric_junk_short_fires_for_random_digits(self):
         """100-char string of random digits must trigger numeric_junk_short."""
         import random
+
         random.seed(42)
         digits_text = "".join(str(random.randint(0, 9)) for _ in range(100))
         prongs = _garble_prongs(
@@ -1624,8 +1655,7 @@ class TestNumericJunkShortProng:
     def test_numeric_junk_short_does_not_fire_for_currency(self):
         """Currency amounts with text labels must NOT trigger."""
         currency_text = (
-            "Praemie: EUR 1200.50, Selbstbehalt: EUR 500.00, "
-            "Deckungssumme: EUR 5000000.00"
+            "Praemie: EUR 1200.50, Selbstbehalt: EUR 500.00, Deckungssumme: EUR 5000000.00"
         )
         assert len(currency_text) >= 50
         prongs = _garble_prongs(
@@ -1677,9 +1707,7 @@ class TestLatinGibberishScriptMismatchChain5:
         # Real words: service, coverage, insurance, policy, premium (5)
         # Nonsense:   Bab, rel, igh, ghal, teb (5) -- 50% ratio
         # 50% > 0.40 (lowered threshold) but 50% < 0.70 (default threshold)
-        mixed_text = (
-            "service Bab coverage rel insurance igh policy ghal premium teb "
-        ) * 5
+        mixed_text = ("service Bab coverage rel insurance igh policy ghal premium teb ") * 5
         # Verify it fires with Arab expected_script (lowered threshold)
         prongs_arab = _garble_prongs(
             mixed_text,
@@ -1691,16 +1719,13 @@ class TestLatinGibberishScriptMismatchChain5:
             ),
         )
         assert "latin_gibberish" in prongs_arab, (
-            "latin_gibberish should fire at lowered 0.40 threshold for "
-            "Arab script mismatch"
+            "latin_gibberish should fire at lowered 0.40 threshold for Arab script mismatch"
         )
 
     def test_latin_gibberish_does_not_fire_at_default_threshold_for_same_text(self):
         """Same semi-plausible text must NOT fire when expected_script is Latn
         (default 0.70 threshold applies)."""
-        mixed_text = (
-            "service Bab coverage rel insurance igh policy ghal premium teb "
-        ) * 5
+        mixed_text = ("service Bab coverage rel insurance igh policy ghal premium teb ") * 5
         prongs_latn = _garble_prongs(
             mixed_text,
             expected_script="Latn",
@@ -1711,8 +1736,7 @@ class TestLatinGibberishScriptMismatchChain5:
             ),
         )
         assert "latin_gibberish" not in prongs_latn, (
-            "latin_gibberish should NOT fire at default 0.70 threshold for "
-            "Latn expected_script"
+            "latin_gibberish should NOT fire at default 0.70 threshold for Latn expected_script"
         )
 
     def test_latin_gibberish_does_not_fire_for_clean_latin_text_with_arab_expected(self):
@@ -1818,9 +1842,7 @@ class TestD1FallbackUsesDetectGarble:
             script_context=ctx,
             config=config,
         )
-        concat = "\n".join(
-            p for n in nodes for p in [n.get("text", "")] if p.strip()
-        )
+        concat = "\n".join(p for n in nodes for p in [n.get("text", "")] if p.strip())
         direct_report = detect_garble(
             concat,
             script_context=ScriptContext(

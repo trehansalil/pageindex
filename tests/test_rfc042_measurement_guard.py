@@ -82,15 +82,11 @@ class TestLegacyDelegation:
 
     def test_flat_block_primary_text_delegates_row_records(self):
         block = _table_block(row_records=["r1", "r2"])
-        assert _flat_block_primary_text(block) == block_text(
-            block, BlockTextPurpose.CHAR_COUNT
-        )
+        assert _flat_block_primary_text(block) == block_text(block, BlockTextPurpose.CHAR_COUNT)
 
     def test_flat_block_primary_text_delegates_headers(self):
         block = _table_block(headers=["H1", "H2"], row_records=[])
-        assert _flat_block_primary_text(block) == block_text(
-            block, BlockTextPurpose.CHAR_COUNT
-        )
+        assert _flat_block_primary_text(block) == block_text(block, BlockTextPurpose.CHAR_COUNT)
 
     def test_flat_search_text_includes_table_content(self):
         data = {

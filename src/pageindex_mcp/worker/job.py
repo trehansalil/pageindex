@@ -366,7 +366,8 @@ async def process_document_job(  # noqa: C901, PLR0915
             from .registry_mirror import _upsert_registry_row
 
             await _upsert_registry_row(
-                doc_id, content_class,
+                doc_id,
+                content_class,
                 verdict_fields=verdict_fields,
                 registry_fields=registry_fields,
             )
@@ -396,7 +397,9 @@ async def process_document_job(  # noqa: C901, PLR0915
             UPLOADS.labels(status="error").inc()
             await _mirror_bridged_incr("uploads_total:error")
             job_try = ctx.get("job_try", 1)
-            logger.error("Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True)
+            logger.error(
+                "Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True
+            )
             if await _dlq_push_on_final_attempt(
                 redis,
                 job_try=job_try,
@@ -418,7 +421,9 @@ async def process_document_job(  # noqa: C901, PLR0915
             if cleanup_staging:
                 staging_deleted = await asyncio.to_thread(delete_staging, staging_key)
                 if not staging_deleted:
-                    logger.warning("Staging object left behind after delete failure: %s", staging_key)
+                    logger.warning(
+                        "Staging object left behind after delete failure: %s", staging_key
+                    )
                     # STAGING_DELETE_FAILURES.inc() already ran inside delete_staging
                     # (storage.py) -- worker-parent process, so it needs the same
                     # Zone-7 bridge as everything else touched only here.

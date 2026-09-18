@@ -14,6 +14,7 @@ Public surface:
   - ``propagate()`` -- re-binds correlation inside a ThreadPoolExecutor
     worker, which does not inherit contextvars (task 12.5).
 """
+
 from __future__ import annotations
 
 from .context import bind_log_context, propagate

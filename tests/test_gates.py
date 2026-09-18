@@ -229,6 +229,7 @@ class TestTableSegmentation:
 
 # --- from test_route_decision.py ---
 
+
 @pytest.fixture(autouse=True)
 def _restore_pipeline_config():
     yield
@@ -738,6 +739,7 @@ class TestDecideOcrStrategyDocumentType:
 
 # ---- Test 1 ----------------------------------------------------------------
 
+
 def test_all_active_gates_have_recovery_or_waiver():
     """Every active gate with non-OK/CAP_MARGINAL policy has recovery or waiver."""
     for g in GATES:
@@ -753,6 +755,7 @@ def test_all_active_gates_have_recovery_or_waiver():
 
 # ---- Test 2 ----------------------------------------------------------------
 
+
 def test_all_recovery_fns_resolve_to_callable_methods():
     """All recovery_fns strings resolve to callable methods on RecoveryMixin."""
     from pageindex_mcp.client.recovery import RecoveryMixin
@@ -765,20 +768,20 @@ def test_all_recovery_fns_resolve_to_callable_methods():
             assert attr is not None, (
                 f"{g.defect.name}: recovery_fn '{fn_name}' not found on RecoveryMixin"
             )
-            assert callable(attr), (
-                f"{g.defect.name}: recovery_fn '{fn_name}' is not callable"
-            )
+            assert callable(attr), f"{g.defect.name}: recovery_fn '{fn_name}' is not callable"
 
 
 # ---- Test 3 ----------------------------------------------------------------
 
-_WAIVED_DEFECTS = frozenset({
-    TreeDefect.REORDERED,
-    TreeDefect.BIDI_DEGRADED,
-    TreeDefect.EMPTY_NODE_CONTAMINATION,
-    TreeDefect.LOW_CONTENT_DENSITY,
-    TreeDefect.SUSPECT_DENSITY,
-})
+_WAIVED_DEFECTS = frozenset(
+    {
+        TreeDefect.REORDERED,
+        TreeDefect.BIDI_DEGRADED,
+        TreeDefect.EMPTY_NODE_CONTAMINATION,
+        TreeDefect.LOW_CONTENT_DENSITY,
+        TreeDefect.SUSPECT_DENSITY,
+    }
+)
 
 
 def test_waived_gates_have_correct_defects():
@@ -791,6 +794,7 @@ def test_waived_gates_have_correct_defects():
 
 
 # ---- Test 4 ----------------------------------------------------------------
+
 
 def test_unrecoverable_gate_without_waiver_triggers_assertion():
     """Synthetic gate with RETRY_OCR, no recovery, no waiver fails the check."""
@@ -809,6 +813,7 @@ def test_unrecoverable_gate_without_waiver_triggers_assertion():
 
 
 # ---- Test 5 ----------------------------------------------------------------
+
 
 def test_nonexistent_recovery_method_triggers_assertion(monkeypatch):
     """validate_recovery_method_names raises on a bogus recovery_fn."""
@@ -830,6 +835,7 @@ def test_nonexistent_recovery_method_triggers_assertion(monkeypatch):
 
 
 # ---- Test 6 ----------------------------------------------------------------
+
 
 def test_waived_gates_have_no_recovery_eligible():
     """Gates with recovery_waived=True must not set recovery_eligible."""
@@ -916,7 +922,6 @@ class TestWidenedGarbleEligibility:
             ok=True,
         )
         assert _eligible_garble(state) is False
-
 
 
 class TestWidenedRtlEligibility:
@@ -1160,9 +1165,7 @@ class TestFinalizeGateAndRouteDecisionRecords:
         _expected_computed = decide_route(TreeDefect.OK, flat_routing_enabled=True)
         assert _expected_computed == Route.TREE
 
-        finalize_gate_and_route(
-            state, gate, flat_routing_enabled=True, force_route=Route.FLAT
-        )
+        finalize_gate_and_route(state, gate, flat_routing_enabled=True, force_route=Route.FLAT)
 
         records = _decision_records(caplog, "route_selected")
         assert len(records) == 1
@@ -1245,7 +1248,9 @@ class TestGateFunctionDecisionRecords:
     def test_empty_node_contamination_gate_not_evaluated_when_zero_nonroot(self, caplog):
         caplog.set_level("INFO", logger="pageindex_mcp.obs")
 
-        fires, _ = _gate_empty_node_contamination(_tree_signals(), [], _script_context(), None, None)
+        fires, _ = _gate_empty_node_contamination(
+            _tree_signals(), [], _script_context(), None, None
+        )
 
         assert fires is False
         rec = _decision_records(caplog, "empty_node_contamination_gate")[0]
@@ -1254,11 +1259,15 @@ class TestGateFunctionDecisionRecords:
     def test_empty_node_contamination_gate_fires_above_threshold(self, caplog):
         caplog.set_level("INFO", logger="pageindex_mcp.obs")
         structure = [
-            {"title": "root", "text": "x", "nodes": [
-                {"title": "", "text": "", "nodes": []},
-                {"title": "", "text": "", "nodes": []},
-                {"title": "", "text": "", "nodes": []},
-            ]}
+            {
+                "title": "root",
+                "text": "x",
+                "nodes": [
+                    {"title": "", "text": "", "nodes": []},
+                    {"title": "", "text": "", "nodes": []},
+                    {"title": "", "text": "", "nodes": []},
+                ],
+            }
         ]
 
         fires, detail = _gate_empty_node_contamination(

@@ -1,5 +1,6 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 """HR3 compliance, HR3 integration, ZDR egress, and remote conversion tests."""
+
 from __future__ import annotations
 
 import base64
@@ -110,9 +111,7 @@ class TestSharedFunctionSingleSourceOfTruth:
         """_lifespan_with_scrape must invoke config.validate_hr3_compliance
         (imported locally at call time) rather than reimplementing the check."""
         sentinel = RuntimeError("sentinel-validate-hr3-compliance-called")
-        with patch(
-            "pageindex_mcp.config.validate_hr3_compliance", side_effect=sentinel
-        ) as mock_fn:
+        with patch("pageindex_mcp.config.validate_hr3_compliance", side_effect=sentinel) as mock_fn:
             from pageindex_mcp.server import _lifespan_with_scrape
 
             with pytest.raises(RuntimeError, match="sentinel-validate-hr3-compliance-called"):
@@ -245,9 +244,7 @@ class TestDoclingEgressGatePasses:
     async def test_remote_pdf_proceeds_when_pii_corpus_false(self):
         from pageindex_mcp.client import _remote_pdf_to_markdown
 
-        fake_settings = _make_docling_settings(
-            pii_corpus=False, docling_service_url=_NON_ZDR_URL
-        )
+        fake_settings = _make_docling_settings(pii_corpus=False, docling_service_url=_NON_ZDR_URL)
         with (
             patch("pageindex_mcp.client.remote.settings", fake_settings),
             patch("pageindex_mcp.config.settings", fake_settings),
@@ -265,9 +262,7 @@ class TestDoclingEgressGatePasses:
     async def test_remote_image_proceeds_when_pii_corpus_false(self):
         from pageindex_mcp.client import _remote_image_to_markdown
 
-        fake_settings = _make_docling_settings(
-            pii_corpus=False, docling_service_url=_NON_ZDR_URL
-        )
+        fake_settings = _make_docling_settings(pii_corpus=False, docling_service_url=_NON_ZDR_URL)
         with (
             patch("pageindex_mcp.client.remote.settings", fake_settings),
             patch("pageindex_mcp.config.settings", fake_settings),
@@ -284,9 +279,7 @@ class TestDoclingEgressGatePasses:
     async def test_remote_pdf_proceeds_when_pii_corpus_true_and_allowlisted(self):
         from pageindex_mcp.client import _remote_pdf_to_markdown
 
-        fake_settings = _make_docling_settings(
-            pii_corpus=True, docling_service_url=_ZDR_URL
-        )
+        fake_settings = _make_docling_settings(pii_corpus=True, docling_service_url=_ZDR_URL)
         with (
             patch("pageindex_mcp.client.remote.settings", fake_settings),
             patch("pageindex_mcp.config.settings", fake_settings),
@@ -304,9 +297,7 @@ class TestDoclingEgressGatePasses:
     async def test_remote_image_proceeds_when_pii_corpus_true_and_allowlisted(self):
         from pageindex_mcp.client import _remote_image_to_markdown
 
-        fake_settings = _make_docling_settings(
-            pii_corpus=True, docling_service_url=_ZDR_URL
-        )
+        fake_settings = _make_docling_settings(pii_corpus=True, docling_service_url=_ZDR_URL)
         with (
             patch("pageindex_mcp.client.remote.settings", fake_settings),
             patch("pageindex_mcp.config.settings", fake_settings),
@@ -396,9 +387,7 @@ class TestPrimaryLlmGatePasses:
     async def test_proceeds_when_pii_corpus_false(self):
         from pageindex_mcp.client.llm import _llm_with_retry
 
-        fake_settings = _make_llm_settings(
-            pii_corpus=False, openai_base_url=_NON_ZDR_URL
-        )
+        fake_settings = _make_llm_settings(pii_corpus=False, openai_base_url=_NON_ZDR_URL)
         call_fn = AsyncMock(return_value="ok")
         with (
             patch("pageindex_mcp.client.llm.settings", fake_settings),
@@ -525,17 +514,13 @@ class TestIndexerVlmExceptHandlerDistinguishesComplianceBlocks:
         assert result is None
         assert VLM_FALLBACK_TOTAL.labels(result="compliance_blocked")._value.get() == vlm_before + 1
         assert HR3_EGRESS_BLOCKED_TOTAL.labels(path="vlm")._value.get() == hr3_before + 1
-        compliance_records = [
-            r for r in caplog.records if "HR3 compliance block" in r.message
-        ]
+        compliance_records = [r for r in caplog.records if "HR3 compliance block" in r.message]
         assert compliance_records, "expected a compliance-event log record"
         assert all(r.levelname == "INFO" for r in compliance_records)
         assert not any(r.levelname == "ERROR" for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_generic_failure_logs_error_and_labels_error_not_compliance_blocked(
-        self, caplog
-    ):
+    async def test_generic_failure_logs_error_and_labels_error_not_compliance_blocked(self, caplog):
         from pageindex_mcp.client.indexer import CustomPageIndexClient
         from pageindex_mcp.metrics import HR3_EGRESS_BLOCKED_TOTAL, VLM_FALLBACK_TOTAL
 
@@ -580,8 +565,7 @@ class TestIndexerVlmExceptHandlerDistinguishesComplianceBlocks:
         assert VLM_FALLBACK_TOTAL.labels(result="error")._value.get() == error_before + 1
         # a genuine API failure must NOT be misclassified as a compliance block
         assert (
-            VLM_FALLBACK_TOTAL.labels(result="compliance_blocked")._value.get()
-            == compliance_before
+            VLM_FALLBACK_TOTAL.labels(result="compliance_blocked")._value.get() == compliance_before
         )
         assert HR3_EGRESS_BLOCKED_TOTAL.labels(path="vlm")._value.get() == hr3_before
         error_records = [r for r in caplog.records if r.levelname == "ERROR"]
@@ -654,8 +638,17 @@ class TestHr3EgressBlockedTotalPathLabels:
             ),
         ):
             await CustomPageIndexClient._persist_flat_result(
-                MagicMock(), state, "/tmp/doc.pdf", "doc.pdf", ".pdf", None,
-                "deadbeef", b"", None, {}, None,
+                MagicMock(),
+                state,
+                "/tmp/doc.pdf",
+                "doc.pdf",
+                ".pdf",
+                None,
+                "deadbeef",
+                b"",
+                None,
+                {},
+                None,
             )
 
         assert HR3_EGRESS_BLOCKED_TOTAL.labels(path="vlm")._value.get() == before + 1
@@ -1315,9 +1308,7 @@ class TestRegressionExistingGates:
 
         fake_settings = _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL)
         with patch("pageindex_mcp.config.settings", fake_settings):
-            result = _generate_flat_doc_description(
-                "Some document text", doc_id="test-doc-456"
-            )
+            result = _generate_flat_doc_description("Some document text", doc_id="test-doc-456")
         assert result == ""
 
     def test_zdr_egress_gate_returns_false_tuple(self):
@@ -1436,8 +1427,7 @@ class TestLlmWithRetryZdrPropagation:
                 )
             # Must be bare RuntimeError, NOT its subclass LLMTransientFailure
             assert not isinstance(exc_info.value, LLMTransientFailure), (
-                "ZDR violation should propagate as RuntimeError, "
-                "not LLMTransientFailure"
+                "ZDR violation should propagate as RuntimeError, not LLMTransientFailure"
             )
             assert "ZDR allow-list" in str(exc_info.value)
 
@@ -1542,14 +1532,14 @@ class TestEgressSiteExhaustiveness:
     the test suite itself covers the full list."""
 
     EXPECTED_EGRESS_SITES = [
-        "config.require_zdr_compliance",           # central primitive
-        "config._is_zdr_allowlisted",               # allowlist function
-        "server._lifespan_with_scrape",             # startup check
-        "client.llm._llm_with_retry",               # fallback path
-        "converters.formats.vlm_extract_markdown",   # VLM garble fallback
+        "config.require_zdr_compliance",  # central primitive
+        "config._is_zdr_allowlisted",  # allowlist function
+        "server._lifespan_with_scrape",  # startup check
+        "client.llm._llm_with_retry",  # fallback path
+        "converters.formats.vlm_extract_markdown",  # VLM garble fallback
         "converters.formats.html_to_markdown_with_images",  # HTML image description
-        "helpers.rag._llm",                          # query-path LLM
-        "converters.pictures._add_vlm_descriptions", # already-gated (regression)
+        "helpers.rag._llm",  # query-path LLM
+        "converters.pictures._add_vlm_descriptions",  # already-gated (regression)
         "client.indexer._generate_flat_doc_description",  # already-gated (regression)
     ]
 
@@ -2051,9 +2041,7 @@ class TestRemotePdfExpectedScriptPayload:
         from pageindex_mcp.client import indexer
 
         source = inspect.getsource(indexer)
-        calls = re.findall(
-            r"_remote_pdf_to_markdown\((.*?)\n\s*\)", source, flags=re.DOTALL
-        )
+        calls = re.findall(r"_remote_pdf_to_markdown\((.*?)\n\s*\)", source, flags=re.DOTALL)
         assert calls, "indexer.py must call _remote_pdf_to_markdown"
         for call in calls:
             assert "expected_script=expected_script" in call, (

@@ -48,7 +48,6 @@ def _make_client():
     return CustomPageIndexClient(api_key="test-key")
 
 
-
 async def _tree_coro():
     return {"structure": [{"node_id": "n1", "text": "x", "nodes": []}], "doc_description": ""}
 
@@ -312,6 +311,7 @@ class TestSparseMojibakeRealCorruption:
         fragment = "كلمةXYZكلمة "
         text = clean + fragment * 30
         from pageindex_mcp.helpers.garble import _garble_prongs
+
         assert "sparse_mojibake" in _garble_prongs(text, original_text=text)
 
 

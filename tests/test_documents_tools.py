@@ -125,9 +125,7 @@ class TestValidateErasureManifest:
                 execute=AsyncMock(return_value=True),
                 consumes=frozenset({"ctx.doc_name"}),
             ),
-        ) + tuple(
-            s for s in _ERASURE_MANIFEST if s.name != "early_consumer"
-        )
+        ) + tuple(s for s in _ERASURE_MANIFEST if s.name != "early_consumer")
         with patch.object(_docs_mod, "_ERASURE_MANIFEST", reordered):
             with pytest.raises(ValueError, match="early_consumer.*ctx.doc_name"):
                 validate_erasure_manifest()
@@ -139,15 +137,15 @@ class TestValidateErasureManifest:
 
         by_name = {s.name: s for s in _ERASURE_MANIFEST}
         reordered = tuple(
-            by_name["meta_json"] if name == "verdicts"
-            else by_name["verdicts"] if name == "meta_json"
+            by_name["meta_json"]
+            if name == "verdicts"
+            else by_name["verdicts"]
+            if name == "meta_json"
             else by_name[name]
             for name in by_name
         )
         with patch.object(_docs_mod, "_ERASURE_MANIFEST", reordered):
-            with pytest.raises(
-                ValueError, match="verdicts.*processed/\\{id\\}\\.meta\\.json"
-            ):
+            with pytest.raises(ValueError, match="verdicts.*processed/\\{id\\}\\.meta\\.json"):
                 validate_erasure_manifest()
 
 
@@ -167,6 +165,7 @@ def _s3_no_such_key(*args, **kwargs):
 def _s3_error(code):
     def _raise(*args, **kwargs):
         raise S3Error(code, "error", "", "", "", "")
+
     return _raise
 
 
@@ -174,6 +173,7 @@ def _mock_settings(**overrides):
     """Build a settings-like object with sensible defaults for erasure tests."""
     import dataclasses
     from pageindex_mcp.config import settings as _base
+
     return dataclasses.replace(_base, **overrides)
 
 
@@ -244,8 +244,7 @@ class TestDeleteDocLogMessages:
         # The log line must contain "cascade complete" with both counts
         cascade_msgs = [r.message for r in caplog.records if "cascade complete" in r.message]
         assert len(cascade_msgs) >= 1, (
-            f"Expected 'cascade complete' log but got: "
-            f"{[r.message for r in caplog.records]}"
+            f"Expected 'cascade complete' log but got: {[r.message for r in caplog.records]}"
         )
         msg = cascade_msgs[0]
         assert "required ok" in msg

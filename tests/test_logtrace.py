@@ -28,6 +28,7 @@ task 12.10):
 imported here via ``importlib`` from its file path so pytest need not add
 ``scripts/`` to ``sys.path`` globally.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -103,14 +104,34 @@ class TestBatchRouteInterleavedDocuments:
 
     def test_two_interleaved_documents_resolve_to_disjoint_traces(self, tmp_path, lt):
         lines = [
-            _rec(run_id="run-A", doc_name="alpha.pdf", phase="route_select",
-                 kind="phase_entry", msg="phase phase_entry: route_select"),
-            _rec(run_id="run-A", doc_name="bravo.pdf", phase="route_select",
-                 kind="phase_entry", msg="phase phase_entry: route_select"),
-            _rec(run_id="run-A", doc_name="alpha.pdf", phase="convert",
-                 kind="phase_entry", msg="phase phase_entry: convert"),
-            _rec(run_id="run-A", doc_name="bravo.pdf", phase="convert",
-                 kind="phase_entry", msg="phase phase_entry: convert"),
+            _rec(
+                run_id="run-A",
+                doc_name="alpha.pdf",
+                phase="route_select",
+                kind="phase_entry",
+                msg="phase phase_entry: route_select",
+            ),
+            _rec(
+                run_id="run-A",
+                doc_name="bravo.pdf",
+                phase="route_select",
+                kind="phase_entry",
+                msg="phase phase_entry: route_select",
+            ),
+            _rec(
+                run_id="run-A",
+                doc_name="alpha.pdf",
+                phase="convert",
+                kind="phase_entry",
+                msg="phase phase_entry: convert",
+            ),
+            _rec(
+                run_id="run-A",
+                doc_name="bravo.pdf",
+                phase="convert",
+                kind="phase_entry",
+                msg="phase phase_entry: convert",
+            ),
         ]
         path = _write_log(tmp_path, lines)
 
@@ -134,9 +155,7 @@ class TestBatchRouteInterleavedDocuments:
         assert len(result.records) == 2
         assert result.malformed_line_count == 1
 
-    def test_unrelated_process_sharing_doc_name_under_different_run_is_excluded(
-        self, tmp_path, lt
-    ):
+    def test_unrelated_process_sharing_doc_name_under_different_run_is_excluded(self, tmp_path, lt):
         lines = [
             _rec(run_id="run-A", doc_name="alpha.pdf", phase="convert"),
             _rec(run_id="run-B", doc_name="alpha.pdf", phase="ocr"),
@@ -150,9 +169,7 @@ class TestBatchRouteInterleavedDocuments:
         assert result.records[0]["run_id"] == "run-A"
         assert result.records[0]["phase"] == "convert"
 
-    def test_same_doc_name_in_two_runs_reports_ambiguity_without_run_id(
-        self, tmp_path, lt
-    ):
+    def test_same_doc_name_in_two_runs_reports_ambiguity_without_run_id(self, tmp_path, lt):
         lines = [
             _rec(run_id="run-A", doc_name="alpha.pdf"),
             _rec(run_id="run-B", doc_name="alpha.pdf"),
@@ -170,22 +187,36 @@ class TestTwoPassResolutionAcrossTheDocIdBoundary:
     """The specific failure to avoid: a trace queried by doc_id must not
     silently drop the parent-side records that predate doc_id/doc_sha8."""
 
-    def test_query_by_doc_id_recovers_the_earliest_parent_side_record(
-        self, tmp_path, lt
-    ):
+    def test_query_by_doc_id_recovers_the_earliest_parent_side_record(self, tmp_path, lt):
         lines = [
             # Parent (worker route): binds run_id + job_id only, nothing
             # about the document identity yet.
-            _rec(run_id="run-A", job_id="job-1", phase="route_select",
-                 kind="phase_entry", msg="phase phase_entry: route_select"),
+            _rec(
+                run_id="run-A",
+                job_id="job-1",
+                phase="route_select",
+                kind="phase_entry",
+                msg="phase phase_entry: route_select",
+            ),
             # Child, mid-pipeline: doc_sha8 has appeared, doc_id has not.
-            _rec(run_id="run-A", job_id="job-1", doc_sha8="deadbeef",
-                 phase="convert", kind="phase_entry",
-                 msg="phase phase_entry: convert"),
+            _rec(
+                run_id="run-A",
+                job_id="job-1",
+                doc_sha8="deadbeef",
+                phase="convert",
+                kind="phase_entry",
+                msg="phase phase_entry: convert",
+            ),
             # Child, later: doc_id has now appeared (post-persist enrichment).
-            _rec(run_id="run-A", job_id="job-1", doc_sha8="deadbeef",
-                 doc_id="doc-999", phase="persist", kind="phase_entry",
-                 msg="phase phase_entry: persist"),
+            _rec(
+                run_id="run-A",
+                job_id="job-1",
+                doc_sha8="deadbeef",
+                doc_id="doc-999",
+                phase="persist",
+                kind="phase_entry",
+                msg="phase phase_entry: persist",
+            ),
         ]
         path = _write_log(tmp_path, lines)
 
@@ -200,13 +231,10 @@ class TestTwoPassResolutionAcrossTheDocIdBoundary:
         assert result.records[0]["doc_sha8"] is None
         assert result.records[-1]["doc_id"] == "doc-999"
 
-    def test_query_by_doc_sha8_also_recovers_the_earliest_parent_side_record(
-        self, tmp_path, lt
-    ):
+    def test_query_by_doc_sha8_also_recovers_the_earliest_parent_side_record(self, tmp_path, lt):
         lines = [
             _rec(run_id="run-A", job_id="job-1", phase="route_select"),
-            _rec(run_id="run-A", job_id="job-1", doc_sha8="deadbeef",
-                 phase="convert"),
+            _rec(run_id="run-A", job_id="job-1", doc_sha8="deadbeef", phase="convert"),
         ]
         path = _write_log(tmp_path, lines)
 
@@ -221,9 +249,7 @@ class TestWorkerRouteDocNameFailsClearly:
     --doc-name against such a log must fail with a clear message, not
     silently return an empty trace."""
 
-    def test_doc_name_query_on_worker_route_log_raises_clear_error(
-        self, tmp_path, lt
-    ):
+    def test_doc_name_query_on_worker_route_log_raises_clear_error(self, tmp_path, lt):
         lines = [
             _rec(run_id="run-A", job_id="job-1", phase="route_select"),
             _rec(run_id="run-A", job_id="job-1", doc_id="doc-1", phase="persist"),
@@ -259,10 +285,14 @@ class TestDecisionRecordsAreOptional:
 
     def test_trace_with_no_decision_records_still_renders(self, tmp_path, lt):
         lines = [
-            _rec(run_id="run-A", doc_name="alpha.pdf", kind="phase_entry",
-                 phase="route_select"),
-            _rec(run_id="run-A", doc_name="alpha.pdf", kind="phase_exit",
-                 phase="route_select", dur_ms=12),
+            _rec(run_id="run-A", doc_name="alpha.pdf", kind="phase_entry", phase="route_select"),
+            _rec(
+                run_id="run-A",
+                doc_name="alpha.pdf",
+                kind="phase_exit",
+                phase="route_select",
+                dur_ms=12,
+            ),
         ]
         path = _write_log(tmp_path, lines)
 
@@ -274,11 +304,16 @@ class TestDecisionRecordsAreOptional:
 
     def test_decision_record_present_is_included_when_it_exists(self, tmp_path, lt):
         lines = [
-            _rec(run_id="run-A", doc_name="alpha.pdf", kind="phase_entry",
-                 phase="ocr"),
-            _rec(run_id="run-A", doc_name="alpha.pdf", kind="decision",
-                 phase="ocr", event="decide_ocr_strategy", choice="tesseract",
-                 reason="garble_detected"),
+            _rec(run_id="run-A", doc_name="alpha.pdf", kind="phase_entry", phase="ocr"),
+            _rec(
+                run_id="run-A",
+                doc_name="alpha.pdf",
+                kind="decision",
+                phase="ocr",
+                event="decide_ocr_strategy",
+                choice="tesseract",
+                reason="garble_detected",
+            ),
         ]
         path = _write_log(tmp_path, lines)
 
@@ -322,7 +357,7 @@ def test_job_id_alone_resolves_without_a_run_id(lt, tmp_path):
     # Arrange
     path = tmp_path / "log.jsonl"
     path.write_text(
-        '\n'.join(
+        "\n".join(
             json.dumps(r)
             for r in (
                 {"run_id": "r1", "job_id": "j1", "msg": "parent start"},
@@ -344,7 +379,7 @@ def test_job_id_with_run_id_still_narrows(lt, tmp_path):
     # Arrange -- the same job_id reused across two runs
     path = tmp_path / "log.jsonl"
     path.write_text(
-        '\n'.join(
+        "\n".join(
             json.dumps(r)
             for r in (
                 {"run_id": "r1", "job_id": "j1", "msg": "run one"},

@@ -9,6 +9,7 @@ Usage:
     uv run python scripts/update_golden_files.py
     uv run python scripts/update_golden_files.py --archetype arabic_garbled
 """
+
 from __future__ import annotations
 
 import argparse

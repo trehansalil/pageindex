@@ -123,12 +123,14 @@ def _keep_best_wins(
     # hardcoding False -- closes the ScriptContext threading gap so the
     # garble-detection fallback at detect_garble:543-554 receives accurate
     # had_presentation_forms when comparing pre vs post OCR results.
-    _kb_ctx = script_context if script_context is not None else ScriptContext(
-        dominant_script=expected_script,
-        had_presentation_forms=_infer_pf(
-            _flatten_tree_text(pre_result.get("structure", []))
-        ),
-        source="ocr_retry_keep_best",
+    _kb_ctx = (
+        script_context
+        if script_context is not None
+        else ScriptContext(
+            dominant_script=expected_script,
+            had_presentation_forms=_infer_pf(_flatten_tree_text(pre_result.get("structure", []))),
+            source="ocr_retry_keep_best",
+        )
     )
 
     # Stage 1: zero-char shortcut (Zone-8 fix).

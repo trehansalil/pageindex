@@ -102,7 +102,9 @@ def _build_pdf_pipeline_options(
         # performs no OCR at all on the primary pass.
         logger.debug(
             "docling OCR bound to engine=%s langs=%s force_full_page=%s",
-            OcrEngine.TESSERACT, langs, force_ocr,
+            OcrEngine.TESSERACT,
+            langs,
+            force_ocr,
         )
         opts.ocr_options = TesseractCliOcrOptions(lang=langs, force_full_page_ocr=force_ocr)
     opts.accelerator_options = AcceleratorOptions(device=device, num_threads=num_threads)

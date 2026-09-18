@@ -6,6 +6,7 @@ site with ``kind="log"`` and the full envelope: callers never build the
 envelope themselves, the formatter always does, so the 48 existing modules
 gain it for free.
 """
+
 from __future__ import annotations
 
 import json

@@ -23,9 +23,7 @@ MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 # permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
 # RFC-042 D4: hoisted from client/indexer.py (hot-path) — this is a startup-only
 # read, config.py is the designated home for it.
-CLIENT_BUILD_SHA: str = os.environ.get("BUILD_SHA") or os.environ.get(
-    "CLIENT_BUILD_SHA", "unknown"
-)
+CLIENT_BUILD_SHA: str = os.environ.get("BUILD_SHA") or os.environ.get("CLIENT_BUILD_SHA", "unknown")
 
 # ---------------------------------------------------------------------------
 # Backward-compat module-level aliases for the 6 pipeline-behavior flags that
@@ -496,7 +494,9 @@ class PipelineConfig:
             ocr_escalation_low_content=os.environ.get(
                 "OCR_ESCALATION_LOW_CONTENT",
                 os.environ.get("OCR_ESCALATION_GARBLE", "1"),
-            ).strip().lower()
+            )
+            .strip()
+            .lower()
             in ("1", "true", "yes"),
             ocr_escalation_per_picture=os.environ.get("OCR_ESCALATION_PER_PICTURE", "1")
             .strip()
@@ -580,9 +580,7 @@ class PipelineConfig:
             min_marginal_chars=int(os.environ.get("MIN_MARGINAL_CHARS", "50")),
             # Verdict-gate thresholds (VG-2/3/4).  Defaults reproduce the
             # literals they replaced exactly, so the change is behavior-neutral.
-            hard_fail_max_leaf_ratio=float(
-                os.environ.get("HARD_FAIL_MAX_LEAF_RATIO", "0.75")
-            ),
+            hard_fail_max_leaf_ratio=float(os.environ.get("HARD_FAIL_MAX_LEAF_RATIO", "0.75")),
             cat_a_max_leaf_ratio=float(os.environ.get("CAT_A_MAX_LEAF_RATIO", "0.15")),
             cat_a_max_ocr_noise=float(os.environ.get("CAT_A_MAX_OCR_NOISE", "0.005")),
             small_doc_min_chars=int(os.environ.get("SMALL_DOC_MIN_CHARS", "100")),
@@ -597,9 +595,7 @@ class PipelineConfig:
             picture_page_coverage_threshold=float(
                 os.environ.get("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6")
             ),
-            decorative_icon_min_dim_pt=float(
-                os.environ.get("DECORATIVE_ICON_MIN_DIM_PT", "20")
-            ),
+            decorative_icon_min_dim_pt=float(os.environ.get("DECORATIVE_ICON_MIN_DIM_PT", "20")),
             image_enrich_concurrency=max(
                 1, int(os.environ.get("IMAGE_ENRICH_CONCURRENCY", "4") or "4")
             ),
@@ -613,9 +609,7 @@ class PipelineConfig:
             landscape_reextract_deadline_seconds=float(
                 os.environ.get("LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", "600")
             ),
-            page_rotation_detection_enabled=_envbool(
-                "PAGE_ROTATION_DETECTION_ENABLED", "true"
-            ),
+            page_rotation_detection_enabled=_envbool("PAGE_ROTATION_DETECTION_ENABLED", "true"),
             strip_skipped_image_markers=_envbool("STRIP_SKIPPED_IMAGE_MARKERS", "true"),
         )
 

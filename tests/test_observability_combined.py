@@ -302,7 +302,9 @@ class TestProcessDocumentJobStamping:
             assert job_start_config is not None
             return {"doc_id": "doc123"}
 
-        async def fake_upsert_registry_row(doc_id, content_class, *, verdict_fields=None, registry_fields=None):
+        async def fake_upsert_registry_row(
+            doc_id, content_class, *, verdict_fields=None, registry_fields=None
+        ):
             pass
 
         monkeypatch.setattr(worker, "get_async_redis", fake_get_async_redis)
