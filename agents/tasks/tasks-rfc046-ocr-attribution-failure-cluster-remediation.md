@@ -427,7 +427,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R11.1](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [R11.2](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [R11.7](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [Property 11](design-rfc046-ocr-attribution-failure-cluster-remediation#property-11-timeout-bound-ordering)_
     - _Dependencies: 1.C_
 
-  - [ ] 3.11 Fix the floor/ceiling inversion in the dynamic child timeout
+  - [x] 3.11 Fix the floor/ceiling inversion in the dynamic child timeout
 
     - `subprocess_mgr.py:163` computes `effective_timeout = max(CHILD_TIMEOUT, chunked_docling_timeout_s(n))`, but `CHILD_TIMEOUT = JOB_TIMEOUT - 30 = 3600` and `JOB_TIMEOUT = 3630` was itself sized (`worker/constants.py:11`) as *"max_dynamic_child_timeout 3300 + 300 buffer + CHILD_GRACE_SECONDS 30"*. **The floor is derived from a ceiling sized to hold the dynamic budget, so the floor is always >= the dynamic budget and `max()` can never select it.** RFC-028 D0 built the size-proportional timeout and made it unreachable in the same change.
     - `max()` is the wrong combinator once `is_docling_route` and `chunk_count > 1`: the single-pass floor exists to cover non-conversion overhead, so the chunked budget should *add to* it, not compete with it.

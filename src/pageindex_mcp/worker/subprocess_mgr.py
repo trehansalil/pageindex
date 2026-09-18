@@ -13,6 +13,7 @@ from typing import Any
 
 from ..config import pipeline_config, settings
 from ..converters import chunked_docling_timeout_s
+from ..converters.docling_conv import _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
 from ..obs.constants import ENV_LOG_CONTEXT
 from ..obs.context import current_context
 
@@ -342,7 +343,14 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
             except (ValueError, TypeError):
                 chunk_count = 1
             dynamic_timeout = chunked_docling_timeout_s(chunk_count)
-            effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
+            # RFC-046 D11 (task 3.11): the single-pass floor covers
+            # non-conversion overhead; the per-chunk budget adds to it,
+            # not competes with it.  max() made the floor swallow the
+            # dynamic budget at chunk_count >= 2.
+            if chunk_count > 1:
+                effective_timeout = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+            else:
+                effective_timeout = max(CHILD_TIMEOUT, dynamic_timeout)
         pdf_class = handshake.get("pdf_classification")
         if pdf_class:
             logger.info(

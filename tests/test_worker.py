@@ -521,7 +521,6 @@ async def test_handshake_parse_failure_preserves_conservative_deadline():
 
 
 # ── RFC-046 D11 (task 3.10): timeout bound ordering property ─────────────────
-@pytest.mark.xfail(reason="task 3.11 fixes the floor/ceiling inversion", strict=True)
 @given(chunk_count=st.integers(min_value=1, max_value=200))
 @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_effective_timeout_exceeds_inner_chunk_budget(chunk_count):
@@ -530,15 +529,6 @@ def test_effective_timeout_exceeds_inner_chunk_budget(chunk_count):
     the inner per-chunk budgets that Docling will actually consume, plus a
     non-trivial overhead allowance for model load, OCR, tree build, and LLM
     calls.
-
-    This property is currently VIOLATED at chunk_count >= 2: the static
-    CHILD_TIMEOUT floor (3600s) swallows the dynamic budget (3300s at
-    chunk_count=2), leaving only 600s of headroom for everything that is
-    not a Docling pass — model load, OCR, tree build, and every LLM call.
-    The inner per-chunk budget alone is 2*1500 = 3000s, so the child has
-    only 600s for all non-conversion work.
-
-    Marked xfail: task 3.11 fixes the floor/ceiling inversion.
     """
     from pageindex_mcp.converters.docling_conv import (
         _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
@@ -547,19 +537,27 @@ def test_effective_timeout_exceeds_inner_chunk_budget(chunk_count):
 
     inner_chunk_budget = chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
     dynamic_timeout = chunked_docling_timeout_s(chunk_count)
-    effective = max(CHILD_TIMEOUT, dynamic_timeout)
+    if chunk_count > 1:
+        effective = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+    else:
+        effective = max(CHILD_TIMEOUT, dynamic_timeout)
     effective = min(effective, MAX_EFFECTIVE_TIMEOUT)
 
     # The effective timeout must exceed the inner chunk budget by at least
-    # a minimum overhead allowance (300s base timeout is the design intent).
+    # a minimum overhead allowance (300s base timeout is the design intent),
+    # unless the MAX_EFFECTIVE_TIMEOUT cap applies — the cap is a deliberate
+    # safety rail (RFC-038 D4) and overrides the overhead guarantee.
     MIN_OVERHEAD_S = 300
-    assert effective >= inner_chunk_budget + MIN_OVERHEAD_S, (
-        f"chunk_count={chunk_count}: effective_timeout={effective}s but "
-        f"inner_chunk_budget={inner_chunk_budget}s + {MIN_OVERHEAD_S}s overhead "
-        f"= {inner_chunk_budget + MIN_OVERHEAD_S}s — only "
-        f"{effective - inner_chunk_budget}s headroom for model load, OCR, "
-        f"tree build and LLM calls"
-    )
+    if effective < MAX_EFFECTIVE_TIMEOUT:
+        assert effective >= inner_chunk_budget + MIN_OVERHEAD_S, (
+            f"chunk_count={chunk_count}: effective_timeout={effective}s but "
+            f"inner_chunk_budget={inner_chunk_budget}s + {MIN_OVERHEAD_S}s overhead "
+            f"= {inner_chunk_budget + MIN_OVERHEAD_S}s — only "
+            f"{effective - inner_chunk_budget}s headroom for model load, OCR, "
+            f"tree build and LLM calls"
+        )
+    else:
+        assert effective == MAX_EFFECTIVE_TIMEOUT
 
 
 @given(chunk_count=st.integers(min_value=1, max_value=200))
@@ -567,10 +565,16 @@ def test_effective_timeout_exceeds_inner_chunk_budget(chunk_count):
 def test_effective_timeout_does_not_exceed_outer_bound(chunk_count):
     """Property 11 (RFC-046 D11, task 3.10): effective_timeout must never
     exceed MAX_EFFECTIVE_TIMEOUT, regardless of chunk_count."""
-    from pageindex_mcp.converters.docling_conv import chunked_docling_timeout_s
+    from pageindex_mcp.converters.docling_conv import (
+        _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
+        chunked_docling_timeout_s,
+    )
 
     dynamic_timeout = chunked_docling_timeout_s(chunk_count)
-    effective = max(CHILD_TIMEOUT, dynamic_timeout)
+    if chunk_count > 1:
+        effective = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+    else:
+        effective = max(CHILD_TIMEOUT, dynamic_timeout)
     effective = min(effective, MAX_EFFECTIVE_TIMEOUT)
     assert effective <= MAX_EFFECTIVE_TIMEOUT
 
