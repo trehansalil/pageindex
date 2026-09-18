@@ -10,14 +10,13 @@ Public surface:
   - ``bind_log_context()`` -- binds correlation fields across the process
     boundary and across recovery passes (task 12.2).
   - ``Phase`` / ``phase()`` -- the phase model (task 12.4).
-  - ``decision()`` -- the decision-record emitter's home. Task 12.5 (the
-    ``DECISION_POINTS`` registry and instrumenting the 19 enumerated
-    decision points) is a separate tranche and is NOT done here: nothing in
-    ``src/`` calls ``decision()`` yet.
+  - ``decision()`` + ``DECISION_POINTS`` -- the decision layer (task 12.5).
+  - ``propagate()`` -- re-binds correlation inside a ThreadPoolExecutor
+    worker, which does not inherit contextvars (task 12.5).
 """
 from __future__ import annotations
 
-from .context import bind_log_context
+from .context import bind_log_context, propagate
 from .decisions import decision
 from .filter import ContextFilter
 from .formatter import JsonFormatter
@@ -29,6 +28,7 @@ __all__ = [
     "JsonFormatter",
     "Phase",
     "bind_log_context",
+    "propagate",
     "configure",
     "decision",
     "phase",
