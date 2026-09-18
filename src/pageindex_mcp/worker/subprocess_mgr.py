@@ -14,6 +14,7 @@ from typing import Any
 from ..config import pipeline_config, settings
 from ..obs.constants import ENV_LOG_CONTEXT
 from ..obs.context import current_context
+from ..obs.redact import scrub_message
 from .timeouts import effective_child_timeout
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr/patch.
@@ -121,8 +122,12 @@ def _write_through(line: bytes, tail: _StderrTail) -> None:
     stderr_bytes stayed b"" for the entire timeout path because the
     tuple-unpack from communicate() never completed.
     """
-    tail.append(line)
-    sys.stderr.write(line.decode(errors="replace"))
+    # R12.7 (task 12.6): docling and pymupdf print absolute paths of their own
+    # on this channel. An AST guard over decision() call sites structurally
+    # cannot see them, so the reduction happens here, on the way through.
+    text = scrub_message(line.decode(errors="replace"))
+    tail.append(text.encode())
+    sys.stderr.write(text)
     sys.stderr.flush()
 
 

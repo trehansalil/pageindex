@@ -21,6 +21,7 @@ from .constants import (
     PLACEHOLDER_UNSERIALISABLE,
     SCHEMA_VERSION,
 )
+from .redact import scrub_message
 from .safe import safe_attrs, safe_scalar
 
 _MS_PER_SECOND = 1000
@@ -83,7 +84,11 @@ def _safe_message(record: logging.LogRecord) -> str:
     args; a hostile ``__str__`` in an arg raises there, before the envelope
     is even built."""
     try:
-        return record.getMessage()
+        # R12.7: the ~48 pre-existing call sites format absolute paths into
+        # their messages (indexer.py:1062, pipeline.py:477, job.py:164, ...).
+        # Reducing them here covers every one at once, instead of editing --
+        # and eventually missing -- each site.
+        return scrub_message(record.getMessage())
     except Exception:  # pragma: no cover - defensive
         return PLACEHOLDER_UNSERIALISABLE
 
