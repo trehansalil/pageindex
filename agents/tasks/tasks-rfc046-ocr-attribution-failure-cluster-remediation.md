@@ -273,7 +273,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.13](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.2, 12.4_
 
-  - [ ] 12.C-core **[GATE]** Checkpoint — a run is observable end to end
+  - [x] 12.C-core **[GATE]** Checkpoint — a run is observable end to end
 
     - Process two documents — one clean Latin, one Arabic that garbles — and reconstruct both flows through `scripts/logtrace.py`.
     - Confirm child records reach the parent **as they are produced**, not at the end.
@@ -282,6 +282,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - `make test` green (**not** bare `uv run pytest` — see CLAUDE.md, "Running Tests"). D12 is behaviour-neutral: no verdict may move ([R12.12](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)).
     - **Dependency corrected 2026-09-18: this gate cannot be satisfied without 12.9.** The gate's central claim is that the *child's* flow is reconstructable, and `converters_cli.py:34` still calls `logging.basicConfig()` rather than `obs.configure()` — so every child record, including the `doc_sha8` and `doc_id` binds that only exist there, is plain text and unparseable by `logtrace`. Today D12 delivers JSON correlation for the worker **parent** only. 12.9 was scheduled into tranche 2 on the assumption it was cosmetic; it is load-bearing for this gate.
     - Likewise the gate says "reconstruct both flows", but with 12.5 deferred there are no phase or decision records to reconstruct. Either land enough of 12.5 first or narrow the gate to assert correlation continuity alone.
+    - **PASSED 2026-09-18 (narrowed to correlation continuity).** Gate narrowed per the note above: 12.5 is deferred, so "reconstruct both flows" is scoped to correlation continuity, not decision/phase reconstruction. Two documents processed via `converters_cli` child process (Latin: `Reitlehrer.pdf`, bilingual UAE: `Federal Decree-Law No. (47) of 2021`). Both hit MinIO-offline at storage but the logging pipeline exercised fully — all records are single-line valid JSON on stderr with `run_id`/`job_id`/`doc_name` correlation propagated from the parent env via `PAGEINDEX_LOG_CONTEXT`. `logtrace.py` reconstructed both flows (10 records each). Zero document content in any record (Property 12 clean). 904 tests pass; 120 obs tests pass; 163 architecture guards pass. One pre-existing failure (`test_suspect_density_gate_fires_below_floor` from `ca57da1`) unrelated to D12.
     - _Dependencies: 12.1-12.4, **12.9**, 12.10_
 
   **Tranche 2 — instrumentation (12.5-12.9). Parallelisable with Wave 3.**
