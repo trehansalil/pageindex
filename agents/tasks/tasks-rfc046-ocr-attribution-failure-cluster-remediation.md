@@ -435,7 +435,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R11.1](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [Property 11](design-rfc046-ocr-attribution-failure-cluster-remediation#property-11-timeout-bound-ordering)_
     - _Dependencies: 3.10_
 
-  - [ ] 3.12 Collapse the batch-CLI / arq-worker timeout divergence
+  - [x] 3.12 Collapse the batch-CLI / arq-worker timeout divergence
 
     - `_run_converter_subprocess` has exactly two callers (verified via call graph): `preprocess_client._process_one` and `worker.job.process_document_job`. They share the primitive but **not the policy** — arq wraps the worker path in a worker-level `job_timeout = JOB_TIMEOUT = 3630` (`worker/lifecycle.py:143`, applied at `arq/worker.py:570`); the batch CLI has no outer bound at all.
     - Consequence: `MAX_EFFECTIVE_TIMEOUT` (54000) and the 16.5x inspector multiplier are **dead in the worker path** — arq cancels at 3630 first — while both are live via the batch CLI. The 1.C baseline was taken through the CLI, so **the baseline and production do not share timeout semantics.**

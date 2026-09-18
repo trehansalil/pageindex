@@ -1530,3 +1530,32 @@ class TestNoConfigDoubleSourcing:
             "R9/D9 (RFC-046): these entries are no longer double-sourced and "
             f"must be deleted from KNOWN_DOUBLE_SOURCED: {sorted(stale)}"
         )
+
+
+# ── RFC-046 D11 (task 3.12): timeout authority convergence ───────────────────
+class TestTimeoutAuthorityConvergence:
+    """Every caller of _run_converter_subprocess must be subject to a timeout
+    that is >= MAX_EFFECTIVE_TIMEOUT so the dynamic effective_timeout computed
+    post-handshake is never pre-empted by a tighter outer bound."""
+
+    def test_arq_function_timeout_is_non_binding_backstop(self):
+        """The arq per-function timeout on process_document_job must be
+        >= MAX_EFFECTIVE_TIMEOUT so arq never cancels before the dynamic
+        effective_timeout fires."""
+        from pageindex_mcp.worker import WorkerSettings
+        from pageindex_mcp.worker.constants import MAX_EFFECTIVE_TIMEOUT
+
+        funcs = WorkerSettings.functions
+        assert len(funcs) >= 1
+        job_func = funcs[0]
+        # arq.func() wraps the coroutine and sets timeout_s
+        assert hasattr(job_func, "timeout_s"), (
+            "process_document_job must be wrapped with arq.func() to set "
+            "a per-function timeout — bare coroutines inherit the class-level "
+            "job_timeout which is too tight"
+        )
+        assert job_func.timeout_s >= MAX_EFFECTIVE_TIMEOUT, (
+            f"arq per-function timeout ({job_func.timeout_s}s) is tighter than "
+            f"MAX_EFFECTIVE_TIMEOUT ({MAX_EFFECTIVE_TIMEOUT}s) — arq will cancel "
+            f"before the dynamic effective_timeout fires"
+        )

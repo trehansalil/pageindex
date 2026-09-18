@@ -5,11 +5,12 @@ import os
 from typing import ClassVar
 
 import redis.asyncio as aioredis
-from arq import cron
+from arq import cron, func
 from arq.connections import RedisSettings
 
 from ..config import settings, validate_hr3_compliance
 from ..obs import configure as configure_obs
+from .constants import MAX_EFFECTIVE_TIMEOUT, REAP_GRACE
 from .job import JOB_TIMEOUT, MAX_TRIES, process_document_job, reap_stale_jobs
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,13 @@ else:
 
 
 class WorkerSettings:
-    functions: ClassVar = [process_document_job]
+    # RFC-046 D11 (task 3.12): per-function timeout overrides the class-level
+    # job_timeout so arq's static bound is a non-binding backstop.  The dynamic
+    # effective_timeout (computed post-handshake in subprocess_mgr) is the real
+    # authority; arq must not cancel before it fires.
+    functions: ClassVar = [
+        func(process_document_job, timeout=MAX_EFFECTIVE_TIMEOUT + REAP_GRACE),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
