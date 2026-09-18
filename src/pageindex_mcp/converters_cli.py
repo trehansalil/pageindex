@@ -27,20 +27,14 @@ import resource
 import sys
 import time
 
+from .obs import configure as configure_obs
 from .obs.constants import ENV_LOG_CONTEXT
 from .obs.context import bind_log_context
 
-# Redirect all logging to stderr immediately — before any other import.
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-# NOTE (RFC-046 D12, task 12.2): this module intentionally does NOT call
-# obs.configure() -- it would install a second handler alongside the
-# basicConfig above, doubling every log line (plain-text + JSON) rather than
-# replacing the format. Unifying this basicConfig call onto obs.configure()
-# is task 12.9 (a separate tranche); until then, correlation is BOUND here
-# (via bind_log_context below) but not yet FORMATTED as JSON for this
-# process -- the same context still crosses correctly into anything that
-# reads current_context() directly (e.g. subprocess_mgr would, if this were
-# itself a parent -- it is not).
+# Install JSON stderr handler immediately — before any other import.
+# converters_cli reserves stdout for exactly two JSON lines (handshake +
+# result); all logging must go to stderr (Property 13, R12.11).
+configure_obs()
 
 # _stdout is the stream used for the final JSON output line.
 # It is a module-level variable so tests can monkeypatch it to a StringIO.

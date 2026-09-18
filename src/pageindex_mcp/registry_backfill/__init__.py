@@ -32,7 +32,6 @@ running the script multiple times is safe.
 
 from __future__ import annotations
 
-import logging
 import sys
 from pathlib import Path
 
@@ -44,11 +43,9 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+from pageindex_mcp.obs import configure as configure_obs  # noqa: E402
+
+configure_obs()
 
 from ..config import settings as settings  # noqa: E402
 from ..storage import (  # noqa: E402

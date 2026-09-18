@@ -140,7 +140,9 @@ async def run_sweep() -> dict:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    from pageindex_mcp.obs import configure as configure_obs
+
+    configure_obs()
     asyncio.run(run_sweep())
 
 

@@ -324,12 +324,13 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.8](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [R12.11](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12), [Property 13](design-rfc046-ocr-attribution-failure-cluster-remediation#property-13-one-line-one-record-on-stderr)_
     - _Dependencies: 12.5, 12.7_
 
-  - [ ] 12.9 Unify the divergent logging configuration
+  - [x] 12.9 Unify the divergent logging configuration
 
     - **Promoted into tranche 1 on 2026-09-18: 12.C-core cannot be satisfied without at least `converters_cli.py`.** See that gate's corrected dependency list.
     - Replace `logging.basicConfig` at `server.py:18`, `converters_cli.py:31` and `hash_cache_migrate.py:45` with `obs.configure()`.
     - **Two sites are missing from that list:** `registry_backfill/__init__.py:47` and `promotion_sweep.py:143`. `registry_backfill` is imported lazily from `worker/lifecycle.py:87`, *after* `configure_obs()` at `:57`, so its `basicConfig` no-ops today only because root already has a handler — luck, not design. Any reordering silently installs a second root handler and doubles every worker line, because `configure()` only removes handlers it marked itself.
     - Give the **arq worker** an explicit configuration via `WorkerSettings.on_startup` — it has none today and inherits whatever arq installs.
+    - **DONE 2026-09-18.** All five `basicConfig` sites replaced with `obs.configure()`: `converters_cli.py:34`, `server.py:18`, `hash_cache_migrate.py:45`, `registry_backfill/__init__.py:47`, `promotion_sweep.py:143`. `configure()` widened to remove **all** existing root handlers (not just tagged ones), so a prior `basicConfig` handler is cleanly replaced rather than doubled. The arq worker already had `configure_obs()` in `WorkerSettings.on_startup` (landed in task 12.2); its stale comment was updated. Zero `logging.basicConfig` calls remain in `src/` or the repo-root scripts. 163 architecture guard tests pass; 120 obs/rfc046 tests pass.
     - _Requirements: [R12.1](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
 

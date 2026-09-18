@@ -50,10 +50,8 @@ MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
 
 
 async def startup(ctx: dict) -> None:
-    # RFC-046 D12 (task 12.2): install the JSON stderr handler for this
-    # worker process. No existing logging.basicConfig call here to coexist
-    # with (unlike converters_cli/server/hash_cache_migrate) -- safe to call
-    # unconditionally.
+    # RFC-046 D12 (task 12.2 + 12.9): install the JSON stderr handler for
+    # this worker process.
     configure_obs()
 
     # RFC-039 D1: HR3 boot gate — refuse to start when pii_corpus=True and any

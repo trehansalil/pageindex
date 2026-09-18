@@ -582,6 +582,43 @@ mappings:
     tests:
       - test_upload.py
 
+  # ── Observability / structured logging (RFC-046 D12) ────────────────────────
+  obs/__init__.py:
+    tests:
+      - test_obs_logging.py primary
+      - test_architecture_guards.py
+  obs/constants.py:
+    tests:
+      - test_obs_logging.py primary
+  obs/context.py:
+    tests:
+      - test_obs_logging.py primary
+      - test_logtrace.py
+  obs/decision_points.py:
+    tests:
+      - test_obs_logging.py primary
+      - test_rfc046_attribution.py
+  obs/decisions.py:
+    tests:
+      - test_obs_logging.py primary
+      - test_rfc046_attribution.py
+  obs/filter.py:
+    tests:
+      - test_obs_logging.py primary
+  obs/formatter.py:
+    tests:
+      - test_obs_logging.py primary
+  obs/log_config.py:
+    tests:
+      - test_obs_logging.py primary
+  obs/phases.py:
+    tests:
+      - test_obs_logging.py primary
+      - test_rfc046_attribution.py
+  obs/safe.py:
+    tests:
+      - test_obs_logging.py primary
+
   # ── Package facades / barrels (RFC-045 D5) ──────────────────────────────────
   # __init__.py is excluded from the gate's source scan, but each barrel's
   # __all__ is a real contract: services/docling-service and issue/ import
@@ -632,3 +669,6 @@ standalone:
   scripts/facade_surface_measure.py:
     tests:
       - test_rfc045_facade_measurement.py    # RFC-045 D6 disposition rule
+  scripts/ocr_spike_eval.py:
+    tests:
+      - test_ocr_spike_eval.py    # RFC-046 Wave 2 / D1 OCR eval

@@ -15,11 +15,9 @@ from .config import settings
 from .metrics import metrics_response, registry_metrics_sync_loop
 from .upload_app import create_upload_app
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from .obs import configure as configure_obs
+
+configure_obs()
 
 mcp = FastMCP("pageindex-local")
 

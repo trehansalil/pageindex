@@ -32,11 +32,14 @@ def configure(level: int | None = None) -> None:
     every job with "invalid JSON on stdout" (Property 13). Idempotent: any
     handler this module previously installed (tagged via ``HANDLER_MARKER``)
     is removed first, so repeated calls never duplicate output.
+
+    Also removes any untagged handler (e.g. one installed by a prior
+    ``logging.basicConfig`` call) so that callers migrating from basicConfig
+    to ``configure()`` get exactly one handler, not two (task 12.9).
     """
     root = logging.getLogger()
     for existing in list(root.handlers):
-        if getattr(existing, HANDLER_MARKER, False):
-            root.removeHandler(existing)
+        root.removeHandler(existing)
 
     handler = logging.StreamHandler(sys.stderr)
     setattr(handler, HANDLER_MARKER, True)
