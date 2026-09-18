@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..config import pipeline_config
 from ..helpers import _garble_config, detect_garble
+from ..obs.decisions import decision
 from ..helpers.garble import _infer_presentation_forms as _infer_pf
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr.
@@ -165,7 +166,19 @@ def zdr_egress_gate(purpose: str, doc_id: str = "") -> tuple[bool, str | None]:
             purpose,
             doc_id or "<unknown doc>",
         )
+        decision(
+            event="vlm_egress_gate",
+            choice="blocked",
+            reason="pii_corpus=True and endpoint not ZDR-allowlisted",
+            attrs={"purpose": purpose, "api_base_host": api_base or "", "pii_corpus": True},
+        )
         return False, api_base
+    decision(
+        event="vlm_egress_gate",
+        choice="allowed",
+        reason="ZDR compliance check passed",
+        attrs={"purpose": purpose, "api_base_host": api_base or "", "pii_corpus": settings.pii_corpus},
+    )
     return True, api_base
 
 
@@ -359,6 +372,19 @@ def _document_level_text_fallback(
         total_chars >= _DOC_TEXT_FALLBACK_MIN_CHARS
         and total_chars / max(heading_count, 1) >= _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING
     ):
+        decision(
+            event="doc_text_layer_fallback",
+            choice="not_needed",
+            reason="text content sufficient",
+            attrs={
+                "total_chars": total_chars,
+                "heading_count": heading_count,
+                "chars_per_heading": total_chars // max(heading_count, 1),
+                "min_chars_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS,
+                "min_chars_per_heading_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING,
+                "fired_prongs": [],
+            },
+        )
         return md
     try:
         import pypdfium2 as pdfium
@@ -379,9 +405,35 @@ def _document_level_text_fallback(
             pdf_path,
             exc,
         )
+        decision(
+            event="doc_text_layer_fallback",
+            choice="pdfium_read_failed",
+            reason=f"pdfium read failed: {type(exc).__name__}",
+            attrs={
+                "total_chars": total_chars,
+                "heading_count": heading_count,
+                "chars_per_heading": total_chars // max(heading_count, 1),
+                "min_chars_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS,
+                "min_chars_per_heading_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING,
+                "fired_prongs": [],
+            },
+        )
         return md
     full_text = "\n\n".join(page_texts).strip()
     if not full_text:
+        decision(
+            event="doc_text_layer_fallback",
+            choice="empty_text",
+            reason="pdfium text layer is empty",
+            attrs={
+                "total_chars": total_chars,
+                "heading_count": heading_count,
+                "chars_per_heading": total_chars // max(heading_count, 1),
+                "min_chars_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS,
+                "min_chars_per_heading_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING,
+                "fired_prongs": [],
+            },
+        )
         return md
     # RFC-024 D1 risk mitigation: a scanned page can carry a thin mojibake text
     # layer — never append a garbled text layer as supplementary content (HR5).
@@ -399,12 +451,38 @@ def _document_level_text_fallback(
             pdf_path,
             _garble_report.fired_prongs,
         )
+        decision(
+            event="doc_text_layer_fallback",
+            choice="garbled_skip",
+            reason="pdfium text layer is garbled",
+            attrs={
+                "total_chars": total_chars,
+                "heading_count": heading_count,
+                "chars_per_heading": total_chars // max(heading_count, 1),
+                "min_chars_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS,
+                "min_chars_per_heading_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING,
+                "fired_prongs": list(_garble_report.fired_prongs),
+            },
+        )
         return md
     logger.info(
         "document-level text-layer fallback fired for %s (%d markdown char(s) "
         "excluding image markers)",
         pdf_path,
         total_chars,
+    )
+    decision(
+        event="doc_text_layer_fallback",
+        choice="fired",
+        reason="text content below threshold, pdfium fallback appended",
+        attrs={
+            "total_chars": total_chars,
+            "heading_count": heading_count,
+            "chars_per_heading": total_chars // max(heading_count, 1),
+            "min_chars_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS,
+            "min_chars_per_heading_threshold": _DOC_TEXT_FALLBACK_MIN_CHARS_PER_HEADING,
+            "fired_prongs": [],
+        },
     )
     return f"{md}\n\n{full_text}"
 
@@ -459,12 +537,24 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
     corrupted page's rotation metadata must not abort extraction).
     """
     if not _PAGE_ROTATION_DETECTION_ENABLED:
+        decision(
+            event="pdf_rotation_normalization",
+            choice="disabled_by_flag",
+            reason="page_rotation_detection_enabled is false",
+            attrs={"pages_corrected_count": 0, "allow_agpl_fallback": pipeline_config.allow_agpl_fallback, "error_type": ""},
+        )
         return pdf_path
     if not pipeline_config.allow_agpl_fallback:
         logger.warning(
             "rotation normalization skipped for %s: ALLOW_AGPL_FALLBACK=false "
             "(fitz/PyMuPDF is AGPL-3.0)",
             pdf_path,
+        )
+        decision(
+            event="pdf_rotation_normalization",
+            choice="agpl_fallback_disabled",
+            reason="ALLOW_AGPL_FALLBACK=false",
+            attrs={"pages_corrected_count": 0, "allow_agpl_fallback": False, "error_type": ""},
         )
         return pdf_path
     try:
@@ -473,6 +563,7 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
         pdf = fitz.open(pdf_path)
         try:
             changed = False
+            pages_corrected_count = 0
             for page in pdf:
                 info = _page_rotation_correction_info(page)
                 effective_rotation = (
@@ -481,7 +572,14 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
                 if effective_rotation and effective_rotation != page.rotation:
                     page.set_rotation(effective_rotation)
                     changed = True
+                    pages_corrected_count += 1
             if not changed:
+                decision(
+                    event="pdf_rotation_normalization",
+                    choice="no_change_needed",
+                    reason="no page needed rotation correction",
+                    attrs={"pages_corrected_count": 0, "allow_agpl_fallback": True, "error_type": ""},
+                )
                 return pdf_path
             # SIM115 rationale: the temp FILE must outlive this scope -- its path is
             # returned to the caller, who reads it and unlinks it later. A context
@@ -489,12 +587,24 @@ def _normalize_pdf_page_rotation(pdf_path: str) -> str:
             tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # noqa: SIM115
             tmp.close()
             pdf.save(tmp.name)
+            decision(
+                event="pdf_rotation_normalization",
+                choice="corrected",
+                reason="pages with rotation corrections saved",
+                attrs={"pages_corrected_count": pages_corrected_count, "allow_agpl_fallback": True, "error_type": ""},
+            )
             return tmp.name
         finally:
             pdf.close()
     except Exception as exc:
         logger.warning(
             "rotation normalization failed for %s (%s); using original file", pdf_path, exc
+        )
+        decision(
+            event="pdf_rotation_normalization",
+            choice="failed",
+            reason=f"rotation normalization failed: {type(exc).__name__}",
+            attrs={"pages_corrected_count": 0, "allow_agpl_fallback": True, "error_type": type(exc).__name__},
         )
         return pdf_path
 
@@ -509,6 +619,12 @@ def _tag_landscape_pages_for_fallback(pdf_path: str) -> list[dict]:
     documents yield an all-False probe and are otherwise unaffected.
     """
     if not pipeline_config.allow_agpl_fallback:
+        decision(
+            event="landscape_probe_outcome",
+            choice="agpl_fallback_disabled",
+            reason="ALLOW_AGPL_FALLBACK=false",
+            attrs={"landscape_page_count": 0, "total_page_count": 0, "error_type": ""},
+        )
         return []
     try:
         import fitz  # PyMuPDF, AGPL-3.0
@@ -532,9 +648,25 @@ def _tag_landscape_pages_for_fallback(pdf_path: str) -> list[dict]:
                         "is_landscape": is_landscape,
                     }
                 )
+        decision(
+            event="landscape_probe_outcome",
+            choice="completed",
+            reason="landscape probe completed",
+            attrs={
+                "landscape_page_count": sum(1 for p in pages if p["is_landscape"]),
+                "total_page_count": len(pages),
+                "error_type": "",
+            },
+        )
         return pages
     except Exception as exc:
         logger.warning("landscape orientation probe failed for %s (%s)", pdf_path, exc)
+        decision(
+            event="landscape_probe_outcome",
+            choice="probe_failed",
+            reason=f"probe failed: {type(exc).__name__}",
+            attrs={"landscape_page_count": 0, "total_page_count": 0, "error_type": type(exc).__name__},
+        )
         return []
 
 
@@ -548,16 +680,32 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
     carry no picture region, so they no longer false-positive trigger.
     """
     if not any(p["is_landscape"] for p in landscape_pages):
+        decision(
+            event="landscape_page_flagged_for_reextract",
+            choice="no_landscape_pages_at_all",
+            reason="no landscape pages in the probe",
+            attrs={"page_no": 0, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": False, "has_picture_region": False},
+        )
         return []
     picture_pages = {r["page"] for r in _collect_picture_regions(document)}
     below = []
     for p in landscape_pages:
         if not p["is_landscape"]:
+            decision(
+                event="landscape_page_flagged_for_reextract",
+                choice="not_landscape",
+                reason="page is not landscape",
+                attrs={"page_no": p["page_no"] + 1, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": False, "has_picture_region": False},
+            )
             continue
-        # PyMuPDF page_no is 0-indexed; Docling's prov.page_no (and
-        # iterate_items' page_no kwarg) is 1-indexed.
         page_no = p["page_no"] + 1
         if page_no not in picture_pages:
+            decision(
+                event="landscape_page_flagged_for_reextract",
+                choice="no_picture_region",
+                reason="landscape page has no picture region",
+                attrs={"page_no": page_no, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": False},
+            )
             continue
         char_count = 0
         try:
@@ -566,9 +714,28 @@ def _landscape_pages_below_threshold(document, landscape_pages: list[dict]) -> l
                 char_count += len(text)
         except Exception as exc:
             logger.warning("landscape char-count probe failed for page %d (%s)", page_no, exc)
+            decision(
+                event="landscape_page_flagged_for_reextract",
+                choice="char_count_probe_failed",
+                reason=f"char count probe failed: {type(exc).__name__}",
+                attrs={"page_no": page_no, "char_count": 0, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": True},
+            )
             continue
         if char_count < LANDSCAPE_CHAR_THRESHOLD:
+            decision(
+                event="landscape_page_flagged_for_reextract",
+                choice="flagged",
+                reason="char count below landscape threshold",
+                attrs={"page_no": page_no, "char_count": char_count, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": True},
+            )
             below.append({**p, "char_count": char_count})
+        else:
+            decision(
+                event="landscape_page_flagged_for_reextract",
+                choice="above_threshold",
+                reason="char count above landscape threshold",
+                attrs={"page_no": page_no, "char_count": char_count, "landscape_char_threshold": LANDSCAPE_CHAR_THRESHOLD, "is_landscape": True, "has_picture_region": True},
+            )
     return below
 
 
@@ -623,6 +790,7 @@ def _landscape_rasterize_rotate_reextract(
     deadline = time.monotonic() + LANDSCAPE_REEXTRACT_DEADLINE_SECONDS
     for p in pages:
         if len(results) >= MAX_LANDSCAPE_PAGES or time.monotonic() >= deadline:
+            bail_reason = "bail_deadline_reached" if time.monotonic() >= deadline else "bail_cap_reached"
             logger.warning(
                 "landscape reextraction bailing early (%d/%d pages, deadline=%s) for %s",
                 len(results),
@@ -630,8 +798,20 @@ def _landscape_rasterize_rotate_reextract(
                 time.monotonic() >= deadline,
                 pdf_path,
             )
+            decision(
+                event="landscape_reextract_bail",
+                choice=bail_reason,
+                reason=f"landscape reextraction bailing: {bail_reason}",
+                attrs={"pages_recovered_so_far": len(results), "max_landscape_pages": MAX_LANDSCAPE_PAGES, "deadline_seconds": LANDSCAPE_REEXTRACT_DEADLINE_SECONDS},
+            )
             break
         page_no = p["page_no"]
+        decision(
+            event="landscape_reextract_bail",
+            choice="continue",
+            reason="within cap and deadline",
+            attrs={"pages_recovered_so_far": len(results), "max_landscape_pages": MAX_LANDSCAPE_PAGES, "deadline_seconds": LANDSCAPE_REEXTRACT_DEADLINE_SECONDS},
+        )
         try:
             png_path = _rasterize_rotate_page(pdf_path, page_no, dpi=300)
         except Exception as exc:
@@ -641,6 +821,12 @@ def _landscape_rasterize_rotate_reextract(
                 page_no,
                 pdf_path,
                 exc,
+            )
+            decision(
+                event="landscape_reextract_engine",
+                choice="rasterize_failed",
+                reason=f"rasterize/rotate failed: {type(exc).__name__}",
+                attrs={"page_no": page_no, "has_pictures": False, "ocr_langs": ocr_lang_override or [], "md_chars": 0},
             )
             continue
         try:
@@ -663,6 +849,12 @@ def _landscape_rasterize_rotate_reextract(
                 )
                 md = _tesseract_ocr_image(png_path, ocr_lang_override or ["eng"])
                 has_pictures = False
+                decision(
+                    event="landscape_reextract_engine",
+                    choice="tesseract_fallback_recovered" if md.strip() else "reextract_failed",
+                    reason=f"Docling failed ({type(exc).__name__}), tesseract fallback",
+                    attrs={"page_no": page_no, "has_pictures": False, "ocr_langs": ocr_lang_override or ["eng"], "md_chars": len(md.strip())},
+                )
         except Exception as exc:
             logger.warning(
                 "landscape re-extraction failed for page %d of %s (%s); "
@@ -671,12 +863,31 @@ def _landscape_rasterize_rotate_reextract(
                 pdf_path,
                 exc,
             )
+            decision(
+                event="landscape_reextract_engine",
+                choice="reextract_failed",
+                reason=f"re-extraction failed: {type(exc).__name__}",
+                attrs={"page_no": page_no, "has_pictures": False, "ocr_langs": ocr_lang_override or [], "md_chars": 0},
+            )
             continue
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(png_path)
         if md and md.strip():
+            decision(
+                event="landscape_reextract_engine",
+                choice="docling_recovered",
+                reason="Docling re-extraction succeeded",
+                attrs={"page_no": page_no, "has_pictures": has_pictures, "ocr_langs": ocr_lang_override or [], "md_chars": len(md.strip())},
+            )
             results.append({"page_no": page_no, "markdown": md, "has_pictures": has_pictures})
+        else:
+            decision(
+                event="landscape_reextract_engine",
+                choice="empty_dropped",
+                reason="re-extraction yielded empty markdown",
+                attrs={"page_no": page_no, "has_pictures": has_pictures, "ocr_langs": ocr_lang_override or [], "md_chars": 0},
+            )
     return results
 
 
@@ -735,10 +946,22 @@ def _recover_picture_text(  # noqa: PLR0915, C901
             "(fitz/PyMuPDF is AGPL-3.0)",
             pdf_path,
         )
+        decision(
+            event="picture_recovery_agpl_gate",
+            choice="blocked_agpl_disabled",
+            reason="ALLOW_AGPL_FALLBACK=false",
+            attrs={"region_count": len(regions)},
+        )
         return {}, {}
 
     import fitz  # PyMuPDF, AGPL-3.0
 
+    decision(
+        event="picture_recovery_agpl_gate",
+        choice="allowed",
+        reason="AGPL fallback enabled",
+        attrs={"region_count": len(regions)},
+    )
     md_norm = _normalize_for_containment(md) if _GATE_CONFIG.clip_text_capture_enabled else ""
     gate_config = _GATE_CONFIG
 
@@ -795,6 +1018,35 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 )
                 disp = cls.disposition
 
+                # RFC-046 D12 (task 12.5): per-region disposition decision
+                _disp_choice_map = {
+                    RegionDisposition.SKIP_PAGE_COVERAGE: "skip_page_coverage",
+                    RegionDisposition.SKIP_COVERAGE_CAP: "skip_coverage_cap",
+                    RegionDisposition.SKIP_CLIP_EXPORTED: "skip_clip_exported",
+                    RegionDisposition.SKIP_CLIP_TEXT: "skip_clip_text",
+                    RegionDisposition.SKIP_DECORATIVE: "skip_decorative",
+                    RegionDisposition.CAPTURE_CLIP_TEXT: "capture_clip_text",
+                    RegionDisposition.CROP_AND_OCR: "crop_and_ocr",
+                }
+                decision(
+                    event="picture_region_disposition",
+                    choice=_disp_choice_map.get(disp, "crop_and_ocr"),
+                    reason=disp.skip_reason_str or disp.name,
+                    attrs={
+                        "region_index": i,
+                        "page": region["page"],
+                        "coverage": round(coverage, 4),
+                        "rect_width": round(rect.width, 1),
+                        "rect_height": round(rect.height, 1),
+                        "clip_text_len": len(clip_text),
+                        "clip_contained": clip_text_contained,
+                        "fullpage_ocr_region_count": fullpage_ocr_region_count,
+                        "retains_crop": disp.retains_crop if disp.is_skip else False,
+                        "skip_reason": disp.skip_reason_str or "",
+                        "error_type": "",
+                    },
+                )
+
                 # -- Disposition switch ----------------------------------------
                 if disp.is_skip:
                     reason = disp.skip_reason_str or (
@@ -831,6 +1083,19 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                         coverage * 100,
                         page_index + 1,
                     )
+                    decision(
+                        event="picture_coverage_exemption",
+                        choice="exempt",
+                        reason="page has no text layer, picture IS the content",
+                        attrs={"page": page_index + 1, "coverage_pct": round(coverage * 100, 1), "fullpage_ocr_region_count_after": fullpage_ocr_region_count},
+                    )
+                else:
+                    decision(
+                        event="picture_coverage_exemption",
+                        choice="not_exempt",
+                        reason="coverage exemption not needed",
+                        attrs={"page": page_index + 1, "coverage_pct": round(coverage * 100, 1), "fullpage_ocr_region_count_after": fullpage_ocr_region_count},
+                    )
 
                 if disp == RegionDisposition.CAPTURE_CLIP_TEXT:
                     clip_captures[i] = {
@@ -849,6 +1114,24 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                 # CROP_AND_OCR: D6 — zero page rotation before rendering.
                 png = _crop_page_region(page, rect, region_index=i)
                 if png is None:
+                    decision(
+                        event="picture_region_disposition",
+                        choice="crop_error",
+                        reason="crop returned None",
+                        attrs={
+                            "region_index": i,
+                            "page": region["page"],
+                            "coverage": round(coverage, 4),
+                            "rect_width": round(rect.width, 1),
+                            "rect_height": round(rect.height, 1),
+                            "clip_text_len": len(clip_text),
+                            "clip_contained": clip_text_contained,
+                            "fullpage_ocr_region_count": fullpage_ocr_region_count,
+                            "retains_crop": False,
+                            "skip_reason": "crop_error",
+                            "error_type": "",
+                        },
+                    )
                     skip_reasons[i] = "crop_error"
                     continue
                 crops[i] = {
@@ -862,6 +1145,24 @@ def _recover_picture_text(  # noqa: PLR0915, C901
                     i,
                     pdf_path,
                     exc,
+                )
+                decision(
+                    event="picture_region_disposition",
+                    choice="region_exception",
+                    reason=f"region processing failed: {type(exc).__name__}",
+                    attrs={
+                        "region_index": i,
+                        "page": region.get("page", 0),
+                        "coverage": 0.0,
+                        "rect_width": 0.0,
+                        "rect_height": 0.0,
+                        "clip_text_len": 0,
+                        "clip_contained": False,
+                        "fullpage_ocr_region_count": fullpage_ocr_region_count,
+                        "retains_crop": False,
+                        "skip_reason": "crop_error",
+                        "error_type": type(exc).__name__,
+                    },
                 )
                 skip_reasons[i] = "crop_error"
                 continue
@@ -890,7 +1191,19 @@ def _recover_picture_text(  # noqa: PLR0915, C901
             pr["ocr_text"] = rs["ocr_text"]
         recovered[i] = pr
     if not crops:
+        decision(
+            event="picture_ocr_phase2_skipped",
+            choice="skipped_no_crops",
+            reason="no crops to OCR",
+            attrs={"region_count": len(regions), "clip_capture_count": len(clip_captures), "retained_skip_count": len(retained_skips)},
+        )
         return recovered, skip_reasons
+    decision(
+        event="picture_ocr_phase2_skipped",
+        choice="ran",
+        reason="crops available for OCR",
+        attrs={"region_count": len(regions), "clip_capture_count": len(clip_captures), "retained_skip_count": len(retained_skips)},
+    )
 
     def _ocr_one(png_bytes: bytes) -> str:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -935,6 +1248,19 @@ def _recover_picture_text(  # noqa: PLR0915, C901
         # counts_in_denominator returns False -- same exclusion as old decorative.
         if not ocr_text:
             result["skipped_reason"] = SkipReason.OCR_MIN_CHARS.value
+            decision(
+                event="picture_ocr_min_chars_outcome",
+                choice="decorative_ocr_min_chars",
+                reason="OCR yield below minimum chars threshold",
+                attrs={"region_index": i, "ocr_text_len": 0, "vlm_describe_images_enabled": keep_silent_png, "png_kept": bool(result.get("png_bytes"))},
+            )
+        else:
+            decision(
+                event="picture_ocr_min_chars_outcome",
+                choice="content",
+                reason="OCR yielded content above threshold",
+                attrs={"region_index": i, "ocr_text_len": len(ocr_text), "vlm_describe_images_enabled": keep_silent_png, "png_kept": True},
+            )
         recovered[i] = result
     return recovered, skip_reasons
 
@@ -1002,21 +1328,58 @@ def splice_figure_markers(md: str, pics: list[PictureResult]) -> str:
         k = counter["i"]
         counter["i"] += 1
         if k >= len(real_pics):
+            _choice = "excess_stripped" if pipeline_config.strip_skipped_image_markers else "excess_neutral"
+            decision(
+                event="figure_marker_disposition",
+                choice=_choice,
+                reason="marker index exceeds real_pics count",
+                attrs={"picture_index": k, "has_ocr": False, "has_desc": False, "has_png": False, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+            )
             if pipeline_config.strip_skipped_image_markers:
                 return ""
             return m.group(0)
         result = real_pics[k]
         ocr = result.get("ocr_text", "")
         desc = result.get("description", "")
-        if not (ocr or desc or result.get("png_bytes")):
+        has_png = bool(result.get("png_bytes"))
+        if not (ocr or desc or has_png):
             if result.get("skipped_reason"):
+                _choice = "skipped_stripped" if pipeline_config.strip_skipped_image_markers else "skipped_neutral"
+                decision(
+                    event="figure_marker_disposition",
+                    choice=_choice,
+                    reason=f"skipped: {result.get('skipped_reason', 'unknown')}",
+                    attrs={"picture_index": k, "has_ocr": False, "has_desc": False, "has_png": False, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+                )
                 if pipeline_config.strip_skipped_image_markers:
                     return ""
+            else:
+                decision(
+                    event="figure_marker_disposition",
+                    choice="figure_marker_only",
+                    reason="no ocr, description or png",
+                    attrs={"picture_index": k, "has_ocr": False, "has_desc": False, "has_png": False, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+                )
             return m.group(0)
         if desc:
             marker = f"[Figure: fig-{k} | {_figure_desc_inline(desc)}]"
         else:
             marker = f"[Figure: fig-{k}]"
+        if ocr:
+            if desc:
+                _choice = "figure_with_desc_and_ocr"
+            else:
+                _choice = "figure_with_ocr_only"
+        elif desc:
+            _choice = "figure_with_desc_only"
+        else:
+            _choice = "figure_marker_only"
+        decision(
+            event="figure_marker_disposition",
+            choice=_choice,
+            reason="figure spliced",
+            attrs={"picture_index": k, "has_ocr": bool(ocr), "has_desc": bool(desc), "has_png": has_png, "strip_skipped_image_markers": pipeline_config.strip_skipped_image_markers},
+        )
         if ocr:
             _spliced_indices.add(k)
             return marker + "\n\n> [Chart text]: " + ocr
@@ -1078,6 +1441,22 @@ def _recover_picture_results(  # noqa: PLR0913
         full_page_already_applied=force_full_page_ocr_applied,
         document_type="pdf",
     )
+    _strategy_choice_map = {
+        OcrMode.NONE: "none",
+        OcrMode.PER_PICTURE: "per_picture",
+        OcrMode.FULL_PAGE: "full_page",
+    }
+    decision(
+        event="per_picture_ocr_strategy",
+        choice=_strategy_choice_map.get(_ocr_decision.mode, "none"),
+        reason=str(_ocr_decision.mode.value),
+        attrs={
+            "ocr_escalation_enabled": pipeline_config.ocr_escalation_per_picture,
+            "has_image_markers": _IMAGE_MARKER in md,
+            "force_full_page_ocr_applied": force_full_page_ocr_applied,
+            "document_type": "pdf",
+        },
+    )
     if _ocr_decision.mode == OcrMode.NONE:
         return []
     containment_md = body_for_containment if body_for_containment is not None else md
@@ -1092,12 +1471,24 @@ def _recover_picture_results(  # noqa: PLR0913
                     lang_sources.append(lg)
         try:
             langs = ensure_tessdata(lang_sources)
+            decision(
+                event="picture_ocr_lang_tessdata_degrade",
+                choice="detected_langs",
+                reason="tessdata available for detected languages",
+                attrs={"lang_sources": lang_sources, "resolved_langs": langs},
+            )
         except TessdataUnavailableError:
             langs = ["deu", "eng"]
             logger.warning(
                 "tessdata unavailable for %s (detected %s); "
                 "degrading to %s — pre-bake traineddata in worker image",
                 filename, lang_sources, langs,
+            )
+            decision(
+                event="picture_ocr_lang_tessdata_degrade",
+                choice="degraded_default",
+                reason="tessdata unavailable, degraded to deu+eng",
+                attrs={"lang_sources": lang_sources, "resolved_langs": langs},
             )
         recovered, skip_reasons = _recover_picture_text(
             pdf_path,
@@ -1114,6 +1505,12 @@ def _recover_picture_results(  # noqa: PLR0913
             len(regions),
             pdf_path,
         )
+        decision(
+            event="per_picture_recovery_aborted",
+            choice="completed",
+            reason="per-picture recovery completed",
+            attrs={"region_count": len(regions), "error_type": ""},
+        )
         return [
             recovered.get(i, PictureResult(skipped_reason=skip_reasons.get(i, "unknown")))
             for i in range(len(regions))
@@ -1123,6 +1520,12 @@ def _recover_picture_results(  # noqa: PLR0913
             "per-picture OCR recovery failed for %s (%s); continuing without figures",
             pdf_path,
             exc,
+        )
+        decision(
+            event="per_picture_recovery_aborted",
+            choice="aborted_exception",
+            reason=f"per-picture recovery failed: {type(exc).__name__}",
+            attrs={"region_count": 0, "error_type": type(exc).__name__},
         )
     return []
 
@@ -1185,6 +1588,12 @@ def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
                 desc = (resp.choices[0].message.content or "").strip()
                 if desc:
                     result["description"] = desc
+                decision(
+                    event="vlm_description_outcome",
+                    choice="success",
+                    reason="VLM description succeeded",
+                    attrs={"attempt_count": attempt + 1, "error_type": ""},
+                )
                 return
             except Exception as exc:
                 if attempt == 0:
@@ -1199,6 +1608,12 @@ def _add_vlm_descriptions(pics: list[PictureResult], doc_id: str) -> None:
                     str(exc)[:200],
                 )
                 IMAGE_DESCRIBE_FAILURES.labels(error_type=type(exc).__name__).inc()
+                decision(
+                    event="vlm_description_outcome",
+                    choice="failed_after_retry",
+                    reason=f"VLM description failed: {type(exc).__name__}",
+                    attrs={"attempt_count": 2, "error_type": type(exc).__name__},
+                )
 
     with ThreadPoolExecutor(max_workers=min(_IMAGE_ENRICH_CONCURRENCY, len(targets))) as pool:
         list(pool.map(_describe_one, targets))

@@ -323,16 +323,15 @@ def _fake_proc(handshake: dict | None, result: dict, returncode: int = 0):
 
 
 class TestDynamicTimeoutWiring:
-    """Property 1: effective_timeout = max(CHILD_TIMEOUT, chunked_docling_timeout_s(N))
-    on a Docling route; CHILD_TIMEOUT unconditionally on a non-Docling route."""
+    """Property 1: effective_timeout = CHILD_TIMEOUT + chunk_count * PER_CHUNK
+    on a chunked Docling route (chunk_count > 1); max(CHILD_TIMEOUT, dynamic)
+    for chunk_count <= 1; CHILD_TIMEOUT unconditionally on non-Docling."""
 
     async def test_docling_route_dynamic_timeout_exceeds_child_timeout(self):
-        # Discriminating case: pick a chunk_count whose dynamic timeout is
-        # STRICTLY GREATER than CHILD_TIMEOUT, so this test fails if the D0
-        # wiring is removed (a bare CHILD_TIMEOUT fallback would land 3600,
-        # not chunked_docling_timeout_s(3) = 4800).
-        assert chunked_docling_timeout_s(3) > CHILD_TIMEOUT
-        handshake = {"handshake": True, "chunk_count": 3, "is_docling_route": True}
+        from pageindex_mcp.converters.docling_conv import _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+
+        chunk_count = 3
+        handshake = {"handshake": True, "chunk_count": chunk_count, "is_docling_route": True}
         result = {"ok": True, "doc_id": "d1b"}
         proc = _fake_proc(handshake, result)
         sink: list = []
@@ -344,7 +343,7 @@ class TestDynamicTimeoutWiring:
             patch("pageindex_mcp.worker.subprocess_mgr.asyncio.timeout", _RecordingTimeout(sink)),
         ):
             await _run_converter_subprocess("/tmp/bigger.pdf")
-        expected = chunked_docling_timeout_s(3)
+        expected = CHILD_TIMEOUT + chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
         assert expected - 5 <= sink[1] <= expected
         assert sink[1] > CHILD_TIMEOUT
 

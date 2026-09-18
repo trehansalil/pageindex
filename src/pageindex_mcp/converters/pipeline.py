@@ -15,6 +15,7 @@ from collections.abc import Callable
 from enum import StrEnum
 
 from ..config import MAX_DOCLING_PAGES, pipeline_config
+from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import RtlDecision
 from .docling_conv import (
@@ -240,6 +241,18 @@ def _run_stages(
                     heading_delta=headings_after - headings_before,
                 )
             )
+            if logger.isEnabledFor(logging.INFO):
+                decision(
+                    event="extraction_stage_outcome",
+                    choice="success",
+                    reason=f"stage {name!r} completed",
+                    attrs={
+                        "stage_name": name,
+                        "char_delta": chars_after - chars_before,
+                        "heading_delta": headings_after - headings_before,
+                        "error_type": None,
+                    },
+                )
             md = result
         except Exception as exc:
             logger.warning("extraction stage %r failed: %s", name, exc)
@@ -255,6 +268,18 @@ def _run_stages(
                     error=str(exc),
                 )
             )
+            if logger.isEnabledFor(logging.INFO):
+                decision(
+                    event="extraction_stage_outcome",
+                    choice="failed",
+                    reason=f"stage {name!r} raised {type(exc).__name__}",
+                    attrs={
+                        "stage_name": name,
+                        "char_delta": 0,
+                        "heading_delta": 0,
+                        "error_type": type(exc).__name__,
+                    },
+                )
     return md, records
 
 
@@ -326,7 +351,19 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
                 exc,
             )
             page_count = 0
+    page_count_guard_failed = not (effective_max_pages > 0 and page_count > 0)
     if effective_max_pages > 0 and page_count > effective_max_pages:
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="docling_chunk_route",
+                choice="chunked",
+                reason="page_count exceeds effective_max_pages",
+                attrs={
+                    "page_count": page_count,
+                    "effective_max_pages": effective_max_pages,
+                    "page_count_guard_failed": page_count_guard_failed,
+                },
+            )
         return _pdf_to_markdown_docling_chunked(
             pdf_path,
             page_count=page_count,
@@ -334,6 +371,18 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             force_full_page_ocr=force_full_page_ocr,
             ocr_lang_override=ocr_lang_override,
             expected_script=expected_script,
+        )
+
+    if logger.isEnabledFor(logging.INFO):
+        decision(
+            event="docling_chunk_route",
+            choice="direct",
+            reason="page_count within limit or guard skipped",
+            attrs={
+                "page_count": page_count,
+                "effective_max_pages": effective_max_pages,
+                "page_count_guard_failed": page_count_guard_failed,
+            },
         )
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
@@ -367,6 +416,17 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     # only here — the rasterize-rotate-reextract fallback itself is Phase 2 proper.
     landscape_below_threshold = _landscape_pages_below_threshold(result.document, landscape_pages)
     landscape_fallback_pages: list[dict] = []
+    if logger.isEnabledFor(logging.INFO):
+        decision(
+            event="landscape_phase2_trigger",
+            choice="triggered" if landscape_below_threshold else "not_triggered",
+            reason=(
+                f"{len(landscape_below_threshold)} pages below char threshold"
+                if landscape_below_threshold
+                else "no landscape pages below threshold"
+            ),
+            attrs={"pages_below_threshold_count": len(landscape_below_threshold) if landscape_below_threshold else 0},
+        )
     if landscape_below_threshold:
         logger.info(
             "landscape pages below LANDSCAPE_CHAR_THRESHOLD (%d chars) in %s: %s",
@@ -425,25 +485,48 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
         # TOC title omits the in-document "BHB N"/"A."/"I." prefix) BEFORE it runs,
         # so it keeps the real headings instead of demoting them. Guarded + never
         # fatal — the Rank-1 fallback below covers any patch failure.
+        _patch_infer_ok = True
         try:
             _patch_hierarchical_infer()
         except Exception as exc:
+            _patch_infer_ok = False
             logger.warning(
                 "could not patch hierarchical infer() (%s); relying on raw-docling fallback",
                 exc,
             )
         ResultPostprocessor(result, source=pdf_path).process()
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="hierarchical_addon_status",
+                choice="applied",
+                reason="hierarchical add-on postprocess succeeded",
+                attrs={"patch_infer_applied": _patch_infer_ok, "error_type": None},
+            )
     except ImportError:
         logger.warning(
             "docling-hierarchical-pdf not installed; using raw docling headings. "
             "Install it to recover clean heading selection."
         )
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="hierarchical_addon_status",
+                choice="not_installed",
+                reason="docling-hierarchical-pdf not importable",
+                attrs={"patch_infer_applied": False, "error_type": "ImportError"},
+            )
     except Exception as exc:
         logger.warning(
             "hierarchical add-on postprocess failed for %s (%s); using raw docling headings",
             pdf_path,
             exc,
         )
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="hierarchical_addon_status",
+                choice="postprocess_failed",
+                reason=f"add-on raised {type(exc).__name__}",
+                attrs={"patch_infer_applied": False, "error_type": type(exc).__name__},
+            )
 
     # Re-promote the deep numbered clauses the add-on demoted to body text
     # (e.g. AKB "A.1.1"/"A.1.1.1"), restoring the tree depth the add-on prunes.
@@ -457,16 +540,44 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
                 n_promo,
                 pdf_path,
             )
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="heading_repromotion_status",
+                choice="applied" if n_promo > 0 else "no_op",
+                reason=f"re-promoted {n_promo} headings" if n_promo > 0 else "no demoted headings found",
+                attrs={"n_promoted": n_promo, "error_type": None},
+            )
     except Exception as exc:
         logger.warning(
             "heading re-promotion failed for %s (%s); using add-on selection",
             pdf_path,
             exc,
         )
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="heading_repromotion_status",
+                choice="failed",
+                reason=f"repromotion raised {type(exc).__name__}",
+                attrs={"n_promoted": 0, "error_type": type(exc).__name__},
+            )
 
     post_md = _repair_docling_tables(result.document.export_to_markdown(), doc_name=pdf_path)
     if not post_md or not post_md.strip():
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="docling_empty_output",
+                choice="empty_raise",
+                reason="docling produced empty or whitespace-only output",
+                attrs={"post_md_len": len(post_md) if post_md else 0},
+            )
         raise RuntimeError(f"docling produced empty output for {pdf_path}")
+    if logger.isEnabledFor(logging.INFO):
+        decision(
+            event="docling_empty_output",
+            choice="has_content",
+            reason="docling produced non-empty output",
+            attrs={"post_md_len": len(post_md)},
+        )
 
     extraction_stages: dict[str, dict] = {}
 
@@ -523,6 +634,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
     # recovers real depth. raw Docling is ligature-correct + MIT (HR4). The real
     # gate (validate_tree) still runs downstream; this only picks the better source.
     selected = post_candidate
+    _source_choice = "post_add_on"
     if not post_candidate.has_depth and raw_headings >= 3 and raw_headings > post_headings:
         if raw_candidate.has_depth:
             logger.warning(
@@ -534,6 +646,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
                 raw_headings,
             )
             selected = raw_candidate
+            _source_choice = "raw_over_prune_rescue"
     # Zone-3: when both candidates have structural depth, prefer the one with
     # the better classify_verdict result.  This catches cases the proxy misses:
     # the post-add-on markdown may have depth but be garbled, reordered, or have
@@ -555,6 +668,26 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             raw_headings,
         )
         selected = raw_candidate
+        _source_choice = "raw_verdict_better"
+    if logger.isEnabledFor(logging.INFO):
+        decision(
+            event="markdown_source_selection",
+            choice=_source_choice,
+            reason=(
+                "post-add-on selected" if _source_choice == "post_add_on"
+                else "raw rescued over-pruned post" if _source_choice == "raw_over_prune_rescue"
+                else "raw verdict better than post"
+            ),
+            attrs={
+                "post_headings": post_headings,
+                "raw_headings": raw_headings,
+                "post_has_depth": post_candidate.has_depth,
+                "raw_has_depth": raw_candidate.has_depth,
+                "post_verdict": post_candidate.verdict,
+                "raw_verdict": raw_candidate.verdict,
+                "post_max_heading_level": _max_heading_level(post_candidate.md),
+            },
+        )
 
     # Runtime contract: the selected source must be a Candidate so the
     # downstream pipeline can rely on .md / .heading_pages being present
@@ -662,6 +795,20 @@ def _fallback_and_recover_pictures(  # noqa: PLR0913
     # residual <!-- image --> markers so they do not persist in tree output.
     if not pic_results:
         md = strip_unresolved_image_markers(md)
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="picture_marker_strip_on_empty_recovery",
+                choice="stripped",
+                reason="no pic_results — stripping residual image markers",
+                attrs={"pic_results_count": 0},
+            )
+    elif logger.isEnabledFor(logging.INFO):
+        decision(
+            event="picture_marker_strip_on_empty_recovery",
+            choice="kept",
+            reason="pic_results present — markers kept for splice",
+            attrs={"pic_results_count": len(pic_results)},
+        )
 
     # RFC-035 D2 Fix: surface landscape-fallback pages with pictures as
     # routing-only markers (no ocr_text/png_bytes, inert to splice alignment).
@@ -669,6 +816,20 @@ def _fallback_and_recover_pictures(  # noqa: PLR0913
         if p.get("has_pictures"):
             pic_results.append(
                 PictureResult(page=p["page_no"], skipped_reason=SkipReason.LANDSCAPE_FALLBACK.value)
+            )
+            if logger.isEnabledFor(logging.INFO):
+                decision(
+                    event="landscape_fallback_marker_added",
+                    choice="marker_added",
+                    reason="landscape page has pictures",
+                    attrs={"page_no": p["page_no"], "has_pictures": True},
+                )
+        elif logger.isEnabledFor(logging.INFO):
+            decision(
+                event="landscape_fallback_marker_added",
+                choice="not_added",
+                reason="landscape page has no pictures",
+                attrs={"page_no": p["page_no"], "has_pictures": False},
             )
 
     # Provenance: picture recovery (non-string-mutation, manual entry).
@@ -758,6 +919,17 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
         from ..metrics import AGPL_FALLBACK_TOTAL
 
         AGPL_FALLBACK_TOTAL.labels(reason="blocked").inc()
+        if logger.isEnabledFor(logging.INFO):
+            decision(
+                event="converter_chain_composition",
+                choice="no_converters_available_raise",
+                reason="docling not installed and AGPL fallback disabled",
+                attrs={
+                    "configured_primary": primary,
+                    "have_docling": False,
+                    "allow_agpl_fallback": False,
+                },
+            )
         raise RuntimeError(
             "docling is not installed and ALLOW_AGPL_FALLBACK=false; "
             "either install docling (uv sync --extra docling) or set "
@@ -795,4 +967,24 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
         from ..metrics import AGPL_FALLBACK_TOTAL
 
         AGPL_FALLBACK_TOTAL.labels(reason="docling_missing").inc()
+
+    if logger.isEnabledFor(logging.INFO):
+        if primary == DOCLING_CONVERTER_NAME and have_docling:
+            _chain_choice = "docling_primary"
+        elif have_docling and pipeline_config.allow_agpl_fallback:
+            _chain_choice = "pymupdf4llm_primary_docling_secondary"
+        elif have_docling:
+            _chain_choice = "pymupdf4llm_only_docling_unavailable"
+        else:
+            _chain_choice = "pymupdf4llm_only_docling_missing_requested"
+        decision(
+            event="converter_chain_composition",
+            choice=_chain_choice,
+            reason=f"primary={primary}, have_docling={have_docling}",
+            attrs={
+                "configured_primary": primary,
+                "have_docling": have_docling,
+                "allow_agpl_fallback": pipeline_config.allow_agpl_fallback,
+            },
+        )
     return chain
