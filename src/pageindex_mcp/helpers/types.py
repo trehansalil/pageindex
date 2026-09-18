@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ..config import pipeline_config
+from ..obs import decision
 
 _logger = logging.getLogger(__name__)
 
@@ -454,7 +455,9 @@ def finalize_gate_and_route(
             if state.gate_result is not None
             else _defect_from_reason_str(state.reason)
         )
-        state.route = decide_route(state.first_defect, flat_routing_enabled)
+        _computed_route = decide_route(state.first_defect, flat_routing_enabled)
+        state.route = _computed_route
+        _computed_ok = state.ok
 
         if force_route is not None:
             state.route = force_route
@@ -462,6 +465,39 @@ def finalize_gate_and_route(
             state.ok = force_ok
     finally:
         _guard_bypass.active = False
+
+    # R12.5: emitted AFTER the finally above -- never inside the
+    # _guard_bypass window (R12.8). Both the computed outcome and the
+    # forced one (if any) are captured so an override is never lost.
+    _final_route = state.route
+    _final_ok = state.ok
+    _forced_route = force_route is not None
+    _forced_ok = force_ok is not None
+    decision(
+        event="route_selected",
+        choice=_final_route.value,
+        reason="forced_route" if _forced_route else "computed_route",
+        attrs={
+            "computed_route": _computed_route.value,
+            "final_route": _final_route.value,
+            "forced": _forced_route,
+            "first_defect": state.first_defect.value,
+            "flat_routing_enabled": flat_routing_enabled,
+            "recovery_method": recovery_method,
+            "recovery_succeeded": recovery_succeeded,
+        },
+    )
+    decision(
+        event="gate_ok_finalized",
+        choice="ok" if _final_ok else "not_ok",
+        reason="forced_ok" if _forced_ok else "computed_ok",
+        attrs={
+            "computed_ok": _computed_ok,
+            "final_ok": _final_ok,
+            "forced": _forced_ok,
+            "first_defect": state.first_defect.value,
+        },
+    )
 
 
 @dataclass(frozen=True)

@@ -20,7 +20,7 @@ from .constants import (
     PLACEHOLDER_UNSERIALISABLE,
     SCHEMA_VERSION,
 )
-from .safe import safe_scalar, safe_attrs
+from .safe import safe_attrs, safe_scalar
 
 _MS_PER_SECOND = 1000
 

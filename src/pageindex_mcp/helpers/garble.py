@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..config import pipeline_config
+from ..obs import decision
 from ..script import (
     ARABIC_RANGES,
     PRESENTATION_RANGES,
@@ -24,6 +26,37 @@ if TYPE_CHECKING:
     from ..config import PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+# RFC-046 D12 / task 12.5: per-document cap on the two DEBUG, per-blob
+# decision events below (garble_prong_evaluation, garble_verdict). A
+# ContextVar mirrors obs.context's phase-seq counter: each asyncio task
+# (one per document in the arq worker) gets its own copy at task creation,
+# so concurrent documents never share -- or under/over-count -- each
+# other's caps.
+_DECISION_EMIT_COUNTS: ContextVar[dict] = ContextVar("garble_decision_emit_counts")
+
+
+def _under_emit_cap(event: str, cap: int) -> bool:
+    """True while *event* has fired fewer than *cap* times for this document.
+
+    Never raises -- a bug here must degrade to "skip this debug record",
+    never break the document (R12.8 posture).
+    """
+    try:
+        counts = _DECISION_EMIT_COUNTS.get(None) or {}
+        n = counts.get(event, 0)
+        if n >= cap:
+            return False
+        updated = dict(counts)
+        updated[event] = n + 1
+        _DECISION_EMIT_COUNTS.set(updated)
+        return True
+    except Exception:
+        return False
+
+
+_GARBLE_PRONG_EVAL_CAP = 50
+_GARBLE_VERDICT_CAP = 50
 
 
 def _infer_presentation_forms(text: str) -> bool:
@@ -335,6 +368,46 @@ def _is_morphologically_nonsense(token: str) -> bool:
     return token.lower() not in _COMMON_WORDS
 
 
+def _emit_prong_decision(
+    prongs: frozenset[str],
+    *,
+    norm_blob_len: int,
+    expected_script: str | None,
+    had_presentation_forms: bool,
+    cfg: GarbleConfig,
+    reason: str,
+) -> None:
+    """DEBUG, capped emit for the per-blob ``garble_prong_evaluation`` point.
+
+    Extracted so the two call sites inside :func:`_garble_prongs` (the
+    empty-blob early return and the normal exit) stay one statement each --
+    keeping the already-large parent function under the repo's
+    max-statements gate (R12.9's isEnabledFor-before-cost-check still lives
+    here, just out of the caller's line count).
+    """
+    if not (
+        logger.isEnabledFor(logging.DEBUG)
+        and _under_emit_cap("garble_prong_evaluation", _GARBLE_PRONG_EVAL_CAP)
+    ):
+        return
+    decision(
+        event="garble_prong_evaluation",
+        choice="fired" if prongs else "clean",
+        reason=reason,
+        attrs={
+            "norm_blob_len": norm_blob_len,
+            "expected_script": expected_script,
+            "had_presentation_forms": had_presentation_forms,
+            "fired_prong_count": len(prongs),
+            "fired_prongs": sorted(prongs),
+            "garble_latin_ratio": cfg.garble_latin_ratio,
+            "garble_nonsense_ratio": cfg.garble_nonsense_ratio,
+            "garble_digit_floor": cfg.garble_digit_floor,
+        },
+        logger=logger,
+    )
+
+
 def _garble_prongs(
     norm_blob: str,
     *,
@@ -368,6 +441,14 @@ def _garble_prongs(
     prongs: set[str] = set()
 
     if not norm_blob.strip():
+        _emit_prong_decision(
+            frozenset({"empty"}),
+            norm_blob_len=0,
+            expected_script=expected_script,
+            had_presentation_forms=had_presentation_forms,
+            cfg=cfg,
+            reason="empty_blob",
+        )
         return frozenset({"empty"})
 
     norm = norm_blob
@@ -449,6 +530,15 @@ def _garble_prongs(
         _sparse_matches = _MIXED_SCRIPT_RE.findall(_sparse_text)
         if (len(_sparse_matches) / max(len(_sparse_text.split()), 1)) > 0.02:
             prongs.add("sparse_mojibake")
+
+    _emit_prong_decision(
+        frozenset(prongs),
+        norm_blob_len=len(norm_blob),
+        expected_script=expected_script,
+        had_presentation_forms=had_presentation_forms,
+        cfg=cfg,
+        reason="prongs_evaluated",
+    )
 
     return frozenset(prongs)
 
@@ -617,6 +707,28 @@ def detect_garble(
     # When prongs did NOT fire, the text is clean -- do not force garbled.
     if _short_text_prior and prongs:
         prongs = prongs | frozenset({"short_text_prior_garble"})
+
+    if logger.isEnabledFor(logging.DEBUG) and _under_emit_cap(
+        "garble_verdict", _GARBLE_VERDICT_CAP
+    ):
+        decision(
+            event="garble_verdict",
+            choice="garbled" if prongs else "clean",
+            reason=(
+                "short_text_prior_forced" if (_short_text_prior and prongs)
+                else "prong_scan"
+            ),
+            attrs={
+                "fired_prongs": sorted(prongs),
+                "blob_kind": blob_kind.value,
+                "blob_len": len(blob),
+                "dominant_script": _effective_script,
+                "had_presentation_forms": _had_pf,
+                "short_text_prior_applicable": _short_text_prior,
+            },
+            logger=logger,
+        )
+
     return GarbleReport(
         is_garbled=bool(prongs),
         fired_prongs=prongs,
@@ -759,24 +871,61 @@ def _garble_check_nodes(
     # fall below garble_digit_floor per node but surface in aggregate.
     # D1: uses detect_garble (not _garble_prongs) so short-text rule and
     # PF recovery logic apply consistently.
-    if _is_toplevel and garbled == 0:
-        _concat = _collect_all_node_text(nodes)
-        _fallback_ctx = ScriptContext(
-            dominant_script=_doc_script,
-            had_presentation_forms=script_context.had_presentation_forms,
-            source="whole_tree_fallback",
-        )
-        _fallback_report = detect_garble(
-            _concat,
-            script_context=_fallback_ctx,
-            config=config,
-        )
-        if _fallback_report:
-            logger.info(
-                "Whole-tree concatenated fallback detected garble: prongs=%s",
-                _fallback_report.fired_prongs,
+    if _is_toplevel:
+        _per_node_garbled_count = garbled
+        if garbled == 0:
+            _concat = _collect_all_node_text(nodes)
+            _fallback_ctx = ScriptContext(
+                dominant_script=_doc_script,
+                had_presentation_forms=script_context.had_presentation_forms,
+                source="whole_tree_fallback",
             )
-            garbled = 1
+            _fallback_report = detect_garble(
+                _concat,
+                script_context=_fallback_ctx,
+                config=config,
+            )
+            if _fallback_report:
+                # RFC-046 D12: migrates the prior `logger.info` here rather
+                # than duplicating it (registry note) -- same information,
+                # now carrying the computed per-node count alongside the
+                # fallback's forced outcome (R12.5).
+                decision(
+                    event="garble_whole_tree_fallback",
+                    choice="fallback_fired",
+                    reason="per_node_clean_whole_tree_garbled",
+                    attrs={
+                        "per_node_garbled_count": _per_node_garbled_count,
+                        "concat_text_len": len(_concat),
+                        "fired_prongs": sorted(_fallback_report.fired_prongs),
+                    },
+                    logger=logger,
+                )
+                garbled = 1
+            else:
+                decision(
+                    event="garble_whole_tree_fallback",
+                    choice="fallback_clean",
+                    reason="per_node_clean_whole_tree_clean",
+                    attrs={
+                        "per_node_garbled_count": _per_node_garbled_count,
+                        "concat_text_len": len(_concat),
+                        "fired_prongs": [],
+                    },
+                    logger=logger,
+                )
+        else:
+            decision(
+                event="garble_whole_tree_fallback",
+                choice="fallback_not_reached",
+                reason="per_node_garble_already_found",
+                attrs={
+                    "per_node_garbled_count": _per_node_garbled_count,
+                    "concat_text_len": 0,
+                    "fired_prongs": [],
+                },
+                logger=logger,
+            )
     return garbled
 
 
@@ -816,12 +965,37 @@ def _garble_check_flat_blocks(
             all_fired.update(report.fired_prongs)
 
     if not garbled_count:
+        decision(
+            event="garble_flat_block_verdict",
+            choice="clean",
+            reason="no_blocks_garbled",
+            attrs={
+                "checked_count": checked_count,
+                "garbled_count": 0,
+                "garble_ratio": 0.0,
+                "fired_prongs": [],
+            },
+            logger=logger,
+        )
         return None
 
+    _ratio = garbled_count / checked_count if checked_count else 0.0
+    decision(
+        event="garble_flat_block_verdict",
+        choice="garbled",
+        reason="blocks_garbled",
+        attrs={
+            "checked_count": checked_count,
+            "garbled_count": garbled_count,
+            "garble_ratio": _ratio,
+            "fired_prongs": sorted(all_fired),
+        },
+        logger=logger,
+    )
     return GarbleReport(
         is_garbled=True,
         fired_prongs=frozenset(all_fired),
-        garble_ratio=garbled_count / checked_count if checked_count else 0.0,
+        garble_ratio=_ratio,
     )
 
 

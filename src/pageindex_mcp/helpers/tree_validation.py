@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 
 from ..config import pipeline_config
+from ..obs import Phase, decision, phase
 from ..script import (
     ARABIC_RANGES,
     PRESENTATION_RANGES,
@@ -348,6 +349,30 @@ class TreeSignals:
             effectively_garbled = False
         is_reordered = _tree_is_reordered(structure)
         expected_min_depth = min(4, 2 + math.floor(math.log2(max(node_count, 1) / 100)))
+
+        if not garbled:
+            _verdict_choice = "not_garbled"
+        elif effectively_garbled:
+            _verdict_choice = "effectively_garbled"
+        else:
+            _verdict_choice = "sub_threshold_garbled"
+        decision(
+            event="tree_effective_garble_verdict",
+            choice=_verdict_choice,
+            reason=f"garble_ratio_vs_threshold_{garble_threshold}",
+            attrs={
+                "garbled": garbled,
+                "garble_ratio": gr,
+                "garble_threshold": garble_threshold,
+                "garble_prongs": sorted(garble_prongs),
+                "node_count": node_count,
+                "depth": depth,
+                "max_leaf_ratio": max_leaf_ratio,
+                "is_reordered": is_reordered,
+            },
+            logger=logger,
+        )
+
         return cls(
             node_count=node_count,
             depth=depth,
@@ -366,6 +391,60 @@ class TreeSignals:
 # ---------------------------------------------------------------------------
 # validate_tree
 # ---------------------------------------------------------------------------
+
+
+def _emit_gate_primary_defect_selection(
+    computed_primary_defect: TreeDefect,
+    final_primary_defect: TreeDefect,
+    garble_co_fired: bool,
+    fired: list[tuple[TreeDefect, str]],
+) -> None:
+    """R12.5: ``force_route``-shaped override inside ``validate_tree`` --
+    the co-firing garble defect silently replaces ``fired[0]`` at the call
+    site. Both labels survive here regardless of whether the override fired.
+    """
+    decision(
+        event="gate_primary_defect_selection",
+        choice="garble_override" if garble_co_fired else "first_fired_wins",
+        reason=(
+            "garble_defect_promoted_to_primary" if garble_co_fired
+            else "first_fired_defect_kept"
+        ),
+        attrs={
+            "computed_primary_defect": computed_primary_defect.value,
+            "final_primary_defect": final_primary_defect.value,
+            "garble_co_fired": garble_co_fired,
+            "fired_defects": [d.value for d, _ in fired],
+            "fired_count": len(fired),
+        },
+        logger=logger,
+    )
+
+
+def _emit_tree_gate_verdict(
+    sig: TreeSignals,
+    primary_defect: TreeDefect,
+    fired: tuple | list,
+    *,
+    warning_labels,
+) -> None:
+    """The CLAUDE.md HR5 'never silently persist a low-quality tree' record."""
+    decision(
+        event="tree_gate_verdict",
+        choice="gate_failed" if fired else "gate_passed",
+        reason="gate_fired" if fired else "no_gate_fired",
+        attrs={
+            "primary_defect": primary_defect.value,
+            "all_defects": sorted(d.value for d, _ in fired),
+            "node_count": sig.node_count,
+            "depth": sig.depth,
+            "garble_ratio": sig.garble_ratio,
+            "max_leaf_ratio": sig.max_leaf_ratio,
+            "is_reordered": sig.is_reordered,
+            "warning_labels": list(warning_labels),
+        },
+        logger=logger,
+    )
 
 
 def validate_tree(
@@ -402,90 +481,109 @@ def validate_tree(
 
     th = VerdictThresholds.from_config(pipeline_config)
 
-    sig = TreeSignals.from_tree(
-        structure,
-        expected_script=expected_script,
-        garble_threshold=th.garble_threshold,
-        garble_config=garble_config,
-    )
-
-    # Zone-4 + Zone-7 fix: build ScriptContext for gate dispatch AFTER
-    # TreeSignals.from_tree computes flat_text.  When expected_script is a
-    # bare string, the old from_script_str path hardcoded
-    # had_presentation_forms=False, causing _gate_node_garbling (which
-    # threads _script_ctx into _garble_check_nodes) to disagree with
-    # sig.garbled (which from_tree computed with accurate PF detection).
-    # Now: scan sig.flat_text for presentation forms so the gate dispatch
-    # ScriptContext is consistent with from_tree's internal PF detection.
-    if isinstance(expected_script, ScriptContext):
-        _script_ctx = expected_script
-    else:
-        from .garble import _infer_presentation_forms
-
-        _eff_script = (
-            expected_script
-            if expected_script is not None
-            else _infer_script(sig.flat_text) if sig.flat_text else None
-        )
-        _script_ctx = ScriptContext(
-            dominant_script=_eff_script,
-            had_presentation_forms=_infer_presentation_forms(sig.flat_text),
-            source="validate_tree",
+    # No per-call attrs here (R12.9): node_count/depth/etc. are already
+    # cheap-to-compute TreeSignals fields carried on tree_gate_verdict
+    # below -- recomputing them again just to decorate the phase entry
+    # would mean walking the tree twice.
+    with phase(Phase.TREE_VALIDATE):
+        sig = TreeSignals.from_tree(
+            structure,
+            expected_script=expected_script,
+            garble_threshold=th.garble_threshold,
+            garble_config=garble_config,
         )
 
-    _rtl_decision = rtl_decision
-    if _rtl_decision is None:
-        _rtl_decision = decide_rtl(sig.flat_text) if sig.flat_text else None
+        # Zone-4 + Zone-7 fix: build ScriptContext for gate dispatch AFTER
+        # TreeSignals.from_tree computes flat_text.  When expected_script is a
+        # bare string, the old from_script_str path hardcoded
+        # had_presentation_forms=False, causing _gate_node_garbling (which
+        # threads _script_ctx into _garble_check_nodes) to disagree with
+        # sig.garbled (which from_tree computed with accurate PF detection).
+        # Now: scan sig.flat_text for presentation forms so the gate dispatch
+        # ScriptContext is consistent with from_tree's internal PF detection.
+        if isinstance(expected_script, ScriptContext):
+            _script_ctx = expected_script
+        else:
+            from .garble import _infer_presentation_forms
 
-    fired: list[tuple[TreeDefect, str]] = []
-    for gate_fn, defect in GATE_TABLE:
-        fires, detail = gate_fn(sig, structure, _script_ctx, page_count, _rtl_decision)
-        if fires:
-            fired.append((defect, detail))
+            _eff_script = (
+                expected_script
+                if expected_script is not None
+                else _infer_script(sig.flat_text) if sig.flat_text else None
+            )
+            _script_ctx = ScriptContext(
+                dominant_script=_eff_script,
+                had_presentation_forms=_infer_presentation_forms(sig.flat_text),
+                source="validate_tree",
+            )
 
-    if fired:
-        primary_defect, primary_detail = fired[0]
-        # D4: garble-type defects must win as primary when co-firing with
-        # non-garble defects, so OCR recovery dispatches correctly.
-        _garble_defects = {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
-        if primary_defect not in _garble_defects:
-            for d, detail in fired:
-                if d in _garble_defects:
-                    primary_defect, primary_detail = d, detail
-                    break
+        _rtl_decision = rtl_decision
+        if _rtl_decision is None:
+            _rtl_decision = decide_rtl(sig.flat_text) if sig.flat_text else None
+
+        fired: list[tuple[TreeDefect, str]] = []
+        for gate_fn, defect in GATE_TABLE:
+            fires, detail = gate_fn(sig, structure, _script_ctx, page_count, _rtl_decision)
+            if fires:
+                fired.append((defect, detail))
+
+        if fired:
+            computed_primary_defect, primary_detail = fired[0]
+            primary_defect = computed_primary_defect
+            # D4: garble-type defects must win as primary when co-firing with
+            # non-garble defects, so OCR recovery dispatches correctly.
+            _garble_defects = {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
+            _garble_co_fired = computed_primary_defect not in _garble_defects and any(
+                d in _garble_defects for d, _ in fired
+            )
+            if primary_defect not in _garble_defects:
+                for d, detail in fired:
+                    if d in _garble_defects:
+                        primary_defect, primary_detail = d, detail
+                        break
+            _emit_gate_primary_defect_selection(
+                computed_primary_defect, primary_defect, _garble_co_fired, fired
+            )
+            _emit_tree_gate_verdict(sig, primary_defect, fired, warning_labels=())
+            return TreeGateResult(
+                ok=False,
+                defect=primary_defect,
+                detail=primary_detail,
+                signals=sig,
+                all_defects=frozenset(d for d, _ in fired),
+            )
+        # Advisory warnings for sub-threshold garble signals (no behavioral
+        # change: ok=True verdict is preserved).
+        _warnings: list[str] = []
+        _warning_labels: list[str] = []
+        if sig.garble_ratio > 0.0:
+            _warnings.append(
+                f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}"
+            )
+            _warning_labels.append("sub_threshold_garble")
+        # Near-firing checks for structural gates (cheap — uses pre-computed
+        # signals; advisory only, no behavioral change).
+        if sig.node_count <= 5:
+            _warnings.append(
+                f"near_gate_node_count: count={sig.node_count} (gate fires <3)"
+            )
+            _warning_labels.append("near_gate_node_count")
+        if sig.depth == 2:
+            _warnings.append(
+                f"near_gate_depth: depth={sig.depth} (gate fires <2)"
+            )
+            _warning_labels.append("near_gate_depth")
+        if sig.max_leaf_ratio > th.pass_max_leaf_ratio * 0.8:
+            _warnings.append(
+                f"near_gate_leaf_concentration: ratio={sig.max_leaf_ratio:.3f} "
+                f"(pass threshold={th.pass_max_leaf_ratio:.2f})"
+            )
+            _warning_labels.append("near_gate_leaf_concentration")
+        _emit_tree_gate_verdict(sig, TreeDefect.OK, (), warning_labels=_warning_labels)
         return TreeGateResult(
-            ok=False,
-            defect=primary_defect,
-            detail=primary_detail,
+            ok=True,
+            defect=TreeDefect.OK,
             signals=sig,
-            all_defects=frozenset(d for d, _ in fired),
+            all_defects=frozenset(),
+            warnings=tuple(_warnings),
         )
-    # Advisory warnings for sub-threshold garble signals (no behavioral
-    # change: ok=True verdict is preserved).
-    _warnings: list[str] = []
-    if sig.garble_ratio > 0.0:
-        _warnings.append(
-            f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}"
-        )
-    # Near-firing checks for structural gates (cheap — uses pre-computed
-    # signals; advisory only, no behavioral change).
-    if sig.node_count <= 5:
-        _warnings.append(
-            f"near_gate_node_count: count={sig.node_count} (gate fires <3)"
-        )
-    if sig.depth == 2:
-        _warnings.append(
-            f"near_gate_depth: depth={sig.depth} (gate fires <2)"
-        )
-    if sig.max_leaf_ratio > th.pass_max_leaf_ratio * 0.8:
-        _warnings.append(
-            f"near_gate_leaf_concentration: ratio={sig.max_leaf_ratio:.3f} "
-            f"(pass threshold={th.pass_max_leaf_ratio:.2f})"
-        )
-    return TreeGateResult(
-        ok=True,
-        defect=TreeDefect.OK,
-        signals=sig,
-        all_defects=frozenset(),
-        warnings=tuple(_warnings),
-    )

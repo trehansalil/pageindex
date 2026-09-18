@@ -17,6 +17,19 @@ Public surface:
 from __future__ import annotations
 
 from .context import bind_log_context, propagate
+from .decision_points import (
+    DECISION_EVENTS,
+    DECISION_POINTS,
+    DECISION_POINTS_BY_EVENT,
+    FORBIDDEN_ATTR_SUBSTRINGS,
+    INSTRUMENTED_MODULES,
+    DecisionPoint,
+    allowed_attrs,
+    allowed_choices,
+    content_attr_violations,
+    is_content_attr,
+    point_for,
+)
 from .decisions import decision
 from .filter import ContextFilter
 from .formatter import JsonFormatter
@@ -24,12 +37,23 @@ from .log_config import configure
 from .phases import Phase, phase
 
 __all__ = [
+    "DECISION_EVENTS",
+    "DECISION_POINTS",
+    "DECISION_POINTS_BY_EVENT",
+    "FORBIDDEN_ATTR_SUBSTRINGS",
+    "INSTRUMENTED_MODULES",
     "ContextFilter",
+    "DecisionPoint",
     "JsonFormatter",
     "Phase",
+    "allowed_attrs",
+    "allowed_choices",
     "bind_log_context",
-    "propagate",
     "configure",
+    "content_attr_violations",
     "decision",
+    "is_content_attr",
     "phase",
+    "point_for",
+    "propagate",
 ]

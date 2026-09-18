@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 
 from ..config import pipeline_config
+from ..obs import decision
 from ..script import RtlDecision, ScriptContext
 from .garble import (
     _EMPTY_NODE_FRACTION_THRESHOLD,
@@ -159,8 +160,28 @@ def _gate_bidi_degraded(
     ``RtlDecision.had_presentation_forms``.
     """
     if not pipeline_config.bidi_coherence_enforce:
+        decision(
+            event="bidi_degraded_gate",
+            choice="suppressed_by_config",
+            reason="bidi_coherence_enforce is disabled",
+            attrs={
+                "bidi_coherence_enforce": pipeline_config.bidi_coherence_enforce,
+                "reversed_signal": None,
+                "pres_forms_signal": None,
+            },
+        )
         return (False, "")
     if rtl_decision is None:
+        decision(
+            event="bidi_degraded_gate",
+            choice="no_rtl_decision",
+            reason="no cached rtl_decision available",
+            attrs={
+                "bidi_coherence_enforce": pipeline_config.bidi_coherence_enforce,
+                "reversed_signal": None,
+                "pres_forms_signal": None,
+            },
+        )
         return (False, "")
     reversed_signal = rtl_decision.reversed
     pres_forms_signal = rtl_decision.had_presentation_forms
@@ -171,6 +192,20 @@ def _gate_bidi_degraded(
             f"reversed={reversed_signal}"
             f",had_presentation_forms={pres_forms_signal}"
         )
+    decision(
+        event="bidi_degraded_gate",
+        choice="fires" if fires else "clear",
+        reason=(
+            "reversed or presentation-forms signal present"
+            if fires
+            else "no bidi degradation signal"
+        ),
+        attrs={
+            "bidi_coherence_enforce": pipeline_config.bidi_coherence_enforce,
+            "reversed_signal": reversed_signal,
+            "pres_forms_signal": pres_forms_signal,
+        },
+    )
     return (fires, detail)
 
 
@@ -184,9 +219,32 @@ def _gate_empty_node_contamination(
     """Gate 8: zero-body contamination (RFC-029 D10)."""
     _total_non_root, _empty_leaf, _empty_non_leaf = _count_empty_body_nodes(structure)
     if _total_non_root <= 0:
+        decision(
+            event="empty_node_contamination_gate",
+            choice="not_evaluated_zero_nonroot_nodes",
+            reason="no non-root nodes to evaluate",
+            attrs={
+                "empty_fraction": None,
+                "empty_leaf": _empty_leaf,
+                "empty_non_leaf": _empty_non_leaf,
+                "total_non_root": _total_non_root,
+            },
+        )
         return (False, "")
     _empty_fraction = (_empty_leaf + _empty_non_leaf) / _total_non_root
-    if _empty_fraction > _EMPTY_NODE_FRACTION_THRESHOLD:
+    _fires = _empty_fraction > _EMPTY_NODE_FRACTION_THRESHOLD
+    decision(
+        event="empty_node_contamination_gate",
+        choice="fires" if _fires else "clear",
+        reason="empty fraction exceeds threshold" if _fires else "empty fraction within threshold",
+        attrs={
+            "empty_fraction": _empty_fraction,
+            "empty_leaf": _empty_leaf,
+            "empty_non_leaf": _empty_non_leaf,
+            "total_non_root": _total_non_root,
+        },
+    )
+    if _fires:
         detail = (
             f"fraction={_empty_fraction:.2f}"
             f",empty_leaf={_empty_leaf}"
@@ -216,6 +274,19 @@ def _gate_low_content_density(
     Shallow non-Arabic documents keep the existing 150 floor unchanged.
     """
     if sig.node_count < 200:
+        decision(
+            event="low_content_density_gate",
+            choice="not_evaluated_below_min_nodes",
+            reason="node_count below the 200 evaluation minimum",
+            attrs={
+                "node_count": sig.node_count,
+                "depth": None,
+                "is_deep": None,
+                "is_arabic": None,
+                "chars_per_node": None,
+                "threshold": None,
+            },
+        )
         return (False, "")
 
     is_deep = sig.depth >= _RFC029_DEEP_TREE_DEPTH_THRESHOLD
@@ -226,7 +297,25 @@ def _gate_low_content_density(
         threshold = _RFC029_MIN_CHARS_PER_NODE
 
     chars_per_node = len(sig.flat_text) / sig.node_count
-    if chars_per_node < threshold:
+    _fires = chars_per_node < threshold
+    decision(
+        event="low_content_density_gate",
+        choice="fires" if _fires else "clear",
+        reason=(
+            "chars_per_node below the resolved threshold"
+            if _fires
+            else "chars_per_node within threshold"
+        ),
+        attrs={
+            "node_count": sig.node_count,
+            "depth": sig.depth,
+            "is_deep": is_deep,
+            "is_arabic": is_arabic,
+            "chars_per_node": chars_per_node,
+            "threshold": threshold,
+        },
+    )
+    if _fires:
         detail = (
             f"chars_per_node={chars_per_node:.1f}"
             f",threshold={threshold:.1f}"
@@ -248,9 +337,26 @@ def _gate_suspect_density(
     Only fires when page_count is provided and positive.
     """
     if page_count is None or page_count <= 0:
+        decision(
+            event="suspect_density_gate",
+            choice="not_evaluated_no_page_count",
+            reason="page_count missing or non-positive",
+            attrs={"page_count": page_count, "chars_per_page": None},
+        )
         return (False, "")
     chars_per_page = len(sig.flat_text) / page_count
-    if chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR:
+    _fires = chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR
+    decision(
+        event="suspect_density_gate",
+        choice="fires" if _fires else "clear",
+        reason=(
+            "chars_per_page below the scanned-density floor"
+            if _fires
+            else "chars_per_page within floor"
+        ),
+        attrs={"page_count": page_count, "chars_per_page": chars_per_page},
+    )
+    if _fires:
         return (True, f"chars_per_page={chars_per_page:.1f}")
     return (False, "")
 
@@ -285,9 +391,22 @@ def _eligible_garble(state: ExtractionState) -> bool:
     their independence (VLM can fire even when OCR escalation is off).
     """
     if state.ok:
+        decision(
+            event="garble_recovery_eligible",
+            choice="not_eligible_gate_passed",
+            reason="state.ok is True",
+            attrs={"state_ok": state.ok, "garble_defect_present": False},
+        )
         return False
     _garble_types = {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
-    return bool(_all_defects(state) & _garble_types)
+    _present = bool(_all_defects(state) & _garble_types)
+    decision(
+        event="garble_recovery_eligible",
+        choice="eligible" if _present else "not_eligible_defect_absent",
+        reason="garble defect present in all_defects" if _present else "no garble defect present",
+        attrs={"state_ok": state.ok, "garble_defect_present": _present},
+    )
+    return _present
 
 
 def _eligible_low_content(state: ExtractionState) -> bool:
@@ -300,10 +419,46 @@ def _eligible_low_content(state: ExtractionState) -> bool:
     image_dominant_ocr_escalation_enabled (see _eligible_image_dominant).
     """
     if state.ok:
+        decision(
+            event="low_content_recovery_eligible",
+            choice="not_eligible_gate_passed",
+            reason="state.ok is True",
+            attrs={
+                "state_ok": state.ok,
+                "node_count_low_present": False,
+                "ocr_escalation_low_content": pipeline_config.ocr_escalation_low_content,
+            },
+        )
         return False
-    if TreeDefect.NODE_COUNT_LOW not in _all_defects(state):
+    _present = TreeDefect.NODE_COUNT_LOW in _all_defects(state)
+    if not _present:
+        decision(
+            event="low_content_recovery_eligible",
+            choice="not_eligible_defect_absent",
+            reason="NODE_COUNT_LOW not in all_defects",
+            attrs={
+                "state_ok": state.ok,
+                "node_count_low_present": _present,
+                "ocr_escalation_low_content": pipeline_config.ocr_escalation_low_content,
+            },
+        )
         return False
-    return pipeline_config.ocr_escalation_low_content
+    _enabled = pipeline_config.ocr_escalation_low_content
+    decision(
+        event="low_content_recovery_eligible",
+        choice="eligible" if _enabled else "not_eligible_flag_disabled",
+        reason=(
+            "ocr_escalation_low_content enabled"
+            if _enabled
+            else "ocr_escalation_low_content disabled"
+        ),
+        attrs={
+            "state_ok": state.ok,
+            "node_count_low_present": _present,
+            "ocr_escalation_low_content": _enabled,
+        },
+    )
+    return _enabled
 
 
 def _eligible_image_dominant(state: ExtractionState) -> bool:
@@ -316,10 +471,44 @@ def _eligible_image_dominant(state: ExtractionState) -> bool:
     so the gate is skipped entirely when disabled.
     """
     if state.ok:
+        decision(
+            event="image_dominant_recovery_eligible",
+            choice="not_eligible_gate_passed",
+            reason="state.ok is True",
+            attrs={
+                "state_ok": state.ok,
+                "depth_low_present": False,
+                "image_dominant_ocr_escalation_enabled": (
+                    pipeline_config.image_dominant_ocr_escalation_enabled
+                ),
+            },
+        )
         return False
-    if not pipeline_config.image_dominant_ocr_escalation_enabled:
+    _enabled = pipeline_config.image_dominant_ocr_escalation_enabled
+    if not _enabled:
+        decision(
+            event="image_dominant_recovery_eligible",
+            choice="not_eligible_flag_disabled",
+            reason="image_dominant_ocr_escalation_enabled disabled",
+            attrs={
+                "state_ok": state.ok,
+                "depth_low_present": False,
+                "image_dominant_ocr_escalation_enabled": _enabled,
+            },
+        )
         return False
-    return TreeDefect.DEPTH_LOW in _all_defects(state)
+    _present = TreeDefect.DEPTH_LOW in _all_defects(state)
+    decision(
+        event="image_dominant_recovery_eligible",
+        choice="eligible" if _present else "not_eligible_defect_absent",
+        reason="DEPTH_LOW present in all_defects" if _present else "DEPTH_LOW absent",
+        attrs={
+            "state_ok": state.ok,
+            "depth_low_present": _present,
+            "image_dominant_ocr_escalation_enabled": _enabled,
+        },
+    )
+    return _present
 
 
 def _eligible_rtl(state: ExtractionState) -> bool:
@@ -330,8 +519,21 @@ def _eligible_rtl(state: ExtractionState) -> bool:
     primary still triggers RTL-specific recovery.
     """
     if state.ok:
+        decision(
+            event="rtl_recovery_eligible",
+            choice="not_eligible_gate_passed",
+            reason="state.ok is True",
+            attrs={"state_ok": state.ok, "rtl_reversal_present": False},
+        )
         return False
-    return TreeDefect.RTL_REVERSAL in _all_defects(state)
+    _present = TreeDefect.RTL_REVERSAL in _all_defects(state)
+    decision(
+        event="rtl_recovery_eligible",
+        choice="eligible" if _present else "not_eligible_defect_absent",
+        reason="RTL_REVERSAL present in all_defects" if _present else "RTL_REVERSAL absent",
+        attrs={"state_ok": state.ok, "rtl_reversal_present": _present},
+    )
+    return _present
 
 
 # ---------------------------------------------------------------------------

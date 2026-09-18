@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from ..config import pipeline_config
+from ..obs import decision
 from ..script import ScriptContext
 from .heuristic_registry import registry as _heuristic_registry
 from .garble import (
@@ -167,6 +168,12 @@ def evaluate_gates(
         )
 
     if sig.node_count == 0 or len(sig.flat_text.strip()) == 0:
+        decision(
+            event="zero_content_check",
+            choice="fail_zero_content",
+            reason="node_count is zero or flat_text is empty",
+            attrs={"node_count": sig.node_count, "flat_text_len": len(sig.flat_text)},
+        )
         return GateOutcome(
             defect=defect,
             validate_reason=validate_reason,
@@ -176,12 +183,41 @@ def evaluate_gates(
                 "FAIL", "zero_content", defect=defect, signals=sig, all_defects=_all_defects
             ),
         )
+    decision(
+        event="zero_content_check",
+        choice="continue",
+        reason="node_count and flat_text are non-empty",
+        attrs={"node_count": sig.node_count, "flat_text_len": len(sig.flat_text)},
+    )
 
-    if validate_result is None and sig.is_reordered:
-        defect = TreeDefect.REORDERED
-        _all_defects = frozenset({TreeDefect.REORDERED})
+    if validate_result is None:
+        _is_reordered = sig.is_reordered
+        if _is_reordered:
+            defect = TreeDefect.REORDERED
+            _all_defects = frozenset({TreeDefect.REORDERED})
+        decision(
+            event="reordered_defect_inferred",
+            choice="reordered_inferred" if _is_reordered else "no_override",
+            reason=(
+                "legacy call path inferred REORDERED from is_reordered"
+                if _is_reordered
+                else "legacy call path, no reorder signal"
+            ),
+            attrs={"validate_result_present": False, "is_reordered": _is_reordered},
+        )
 
     if defect in HARD_FAIL_DEFECTS:
+        decision(
+            event="hard_fail_resolution",
+            choice="primary_hard_fail",
+            reason="primary defect is itself a hard-fail defect",
+            attrs={
+                "defect": defect.value,
+                "all_defects_count": len(_all_defects),
+                "masked_defect": False,
+                "worst_defect": None,
+            },
+        )
         return GateOutcome(
             defect=defect,
             validate_reason=validate_reason,
@@ -198,6 +234,17 @@ def evaluate_gates(
     _masked = _all_defects & HARD_FAIL_DEFECTS
     if _masked:
         _worst = min(_masked, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))
+        decision(
+            event="hard_fail_resolution",
+            choice="masked_hard_fail",
+            reason="a co-firing defect is a hard fail though the primary is not",
+            attrs={
+                "defect": defect.value,
+                "all_defects_count": len(_all_defects),
+                "masked_defect": True,
+                "worst_defect": _worst.value,
+            },
+        )
         return GateOutcome(
             defect=defect,
             validate_reason=validate_reason,
@@ -212,6 +259,17 @@ def evaluate_gates(
             ),
         )
 
+    decision(
+        event="hard_fail_resolution",
+        choice="no_hard_fail",
+        reason="no hard-fail defect present in all_defects",
+        attrs={
+            "defect": defect.value,
+            "all_defects_count": len(_all_defects),
+            "masked_defect": False,
+            "worst_defect": None,
+        },
+    )
     return GateOutcome(
         defect=defect,
         validate_reason=validate_reason,
@@ -441,6 +499,15 @@ def apply_promotions(
 
     if content_class == "image_standalone":
         _iv, _ir = _classify_image_verdict(image_enrichment_ratio)
+        decision(
+            event="image_standalone_verdict",
+            choice=_iv.lower(),
+            reason=_ir,
+            attrs={
+                "content_class": content_class,
+                "image_enrichment_ratio": image_enrichment_ratio,
+            },
+        )
         return VerdictResult(_iv, _ir, defect=defect, signals=sig, all_defects=_all_defects)
 
     # Zone-8: content-volume floor — documents below the minimum stripped-
@@ -448,7 +515,18 @@ def apply_promotions(
     # the hysteresis gap where near-zero-content docs were reclassified
     # from FAIL to MARGINAL, violating HR#5.
     _stripped_len = len(sig.flat_text.strip())
-    if _stripped_len < th.min_marginal_chars:
+    _below_floor = _stripped_len < th.min_marginal_chars
+    decision(
+        event="content_volume_floor",
+        choice="fail_insufficient_content" if _below_floor else "continue",
+        reason=(
+            "stripped text below min_marginal_chars"
+            if _below_floor
+            else "stripped text at or above the floor"
+        ),
+        attrs={"stripped_len": _stripped_len, "min_marginal_chars": th.min_marginal_chars},
+    )
+    if _below_floor:
         return VerdictResult(
             "FAIL",
             f"insufficient_content(chars={_stripped_len})",
@@ -476,6 +554,16 @@ def apply_promotions(
         """
         if source_selection and _is_image_enrichment:
             _heuristic_registry.fire("source_selection_bypass")
+            decision(
+                event="promotion_clamp",
+                choice="bypass_source_selection",
+                reason="source_selection bypasses clamp for image-enrichment promotion",
+                attrs={
+                    "source_selection": source_selection,
+                    "is_image_enrichment": _is_image_enrichment,
+                    "pre_clamp_reason_kind": reason,
+                },
+            )
             return VerdictResult(
                 "PASS",
                 reason,
@@ -485,6 +573,16 @@ def apply_promotions(
                 promotion_paths_matched=paths,
             )
         _v, _r = _clamp_pass(reason, defect=defect, sig=sig)
+        decision(
+            event="promotion_clamp",
+            choice="clamped_pass" if _v == "PASS" else "clamped_marginal",
+            reason="_clamp_pass evaluated bidi/depth caps",
+            attrs={
+                "source_selection": source_selection,
+                "is_image_enrichment": _is_image_enrichment,
+                "pre_clamp_reason_kind": reason,
+            },
+        )
         return VerdictResult(
             _v,
             _r,
@@ -505,10 +603,30 @@ def apply_promotions(
     # D1: Unconditional structural hard-fail gate
     if sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio:
         if _ie is not None:
+            decision(
+                event="structural_hard_fail_gate",
+                choice="image_enrichment_exception",
+                reason="max_leaf_ratio exceeds hard-fail threshold; image enrichment rescues it",
+                attrs={
+                    "max_leaf_ratio": sig.max_leaf_ratio,
+                    "hard_fail_max_leaf_ratio": th.hard_fail_max_leaf_ratio,
+                    "image_enrichment_available": True,
+                },
+            )
             _heuristic_registry.fire("_try_image_enrichment")
             return _apply_clamp(
                 _ie, _is_image_enrichment=True, paths=("image_enrichment",)
             )
+        decision(
+            event="structural_hard_fail_gate",
+            choice="hard_fail",
+            reason="max_leaf_ratio exceeds the hard-fail threshold",
+            attrs={
+                "max_leaf_ratio": sig.max_leaf_ratio,
+                "hard_fail_max_leaf_ratio": th.hard_fail_max_leaf_ratio,
+                "image_enrichment_available": False,
+            },
+        )
         return VerdictResult(
             "FAIL",
             f"max_leaf_ratio={sig.max_leaf_ratio:.2f}",
@@ -516,6 +634,16 @@ def apply_promotions(
             signals=sig,
             all_defects=_all_defects,
         )
+    decision(
+        event="structural_hard_fail_gate",
+        choice="continue",
+        reason="max_leaf_ratio within the hard-fail threshold",
+        attrs={
+            "max_leaf_ratio": sig.max_leaf_ratio,
+            "hard_fail_max_leaf_ratio": th.hard_fail_max_leaf_ratio,
+            "image_enrichment_available": _ie is not None,
+        },
+    )
 
     # D2: Ordered promotion pipeline.
     #
@@ -559,21 +687,52 @@ def apply_promotions(
 
     if _matches:
         _winner_name, _winner_reason = _matches[0]
+        decision(
+            event="promotion_pipeline",
+            choice=_winner_name,
+            reason="first matching promotion path wins",
+            attrs={
+                "matched_paths": [_name for _name, _ in _matches],
+                "content_class": content_class,
+            },
+        )
         return _apply_clamp(
             _winner_reason,
             _is_image_enrichment=_winner_name == "image_enrichment",
             paths=tuple(_name for _name, _ in _matches),
         )
 
+    decision(
+        event="promotion_pipeline",
+        choice="none",
+        reason="no promotion path matched",
+        attrs={"matched_paths": [], "content_class": content_class},
+    )
+
     # Fallback: no promotion path fired → MARGINAL
     if sig.effectively_garbled:
         reason = f"garbling(ratio={sig.garble_ratio:.2f})"
+        _fallback_choice = "garbling"
     elif sig.node_count < 3:
         reason = f"node_count={sig.node_count}"
+        _fallback_choice = "node_count_low"
     elif sig.depth < 2:
         reason = f"depth={sig.depth}"
+        _fallback_choice = "depth_low"
     else:
         reason = f"leaf_concentration={sig.max_leaf_ratio:.2f}"
+        _fallback_choice = "leaf_concentration"
+    decision(
+        event="promotion_fallback_marginal",
+        choice=_fallback_choice,
+        reason="no promotion path matched; falling back to a MARGINAL verdict",
+        attrs={
+            "garble_ratio": sig.garble_ratio,
+            "node_count": sig.node_count,
+            "depth": sig.depth,
+            "max_leaf_ratio": sig.max_leaf_ratio,
+        },
+    )
     return VerdictResult("MARGINAL", reason, defect=defect, signals=sig, all_defects=_all_defects)
 
 
@@ -659,11 +818,41 @@ def detect_regression(
       - max_leaf_ratio grew >2x
     """
     if prev_node_count is None or prev_max_leaf_ratio is None:
+        decision(
+            event="regression_detected",
+            choice="no_baseline",
+            reason="no prior verdict to compare against",
+            attrs={},
+        )
         return False
     if prev_node_count == 0:
+        decision(
+            event="regression_detected",
+            choice="no_baseline",
+            reason="prior node_count is zero",
+            attrs={},
+        )
         return False
     cur_count = _tree_node_count(structure)
     _, _, cur_ratio = _tree_max_leaf_ratio(structure)
     count_dropped = cur_count < prev_node_count * 0.7
     ratio_grew = prev_max_leaf_ratio > 0 and cur_ratio > prev_max_leaf_ratio * 2
-    return count_dropped and ratio_grew
+    _regressed = count_dropped and ratio_grew
+    decision(
+        event="regression_detected",
+        choice="regressed" if _regressed else "clean",
+        reason=(
+            "node count dropped >30% and max_leaf_ratio grew >2x"
+            if _regressed
+            else "no regression signal"
+        ),
+        attrs={
+            "cur_count": cur_count,
+            "prev_node_count": prev_node_count,
+            "cur_ratio": cur_ratio,
+            "prev_max_leaf_ratio": prev_max_leaf_ratio,
+            "count_dropped": count_dropped,
+            "ratio_grew": ratio_grew,
+        },
+    )
+    return _regressed

@@ -29,7 +29,17 @@ from pageindex_mcp.helpers import (
     TreeGateResult,
     validate_tree,
 )
-from pageindex_mcp.helpers.gates import validate_recovery_method_names
+from pageindex_mcp.helpers.gates import (
+    _eligible_garble,
+    _eligible_image_dominant,
+    _eligible_low_content,
+    _eligible_rtl,
+    _gate_bidi_degraded,
+    _gate_empty_node_contamination,
+    _gate_low_content_density,
+    _gate_suspect_density,
+    validate_recovery_method_names,
+)
 from pageindex_mcp.helpers.types import ExtractionState
 from pageindex_mcp.picture_plane import (
     OcrDecision,
@@ -39,7 +49,7 @@ from pageindex_mcp.picture_plane import (
     decide_ocr_strategy,
     skip_reason_from_str,
 )
-from pageindex_mcp.script import decide_rtl
+from pageindex_mcp.script import RtlDecision, ScriptContext, decide_rtl
 
 
 # --- from test_gate_table.py ---
@@ -1079,3 +1089,301 @@ class TestStripUnresolvedImageMarkers:
         md = "<!-- image --><!-- image --><!-- image -->"
         result = strip_unresolved_image_markers(md)
         assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 D12 (task 12.5): decision() instrumentation added to gates.py and
+# finalize_gate_and_route (types.py). Behaviour-neutral -- these tests assert
+# the emitted event/choice/attrs, not any change to gate outcomes.
+# ---------------------------------------------------------------------------
+
+
+def _decision_records(caplog, event=None):
+    """Every emitted obs decision() record, optionally filtered by event."""
+    records = [r for r in caplog.records if getattr(r, "kind", None) == "decision"]
+    if event is not None:
+        records = [r for r in records if r.event == event]
+    return records
+
+
+def _script_context(**overrides):
+    defaults = dict(dominant_script=None, had_presentation_forms=False, source="test")
+    defaults.update(overrides)
+    return ScriptContext(**defaults)
+
+
+def _tree_signals(**overrides):
+    from pageindex_mcp.helpers.tree_validation import TreeSignals
+
+    defaults = dict(
+        node_count=5,
+        depth=2,
+        max_leaf_ratio=0.1,
+        flat_text="word " * 400,
+        garbled=False,
+        garble_ratio=0.0,
+        effectively_garbled=False,
+        is_reordered=False,
+        expected_min_depth=1,
+    )
+    defaults.update(overrides)
+    return TreeSignals(**defaults)
+
+
+class TestFinalizeGateAndRouteDecisionRecords:
+    """R12.5: route_selected / gate_ok_finalized carry both the computed
+    outcome and the forced one when force_route/force_ok override it."""
+
+    def test_route_selected_emits_computed_route_when_not_overridden(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW)
+        state = _make_state()
+
+        finalize_gate_and_route(state, gate, flat_routing_enabled=True)
+
+        records = _decision_records(caplog, "route_selected")
+        assert len(records) == 1
+        rec = records[0]
+        assert rec.choice == state.route.value
+        assert rec.attrs["computed_route"] == state.route.value
+        assert rec.attrs["final_route"] == state.route.value
+        assert rec.attrs["forced"] is False
+
+    def test_route_selected_carries_both_computed_and_forced_route_on_override(self, caplog):
+        """R12.5 headline case: force_route overwrites decide_route()'s
+        answer -- the record must not lose either value."""
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        # OK computes to Route.TREE -- force_route diverges from it, so the
+        # test actually exercises an override rather than a coincidental match.
+        gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
+        state = _make_state(ok=True)
+        _expected_computed = decide_route(TreeDefect.OK, flat_routing_enabled=True)
+        assert _expected_computed == Route.TREE
+
+        finalize_gate_and_route(
+            state, gate, flat_routing_enabled=True, force_route=Route.FLAT
+        )
+
+        records = _decision_records(caplog, "route_selected")
+        assert len(records) == 1
+        rec = records[0]
+        assert state.route == Route.FLAT
+        assert rec.choice == Route.FLAT.value
+        assert rec.attrs["computed_route"] == Route.TREE.value
+        assert rec.attrs["final_route"] == Route.FLAT.value
+        assert rec.attrs["forced"] is True
+
+    def test_gate_ok_finalized_carries_both_values_on_force_ok_override(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW)
+        state = _make_state()
+
+        finalize_gate_and_route(state, gate, flat_routing_enabled=True, force_ok=True)
+
+        records = _decision_records(caplog, "gate_ok_finalized")
+        assert len(records) == 1
+        rec = records[0]
+        assert state.ok is True
+        assert rec.choice == "ok"
+        assert rec.attrs["computed_ok"] is False
+        assert rec.attrs["final_ok"] is True
+        assert rec.attrs["forced"] is True
+
+    def test_no_override_records_forced_false_and_matching_values(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
+        state = _make_state()
+
+        finalize_gate_and_route(state, gate, flat_routing_enabled=True)
+
+        rec = _decision_records(caplog, "gate_ok_finalized")[0]
+        assert rec.choice == "ok"
+        assert rec.attrs["computed_ok"] == rec.attrs["final_ok"] is True
+        assert rec.attrs["forced"] is False
+
+
+class TestGateFunctionDecisionRecords:
+    """Each of the four gates.py gate functions emits exactly one INFO
+    decision() record per evaluation, matching its return value."""
+
+    def test_bidi_degraded_gate_suppressed_by_config(self, caplog, monkeypatch):
+        import dataclasses as _dc
+
+        from pageindex_mcp.config import pipeline_config
+
+        monkeypatch.setattr(
+            "pageindex_mcp.helpers.gates.pipeline_config",
+            _dc.replace(pipeline_config, bidi_coherence_enforce=False),
+        )
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+
+        fires, _ = _gate_bidi_degraded(_tree_signals(), [], _script_context(), None, None)
+
+        assert fires is False
+        rec = _decision_records(caplog, "bidi_degraded_gate")[0]
+        assert rec.choice == "suppressed_by_config"
+
+    def test_bidi_degraded_gate_fires_on_reversed_signal(self, caplog, monkeypatch):
+        import dataclasses as _dc
+
+        from pageindex_mcp.config import pipeline_config
+
+        monkeypatch.setattr(
+            "pageindex_mcp.helpers.gates.pipeline_config",
+            _dc.replace(pipeline_config, bidi_coherence_enforce=True),
+        )
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        rtl = RtlDecision(reversed=True, repair_effective=False, sampled=10, method="test")
+
+        fires, _ = _gate_bidi_degraded(_tree_signals(), [], _script_context(), None, rtl)
+
+        assert fires is True
+        rec = _decision_records(caplog, "bidi_degraded_gate")[0]
+        assert rec.choice == "fires"
+        assert rec.attrs["reversed_signal"] is True
+
+    def test_empty_node_contamination_gate_not_evaluated_when_zero_nonroot(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+
+        fires, _ = _gate_empty_node_contamination(_tree_signals(), [], _script_context(), None, None)
+
+        assert fires is False
+        rec = _decision_records(caplog, "empty_node_contamination_gate")[0]
+        assert rec.choice == "not_evaluated_zero_nonroot_nodes"
+
+    def test_empty_node_contamination_gate_fires_above_threshold(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        structure = [
+            {"title": "root", "text": "x", "nodes": [
+                {"title": "", "text": "", "nodes": []},
+                {"title": "", "text": "", "nodes": []},
+                {"title": "", "text": "", "nodes": []},
+            ]}
+        ]
+
+        fires, detail = _gate_empty_node_contamination(
+            _tree_signals(), structure, _script_context(), None, None
+        )
+
+        assert fires is True
+        rec = _decision_records(caplog, "empty_node_contamination_gate")[0]
+        assert rec.choice == "fires"
+        assert rec.attrs["total_non_root"] == 3
+
+    def test_low_content_density_gate_not_evaluated_below_min_nodes(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        sig = _tree_signals(node_count=5)
+
+        fires, _ = _gate_low_content_density(sig, [], _script_context(), None, None)
+
+        assert fires is False
+        rec = _decision_records(caplog, "low_content_density_gate")[0]
+        assert rec.choice == "not_evaluated_below_min_nodes"
+
+    def test_low_content_density_gate_fires_below_threshold(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        sig = _tree_signals(node_count=250, flat_text="x" * 100)
+
+        fires, _ = _gate_low_content_density(sig, [], _script_context(), None, None)
+
+        assert fires is True
+        rec = _decision_records(caplog, "low_content_density_gate")[0]
+        assert rec.choice == "fires"
+        assert rec.attrs["node_count"] == 250
+
+    def test_suspect_density_gate_not_evaluated_without_page_count(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+
+        fires, _ = _gate_suspect_density(_tree_signals(), [], _script_context(), None, None)
+
+        assert fires is False
+        rec = _decision_records(caplog, "suspect_density_gate")[0]
+        assert rec.choice == "not_evaluated_no_page_count"
+
+    def test_suspect_density_gate_fires_below_floor(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        sig = _tree_signals(flat_text="x" * 10)
+
+        fires, _ = _gate_suspect_density(sig, [], _script_context(), None, page_count=100)
+
+        assert fires is True
+        rec = _decision_records(caplog, "suspect_density_gate")[0]
+        assert rec.choice == "fires"
+        assert rec.attrs["page_count"] == 100
+
+
+class TestRecoveryEligibilityDecisionRecords:
+    """The four *_recovery_eligible predicates each emit one record whose
+    choice matches the boolean they return."""
+
+    def test_garble_recovery_eligible_not_eligible_when_gate_passed(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        state = _make_state(ok=True)
+
+        result = _eligible_garble(state)
+
+        assert result is False
+        rec = _decision_records(caplog, "garble_recovery_eligible")[0]
+        assert rec.choice == "not_eligible_gate_passed"
+
+    def test_garble_recovery_eligible_true_when_garble_defect_present(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=False, defect=TreeDefect.GARBLING)
+        state = _make_state(ok=False, gate_result=gate, first_defect=TreeDefect.GARBLING)
+
+        result = _eligible_garble(state)
+
+        assert result is True
+        rec = _decision_records(caplog, "garble_recovery_eligible")[0]
+        assert rec.choice == "eligible"
+        assert rec.attrs["garble_defect_present"] is True
+
+    def test_low_content_recovery_eligible_flag_disabled(self, caplog, monkeypatch):
+        import dataclasses as _dc
+
+        from pageindex_mcp.config import pipeline_config
+
+        monkeypatch.setattr(
+            "pageindex_mcp.helpers.gates.pipeline_config",
+            _dc.replace(pipeline_config, ocr_escalation_low_content=False),
+        )
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW)
+        state = _make_state(ok=False, gate_result=gate, first_defect=TreeDefect.NODE_COUNT_LOW)
+
+        result = _eligible_low_content(state)
+
+        assert result is False
+        rec = _decision_records(caplog, "low_content_recovery_eligible")[0]
+        assert rec.choice == "not_eligible_flag_disabled"
+
+    def test_image_dominant_recovery_eligible_defect_absent(self, caplog, monkeypatch):
+        import dataclasses as _dc
+
+        from pageindex_mcp.config import pipeline_config
+
+        monkeypatch.setattr(
+            "pageindex_mcp.helpers.gates.pipeline_config",
+            _dc.replace(pipeline_config, image_dominant_ocr_escalation_enabled=True),
+        )
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW)
+        state = _make_state(ok=False, gate_result=gate, first_defect=TreeDefect.NODE_COUNT_LOW)
+
+        result = _eligible_image_dominant(state)
+
+        assert result is False
+        rec = _decision_records(caplog, "image_dominant_recovery_eligible")[0]
+        assert rec.choice == "not_eligible_defect_absent"
+
+    def test_rtl_recovery_eligible_true_when_defect_present(self, caplog):
+        caplog.set_level("INFO", logger="pageindex_mcp.obs")
+        gate = TreeGateResult(ok=False, defect=TreeDefect.RTL_REVERSAL)
+        state = _make_state(ok=False, gate_result=gate, first_defect=TreeDefect.RTL_REVERSAL)
+
+        result = _eligible_rtl(state)
+
+        assert result is True
+        rec = _decision_records(caplog, "rtl_recovery_eligible")[0]
+        assert rec.choice == "eligible"
+        assert rec.attrs["rtl_reversal_present"] is True
