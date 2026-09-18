@@ -1,11 +1,10 @@
-"""``decision()`` -- the emitter's home (RFC-046 D12).
+"""``decision()`` -- the decision-layer emitter (RFC-046 D12, tasks 12.1/12.5).
 
-This module is deliberately just the emitter. The ``DECISION_POINTS``
-registry and instrumenting the 19 enumerated decision points across
+All 102 enumerated decision points across
 ``helpers/{types,gates,garble,tree_validation,verdict}.py``,
-``client/{indexer,recovery}.py`` and ``converters/{pictures,ocr_langs,
-pipeline}.py`` is task 12.5 -- a separate tranche, not built here. Nothing
-in ``src/`` calls ``decision()`` yet.
+``client/{indexer,recovery}.py`` and
+``converters/{pictures,ocr_langs,pipeline}.py`` call this; the registry that
+enumerates them is ``decision_points.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from __future__ import annotations
 import logging
 
 from .constants import DEFAULT_LOGGER_NAME, KIND_DECISION
+from .log_config import LOG_DECISIONS_ENABLED
 from .safe import safe_attrs
 
 
@@ -25,7 +25,7 @@ def decision(
     logger: logging.Logger | None = None,
 ) -> None:
     """Emit one INFO decision record: ``event``, ``choice``, ``reason``,
-    bounded ``attrs``.
+    bounded ``attrs``. Silenced entirely by ``PAGEINDEX_LOG_DECISIONS=off``.
 
     INFO, not DEBUG (R12.6) -- a normal corpus run must answer "what flow did
     this document take" without raising the log level. Guarded by
@@ -37,6 +37,11 @@ def decision(
     """
     log = logger or logging.getLogger(DEFAULT_LOGGER_NAME)
     try:
+        # Read as a module global, not re-read from the environment: the value
+        # is resolved once at import in log_config (task 12.7), and tests
+        # monkeypatch this name to exercise both settings.
+        if not LOG_DECISIONS_ENABLED:
+            return
         if not log.isEnabledFor(logging.INFO):
             return
         log.info(

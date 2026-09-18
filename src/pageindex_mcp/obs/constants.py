@@ -47,13 +47,24 @@ PLACEHOLDER_UNSERIALISABLE = "<unserialisable>"
 #: lines.
 ENV_LOG_CONTEXT = "PAGEINDEX_LOG_CONTEXT"
 
-#: Env var read once at import by ``log_config.py`` (task 12.7's stub here --
-#: only the level is read in this core tranche). Deliberately NOT registered
-#: in ``PipelineConfig.from_env``: see ``log_config.py`` docstring.
+#: Env vars read once at import by ``log_config.py`` (task 12.7), and nowhere
+#: else in ``src/``. Deliberately NOT registered in ``PipelineConfig.from_env``:
+#: see ``log_config.py``'s docstring for why that would be self-defeating.
 ENV_LOG_LEVEL = "PAGEINDEX_LOG_LEVEL"
+ENV_LOG_NODE_SAMPLE = "PAGEINDEX_LOG_NODE_SAMPLE"
+ENV_LOG_DECISIONS = "PAGEINDEX_LOG_DECISIONS"
+ENV_LOG_CONTENT = "PAGEINDEX_LOG_CONTENT"
 
 #: Default level when ``PAGEINDEX_LOG_LEVEL`` is unset or unrecognised.
 DEFAULT_LOG_LEVEL_NAME = "INFO"
+
+#: Truncation bound applied to any length-bearing excerpt a record may carry.
+#: ``PAGEINDEX_LOG_CONTENT=true`` swaps the first for the second -- it widens a
+#: bound, it never unmasks full text, and the wide bound is still finite
+#: (R12.7). Neither value ever permits a node title, summary or OCR output:
+#: those are refused by key, not truncated (see ``is_content_attr``).
+CONTENT_TRUNCATION_CHARS = 120
+CONTENT_TRUNCATION_CHARS_WIDE = 512
 
 #: Marker attribute set on handlers this package installs, so ``configure()``
 #: can replace its own prior handler instead of duplicating it.
