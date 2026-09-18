@@ -418,8 +418,9 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R10.3](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.4](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.5](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [Property 10](design-rfc046-ocr-attribution-failure-cluster-remediation#property-10-no-post-nfkc-script-context)_
     - _Dependencies: 3.8_
 
-  - [ ] 3.10 Failing property test for the timeout invariant — **land this first**
+  - [x] 3.10 Failing property test for the timeout invariant — **land this first**
 
+    - **DONE 2026-09-18.** Two Hypothesis property tests added to `tests/test_worker.py`: `test_effective_timeout_exceeds_inner_chunk_budget` (xfail strict — proves the violation exists; task 3.11 removes the xfail) and `test_effective_timeout_does_not_exceed_outer_bound` (passes). Hypothesis shrinks to `chunk_count=36` as the minimal counterexample.
     - The current tests verify each half in isolation and both pass while contradicting each other: `tests/test_worker.py:330` asserts `effective_timeout` can reach `MAX_EFFECTIVE_TIMEOUT` (54000); `tests/test_worker.py:526` asserts the persisted deadline cannot exceed `JOB_TIMEOUT + REAP_GRACE` (3750). Nothing tests the relationship, which is why the two halves drifted.
     - Add the property that is actually broken: for any `chunk_count`, `effective_timeout` MUST exceed the sum of the inner per-chunk budgets (`chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S`, `converters/docling_conv.py:714`) plus a non-conversion overhead allowance, AND MUST NOT exceed the outer bound its caller imposes.
     - This fails today at `chunk_count = 2`: `max(CHILD_TIMEOUT=3600, 300 + 2*1500=3300) = 3600`, against 3000s of inner chunk budget — 600s left for model load, OCR, tree build and every LLM call.
@@ -445,7 +446,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R11.3](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [R11.4](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [R11.5](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11), [Property 11](design-rfc046-ocr-attribution-failure-cluster-remediation#property-11-timeout-bound-ordering)_
     - _Dependencies: 3.11_
 
-  - [ ] 3.13 Retain child stderr on the timeout path
+  - [x] 3.13 Retain child stderr on the timeout path
 
     - `_run_converter_subprocess` calls `_kill_group(proc)` and re-raises before `proc.communicate()` returns, so `stderr_bytes` is never populated and **child stderr is discarded on every timeout**. This is why "how far did it get?" is unanswerable for `world-stats-pocketbook` after four failures, and why a 60s handshake stall is indistinguishable from a full-conversion overrun.
     - Drain whatever stderr is buffered before killing the group, and surface it on the `TimeoutError` the way `ConverterChildError` already carries `stderr_tail`.
