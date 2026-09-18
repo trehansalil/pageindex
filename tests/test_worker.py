@@ -236,15 +236,63 @@ async def test_kill_group_sigkill_after_sigterm_timeout():
 
 
 # ── _run_converter_subprocess ─────────────────────────────────────────────
+class _ReadlineFeed:
+    """Serves fixed byte chunks one per ``readline()`` call -- optionally
+    pausing before a given chunk index -- then returns b"" (EOF) forever
+    after. Mirrors a real pipe's ``asyncio.StreamReader`` closely enough for
+    RFC-046 task 12.3's line-by-line ``proc.stdout``/``proc.stderr`` reads
+    (which replaced the old single ``proc.communicate()`` call) to run
+    against a fake. A fixed ``AsyncMock(return_value=...)`` would instead
+    replay the same non-empty bytes forever and spin the read loop forever.
+    """
+
+    def __init__(self, chunks: list[bytes] | None = None, delays: dict[int, float] | None = None):
+        self._chunks = list(chunks or [])
+        self._delays = delays or {}
+        self._idx = 0
+
+    async def readline(self):
+        if self._idx >= len(self._chunks):
+            return b""
+        delay = self._delays.get(self._idx)
+        if delay:
+            await asyncio.sleep(delay)
+        chunk = self._chunks[self._idx]
+        self._idx += 1
+        return chunk
+    async def read(self, n: int = -1):
+        """The production readers use ``read(n)``, not ``readline()``: a real
+        ``asyncio.StreamReader.readline()`` raises ValueError on a line over
+        64 KiB, which the child controls. Serves the same scripted chunks.
+
+        An empty scripted chunk means "no handshake line was written", not
+        end-of-stream, so it is skipped rather than terminating the feed --
+        a real pipe's b"" is permanent EOF and would hide the chunks after it.
+        """
+        while self._idx < len(self._chunks):
+            delay = self._delays.get(self._idx)
+            if delay:
+                await asyncio.sleep(delay)
+            chunk = self._chunks[self._idx]
+            self._idx += 1
+            if chunk:
+                return chunk
+        return b""
+
+
+
 def _fake_subprocess(returncode, stdout=b"", stderr=b""):
     proc = MagicMock()
-    # RFC-028 D0: worker now reads a startup handshake line off proc.stdout
-    # before calling communicate(). No handshake here (empty readline) means
-    # the full stdout is delivered via communicate(), matching pre-D0 behavior.
-    proc.stdout = MagicMock()
-    proc.stdout.readline = AsyncMock(return_value=b"")
-    proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.returncode = returncode
+    # RFC-028 D0: worker now reads a startup handshake line off proc.stdout
+    # before reading the rest. No handshake here (empty first read) means the
+    # full stdout is delivered as the next line, matching pre-D0 behavior.
+    # RFC-046 task 12.3: proc.stdout/proc.stderr are now drained line-by-line
+    # to EOF (not proc.communicate()) -- see _ReadlineFeed.
+    proc.stdout = _ReadlineFeed([b"", stdout])
+    proc.stderr = _ReadlineFeed([stderr] if stderr else [])
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    proc.wait = AsyncMock(return_value=returncode)
     return proc
 
 
@@ -291,10 +339,12 @@ async def test_run_converter_subprocess_generic_nonzero_no_stdout():
 # ── RFC-038 D1: confidence gate alignment ────────────────────────────────────
 def _fake_subprocess_with_handshake(handshake: dict, stdout=b""):
     proc = MagicMock()
-    proc.stdout = MagicMock()
-    proc.stdout.readline = AsyncMock(return_value=(json.dumps(handshake) + "\n").encode())
-    proc.communicate = AsyncMock(return_value=(stdout, b""))
     proc.returncode = 0
+    handshake_line = (json.dumps(handshake) + "\n").encode()
+    proc.stdout = _ReadlineFeed([handshake_line, stdout])
+    proc.stderr = _ReadlineFeed([])
+    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    proc.wait = AsyncMock(return_value=0)
     return proc
 
 
@@ -445,11 +495,12 @@ async def test_handshake_parse_failure_preserves_conservative_deadline():
     no multiplier is applied -- so the value surfaced for Redis persistence
     stays conservative rather than regressing to an inflated one."""
     proc = MagicMock()
-    proc.stdout = MagicMock()
-    proc.stdout.readline = AsyncMock(return_value=b"not valid json garbage\n")
-    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
-    proc.communicate = AsyncMock(return_value=(stdout, b""))
     proc.returncode = 0
+    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
+    proc.stdout = _ReadlineFeed([b"not valid json garbage\n", stdout])
+    proc.stderr = _ReadlineFeed([])
+    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    proc.wait = AsyncMock(return_value=0)
 
     surfaced = []
 
@@ -472,11 +523,17 @@ async def test_handshake_parse_failure_preserves_conservative_deadline():
 # ── RFC-038 Task 3.1: integration tests (D1+D2+D4) ───────────────────────────
 def _fake_subprocess_e2e(handshake: dict, stdout: bytes, *, communicate_delay: float = 0):
     """A subprocess double for full process_document_job() runs: the handshake
-    line is delivered via proc.stdout.readline() and the terminal result via
-    proc.communicate(), exactly as the real converter child behaves."""
+    line is delivered first, then (after ``communicate_delay``, simulating the
+    child still working) the terminal result line -- exactly as the real
+    converter child behaves post-12.3 (line-by-line reads, not communicate())."""
     proc = MagicMock()
-    proc.stdout = MagicMock()
-    proc.stdout.readline = AsyncMock(return_value=(json.dumps(handshake) + "\n").encode())
+    proc.returncode = 0
+    handshake_line = (json.dumps(handshake) + "\n").encode()
+    proc.stdout = _ReadlineFeed(
+        [handshake_line, stdout],
+        delays={1: communicate_delay} if communicate_delay else None,
+    )
+    proc.stderr = _ReadlineFeed([])
 
     async def _communicate():
         if communicate_delay:
@@ -484,7 +541,7 @@ def _fake_subprocess_e2e(handshake: dict, stdout: bytes, *, communicate_delay: f
         return (stdout, b"")
 
     proc.communicate = AsyncMock(side_effect=_communicate)
-    proc.returncode = 0
+    proc.wait = AsyncMock(return_value=0)
     return proc
 
 
@@ -1079,3 +1136,64 @@ class TestLlmTransientFailure:
     def test_none_status(self):
         e = LLMTransientFailure(attempts=2, last_status=None, last_error="timeout")
         assert e.last_status is None
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 D12 review follow-ups (2026-09-18): the pipe readers introduced by
+# task 12.3 must not inherit readline()'s 64 KiB line limit, and the stderr
+# reader must be live before the handshake read.
+# ---------------------------------------------------------------------------
+async def _feed(data: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    reader.feed_data(data)
+    reader.feed_eof()
+    return reader
+
+
+@pytest.mark.asyncio
+async def test_stderr_forwarder_handles_a_line_over_the_stream_limit(capsys):
+    """asyncio.StreamReader.readline() raises ValueError on a line over
+    64 KiB. proc.communicate() -- which 12.3 replaced -- used read() and had
+    no such limit, so a readline()-based reader would have introduced a new
+    crash path that escapes _run_converter_subprocess with the child alive."""
+    # Arrange
+    from pageindex_mcp.worker.subprocess_mgr import _StderrTail, _forward_child_stderr
+
+    oversized = b"X" * 200_000 + b"\n"
+    tail = _StderrTail()
+
+    # Act
+    await _forward_child_stderr(await _feed(oversized), tail)
+
+    # Assert -- no ValueError, and the bounded tail stayed bounded
+    assert len(tail.text()) <= 4000
+    assert "X" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_stdout_drain_handles_a_line_over_the_stream_limit():
+    # Arrange
+    from pageindex_mcp.worker.subprocess_mgr import _drain_remaining_stdout
+
+    oversized = b"Y" * 200_000 + b"\n"
+
+    # Act
+    drained = await _drain_remaining_stdout(await _feed(oversized))
+
+    # Assert
+    assert drained == oversized
+
+
+@pytest.mark.asyncio
+async def test_read_line_returns_the_over_read_rather_than_dropping_it():
+    """The handshake read must not swallow bytes that arrived in the same
+    chunk: the caller stitches them back via leftover_stdout."""
+    # Arrange
+    from pageindex_mcp.worker.subprocess_mgr import _read_line
+
+    # Act
+    line, over_read = await _read_line(await _feed(b'{"handshake": true}\n{"ok": true}\n'))
+
+    # Assert
+    assert line == b'{"handshake": true}\n'
+    assert over_read == b'{"ok": true}\n'

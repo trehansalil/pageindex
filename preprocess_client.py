@@ -82,6 +82,18 @@ class _FilteredStderr:
         lines = self._buf.split("\n")
         self._buf = lines[-1]  # hold incomplete last line
         for line in lines[:-1]:
+            # RFC-046 D12: obs.configure() binds its StreamHandler to whatever
+            # sys.stderr is at the time, and on this route that is *this*
+            # object -- the swap at the bottom of the module happens before
+            # preprocess() runs. Without this passthrough a structured record
+            # whose msg merely mentions e.g. litellm_logging.py is silently
+            # dropped, and the log stream 12.C-core reconstructs from has
+            # holes in it. A JSON object on its own line is a record, never a
+            # traceback frame: emit it and clear any suppression state.
+            if line.startswith("{") and line.rstrip().endswith("}"):
+                self._suppressing = False
+                self._wrapped.write(line + "\n")
+                continue
             # Trigger: enter suppression mode
             if any(t in line for t in _NOISE_TRIGGERS):
                 self._suppressing = True
@@ -107,6 +119,7 @@ class _FilteredStderr:
 from dotenv import load_dotenv
 
 from pageindex_mcp.client import _SUPPORTED as SUPPORTED
+from pageindex_mcp.obs import bind_log_context, configure as configure_obs
 
 load_dotenv()
 
@@ -138,25 +151,29 @@ def _concurrency() -> int:
         return 1
 
 
-async def _process_one(sem: asyncio.Semaphore, file: Path) -> None:
+async def _process_one(sem: asyncio.Semaphore, file: Path, run_id: str) -> None:
     # Same isolation primitive the arq worker uses: a fresh converters_cli child
     # per file that dies (and frees Docling/torch memory) when it returns. The
     # child runs CustomPageIndexClient.index() in-process, then exits.
     from pageindex_mcp.worker import ConverterOOMError, _run_converter_subprocess
 
+    # RFC-046 D12 (task 12.2): bind INSIDE the semaphore, not before it -- each
+    # concurrent document must carry its own doc_name in the correlation
+    # context passed down to the converter child via PAGEINDEX_LOG_CONTEXT.
     async with sem:
-        try:
-            result = await _run_converter_subprocess(str(file))
-        except ConverterOOMError:
-            print(f"  [{file.name}] ERROR: converter child OOM-killed", flush=True)
-            return
-        except TimeoutError:
-            print(f"  [{file.name}] ERROR: converter child timed out", flush=True)
-            return
-        except Exception as e:
-            # Report and continue to the next file (matches prior behaviour).
-            print(f"  [{file.name}] ERROR: {e}", flush=True)
-            return
+        with bind_log_context(run_id=run_id, doc_name=file.name):
+            try:
+                result = await _run_converter_subprocess(str(file))
+            except ConverterOOMError:
+                print(f"  [{file.name}] ERROR: converter child OOM-killed", flush=True)
+                return
+            except TimeoutError:
+                print(f"  [{file.name}] ERROR: converter child timed out", flush=True)
+                return
+            except Exception as e:
+                # Report and continue to the next file (matches prior behaviour).
+                print(f"  [{file.name}] ERROR: {e}", flush=True)
+                return
 
     doc_id = result.get("doc_id")
     content_class = result.get("content_class")
@@ -215,6 +232,12 @@ async def _close_registry_pool() -> None:
 
 
 async def preprocess(files: list[Path]) -> None:
+    import uuid
+
+    configure_obs()
+    # RFC-046 D12 (task 12.2): one run_id per invocation of this script -- the
+    # correlation key spanning every document this batch processes.
+    run_id = str(uuid.uuid4())
     concurrency = _concurrency()
     print(
         f"Processing {len(files)} file(s) via isolated converter subprocesses "
@@ -224,7 +247,7 @@ async def preprocess(files: list[Path]) -> None:
     await _init_registry_pool()
     sem = asyncio.Semaphore(concurrency)
     try:
-        await asyncio.gather(*(_process_one(sem, f) for f in files))
+        await asyncio.gather(*(_process_one(sem, f, run_id) for f in files))
     finally:
         await _close_registry_pool()
 

@@ -27,8 +27,20 @@ import resource
 import sys
 import time
 
+from .obs.constants import ENV_LOG_CONTEXT
+from .obs.context import bind_log_context
+
 # Redirect all logging to stderr immediately — before any other import.
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+# NOTE (RFC-046 D12, task 12.2): this module intentionally does NOT call
+# obs.configure() -- it would install a second handler alongside the
+# basicConfig above, doubling every log line (plain-text + JSON) rather than
+# replacing the format. Unifying this basicConfig call onto obs.configure()
+# is task 12.9 (a separate tranche); until then, correlation is BOUND here
+# (via bind_log_context below) but not yet FORMATTED as JSON for this
+# process -- the same context still crosses correctly into anything that
+# reads current_context() directly (e.g. subprocess_mgr would, if this were
+# itself a parent -- it is not).
 
 # _stdout is the stream used for the final JSON output line.
 # It is a module-level variable so tests can monkeypatch it to a StringIO.
@@ -38,6 +50,27 @@ _stdout = sys.stdout
 def _emit(payload: dict) -> None:
     """Write exactly one JSON line to _stdout and flush."""
     print(json.dumps(payload), file=_stdout, flush=True)
+
+
+def _log_context_from_env() -> dict:
+    """Parse ``PAGEINDEX_LOG_CONTEXT`` (written by the parent's
+    ``subprocess_mgr``) into the fields to bind for this child's lifetime.
+
+    Absent or malformed input degrades to an empty mapping rather than
+    raising -- a logging/correlation problem must never fail a document
+    (RFC-046 D12 posture, same as the PAGEINDEX_JOB_START_CONFIG precedent
+    a few lines below in ``main()``).
+    """
+    raw = os.environ.get(ENV_LOG_CONTEXT)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
 
 
 def _peak_rss_kib() -> int:
@@ -64,151 +97,152 @@ async def main() -> int:  # noqa: PLR0915
 
     start = time.monotonic()
 
-    try:
-        parser = argparse.ArgumentParser(
-            prog="converters_cli",
-            description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
-        )
-        parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
-        parser.add_argument(
-            "--staging-key",
-            default=None,
-            help="MinIO staging key for remote Docling service (presigned URL generation).",
-        )
+    with bind_log_context(**_log_context_from_env()):
         try:
-            args = parser.parse_args()
-        except SystemExit as sysexit:
-            # argparse calls sys.exit() on --help (code 0) or bad args (code 2).
-            # Both are "handled failure" from the worker's perspective: the
-            # documented CLI exit contract is 0 on success or 1 on handled
-            # failure, so we coerce any argparse exit to 1. Emit a JSON line
-            # first so the stdout-is-exactly-one-JSON-line contract holds.
-            _emit(
-                {
-                    "ok": False,
-                    "error": "ArgparseExit",
-                    "message": f"argparse exited with code {sysexit.code}",
+            parser = argparse.ArgumentParser(
+                prog="converters_cli",
+                description="Index a document via CustomPageIndexClient and emit JSON to stdout.",
+            )
+            parser.add_argument("input_path", help="Path to the input PDF (or other supported format).")
+            parser.add_argument(
+                "--staging-key",
+                default=None,
+                help="MinIO staging key for remote Docling service (presigned URL generation).",
+            )
+            try:
+                args = parser.parse_args()
+            except SystemExit as sysexit:
+                # argparse calls sys.exit() on --help (code 0) or bad args (code 2).
+                # Both are "handled failure" from the worker's perspective: the
+                # documented CLI exit contract is 0 on success or 1 on handled
+                # failure, so we coerce any argparse exit to 1. Emit a JSON line
+                # first so the stdout-is-exactly-one-JSON-line contract holds.
+                _emit(
+                    {
+                        "ok": False,
+                        "error": "ArgparseExit",
+                        "message": f"argparse exited with code {sysexit.code}",
+                    }
+                )
+                return 1
+
+            # RFC-028 D0: emit the startup handshake before any heavy import so the
+            # worker can size its child timeout from the actual page/chunk count
+            # instead of the fixed CHILD_TIMEOUT, without the worker having to
+            # re-derive page count itself (avoids worker/child disagreement).
+            from pageindex_mcp.converters import probe_conversion_route
+
+            chunk_count, is_docling_route, pdf_classification = probe_conversion_route(args.input_path)
+            handshake_payload = {
+                "handshake": True,
+                "chunk_count": chunk_count,
+                "is_docling_route": is_docling_route,
+            }
+            if pdf_classification is not None:
+                handshake_payload["pdf_classification"] = pdf_classification
+            _emit(handshake_payload)
+
+            try:
+                # Heavy import deferred to here so baseline RSS in the parent process
+                # (before any conversion) is not polluted by pageindex/litellm imports.
+                from pageindex_mcp.client import (
+                    CustomPageIndexClient,
+                    configure_litellm,
+                    validate_llm_config,
+                )
+
+                # Provider abstraction: validate the LLM config and point the fork's
+                # litellm calls at the configured (OpenAI-compatible / Azure) endpoint
+                # before indexing — the ingestion path no longer relies on litellm
+                # reading OPENAI_BASE_URL from the environment by chance.
+                validate_llm_config()
+                configure_litellm()
+
+                # Zone-7: threaded via env var (not argv/stdin) so it never touches
+                # the stdout JSON-lines contract this module's docstring guards.
+                job_start_config = None
+                raw_job_start_config = os.environ.get("PAGEINDEX_JOB_START_CONFIG")
+                if raw_job_start_config:
+                    try:
+                        job_start_config = json.loads(raw_job_start_config)
+                    except json.JSONDecodeError:
+                        logging.getLogger(__name__).warning(
+                            "PAGEINDEX_JOB_START_CONFIG was not valid JSON; ignoring"
+                        )
+
+                client = CustomPageIndexClient()
+                if args.staging_key:
+                    client._staging_key = args.staging_key
+                doc_id = await client.index(
+                    args.input_path,
+                    pdf_classification=pdf_classification,
+                    job_start_config=job_start_config,
+                )
+
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload = {
+                    "ok": True,
+                    "doc_id": doc_id,
+                    "peak_rss_kib": _peak_rss_kib(),
+                    "duration_ms": duration_ms,
                 }
-            )
-            return 1
+                # RFC-004 Amendment 1 (Step 5 integration): when index() routed the
+                # doc to the flat success path it stamps last_content_class. Surface it
+                # in the stdout JSON so the worker hash carries content_class
+                # (FLAT-04-C1). Absent for a normal tree doc.
+                content_class = getattr(client, "last_content_class", None)
+                if content_class:
+                    payload["content_class"] = content_class
+                # Zone-7: surface verdict fields computed during index() so the
+                # worker parent can thread them into _upsert_registry_row,
+                # closing the MinIO re-read race window for verdict data.
+                # Omitted when None (backward compat with older workers).
+                verdict_fields = getattr(client, "last_verdict_fields", None)
+                if verdict_fields:
+                    payload["verdict_fields"] = verdict_fields
+                # Zone-7 (dual-write consistency): surface registry fields
+                # computed during index() so the worker parent can pass them
+                # to _upsert_registry_row, eliminating the MinIO re-read
+                # race window for all registry columns (not just verdict).
+                # Omitted when None (backward compat with older workers).
+                last_registry_fields = getattr(client, "last_registry_fields", None)
+                if last_registry_fields:
+                    payload["registry_fields"] = last_registry_fields
+                _emit(payload)
+                return 0
 
-        # RFC-028 D0: emit the startup handshake before any heavy import so the
-        # worker can size its child timeout from the actual page/chunk count
-        # instead of the fixed CHILD_TIMEOUT, without the worker having to
-        # re-derive page count itself (avoids worker/child disagreement).
-        from pageindex_mcp.converters import probe_conversion_route
+            except Exception as exc:
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload = {
+                    "ok": False,
+                    "error": type(exc).__name__,
+                    "message": str(exc),
+                }
+                _emit(payload)
+                logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
+                return 1
+        finally:
+            # LLM-02: this is a short-lived subprocess — flush buffered spans before
+            # exit or they are lost. Two distinct providers must be flushed: the
+            # langfuse-python client (any query-path spans) AND litellm's private
+            # langfuse_otel OTel provider (the ingestion-path generations + cost).
+            # Flush each INDEPENDENTLY so a failure in one does not suppress the
+            # other. Both are no-ops when tracing is disabled. Deferred imports so the
+            # parent baseline RSS is clean.
+            _log = logging.getLogger(__name__)
+            try:
+                from pageindex_mcp.tracing import flush_langfuse
 
-        chunk_count, is_docling_route, pdf_classification = probe_conversion_route(args.input_path)
-        handshake_payload = {
-            "handshake": True,
-            "chunk_count": chunk_count,
-            "is_docling_route": is_docling_route,
-        }
-        if pdf_classification is not None:
-            handshake_payload["pdf_classification"] = pdf_classification
-        _emit(handshake_payload)
+                flush_langfuse()
+            except Exception:  # pragma: no cover - never let flush break the CLI contract
+                _log.debug("Langfuse client flush skipped", exc_info=True)
+            try:
+                from pageindex_mcp.client import flush_litellm_tracing
 
-        try:
-            # Heavy import deferred to here so baseline RSS in the parent process
-            # (before any conversion) is not polluted by pageindex/litellm imports.
-            from pageindex_mcp.client import (
-                CustomPageIndexClient,
-                configure_litellm,
-                validate_llm_config,
-            )
-
-            # Provider abstraction: validate the LLM config and point the fork's
-            # litellm calls at the configured (OpenAI-compatible / Azure) endpoint
-            # before indexing — the ingestion path no longer relies on litellm
-            # reading OPENAI_BASE_URL from the environment by chance.
-            validate_llm_config()
-            configure_litellm()
-
-            # Zone-7: threaded via env var (not argv/stdin) so it never touches
-            # the stdout JSON-lines contract this module's docstring guards.
-            job_start_config = None
-            raw_job_start_config = os.environ.get("PAGEINDEX_JOB_START_CONFIG")
-            if raw_job_start_config:
-                try:
-                    job_start_config = json.loads(raw_job_start_config)
-                except json.JSONDecodeError:
-                    logging.getLogger(__name__).warning(
-                        "PAGEINDEX_JOB_START_CONFIG was not valid JSON; ignoring"
-                    )
-
-            client = CustomPageIndexClient()
-            if args.staging_key:
-                client._staging_key = args.staging_key
-            doc_id = await client.index(
-                args.input_path,
-                pdf_classification=pdf_classification,
-                job_start_config=job_start_config,
-            )
-
-            duration_ms = int((time.monotonic() - start) * 1000)
-            payload = {
-                "ok": True,
-                "doc_id": doc_id,
-                "peak_rss_kib": _peak_rss_kib(),
-                "duration_ms": duration_ms,
-            }
-            # RFC-004 Amendment 1 (Step 5 integration): when index() routed the
-            # doc to the flat success path it stamps last_content_class. Surface it
-            # in the stdout JSON so the worker hash carries content_class
-            # (FLAT-04-C1). Absent for a normal tree doc.
-            content_class = getattr(client, "last_content_class", None)
-            if content_class:
-                payload["content_class"] = content_class
-            # Zone-7: surface verdict fields computed during index() so the
-            # worker parent can thread them into _upsert_registry_row,
-            # closing the MinIO re-read race window for verdict data.
-            # Omitted when None (backward compat with older workers).
-            verdict_fields = getattr(client, "last_verdict_fields", None)
-            if verdict_fields:
-                payload["verdict_fields"] = verdict_fields
-            # Zone-7 (dual-write consistency): surface registry fields
-            # computed during index() so the worker parent can pass them
-            # to _upsert_registry_row, eliminating the MinIO re-read
-            # race window for all registry columns (not just verdict).
-            # Omitted when None (backward compat with older workers).
-            last_registry_fields = getattr(client, "last_registry_fields", None)
-            if last_registry_fields:
-                payload["registry_fields"] = last_registry_fields
-            _emit(payload)
-            return 0
-
-        except Exception as exc:
-            duration_ms = int((time.monotonic() - start) * 1000)
-            payload = {
-                "ok": False,
-                "error": type(exc).__name__,
-                "message": str(exc),
-            }
-            _emit(payload)
-            logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
-            return 1
-    finally:
-        # LLM-02: this is a short-lived subprocess — flush buffered spans before
-        # exit or they are lost. Two distinct providers must be flushed: the
-        # langfuse-python client (any query-path spans) AND litellm's private
-        # langfuse_otel OTel provider (the ingestion-path generations + cost).
-        # Flush each INDEPENDENTLY so a failure in one does not suppress the
-        # other. Both are no-ops when tracing is disabled. Deferred imports so the
-        # parent baseline RSS is clean.
-        _log = logging.getLogger(__name__)
-        try:
-            from pageindex_mcp.tracing import flush_langfuse
-
-            flush_langfuse()
-        except Exception:  # pragma: no cover - never let flush break the CLI contract
-            _log.debug("Langfuse client flush skipped", exc_info=True)
-        try:
-            from pageindex_mcp.client import flush_litellm_tracing
-
-            flush_litellm_tracing()
-        except Exception:  # pragma: no cover - never let flush break the CLI contract
-            _log.debug("litellm langfuse_otel flush skipped", exc_info=True)
-        sys.stdout = orig_stdout
+                flush_litellm_tracing()
+            except Exception:  # pragma: no cover - never let flush break the CLI contract
+                _log.debug("litellm langfuse_otel flush skipped", exc_info=True)
+            sys.stdout = orig_stdout
 
 
 if __name__ == "__main__":

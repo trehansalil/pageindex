@@ -9,6 +9,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from ..config import settings, validate_hr3_compliance
+from ..obs import configure as configure_obs
 from .job import JOB_TIMEOUT, MAX_TRIES, process_document_job, reap_stale_jobs
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,12 @@ MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
 
 
 async def startup(ctx: dict) -> None:
+    # RFC-046 D12 (task 12.2): install the JSON stderr handler for this
+    # worker process. No existing logging.basicConfig call here to coexist
+    # with (unlike converters_cli/server/hash_cache_migrate) -- safe to call
+    # unconditionally.
+    configure_obs()
+
     # RFC-039 D1: HR3 boot gate — refuse to start when pii_corpus=True and any
     # egress endpoint (openai_base_url, LLM_FALLBACK_BASE_URL, docling_service_url)
     # is not ZDR-allowlisted. Must run before Redis connection and registry init

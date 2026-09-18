@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
 
 import redis.asyncio as aioredis
 
@@ -22,6 +23,7 @@ from ..metrics import (
     UPLOAD_DURATION,
     UPLOADS,
 )
+from ..obs import bind_log_context
 from ..storage import delete_staging, download_staging
 from .constants import JOB_TIMEOUT, REAP_GRACE
 from .errors import (
@@ -103,318 +105,324 @@ async def process_document_job(  # noqa: C901, PLR0915
     to a local temp directory, runs conversion in an isolated child process,
     then cleans up both.
     """
-    redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
-    # Zone-7: captured once, up front, before anything can fail -- this is
-    # the pipeline config/build actually in effect for THIS job, persisted on
-    # every status transition below (including error paths that die before
-    # the subprocess ever reaches save_doc_meta). Previously there was zero
-    # record of pipeline config for a job that never completed successfully.
-    job_start_config = effective_config_snapshot()
-    job_start_fields = {
-        "job_start_config": json.dumps(job_start_config),
-        "job_start_build_sha": _WORKER_BUILD_SHA,
-    }
+    run_id = ctx.get("run_id") or str(uuid.uuid4())
     # Extract filename from staging key: uploads/staging/<job_id>/<filename>
+    # Derived before the bind, not thirteen lines into it: doc_name is the one
+    # identifier a human actually has, and binding it here means both routes
+    # share a single query key instead of the worker route being reachable
+    # only by job_id (RFC-046 R12.2, correction of 2026-09-18).
     filename = os.path.basename(staging_key)
-    tmp_dir = tempfile.mkdtemp()
-    local_path = os.path.join(tmp_dir, filename)
-    ACTIVE_UPLOADS.inc()
-
-    from .registry_mirror import _mirror_bridged_incr
-
-    await _mirror_bridged_incr("active_uploads", 1)
-    start = time.monotonic()
-    # Default to keeping the staged file; only purge it on terminal outcomes so
-    # arq retries can re-download the original document from MinIO.
-    cleanup_staging = False
-    logger.info("Worker processing: job=%s staging_key=%s", job_id, staging_key)
-    try:
-        # Stamp a wall-clock start time (epoch seconds, NOT time.monotonic which is
-        # process-relative and meaningless across the worker restart a crash causes)
-        # so reap_stale_jobs can later detect a job orphaned mid-processing.
-        #
-        # Also record effective_timeout_at — the absolute wall-clock deadline
-        # after which the reaper may declare this job stale.  We write a
-        # conservative initial value based on JOB_TIMEOUT here; RFC-038 D2:
-        # once the child's handshake reveals a longer effective_timeout (e.g.
-        # 16.5x for scanned PDFs), _persist_effective_timeout below updates
-        # effective_timeout_at immediately — before the subprocess completes,
-        # not after — so reap_stale_jobs never sees only this conservative
-        # default for a legitimately long-running job.
-        processing_now = int(time.time())
-        await _set_job_status(
-            redis,
-            job_id,
-            JobStatus.PROCESSING,
-            ttl=JOB_TTL,
-            processing_started_at=str(processing_now),
-            effective_timeout_at=str(processing_now + JOB_TIMEOUT + REAP_GRACE),
-            **job_start_fields,
-        )
-        # Download staged file from MinIO to local temp
-        await asyncio.to_thread(download_staging, staging_key, local_path)
-        logger.info("Downloaded staged file to %s", local_path)
-
-        # Memory-admission gate: with up to 2 worker pods, wait until the node
-        # has headroom for one ~1.9Gi conversion before spawning the child.
-        # Fails open (proceeds) on any error or after the wait cap.
-        await wait_for_memory(redis)
-
-        # RFC-038 D2: persist the real effective_timeout_at to Redis as soon as
-        # the child's handshake reveals it — before the subprocess completes —
-        # so reap_stale_jobs never sees only the conservative default deadline
-        # written above for a legitimately long-running job.
-        async def _persist_effective_timeout(effective_timeout: float) -> None:
-            new_deadline = processing_now + int(effective_timeout) + REAP_GRACE
-            # RFC-038 D2 AC3: never tighten the deadline below the conservative
-            # default written at PROCESSING (handshake-parse failure surfaces
-            # CHILD_TIMEOUT < JOB_TIMEOUT here) — only extensions are persisted.
-            if new_deadline <= processing_now + JOB_TIMEOUT + REAP_GRACE:
-                return
-            # Best-effort: a Redis hiccup here must not raise mid-handshake —
-            # that would propagate out of _run_converter_subprocess on a path
-            # with no _kill_group, orphaning the running converter child. On
-            # failure the conservative default simply remains in Redis.
-            try:
-                await redis.hset(_job_key(job_id), "effective_timeout_at", str(new_deadline))
-                logger.info(
-                    "Updated effective_timeout_at for job=%s: %ss (effective_timeout=%ss)",
-                    job_id,
-                    new_deadline,
-                    effective_timeout,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to persist early effective_timeout_at for job=%s; "
-                    "conservative default deadline remains",
-                    job_id,
-                    exc_info=True,
-                )
-
-        try:
-            result = await _run_converter_subprocess(
-                local_path,
-                staging_key=staging_key,
-                job_start_config=job_start_config,
-                on_effective_timeout=_persist_effective_timeout,
-            )
-        except ConverterOOMError as exc:
-            await _set_job_status(
-                redis,
-                job_id,
-                JobStatus.ERROR,
-                ttl=JOB_TTL,
-                reason="converter_oom",
-                error=exc.stderr_tail,
-                **job_start_fields,
-            )
-            UPLOADS.labels(status="error").inc()
-            await _mirror_bridged_incr("uploads_total:error")
-            logger.error("Converter child OOM: job=%s", job_id)
-            # Do NOT cleanup staging here: the outer handler will set
-            # cleanup_staging=True only on the final retry. Deleting the
-            # staged object before then would make subsequent attempts fail
-            # at download_staging and overwrite the original OOM reason.
-            raise
-        except TimeoutError:
-            CONVERTER_CHILD_TIMEOUT_TOTAL.inc()
-            await _mirror_bridged_incr("converter_child_timeout_total")
-            await _set_job_status(
-                redis,
-                job_id,
-                JobStatus.ERROR,
-                ttl=JOB_TTL,
-                reason="converter_timeout",
-                **job_start_fields,
-            )
-            UPLOADS.labels(status="error").inc()
-            await _mirror_bridged_incr("uploads_total:error")
-            logger.error("Converter child timed out: job=%s", job_id)
-            raise
-        except ConverterChildError as exc:
-            if exc.error_class == "LLMTransientFailure":
-                reason = _classify_llm_failure(exc.stderr_tail)
-            else:
-                classification = _CHILD_ERROR_REGISTRY.get(
-                    exc.error_class or "", _DEFAULT_CHILD_CLASSIFICATION
-                )
-                reason = classification.reason
-            await _set_job_status(
-                redis,
-                job_id,
-                JobStatus.ERROR,
-                ttl=JOB_TTL,
-                reason=reason,
-                error=exc.stderr_tail,
-                **job_start_fields,
-            )
-            UPLOADS.labels(status="error").inc()
-            await _mirror_bridged_incr("uploads_total:error")
-            logger.error(
-                "Converter child failed: job=%s rc=%s reason=%s error_class=%s",
-                job_id,
-                exc.returncode,
-                reason,
-                exc.error_class,
-            )
-            if reason in _TERMINAL_CHILD_REASONS:
-                # Deterministic failure: a retry on the same staged input
-                # produces the same outcome. Mark terminal, purge staging,
-                # and swallow so arq does not requeue / DLQ-push.
-                cleanup_staging = True
-                logger.warning(
-                    "Treating job=%s as terminal (reason=%s); not retrying.",
-                    job_id,
-                    reason,
-                )
-                return ""
-            raise
-
-        doc_id = result["doc_id"]
-        # A flat-document result (RFC-004 Amendment 1) carries a content_class:
-        # the job still completes as a SUCCESS (status=done), but surfaces the
-        # class so downstream consumers can read the flat artifact. A normal
-        # tree document has no content_class — the mapping is left unchanged so
-        # we never write an empty/None content_class for it.
-        content_class = result.get("content_class")
-        done_fields: dict[str, str] = {
-            "doc_id": doc_id,
-            **job_start_fields,
+    with bind_log_context(run_id=run_id, job_id=job_id, doc_name=filename):
+        redis: aioredis.Redis = ctx.get("redis") or await get_async_redis()
+        # Zone-7: captured once, up front, before anything can fail -- this is
+        # the pipeline config/build actually in effect for THIS job, persisted on
+        # every status transition below (including error paths that die before
+        # the subprocess ever reaches save_doc_meta). Previously there was zero
+        # record of pipeline config for a job that never completed successfully.
+        job_start_config = effective_config_snapshot()
+        job_start_fields = {
+            "job_start_config": json.dumps(job_start_config),
+            "job_start_build_sha": _WORKER_BUILD_SHA,
         }
-        if content_class:
-            done_fields["content_class"] = content_class
-        # Zone 6 (Part C): wrap in try/except ValueError so a reaped-then-
-        # completed job (ERROR->DONE) still records the doc_id and registry
-        # row.  With ERROR->DONE in _VALID_TRANSITIONS, the normal path
-        # succeeds and writes ``late_success``/``reaped_recovery`` flags.
-        # The except path is a safety net for any future transition rejection.
-        late_success = False
+        tmp_dir = tempfile.mkdtemp()
+        local_path = os.path.join(tmp_dir, filename)
+        ACTIVE_UPLOADS.inc()
+
+        from .registry_mirror import _mirror_bridged_incr
+
+        await _mirror_bridged_incr("active_uploads", 1)
+        start = time.monotonic()
+        # Default to keeping the staged file; only purge it on terminal outcomes so
+        # arq retries can re-download the original document from MinIO.
+        cleanup_staging = False
+        logger.info("Worker processing: job=%s staging_key=%s", job_id, staging_key)
         try:
-            # Check current status to detect late-success (reap recovery)
-            current_raw = await redis.hget(_job_key(job_id), "status")
-            if current_raw == JobStatus.ERROR.value:
-                late_success = True
-                done_fields["late_success"] = "true"
-                done_fields["reaped_recovery"] = "true"
+            # Stamp a wall-clock start time (epoch seconds, NOT time.monotonic which is
+            # process-relative and meaningless across the worker restart a crash causes)
+            # so reap_stale_jobs can later detect a job orphaned mid-processing.
+            #
+            # Also record effective_timeout_at — the absolute wall-clock deadline
+            # after which the reaper may declare this job stale.  We write a
+            # conservative initial value based on JOB_TIMEOUT here; RFC-038 D2:
+            # once the child's handshake reveals a longer effective_timeout (e.g.
+            # 16.5x for scanned PDFs), _persist_effective_timeout below updates
+            # effective_timeout_at immediately — before the subprocess completes,
+            # not after — so reap_stale_jobs never sees only this conservative
+            # default for a legitimately long-running job.
+            processing_now = int(time.time())
             await _set_job_status(
                 redis,
                 job_id,
-                JobStatus.DONE,
+                JobStatus.PROCESSING,
                 ttl=JOB_TTL,
-                **done_fields,
+                processing_started_at=str(processing_now),
+                effective_timeout_at=str(processing_now + JOB_TIMEOUT + REAP_GRACE),
+                **job_start_fields,
             )
-        except ValueError:
-            # Safety net: transition rejected (should not happen now that
-            # ERROR->DONE exists, but guard against future state-machine
-            # changes).  Log the anomaly but still proceed to record the
-            # doc_id and upsert the registry row — losing the document
-            # is worse than an unexpected state-machine edge.
-            logger.warning(
-                "Zone 6 safety net: _set_job_status(DONE) raised ValueError for "
-                "job=%s doc_id=%s; proceeding with registry write.",
+            # Download staged file from MinIO to local temp
+            await asyncio.to_thread(download_staging, staging_key, local_path)
+            logger.info("Downloaded staged file to %s", local_path)
+
+            # Memory-admission gate: with up to 2 worker pods, wait until the node
+            # has headroom for one ~1.9Gi conversion before spawning the child.
+            # Fails open (proceeds) on any error or after the wait cap.
+            await wait_for_memory(redis)
+
+            # RFC-038 D2: persist the real effective_timeout_at to Redis as soon as
+            # the child's handshake reveals it — before the subprocess completes —
+            # so reap_stale_jobs never sees only the conservative default deadline
+            # written above for a legitimately long-running job.
+            async def _persist_effective_timeout(effective_timeout: float) -> None:
+                new_deadline = processing_now + int(effective_timeout) + REAP_GRACE
+                # RFC-038 D2 AC3: never tighten the deadline below the conservative
+                # default written at PROCESSING (handshake-parse failure surfaces
+                # CHILD_TIMEOUT < JOB_TIMEOUT here) — only extensions are persisted.
+                if new_deadline <= processing_now + JOB_TIMEOUT + REAP_GRACE:
+                    return
+                # Best-effort: a Redis hiccup here must not raise mid-handshake —
+                # that would propagate out of _run_converter_subprocess on a path
+                # with no _kill_group, orphaning the running converter child. On
+                # failure the conservative default simply remains in Redis.
+                try:
+                    await redis.hset(_job_key(job_id), "effective_timeout_at", str(new_deadline))
+                    logger.info(
+                        "Updated effective_timeout_at for job=%s: %ss (effective_timeout=%ss)",
+                        job_id,
+                        new_deadline,
+                        effective_timeout,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist early effective_timeout_at for job=%s; "
+                        "conservative default deadline remains",
+                        job_id,
+                        exc_info=True,
+                    )
+
+            try:
+                result = await _run_converter_subprocess(
+                    local_path,
+                    staging_key=staging_key,
+                    job_start_config=job_start_config,
+                    on_effective_timeout=_persist_effective_timeout,
+                )
+            except ConverterOOMError as exc:
+                await _set_job_status(
+                    redis,
+                    job_id,
+                    JobStatus.ERROR,
+                    ttl=JOB_TTL,
+                    reason="converter_oom",
+                    error=exc.stderr_tail,
+                    **job_start_fields,
+                )
+                UPLOADS.labels(status="error").inc()
+                await _mirror_bridged_incr("uploads_total:error")
+                logger.error("Converter child OOM: job=%s", job_id)
+                # Do NOT cleanup staging here: the outer handler will set
+                # cleanup_staging=True only on the final retry. Deleting the
+                # staged object before then would make subsequent attempts fail
+                # at download_staging and overwrite the original OOM reason.
+                raise
+            except TimeoutError:
+                CONVERTER_CHILD_TIMEOUT_TOTAL.inc()
+                await _mirror_bridged_incr("converter_child_timeout_total")
+                await _set_job_status(
+                    redis,
+                    job_id,
+                    JobStatus.ERROR,
+                    ttl=JOB_TTL,
+                    reason="converter_timeout",
+                    **job_start_fields,
+                )
+                UPLOADS.labels(status="error").inc()
+                await _mirror_bridged_incr("uploads_total:error")
+                logger.error("Converter child timed out: job=%s", job_id)
+                raise
+            except ConverterChildError as exc:
+                if exc.error_class == "LLMTransientFailure":
+                    reason = _classify_llm_failure(exc.stderr_tail)
+                else:
+                    classification = _CHILD_ERROR_REGISTRY.get(
+                        exc.error_class or "", _DEFAULT_CHILD_CLASSIFICATION
+                    )
+                    reason = classification.reason
+                await _set_job_status(
+                    redis,
+                    job_id,
+                    JobStatus.ERROR,
+                    ttl=JOB_TTL,
+                    reason=reason,
+                    error=exc.stderr_tail,
+                    **job_start_fields,
+                )
+                UPLOADS.labels(status="error").inc()
+                await _mirror_bridged_incr("uploads_total:error")
+                logger.error(
+                    "Converter child failed: job=%s rc=%s reason=%s error_class=%s",
+                    job_id,
+                    exc.returncode,
+                    reason,
+                    exc.error_class,
+                )
+                if reason in _TERMINAL_CHILD_REASONS:
+                    # Deterministic failure: a retry on the same staged input
+                    # produces the same outcome. Mark terminal, purge staging,
+                    # and swallow so arq does not requeue / DLQ-push.
+                    cleanup_staging = True
+                    logger.warning(
+                        "Treating job=%s as terminal (reason=%s); not retrying.",
+                        job_id,
+                        reason,
+                    )
+                    return ""
+                raise
+
+            doc_id = result["doc_id"]
+            # A flat-document result (RFC-004 Amendment 1) carries a content_class:
+            # the job still completes as a SUCCESS (status=done), but surfaces the
+            # class so downstream consumers can read the flat artifact. A normal
+            # tree document has no content_class — the mapping is left unchanged so
+            # we never write an empty/None content_class for it.
+            content_class = result.get("content_class")
+            done_fields: dict[str, str] = {
+                "doc_id": doc_id,
+                **job_start_fields,
+            }
+            if content_class:
+                done_fields["content_class"] = content_class
+            # Zone 6 (Part C): wrap in try/except ValueError so a reaped-then-
+            # completed job (ERROR->DONE) still records the doc_id and registry
+            # row.  With ERROR->DONE in _VALID_TRANSITIONS, the normal path
+            # succeeds and writes ``late_success``/``reaped_recovery`` flags.
+            # The except path is a safety net for any future transition rejection.
+            late_success = False
+            try:
+                # Check current status to detect late-success (reap recovery)
+                current_raw = await redis.hget(_job_key(job_id), "status")
+                if current_raw == JobStatus.ERROR.value:
+                    late_success = True
+                    done_fields["late_success"] = "true"
+                    done_fields["reaped_recovery"] = "true"
+                await _set_job_status(
+                    redis,
+                    job_id,
+                    JobStatus.DONE,
+                    ttl=JOB_TTL,
+                    **done_fields,
+                )
+            except ValueError:
+                # Safety net: transition rejected (should not happen now that
+                # ERROR->DONE exists, but guard against future state-machine
+                # changes).  Log the anomaly but still proceed to record the
+                # doc_id and upsert the registry row — losing the document
+                # is worse than an unexpected state-machine edge.
+                logger.warning(
+                    "Zone 6 safety net: _set_job_status(DONE) raised ValueError for "
+                    "job=%s doc_id=%s; proceeding with registry write.",
+                    job_id,
+                    doc_id,
+                )
+                late_success = True
+            if late_success:
+                logger.warning(
+                    "Late success (reap recovery): job=%s doc_id=%s completed after "
+                    "reaper had marked it ERROR.",
+                    job_id,
+                    doc_id,
+                )
+            UPLOADS.labels(status="success").inc()
+            await _mirror_bridged_incr("uploads_total:success")
+            logger.info(
+                "Worker done: job=%s doc_id=%s (%.1fs)%s",
                 job_id,
                 doc_id,
+                time.monotonic() - start,
+                " [late_success]" if late_success else "",
             )
-            late_success = True
-        if late_success:
-            logger.warning(
-                "Late success (reap recovery): job=%s doc_id=%s completed after "
-                "reaper had marked it ERROR.",
+            # RFC-006 dual-write: the document save (and the fork's save_doc_meta)
+            # ran in the isolated converter child, which has no registry pool. The
+            # registry upsert must therefore happen here in the long-lived parent,
+            # where startup() opened the pool. Best-effort — never fail the job.
+            #
+            # Zone-7: the converter child's stdout JSON now carries verdict_fields
+            # (verdict, verdict_reason, pipeline_version, max_leaf_ratio,
+            # verdict_computed_at) computed during index().  Threading them via the
+            # verdict_fields kwarg closes the MinIO re-read race window: even if
+            # the just-written artifact is not yet read-visible, the registry row
+            # gets the correct verdict data.  Falls back gracefully to the
+            # read_registry_fields MinIO-read path when verdict_fields is absent
+            # (older child binaries, or tree/flat persist paths that don't emit it).
+            verdict_fields = result.get("verdict_fields")
+            # Zone-7 (dual-write consistency): the converter child's stdout
+            # JSON now carries registry_fields (all _REGISTRY_FIELDS columns
+            # plus node_count) computed in-memory during index().  Threading
+            # them via the registry_fields kwarg eliminates the MinIO re-read
+            # in _upsert_registry_row entirely — no race window, no extra GET.
+            # Falls back gracefully (None) when the child doesn't emit them
+            # (older child binaries or callers that don't supply it).
+            registry_fields = result.get("registry_fields")
+
+            from .registry_mirror import _upsert_registry_row
+
+            await _upsert_registry_row(
+                doc_id, content_class,
+                verdict_fields=verdict_fields,
+                registry_fields=registry_fields,
+            )
+            cleanup_staging = True  # terminal success
+            return doc_id
+        except (TimeoutError, ConverterOOMError, ConverterChildError) as exc:
+            # Terminal-but-arq-aware error paths above already wrote Redis state.
+            # Push to DLQ on final attempt and re-raise so arq retries / records it.
+            if await _dlq_push_on_final_attempt(
+                redis,
+                job_try=ctx.get("job_try", 1),
+                job_id=job_id,
+                staging_key=staging_key,
+                exc=exc,
+            ):
+                cleanup_staging = True
+            raise
+        except Exception as exc:
+            await _set_job_status(
+                redis,
                 job_id,
-                doc_id,
+                JobStatus.ERROR,
+                ttl=JOB_TTL,
+                error=str(exc),
+                **job_start_fields,
             )
-        UPLOADS.labels(status="success").inc()
-        await _mirror_bridged_incr("uploads_total:success")
-        logger.info(
-            "Worker done: job=%s doc_id=%s (%.1fs)%s",
-            job_id,
-            doc_id,
-            time.monotonic() - start,
-            " [late_success]" if late_success else "",
-        )
-        # RFC-006 dual-write: the document save (and the fork's save_doc_meta)
-        # ran in the isolated converter child, which has no registry pool. The
-        # registry upsert must therefore happen here in the long-lived parent,
-        # where startup() opened the pool. Best-effort — never fail the job.
-        #
-        # Zone-7: the converter child's stdout JSON now carries verdict_fields
-        # (verdict, verdict_reason, pipeline_version, max_leaf_ratio,
-        # verdict_computed_at) computed during index().  Threading them via the
-        # verdict_fields kwarg closes the MinIO re-read race window: even if
-        # the just-written artifact is not yet read-visible, the registry row
-        # gets the correct verdict data.  Falls back gracefully to the
-        # read_registry_fields MinIO-read path when verdict_fields is absent
-        # (older child binaries, or tree/flat persist paths that don't emit it).
-        verdict_fields = result.get("verdict_fields")
-        # Zone-7 (dual-write consistency): the converter child's stdout
-        # JSON now carries registry_fields (all _REGISTRY_FIELDS columns
-        # plus node_count) computed in-memory during index().  Threading
-        # them via the registry_fields kwarg eliminates the MinIO re-read
-        # in _upsert_registry_row entirely — no race window, no extra GET.
-        # Falls back gracefully (None) when the child doesn't emit them
-        # (older child binaries or callers that don't supply it).
-        registry_fields = result.get("registry_fields")
-
-        from .registry_mirror import _upsert_registry_row
-
-        await _upsert_registry_row(
-            doc_id, content_class,
-            verdict_fields=verdict_fields,
-            registry_fields=registry_fields,
-        )
-        cleanup_staging = True  # terminal success
-        return doc_id
-    except (TimeoutError, ConverterOOMError, ConverterChildError) as exc:
-        # Terminal-but-arq-aware error paths above already wrote Redis state.
-        # Push to DLQ on final attempt and re-raise so arq retries / records it.
-        if await _dlq_push_on_final_attempt(
-            redis,
-            job_try=ctx.get("job_try", 1),
-            job_id=job_id,
-            staging_key=staging_key,
-            exc=exc,
-        ):
-            cleanup_staging = True
-        raise
-    except Exception as exc:
-        await _set_job_status(
-            redis,
-            job_id,
-            JobStatus.ERROR,
-            ttl=JOB_TTL,
-            error=str(exc),
-            **job_start_fields,
-        )
-        UPLOADS.labels(status="error").inc()
-        await _mirror_bridged_incr("uploads_total:error")
-        job_try = ctx.get("job_try", 1)
-        logger.error("Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True)
-        if await _dlq_push_on_final_attempt(
-            redis,
-            job_try=job_try,
-            job_id=job_id,
-            staging_key=staging_key,
-            exc=exc,
-        ):
-            # Final attempt failed: staging will not be retried, safe to clean up.
-            cleanup_staging = True
-        raise  # let arq retry until max_tries
-    finally:
-        UPLOAD_DURATION.observe(time.monotonic() - start)
-        ACTIVE_UPLOADS.dec()
-        await _mirror_bridged_incr("active_uploads", -1)
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        # Only purge the staged object once the job is terminal (success, low-quality
-        # rejection, or max_tries exhausted). Pending retries must keep the original
-        # file so re-runs can re-download it from MinIO.
-        if cleanup_staging:
-            staging_deleted = await asyncio.to_thread(delete_staging, staging_key)
-            if not staging_deleted:
-                logger.warning("Staging object left behind after delete failure: %s", staging_key)
-                # STAGING_DELETE_FAILURES.inc() already ran inside delete_staging
-                # (storage.py) -- worker-parent process, so it needs the same
-                # Zone-7 bridge as everything else touched only here.
-                await _mirror_bridged_incr("staging_delete_failures_total")
+            UPLOADS.labels(status="error").inc()
+            await _mirror_bridged_incr("uploads_total:error")
+            job_try = ctx.get("job_try", 1)
+            logger.error("Worker failed: job=%s try=%s error=%s", job_id, job_try, exc, exc_info=True)
+            if await _dlq_push_on_final_attempt(
+                redis,
+                job_try=job_try,
+                job_id=job_id,
+                staging_key=staging_key,
+                exc=exc,
+            ):
+                # Final attempt failed: staging will not be retried, safe to clean up.
+                cleanup_staging = True
+            raise  # let arq retry until max_tries
+        finally:
+            UPLOAD_DURATION.observe(time.monotonic() - start)
+            ACTIVE_UPLOADS.dec()
+            await _mirror_bridged_incr("active_uploads", -1)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            # Only purge the staged object once the job is terminal (success, low-quality
+            # rejection, or max_tries exhausted). Pending retries must keep the original
+            # file so re-runs can re-download it from MinIO.
+            if cleanup_staging:
+                staging_deleted = await asyncio.to_thread(delete_staging, staging_key)
+                if not staging_deleted:
+                    logger.warning("Staging object left behind after delete failure: %s", staging_key)
+                    # STAGING_DELETE_FAILURES.inc() already ran inside delete_staging
+                    # (storage.py) -- worker-parent process, so it needs the same
+                    # Zone-7 bridge as everything else touched only here.
+                    await _mirror_bridged_incr("staging_delete_failures_total")
 
 
 async def reap_stale_jobs(ctx: dict) -> None:

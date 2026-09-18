@@ -67,6 +67,48 @@ async def test_jpg_file_enqueues_via_process_one(tmp_path):
     sem = asyncio.Semaphore(1)
 
     with patch("pageindex_mcp.worker._run_converter_subprocess", fake_run, create=True):
-        await preprocess_client._process_one(sem, jpg)
+        await preprocess_client._process_one(sem, jpg, "run-test")
 
     fake_run.assert_awaited_once_with(str(jpg))
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 D12 review follow-up (2026-09-18): obs.configure() binds its handler
+# to whatever sys.stderr is at the time, and on the batch route that is
+# _FilteredStderr. Structured records must survive it.
+# ---------------------------------------------------------------------------
+def test_filtered_stderr_passes_structured_records_through():
+    """A record whose msg merely mentions a noise trigger was silently
+    dropped -- leaving holes in the very log stream gate 12.C-core
+    reconstructs from."""
+    # Arrange
+    import io
+    import json as _json
+
+    from preprocess_client import _FilteredStderr
+
+    sink = io.StringIO()
+    stream = _FilteredStderr(sink)
+    record = _json.dumps({"v": 1, "msg": "litellm_logging.py emitted a warning"})
+
+    # Act
+    stream.write(record + "\n")
+
+    # Assert
+    assert sink.getvalue().strip() == record
+
+
+def test_filtered_stderr_still_drops_raw_tracebacks():
+    # Arrange
+    import io
+
+    from preprocess_client import _FilteredStderr
+
+    sink = io.StringIO()
+    stream = _FilteredStderr(sink)
+
+    # Act
+    stream.write("Task exception was never retrieved\n  File 'x.py', line 1\n")
+
+    # Assert
+    assert sink.getvalue() == ""

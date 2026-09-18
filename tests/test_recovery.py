@@ -273,16 +273,52 @@ class _RecordingTimeout:
         return False
 
 
+class _ReadlineFeed:
+    """Serves fixed byte chunks one per ``readline()`` call, then returns
+    b"" (EOF) forever after. RFC-046 task 12.3: proc.stdout/proc.stderr are
+    now drained line-by-line to EOF (not proc.communicate()), so a fixed
+    ``AsyncMock(return_value=...)`` (which replays the same bytes forever)
+    would spin that read loop forever instead of reaching EOF."""
+
+    def __init__(self, chunks: list[bytes] | None = None):
+        self._chunks = list(chunks or [])
+        self._idx = 0
+
+    async def readline(self):
+        if self._idx >= len(self._chunks):
+            return b""
+        chunk = self._chunks[self._idx]
+        self._idx += 1
+        return chunk
+    async def read(self, n: int = -1):
+        """The production readers use ``read(n)``, not ``readline()``: a real
+        ``asyncio.StreamReader.readline()`` raises ValueError on a line over
+        64 KiB, which the child controls. Serves the same scripted chunks.
+
+        An empty scripted chunk means "no handshake line was written", not
+        end-of-stream, so it is skipped rather than terminating the feed --
+        a real pipe's b"" is permanent EOF and would hide the chunks after it.
+        """
+        while self._idx < len(self._chunks):
+            chunk = self._chunks[self._idx]
+            self._idx += 1
+            if chunk:
+                return chunk
+        return b""
+
+
 def _fake_proc(handshake: dict | None, result: dict, returncode: int = 0):
     proc = MagicMock()
-    proc.stdout = MagicMock()
-    if handshake is not None:
-        proc.stdout.readline = AsyncMock(return_value=(json.dumps(handshake) + "\n").encode())
-    else:
-        proc.stdout.readline = AsyncMock(return_value=b"")
-    stdout = json.dumps(result).encode()
-    proc.communicate = AsyncMock(return_value=(stdout, b""))
     proc.returncode = returncode
+    stdout = json.dumps(result).encode()
+    if handshake is not None:
+        handshake_line = (json.dumps(handshake) + "\n").encode()
+        proc.stdout = _ReadlineFeed([handshake_line, stdout])
+    else:
+        proc.stdout = _ReadlineFeed([b"", stdout])
+    proc.stderr = _ReadlineFeed([])
+    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    proc.wait = AsyncMock(return_value=returncode)
     return proc
 
 

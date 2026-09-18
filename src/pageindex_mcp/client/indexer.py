@@ -27,6 +27,7 @@ from ..config import (
     pipeline_config,
     settings,
 )
+from ..obs import bind_log_context
 from ..converters import (
     ConverterFailurePolicy,
     PictureResult,
@@ -1102,157 +1103,158 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             splice_markers=False,
         )
 
-        logger.info(
-            "Routing %s to flat success path: reason=%s content_class=%s",
-            filename,
-            state.reason,
-            content_class,
-        )
-
-        protocol = "https" if settings.minio_secure else "http"
-        source_url = (
-            f"{protocol}://{settings.minio_endpoint}"
-            f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
-        )
-        processed_at = datetime.now(UTC).isoformat()
-
-        flat_structure = state.result.get("structure", [])
-        if blocks:
-            flat_structure = [
-                {"title": "", "text": _flat_block_primary_text(b)}
-                for b in blocks
-                if _flat_block_primary_text(b).strip()
-            ]
-
-        _vr = compute_verdict(
-            flat_structure,
-            content_class,
-            state.gate_result,
-            image_enrichment_ratio=image_enrichment_ratio,
-            expected_script=script_context if script_context is not None else expected_script,
-        )
-        f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
-        f_promotion_paths = list(_vr.promotion_paths_matched)
-
-        _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
-
-        flat_desc = await asyncio.to_thread(
-            _generate_flat_doc_description,
-            flat_md,
-            doc_id=doc_id,
-        )
-
-        flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
-
-        # Zone-4.7: pre-aggregate row_records from table blocks so
-        # flat_doc_view can read them directly instead of re-deriving
-        # on every get_document / get_document_structure call.
-        _row_records: list[str] = []
-        for _blk in blocks:
-            if _blk.get("role") == "table":
-                _row_records.extend(_blk.get("row_records", []) or [])
-
-        _flat_verdict_computed_at = datetime.now(UTC).isoformat()
-
-        # Zone-5: verdict fields stripped from flat artifact body; sidecar
-        # (.meta.json via save_doc_meta) is the sole authoritative verdict
-        # store.  save_flat_doc no longer touches the sidecar (RFC-042 D3);
-        # the separate save_doc_meta call below is this child subprocess's
-        # only sidecar write, merging verdict fields in directly.
-        flat_meta = {
-            "doc_id": doc_id,
-            "doc_name": filename,
-            "source_url": source_url,
-            "processed_at": processed_at,
-            "sha256": sha256,
-            "content_class": content_class,
-            "blocks": blocks,
-            "row_records": _row_records,
-            "doc_description": flat_desc,
-            "flat_char_count": flat_char_count,
-            "build_sha": CLIENT_BUILD_SHA,
-            "effective_config": _effective_cfg,
-        }
-        if _effective_config_at_job_start is not None:
-            flat_meta["effective_config_at_job_start"] = _effective_config_at_job_start
-        # RFC-046 D2: attribution. Without these, a verdict cannot be tied to
-        # the engine that produced its text or the prong that condemned it,
-        # which is what makes corpus diffs unexplainable.
-        if state.ocr_engine:
-            flat_meta["ocr_engine"] = state.ocr_engine
-        if state.gate_result is not None and state.gate_result.signals is not None:
-            _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
-            if _prongs:
-                flat_meta["garble_prongs"] = sorted(_prongs)
-        await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
-        FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
-
-        # Zone-5: verdict written exclusively via sidecar (authoritative path).
-        await asyncio.to_thread(
-            save_doc_meta,
-            doc_id,
-            {
-                "verdict": f_verdict,
-                "verdict_reason": f_verdict_reason,
-                "max_leaf_ratio": round(f_mlr, 4),
-                "pipeline_version": CURRENT_PIPELINE_VERSION,
-                "verdict_computed_at": _flat_verdict_computed_at,
-                **({"promotion_paths_matched": f_promotion_paths} if f_promotion_paths else {}),
-            },
-        )
-
-        try:
-            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
-        except Exception:
-            RAW_UPLOAD_FAILURES.inc()
-            logger.exception(
-                "save_raw failed after save_flat_doc succeeded for doc_id=%s",
-                doc_id,
+        with bind_log_context(doc_id=doc_id):
+            logger.info(
+                "Routing %s to flat success path: reason=%s content_class=%s",
+                filename,
+                state.reason,
+                content_class,
             )
 
-        await asyncio.to_thread(hash_cache_set, filename, sha256)
+            protocol = "https" if settings.minio_secure else "http"
+            source_url = (
+                f"{protocol}://{settings.minio_endpoint}"
+                f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
+            )
+            processed_at = datetime.now(UTC).isoformat()
 
-        logger.info(
-            "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
-            filename,
-            doc_id,
-            content_class,
-            len(blocks),
-        )
-        self.last_content_class = content_class
-        # Zone-7: stash verdict fields so converters_cli can surface them
-        # in stdout JSON for the worker parent's _upsert_registry_row call.
-        self.last_verdict_fields = {
-            "verdict": f_verdict,
-            "verdict_reason": f_verdict_reason,
-            "pipeline_version": CURRENT_PIPELINE_VERSION,
-            "max_leaf_ratio": round(f_mlr, 4),
-            "verdict_computed_at": _flat_verdict_computed_at,
-            **({"promotion_paths_matched": f_promotion_paths} if f_promotion_paths else {}),
-        }
-        # Zone-7 (dual-write consistency): stash registry fields for flat
-        # docs so converters_cli can surface them in stdout JSON, eliminating
-        # the MinIO re-read in _upsert_registry_row.  Keys mirror
-        # _REGISTRY_FIELDS (verdict.py) plus content_class and node_count.
-        self.last_registry_fields = {
-            "doc_name": filename,
-            "source_url": source_url,
-            "processed_at": processed_at,
-            "sha256": sha256,
-            "content_class": content_class,
-            "doc_description": flat_desc,
-            "product": "",
-            "tier": "",
-            "doc_family": "",
-            "effective_date": "",
-            "node_count": 0,
-        }
-        # Zone-verdict: when VERDICT_DOWNGRADE_ENABLED and pipeline_version
-        # is strictly newer, allow the verdict-priority CAS to be bypassed
-        # so a re-ingestion can downgrade a verdict locked by a prior run.
-        if VERDICT_DOWNGRADE_ENABLED:
-            self.last_verdict_fields["force_verdict_override"] = True
-        return doc_id
+            flat_structure = state.result.get("structure", [])
+            if blocks:
+                flat_structure = [
+                    {"title": "", "text": _flat_block_primary_text(b)}
+                    for b in blocks
+                    if _flat_block_primary_text(b).strip()
+                ]
+
+            _vr = compute_verdict(
+                flat_structure,
+                content_class,
+                state.gate_result,
+                image_enrichment_ratio=image_enrichment_ratio,
+                expected_script=script_context if script_context is not None else expected_script,
+            )
+            f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
+            f_promotion_paths = list(_vr.promotion_paths_matched)
+
+            _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
+
+            flat_desc = await asyncio.to_thread(
+                _generate_flat_doc_description,
+                flat_md,
+                doc_id=doc_id,
+            )
+
+            flat_char_count = sum(len(_flat_block_primary_text(b)) for b in blocks)
+
+            # Zone-4.7: pre-aggregate row_records from table blocks so
+            # flat_doc_view can read them directly instead of re-deriving
+            # on every get_document / get_document_structure call.
+            _row_records: list[str] = []
+            for _blk in blocks:
+                if _blk.get("role") == "table":
+                    _row_records.extend(_blk.get("row_records", []) or [])
+
+            _flat_verdict_computed_at = datetime.now(UTC).isoformat()
+
+            # Zone-5: verdict fields stripped from flat artifact body; sidecar
+            # (.meta.json via save_doc_meta) is the sole authoritative verdict
+            # store.  save_flat_doc no longer touches the sidecar (RFC-042 D3);
+            # the separate save_doc_meta call below is this child subprocess's
+            # only sidecar write, merging verdict fields in directly.
+            flat_meta = {
+                "doc_id": doc_id,
+                "doc_name": filename,
+                "source_url": source_url,
+                "processed_at": processed_at,
+                "sha256": sha256,
+                "content_class": content_class,
+                "blocks": blocks,
+                "row_records": _row_records,
+                "doc_description": flat_desc,
+                "flat_char_count": flat_char_count,
+                "build_sha": CLIENT_BUILD_SHA,
+                "effective_config": _effective_cfg,
+            }
+            if _effective_config_at_job_start is not None:
+                flat_meta["effective_config_at_job_start"] = _effective_config_at_job_start
+            # RFC-046 D2: attribution. Without these, a verdict cannot be tied to
+            # the engine that produced its text or the prong that condemned it,
+            # which is what makes corpus diffs unexplainable.
+            if state.ocr_engine:
+                flat_meta["ocr_engine"] = state.ocr_engine
+            if state.gate_result is not None and state.gate_result.signals is not None:
+                _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
+                if _prongs:
+                    flat_meta["garble_prongs"] = sorted(_prongs)
+            await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
+            FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
+
+            # Zone-5: verdict written exclusively via sidecar (authoritative path).
+            await asyncio.to_thread(
+                save_doc_meta,
+                doc_id,
+                {
+                    "verdict": f_verdict,
+                    "verdict_reason": f_verdict_reason,
+                    "max_leaf_ratio": round(f_mlr, 4),
+                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                    "verdict_computed_at": _flat_verdict_computed_at,
+                    **({"promotion_paths_matched": f_promotion_paths} if f_promotion_paths else {}),
+                },
+            )
+
+            try:
+                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+            except Exception:
+                RAW_UPLOAD_FAILURES.inc()
+                logger.exception(
+                    "save_raw failed after save_flat_doc succeeded for doc_id=%s",
+                    doc_id,
+                )
+
+            await asyncio.to_thread(hash_cache_set, filename, sha256)
+
+            logger.info(
+                "Indexed flat doc %s → doc_id=%s (content_class=%s, %d blocks)",
+                filename,
+                doc_id,
+                content_class,
+                len(blocks),
+            )
+            self.last_content_class = content_class
+            # Zone-7: stash verdict fields so converters_cli can surface them
+            # in stdout JSON for the worker parent's _upsert_registry_row call.
+            self.last_verdict_fields = {
+                "verdict": f_verdict,
+                "verdict_reason": f_verdict_reason,
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "max_leaf_ratio": round(f_mlr, 4),
+                "verdict_computed_at": _flat_verdict_computed_at,
+                **({"promotion_paths_matched": f_promotion_paths} if f_promotion_paths else {}),
+            }
+            # Zone-7 (dual-write consistency): stash registry fields for flat
+            # docs so converters_cli can surface them in stdout JSON, eliminating
+            # the MinIO re-read in _upsert_registry_row.  Keys mirror
+            # _REGISTRY_FIELDS (verdict.py) plus content_class and node_count.
+            self.last_registry_fields = {
+                "doc_name": filename,
+                "source_url": source_url,
+                "processed_at": processed_at,
+                "sha256": sha256,
+                "content_class": content_class,
+                "doc_description": flat_desc,
+                "product": "",
+                "tier": "",
+                "doc_family": "",
+                "effective_date": "",
+                "node_count": 0,
+            }
+            # Zone-verdict: when VERDICT_DOWNGRADE_ENABLED and pipeline_version
+            # is strictly newer, allow the verdict-priority CAS to be bypassed
+            # so a re-ingestion can downgrade a verdict locked by a prior run.
+            if VERDICT_DOWNGRADE_ENABLED:
+                self.last_verdict_fields["force_verdict_override"] = True
+            return doc_id
 
     async def _persist_tree_result(
         self,
@@ -1271,149 +1273,150 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         """Persist a tree-routed document. Returns doc_id."""
         doc_id = str(uuid.uuid4())
 
-        protocol = "https" if settings.minio_secure else "http"
-        source_url = (
-            f"{protocol}://{settings.minio_endpoint}"
-            f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
-        )
+        with bind_log_context(doc_id=doc_id):
+            protocol = "https" if settings.minio_secure else "http"
+            source_url = (
+                f"{protocol}://{settings.minio_endpoint}"
+                f"/{settings.minio_bucket}/uploads/{doc_id}/{filename}"
+            )
 
-        processed_at = datetime.now(UTC).isoformat()
-        structure = state.result.get("structure", [])
+            processed_at = datetime.now(UTC).isoformat()
+            structure = state.result.get("structure", [])
 
-        _vr = compute_verdict(
-            structure,
-            "",
-            state.gate_result,
-            inspector_class=(pdf_classification.get("pdf_type") if pdf_classification else None),
-            expected_script=script_context if script_context is not None else expected_script,
-        )
-        verdict, verdict_reason = _vr.verdict, _vr.reason
-        promotion_paths = list(_vr.promotion_paths_matched)
+            _vr = compute_verdict(
+                structure,
+                "",
+                state.gate_result,
+                inspector_class=(pdf_classification.get("pdf_type") if pdf_classification else None),
+                expected_script=script_context if script_context is not None else expected_script,
+            )
+            verdict, verdict_reason = _vr.verdict, _vr.reason
+            promotion_paths = list(_vr.promotion_paths_matched)
 
-        _, _, mlr = _tree_max_leaf_ratio(structure)
-        _verdict_computed_at = datetime.now(UTC).isoformat()
+            _, _, mlr = _tree_max_leaf_ratio(structure)
+            _verdict_computed_at = datetime.now(UTC).isoformat()
 
-        # Zone-5: verdict fields stripped from artifact body; sidecar
-        # (.meta.json via save_doc_meta) is the sole authoritative verdict
-        # store.  read_registry_fields falls back to sidecar for new
-        # artifacts that lack verdict in the JSON body.
-        await asyncio.to_thread(
-            save_doc,
-            doc_id,
-            {
+            # Zone-5: verdict fields stripped from artifact body; sidecar
+            # (.meta.json via save_doc_meta) is the sole authoritative verdict
+            # store.  read_registry_fields falls back to sidecar for new
+            # artifacts that lack verdict in the JSON body.
+            await asyncio.to_thread(
+                save_doc,
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "doc_name": filename,
+                    "source_url": source_url,
+                    "processed_at": processed_at,
+                    "sha256": sha256,
+                    "doc_description": state.result.get("doc_description", ""),
+                    "structure": structure,
+                },
+            )
+
+            # Zone-5: single save_doc_meta call carries both verdict and
+            # non-verdict metadata -- no separate write_verdict path.
+            meta = {
                 "doc_id": doc_id,
                 "doc_name": filename,
                 "source_url": source_url,
                 "processed_at": processed_at,
                 "sha256": sha256,
                 "doc_description": state.result.get("doc_description", ""),
-                "structure": structure,
-            },
-        )
-
-        # Zone-5: single save_doc_meta call carries both verdict and
-        # non-verdict metadata -- no separate write_verdict path.
-        meta = {
-            "doc_id": doc_id,
-            "doc_name": filename,
-            "source_url": source_url,
-            "processed_at": processed_at,
-            "sha256": sha256,
-            "doc_description": state.result.get("doc_description", ""),
-            "total_tree_chars": len(_flatten_tree_text(structure)),
-            "build_sha": CLIENT_BUILD_SHA,
-            "effective_config": _effective_cfg,
-            "decider_version": "zone3_decide_rtl_v1",
-            # Verdict fields -- authoritative via sidecar (Zone-5)
-            "verdict": verdict,
-            "verdict_reason": verdict_reason,
-            "max_leaf_ratio": round(mlr, 4),
-            "pipeline_version": CURRENT_PIPELINE_VERSION,
-            "verdict_computed_at": _verdict_computed_at,
-        }
-        if promotion_paths:
-            meta["promotion_paths_matched"] = promotion_paths
-        if state.gate_result is not None and state.gate_result.all_defects:
-            meta["all_defects"] = sorted(d.value for d in state.gate_result.all_defects)
-        # RFC-046 D2: attribution. Without these, a verdict cannot be tied to
-        # the engine that produced its text or the prong that condemned it,
-        # which is what makes corpus diffs unexplainable.
-        if state.ocr_engine:
-            meta["ocr_engine"] = state.ocr_engine
-        if state.gate_result is not None and state.gate_result.signals is not None:
-            _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
-            if _prongs:
-                meta["garble_prongs"] = sorted(_prongs)
-        if _effective_config_at_job_start is not None:
-            meta["effective_config_at_job_start"] = _effective_config_at_job_start
-        if ext == ".pdf":
-            _route_remote = bool(
-                state.use_remote and state.used_converter and state.supports_ocr
-            )
-            meta["extraction_route"] = "remote" if _route_remote else "local"
-            if state.used_converter:
-                meta["converter_name"] = state.used_converter
-                contract = _converter_contract(state.used_converter)
-                if contract is not None:
-                    meta["converter_contract"] = contract
-            if state.pdf_page_count is not None:
-                meta["page_count"] = state.pdf_page_count
-            if pdf_classification and pipeline_config.pdf_inspector_preclassify:
-                meta["inspector_class"] = pdf_classification.get("pdf_type")
-            if state.extraction_stages_captured:
-                meta["extraction_stages"] = state.extraction_stages_captured
-            if _route_remote and _remote_mod._remote_docling_version:
-                meta["remote_build_sha"] = _remote_mod._remote_docling_version.get(
-                    "commit_sha", "unknown"
+                "total_tree_chars": len(_flatten_tree_text(structure)),
+                "build_sha": CLIENT_BUILD_SHA,
+                "effective_config": _effective_cfg,
+                "decider_version": "zone3_decide_rtl_v1",
+                # Verdict fields -- authoritative via sidecar (Zone-5)
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "max_leaf_ratio": round(mlr, 4),
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": _verdict_computed_at,
+            }
+            if promotion_paths:
+                meta["promotion_paths_matched"] = promotion_paths
+            if state.gate_result is not None and state.gate_result.all_defects:
+                meta["all_defects"] = sorted(d.value for d in state.gate_result.all_defects)
+            # RFC-046 D2: attribution. Without these, a verdict cannot be tied to
+            # the engine that produced its text or the prong that condemned it,
+            # which is what makes corpus diffs unexplainable.
+            if state.ocr_engine:
+                meta["ocr_engine"] = state.ocr_engine
+            if state.gate_result is not None and state.gate_result.signals is not None:
+                _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
+                if _prongs:
+                    meta["garble_prongs"] = sorted(_prongs)
+            if _effective_config_at_job_start is not None:
+                meta["effective_config_at_job_start"] = _effective_config_at_job_start
+            if ext == ".pdf":
+                _route_remote = bool(
+                    state.use_remote and state.used_converter and state.supports_ocr
                 )
-        await asyncio.to_thread(save_doc_meta, doc_id, meta)
+                meta["extraction_route"] = "remote" if _route_remote else "local"
+                if state.used_converter:
+                    meta["converter_name"] = state.used_converter
+                    contract = _converter_contract(state.used_converter)
+                    if contract is not None:
+                        meta["converter_contract"] = contract
+                if state.pdf_page_count is not None:
+                    meta["page_count"] = state.pdf_page_count
+                if pdf_classification and pipeline_config.pdf_inspector_preclassify:
+                    meta["inspector_class"] = pdf_classification.get("pdf_type")
+                if state.extraction_stages_captured:
+                    meta["extraction_stages"] = state.extraction_stages_captured
+                if _route_remote and _remote_mod._remote_docling_version:
+                    meta["remote_build_sha"] = _remote_mod._remote_docling_version.get(
+                        "commit_sha", "unknown"
+                    )
+            await asyncio.to_thread(save_doc_meta, doc_id, meta)
 
-        try:
-            await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
-        except Exception:
-            RAW_UPLOAD_FAILURES.inc()
-            logger.exception("save_raw failed after save_doc succeeded for doc_id=%s", doc_id)
+            try:
+                await asyncio.to_thread(save_raw, doc_id, filename, file_bytes)
+            except Exception:
+                RAW_UPLOAD_FAILURES.inc()
+                logger.exception("save_raw failed after save_doc succeeded for doc_id=%s", doc_id)
 
-        await asyncio.to_thread(hash_cache_set, filename, sha256)
+            await asyncio.to_thread(hash_cache_set, filename, sha256)
 
-        logger.info(
-            "Indexed %s → doc_id=%s (%d sections)",
-            filename,
-            doc_id,
-            len(state.result.get("structure", [])),
-        )
-        # Zone-7: stash verdict fields so converters_cli can surface them
-        # in stdout JSON for the worker parent's _upsert_registry_row call.
-        self.last_verdict_fields = {
-            "verdict": verdict,
-            "verdict_reason": verdict_reason,
-            "pipeline_version": CURRENT_PIPELINE_VERSION,
-            "max_leaf_ratio": round(mlr, 4),
-            "verdict_computed_at": _verdict_computed_at,
-            **({"promotion_paths_matched": promotion_paths} if promotion_paths else {}),
-        }
-        # Zone-7 (dual-write consistency): stash registry fields so
-        # converters_cli can surface them in stdout JSON, eliminating the
-        # MinIO re-read in _upsert_registry_row.  Keys mirror
-        # _REGISTRY_FIELDS (verdict.py) plus node_count.
-        self.last_registry_fields = {
-            "doc_name": filename,
-            "source_url": source_url,
-            "processed_at": processed_at,
-            "sha256": sha256,
-            "doc_description": state.result.get("doc_description", ""),
-            "product": "",
-            "tier": "",
-            "doc_family": "",
-            "effective_date": "",
-            "node_count": _tree_node_count(structure),
-        }
-        # Zone-verdict: when VERDICT_DOWNGRADE_ENABLED and pipeline_version
-        # is strictly newer, allow the verdict-priority CAS to be bypassed
-        # so a re-ingestion can downgrade a verdict locked by a prior run.
-        if VERDICT_DOWNGRADE_ENABLED:
-            self.last_verdict_fields["force_verdict_override"] = True
-        return doc_id
+            logger.info(
+                "Indexed %s → doc_id=%s (%d sections)",
+                filename,
+                doc_id,
+                len(state.result.get("structure", [])),
+            )
+            # Zone-7: stash verdict fields so converters_cli can surface them
+            # in stdout JSON for the worker parent's _upsert_registry_row call.
+            self.last_verdict_fields = {
+                "verdict": verdict,
+                "verdict_reason": verdict_reason,
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "max_leaf_ratio": round(mlr, 4),
+                "verdict_computed_at": _verdict_computed_at,
+                **({"promotion_paths_matched": promotion_paths} if promotion_paths else {}),
+            }
+            # Zone-7 (dual-write consistency): stash registry fields so
+            # converters_cli can surface them in stdout JSON, eliminating the
+            # MinIO re-read in _upsert_registry_row.  Keys mirror
+            # _REGISTRY_FIELDS (verdict.py) plus node_count.
+            self.last_registry_fields = {
+                "doc_name": filename,
+                "source_url": source_url,
+                "processed_at": processed_at,
+                "sha256": sha256,
+                "doc_description": state.result.get("doc_description", ""),
+                "product": "",
+                "tier": "",
+                "doc_family": "",
+                "effective_date": "",
+                "node_count": _tree_node_count(structure),
+            }
+            # Zone-verdict: when VERDICT_DOWNGRADE_ENABLED and pipeline_version
+            # is strictly newer, allow the verdict-priority CAS to be bypassed
+            # so a re-ingestion can downgrade a verdict locked by a prior run.
+            if VERDICT_DOWNGRADE_ENABLED:
+                self.last_verdict_fields["force_verdict_override"] = True
+            return doc_id
 
     # ------------------------------------------------------------------
     # Indexing — orchestrator
@@ -1495,167 +1498,168 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             extraction_stages_captured=[],
         )
 
-        try:
-            await self._convert_to_tree(
-                state, file_path, filename, ext, expected_script, pdf_classification,
-                script_context=script_context,
-            )
-
-            # Zone-3: enrich ScriptContext with post-conversion content text.
-            # _convert_to_tree populates state.md_content from the fitz probe /
-            # Docling output.  Re-derive ScriptContext using actual content so
-            # Arabic PDFs with Latin filenames get correct expected_script for
-            # the recovery loop and flat-prefer guard.  Only re-derive when
-            # md_content is available; preserve existing expected_script when
-            # content inference returns None (no change for Latin docs).
-            if state.md_content:
-                script_context = ScriptContext.from_document(
-                    filename, raw_text=state.md_content
+        with bind_log_context(doc_sha8=sha256[:8]):
+            try:
+                await self._convert_to_tree(
+                    state, file_path, filename, ext, expected_script, pdf_classification,
+                    script_context=script_context,
                 )
-                # D10c: state.md_content is post-NFKC (presentation-form
-                # codepoints decomposed), so from_document's PF scan
-                # always returns False.  Recover the pre-NFKC signal
-                # from state.rtl_decision (captured before NFKC in
-                # _pre_inference_normalize / _renormalize_bidi_guarded).
-                if (
-                    state.rtl_decision is not None
-                    and state.rtl_decision.had_presentation_forms
-                    and not script_context.had_presentation_forms
-                ):
-                    script_context = dataclasses.replace(
-                        script_context, had_presentation_forms=True
-                    )
-                expected_script = script_context.dominant_script
 
-            # Zone-1: GateSpec-driven recovery loop (single source of truth).
-            # Each GateSpec with non-empty recovery_fns declares its own
-            # recovery_eligible predicate and recovery method names.
-            # Iteration follows GATES severity order; dedup by method name
-            # across ALL gate tuples prevents repeated firing when multiple
-            # GateSpecs share a recovery method (e.g. NODE_COUNT_LOW and
-            # DEPTH_LOW both carry _recover_image_dominant_ocr).
-            _fired_methods: set[str] = set()
-            for _gate in GATES:
-                if not _gate.recovery_fns:
-                    continue
-                if _gate.recovery_eligible is None or not _gate.recovery_eligible(state):
-                    continue
-                for _fn_name in _gate.recovery_fns:
-                    if _fn_name in _fired_methods:
+                # Zone-3: enrich ScriptContext with post-conversion content text.
+                # _convert_to_tree populates state.md_content from the fitz probe /
+                # Docling output.  Re-derive ScriptContext using actual content so
+                # Arabic PDFs with Latin filenames get correct expected_script for
+                # the recovery loop and flat-prefer guard.  Only re-derive when
+                # md_content is available; preserve existing expected_script when
+                # content inference returns None (no change for Latin docs).
+                if state.md_content:
+                    script_context = ScriptContext.from_document(
+                        filename, raw_text=state.md_content
+                    )
+                    # D10c: state.md_content is post-NFKC (presentation-form
+                    # codepoints decomposed), so from_document's PF scan
+                    # always returns False.  Recover the pre-NFKC signal
+                    # from state.rtl_decision (captured before NFKC in
+                    # _pre_inference_normalize / _renormalize_bidi_guarded).
+                    if (
+                        state.rtl_decision is not None
+                        and state.rtl_decision.had_presentation_forms
+                        and not script_context.had_presentation_forms
+                    ):
+                        script_context = dataclasses.replace(
+                            script_context, had_presentation_forms=True
+                        )
+                    expected_script = script_context.dominant_script
+
+                # Zone-1: GateSpec-driven recovery loop (single source of truth).
+                # Each GateSpec with non-empty recovery_fns declares its own
+                # recovery_eligible predicate and recovery method names.
+                # Iteration follows GATES severity order; dedup by method name
+                # across ALL gate tuples prevents repeated firing when multiple
+                # GateSpecs share a recovery method (e.g. NODE_COUNT_LOW and
+                # DEPTH_LOW both carry _recover_image_dominant_ocr).
+                _fired_methods: set[str] = set()
+                for _gate in GATES:
+                    if not _gate.recovery_fns:
                         continue
-                    _fired_methods.add(_fn_name)
-                    await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script, script_context=script_context)
-                # Zone-3: finalize_gate_and_route() is now called inside
-                # each recovery method (_reconvert_and_revalidate,
-                # _recover_rtl_repair) so gate_result/ok/reason/first_defect/
-                # route are always consistent after every recovery step.
-                # Recovery methods that intentionally override state.route
-                # (e.g. _recover_rtl_flat_compare, _recover_vlm_fallback)
-                # do so AFTER finalize_gate_and_route, which is correct.
-                state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
+                    if _gate.recovery_eligible is None or not _gate.recovery_eligible(state):
+                        continue
+                    for _fn_name in _gate.recovery_fns:
+                        if _fn_name in _fired_methods:
+                            continue
+                        _fired_methods.add(_fn_name)
+                        await getattr(self, _fn_name)(state, file_path, filename, ext, expected_script, script_context=script_context)
+                    # Zone-3: finalize_gate_and_route() is now called inside
+                    # each recovery method (_reconvert_and_revalidate,
+                    # _recover_rtl_repair) so gate_result/ok/reason/first_defect/
+                    # route are always consistent after every recovery step.
+                    # Recovery methods that intentionally override state.route
+                    # (e.g. _recover_rtl_flat_compare, _recover_vlm_fallback)
+                    # do so AFTER finalize_gate_and_route, which is correct.
+                    state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
-            # Quality checks (may override route intentionally — no
-            # re-derivation afterwards).
-            await self._recover_flat_prefer(state, filename, expected_script)
-            await self._recover_landscape_reroute(state, filename)
+                # Quality checks (may override route intentionally — no
+                # re-derivation afterwards).
+                await self._recover_flat_prefer(state, filename, expected_script)
+                await self._recover_landscape_reroute(state, filename)
 
-            # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered
-            # is currently only set inside _persist_flat_result, but it is an
-            # independent reject trigger that must not be lost in the route
-            # dispatch below.  Pre-match guard ensures it fires regardless of
-            # the (ok, route) combination.
-            if state.flat_garble_unrecovered:
-                LOW_QUALITY_TREES.labels(reason="garbling").inc()
-                logger.warning(
-                    "Rejecting low-quality tree for %s: reason=garbling",
+                # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered
+                # is currently only set inside _persist_flat_result, but it is an
+                # independent reject trigger that must not be lost in the route
+                # dispatch below.  Pre-match guard ensures it fires regardless of
+                # the (ok, route) combination.
+                if state.flat_garble_unrecovered:
+                    LOW_QUALITY_TREES.labels(reason="garbling").inc()
+                    logger.warning(
+                        "Rejecting low-quality tree for %s: reason=garbling",
+                        filename,
+                    )
+                    raise LowQualityTreeError("garbling")
+
+                # Zone-2: exhaustive route dispatch — every (ok, route) pair has
+                # an explicit case.  Cases that persist the tree fall through to
+                # the _persist_tree_result call after the match block; cases that
+                # reject or persist flat return/raise within the case body.
+                match (state.ok, state.route):
+                    case (True, Route.TREE):
+                        pass  # success — persist tree below
+
+                    case (False, Route.FLAT):
+                        doc_id = await self._persist_flat_result(
+                            state,
+                            file_path,
+                            filename,
+                            ext,
+                            expected_script,
+                            sha256,
+                            file_bytes,
+                            pdf_classification,
+                            _effective_cfg,
+                            _effective_config_at_job_start,
+                            script_context=script_context,
+                        )
+                        if doc_id is not None:
+                            return doc_id
+                        # Flat persist failed (garble or unavailable) — reject.
+                        _reject_reason = (
+                            "garbling" if state.flat_garble_unrecovered else state.first_defect.value
+                        )
+                        LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
+                        logger.warning(
+                            "Rejecting low-quality tree for %s: reason=%s",
+                            filename,
+                            _reject_reason,
+                        )
+                        raise LowQualityTreeError(_reject_reason)
+
+                    case (False, Route.REJECT):
+                        _reject_reason = state.first_defect.value
+                        LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
+                        logger.warning(
+                            "Rejecting low-quality tree for %s: reason=%s",
+                            filename,
+                            _reject_reason,
+                        )
+                        raise LowQualityTreeError(_reject_reason)
+
+                    case (False, Route.TREE) | (False, Route.PERSIST_FAIL):
+                        logger.warning(
+                            "Persisting low-quality tree with FAIL verdict for %s: reason=%s",
+                            filename,
+                            state.reason,
+                        )
+                        # fall through to _persist_tree_result below
+
+                    case _:
+                        # Zone-3 exhaustiveness guard: finalize_gate_and_route()
+                        # keeps route consistent with ok, so (True, !TREE) should
+                        # be unreachable.  Log and persist tree as a safe fallback.
+                        logger.error(
+                            "Unexpected (ok=%s, route=%s) for %s — persisting tree "
+                            "as fallback (Zone-3 exhaustiveness guard)",
+                            state.ok,
+                            state.route,
+                            filename,
+                        )
+
+                return await self._persist_tree_result(
+                    state,
                     filename,
+                    ext,
+                    expected_script,
+                    sha256,
+                    file_bytes,
+                    pdf_classification,
+                    _effective_cfg,
+                    _effective_config_at_job_start,
+                    script_context=script_context,
                 )
-                raise LowQualityTreeError("garbling")
 
-            # Zone-2: exhaustive route dispatch — every (ok, route) pair has
-            # an explicit case.  Cases that persist the tree fall through to
-            # the _persist_tree_result call after the match block; cases that
-            # reject or persist flat return/raise within the case body.
-            match (state.ok, state.route):
-                case (True, Route.TREE):
-                    pass  # success — persist tree below
-
-                case (False, Route.FLAT):
-                    doc_id = await self._persist_flat_result(
-                        state,
-                        file_path,
-                        filename,
-                        ext,
-                        expected_script,
-                        sha256,
-                        file_bytes,
-                        pdf_classification,
-                        _effective_cfg,
-                        _effective_config_at_job_start,
-                        script_context=script_context,
-                    )
-                    if doc_id is not None:
-                        return doc_id
-                    # Flat persist failed (garble or unavailable) — reject.
-                    _reject_reason = (
-                        "garbling" if state.flat_garble_unrecovered else state.first_defect.value
-                    )
-                    LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
-                    logger.warning(
-                        "Rejecting low-quality tree for %s: reason=%s",
-                        filename,
-                        _reject_reason,
-                    )
-                    raise LowQualityTreeError(_reject_reason)
-
-                case (False, Route.REJECT):
-                    _reject_reason = state.first_defect.value
-                    LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
-                    logger.warning(
-                        "Rejecting low-quality tree for %s: reason=%s",
-                        filename,
-                        _reject_reason,
-                    )
-                    raise LowQualityTreeError(_reject_reason)
-
-                case (False, Route.TREE) | (False, Route.PERSIST_FAIL):
-                    logger.warning(
-                        "Persisting low-quality tree with FAIL verdict for %s: reason=%s",
-                        filename,
-                        state.reason,
-                    )
-                    # fall through to _persist_tree_result below
-
-                case _:
-                    # Zone-3 exhaustiveness guard: finalize_gate_and_route()
-                    # keeps route consistent with ok, so (True, !TREE) should
-                    # be unreachable.  Log and persist tree as a safe fallback.
-                    logger.error(
-                        "Unexpected (ok=%s, route=%s) for %s — persisting tree "
-                        "as fallback (Zone-3 exhaustiveness guard)",
-                        state.ok,
-                        state.route,
-                        filename,
-                    )
-
-            return await self._persist_tree_result(
-                state,
-                filename,
-                ext,
-                expected_script,
-                sha256,
-                file_bytes,
-                pdf_classification,
-                _effective_cfg,
-                _effective_config_at_job_start,
-                script_context=script_context,
-            )
-
-        finally:
-            if state.tmp_lo_dir:
-                shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
-            if state.tmp_md_path and os.path.exists(state.tmp_md_path):
-                os.unlink(state.tmp_md_path)
+            finally:
+                if state.tmp_lo_dir:
+                    shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
+                if state.tmp_md_path and os.path.exists(state.tmp_md_path):
+                    os.unlink(state.tmp_md_path)
 
     # ------------------------------------------------------------------
     # Retrieval (lazy-load from MinIO)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -12,6 +13,8 @@ from typing import Any
 
 from ..config import pipeline_config, settings
 from ..converters import chunked_docling_timeout_s
+from ..obs.constants import ENV_LOG_CONTEXT
+from ..obs.context import current_context
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr/patch.
 # New code should read ``pipeline_config.pdf_inspector_preclassify`` directly.
@@ -26,6 +29,160 @@ logger = logging.getLogger(__name__)
 
 # How long to wait between SIGTERM and SIGKILL when reaping a child process group.
 KILL_GRACE_SECONDS = 10.0
+
+# Upper bound (bytes) on the stderr_tail retained for ConverterChildError /
+# ConverterOOMError -- matches the byte budget the pre-streaming implementation
+# truncated to. A ring buffer, not a growing accumulator: see _StderrTail.
+STDERR_TAIL_MAX_BYTES = 4000
+
+# Chunk size for the pipe readers. Any value works: the readers split on
+# newlines themselves rather than relying on the stream's line limit.
+_READ_CHUNK_BYTES = 65536
+
+
+class _StderrTail:
+    """Bounded ring buffer of the child's most recent stderr bytes.
+
+    RFC-046 task 12.3: the pre-streaming implementation buffered the child's
+    *entire* stderr in the parent for the whole run and only truncated it to
+    the last STDERR_TAIL_MAX_BYTES once, at the very end, right before
+    discarding it (success path) or attaching it to an exception (failure
+    path). That is an unbounded-while-running buffer with a bounded view at
+    the end -- fine for memory, but why the tail was invisible until the
+    child had already exited. This buffer stays bounded *while the child is
+    still running*: each streamed line is appended and the buffer is
+    immediately trimmed back down to STDERR_TAIL_MAX_BYTES, so parent memory
+    never grows with total child stderr volume even for a very chatty or
+    very long-running child.
+    """
+
+    __slots__ = ("_buf",)
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def append(self, chunk: bytes) -> None:
+        self._buf.extend(chunk)
+        overflow = len(self._buf) - STDERR_TAIL_MAX_BYTES
+        if overflow > 0:
+            del self._buf[:overflow]
+
+    def text(self) -> str:
+        return bytes(self._buf).decode(errors="replace")
+
+
+async def _forward_child_stderr(
+    stderr_reader: asyncio.StreamReader, tail: _StderrTail
+) -> None:
+    """Stream the child's stderr to the parent's own stderr as it is produced.
+
+    Runs concurrently with ``_drain_remaining_stdout`` and ``proc.wait()``
+    (see the ``asyncio.gather`` call in ``_run_converter_subprocess``) for the
+    child's entire remaining lifetime -- it is never paused to wait on stdout
+    or on process exit first.
+
+    Backpressure / deadlock note: a child process can only deadlock writing
+    to a full stderr pipe if nothing on the parent side is reading that pipe.
+    This loop calls ``readline()`` in a tight loop for as long as the child
+    is alive, so the pipe is drained continuously -- exactly the same
+    concurrency ``asyncio.subprocess.Process.communicate()`` uses internally
+    to read stdout and stderr at the same time (which is *why* communicate()
+    exists instead of sequential ``.read()`` calls). Reading stdout
+    (``_drain_remaining_stdout``) concurrently in the same ``gather`` call
+    preserves that guarantee here: neither pipe is ever left undrained while
+    the other is being read, so the child can always make forward progress
+    writing to either one.
+    """
+    # NOT readline(): asyncio.StreamReader.readline() raises ValueError
+    # ("Separator is not found, and chunk exceed the limit") on any line over
+    # the stream's 64 KiB limit. proc.communicate(), which this replaced, used
+    # read() and had no such limit, so switching to readline() would have
+    # introduced a new crash path -- and one that escapes the except clause
+    # below with the child still alive, leaking a converter process. A single
+    # long litellm/docling line, or a JSON record whose exc.stack exceeds
+    # 64 KiB, is enough. Read fixed-size chunks and split on newlines instead.
+    buf = b""
+    while True:
+        chunk = await stderr_reader.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            if buf:
+                _write_through(buf + b"\n", tail)
+            return
+        buf += chunk
+        *lines, buf = buf.split(b"\n")
+        for line in lines:
+            _write_through(line + b"\n", tail)
+
+
+def _write_through(line: bytes, tail: _StderrTail) -> None:
+    """Record one child stderr line in the bounded tail and forward it.
+
+    Forwarded as produced (not batched) so a child killed mid-run -- e.g. on
+    timeout -- still leaves its diagnostic output in the parent's own
+    stderr/log stream. This is what discharges task 3.13: previously
+    stderr_bytes stayed b"" for the entire timeout path because the
+    tuple-unpack from communicate() never completed.
+    """
+    tail.append(line)
+    sys.stderr.write(line.decode(errors="replace"))
+    sys.stderr.flush()
+
+
+_HANDSHAKE_LINE_MAX_BYTES = 1_048_576
+
+
+async def _read_line(reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
+    """``(line, over_read)`` -- one newline-terminated line plus whatever
+    followed it in the same chunk, without readline()'s 64 KiB ValueError.
+
+    The over-read is returned rather than pushed back into the reader's
+    private buffer: the caller already carries a ``leftover_stdout`` for
+    exactly this, and ``feed_data()`` asserts on a reader that has seen EOF.
+
+    Capped at _HANDSHAKE_LINE_MAX_BYTES so a child spewing an unterminated
+    stream cannot grow the parent without bound; the cap returns what was
+    read rather than raising, so the caller's existing "not valid JSON"
+    branch handles it.
+    """
+    buf = bytearray()
+    while len(buf) < _HANDSHAKE_LINE_MAX_BYTES:
+        chunk = await reader.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        newline = chunk.find(b"\n")
+        if newline == -1:
+            buf.extend(chunk)
+            continue
+        buf.extend(chunk[: newline + 1])
+        return bytes(buf), chunk[newline + 1 :]
+    return bytes(buf), b""
+
+
+async def _cancel(task: asyncio.Task) -> None:
+    """Cancel the stderr reader and wait for it, so no task outlives the
+    call on an error path."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+async def _drain_remaining_stdout(stdout_reader: asyncio.StreamReader) -> bytes:
+    """Read the child's remaining stdout (after the handshake line) to EOF.
+
+    Replaces the stdout half of ``proc.communicate()``. The two-JSON-line
+    stdout contract (handshake, then exactly one terminal result line) is
+    unaffected: this only changes *how* the bytes are collected, not which
+    bytes are read or in what order.
+    """
+    # read(), not readline(): see _forward_child_stderr for why readline()
+    # is unsafe on a stream the child controls the line length of.
+    chunks: list[bytes] = []
+    while True:
+        chunk = await stdout_reader.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +280,15 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
         # reserves stdout exclusively for JSON lines, so this avoids that
         # contract entirely.
         child_env["PAGEINDEX_JOB_START_CONFIG"] = json.dumps(job_start_config)
+    # RFC-046 D12 (task 12.2): carry whatever correlation is already bound in
+    # the parent (run_id/job_id at minimum) across the same process boundary,
+    # via the same env-var precedent as PAGEINDEX_JOB_START_CONFIG above.
+    # doc_sha8/doc_id are not yet known here -- hashing happens inside the
+    # child (client/indexer.py), well after this call -- so this carries only
+    # what the parent has bound by this point (e.g. run_id, job_id).
+    log_context = current_context()
+    if log_context:
+        child_env[ENV_LOG_CONTEXT] = json.dumps(dict(log_context))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -137,23 +303,39 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     # fixed CHILD_TIMEOUT. HANDSHAKE_TIMEOUT_S bounds only this cheap probe;
     # the remaining budget below still adds up to at most effective_timeout.
     start = time.monotonic()
+    # RFC-046 task 3.13: the stderr reader starts HERE, before the handshake
+    # read, and runs for the child's whole lifetime. Starting it only after
+    # the handshake (as the first cut of 12.3 did) left a 60-second window in
+    # which nothing drained proc.stderr: on a handshake stall the child was
+    # killed correctly but everything it had written died in the pipe, which
+    # is precisely the case 3.13 names -- "a 60s handshake stall is
+    # indistinguishable from a full-conversion overrun".
+    tail = _StderrTail()
+    stderr_task = asyncio.create_task(_forward_child_stderr(proc.stderr, tail))
+
     HANDSHAKE_TIMEOUT_S = 60
     handshake_line = b""
+    over_read = b""
     try:
         async with asyncio.timeout(HANDSHAKE_TIMEOUT_S):
-            handshake_line = await proc.stdout.readline()
+            handshake_line, over_read = await _read_line(proc.stdout)
     except (TimeoutError, asyncio.CancelledError):
+        logger.error(
+            "converter child killed during handshake; stderr tail: %s",
+            tail.text() or "<empty>",
+        )
+        await _cancel(stderr_task)
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
 
     effective_timeout = CHILD_TIMEOUT
-    leftover_stdout = handshake_line
+    leftover_stdout = handshake_line + over_read
     try:
         handshake = json.loads(handshake_line.decode(errors="replace").strip())
     except (json.JSONDecodeError, AttributeError):
         handshake = None
     if isinstance(handshake, dict) and handshake.get("handshake"):
-        leftover_stdout = b""
+        leftover_stdout = over_read
         if handshake.get("is_docling_route"):
             try:
                 chunk_count = int(handshake.get("chunk_count", 1))
@@ -203,16 +385,39 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
 
     remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
     stdout_bytes = b""
-    stderr_bytes = b""
     try:
+        # RFC-046 task 12.3: replaces proc.communicate(). communicate()
+        # itself reads stdout and stderr concurrently specifically to avoid
+        # the classic pipe deadlock (a child blocked writing to one full
+        # pipe while the parent only drains the other); gather()-ing the
+        # stdout drain, the stderr stream-forward, and proc.wait() together
+        # preserves that same concurrency, so this is not a naive drop-in
+        # for communicate() -- see _forward_child_stderr's docstring for why
+        # the child cannot deadlock here.
         async with asyncio.timeout(remaining_budget):
-            rest_stdout, stderr_bytes = await proc.communicate()
+            rest_stdout, _, _ = await asyncio.gather(
+                _drain_remaining_stdout(proc.stdout),
+                stderr_task,
+                proc.wait(),
+            )
     except (TimeoutError, asyncio.CancelledError):
+        # Task 3.13: previously stderr_bytes stayed b"" here because the
+        # tuple-unpack from communicate() never completed before the
+        # exception propagated. Now every stderr line the child produced up
+        # to the kill has already been forwarded live (see
+        # _forward_child_stderr) AND is sitting in `tail` -- log it here so
+        # it is not only visible in the raw stderr stream but also
+        # attributable to this specific timeout in the structured logs.
+        logger.error(
+            "converter child killed after timeout; stderr tail: %s",
+            tail.text() or "<empty>",
+        )
+        await _cancel(stderr_task)
         await _kill_group(proc, grace=KILL_GRACE_SECONDS)
         raise
     stdout_bytes = leftover_stdout + rest_stdout
 
-    stderr_tail = stderr_bytes.decode(errors="replace")[-4000:]
+    stderr_tail = tail.text()
 
     if proc.returncode == 0:
         stdout_text = stdout_bytes.decode(errors="replace").strip()
