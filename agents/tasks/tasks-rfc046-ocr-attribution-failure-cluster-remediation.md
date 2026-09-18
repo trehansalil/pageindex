@@ -287,7 +287,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   **Tranche 2 — instrumentation (12.5-12.9). Parallelisable with Wave 3.**
 
-  - [ ] 12.5 The `DECISION_POINTS` registry and the `decision()` emitter
+  - [x] 12.5 The `DECISION_POINTS` registry and the `decision()` emitter — 102/102 points instrumented across 10 modules (03565b0)
 
     - Instrument every enumerated decision point across `helpers/{types,gates,garble,tree_validation,verdict}.py`, `client/{indexer,recovery}.py`, `converters/{pictures,ocr_langs,pipeline}.py`.
     - Each record carries `event`, `choice`, `reason` and bounded `attrs` sufficient to reconstruct the branch. **Where a decision is overridden, carry both the computed outcome and the forced one** — `force_route` currently overwrites `decide_route`'s answer leaving no trace of either.
