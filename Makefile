@@ -15,7 +15,13 @@ APP          ?=
 MINIO        ?=
 REDIS        ?=
 POSTGRES     ?=
-DOCLING      ?=
+# 2026-09-19: defaults to `local` because deployment to the Scaleway Docling
+# service is no longer working, so `remote` would exercise a stale build. With
+# PI_LOCAL_DOCLING_URL empty (env/local.env) `local` resolves DOCLING_SERVICE_URL
+# to empty, which routes conversion IN-PROCESS -- the repo's own converter code,
+# which is the point: the latest code gets tested. No container, no docker.
+# Override per-invocation with DOCLING=remote once that deployment is fixed.
+DOCLING      ?= local
 MINIO_ACCESS ?=
 
 # Only forward the ones actually set, so env_profile.sh's own defaults apply.

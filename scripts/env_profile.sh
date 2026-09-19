@@ -127,8 +127,15 @@ PI_MINIO="${PI_MINIO:-$d_store}"
 PI_REDIS="${PI_REDIS:-$d_store}"
 PI_POSTGRES="${PI_POSTGRES:-$d_store}"
 # Docling defaults to remote under every profile except an explicit `local`
-# one: the Scaleway service is always reachable, so there is rarely a reason
-# to pay for a 1.9 GB local container.
+# one. NOTE (2026-09-19): the Makefile now passes DOCLING=local by default,
+# because deployment to the Scaleway service stopped working and `remote`
+# would exercise a stale build.
+#
+# Correction to the note this replaces: `local` does NOT necessarily mean a
+# 1.9 GB container. It reads PI_LOCAL_DOCLING_URL from env/local.env, which is
+# empty -- so DOCLING_SERVICE_URL resolves empty and conversion runs
+# IN-PROCESS (indexer.py:680, subprocess_mgr.py:278). The container is only
+# involved if you set PI_LOCAL_DOCLING_URL and run `make compose-docling`.
 PI_DOCLING="${PI_DOCLING:-$d_docling}"
 PI_APP="${PI_APP:-host}"
 PI_MINIO_ACCESS="${PI_MINIO_ACCESS:-auto}"
@@ -264,9 +271,15 @@ fi
 if [ "$PI_DOCLING" = "remote" ] && [ "$PI_MINIO" = "remote" ] && [ -z "$M_PRESIGN" ]; then
   warn "No public MinIO host is configured, so presigned URLs are unreachable from Scaleway. PDF/image ingestion will fail; other formats are unaffected. See docs/ENV_PROFILES.md."
 fi
-if [ "$PI_DOCLING" = "local" ] && [ "$PI_MINIO" = "remote" ] && [ "$MINIO_ACCESS_MODE" != "n/a" ]; then
+# Only a CONTAINERISED local Docling has a reachability problem here, and that
+# is the case where D_URL is set. With D_URL empty, conversion runs in-process
+# -- in this very process, which reaches the ClusterIP like every other call
+# it makes. Warning unconditionally on PI_DOCLING=local told the in-process
+# user their working setup was broken.
+if [ "$PI_DOCLING" = "local" ] && [ -n "$D_URL" ] && [ "$PI_MINIO" = "remote" ] \
+   && [ "$MINIO_ACCESS_MODE" != "n/a" ]; then
   case "$MINIO_ACCESS_MODE" in
-    cluster*) warn "PI_DOCLING=local + remote MinIO over the ClusterIP: the docling container must be able to reach $M_ENDPOINT. It usually cannot from a laptop." ;;
+    cluster*) warn "PI_DOCLING=local with a containerised Docling ($D_URL) + remote MinIO over the ClusterIP: the container must be able to reach $M_ENDPOINT. It usually cannot from a laptop." ;;
   esac
 fi
 
