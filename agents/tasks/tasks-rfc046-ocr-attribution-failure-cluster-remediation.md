@@ -64,6 +64,19 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   Applies to every task below that ingests or re-ingests: **1.C**, **12.C-core**, **12.C**, **3.x** re-ingest steps, and **7.1**. A run whose hash cache was not cleared first proves nothing and must be discarded, not interpreted.
 
+- **Full clean-slate reset — the four stores, in Hard Rule 2 order.** <a id="clean-slate-reset"></a> A hash-cache clear alone leaves the *previous* run's artifacts in place: re-ingesting mints a fresh `uuid4` `doc_id` per document, so the old `processed/` copies become unreachable orphans that no erasure request can then cascade to (HR2). When a gate needs a genuinely clean baseline rather than an incremental re-run, reset all four — and in this order, because each step invalidates the next:
+
+  1. **Back up anything that exists ONLY in the bucket.** Do not skip this. On 2026-09-19, 13 of 47 objects under `uploads/` had no copy in `doc_store/` — 5 German insurance PDFs, 6 HR `.docx` policies, an Arabic UN convention PDF and a 34.8 MB presign proof. Emptying the bucket would have been the only copy destroyed. Diff `uploads/` basenames against `doc_store/` under **NFC normalisation** — the Arabic filenames do not match byte-for-byte otherwise.
+  2. **MinIO** — delete every object (`uploads/`, `processed/*.json`, `processed/*.meta.json`, `figures/`, `staging/`). Record an inventory (object name, size, etag) first so the wipe stays auditable for the derived artifacts you did not back up.
+  3. **Postgres `doc_registry`** — `TRUNCATE`. Dump the rows to JSON first: they carry the verdict distribution that a later run is compared against, and it is the only record of what the prior baseline held.
+  4. **Redis** — `DEL pageindex:hashes` plus every `pageindex:registry:*` key (`complete`, `last_reconcile_at`, `reconcile_etags`). Leaving the reconcile keys behind points a sweep at etags for objects that no longer exist.
+
+  **Verify all four read zero before ingesting.** A partial reset is worse than none: the registry believing in 45 documents whose artifacts are gone makes every query resolve a row and then fail to fetch it.
+
+  **Do NOT touch `arq:*` keys.** The containerised `/app` workers are live on the same Redis db; `arq:in-progress:cron:reap_stale_jobs:*` is their reaper lock, not ours.
+
+  Executed 2026-09-19 (backup at `/mnt/HC_Volume_106759881/minio-backups/pageindex-20260919/`, with `manifest.json`, `deleted-inventory.json` and `doc_registry-backup.json`): 143 objects / 88 MB removed, 45 registry rows truncated — prior distribution PASS 23 / MARGINAL 17 / FAIL 5 — and all four stores verified at zero.
+
 **Wave 2 may be parallelised with Waves 1 and 3–6.** All other waves are strictly sequential — see [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour).
 
 ## Tasks
@@ -148,7 +161,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   - [x] 1.C **[GATE]** Checkpoint — Attributed corpus baseline
 
-    - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs. **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition).
+    - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs. **Do a full [clean-slate reset](#clean-slate-reset) first**, not just a hash-cache clear — a baseline run compared against orphaned artifacts from a prior run is not a baseline.
     - This run is the graded baseline for every subsequent wave. **No behavioural deliverable (Waves 3–6) may merge until this gate is checked.**
     - Verify: `uv run pytest` green; architecture guards pass; sidecar schema test passes.
     - **PREREQUISITE — set `VERDICT_DOWNGRADE_ENABLED=true` for the baseline run (found 2026-09-15, task 1.9).** The registry upsert is a max-verdict-priority CAS (`registry/queries.py:95-113`, `VERDICT_PRIORITY` PASS=3 > MARGINAL=2 > FAIL=1 > ERROR=0): a verdict can only be upgraded, never downgraded, across re-ingestion cycles. `preprocess_client.py:177` writes through that same CAS, and `worker/registry_mirror.py:88` mirrors it onto the MinIO sidecar. `VERDICT_DOWNGRADE_ENABLED` defaults to **false** (`config.py`), and it is the only thing that sets `force_verdict_override` (`indexer.py:1254,1415`).
@@ -281,7 +294,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
   - [x] 12.C-core **[GATE]** Checkpoint — a run is observable end to end
 
     - Process two documents — one clean Latin, one Arabic that garbles — and reconstruct both flows through `scripts/logtrace.py`.
-    - **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition). Both documents are already in the corpus, so without it this gate reads the previous run's records and passes on stale evidence.
+    - **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition). Both documents are already in the corpus, so without it this gate reads the previous run's records and passes on stale evidence. As of 2026-09-19 the stores are at a verified [clean slate](#clean-slate-reset), so this gate's next run needs no clearing — it needs the documents ingested from scratch.
     - Confirm child records reach the parent **as they are produced**, not at the end.
     - Confirm the handler stream is `sys.stderr` and no record spans two lines.
     - Confirm **zero** document text, node text and node titles in the output ([Property 12](design-rfc046-ocr-attribution-failure-cluster-remediation#property-12-no-document-content-in-logs)).
