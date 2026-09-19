@@ -767,6 +767,47 @@ class TestPreprocessClientBindsInsideSemaphore:
         assert captured["first"] != captured["second"]
 
 
+class TestPreprocessClientCorrelatesTheRegistryUpsert:
+    """The registry dual-write runs OUTSIDE the semaphore -- deliberately, so
+    the next document can start converting while this one upserts -- but it
+    must still be correlated.
+
+    Found by gate 12.C on 2026-09-19: ``registry: dual-write upserted
+    doc_id=...`` was the one per-document record on the batch parent route
+    carrying no ``run_id`` and no ``doc_name_sha8``, so the record that names
+    the doc_id was unreachable from ``logtrace --doc-name``."""
+
+    async def test_registry_upsert_sees_run_id_doc_name_and_doc_id(self):
+        import asyncio as _asyncio
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import preprocess_client
+
+        from pageindex_mcp.obs.context import current_context
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        captured: dict = {}
+
+        async def fake_subprocess(path, *args, **kwargs):
+            return {"ok": True, "doc_id": "doc-42", "peak_rss_kib": 0, "duration_ms": 0}
+
+        async def fake_upsert(doc_id, content_class, **kwargs):
+            captured.update(current_context())
+
+        with (
+            patch("pageindex_mcp.worker._run_converter_subprocess", fake_subprocess, create=True),
+            patch("pageindex_mcp.worker._upsert_registry_row", fake_upsert, create=True),
+        ):
+            await preprocess_client._process_one(
+                _asyncio.Semaphore(1), Path("policy.pdf"), "run-upsert"
+            )
+
+        assert captured.get("run_id") == "run-upsert"
+        assert captured.get("doc_name_sha8") == hash_doc_name("policy.pdf")
+        assert captured.get("doc_id") == "doc-42"
+
+
 class TestConvertersCliBindsLogContextFromEnv:
     """converters_cli reads PAGEINDEX_LOG_CONTEXT and binds it -- a malformed
     or absent value must never raise (a logging problem must never fail a

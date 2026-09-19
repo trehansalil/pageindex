@@ -190,15 +190,22 @@ async def _process_one(sem: asyncio.Semaphore, file: Path, run_id: str) -> None:
         # the batch path skips the MinIO re-read and its race window too —
         # otherwise the optimisation only covers the worker.  Both are None
         # for older child binaries, which restores the MinIO-read fallback.
-        try:
-            await _upsert_registry_row(
-                doc_id,
-                content_class,
-                verdict_fields=result.get("verdict_fields"),
-                registry_fields=result.get("registry_fields"),
-            )
-        except Exception as exc:
-            print(f"  [{file.name}] registry upsert failed (non-fatal): {exc}", flush=True)
+        # RFC-046 D12, gate 12.C (2026-09-19): re-bind here. The upsert runs
+        # deliberately OUTSIDE the semaphore so the next document can start
+        # converting while this one writes, which also puts it outside the
+        # bind above -- leaving `registry: dual-write upserted doc_id=...`,
+        # the one per-document record on this route that names the doc_id,
+        # with no run_id and no doc_name_sha8 to resolve it by.
+        with bind_log_context(run_id=run_id, doc_name=file.name, doc_id=doc_id):
+            try:
+                await _upsert_registry_row(
+                    doc_id,
+                    content_class,
+                    verdict_fields=result.get("verdict_fields"),
+                    registry_fields=result.get("registry_fields"),
+                )
+            except Exception as exc:
+                print(f"  [{file.name}] registry upsert failed (non-fatal): {exc}", flush=True)
 
 
 async def _init_registry_pool() -> None:
