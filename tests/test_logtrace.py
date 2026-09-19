@@ -72,7 +72,7 @@ def _rec(**fields) -> str:
         "job_id": None,
         "doc_sha8": None,
         "doc_id": None,
-        "doc_name": None,
+        "doc_name_sha8": None,
         "phase": None,
         "phase_seq": None,
         "event": None,
@@ -82,6 +82,14 @@ def _rec(**fields) -> str:
         "dur_ms": None,
         "exc": None,
     }
+    # A test that writes a plaintext doc_name would be testing an envelope the
+    # emitter can no longer produce: context._bind digests it at bind time
+    # (task 12.6, owner decision 2026-09-19). Accept the readable name here and
+    # store what would actually be logged.
+    if "doc_name" in fields:
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        fields["doc_name_sha8"] = hash_doc_name(fields.pop("doc_name"))
     base.update(fields)
     return json.dumps(base)
 
@@ -138,7 +146,9 @@ class TestBatchRouteInterleavedDocuments:
         result = lt.resolve_trace(path, doc_name="alpha.pdf")
 
         assert len(result.records) == 2
-        assert all(r["doc_name"] == "alpha.pdf" for r in result.records)
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        assert all(r["doc_name_sha8"] == hash_doc_name("alpha.pdf") for r in result.records)
         phases = [r["phase"] for r in result.records]
         assert phases == ["route_select", "convert"]
 

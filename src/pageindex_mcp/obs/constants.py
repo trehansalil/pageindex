@@ -17,7 +17,12 @@ CORRELATION_FIELDS: tuple[str, ...] = (
     "job_id",
     "doc_sha8",
     "doc_id",
-    "doc_name",
+    # RFC-046 task 12.6, owner decision 2026-09-19: the DIGEST of the filename,
+    # never the filename. ``context._bind`` hashes any ``doc_name`` it is given
+    # and stores it here instead. "doc_name" is deliberately absent from this
+    # tuple -- the formatter only serialises fields named here, so a stray
+    # ``extra={"doc_name": ...}`` at some call site cannot reintroduce it.
+    "doc_name_sha8",
     # RFC-046 task 12.2: the Langfuse trace id for the enclosing tool call,
     # bound by tracing.trace_tool(). It is what joins the two observability
     # surfaces -- without it Langfuse knows the trace, the logs know the

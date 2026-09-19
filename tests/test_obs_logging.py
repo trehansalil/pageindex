@@ -43,7 +43,7 @@ REQUIRED_ENVELOPE_KEYS = {
     "job_id",
     "doc_sha8",
     "doc_id",
-    "doc_name",
+    "doc_name_sha8",
     "phase",
     "phase_seq",
     "event",
@@ -300,16 +300,19 @@ class TestContextCorrelation:
 
         combined_output = stream_a.getvalue() + stream_b.getvalue()
         records = [json.loads(line) for line in combined_output.split("\n") if line.strip()]
-        doc_names = {r["doc_name"] for r in records}
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        doc_names = {r["doc_name_sha8"] for r in records}
 
         # Each record must carry exactly the doc_name of the task that
         # emitted it -- never the other task's value, and never both mixed
-        # into one record.
-        record_by_msg = {r["msg"]: r["doc_name"] for r in records}
-        assert record_by_msg.get("record from task A") == "doc-A"
-        assert record_by_msg.get("record from task B") == "doc-B"
-        assert "doc-B" != record_by_msg.get("record from task A")
-        assert "doc-A" != record_by_msg.get("record from task B")
+        # into one record. Compared as digests since task 12.6: the filename
+        # is hashed at bind time and never reaches the envelope in clear.
+        record_by_msg = {r["msg"]: r["doc_name_sha8"] for r in records}
+        assert record_by_msg.get("record from task A") == hash_doc_name("doc-A")
+        assert record_by_msg.get("record from task B") == hash_doc_name("doc-B")
+        assert record_by_msg.get("record from task A") != record_by_msg.get("record from task B")
+        assert "doc-A" not in combined_output and "doc-B" not in combined_output
 
     def test_context_is_restored_after_the_manager_exits_no_bleed_to_next_document(self):
         """The arq worker process is long-lived: after bind_log_context()'s
@@ -738,10 +741,10 @@ class TestPreprocessClientBindsInsideSemaphore:
             if "first" in path:
                 seen_first_started.set()
                 await release_first.wait()
-                captured["first"] = current_context().get("doc_name")
+                captured["first"] = current_context().get("doc_name_sha8")
             else:
                 await seen_first_started.wait()
-                captured["second"] = current_context().get("doc_name")
+                captured["second"] = current_context().get("doc_name_sha8")
                 release_first.set()
             return {"ok": True, "doc_id": "d", "peak_rss_kib": 0, "duration_ms": 0}
 
@@ -754,8 +757,13 @@ class TestPreprocessClientBindsInsideSemaphore:
                 preprocess_client._process_one(sem, Path("second.pdf"), "run-x"),
             )
 
-        assert captured["first"] == "first.pdf"
-        assert captured["second"] == "second.pdf"
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        # Digests since task 12.6 -- the point of the test is unchanged: the
+        # two concurrent documents must not see each other's binding.
+        assert captured["first"] == hash_doc_name("first.pdf")
+        assert captured["second"] == hash_doc_name("second.pdf")
+        assert captured["first"] != captured["second"]
         assert captured["first"] != captured["second"]
 
 
@@ -1225,3 +1233,80 @@ class TestOversizedChildStderrLineRealSubprocess:
             await proc.wait()
 
         assert len(tail.text().encode()) <= STDERR_TAIL_MAX_BYTES * 2
+
+
+# ── RFC-046 D12 (task 12.6): doc_name is hashed, never logged in clear ───────
+class TestDocNameIsHashed:
+    """Owner decision, 2026-09-19: log a hash of the filename, not the
+    filename. A customer corpus can ship `Mustermann_Police_2024.pdf`, which
+    puts an insured party's name on every record (Hard Rule 3).
+
+    The hash is applied at BIND time, not at emit time, so the plaintext never
+    enters the correlation context at all -- and therefore never reaches the
+    converter child through PAGEINDEX_LOG_CONTEXT either
+    (``subprocess_mgr.py:292`` serialises the whole mapping into the child's
+    environment).
+    """
+
+    def test_binding_a_doc_name_stores_only_its_hash(self):
+        from pageindex_mcp.obs.context import bind_log_context, current_context
+
+        with bind_log_context(doc_name="Mustermann_Police_2024.pdf"):
+            ctx = dict(current_context())
+
+        assert ctx.get("doc_name_sha8")
+        assert "doc_name" not in ctx
+        assert "Mustermann" not in repr(ctx)
+
+    def test_record_carries_the_hash_and_not_the_name(self):
+        from pageindex_mcp.obs.context import bind_log_context
+        from pageindex_mcp.obs.filter import ContextFilter
+        from pageindex_mcp.obs.formatter import JsonFormatter
+
+        record = logging.LogRecord("t", logging.INFO, "f.py", 1, "converted", None, None)
+        with bind_log_context(doc_name="Mustermann_Police_2024.pdf"):
+            ContextFilter().filter(record)
+        payload = json.loads(JsonFormatter().format(record))
+
+        assert payload["doc_name_sha8"] == _expected_sha8("Mustermann_Police_2024.pdf")
+        assert "Mustermann" not in json.dumps(payload)
+        assert payload.get("doc_name") is None
+
+    def test_hash_is_stable_and_distinguishing(self):
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        assert hash_doc_name("a.pdf") == hash_doc_name("a.pdf")
+        assert hash_doc_name("a.pdf") != hash_doc_name("b.pdf")
+        assert len(hash_doc_name("a.pdf")) == 8
+
+    def test_none_and_empty_survive_without_a_hash(self):
+        from pageindex_mcp.obs.context import bind_log_context, current_context
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        assert hash_doc_name(None) is None
+        assert hash_doc_name("") is None
+        with bind_log_context(doc_name=None):
+            assert "doc_name_sha8" not in current_context()
+
+    def test_an_already_hashed_value_is_not_hashed_again(self):
+        """converters_cli rebinds the mapping it receives through
+        PAGEINDEX_LOG_CONTEXT, which already carries doc_name_sha8. Re-hashing
+        it in the child would break correlation between parent and child."""
+        from pageindex_mcp.obs.context import bind_log_context, current_context
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        digest = hash_doc_name("report.pdf")
+        with bind_log_context(doc_name_sha8=digest):
+            assert current_context()["doc_name_sha8"] == digest
+
+    def test_doc_name_is_not_a_declared_envelope_field(self):
+        from pageindex_mcp.obs.constants import CORRELATION_FIELDS
+
+        assert "doc_name_sha8" in CORRELATION_FIELDS
+        assert "doc_name" not in CORRELATION_FIELDS
+
+
+def _expected_sha8(name: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]

@@ -25,6 +25,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from types import MappingProxyType
 
+from .redact import hash_doc_name
+
 _EMPTY_CONTEXT: Mapping[str, object] = MappingProxyType({})
 
 _CONTEXT: ContextVar[Mapping[str, object]] = ContextVar(
@@ -49,7 +51,20 @@ def _bind(**fields: object) -> Token:
     clobbering it with an explicit ``None``.
     """
     merged = dict(_CONTEXT.get())
-    merged.update({key: value for key, value in fields.items() if value is not None})
+    incoming = {key: value for key, value in fields.items() if value is not None}
+    # The filename is digested HERE, not at emit time, so the plaintext never
+    # enters the mapping: subprocess_mgr.py:292 serialises this whole mapping
+    # into the converter child's environment, and an emit-time hash would
+    # leave the clear name sitting in /proc for the child's lifetime.
+    # A caller passing doc_name_sha8 directly (converters_cli, rebinding what
+    # it received through PAGEINDEX_LOG_CONTEXT) is left alone -- re-hashing
+    # would break parent/child correlation.
+    name = incoming.pop("doc_name", None)
+    if name is not None:
+        digest = hash_doc_name(name)
+        if digest is not None:
+            incoming["doc_name_sha8"] = digest
+    merged.update(incoming)
     return _CONTEXT.set(MappingProxyType(merged))
 
 

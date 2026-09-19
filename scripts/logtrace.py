@@ -61,12 +61,30 @@ from typing import Any
 #: Envelope fields that can identify a document's spanning key (R12.3).
 _KEY_FIELDS_BY_ROUTE: dict[str, tuple[str, str]] = {
     "worker": ("run_id", "job_id"),
-    "batch": ("run_id", "doc_name"),
+    "batch": ("run_id", "doc_name_sha8"),
 }
 
 #: Identifiers that resolve to a spanning key via a two-pass lookup, rather
 #: than being part of the key themselves (R12.3: late-arriving enrichments).
-_RESOLVABLE_IDENTIFIER_FIELDS: tuple[str, ...] = ("doc_id", "doc_sha8", "doc_name")
+_RESOLVABLE_IDENTIFIER_FIELDS: tuple[str, ...] = ("doc_id", "doc_sha8", "doc_name_sha8")
+
+
+def _hash_doc_name(name: str | None) -> str | None:
+    """Digest a --doc-name argument the same way the emitter did.
+
+    Imported from the production helper rather than reimplemented: if the two
+    ever disagreed, every --doc-name query would silently match nothing.
+    """
+    if name is None:
+        return None
+    try:
+        from pageindex_mcp.obs.redact import hash_doc_name
+    except ImportError:  # pragma: no cover - logtrace must run without the package
+        import hashlib
+
+        return hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    return hash_doc_name(name)
+
 
 _DECISION_KIND = "decision"
 _PHASE_ENTRY_KIND = "phase_entry"
@@ -178,12 +196,14 @@ def _resolve_by_identifier(
         candidates = {c for c in candidates if c[0] == run_id}
 
     if not candidates:
-        if identifier_field == "doc_name":
+        if identifier_field == "doc_name_sha8":
             raise IdentifierNotFoundError(
-                f"no record carries doc_name={identifier_value!r}. Logs "
-                "written before 2026-09-18 by the arq worker route carry no "
-                "doc_name (the key was run_id + job_id) -- for those, query "
-                "by --job-id, --doc-id or --doc-sha8 instead."
+                f"no record carries doc_name_sha8={identifier_value!r} "
+                "(the digest of the --doc-name you gave; filenames are hashed "
+                "before they are logged, see obs/redact.py:hash_doc_name). "
+                "Logs written before 2026-09-18 by the arq worker route carry "
+                "no doc_name at all (the key was run_id + job_id) -- for those, "
+                "query by --job-id, --doc-id or --doc-sha8 instead."
             )
         raise IdentifierNotFoundError(f"no record carries {identifier_field}={identifier_value!r}")
 
@@ -253,7 +273,7 @@ def resolve_trace(
         for name, value in (
             ("doc_id", doc_id),
             ("doc_sha8", doc_sha8),
-            ("doc_name", doc_name),
+            ("doc_name_sha8", _hash_doc_name(doc_name)),
             ("job_id", job_id),
         )
         if value is not None

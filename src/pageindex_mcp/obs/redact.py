@@ -20,6 +20,7 @@ what the line was diagnosing anyway.
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from .constants import PLACEHOLDER_UNSERIALISABLE
@@ -80,3 +81,34 @@ def redact_excerpt(text: object, limit: int | None = None) -> str:
     if len(value) <= bound:
         return value
     return f"{value[:bound]}…(+{len(value) - bound} of {len(value)} chars)"
+
+
+#: Length of the ``doc_name`` digest. Eight hex characters matches ``doc_sha8``
+#: and is ample to tell one document apart from another within a run, while
+#: being far too short to brute-force back to a filename with any confidence.
+DOC_NAME_SHA_CHARS = 8
+
+
+def hash_doc_name(name: object) -> str | None:
+    """Digest a filename for the log stream, or ``None`` if there is nothing
+    to digest.
+
+    Owner decision, 2026-09-19: the filename itself is NOT logged. This corpus
+    has harmless names, but a customer corpus can ship
+    ``Mustermann_Police_2024.pdf`` -- an insured party's name on every record,
+    which is a Hard Rule 3 problem, not a style one.
+
+    Applied at bind time (``context._bind``) rather than at emit time, so the
+    plaintext never enters the correlation mapping -- and therefore never
+    reaches the converter child either, which receives that whole mapping
+    through ``PAGEINDEX_LOG_CONTEXT`` (``subprocess_mgr.py:292``).
+    """
+    if not name:
+        return None
+    try:
+        text = name if isinstance(name, str) else str(name)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if not text:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:DOC_NAME_SHA_CHARS]
