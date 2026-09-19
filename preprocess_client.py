@@ -238,6 +238,73 @@ async def _close_registry_pool() -> None:
         pass
 
 
+#: Signals a supervisor actually sends. SIGKILL is deliberately absent: it
+#: cannot be caught, and no amount of Python can cover it — see
+#: ``run_with_child_reaping``.
+_REAPING_SIGNALS = ("SIGTERM", "SIGINT")
+
+
+def install_child_reaping_signal_handlers(loop, task) -> list[str]:
+    """Turn a supervisor's signal into a cancellation of *task*.
+
+    Why this exists (observed 2026-09-19, gate 12.C): ``_kill_group``
+    (``worker/subprocess_mgr.py:209``) reaps the converter child correctly on
+    every *exception* path — timeout, cancel, handshake failure. But a
+    supervisor (``timeout 2400``, a harness OOM reaper, Ctrl-C) kills this
+    process with a *signal*, and Python's default SIGTERM action terminates
+    immediately: no ``finally``, no ``except CancelledError``, so
+    ``_kill_group`` never runs. The child is spawned with
+    ``start_new_session=True``, so it is in its own session and the signal
+    does not reach it either — it survives, holding ~2-3 GB, and on this host
+    it was still burning CPU on OCR minutes after its parent had gone.
+
+    Cancelling the task instead routes the shutdown through the cleanup that
+    already exists and is already tested, rather than adding a second one.
+
+    Returns the names of the signals actually hooked, so a caller can log what
+    coverage it got — ``add_signal_handler`` is a no-op on platforms that do
+    not support it, and that must not be silent.
+    """
+    import contextlib
+    import signal as _signal
+
+    installed: list[str] = []
+    for name in _REAPING_SIGNALS:
+        sig = getattr(_signal, name, None)
+        if sig is None:  # pragma: no cover - POSIX always has both
+            continue
+        with contextlib.suppress(NotImplementedError, ValueError, RuntimeError):
+            loop.add_signal_handler(sig, _cancel_for_signal, task, name)
+            installed.append(name)
+    return installed
+
+
+def _cancel_for_signal(task, signame: str) -> None:
+    print(f"  {signame} received — cancelling, converter child will be reaped", flush=True)
+    task.cancel()
+
+
+async def run_with_child_reaping(files: list[Path]) -> None:
+    """``preprocess(files)``, with signals routed into cancellation.
+
+    Covers SIGTERM and SIGINT. **It cannot cover SIGKILL** — nothing in this
+    process can. A ``kill -9`` of this process still leaves the converter
+    child running; check ``pgrep -f converters_cli`` after one. Closing that
+    last gap needs ``PR_SET_PDEATHSIG`` in the child, which is a
+    ``preexec_fn`` in a threaded asyncio parent and is not worth the hazard
+    for a case a supervisor rarely produces.
+    """
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if task is not None:
+        install_child_reaping_signal_handlers(loop, task)
+    try:
+        await preprocess(files)
+    except asyncio.CancelledError:
+        print("  aborted; converter child reaped", flush=True)
+        raise
+
+
 async def preprocess(files: list[Path]) -> None:
     import uuid
 
@@ -251,12 +318,20 @@ async def preprocess(files: list[Path]) -> None:
         f"(concurrency={concurrency})...",
         flush=True,
     )
-    await _init_registry_pool()
-    sem = asyncio.Semaphore(concurrency)
-    try:
-        await asyncio.gather(*(_process_one(sem, f, run_id) for f in files))
-    finally:
-        await _close_registry_pool()
+    # Gate 12.C (2026-09-19): bind run_id for the WHOLE run, not just per
+    # document. The registry pool's own lifecycle records ("connecting to
+    # Postgres", "schema ready", "pool closed" -- registry/schema.py) are
+    # emitted outside any document's bind and reached the Arabic capture with
+    # run_id=None. They are run-scoped, not document-scoped, so this is the
+    # level they belong at; the per-document binds in _process_one merge on
+    # top of it rather than replacing it.
+    with bind_log_context(run_id=run_id):
+        await _init_registry_pool()
+        sem = asyncio.Semaphore(concurrency)
+        try:
+            await asyncio.gather(*(_process_one(sem, f, run_id) for f in files))
+        finally:
+            await _close_registry_pool()
 
 
 async def recompute_verdicts(doc_id: str | None = None) -> None:
@@ -479,6 +554,6 @@ if __name__ == "__main__":
                 _orig(ctx)
 
             loop.set_exception_handler(_exception_handler)
-            runner.run(preprocess(files))
+            runner.run(run_with_child_reaping(files))
     finally:
         sys.stderr = sys.stderr._wrapped  # type: ignore[union-attr]

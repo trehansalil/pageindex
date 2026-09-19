@@ -29,7 +29,7 @@ import time
 
 from .obs import configure as configure_obs
 from .obs.constants import ENV_LOG_CONTEXT
-from .obs.context import bind_log_context
+from .obs.context import bind_log_context, disable_main_thread_ambient, enable_main_thread_ambient
 
 # Install JSON stderr handler immediately — before any other import.
 # converters_cli reserves stdout for exactly two JSON lines (handshake +
@@ -91,6 +91,13 @@ async def main() -> int:  # noqa: PLR0915
 
     start = time.monotonic()
 
+    # Gate 12.C (2026-09-19): Docling runs its OCR stages on threads of its
+    # own, where every ContextVar reads back its default -- 86 records from
+    # one 42-page Arabic document arrived with no correlation at all. This
+    # child handles exactly one document, so the main thread's binding is the
+    # right answer for any thread that has none. Enabled BEFORE the bind
+    # below so that bind mirrors itself into the ambient slot.
+    enable_main_thread_ambient()
     with bind_log_context(**_log_context_from_env()):
         try:
             parser = argparse.ArgumentParser(
@@ -241,6 +248,10 @@ async def main() -> int:  # noqa: PLR0915
             except Exception:  # pragma: no cover - never let flush break the CLI contract
                 _log.debug("litellm langfuse_otel flush skipped", exc_info=True)
             sys.stdout = orig_stdout
+            # Symmetry with enable_main_thread_ambient() above: the process is
+            # about to exit, but in-process callers (tests) must not inherit
+            # a registered ambient thread.
+            disable_main_thread_ambient()
 
 
 if __name__ == "__main__":

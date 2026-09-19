@@ -20,6 +20,7 @@ correlation inside an executor-submitted callable must wrap it in
 from __future__ import annotations
 
 import functools
+import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -38,9 +39,68 @@ _CONTEXT: ContextVar[Mapping[str, object]] = ContextVar(
 _PHASE_SEQ_COUNTER: ContextVar[int] = ContextVar("pageindex_obs_phase_seq", default=0)
 
 
+#: Opt-in fallback for threads a library creates and we therefore cannot wrap
+#: in ``propagate()``. Gate 12.C (2026-09-19) measured 86 records from
+#: ``docling…tesseract_ocr_cli_model`` worker threads on one 42-page Arabic
+#: document, every one with ``run_id=None``: a ContextVar read in a thread the
+#: binder never touched returns its *default*, so the record is emitted with no
+#: correlation at all and ``logtrace`` drops it silently.
+#:
+#: Enabled ONLY in the converter child (``converters_cli``), which handles
+#: exactly one document per process -- there, "whatever the main thread is
+#: currently bound to" is unambiguously the right answer for a worker thread.
+#: Deliberately NOT enabled in the long-lived parent or the arq worker, which
+#: interleave documents: there it could attribute one document's OCR record to
+#: another, which is worse than no correlation.
+#:
+#: Written only from the registered main thread and read from others. A plain
+#: reference rebind is atomic under the GIL, so no lock is needed -- and a lock
+#: on this path would be taken once per log record.
+_AMBIENT_ENABLED = False
+_AMBIENT_THREAD_ID: int | None = None
+_AMBIENT_CONTEXT: Mapping[str, object] = _EMPTY_CONTEXT
+
+
+def enable_main_thread_ambient() -> None:
+    """Let threads without their own binding fall back to this thread's.
+
+    Registers the *calling* thread as the one whose binding is authoritative.
+    Idempotent; re-registers if called from a different thread.
+    """
+    global _AMBIENT_ENABLED, _AMBIENT_THREAD_ID, _AMBIENT_CONTEXT
+    _AMBIENT_THREAD_ID = threading.get_ident()
+    _AMBIENT_CONTEXT = _CONTEXT.get()
+    _AMBIENT_ENABLED = True
+
+
+def disable_main_thread_ambient() -> None:
+    """Restore the plain contextvars-only behaviour."""
+    global _AMBIENT_ENABLED, _AMBIENT_THREAD_ID, _AMBIENT_CONTEXT
+    _AMBIENT_ENABLED = False
+    _AMBIENT_THREAD_ID = None
+    _AMBIENT_CONTEXT = _EMPTY_CONTEXT
+
+
 def current_context() -> Mapping[str, object]:
-    """The frozen correlation mapping bound for the currently running task."""
-    return _CONTEXT.get()
+    """The frozen correlation mapping bound for the currently running task.
+
+    With the ambient fallback enabled, a thread that has no binding of its own
+    reads the registered main thread's instead. A thread that *does* have one
+    still wins field-by-field, so ``propagate()`` behaves exactly as before.
+    """
+    local = _CONTEXT.get()
+    # Hot path -- one bool test per log record when the fallback is off, and
+    # one more when the caller is the main thread.
+    if not _AMBIENT_ENABLED or threading.get_ident() == _AMBIENT_THREAD_ID:
+        return local
+    ambient = _AMBIENT_CONTEXT
+    if not ambient:
+        return local
+    if not local:
+        return ambient
+    merged = dict(ambient)
+    merged.update(local)
+    return MappingProxyType(merged)
 
 
 def _bind(**fields: object) -> tuple[Token, Token | None]:
@@ -88,12 +148,24 @@ def bind_log_context(**fields: object) -> Iterator[None]:
     long-lived: a bare ``set()`` with no reset would leave one document's
     ``doc_id`` bound for every job the worker processes afterward.
     """
+    global _AMBIENT_CONTEXT
+
     token, name_token = _bind(**fields)
+    # Keep the ambient mirror in step with the main thread's real binding, so a
+    # field bound later in the document's life (doc_sha8 lands only once the
+    # child has hashed the file) reaches library threads too. Saved and
+    # restored rather than recomputed, so nested binds unwind correctly.
+    is_ambient_owner = _AMBIENT_ENABLED and threading.get_ident() == _AMBIENT_THREAD_ID
+    previous_ambient = _AMBIENT_CONTEXT
+    if is_ambient_owner:
+        _AMBIENT_CONTEXT = _CONTEXT.get()
     try:
         yield
     finally:
         _CONTEXT.reset(token)
         reset_plain_doc_name(name_token)
+        if is_ambient_owner:
+            _AMBIENT_CONTEXT = previous_ambient
 
 
 def next_phase_seq() -> int:

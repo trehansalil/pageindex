@@ -18,10 +18,12 @@ today and never forwarded to the parent's real stderr as it is produced.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import json
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -767,6 +769,101 @@ class TestPreprocessClientBindsInsideSemaphore:
         assert captured["first"] != captured["second"]
 
 
+class TestSignalsReapTheConverterChild:
+    """A supervisor's SIGTERM must reach `_kill_group`, not bypass it.
+
+    Observed 2026-09-19 (gate 12.C): `timeout 2400` killed the parent and the
+    converter child survived in its own session, holding ~2-3 GB and still
+    running OCR minutes later. `_kill_group` is wired into every *exception*
+    path but Python's default SIGTERM action runs no `finally`, so nothing
+    reaped it. The fix routes the signal into task cancellation, which the
+    existing cleanup already handles."""
+
+    async def test_sigterm_and_sigint_are_both_hooked(self):
+        import asyncio as _asyncio
+
+        import preprocess_client
+
+        hooked: list[str] = []
+
+        class _Loop:
+            def add_signal_handler(self, sig, cb, *args):
+                hooked.append(sig.name)
+
+        task = _asyncio.current_task()
+        installed = preprocess_client.install_child_reaping_signal_handlers(_Loop(), task)
+
+        assert hooked == ["SIGTERM", "SIGINT"]
+        assert installed == ["SIGTERM", "SIGINT"]
+
+    async def test_the_handler_cancels_the_task(self):
+        """The registered callback must cancel -- registering something that
+        does not cancel would leave the child exactly as orphaned."""
+        import asyncio as _asyncio
+
+        import preprocess_client
+
+        captured: dict = {}
+
+        class _Loop:
+            def add_signal_handler(self, sig, cb, *args):
+                captured.setdefault("cb", (cb, args))
+
+        async def _sleeper():
+            await _asyncio.sleep(30)
+
+        task = _asyncio.create_task(_sleeper())
+        preprocess_client.install_child_reaping_signal_handlers(_Loop(), task)
+        cb, args = captured["cb"]
+        cb(*args)
+
+        with pytest.raises(_asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+    async def test_unsupported_platform_is_reported_not_swallowed(self):
+        """`add_signal_handler` raises NotImplementedError where it is not
+        supported. That must not crash the run -- but it must also not claim
+        coverage it does not have."""
+        import asyncio as _asyncio
+
+        import preprocess_client
+
+        class _Loop:
+            def add_signal_handler(self, sig, cb, *args):
+                raise NotImplementedError
+
+        installed = preprocess_client.install_child_reaping_signal_handlers(
+            _Loop(), _asyncio.current_task()
+        )
+        assert installed == []
+
+    async def test_cancelling_the_wrapper_reaps_a_real_child(self):
+        """The guarantee itself, through the real code path: a cancelled
+        `_run_converter_subprocess` must leave no surviving process."""
+        import asyncio as _asyncio
+        import os
+        import signal as _signal
+        import sys as _sys
+
+        from pageindex_mcp.worker.subprocess_mgr import _kill_group
+
+        proc = await _asyncio.create_subprocess_exec(
+            _sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        pid = proc.pid
+        await _kill_group(proc, grace=5.0)
+
+        assert proc.returncode is not None, "child must have exited"
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, _signal.SIGTERM)
+
+
 class TestPreprocessClientCorrelatesTheRegistryUpsert:
     """The registry dual-write runs OUTSIDE the semaphore -- deliberately, so
     the next document can start converting while this one upserts -- but it
@@ -1437,3 +1534,179 @@ def _expected_sha8(name: str) -> str:
     import hashlib
 
     return hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+
+
+class TestWorkerThreadsInheritTheMainThreadContext:
+    """RFC-046 D12, gate 12.C (2026-09-19): library threads we cannot wrap.
+
+    ``propagate()`` covers the ThreadPoolExecutor sites we own. It cannot
+    cover a pool Docling creates internally: the 42-page Arabic run emitted
+    86 records from ``docling…tesseract_ocr_cli_model`` worker threads, every
+    one of them with ``run_id=None``, because a ContextVar read in a thread
+    the binder never touched returns its *default*.
+
+    The fallback is opt-in and enabled only in the converter child, where one
+    process handles exactly one document -- so "whatever the main thread is
+    doing" is unambiguously the right answer. It is deliberately NOT enabled
+    in the long-lived parent, which interleaves documents.
+    """
+
+    @staticmethod
+    def _seen_in_a_thread(ctx) -> dict:
+        captured: dict = {}
+
+        def worker() -> None:
+            captured.update(dict(ctx.current_context()))
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+        return captured
+
+    @staticmethod
+    def _context_module():
+        from pageindex_mcp.obs import context  # deferred, see module docstring
+
+        return context
+
+    def test_without_the_fallback_a_worker_thread_sees_nothing(self):
+        # Arrange
+        ctx = self._context_module()
+
+        # Act
+        with ctx.bind_log_context(run_id="run-threads", doc_sha8="abc12345"):
+            seen = self._seen_in_a_thread(ctx)
+
+        # Assert -- this is the pre-fix behaviour, pinned so it stays visible.
+        assert seen == {}
+
+    def test_with_the_fallback_a_worker_thread_sees_the_main_binding(self):
+        # Arrange
+        ctx = self._context_module()
+        ctx.enable_main_thread_ambient()
+
+        # Act
+        try:
+            with ctx.bind_log_context(run_id="run-threads", doc_sha8="abc12345"):
+                seen = self._seen_in_a_thread(ctx)
+        finally:
+            ctx.disable_main_thread_ambient()
+
+        # Assert
+        assert seen["run_id"] == "run-threads"
+        assert seen["doc_sha8"] == "abc12345"
+
+    def test_the_fallback_tracks_later_binds_not_just_the_first(self):
+        """``doc_sha8`` is bound in the child only once sha256 has been
+        computed, long after the env-supplied ``run_id``. A snapshot taken at
+        enable time would miss it."""
+        # Arrange
+        ctx = self._context_module()
+        ctx.enable_main_thread_ambient()
+
+        # Act
+        try:
+            with ctx.bind_log_context(run_id="run-late"):
+                first = self._seen_in_a_thread(ctx)
+                with ctx.bind_log_context(doc_sha8="deadbeef"):
+                    second = self._seen_in_a_thread(ctx)
+                third = self._seen_in_a_thread(ctx)
+        finally:
+            ctx.disable_main_thread_ambient()
+
+        # Assert
+        assert "doc_sha8" not in first
+        assert second["doc_sha8"] == "deadbeef"
+        assert second["run_id"] == "run-late"
+        # ...and the inner bind unwinds for the thread too, rather than sticking.
+        assert "doc_sha8" not in third
+
+    def test_a_threads_own_binding_wins_over_the_fallback(self):
+        """``propagate()`` keeps working unchanged: an explicit bind in the
+        worker thread must not be overwritten by the main thread's."""
+        # Arrange
+        ctx = self._context_module()
+        ctx.enable_main_thread_ambient()
+        captured: dict = {}
+
+        def worker() -> None:
+            with ctx.bind_log_context(run_id="run-own", doc_id="doc-own"):
+                captured.update(dict(ctx.current_context()))
+
+        # Act
+        try:
+            with ctx.bind_log_context(run_id="run-main", doc_sha8="abc12345"):
+                thread = threading.Thread(target=worker)
+                thread.start()
+                thread.join()
+        finally:
+            ctx.disable_main_thread_ambient()
+
+        # Assert -- the thread's own value wins field-by-field...
+        assert captured["run_id"] == "run-own"
+        assert captured["doc_id"] == "doc-own"
+        # ...while a field it never set still falls back to the main thread.
+        assert captured["doc_sha8"] == "abc12345"
+
+    def test_disabling_restores_the_previous_behaviour(self):
+        # Arrange
+        ctx = self._context_module()
+        ctx.enable_main_thread_ambient()
+        ctx.disable_main_thread_ambient()
+
+        # Act
+        with ctx.bind_log_context(run_id="run-off"):
+            seen = self._seen_in_a_thread(ctx)
+
+        # Assert
+        assert seen == {}
+
+    def test_the_main_thread_is_unaffected_either_way(self):
+        # Arrange
+        ctx = self._context_module()
+        ctx.enable_main_thread_ambient()
+
+        # Act
+        try:
+            with ctx.bind_log_context(run_id="run-main-only"):
+                inside = dict(ctx.current_context())
+            outside = dict(ctx.current_context())
+        finally:
+            ctx.disable_main_thread_ambient()
+
+        # Assert
+        assert inside == {"run_id": "run-main-only"}
+        assert outside == {}
+
+    def test_a_record_emitted_from_a_worker_thread_carries_run_id(self):
+        """The end-to-end shape of the 86 uncorrelated Arabic records: a
+        third-party logger, emitting from a thread we never created."""
+        # Arrange
+        from pageindex_mcp import obs  # deferred, see module docstring
+
+        ctx = self._context_module()
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(obs.JsonFormatter())
+        handler.addFilter(obs.ContextFilter())
+        library_logger = logging.getLogger("docling.models.stages.ocr.tesseract_ocr_cli_model")
+        library_logger.handlers.clear()
+        library_logger.addHandler(handler)
+        library_logger.setLevel(logging.INFO)
+        library_logger.propagate = False
+        ctx.enable_main_thread_ambient()
+
+        # Act
+        try:
+            with ctx.bind_log_context(run_id="run-ocr", doc_sha8="305e8ca9"):
+                thread = threading.Thread(target=lambda: library_logger.info("Page batch done"))
+                thread.start()
+                thread.join()
+        finally:
+            ctx.disable_main_thread_ambient()
+            library_logger.removeHandler(handler)
+
+        # Assert
+        record = json.loads(stream.getvalue().strip())
+        assert record["run_id"] == "run-ocr"
+        assert record["doc_sha8"] == "305e8ca9"
