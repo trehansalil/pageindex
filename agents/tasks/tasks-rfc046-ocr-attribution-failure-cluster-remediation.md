@@ -57,6 +57,21 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 - **Never use the arq queue.** Containerised `/app` workers are live on the same Redis db and bucket, pointed at the *remote* Docling service; they would process our jobs with different code. All corpus work goes through `preprocess_client.py`, which creates no Redis job.
 - **Source `.env.active` explicitly** when invoking `preprocess_client.py` directly — `load_dotenv()` otherwise falls back to `.env` (localhost).
+- **A local ingest needs ~1.9 GB of host RAM, and the host does not have it spare.** <a id="ingest-memory"></a> A converter child peaks at **1.9–3.1 GB** (Docling model weights plus per-page rasters); measured 1939 MB on a 16-page German PDF, 2891 MB on a 42-page Arabic PDF under OCR recovery, and **3077 MB** on the same Arabic PDF when the run escalated all the way to the VLM fallback. The floor is set by the weights rather than the page count, but each recovery escalation adds to it — budget for 3.1 GB, not 1.9. On this 7.6 GB box, with k3s and the MCP servers resident, that leaves under 1.2 GB free for the duration — and an agent harness that reaps background tasks on low memory will kill the run. Observed 2026-09-19: **four consecutive backgrounded runs reaped**; the same document in the foreground survived. Swap does not help — 6.5 GB of the 8 GB swapfile was free every time. What is scarce is *available RAM*, which swap does not raise.
+
+  Before a long ingest, free it. All four steps are reversible and none touches a repo:
+
+  1. `kubectl scale deployment n8n -n infra --replicas=0`
+  2. `kubectl scale deployment pageindex-mcp -n pageindex-mcp --replicas=0`
+  3. `kubectl scale deployment pageindex-mcp-worker -n pageindex-mcp --replicas=0`
+  4. `kubectl annotate scaledobject pageindex-mcp-worker -n pageindex-mcp autoscaling.keda.sh/paused-replicas="0" --overwrite`
+
+  **Step 4 is not optional.** The worker has a KEDA `ScaledObject` with `minReplicaCount: 1` (`pageindex-mcp/pageindex-mcp-worker`, prometheus trigger), so step 3 alone is undone within seconds — the pod came back 8 s later. Pausing the ScaledObject is what actually holds it down.
+
+  **Restore afterwards**, or the deployment stays dark: `--replicas=1` on all three, then `kubectl annotate scaledobject pageindex-mcp-worker -n pageindex-mcp autoscaling.keda.sh/paused-replicas-` to drop the pause.
+
+  Measured gain: ~650 MB (2.93 GB → 3.57 GB available). Note this also removes the live `/app` workers the first constraint above warns about, so it makes the queue-avoidance rule moot for the duration — and makes restoring them a correctness step, not just tidiness.
+- **`timeout` does not reap the converter child.** Killing `preprocess_client.py` leaves `converters_cli` running: observed twice on 2026-09-19, once still burning CPU on OCR minutes later. Check `pgrep -f converters_cli` after any aborted run and kill it, or the next attempt competes with the corpse for the RAM it just failed to get.
 - **The Run-8 baseline is unrecoverable.** Gates anchor to the fresh attributed baseline from task 1.C. A trial ingest reproduced Run 8 to within 2 characters, so local-route fidelity is established.
 - **Clear the hash cache before ANY re-ingestion, or the run is a no-op.** <a id="reingest-precondition"></a> Ingestion is change-detected by content hash, so a document already processed is skipped silently — the run "succeeds", writes nothing, and the logs/verdicts you go on to read are the *previous* run's. Clear **both** stores:
   - `redis-cli -u "$REDIS_URL" DEL pageindex:hashes` — the primary cache (Redis HSET, `storage/hash_cache.py:20`).
@@ -365,6 +380,22 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Redaction guard green; no text or title in any record.
     - `uv run pytest` green. No verdict moved ([R12.12](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)).
     - _Dependencies: 12.C-core, 12.5-12.9_
+
+    **Run log (2026-09-19).** Two documents captured: `Haftpflicht-Allgemeine-Bedingungen.pdf.pdf` (16 pages, German) and `وارد رقم 597 …` (42 pages, Arabic).
+
+    - **Coverage 75/102 (74%)** across both captures — 62 German, 75 Arabic. The 27 unfired are genuinely unreached branches: DOCX/PPTX, standalone-image, flat route, tessdata download, RTL repair, bidi canonicalisation. Not a gap in the instrumentation.
+    - **Property 12 clean.** One string >120 chars in the German capture (a Docling plugin list); zero Arabic codepoints beyond the filename across NFC/NFD/raw normalisations in the Arabic capture.
+    - **Two correlation holes found and closed** (`5efbfa3`). 86 records from `docling…tesseract_ocr_cli_model` worker threads carried no `run_id` — `propagate()` cannot reach a pool Docling creates internally, so `context.py` gained an opt-in main-thread ambient fallback, enabled in `converters_cli` only (one document per process is what makes it sound). 3 more were the registry pool's own lifecycle records, which are run-scoped; `preprocess()` now binds `run_id` around the whole run. Verified live: `registry: connecting to Postgres` / `schema ready` / `pool closed` all carry `run_id`.
+    - **The registry dual-write upsert was uncorrelated** and is fixed in `31ae833`. It runs deliberately outside the semaphore, which also put it outside `_process_one`'s bind.
+    - **Filenames in our own messages are now the sha8 digest** (`9d3de4e`), applied at the formatter so all ~20 call sites and every future one are covered. Docling's own messages keep the plaintext by owner decision.
+
+    <a id="r12-12-arabic"></a>**R12.12 could not be evaluated on the Arabic document as first run.** Its FAIL baseline predates the VLM fallback; the 2026-09-19 run reached `vlm_fallback` (`VLM_FALLBACK=true`, `azure/gpt-4.1`) after two failed Docling passes and returned **PASS**. A verdict compared across two different routes proves nothing about whether D12 is behaviour-neutral, so the baseline is not a valid control. The German document matched its baseline exactly on the same route and carries R12.12 on its own. Re-run with `VLM_FALLBACK=false` to compare like with like — and **clear the hash cache first** (`storage.hash_cache.hash_cache_delete(filename)`; the Redis HSET `pageindex:hashes`, not the legacy MinIO blob), or the run returns in 6 s with `hash_cache_dedup_skip` and the prior `doc_id`, proving nothing.
+
+    <a id="vlm-drops-pages"></a>**Defect found by this gate — the VLM route silently drops pages (Hard Rule 5).** The tree persisted for `وارد رقم 597 …` (`doc_id` `e89500d2-…`, verdict **PASS**, 102 nodes) **starts at PDF page 10**. Pages 1–9 — a cover letter and an 8-page three-column comments table — are absent. `مهارات المهن الحرفية`, the programme the document is named after, occurs **zero** times in `structure`; so do `مرئيات`, `الموارد البشرية`, `الحرفية`. That is ~21% of the document, discarded with no error and no warning, behind a passing verdict.
+
+    `converters/formats.py:471` filters out pages whose VLM reply is empty or `<!-- blank page -->` and **counts nothing and logs nothing**, so a dropped page is invisible; pages 1–9 are faint grey text under a dense repeating watermark, which is consistent with a blank reply. It cannot be distinguished post hoc from `md_to_tree` (`indexer.py:2147`) dropping them, because the intermediate markdown is not persisted. Three decision points fired around the VLM call and none recorded a page count — that omission is itself the finding. Minimum fix: emit the dropped-page count at the `formats.py` filter before the join, and make a non-zero count a gate input rather than a log line.
+
+    **Not a defect: duplicate node titles.** 20 of the 102 titles appear twice. Investigated and refused as a merge bug — PDF page 10 is headed `| النص الأصلي | النص المقترح | الملاحظات |` and page 15 prints `المادة (3)` twice side by side, original and redlined amendment. The VLM flattens the columns into sequential blocks, so each article legitimately appears once per column; `المادة (1)`/`التعريفات` are byte-identical because that article was unchanged. The code path agrees: `recovery.py:948` and `indexer.py:473` both *assign*, keep-best returns a bool, and the log shows attempt 2 was reverted (`char_count_regression_revert`, 82078 < 101546) before the VLM ran.
 
 - [ ] 3. Independent Cluster Fixes (D5, D8, D10) + Reachable Dynamic Child Timeout (D11)
 
