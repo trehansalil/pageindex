@@ -58,6 +58,11 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 - **Never use the arq queue.** Containerised `/app` workers are live on the same Redis db and bucket, pointed at the *remote* Docling service; they would process our jobs with different code. All corpus work goes through `preprocess_client.py`, which creates no Redis job.
 - **Source `.env.active` explicitly** when invoking `preprocess_client.py` directly — `load_dotenv()` otherwise falls back to `.env` (localhost).
 - **The Run-8 baseline is unrecoverable.** Gates anchor to the fresh attributed baseline from task 1.C. A trial ingest reproduced Run 8 to within 2 characters, so local-route fidelity is established.
+- **Clear the hash cache before ANY re-ingestion, or the run is a no-op.** <a id="reingest-precondition"></a> Ingestion is change-detected by content hash, so a document already processed is skipped silently — the run "succeeds", writes nothing, and the logs/verdicts you go on to read are the *previous* run's. Clear **both** stores:
+  - `redis-cli -u "$REDIS_URL" DEL pageindex:hashes` — the primary cache (Redis HSET, `storage/hash_cache.py:20`).
+  - remove `hashes/processed_hashes.json` from the MinIO bucket — the pre-RFC-007-D6 legacy blob at `hash_cache.py:19`. It is **still read as a fallback** for any filename not yet migrated to Redis, so clearing Redis alone can leave a stale legacy entry that keeps suppressing the re-ingest.
+
+  Applies to every task below that ingests or re-ingests: **1.C**, **12.C-core**, **12.C**, **3.x** re-ingest steps, and **7.1**. A run whose hash cache was not cleared first proves nothing and must be discarded, not interpreted.
 
 **Wave 2 may be parallelised with Waves 1 and 3–6.** All other waves are strictly sequential — see [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour).
 
@@ -143,7 +148,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   - [x] 1.C **[GATE]** Checkpoint — Attributed corpus baseline
 
-    - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs.
+    - Full corpus run with attribution live. Every stored verdict names its engine and, where garbled, its fired prongs. **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition).
     - This run is the graded baseline for every subsequent wave. **No behavioural deliverable (Waves 3–6) may merge until this gate is checked.**
     - Verify: `uv run pytest` green; architecture guards pass; sidecar schema test passes.
     - **PREREQUISITE — set `VERDICT_DOWNGRADE_ENABLED=true` for the baseline run (found 2026-09-15, task 1.9).** The registry upsert is a max-verdict-priority CAS (`registry/queries.py:95-113`, `VERDICT_PRIORITY` PASS=3 > MARGINAL=2 > FAIL=1 > ERROR=0): a verdict can only be upgraded, never downgraded, across re-ingestion cycles. `preprocess_client.py:177` writes through that same CAS, and `worker/registry_mirror.py:88` mirrors it onto the MinIO sidecar. `VERDICT_DOWNGRADE_ENABLED` defaults to **false** (`config.py`), and it is the only thing that sets `force_verdict_override` (`indexer.py:1254,1415`).
@@ -276,6 +281,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
   - [x] 12.C-core **[GATE]** Checkpoint — a run is observable end to end
 
     - Process two documents — one clean Latin, one Arabic that garbles — and reconstruct both flows through `scripts/logtrace.py`.
+    - **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition). Both documents are already in the corpus, so without it this gate reads the previous run's records and passes on stale evidence.
     - Confirm child records reach the parent **as they are produced**, not at the end.
     - Confirm the handler stream is `sys.stderr` and no record spans two lines.
     - Confirm **zero** document text, node text and node titles in the output ([Property 12](design-rfc046-ocr-attribution-failure-cluster-remediation#property-12-no-document-content-in-logs)).
@@ -369,7 +375,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
   - [ ] 3.3 Re-derive Doc 22 and record the surviving prong
 
-    - Re-ingest Doc 22 after 3.1 and record which prong, if any, condemns it.
+    - Re-ingest Doc 22 after 3.1 and record which prong, if any, condemns it. **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition).
     - If `single_letter_fragments` (`garble.py:391-395`) fires, that is a genuine Arabic-shaping extraction defect — **document it as out of scope for this RFC rather than suppressing it.**
     - _Requirements: [R5.7](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [DP-D5](design-rfc046-ocr-attribution-failure-cluster-remediation#d5-presentation-forms-detector-alignment-c5)_
     - _Dependencies: 3.1, 1.4 (needs `fired_prongs` persisted to be answerable)_

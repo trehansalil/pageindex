@@ -505,22 +505,35 @@ def check_docling(cfg: RemoteConfig) -> list[PreflightCheck]:
             )
         ]
     headers = {"Authorization": f"Bearer {cfg.docling_token}"} if cfg.docling_token else {}
-    try:
-        resp = httpx.get(f"{cfg.docling_url}/health", headers=headers, timeout=30.0)
-        ok = resp.status_code == 200
-        return [
-            PreflightCheck(
-                "docling.health",
-                ok,
-                f"{cfg.docling_url} -> HTTP {resp.status_code} {resp.text[:80]}",
-            )
-        ]
-    except Exception as exc:
-        return [
-            PreflightCheck(
-                "docling.health", False, f"{cfg.docling_url}: {type(exc).__name__}: {exc}"
-            )
-        ]
+    # The remote Docling service is a Scaleway serverless function that scales
+    # to zero, so the FIRST request after an idle period pays a cold start.
+    # Measured 2026-09-19: 26.9s cold, then 0.24s and 0.11s warm. A single
+    # 30s probe therefore fails spuriously whenever the function has been idle
+    # -- which is most of the time -- and reports a healthy service as down.
+    # Retry once with a cold-start-tolerant timeout before believing it.
+    attempts = ((30.0, False), (90.0, True))
+    last_exc: Exception | None = None
+    for timeout_s, is_retry in attempts:
+        try:
+            resp = httpx.get(f"{cfg.docling_url}/health", headers=headers, timeout=timeout_s)
+            note = " (after cold start)" if is_retry else ""
+            return [
+                PreflightCheck(
+                    "docling.health",
+                    resp.status_code == 200,
+                    f"{cfg.docling_url} -> HTTP {resp.status_code}{note} {resp.text[:80]}",
+                )
+            ]
+        except Exception as exc:
+            last_exc = exc
+    return [
+        PreflightCheck(
+            "docling.health",
+            False,
+            f"{cfg.docling_url}: {type(last_exc).__name__}: {last_exc} "
+            f"(retried once at {attempts[-1][0]:.0f}s for a cold start)",
+        )
+    ]
 
 
 def check_redis(cfg: RemoteConfig) -> list[PreflightCheck]:
