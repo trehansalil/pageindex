@@ -21,7 +21,7 @@ from .constants import (
     PLACEHOLDER_UNSERIALISABLE,
     SCHEMA_VERSION,
 )
-from .redact import scrub_message
+from .redact import scrub_doc_name, scrub_message
 from .safe import safe_attrs, safe_scalar
 
 _MS_PER_SECOND = 1000
@@ -88,7 +88,9 @@ def _safe_message(record: logging.LogRecord) -> str:
         # their messages (indexer.py:1062, pipeline.py:477, job.py:164, ...).
         # Reducing them here covers every one at once, instead of editing --
         # and eventually missing -- each site.
-        return scrub_message(record.getMessage())
+        # Two reductions, same reasoning: the filename swap (gate 12.C) is
+        # scoped to our own loggers, the path swap applies to every record.
+        return scrub_doc_name(scrub_message(record.getMessage()), record.name)
     except Exception:  # pragma: no cover - defensive
         return PLACEHOLDER_UNSERIALISABLE
 

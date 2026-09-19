@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from contextvars import ContextVar, Token
 
 from .constants import PLACEHOLDER_UNSERIALISABLE
 
@@ -112,3 +113,65 @@ def hash_doc_name(name: object) -> str | None:
     if not text:
         return None
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:DOC_NAME_SHA_CHARS]
+
+
+#: The plaintext filename of the document currently being processed, held
+#: OUTSIDE the correlation mapping on purpose.
+#:
+#: ``subprocess_mgr.py:292`` serialises the whole correlation mapping into the
+#: converter child's environment, where it would sit readable in ``/proc`` for
+#: the child's lifetime. This variable never leaves the process: it is read
+#: only by ``scrub_doc_name`` below, to recognise the name in a message it is
+#: about to rewrite. A ContextVar rather than a module global so two concurrent
+#: documents cannot see each other's name.
+_DOC_NAME_PLAIN: ContextVar[str | None] = ContextVar("pageindex_obs_doc_name_plain", default=None)
+
+#: Loggers whose free-text messages we rewrite. Gate 12.C found the filename
+#: reaching the stream through ``msg`` at ~20 of our own call sites; the owner
+#: chose to fix ours and leave third-party diagnostics readable, so Docling's
+#: "Processing document <name>" stays as it is. Widening this to every record
+#: is a one-line change if that decision is revisited.
+_OWN_LOGGER_PREFIX = "pageindex_mcp"
+
+
+def bind_plain_doc_name(name: object) -> Token | None:
+    """Make *name* available to ``scrub_doc_name`` for this context.
+
+    Returns a token for ``reset_plain_doc_name``, or ``None`` when there was
+    nothing to bind -- callers reset only what they actually bound.
+    """
+    if not name or not isinstance(name, str):
+        return None
+    return _DOC_NAME_PLAIN.set(name)
+
+
+def reset_plain_doc_name(token: Token | None) -> None:
+    """Restore the previous binding. A ``None`` token is a no-op, mirroring
+    ``bind_plain_doc_name`` returning ``None``."""
+    if token is not None:
+        _DOC_NAME_PLAIN.reset(token)
+
+
+def scrub_doc_name(message: str, logger_name: str) -> str:
+    """Replace the bound document filename in *message* with its digest.
+
+    Applied in the formatter rather than at the ~20 call sites that name the
+    file, for the reason ``_safe_message`` already records for absolute paths:
+    editing each site means eventually missing one, and it leaves every future
+    call site uncovered. Cheap in the common case -- an ``in`` test against a
+    single string, no regex.
+
+    Never raises: a redaction failure must not cost the record.
+    """
+    try:
+        if not message or not logger_name.startswith(_OWN_LOGGER_PREFIX):
+            return message
+        name = _DOC_NAME_PLAIN.get()
+        if not name or name not in message:
+            return message
+        digest = hash_doc_name(name)
+        if digest is None:  # pragma: no cover - hash_doc_name only fails on empty
+            return message
+        return message.replace(name, digest)
+    except Exception:  # pragma: no cover - defensive, must never lose a record
+        return message

@@ -1191,6 +1191,92 @@ class TestFormatterScrubsPaths:
         assert "/srv/acme" not in json.dumps(payload)
 
 
+class TestOwnMessagesCarryTheDigestNotTheFilename:
+    """Gate 12.C, 2026-09-19: task 12.6 hashed the *structured* doc_name, but
+    the first real run showed the filename still reaching the stream nine
+    times through free-text ``msg`` ("Indexing file: %s", "table_repair: %s",
+    "Indexed %s -> doc_id=%s", ...).
+
+    Owner decision: substitute in the formatter rather than edit the ~20 call
+    sites, following the same reasoning `_safe_message` already records for
+    absolute paths -- editing each site means eventually missing one, and a
+    new call site added next year is covered for free. Scoped to our own
+    loggers; third-party records are left alone."""
+
+    def _render(self, logger_name, template, args):
+        from pageindex_mcp.obs.formatter import JsonFormatter
+
+        record = logging.LogRecord(logger_name, logging.INFO, "f.py", 1, template, args, None)
+        return json.loads(JsonFormatter().format(record))
+
+    def test_our_logger_gets_the_digest(self):
+        from pageindex_mcp.obs import bind_log_context
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        name = "Mustermann_Police_2024.pdf"
+        with bind_log_context(run_id="r1", doc_name=name):
+            payload = self._render(
+                "pageindex_mcp.client.indexer", "Indexing file: %s (ext=%s)", (name, ".pdf")
+            )
+
+        assert name not in json.dumps(payload, ensure_ascii=False)
+        assert hash_doc_name(name) in payload["msg"]
+
+    def test_arabic_filename_is_substituted(self):
+        from pageindex_mcp.obs import bind_log_context
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        name = "وارد رقم 597 من مكتب أبوظبي التنفيذي.pdf"
+        with bind_log_context(run_id="r1", doc_name=name):
+            payload = self._render(
+                "pageindex_mcp.converters.docling_conv",
+                "table_repair: %s chars %d->%d",
+                (name, 5, 4),
+            )
+
+        assert name not in json.dumps(payload, ensure_ascii=False)
+        assert hash_doc_name(name) in payload["msg"]
+
+    def test_third_party_logger_is_left_alone(self):
+        """The owner chose to leave library records readable. Docling names
+        the file in its own diagnostics and we do not rewrite those."""
+        from pageindex_mcp.obs import bind_log_context
+
+        name = "policy.pdf"
+        with bind_log_context(run_id="r1", doc_name=name):
+            payload = self._render(
+                "docling.pipeline.base_pipeline", "Processing document %s", (name,)
+            )
+
+        assert payload["msg"] == "Processing document policy.pdf"
+
+    def test_nothing_bound_leaves_the_message_untouched(self):
+        payload = self._render("pageindex_mcp.client.indexer", "Indexing file: %s", ("a.pdf",))
+        assert payload["msg"] == "Indexing file: a.pdf"
+
+    def test_binding_is_restored_on_exit(self):
+        from pageindex_mcp.obs import bind_log_context
+
+        with bind_log_context(run_id="r1", doc_name="inner.pdf"):
+            pass
+        payload = self._render("pageindex_mcp.client.indexer", "Indexing file: %s", ("inner.pdf",))
+        assert payload["msg"] == "Indexing file: inner.pdf"
+
+    def test_plaintext_never_enters_the_mapping_sent_to_the_child(self):
+        """The substitution source must live outside the correlation mapping:
+        subprocess_mgr serialises that whole mapping into the child's env."""
+        import json as _json
+
+        from pageindex_mcp.obs import bind_log_context
+        from pageindex_mcp.obs.context import current_context
+
+        name = "Mustermann_Police_2024.pdf"
+        with bind_log_context(run_id="r1", doc_name=name):
+            serialised = _json.dumps(dict(current_context()))
+
+        assert name not in serialised
+
+
 class TestForwardedChildStderrIsScrubbed:
     """The AST guard over decision() call sites cannot see this channel: the
     child's stderr is forwarded through verbatim, and docling/pymupdf print
