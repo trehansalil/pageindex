@@ -419,12 +419,13 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R5.4](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.5](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.6](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [Property 3](design-rfc046-ocr-attribution-failure-cluster-remediation#property-3-presentation-form-detector-uniformity), [Property 4](design-rfc046-ocr-attribution-failure-cluster-remediation#property-4-normalization-coverage-non-regression)_
     - _Dependencies: 3.1_
 
-  - [ ] 3.3 Re-derive Doc 22 and record the surviving prong
+  - [x] 3.3 Re-derive Doc 22 and record the surviving prong
 
     - Re-ingest Doc 22 after 3.1 and record which prong, if any, condemns it. **Clear the hash cache first** — see [the re-ingestion precondition](#reingest-precondition).
     - If `single_letter_fragments` (`garble.py:391-395`) fires, that is a genuine Arabic-shaping extraction defect — **document it as out of scope for this RFC rather than suppressing it.**
     - _Requirements: [R5.7](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [DP-D5](design-rfc046-ocr-attribution-failure-cluster-remediation#d5-presentation-forms-detector-alignment-c5)_
     - _Dependencies: 3.1, 1.4 (needs `fired_prongs` persisted to be answerable)_
+    - **DONE 2026-09-21.** Re-ingested Doc 22 (`sha8=dd1a39f7`, `doc_name_sha8=fb308f20`, `doc_id=37818060-4b9c-407e-b99a-20a464385d7f`) after hash cache clear. Result: **no prong fires** (`garble_prongs=[]`, `garble_ratio=0.0`). Tree gate passed, 38 nodes, depth 2, verdict PASS via `structural_pass`. The `presentation_forms` prong that previously condemned Doc 22 is now correctly below the 50% ratio threshold from task 3.1. `single_letter_fragments` did not fire either. OCR retry keep-best fired (pre=2510 chars garbled → post=7999 chars clean). Density gate also confirmed the 3.4 corrected numerator: `chars_per_page=1999.75, chars_per_page_corrected=2477.0, verdict_would_change=false`.
 
   - [x] 3.4 Correct the density numerator
 
@@ -444,12 +445,13 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R8.4](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [R8.5](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
     - _Dependencies: 1.C_
 
-  - [ ] 3.6 Re-run the Doc-17 force-OCR experiment with a confirmed spelling
+  - [x] 3.6 Re-run the Doc-17 force-OCR experiment with a confirmed spelling
 
     - `RUN-8:207` records "enabling it produces 30k chars of clean Arabic MD" from an uncommitted 2026-09-09 experiment. Given 3.5, the spelling used may have been a silent no-op.
     - Re-run with a confirmed-truthy value and record the result. **This figure is a fixture input for task 5.4** and must not be carried on trust.
     - _Requirements: [R8.6](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
     - _Dependencies: 3.5_
+    - **DONE 2026-09-21.** Re-ran with `PRE_GARBLE_FORCE_OCR_ENABLED=1` (confirmed truthy after 3.5 `_envbool` fix). Doc 17 (`sha8=e16412fe`, `doc_name_sha8=f0116f19`) still fails `low_quality_tree: garbling` (sparse_mojibake prong). VLM fallback was attempted and also garbled. The RUN-8:207 "30k chars" claim is **unverifiable** — the original experiment likely used a spelling that was a silent no-op under the old parse. Task 5.4 must not use this figure as a fixture input.
 
   - [x] 3.7 Threshold-immutability guard
 
