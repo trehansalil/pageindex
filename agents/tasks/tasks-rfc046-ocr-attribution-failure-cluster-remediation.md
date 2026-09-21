@@ -96,7 +96,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 ## Tasks
 
-- [ ] 1. OCR Attribution & Baseline (D2, D3)
+- [x] 1. OCR Attribution & Baseline (D2, D3)
 
   - [x] 1.1 Introduce `OcrEngine` and thread it through `OcrDecision`
 
@@ -193,7 +193,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.1](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.7](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.8](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [Property 9](design-rfc046-ocr-attribution-failure-cluster-remediation#property-9-attribution-precedes-behaviour)_
     - _Dependencies: 1.1–1.9 (1.9 deferred to Wave 3 by decision — see task 1.9)_
 
-- [ ] 2. Reproducible Evaluation Evidence (D1) — *parallelisable with all other waves*
+- [x] 2. Reproducible Evaluation Evidence (D1) — *parallelisable with all other waves*
 
   - [x] 2.1 Make unreachable engine endpoints a hard error
 
@@ -252,7 +252,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Gates RFC-047's claims, not this RFC's deliverables.
     - _Dependencies: 2.1–2.5_
 
-- [ ] 2.5obs. Phase and Decision-Layer Logging (D12) — *core blocks Wave 3; instrumentation does not*
+- [x] 2.5obs. Phase and Decision-Layer Logging (D12) — *core blocks Wave 3; instrumentation does not* (all 12.x subtasks complete; parent checkbox was missed)
 
   **Why this exists.** The whole per-document pipeline runs inside the `converters_cli` child process, on both routes. `worker/subprocess_mgr.py:203` reads that child with `proc.communicate()` and never references `stderr_tail` again when the return code is 0. Child stderr is buffered whole in the parent and **discarded on success**; nothing is visible until the document finishes. So today, at every log level, every line the decision layer would emit is thrown away. Task 12.3 is the gate on everything else here.
 
@@ -398,7 +398,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
     **Not a defect: duplicate node titles.** 20 of the 102 titles appear twice. Investigated and refused as a merge bug — PDF page 10 is headed `| النص الأصلي | النص المقترح | الملاحظات |` and page 15 prints `المادة (3)` twice side by side, original and redlined amendment. The VLM flattens the columns into sequential blocks, so each article legitimately appears once per column; `المادة (1)`/`التعريفات` are byte-identical because that article was unchanged. The code path agrees: `recovery.py:948` and `indexer.py:473` both *assign*, keep-best returns a bool, and the log shows attempt 2 was reverted (`char_count_regression_revert`, 82078 < 101546) before the VLM ran.
 
-- [ ] 3. Independent Cluster Fixes (D5, D8, D10) + Reachable Dynamic Child Timeout (D11)
+- [x] 3. Independent Cluster Fixes (D5, D8, D10) + Reachable Dynamic Child Timeout (D11)
 
   - [x] 3.1 Align the presentation-forms detectors onto one shared ratio
 
@@ -533,7 +533,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - **DONE 2026-09-21.** Added 13 new tests: `TestIsoToTess` (4), `TestPreclassifyDocument` (5), `TestExpandedSerialisation` (4). Total: 27 tests in `test_preclassify.py`. All architecture guard tests green (new events and attrs registered).
     - _File: `tests/test_preclassify.py`_
 
-  - [ ] 3.C **[GATE]** Checkpoint — Independent fixes attributed
+  - [x] 3.C **[GATE]** Checkpoint — Independent fixes attributed (25-doc worker-path ingest on clean slate; 21 unchanged, 3 movements all correct-direction D5, 1 new coverage D11; R11.7 satisfied; 2026-09-21)
 
     - Corpus run. Per-document delta against the 1.C baseline, each change attributed to D5, D8, D10 or D11.
     - **3.10–3.13 are D11 — infrastructure, and the only deliverable in this RFC whose correct outcome is no verdict movement at all** (R11.7). A movement on any of the 24 documents the 1.C baseline scored is a measurement defect, not a result, and R9.4 blocks acceptance pending explanation.
