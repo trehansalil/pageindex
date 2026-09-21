@@ -149,6 +149,8 @@ class RecoveryOutcome:
     rtl_decision: RtlDecision | None | _Unset = _UNSET  # type: ignore[assignment]
     tmp_md_path: str | None | _Unset = _UNSET  # type: ignore[assignment]
     bidi_renorm_applied: bool | _Unset = _UNSET  # type: ignore[assignment]
+    pre_rebuild_md_chars: int | None | _Unset = _UNSET  # type: ignore[assignment]
+    pre_rebuild_md_garbled: bool | None | _Unset = _UNSET  # type: ignore[assignment]
 
     def apply(self, state: ExtractionState) -> None:
         """Write provided (non-``_UNSET``) fields back to *state*.
@@ -181,6 +183,10 @@ class RecoveryOutcome:
                 state.tmp_md_path = self.tmp_md_path
             if not isinstance(self.bidi_renorm_applied, _Unset):
                 state.bidi_renorm_applied = self.bidi_renorm_applied
+            if not isinstance(self.pre_rebuild_md_chars, _Unset):
+                state.pre_rebuild_md_chars = self.pre_rebuild_md_chars
+            if not isinstance(self.pre_rebuild_md_garbled, _Unset):
+                state.pre_rebuild_md_garbled = self.pre_rebuild_md_garbled
         finally:
             _guard_bypass.active = False
 
@@ -234,6 +240,11 @@ class ExtractionState:
     # common case, since Docling does no OCR on the primary pass.
     ocr_engine: str | None = None
     supports_ocr: bool = False
+    # D7 (RFC-046 task 5.1): quality metrics of recovered markdown captured
+    # *before* the tree rebuild so the keep-best heuristic can prefer a
+    # clean extraction even when the tree built from it still fails.
+    pre_rebuild_md_chars: int | None = None
+    pre_rebuild_md_garbled: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_init_complete", True)

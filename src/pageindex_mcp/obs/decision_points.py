@@ -122,6 +122,7 @@ _H_GATES = "pageindex_mcp.helpers.gates"
 _H_GARBLE = "pageindex_mcp.helpers.garble"
 _H_TREEVAL = "pageindex_mcp.helpers.tree_validation"
 _H_VERDICT = "pageindex_mcp.helpers.verdict"
+_H_ARBITRATE = "pageindex_mcp.helpers.arbitrate"
 _C_INDEXER = "pageindex_mcp.client.indexer"
 _C_RECOVERY = "pageindex_mcp.client.recovery"
 _X_PICTURES = "pageindex_mcp.converters.pictures"
@@ -993,6 +994,16 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
 # ---------------------------------------------------------------------------
 _RECOVERY_POINTS: tuple[DecisionPoint, ...] = (
     _p(
+        event="pre_rebuild_md_quality",
+        phase=Phase.OCR,
+        module=_C_RECOVERY,
+        function="_execute_ocr_retry",
+        choices=("md_clean", "md_garbled", "md_empty"),
+        attrs=("md_char_count", "md_garbled", "fired_prongs"),
+        always_emits=False,
+        note="D7 (RFC-046 task 5.1): garble-checks recovered markdown before the expensive tree rebuild.",
+    ),
+    _p(
         event="ocr_retry_lang_degrade",
         phase=Phase.OCR,
         module=_C_RECOVERY,
@@ -1018,6 +1029,7 @@ _RECOVERY_POINTS: tuple[DecisionPoint, ...] = (
         choices=(
             "zero_char_shortcut_retry_wins",
             "char_count_regression_revert",
+            "clean_md_overrides_char_regression",
             "equal_count_tiebreak_retry_wins",
             "equal_count_tiebreak_revert",
             "density_improved_retry_wins",
@@ -1196,7 +1208,7 @@ _RECOVERY_POINTS: tuple[DecisionPoint, ...] = (
         phase=Phase.RECOVERY,
         module=_C_RECOVERY,
         function="_recover_landscape_reroute",
-        choices=("override_to_flat_landscape_fallback", "no_override"),
+        choices=("override_to_flat_landscape_fallback", "no_override", "skip_tree_already_passed"),
         attrs=("computed_route", "final_route", "pic_results_count"),
         overridden=True,
         always_emits=False,
@@ -1210,6 +1222,19 @@ _RECOVERY_POINTS: tuple[DecisionPoint, ...] = (
 # NOTE: hot-path config guard covers this file: read pipeline_config.* only.
 # NOTE: decide_ocr_strategy's SINGLE permitted call site in src/ lives here.
 # ---------------------------------------------------------------------------
+_ARBITRATE_POINTS: tuple[DecisionPoint, ...] = (
+    _p(
+        event="arbitrate_candidates",
+        phase=Phase.OCR,
+        module=_H_ARBITRATE,
+        function="arbitrate",
+        choices=("pre_retry", "post_retry", "corrective_retry"),
+        attrs=("candidate_count", "winner_index", "winner_chars", "winner_garbled"),
+        always_emits=False,
+        note="D7 (RFC-046 task 5.3): unified N-candidate script-aware arbitration.",
+    ),
+)
+
 _PICTURES_POINTS: tuple[DecisionPoint, ...] = (
     _p(
         event="vlm_egress_gate",
@@ -1716,6 +1741,7 @@ DECISION_POINTS: tuple[DecisionPoint, ...] = (
     + _OCRLANGS_POINTS
     + _INDEXER_POINTS
     + _RECOVERY_POINTS
+    + _ARBITRATE_POINTS
     + _PICTURES_POINTS
     + _PRECLASSIFY_POINTS
     + _PIPELINE_POINTS

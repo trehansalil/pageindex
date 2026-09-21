@@ -607,14 +607,14 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 - [ ] 5. Arbitrate on the Extraction (D7)
 
-  - [ ] 5.1 Quality-check recovered markdown before the tree rebuild
+  - [x] 5.1 Quality-check recovered markdown before the tree rebuild
 
     - `_execute_ocr_retry` (`recovery.py:236`) hands its output straight to `_reconvert_and_revalidate` (`indexer.py:423-450`), which re-runs the LLM tree builder before any comparison. **There is no garble check on the recovered markdown anywhere.**
     - Evaluate the markdown for garble and content volume first.
     - _Requirements: [R7.1](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 4.C_
 
-  - [ ] 5.2 Retain a materially better extraction even when its tree fails
+  - [x] 5.2 Retain a materially better extraction even when its tree fails
 
     - When recovered markdown is not garbled and substantially higher in content, keep it rather than reverting at `recovery.py:389`.
     - **Hard Rule #5 — RULED (2026-09-15, OQ3): proceed.** The stored verdict stays a truthful FAIL or MARGINAL. What changes is which extraction the verdict is computed over — a FAIL over 30,000 correct characters rather than a FAIL over 1,283. No extra sidecar divergence marker required.
@@ -622,7 +622,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R7.2](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 5.1_
 
-  - [ ] 5.3 Reconcile the two arbitrators onto one script-aware policy
+  - [x] 5.3 Reconcile the two arbitrators onto one script-aware policy
 
     - Two independent, unreconciled, script-blind arbitrators exist: `_keep_best_wins` (`recovery.py:92-208`, char count + `_repeating_token_density` at `:78`, reverts) and `client/images.py:296-309` (`_ocr_information_density` at `:252-258`, alnum+digit ratio, 1.5× rule, **concatenates** when it doesn't fire).
     - Both have already ranked random Latin gibberish above correct formal Arabic on this corpus — the failure the RFC-045 escape at `recovery.py:184-198` patches around.
@@ -635,7 +635,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R7.3](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.4](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.5](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.6](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [Property 7](design-rfc046-ocr-attribution-failure-cluster-remediation#property-7-arbitration-script-awareness)_
     - _Dependencies: 5.1_
 
-  - [ ] 5.4 Tests for D7
+  - [x] 5.4 Tests for D7
 
     - Doc 17 reproduction: recovery yields clean Arabic markdown, tree rebuild still fails, better extraction retained, verdict truthfully FAIL. **Fixture figure comes from task 3.6, not from `RUN-8:207` on trust.**
     - Three-candidate arbitration test.

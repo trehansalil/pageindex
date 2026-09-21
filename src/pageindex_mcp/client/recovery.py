@@ -100,6 +100,7 @@ def _keep_best_wins(
     expected_script: str | None,
     script_context: ScriptContext | None,
     filename: str,
+    post_md_garbled: bool | None = None,
 ) -> bool:
     """Pure-function keep-best decision for OCR retry vs pre-retry snapshot.
 
@@ -148,7 +149,35 @@ def _keep_best_wins(
         return True
 
     # Stage 2: char-count regression check.
+    # D7 (RFC-046 task 5.2): when the retry markdown is clean but the
+    # pre-retry tree text is garbled, a smaller-but-clean extraction
+    # is better than a larger garbled one.  Check garble before reverting.
     if post_retry_chars < pre_total_chars:
+        if post_md_garbled is False:
+            _pre_text_s2 = _flatten_tree_text(pre_result.get("structure", []))
+            _pre_garbled_s2 = bool(
+                detect_garble(
+                    _pre_text_s2,
+                    script_context=_kb_ctx,
+                    config=_garble_config,
+                    blob_kind=BlobKind.TREE_TEXT,
+                )
+            )
+            if _pre_garbled_s2:
+                decision(
+                    event="ocr_retry_keep_best",
+                    choice="clean_md_overrides_char_regression",
+                    reason="post has fewer tree chars but clean markdown; pre is garbled",
+                    attrs={
+                        "pre_total_chars": pre_total_chars,
+                        "post_retry_chars": post_retry_chars,
+                        "pre_garbled": True,
+                        "post_garbled": False,
+                        "pre_density": None,
+                        "post_density": None,
+                    },
+                )
+                return True
         decision(
             event="ocr_retry_keep_best",
             choice="char_count_regression_revert",
@@ -157,7 +186,7 @@ def _keep_best_wins(
                 "pre_total_chars": pre_total_chars,
                 "post_retry_chars": post_retry_chars,
                 "pre_garbled": None,
-                "post_garbled": None,
+                "post_garbled": post_md_garbled,
                 "pre_density": None,
                 "post_density": None,
             },
@@ -380,6 +409,8 @@ class RecoveryMixin:
                 rtl_decision=state.rtl_decision,
                 tmp_md_path=state.tmp_md_path,
                 bidi_renorm_applied=state.bidi_renorm_applied,
+                pre_rebuild_md_chars=state.pre_rebuild_md_chars,
+                pre_rebuild_md_garbled=state.pre_rebuild_md_garbled,
             )
 
         try:
@@ -483,6 +514,55 @@ class RecoveryMixin:
             else:
                 state.rtl_decision = None
 
+            # D7 (RFC-046 task 5.1): garble-check recovered markdown *before*
+            # the expensive tree rebuild so keep-best can prefer a clean
+            # extraction even when the tree built from it still fails.
+            _md_text = state.md_content or ""
+            _md_chars = len(_md_text.strip())
+            _kb_sc = (
+                script_context
+                if script_context is not None
+                else ScriptContext(
+                    dominant_script=expected_script,
+                    had_presentation_forms=_infer_presentation_forms(_md_text),  # pre-NFKC: post-normalize but safe
+                    source="pre_rebuild_md_quality",  # pre-NFKC
+                )
+            )
+            if _md_chars == 0:
+                _md_garble_result = None
+                _md_garbled = True
+                decision(
+                    event="pre_rebuild_md_quality",
+                    choice="md_empty",
+                    reason="recovered markdown is empty",
+                    attrs={"md_char_count": 0, "md_garbled": True, "fired_prongs": []},
+                )
+            else:
+                _md_garble_result = detect_garble(
+                    _md_text,
+                    script_context=_kb_sc,
+                    config=_garble_config,
+                    blob_kind=BlobKind.TREE_TEXT,
+                )
+                _md_garbled = bool(_md_garble_result)
+                _md_prongs = (
+                    [p.prong_name for p in _md_garble_result.fired_prongs]
+                    if _md_garble_result
+                    else []
+                )
+                decision(
+                    event="pre_rebuild_md_quality",
+                    choice="md_garbled" if _md_garbled else "md_clean",
+                    reason="garble check on recovered markdown before tree rebuild",
+                    attrs={
+                        "md_char_count": _md_chars,
+                        "md_garbled": _md_garbled,
+                        "fired_prongs": _md_prongs,
+                    },
+                )
+            state.pre_rebuild_md_chars = _md_chars
+            state.pre_rebuild_md_garbled = _md_garbled
+
             await self._reconvert_and_revalidate(
                 state,
                 state.md_content,
@@ -505,6 +585,7 @@ class RecoveryMixin:
                     expected_script=expected_script,
                     script_context=script_context,
                     filename=filename,
+                    post_md_garbled=state.pre_rebuild_md_garbled,
                 )
                 _post_chars = len(_flatten_tree_text(state.result.get("structure", [])))
                 decision(
@@ -1163,6 +1244,24 @@ class RecoveryMixin:
             for pr in state.pic_results
         )
         if _has_landscape:
+            # D7 (RFC-046 task 5.3): when the tree already passes all
+            # gates, forcing flat is a downgrade, not a recovery.  The
+            # tree holds the full extraction; the flat path may carry
+            # residual pre-recovery garble.  Skip the reroute.
+            if state.ok and state.gate_result is not None:
+                _tree_passed = getattr(state.gate_result, "ok", state.ok)
+                if _tree_passed:
+                    decision(
+                        event="landscape_reroute_override",
+                        choice="skip_tree_already_passed",
+                        reason="tree passed all gates; landscape reroute would be a downgrade",
+                        attrs={
+                            "computed_route": "tree",
+                            "final_route": "tree",
+                            "pic_results_count": len(state.pic_results),
+                        },
+                    )
+                    return
             logger.warning(
                 "RFC-035 D2: landscape fallback re-extraction triggered picture "
                 "detection for %s — re-routing tree pass to flat-mixed",

@@ -66,6 +66,14 @@ from .flat import (
     route_and_extract_flat,
 )
 
+# ── arbitrate ───────────────────────────────────────────────────────────────
+from .arbitrate import (
+    ENGINE_RELIABILITY_ORDER,
+    HALLUCINATION_CHAR_RATIO,
+    Candidate,
+    arbitrate,
+)
+
 # ── garble ───────────────────────────────────────────────────────────────────
 from .garble import (
     _COMMON_WORDS,
@@ -304,4 +312,9 @@ __all__ = [
     "table_is_rtl",
     "validate_feature_wirings",
     "validate_tree",
+    # arbitrate
+    "ENGINE_RELIABILITY_ORDER",
+    "HALLUCINATION_CHAR_RATIO",
+    "Candidate",
+    "arbitrate",
 ]

@@ -68,6 +68,7 @@ mappings:
       - test_zone3_ocr_recovery.py
       - test_zone4_bidi_rtl.py
       - test_d10c_pre_nfkc_threading.py
+      - test_d7_arbitration.py
       - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
   client/remote.py:
@@ -331,6 +332,10 @@ mappings:
     tests:
       - test_converters_cli.py
 
+  helpers/arbitrate.py:
+    tests:
+      - test_d7_arbitration.py
+
   helpers/types.py:
     tests:
       - test_verdict.py
@@ -345,6 +350,7 @@ mappings:
       - test_inspector.py
       - test_zone1_verdict_partition.py
       - test_d10c_pre_nfkc_threading.py
+      - test_d7_arbitration.py
 
   helpers/tree_validation.py:
     tests:
@@ -611,6 +617,7 @@ mappings:
       - test_obs_logging.py primary
       - test_rfc046_attribution.py
       - test_d6_flat_verdicts.py
+      - test_d7_arbitration.py
   obs/decisions.py:
     tests:
       - test_obs_logging.py primary
