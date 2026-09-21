@@ -104,7 +104,7 @@ class TestProbeWithPdfInspector:
         ):
             from pageindex_mcp.converters import probe_conversion_route
 
-            chunk_count, is_docling, classification = probe_conversion_route(pdf_path)
+            chunk_count, is_docling, classification, _pre = probe_conversion_route(pdf_path)
 
         assert chunk_count == 1
         assert is_docling is True
@@ -128,7 +128,7 @@ class TestProbeWithPdfInspector:
         ):
             from pageindex_mcp.converters import probe_conversion_route
 
-            _, _, classification = probe_conversion_route(pdf_path)
+            _, _, classification, _pre = probe_conversion_route(pdf_path)
 
         assert classification["pdf_type"] == "mixed"
         assert classification["has_encoding_issues"] is True
@@ -144,10 +144,11 @@ class TestProbeWithoutPdfInspector:
     def test_non_pdf_returns_none_classification(self):
         from pageindex_mcp.converters import probe_conversion_route
 
-        chunk_count, is_docling, classification = probe_conversion_route("readme.md")
+        chunk_count, is_docling, classification, pre_classification = probe_conversion_route("readme.md")
         assert chunk_count == 1
         assert is_docling is False
         assert classification is None
+        assert pre_classification is None
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +172,7 @@ class TestShadowModeRouting:
         ):
             from pageindex_mcp.converters import probe_conversion_route
 
-            chunk_count, is_docling, _ = probe_conversion_route(pdf_path)
+            chunk_count, is_docling, _, _pre = probe_conversion_route(pdf_path)
 
         assert chunk_count == 1
         assert is_docling is True

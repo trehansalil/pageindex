@@ -55,7 +55,7 @@ import pytest
 # Frozen facade surface as of RFC-045 (2026-09-07), pre-shrink baseline.
 # 412 entries across 9 packages:
 #   client               13
-#   converters          127
+#   converters          131
 #   helpers              94
 #   metrics              63
 #   registry             19
@@ -144,6 +144,7 @@ FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
         "LANDSCAPE_REEXTRACT_DEADLINE_SECONDS",
         "MAX_LANDSCAPE_PAGES",
         "PictureResult",
+        "PreClassification",
         "RtlDecision",
         "ScriptContext",
         "StageRecord",
@@ -239,18 +240,21 @@ FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
         "chunked_docling_timeout_s",
         "decide_rtl",
         "detect_garble",
+        "detect_lang_from_text_layer",
         "detect_ocr_langs",
         "docx_to_markdown",
         "ensure_tessdata",
         "html_to_markdown_with_images",
         "image_to_markdown",
         "libreoffice_to_pdf",
+        "merge_lang_sources",
         "normalize_dashes",
         "numbering_depth",
         "pdf_markdown_converters",
         "pdf_to_markdown",
         "pdf_to_markdown_docling",
         "pptx_to_markdown",
+        "preclassify_document",
         "probe_conversion_route",
         "rasterize_pdf_pages",
         "rasterize_pdf_pages_fitz",

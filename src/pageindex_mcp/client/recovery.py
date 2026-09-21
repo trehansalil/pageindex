@@ -30,6 +30,7 @@ from ..helpers import (
     _flat_block_primary_text,
     _flatten_tree_text,
     _garble_config,
+    _infer_presentation_forms,
     detect_garble,
     finalize_gate_and_route,
     route_and_extract_flat,
@@ -118,16 +119,13 @@ def _keep_best_wins(
     """
     post_retry_chars = len(_flatten_tree_text(post_result.get("structure", [])))
 
-    # RFC-046 D10 / task 3.8: pre_result tree text is post-NFKC (built
-    # from converter output), so PF codepoints are already destroyed —
-    # _infer_pf would always return False.  Callers with pre-NFKC text
-    # should pass a ScriptContext upstream.
+    _pre_text = _flatten_tree_text(pre_result.get("structure", []))
     _kb_ctx = (
         script_context
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=False,
+            had_presentation_forms=_infer_presentation_forms(_pre_text),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
             source="ocr_retry_keep_best",
         )
     )

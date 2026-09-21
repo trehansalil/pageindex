@@ -1048,15 +1048,12 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
     had_presentation_forms threading; falls back to building one from
     ``expected_script`` when not provided (backward compat).
     """
-    # RFC-046 D10 / task 3.8: when no ScriptContext is passed, text is
-    # likely post-NFKC (all current callers pass a ctx, but the fallback
-    # must not silently scan destroyed codepoints if a new caller appears).
     _ctx = (
         script_context
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=False,
+            had_presentation_forms=_infer_presentation_forms(text),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
             source="garble_ratio",
         )
     )

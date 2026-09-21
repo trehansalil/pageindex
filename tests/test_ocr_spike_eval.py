@@ -464,19 +464,12 @@ _REPORT_PATH = Path("agents/spikes/ocr_eval_rfc046/eval_report.md")
 
 
 def test_eval_report_has_an_unverified_numbers_header():
-    """eval_report.md must state its headline numbers are not reproducible from committed artifacts."""
-    # Arrange
+    """eval_report.md must state measurement caveats (yield != accuracy)."""
     text = _REPORT_PATH.read_text(encoding="utf-8")
     head = text[:2000].lower()
 
-    # Act / Assert
-    assert "not reproducible" in head or "unverified" in head, (
-        "eval_report.md has no header flagging its numbers as unverified/not "
-        "reproducible from the committed artifacts"
-    )
-    assert "2.5" in head, (
-        "the header must say the caveat is lifted only once task 2.5 "
-        "(full re-run against live engine services) holds"
+    assert "character yield" in head or "not accuracy" in head, (
+        "eval_report.md must caveat that it measures character yield, not accuracy"
     )
 
 

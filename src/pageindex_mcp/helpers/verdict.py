@@ -10,6 +10,7 @@ from ..script import ScriptContext
 from .garble import (
     BlobKind,
     _garble_config,
+    _infer_presentation_forms,
     detect_garble,
     hash_pipe_ratio,
     ocr_noise_ratio,
@@ -304,14 +305,12 @@ def _try_image_enrichment(
     total_chars = len(_promoted_text)
     if total_chars < th.min_image_promoted_chars:
         return None
-    # RFC-046 D10 / task 3.8: _promoted_text derives from sig.primary_text
-    # (post-NFKC tree text), so PF codepoints are already destroyed.
     _sc = (
         script_context
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=False,
+            had_presentation_forms=_infer_presentation_forms(_promoted_text),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
             source="apply_promotions",
         )
     )

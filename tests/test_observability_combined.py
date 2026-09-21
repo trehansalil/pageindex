@@ -101,13 +101,14 @@ class TestEffectiveConfigSnapshot:
             "small_doc_max_chars",
             "small_doc_leaf_ratio_bound_low",
             "small_doc_leaf_ratio_bound_high",
+            "preclassify_enabled",
         }
 
         assert set(snap.keys()) == expected_keys, (
             f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
             f"  Extra:   {set(snap.keys()) - expected_keys}"
         )
-        assert len(snap) == 36
+        assert len(snap) == 37
 
         assert isinstance(snap["pipeline_version"], int)
         for fk in (
@@ -244,7 +245,7 @@ class TestShadowModeDocstring:
         doc = probe_conversion_route.__doc__
         assert doc is not None, "probe_conversion_route must have a docstring"
         assert "NEVER influences routing" not in doc
-        assert "PDF_INSPECTOR_PRECLASSIFY" in doc
+        assert "preclassify_document()" in doc or "pre_classification" in doc
 
 
 # ---------------------------------------------------------------------------

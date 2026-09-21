@@ -226,7 +226,7 @@ _GATES_POINTS: tuple[DecisionPoint, ...] = (
         module=_H_GATES,
         function="_gate_suspect_density",
         choices=("fires", "clear", "not_evaluated_no_page_count"),
-        attrs=("page_count", "chars_per_page"),
+        attrs=("page_count", "chars_per_page", "chars_per_page_corrected", "corrected_delta", "verdict_would_change"),
     ),
     _p(
         event="garble_recovery_eligible",

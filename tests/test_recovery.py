@@ -390,7 +390,7 @@ class TestProbeConversionRoute:
     handshake's producer and consumer tested against the same contract."""
 
     def test_non_pdf_input_reports_non_docling(self):
-        assert probe_conversion_route("notes.txt") == (1, False, None)
+        assert probe_conversion_route("notes.txt") == (1, False, None, None)
 
     def test_pymupdf_failure_reports_non_docling(self):
         # `converters.probe_conversion_route` does a function-local

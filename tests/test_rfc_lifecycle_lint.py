@@ -210,7 +210,7 @@ zones:
 def test_real_zone_ownership_manifest_loads():
     real_zone_file = Path(__file__).resolve().parents[1] / "audit" / "zones" / "ZONE_OWNERSHIP.yaml"
     manifest = rfc_lifecycle_lint.load_zone_ownership(real_zone_file)
-    assert manifest["zones"]["zone_2"]["successor_rfc"] == "RFC-041"
+    assert manifest["zones"]["zone_2"]["successor_rfc"] == "RFC-046"
 
 
 def test_main_exits_nonzero_on_repo_state():

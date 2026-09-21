@@ -209,7 +209,9 @@ async def test_json_shape_and_types_on_success(tmp_pdf: Path, monkeypatch):
     # ({"handshake": true, ...}) followed by the final result JSON.
     assert len(lines) == 2, f"Expected exactly 2 stdout lines, got: {lines}"
     handshake = json.loads(lines[0])
-    assert handshake == {"handshake": True, "chunk_count": 1, "is_docling_route": True}
+    assert handshake["handshake"] is True
+    assert handshake["chunk_count"] == 1
+    assert handshake["is_docling_route"] is True
     payload = json.loads(lines[1])
 
     # Required keys

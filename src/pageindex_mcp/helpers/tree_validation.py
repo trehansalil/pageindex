@@ -256,7 +256,7 @@ def _tree_is_reordered(structure: list) -> bool:
 # Redirected to the canonical garble.py copies to eliminate
 # fix-one-miss-the-other drift (RFC-013 D7).
 # ---------------------------------------------------------------------------
-from .garble import GarbleConfig, _garble_ratio
+from .garble import GarbleConfig, _garble_ratio, _infer_presentation_forms
 
 # ---------------------------------------------------------------------------
 # TreeSignals
@@ -506,7 +506,7 @@ def validate_tree(
             )
             _script_ctx = ScriptContext(
                 dominant_script=_eff_script,
-                had_presentation_forms=False,
+                had_presentation_forms=_infer_presentation_forms(sig.flat_text) if sig.flat_text else False,  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
                 source="validate_tree",
             )
 
