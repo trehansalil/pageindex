@@ -601,6 +601,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
     - Corpus run. **Expect movement across the whole flat population, not only Doc 14.** Every change attributed to D6.
     - An improvement with no identifiable cause blocks this gate — see [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation).
+    - **Named expectations (Amendment 2, 2026-09-21):** uae_numbers_landscape (sha8=2982e1b0, 1845 clean flat chars, max_leaf_ratio=0.860) and uae_numbers_portrait (sha8=e62cbd24, clean flat, max_leaf_ratio=1.000) should move from FAIL toward MARGINAL/PASS — their flat content passes garble checks; only tree structural gates condemn them. MOU MOHRE (sha8=7ab5bdf3) should also benefit if D8 corrected numerator is activated (corrected density 1571 > floor 1500, uncorrected 1437 < floor).
     - _Requirements: [R6.9](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 4.1–4.6_
 
@@ -617,6 +618,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
     - When recovered markdown is not garbled and substantially higher in content, keep it rather than reverting at `recovery.py:389`.
     - **Hard Rule #5 — RULED (2026-09-15, OQ3): proceed.** The stored verdict stays a truthful FAIL or MARGINAL. What changes is which extraction the verdict is computed over — a FAIL over 30,000 correct characters rather than a FAIL over 1,283. No extra sidecar divergence marker required.
+    - **Bug-level finding (Amendment 2, 2026-09-21):** `وارد رقم 597` (sha8=305e8ca9) demonstrates the char-count revert defect concretely — `_keep_best_wins` reverts to 106K garbled Latin chars over 80K clean Arabic chars (`char_count_regression_revert, post=80377 < pre=106425`). The 106K is garbled repetition from eng-on-Arabic OCR, not content. Script-aware arbitration (5.3) must prevent this; 5.2's "materially better" criterion must weight script correctness, not just char count.
     - _Requirements: [R7.2](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 5.1_
 
@@ -629,6 +631,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - **Engine reliability ranking (Amendment 1, 2026-09-21):** the unified policy must encode an engine preference order derived from Wave 2 eval data: Surya (zero failures, 93–99% conf) > Tesseract (baseline, zero failures) > PaddleOCR > PaddleOCR-VL (6/25 zero-output). Discard zero-output candidates before ranking; use reliability as tiebreaker. Ship as `config.py` constant, not hardcoded. See `agents/spikes/ocr_eval_rfc046/eval_report.json`.
     - **Hallucination guard (Amendment 1a, 2026-09-21):** PaddleOCR-VL produced 39,732 chars on `قرار مجلس الوزراء رقم (1)` vs ~5K from Tesseract/Surya — 8× inflation, likely hallucinated repetition. The unified policy must cap trust when any engine's char yield exceeds the median of others by >3× (configurable), flagging for repetition-density analysis before preferring.
     - **`tests/test_zone3_ocr_recovery.py` pins the current keyword signature exactly** and changes in the same commit.
+    - **Landscape reroute conflict (Amendment 2, 2026-09-21):** `اتفاقية مستوى الخدمة` (sha8=e16412fe) recovers from garble via OCR retry — 34K clean chars, 108 nodes, depth=4, structural_pass — but `landscape_reroute` forces the route to flat. The flat path carries residual pre-recovery garble (sparse_mojibake + token_repetition) and is REJECTED. The unified policy must check whether the tree path already passed before honouring a flat-forcing reroute; if the tree holds, the override is a downgrade. This is a concrete test case for 5.3.
     - _Requirements: [R7.3](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.4](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.5](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.6](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [Property 7](design-rfc046-ocr-attribution-failure-cluster-remediation#property-7-arbitration-script-awareness)_
     - _Dependencies: 5.1_
 
@@ -638,6 +641,8 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - Three-candidate arbitration test.
     - Script-awareness test: formal Arabic must not lose to Latin gibberish on any scorer (Property 7).
     - Confirm `PRE_GARBLE_FORCE_OCR_ENABLED` default is untouched.
+    - **اتفاقية named test case (Amendment 2, 2026-09-21):** `اتفاقية مستوى الخدمة` (sha8=e16412fe, 20-page scanned Arabic) — tree recovery succeeds (34K chars, depth=4, structural_pass) but landscape_reroute forces flat → REJECTED. Verify that after 5.3, the passing tree is retained and the doc moves from REJECTED toward MARGINAL/PASS.
+    - **وارد char-count revert test (Amendment 2, 2026-09-21):** `وارد رقم 597` (sha8=305e8ca9) — 80K clean Arabic vs 106K garbled Latin. Verify script-aware policy keeps the clean extraction despite lower char count.
     - _Requirements: [R7.7](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.8](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 5.1, 5.2, 5.3, 3.6_
 
@@ -688,6 +693,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - AST guard conformance for any new recovery method.
     - **MOU MOHRE named test case (Amendment 1, 2026-09-21):** `MOU MOHRE & Nafis` (Arabic scanned, Latin filename) moved REJECTED→FAIL in 3.C (D5 garble gate no longer ejects it). With D4 content-derived langs, preclassify detects Arabic content and overrides filename-only `["eng"]` → `["ara","eng"]`. Verify this doc moves from FAIL toward MARGINAL or PASS after 6.2 lands.
     - **وارد رقم 597 named test case (Amendment 1a, 2026-09-21):** scanned Arabic, FAIL→FAIL in 3.C (unchanged). Another D4 candidate — content-derived langs should yield `["ara","eng"]` OCR instead of filename-only. Verify improvement after 6.2.
+    - **اتفاقية named test case (Amendment 2, 2026-09-21):** `اتفاقية مستوى الخدمة` (sha8=e16412fe, 20-page scanned Arabic, REJECTED in 3.C). Initial extraction uses `english_fallthrough` (latin_ratio=1.0 on body text) despite Arabic content — the same eng-on-Arabic bug as MOU MOHRE and وارد. Content-derived langs from preclassify would get `["ara"]` from the start, preventing the initial garble entirely. Verify this doc no longer hits `script_mismatch` garble prong after 6.2.
     - _Requirements: [R4.6](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.7](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2)_
     - _Dependencies: 6.1, 6.2_
 
@@ -743,6 +749,12 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - With correct language selection, correct arbitration, correct flat verdicts and a correct PF detector in place, determine whether a second OCR engine addresses anything that remains.
     - Inputs: the 8.1 residue, the reproducible evidence base from 2.C, and the Wave 2 engine reliability ranking (Amendment 1, 2026-09-21).
     - **Eval-informed framing (Amendment 1, 2026-09-21):** Wave 2 data shows PaddleOCR-VL silently fails on 24% of the corpus (6/25 zero-output docs), PaddleOCR-VL hallucinates on at least 1 doc (8× char inflation), and PaddleOCR is 10× slower than Surya on Arabic (250–400s vs 30–50s per 3-page doc). A 4-engine strategy is not viable without addressing VL reliability and hallucination. The realistic RFC-047 scope is a **2-engine strategy (Tesseract + Surya)** — Surya's zero-failure, high-confidence profile across all doc types makes it the strongest secondary. Frame the decision as: does Surya add enough over Tesseract-only (after D4/D7 fixes) to justify the operational cost (CPU-only Surya service at ~30-50s/doc)?
+    - **Decision-log-informed scope (Amendment 2, 2026-09-21):** 3.C decision-log analysis of all 10 non-PASS documents identified four improvement themes beyond RFC-046 that should be evaluated here:
+      - **`compact_doc_pass` promotion path**: GHV-TKV (10 nodes, depth=3, 1 page) and Unfallversicherung (9 nodes, depth=2, 3 pages) are correctly structured for their size but too few nodes for current promotion paths. A promotion path for small docs (low page_count + reasonable depth + no garble) would lift these from MARGINAL.
+      - **Post-recovery promotion**: `مرسوم بقانون (33)` recovers from garble (166K clean chars, 555 nodes, depth=3, all gates pass) but `promotion_clamp` caps at MARGINAL. A recovered doc whose retry tree passes all gates could reach PASS with an `ocr_recovered=true` sidecar flag.
+      - **VLM chart understanding**: The pie chart image (sha8=19aad2bc) is correctly FAIL for a text pipeline — structured chart extraction is a different capability, VLM-based.
+      - **Depth-cap policy tuning**: FEDERAL LAW (77 pages, 575 nodes, depth=2, 204K clean chars) clamped MARGINAL — arguably correct, but category-aware exceptions for legal documents could be considered.
+      - Evaluate each: standalone micro-RFC, fold into RFC-047, or defer. The pie chart and depth-cap items are likely defers; compact_doc_pass and post-recovery promotion are small enough for RFC-047 if it proceeds.
     - **A legitimate outcome is that RFC-047 is not written.** Record the decision either way, and close `audit/RECONCILIATION_REPORT.md:148-156` "Items Requiring Human Decision #2" (Option A non-Granite VLM / Option B secondary engine / Option C Tesseract-only permanently).
     - If RFC-047 proceeds, carry forward the unresolved blockers the pre-RFC plan raised: HR3/ZDR self-hosted endpoint (A4), AGPL for a PyMuPDF-dependent network service (B5), and the reaped-shadow-flag precedent (`c3ad1c8` → `13c38cf`, fenced by `tests/test_architecture_guards.py:1089-1131`).
     - _Dependencies: 8.1, 2.C_

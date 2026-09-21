@@ -338,6 +338,28 @@ Surya produces output for every document with consistently high confidence; Padd
 
 **Fifth — hallucination guard.** PaddleOCR-VL produced 39,732 chars on `قرار مجلس الوزراء رقم (1)` where Tesseract yielded 4,914 and Surya 4,994 — an 8× inflation strongly suggesting hallucinated repetition, not genuine content. The unified policy must cap trust in any engine whose char yield exceeds the median of other engines by more than a configurable factor (default 3×), and flag such results for repetition-density analysis before preferring them.
 
+**Sixth (Amendment 2, 2026-09-21 — 3.C decision-log analysis of 10 non-PASS documents):** the 3.C ingest decision logs for all FAIL (5), MARGINAL (4) and REJECTED (1) documents were parsed end-to-end to trace root causes and map them to RFC-046 waves. Two bug-level findings in the arbitration layer:
+
+1. **`landscape_reroute` overrides a successful tree recovery.** `اتفاقية مستوى الخدمة` (sha8=e16412fe) recovers from garble via OCR retry — 34K clean chars, 108 nodes, depth=4, structural_pass — but the `landscape_reroute` recovery forces the route to flat. The flat path carries residual garble from the *pre-recovery* extraction (sparse_mojibake + token_repetition) and is REJECTED. The reroute must check whether the tree path already passed before forcing flat; if the tree holds, the flat override is a downgrade, not a recovery. This is D7 scope — a concrete instance of "arbitrate on the extraction, not the tree."
+
+2. **`char_count_regression_revert` discards a quality win.** `وارد رقم 597` (sha8=305e8ca9) has OCR retry produce 80K clean Arabic chars vs 106K garbled Latin chars from the initial eng-on-Arabic extraction. `_keep_best_wins` reverts on char count alone (`post=80377 < pre=106425`). The 106K is garbled repetition, not content. A script-aware policy (task 5.3) would keep the smaller but clean Arabic extraction.
+
+**Wave coverage map from the analysis:**
+
+| Wave | Deliverable | Docs addressed | Mechanism |
+|------|-------------|---------------|-----------|
+| 4 | D6 flat verdicts | uae_numbers landscape + portrait | Clean flat content (1845/2098 chars) killed by tree structural gates; D6 evaluates flat path independently |
+| 4 | D8 activation | MOU MOHRE, uae_portrait | Corrected density above floor (1571, 2098) but uncorrected below; activation clears density gate |
+| 5 | D7 arbitration | وارد رقم 597, اتفاقية | Char-count revert of quality win; landscape reroute discards passing tree |
+| 6 | D4 lang selection | MOU MOHRE, وارد رقم 597, اتفاقية | Arabic content OCR'd as English; preclassify detects correctly but Docling's internal OCR uses eng |
+
+**Four improvement themes beyond RFC-046 scope** (candidates for RFC-047+ or standalone):
+
+- **`compact_doc_pass` promotion path**: GHV-TKV (10 nodes, depth=3, 1 page) and Unfallversicherung (9 nodes, depth=2, 3 pages) are correctly structured for their size but too few nodes for any current promotion path. A promotion path for small docs (low page_count + reasonable depth + no garble) would lift these from MARGINAL.
+- **Post-recovery promotion**: `مرسوم بقانون (33)` recovers from garble (null_replacement_bytes → OCR retry → 166K clean chars, 555 nodes, depth=3, all gates pass) but `promotion_clamp` caps at MARGINAL. A recovered doc whose retry tree passes all gates could reach PASS with an `ocr_recovered=true` sidecar flag.
+- **VLM chart understanding**: The pie chart image (sha8=19aad2bc) is correctly FAIL for a text-extraction pipeline. Extracting structured data from graphical content requires a different capability — RFC-047 scope if VLM-based.
+- **Depth-cap policy tuning**: FEDERAL LAW (77 pages, 575 nodes, depth=2, 204K clean chars) is clamped MARGINAL by the depth cap. Arguably correct — a 77-page doc at depth=2 signals poor hierarchical structure — but a category-aware exception for legal documents with many same-level sections could be considered.
+
 #### D8: Density Numerator and Flag Parse
 
 **Problem A — the density numerator undercounts.** `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count against `RFC029_MIN_SCANNED_DENSITY_FLOOR = 1500` (`config.py:565`). The numerator comes from `_flatten_tree_text` (`tree_validation.py:137-158`), which counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`. A scanned bilingual MOU with stamps and signature blocks is structurally under-counted relative to a floor calibrated on flat text. Doc 6 misses by 4% (1,437.7); Doc 18 by 6% (1,413.1).
