@@ -38,6 +38,7 @@ mappings:
       - test_zone4_bidi_rtl.py
       - test_d10c_pre_nfkc_threading.py
       - test_d6_flat_verdicts.py
+      - test_d4_corrective_retry.py  # RFC-046 D4: corrective retry in image path
 
   client/images.py:
     coverage_threshold: 90
@@ -69,6 +70,7 @@ mappings:
       - test_zone4_bidi_rtl.py
       - test_d10c_pre_nfkc_threading.py
       - test_d7_arbitration.py
+      - test_d4_corrective_retry.py  # RFC-046 D4: image recovery + corrective retry
       - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
   client/remote.py:

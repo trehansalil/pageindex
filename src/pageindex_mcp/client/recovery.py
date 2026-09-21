@@ -17,10 +17,12 @@ from ..converters import (
     TessdataUnavailableError,
     detect_ocr_langs,
     ensure_tessdata,
+    image_to_markdown,
     pdf_to_markdown_docling,
     reconstruct_bidi_order,
     splice_picture_text_for_tree,
 )
+from .images import _IMAGE_EXTS
 from ..converters.pipeline import DOCLING_CONVERTER_NAME
 from ..helpers import (
     ExtractionState,
@@ -458,13 +460,25 @@ class RecoveryMixin:
             # Zone-7: OCR re-extraction produces new md_content; reset
             # bidi_renorm_applied so the flag reflects the new content.
             state.bidi_renorm_applied = False
-            decision(
-                event="ocr_retry_dispatch_route",
-                choice="remote_docling" if state.use_remote else "local_docling",
-                reason="remote" if state.use_remote else "local",
-                attrs={"use_remote": state.use_remote},
-            )
-            if state.use_remote:
+            if ext in _IMAGE_EXTS:
+                # D4 (RFC-046 task 6.1): image inputs use tesseract directly.
+                decision(
+                    event="ocr_retry_dispatch_route",
+                    choice="image_tesseract",
+                    reason="image extension uses local tesseract",
+                    attrs={"use_remote": False, "ext": ext},
+                )
+                state.md_content = await asyncio.to_thread(
+                    image_to_markdown, file_path, langs
+                )
+                state.pic_results = []
+            elif state.use_remote:
+                decision(
+                    event="ocr_retry_dispatch_route",
+                    choice="remote_docling",
+                    reason="remote",
+                    attrs={"use_remote": True},
+                )
                 assert self._staging_key is not None, "use_remote=True but _staging_key is None"
                 state.md_content, state.pic_results = await _remote_pdf_to_markdown(
                     self._staging_key,
@@ -473,6 +487,12 @@ class RecoveryMixin:
                     expected_script=expected_script,
                 )
             else:
+                decision(
+                    event="ocr_retry_dispatch_route",
+                    choice="local_docling",
+                    reason="local",
+                    attrs={"use_remote": False},
+                )
                 state.md_content, state.pic_results, stages_out = _split_converter_output(
                     await asyncio.to_thread(
                         pdf_to_markdown_docling,
@@ -484,10 +504,9 @@ class RecoveryMixin:
                 )
                 if stages_out:
                     state.extraction_stages_captured = stages_out
-            # RFC-046 D2/R2.4: sourced from the converter definition, not
-            # restated. This path forces full-page OCR, so it is an OCR path
-            # and must attribute its engine.
-            state.used_converter = DOCLING_CONVERTER_NAME
+            # RFC-046 D2/R2.4: attribute converter + engine.
+            if ext not in _IMAGE_EXTS:
+                state.used_converter = DOCLING_CONVERTER_NAME
             state.ocr_engine = str(OcrEngine.TESSERACT)
             # Zone-2: full-page OCR successfully applied.  The return value
             # signals callers to set state.full_page_already_applied = True
@@ -668,7 +687,7 @@ class RecoveryMixin:
         ``GateSpec.recovery_eligible`` — this method checks only the flag
         gate and basic preconditions.
         """
-        if state.ok or ext != ".pdf":
+        if state.ok or (ext != ".pdf" and ext not in _IMAGE_EXTS):
             return
         if state.full_page_already_applied:
             return  # D1: re-entry guard -- prior OCR pass already ran
@@ -704,7 +723,7 @@ class RecoveryMixin:
         ``GateSpec.recovery_eligible`` — this method checks the flag gate
         and the character-count floor.
         """
-        if state.ok or ext != ".pdf":
+        if state.ok or (ext != ".pdf" and ext not in _IMAGE_EXTS):
             return
         if state.full_page_already_applied:
             return  # D1: re-entry guard -- prior OCR pass already ran
@@ -760,7 +779,7 @@ class RecoveryMixin:
         ``GateSpec.recovery_eligible`` — this method checks the flag gate,
         flat routing availability, and image-line ratio.
         """
-        if state.ok or ext != ".pdf":
+        if state.ok or (ext != ".pdf" and ext not in _IMAGE_EXTS):
             return
         if state.full_page_already_applied:
             return
@@ -826,7 +845,7 @@ class RecoveryMixin:
         between the per-node repair path and the whole-document
         normalization paths is observable rather than silent.
         """
-        if not (not state.ok and TreeDefect.RTL_REVERSAL in _all_defects(state) and ext == ".pdf"):
+        if not (not state.ok and TreeDefect.RTL_REVERSAL in _all_defects(state) and (ext == ".pdf" or ext in _IMAGE_EXTS)):
             return
         # Zone-7: guard against double bidi correction.
         # _renormalize_bidi_guarded (whole-markdown-level) already ran on
@@ -980,7 +999,7 @@ class RecoveryMixin:
         by ``GateSpec.recovery_eligible`` — only GateSpecs for garble-type
         defects list this method in ``recovery_fns``.
         """
-        if not (not state.ok and ext == ".pdf" and settings.vlm_fallback):
+        if not (not state.ok and (ext == ".pdf" or ext in _IMAGE_EXTS) and settings.vlm_fallback):
             return
         # RFC-045: when full-page OCR was already applied and whole-tree
         # GARBLING is resolved (only NODE_GARBLING on individual nodes or

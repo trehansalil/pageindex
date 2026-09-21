@@ -49,6 +49,7 @@ from ..converters import (
 )
 from ..helpers import (
     GATES,
+    Candidate,
     ExtractionState,
     LowQualityTreeError,
     Route,
@@ -69,6 +70,7 @@ from ..helpers import (
     _tree_max_leaf_ratio,
     _tree_node_count,
     compute_verdict,
+    arbitrate,
     detect_garble,
     finalize_gate_and_route,
     prepare_tree,
@@ -1182,6 +1184,91 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         "min_standalone_image_md_chars": MIN_STANDALONE_IMAGE_MD_CHARS,
                     },
                 )
+            # D4 (RFC-046 task 6.2): bounded detect-correct-retry.
+            # Compare content-derived langs against filename-derived; if they
+            # differ, re-OCR once with corrected langs and arbitrate.
+            content_langs = detect_ocr_langs(standalone_ocr_text) if standalone_ocr_text else img_langs
+            if sorted(content_langs) != sorted(img_langs):
+                _corrective_degraded = False
+                try:
+                    corrective_langs = await asyncio.to_thread(ensure_tessdata, content_langs)
+                except TessdataUnavailableError:
+                    corrective_langs = img_langs
+                    _corrective_degraded = True
+                if not _corrective_degraded and sorted(corrective_langs) != sorted(img_langs):
+                    corrective_md = await asyncio.to_thread(
+                        image_to_markdown, file_path, corrective_langs
+                    )
+                    _corr_chars = len("".join(corrective_md.split()))
+                    corrective_ocr_text = corrective_md
+                    if _corr_chars <= MIN_STANDALONE_IMAGE_MD_CHARS:
+                        corrective_ocr_text = await asyncio.to_thread(
+                            _tesseract_ocr_image, file_path, corrective_langs
+                        )
+                    original_garbled = bool(detect_garble(
+                        standalone_ocr_text,
+                        script_context=script_context,
+                        config=_garble_config,
+                        blob_kind=BlobKind.TREE_TEXT,
+                    )) if standalone_ocr_text else True
+                    corrective_garbled = bool(detect_garble(
+                        corrective_ocr_text,
+                        script_context=script_context,
+                        config=_garble_config,
+                        blob_kind=BlobKind.TREE_TEXT,
+                    )) if corrective_ocr_text else True
+                    candidates = [
+                        Candidate(
+                            label="filename_derived",
+                            text=standalone_ocr_text,
+                            char_count=len(standalone_ocr_text),
+                            garbled=original_garbled,
+                            engine=str(OcrEngine.TESSERACT),
+                        ),
+                        Candidate(
+                            label="corrective_retry",
+                            text=corrective_ocr_text,
+                            char_count=len(corrective_ocr_text),
+                            garbled=corrective_garbled,
+                            engine=str(OcrEngine.TESSERACT),
+                        ),
+                    ]
+                    winner_idx = arbitrate(candidates, script_context=script_context)
+                    if winner_idx == 1:
+                        md_content = corrective_md
+                        standalone_ocr_text = corrective_ocr_text
+                        img_langs = corrective_langs
+                    decision(
+                        event="d4_corrective_retry",
+                        choice=candidates[winner_idx].label,
+                        reason="content-derived langs differ from filename",
+                        attrs={
+                            "source_langs": detected,
+                            "content_langs": content_langs,
+                            "corrective_langs": corrective_langs,
+                            "winner_index": winner_idx,
+                            "original_garbled": original_garbled,
+                            "corrective_garbled": corrective_garbled,
+                        },
+                    )
+                else:
+                    decision(
+                        event="d4_corrective_retry",
+                        choice="skip_tessdata_unavailable" if _corrective_degraded else "skip_same_langs",
+                        reason="corrective langs same as original or tessdata unavailable",
+                        attrs={
+                            "source_langs": detected,
+                            "content_langs": content_langs,
+                        },
+                    )
+            else:
+                decision(
+                    event="d4_corrective_retry",
+                    choice="skip_langs_match",
+                    reason="content-derived langs match filename-derived",
+                    attrs={"langs": img_langs},
+                )
+
             md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", md_content)
             marker_count = md_content.count("<!-- image -->")
             state.pic_results = [

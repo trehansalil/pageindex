@@ -668,7 +668,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Directly addresses the root cause of D4 for text-based PDFs. Scanned PDFs and images still need the bounded-retry in 6.2._
     - _Dependencies: none (probe_conversion_route already ran pdf_inspector at this point)_
 
-  - [ ] 6.1 Make garble recovery reachable for image inputs
+  - [x] 6.1 Make garble recovery reachable for image inputs
 
     - `_recover_garble_ocr` returns at `recovery.py:437` (`if state.ok or ext != ".pdf"`) and `_recover_vlm_fallback` at `:662`. **For a `.jpg` the entire recovery ladder is a no-op.**
     - Widen eligibility to `_IMAGE_EXTS`, or add an image-specific rung to `GATES` (`helpers/gates.py:361-447`).
@@ -676,7 +676,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R4.4](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.5](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [DP-D4](design-rfc046-ocr-attribution-failure-cluster-remediation#d4-content-derived-ocr-language-selection-c2)_
     - _Dependencies: 5.C_
 
-  - [ ] 6.2 Replace filename-only language derivation with a bounded detect-correct-retry
+  - [x] 6.2 Replace filename-only language derivation with a bounded detect-correct-retry
 
     - `indexer.py:893` uses `detect_ocr_langs(filename)`. For `"image pie chart … january 2025 - Copy.jpg"` that returns `["eng"]`, and the chart's Arabic labels are OCR'd with English tessdata — manufacturing the Latin noise the audit quotes.
     - Mirror the union already used at `recovery.py:291-297`: OCR with the filename guess, re-examine the output with `detect_ocr_langs`, and if the detected script is not covered, re-OCR **once** with the corrected set; use that output when it is not garbled.
@@ -685,7 +685,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R4.1](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.2](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.3](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [DP-D4](design-rfc046-ocr-attribution-failure-cluster-remediation#d4-content-derived-ocr-language-selection-c2)_
     - _Dependencies: 6.1, 5.3 (needs N-candidate arbitration — the corrective pass is a third candidate)_
 
-  - [ ] 6.3 Tests for D4
+  - [x] 6.3 Tests for D4
 
     - Latin-filename / ≥30%-Arabic-content image is OCR'd with an Arabic-capable set on the second pass.
     - Bounded-retry test: at most one corrective pass.
@@ -700,7 +700,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R4.6](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2), [R4.7](046-ocr-attribution-failure-cluster-remediation#requirement-4-content-derived-ocr-language-selection-c2)_
     - _Dependencies: 6.1, 6.2_
 
-  - [ ] 6.C **[GATE]** Checkpoint — Language selection attributed
+  - [x] 6.C **[GATE]** Checkpoint — Language selection attributed
 
     - Corpus run, delta attributed to D4. Architecture guards green.
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
