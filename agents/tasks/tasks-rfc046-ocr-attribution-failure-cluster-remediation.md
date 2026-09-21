@@ -543,7 +543,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.8](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R11.7](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11)_
     - _Dependencies: 3.1–3.13, 12.C-core_
 
-- [ ] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
+- [x] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
 
   - [x] 4.1 Make the gate-signal source a caller-declared choice
 
@@ -605,7 +605,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.9](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 4.1–4.6_
 
-- [ ] 5. Arbitrate on the Extraction (D7)
+- [x] 5. Arbitrate on the Extraction (D7)
 
   - [x] 5.1 Quality-check recovered markdown before the tree rebuild
 
@@ -652,7 +652,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 5.1–5.4_
 
-- [ ] 6. Content-Derived OCR Language Selection (D4)
+- [x] 6. Content-Derived OCR Language Selection (D4)
 
   - [x] 6.0 Pre-classification: text-layer language detection in probe_conversion_route
 
@@ -742,9 +742,10 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 - [ ] 8. RFC-047 Decision Point
 
-  - [ ] 8.1 Characterise the surviving failures
+  - [x] 8.1 Characterise the surviving failures
 
     - Against the 7.2 table, identify which of the six clusters still produce FAIL verdicts and why.
+    - **Complete (2026-09-21).** See `agents/baselines/rfc046-wave8-8-1-surviving-failures.md`. Result: **one cluster (C1, density floor) still produces FAIL verdicts**, accounting for 2 of 3 FAILs (MOU MOHRE, uae_numbers portrait) — and it survives because D8 shipped report-only by R8.3 and the R8.4 activation decision is still open, not because the measurement is wrong (`gates.py:344-346` computes `chars_per_page_corrected` and decides on the raw value). C2/C3/C4/C6 are discharged by D4/D6/D7. C5 is discharged at its own site by D5 but its defect *shape* recurs unfixed in `_garble_check_flat_blocks` (`garble.py:985-987`), which computes `garble_ratio` and condemns on `garbled_count >= 1` — 5/297 blocks (ratio 0.017) REJECTs وارد رقم 597 and makes the FAIL↔REJECTED boundary a per-run coin-flip. The pie-chart FAIL is a VLM capability gap owned by no cluster. **No surviving failure is attributable to OCR recognition quality.**
     - _Dependencies: 7.C_
 
   - [ ] 8.2 Decide whether RFC-047 is warranted
