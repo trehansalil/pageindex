@@ -926,6 +926,16 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         ),
     ),
     _p(
+        event="post_enrichment_garble_check",
+        phase=Phase.PERSIST,
+        module=_C_INDEXER,
+        function="_persist_flat_result",
+        choices=("enriched_blocks_garbled", "enriched_blocks_clean"),
+        attrs=("checked_count", "fired_prongs"),
+        always_emits=False,
+        note="D6 (RFC-046): re-checks image blocks after _apply_picture_enrichment writes ocr_text.",
+    ),
+    _p(
         event="verdict_downgrade_override_flat",
         phase=Phase.PERSIST,
         module=_C_INDEXER,

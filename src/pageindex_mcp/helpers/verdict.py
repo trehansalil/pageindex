@@ -126,6 +126,8 @@ def evaluate_gates(
     validate_result: TreeGateResult | None,
     expected_script: str | None | ScriptContext,
     th: VerdictThresholds,
+    *,
+    flat_signals: TreeSignals | None = None,
 ) -> GateOutcome:
     """Zone-4 Phase 1: gate evaluation + hard-fail checks.
 
@@ -162,7 +164,9 @@ def evaluate_gates(
     else:
         _bare_script = expected_script
 
-    if sig is None:
+    if flat_signals is not None:
+        sig = flat_signals
+    elif sig is None:
         sig = TreeSignals.from_tree(
             structure, expected_script=expected_script, garble_threshold=th.garble_threshold
         )
@@ -743,6 +747,7 @@ def compute_verdict(
     expected_script: str | None | ScriptContext = None,
     *,
     source_selection: bool = False,
+    flat_signals: TreeSignals | None = None,
 ) -> VerdictResult:
     """Zone-4 thin dispatcher: evaluate_gates -> apply_promotions.
 
@@ -764,7 +769,7 @@ def compute_verdict(
         _bare_script: str | None = expected_script.dominant_script
     else:
         _bare_script = expected_script
-    outcome = evaluate_gates(structure, validate_result, expected_script, th)
+    outcome = evaluate_gates(structure, validate_result, expected_script, th, flat_signals=flat_signals)
     if outcome.hard_fail_verdict is not None:
         return outcome.hard_fail_verdict
     _sc = expected_script if isinstance(expected_script, ScriptContext) else None

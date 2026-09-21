@@ -37,6 +37,7 @@ mappings:
       - test_worker.py
       - test_zone4_bidi_rtl.py
       - test_d10c_pre_nfkc_threading.py
+      - test_d6_flat_verdicts.py
 
   client/images.py:
     coverage_threshold: 90
@@ -418,6 +419,7 @@ mappings:
       - test_rfc_quality.py
       - test_rfc_registry.py
       - test_rfc_tables.py
+      - test_d6_flat_verdicts.py
 
   helpers/tree_split.py:
     tests:
@@ -468,6 +470,7 @@ mappings:
       - test_zone4_measurement.py
       - test_no_naive_block_text.py    # cross-cutting AST guard
       - test_rfc042_measurement_guard.py
+      - test_d6_flat_verdicts.py
 
   helpers/rag.py:
     tests:
@@ -607,6 +610,7 @@ mappings:
     tests:
       - test_obs_logging.py primary
       - test_rfc046_attribution.py
+      - test_d6_flat_verdicts.py
   obs/decisions.py:
     tests:
       - test_obs_logging.py primary

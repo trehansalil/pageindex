@@ -263,8 +263,13 @@ class TestPrimaryText:
     def test_prose_block_returns_text(self):
         assert _flat_block_primary_text({"text": "content", "role": "prose"}) == "content"
 
-    def test_image_block_returns_empty(self):
+    def test_image_block_returns_ocr_text(self):
+        """D6 (RFC-046): image blocks include ocr_text under CHAR_COUNT."""
         block = {"role": "image", "ocr_text": "OCR", "description": "pic"}
+        assert _flat_block_primary_text(block) == "OCR"
+
+    def test_image_block_without_ocr_returns_empty(self):
+        block = {"role": "image", "description": "pic"}
         assert _flat_block_primary_text(block) == ""
 
 

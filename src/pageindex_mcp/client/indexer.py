@@ -53,6 +53,8 @@ from ..helpers import (
     LowQualityTreeError,
     Route,
     TreeDefect,
+    TreeSignals,
+    VerdictThresholds,
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,
@@ -1264,6 +1266,13 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
         Returns doc_id on success, None if unavailable/garbled.
         """
+        from ..helpers.garble import GarbleConfig
+
+        _image_garble_cfg: GarbleConfig | None = (
+            GarbleConfig(garble_nonsense_ratio=IMAGE_OCR_NONSENSE_RATIO)
+            if ext in _IMAGE_EXTS
+            else None
+        )
         flat_md = state.md_content
         if flat_md is None and state.tmp_md_path is not None:
             flat_md = await asyncio.to_thread(
@@ -1313,7 +1322,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         _flat_garble_report = _garble_check_flat_blocks(
             _garble_blocks,
             script_context=_flat_garble_ctx,
-            config=_garble_config,
+            config=_image_garble_cfg if _image_garble_cfg is not None else _garble_config,
         )
         if _flat_garble_report:
             state.flat_garble_unrecovered = True
@@ -1355,7 +1364,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     if not _garble_check_flat_blocks(
                         _vlm_blocks,
                         script_context=_vlm_ctx,
-                        config=_garble_config,
+                        config=_image_garble_cfg if _image_garble_cfg is not None else _garble_config,
                     ):
                         flat_md = vlm_md
                         state.pic_results = []
@@ -1428,6 +1437,42 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             splice_markers=False,
         )
 
+        _enriched_image_blocks = [
+            b for b in blocks
+            if b.get("role") == "image" and b.get("ocr_text")
+        ]
+        if _enriched_image_blocks:
+            _enrich_garble = _garble_check_flat_blocks(
+                _enriched_image_blocks,
+                script_context=(
+                    script_context
+                    if script_context is not None
+                    else ScriptContext(
+                        dominant_script=expected_script,
+                        had_presentation_forms=_infer_presentation_forms(flat_md),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                        source="post_enrichment_garble",
+                    )
+                ),
+                config=_image_garble_cfg if _image_garble_cfg is not None else _garble_config,
+            )
+            if _enrich_garble:
+                decision(
+                    event="post_enrichment_garble_check",
+                    choice="enriched_blocks_garbled",
+                    reason="image blocks mutated by enrichment contain garbled OCR text",
+                    attrs={
+                        "checked_count": len(_enriched_image_blocks),
+                        "fired_prongs": list(_enrich_garble.fired_prongs) if _enrich_garble.fired_prongs else [],
+                    },
+                )
+            else:
+                decision(
+                    event="post_enrichment_garble_check",
+                    choice="enriched_blocks_clean",
+                    reason="image blocks mutated by enrichment passed garble check",
+                    attrs={"checked_count": len(_enriched_image_blocks)},
+                )
+
         with bind_log_context(doc_id=doc_id):
             logger.info(
                 "Routing %s to flat success path: reason=%s content_class=%s",
@@ -1451,12 +1496,20 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     if _flat_block_primary_text(b).strip()
                 ]
 
+            _flat_script = script_context if script_context is not None else expected_script
+            _flat_th = VerdictThresholds.from_config(pipeline_config)
+            _flat_sig = TreeSignals.from_tree(
+                flat_structure,
+                expected_script=_flat_script,
+                garble_threshold=_flat_th.garble_threshold,
+            )
             _vr = compute_verdict(
                 flat_structure,
                 content_class,
                 state.gate_result,
                 image_enrichment_ratio=image_enrichment_ratio,
-                expected_script=script_context if script_context is not None else expected_script,
+                expected_script=_flat_script,
+                flat_signals=_flat_sig,
             )
             f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
             f_promotion_paths = list(_vr.promotion_paths_matched)

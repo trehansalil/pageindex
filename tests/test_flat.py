@@ -272,15 +272,20 @@ class TestFlatBlockPrimaryText:
         result = _flat_block_primary_text(block)
         assert result == "r1\nr2"
 
-    def test_image_block_returns_empty_string(self):
-        """Image blocks have no primary text -- OCR/description are
-        enrichment, not primary content."""
+    def test_image_block_returns_ocr_text(self):
+        """D6 (RFC-046): image blocks include ocr_text under CHAR_COUNT
+        so the flat garble gate and flat_char_count see image OCR content."""
         block = {
             "role": "image",
             "text": "",
             "ocr_text": "OCR content",
             "description": "A chart showing data",
         }
+        assert _flat_block_primary_text(block) == "OCR content"
+
+    def test_image_block_without_ocr_returns_empty(self):
+        """Image blocks with no ocr_text still return empty under CHAR_COUNT."""
+        block = {"role": "image", "text": ""}
         assert _flat_block_primary_text(block) == ""
 
     def test_block_with_no_role_returns_text(self):
@@ -757,23 +762,37 @@ class TestIndexerFlatCharCountWiring:
 
     def test_flat_structure_synthesis_uses_primary_text(self):
         """Simulate the flat_structure synthesis from
-        indexer.py:_persist_flat_result (lines 1080-1084)."""
+        indexer.py:_persist_flat_result.  D6 (RFC-046): image blocks with
+        ocr_text now contribute to flat_structure."""
         blocks = [
             {"role": "prose", "text": "Intro paragraph."},
             {"role": "table", "row_records": ["A | B", "1 | 2"]},
-            {"role": "image", "ocr_text": "chart"},  # no primary text
+            {"role": "image", "ocr_text": "chart"},
         ]
-        # This mirrors indexer.py lines 1080-1084:
         flat_structure = [
             {"title": "", "text": _flat_block_primary_text(b)}
             for b in blocks
             if _flat_block_primary_text(b).strip()
         ]
-        assert len(flat_structure) == 2, (
-            "Prose + table blocks should produce structure nodes; image should not"
+        assert len(flat_structure) == 3, (
+            "Prose + table + image-with-ocr blocks should all produce structure nodes"
         )
         assert flat_structure[0]["text"] == "Intro paragraph."
         assert flat_structure[1]["text"] == "A | B\n1 | 2"
+        assert flat_structure[2]["text"] == "chart"
+
+    def test_flat_structure_synthesis_excludes_empty_image(self):
+        """Image blocks without ocr_text still excluded from flat_structure."""
+        blocks = [
+            {"role": "prose", "text": "content"},
+            {"role": "image"},
+        ]
+        flat_structure = [
+            {"title": "", "text": _flat_block_primary_text(b)}
+            for b in blocks
+            if _flat_block_primary_text(b).strip()
+        ]
+        assert len(flat_structure) == 1
 
     def test_naive_block_get_text_would_miss_table_content(self):
         """Regression proof: naive block.get('text', '') produces zero
@@ -820,14 +839,19 @@ class TestBlockTextPurposes:
         assert "scanned text" in result
         assert "a photo" in result
 
-    def test_image_block_non_search_excludes_enrichment(self):
+    def test_image_block_garble_and_charcount_include_ocr(self):
+        """D6 (RFC-046): GARBLE_CHECK and CHAR_COUNT include ocr_text
+        so the flat garble gate and flat_char_count see image content."""
         block = {"role": "image", "ocr_text": "scanned text", "description": "a photo"}
-        for purpose in (
-            BlockTextPurpose.GARBLE_CHECK,
-            BlockTextPurpose.CHAR_COUNT,
-            BlockTextPurpose.DISPLAY,
-        ):
-            assert block_text(block, purpose) == ""
+        for purpose in (BlockTextPurpose.GARBLE_CHECK, BlockTextPurpose.CHAR_COUNT):
+            result = block_text(block, purpose)
+            assert "scanned text" in result
+            assert "a photo" not in result
+
+    def test_image_block_display_excludes_enrichment(self):
+        """DISPLAY purpose still excludes enrichment metadata."""
+        block = {"role": "image", "ocr_text": "scanned text", "description": "a photo"}
+        assert block_text(block, BlockTextPurpose.DISPLAY) == ""
 
     def test_table_with_dict_row_records(self):
         block = {"role": "table", "row_records": [{"key": "premium", "value": "1200"}]}
@@ -896,16 +920,29 @@ class TestDocText:
         }
         assert doc_text(data, BlockTextPurpose.SEARCH) == _flat_search_text(data)
 
-    def test_char_count_purpose_excludes_image_enrichment(self):
+    def test_char_count_purpose_includes_image_ocr(self):
+        """D6 (RFC-046): CHAR_COUNT now includes image ocr_text."""
         data = {
             "blocks": [
                 {"role": "prose", "text": "Body text"},
-                {"role": "image", "ocr_text": "should not appear"},
+                {"role": "image", "ocr_text": "scanned chart"},
             ]
         }
         result = doc_text(data, BlockTextPurpose.CHAR_COUNT)
         assert "Body text" in result
-        assert "should not appear" not in result
+        assert "scanned chart" in result
+
+    def test_display_purpose_excludes_image_enrichment(self):
+        """DISPLAY still excludes image enrichment metadata."""
+        data = {
+            "blocks": [
+                {"role": "prose", "text": "Body text"},
+                {"role": "image", "ocr_text": "hidden"},
+            ]
+        }
+        result = doc_text(data, BlockTextPurpose.DISPLAY)
+        assert "Body text" in result
+        assert "hidden" not in result
 
     def test_legacy_top_level_row_records_appended_for_search(self):
         data = {

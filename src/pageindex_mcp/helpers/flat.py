@@ -246,10 +246,15 @@ def block_text(block: dict, purpose: BlockTextPurpose) -> str:
 
     if role == "image":
         parts: list[str] = []
-        if purpose is BlockTextPurpose.SEARCH:
+        if purpose in (
+            BlockTextPurpose.SEARCH,
+            BlockTextPurpose.GARBLE_CHECK,
+            BlockTextPurpose.CHAR_COUNT,
+        ):
             ocr = block.get("ocr_text")
             if ocr:
                 parts.append(ocr)
+        if purpose is BlockTextPurpose.SEARCH:
             desc = block.get("description")
             if desc:
                 parts.append(desc)
