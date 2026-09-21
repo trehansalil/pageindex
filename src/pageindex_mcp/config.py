@@ -502,10 +502,7 @@ class PipelineConfig:
             .strip()
             .lower()
             in ("1", "true", "yes"),
-            pre_garble_force_ocr_enabled=os.environ.get(
-                "PRE_GARBLE_FORCE_OCR_ENABLED", "false"
-            ).lower()
-            == "true",
+            pre_garble_force_ocr_enabled=_envbool("PRE_GARBLE_FORCE_OCR_ENABLED", "false"),
             d7_garble_recovery_enabled=_envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
             image_standalone_pipeline_enabled=_envbool("IMAGE_STANDALONE_PIPELINE_ENABLED", "true"),
             image_dominant_ocr_escalation_enabled=os.environ.get(
@@ -549,12 +546,8 @@ class PipelineConfig:
             min_image_promoted_chars=int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")),
             min_flat_promotion_chars=int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")),
             # Module-level frozen constants from helpers.py
-            garble_short_text_default=os.getenv("GARBLE_SHORT_TEXT_DEFAULT", "true").lower()
-            == "true",
-            garble_flat_markdown_normalize=os.getenv(
-                "GARBLE_FLAT_MARKDOWN_NORMALIZE", "true"
-            ).lower()
-            == "true",
+            garble_short_text_default=_envbool("GARBLE_SHORT_TEXT_DEFAULT", "true"),
+            garble_flat_markdown_normalize=_envbool("GARBLE_FLAT_MARKDOWN_NORMALIZE", "true"),
             empty_node_fraction_threshold=float(
                 os.environ.get("EMPTY_NODE_FRACTION_THRESHOLD", "0.30")
             ),

@@ -388,18 +388,9 @@ def _pipeline_config_bool_env_map() -> dict[str, str]:
 
 _BOOL_ENV_MAP = _pipeline_config_bool_env_map()
 
-#: Fields whose parse predicate diverges from ``_envbool``. RFC-046 task 3.5
-#: fixes PRE_GARBLE_FORCE_OCR_ENABLED; the other two were found by this test
-#: and are recorded here so the divergence is visible rather than implied.
-#: Each is ``strict``, so fixing one turns its xfail into a failure that
-#: forces this list to shrink.
-_KNOWN_PARSE_DIVERGENCES = frozenset(
-    {
-        "pre_garble_force_ocr_enabled",
-        "garble_short_text_default",
-        "garble_flat_markdown_normalize",
-    }
-)
+#: All three divergences (PRE_GARBLE_FORCE_OCR_ENABLED, GARBLE_SHORT_TEXT_DEFAULT,
+#: GARBLE_FLAT_MARKDOWN_NORMALIZE) fixed by RFC-046 task 3.5.
+_KNOWN_PARSE_DIVERGENCES: frozenset[str] = frozenset()
 
 
 def _bool_field_params():
