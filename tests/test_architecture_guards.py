@@ -1701,3 +1701,97 @@ class TestLoggingConfigurationIsCentral:
                 root.removeHandler(h)
             for h in previous:
                 root.addHandler(h)
+
+
+class TestPresentationFormDetectorUniformity:
+    """Property 3 (RFC-046): no module defines an independent PF threshold.
+
+    The PF signal ratio lives in ``garble.PF_SIGNAL_RATIO`` and every
+    consumer imports it.  A second literal ``0.50`` or ``0.5`` in a
+    comparison against PF counts would silently fork the threshold.
+    """
+
+    def test_no_independent_pf_threshold_literal(self):
+        src_root = PROJECT_ROOT / "src" / "pageindex_mcp"
+        offenders = []
+        for path in sorted(src_root.rglob("*.py")):
+            rel = str(path.relative_to(src_root))
+            if rel.startswith("helpers/garble.py"):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                for comparator in [node.left, *node.comparators]:
+                    if isinstance(comparator, ast.Constant) and comparator.value in (0.50, 0.5):
+                        ctx_line = path.read_text(encoding="utf-8").splitlines()[comparator.lineno - 1]
+                        if "pf" in ctx_line.lower() or "presentation" in ctx_line.lower():
+                            offenders.append(f"{rel}:{comparator.lineno}")
+        assert not offenders, (
+            "Property 3 (RFC-046): independent PF threshold literal found. "
+            f"Import PF_SIGNAL_RATIO from garble.py instead. At: {offenders}"
+        )
+
+
+class TestThresholdImmutability:
+    """Non-Goal 2 / Property 8 (RFC-046): verdict thresholds must not widen.
+
+    Threshold widening masks extraction defects — the anti-pattern
+    ``audit/zones/_index.md`` names.  This guard pins every threshold
+    against its pre-RFC value so a widening is a deliberate, reviewed
+    change rather than a silent side-effect.
+    """
+
+    _PINNED_VERDICT_THRESHOLDS: dict[str, object] = {
+        "hard_fail_max_leaf_ratio": 0.75,
+        "pass_max_leaf_ratio": 0.30,
+        "garble_window_ratio_threshold": 0.05,
+        "cat_bc_promotion_threshold": 0.17,
+        "min_image_promoted_chars": 500,
+        "min_flat_promotion_chars": 500,
+        "small_doc_leaf_ratio_bound_low": 0.20,
+        "small_doc_leaf_ratio_bound_high": 0.40,
+        "min_marginal_chars": 50,
+        "cat_a_max_leaf_ratio": 0.15,
+        "cat_a_max_ocr_noise": 0.005,
+        "small_doc_min_chars": 100,
+        "small_doc_max_chars": 15000,
+    }
+
+    _PINNED_GATE_THRESHOLDS: dict[str, object] = {
+        "rfc029_min_scanned_density_floor": 1500.0,
+    }
+
+    def test_verdict_thresholds_match_pre_rfc_values(self):
+        from pageindex_mcp.config import PipelineConfig
+
+        cfg = PipelineConfig.from_env()
+        drift = {}
+        for field, expected in self._PINNED_VERDICT_THRESHOLDS.items():
+            if field == "cat_bc_promotion_threshold":
+                from pageindex_mcp.config import CATEGORY_BC_PROMOTION_THRESHOLD
+
+                actual = CATEGORY_BC_PROMOTION_THRESHOLD
+            else:
+                actual = getattr(cfg, field)
+            if actual != expected:
+                drift[field] = {"expected": expected, "actual": actual}
+        assert not drift, (
+            "Property 8 (RFC-046): verdict threshold(s) moved from pre-RFC "
+            f"values. This masks extraction defects — change the pin in the "
+            f"test if the widening is deliberate and reviewed. Drift: {drift}"
+        )
+
+    def test_gate_thresholds_match_pre_rfc_values(self):
+        from pageindex_mcp.config import PipelineConfig
+
+        cfg = PipelineConfig.from_env()
+        drift = {}
+        for field, expected in self._PINNED_GATE_THRESHOLDS.items():
+            actual = getattr(cfg, field)
+            if actual != expected:
+                drift[field] = {"expected": expected, "actual": actual}
+        assert not drift, (
+            "Property 8 (RFC-046): gate threshold(s) moved from pre-RFC "
+            f"values. Drift: {drift}"
+        )
