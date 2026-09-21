@@ -294,7 +294,7 @@ def _text_layer_has_content(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_pf(text),
+            had_presentation_forms=_infer_pf(text),  # pre-NFKC: raw pymupdf page text
             source="picture_text_probe",
         )
     )
@@ -458,7 +458,7 @@ def _document_level_text_fallback(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_pf(full_text),
+            had_presentation_forms=_infer_pf(full_text),  # pre-NFKC: raw pypdfium2 text
             source="doc_text_fallback",
         )
     )

@@ -566,7 +566,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 if script_context is not None
                                 else ScriptContext(
                                     dominant_script=expected_script,
-                                    had_presentation_forms=_infer_presentation_forms(raw_text),
+                                    had_presentation_forms=_infer_presentation_forms(raw_text),  # pre-NFKC: raw PDF text
                                     source="pre_garble_probe",
                                 )
                             )
@@ -1321,7 +1321,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         if script_context is not None
                         else ScriptContext(
                             dominant_script=expected_script,
-                            had_presentation_forms=_infer_presentation_forms(vlm_md),
+                            had_presentation_forms=_infer_presentation_forms(vlm_md),  # pre-NFKC: raw VLM output
                             source="vlm_fallback_garble",
                         )
                     )

@@ -53,9 +53,9 @@ zones:
     bug_count: 6
     owning_rfc: RFC-040
     owning_deliverable: D6
-    resolved: false
-    successor_rfc: RFC-041
-    successor_deliverable: D10c
+    resolved: true
+    successor_rfc: RFC-046
+    successor_deliverable: D10
     notes: >
       RFC-040 D6 reordered NFKC-before-bidi only in _pre_inference_normalize;
       7 post-NFKC ScriptContext call sites were left broken (the RFC-040

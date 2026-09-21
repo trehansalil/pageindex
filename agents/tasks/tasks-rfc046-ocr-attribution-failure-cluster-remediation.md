@@ -466,7 +466,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R10.1](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [R10.2](046-ocr-attribution-failure-cluster-remediation#requirement-10-zone-2-closure-post-nfkc-scriptcontext-call-sites-d10), [DP-D10](design-rfc046-ocr-attribution-failure-cluster-remediation#d10-zone-2-closure-post-nfkc-scriptcontext-sites)_
     - _Dependencies: 3.1 (shares the garble/normalization subsystem)_
 
-  - [ ] 3.9 Architecture guard against post-NFKC script contexts (D10)
+  - [x] 3.9 Architecture guard against post-NFKC script contexts (D10)
 
     - Guard asserting no `ScriptContext` feeding a garble or bidi decision is built from NFKC-normalized text.
     - **The guard is the durable deliverable** — the seven fixes close today's instances; only the guard prevents a fourth.

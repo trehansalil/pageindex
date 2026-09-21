@@ -1795,3 +1795,80 @@ class TestThresholdImmutability:
             "Property 8 (RFC-046): gate threshold(s) moved from pre-RFC "
             f"values. Drift: {drift}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Property 10 (RFC-046 D10): no post-NFKC ScriptContext construction
+# ---------------------------------------------------------------------------
+
+
+class TestNoPostNfkcScriptContext:
+    """Guard: no ScriptContext(...) passes a function call that infers
+    presentation forms from text as had_presentation_forms.
+
+    NFKC normalization destroys Arabic Presentation Forms codepoints.
+    Any ScriptContext built from post-NFKC text will silently report
+    had_presentation_forms=False.  The only safe ways to set the field:
+
+      - ``ScriptContext.from_document(filename, raw_text)`` (pre-NFKC)
+      - A literal ``True`` / ``False``
+      - A variable threaded from an upstream ScriptContext
+
+    This guard catches the pattern where a developer writes
+    ``had_presentation_forms=_infer_presentation_forms(some_text)``
+    inside a ``ScriptContext(...)`` constructor call without marking
+    the text as pre-NFKC.  Sites with genuinely pre-NFKC text must
+    carry ``# pre-NFKC`` on the ``had_presentation_forms=`` line.
+    """
+
+    _SRC_ROOT = PROJECT_ROOT / "src" / "pageindex_mcp"
+    _PF_CALLEES = {"_infer_presentation_forms", "_infer_pf", "_pf_ratio"}
+
+    def test_no_unmarked_inferred_pf_in_script_context_constructors(self):
+        violations: list[str] = []
+        for py_file in sorted(self._SRC_ROOT.rglob("*.py")):
+            try:
+                source = py_file.read_text()
+                tree = ast.parse(source, filename=str(py_file))
+            except SyntaxError:
+                continue
+            source_lines = source.splitlines()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                is_sc = (
+                    (isinstance(func, ast.Name) and func.id == "ScriptContext")
+                    or (isinstance(func, ast.Attribute) and func.attr == "ScriptContext")
+                )
+                if not is_sc:
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "had_presentation_forms":
+                        continue
+                    val = kw.value
+                    if not isinstance(val, ast.Call):
+                        continue
+                    callee = ""
+                    if isinstance(val.func, ast.Name):
+                        callee = val.func.id
+                    elif isinstance(val.func, ast.Attribute):
+                        callee = val.func.attr
+                    if callee not in self._PF_CALLEES:
+                        continue
+                    line_text = source_lines[kw.value.lineno - 1] if kw.value.lineno <= len(source_lines) else ""
+                    if "pre-NFKC" in line_text:
+                        continue
+                    rel = py_file.relative_to(self._SRC_ROOT)
+                    violations.append(
+                        f"{rel}:{node.lineno} — "
+                        f"had_presentation_forms={callee}(...)"
+                    )
+        assert not violations, (
+            "Property 10 (RFC-046 D10): ScriptContext constructed with "
+            "a PF inference call on unmarked text — it may be post-NFKC "
+            "where the signal is already destroyed.  If the text is "
+            "genuinely pre-NFKC, add '# pre-NFKC' on that line.  "
+            "Otherwise set had_presentation_forms=False.\n"
+            + "\n".join(violations)
+        )
