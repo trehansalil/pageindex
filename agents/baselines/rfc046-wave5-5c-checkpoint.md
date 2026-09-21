@@ -39,7 +39,7 @@
 - VLM fallback tried twice: both `vlm_still_garbled`
 - Final: REJECTED (garbling on flat route)
 
-**Note:** The regression from FAIL to REJECTED is not D7-caused — D7 changes don't touch the RTL recovery or flat garble paths. This doc's problem is wrong OCR language (English tessdata on Arabic content), a D4 candidate. The FAIL→REJECTED movement may reflect D5/D6 flat garble gate changes or processing environment differences.
+**Note:** The regression from FAIL to REJECTED is not D7-caused — D7 changes don't touch the RTL recovery or flat garble paths. **Attributed to D6 task 4.3:** `block_text` now returns image OCR text under `GARBLE_CHECK` purpose, so the flat garble gate sees image-block OCR content that was previously invisible. The flat route's `sparse_mojibake` detection catches garbled image OCR that pre-D6 flat garble gate missed. This is correct behavior (more accurate garble detection), not a defect. The root cause remains wrong OCR language (D4 candidate) — English tessdata on Arabic scanned content produces Latin noise that triggers garble detection.
 
 ### MOU MOHRE: FAIL → FAIL (no change, D7 code active)
 
@@ -53,7 +53,7 @@
 
 1. **D7-attributed improvement:** اتفاقية REJECTED→PASS (landscape reroute guard prevents tree downgrade — exactly as designed in task 5.3)
 2. **D7 code confirmed active:** MOU MOHRE `pre_rebuild_md_quality: md_clean` fires (task 5.1), no behavioral change (density gate is the blocker)
-3. **No D7 regressions:** وارد FAIL→REJECTED is not D7-caused (rtl_reversal path, unaffected by D7)
+3. **No D7 regressions:** وارد FAIL→REJECTED is D6-attributed (task 4.3 flat garble image OCR visibility), not D7
 4. **Named expectations confirmed:**
    - اتفاقية: `skip_tree_already_passed` guard prevents landscape downgrade ✓
    - MOU MOHRE: density gate remains (D8 candidate) ✓

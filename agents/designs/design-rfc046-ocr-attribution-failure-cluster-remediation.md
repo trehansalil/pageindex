@@ -360,6 +360,13 @@ Surya produces output for every document with consistently high confidence; Padd
 - **VLM chart understanding**: The pie chart image (sha8=19aad2bc) is correctly FAIL for a text-extraction pipeline. Extracting structured data from graphical content requires a different capability — RFC-047 scope if VLM-based.
 - **Depth-cap policy tuning**: FEDERAL LAW (77 pages, 575 nodes, depth=2, 204K clean chars) is clamped MARGINAL by the depth cap. Arguably correct — a 77-page doc at depth=2 signals poor hierarchical structure — but a category-aware exception for legal documents with many same-level sections could be considered.
 
+**Implementation evidence (5.C checkpoint, 2026-09-21):**
+
+- اتفاقية (sha8=e16412fe): REJECTED→**PASS**. The landscape reroute guard (`skip_tree_already_passed`) prevented the exact downgrade described in "Sixth, finding 1" above. OCR retry recovered 34K chars, rebuilt tree passed all gates (108 nodes, depth=4), and the guard preserved it. Confirmed the D7 design.
+- وارد (sha8=305e8ca9): D7 `clean_md_overrides_char_regression` was **not reachable** — primary defect is `rtl_reversal`, which dispatches to `_recover_rtl_flat_compare`, not `_recover_garble_ocr`. The char-count revert fix (described in "Sixth, finding 2") requires D4 content-derived langs to first produce a clean Arabic extraction for arbitration. FAIL→REJECTED regression attributed to D6 task 4.3 (flat garble gate now sees image OCR text).
+- MOU MOHRE (sha8=7ab5bdf3): D7 `pre_rebuild_md_quality` fires correctly (`md_clean`). Density gate remains the binding constraint (D8 candidate).
+- Unified arbitration module (`helpers/arbitrate.py`) and 24 tests shipped in tasks 5.1–5.4 (commit `d170cf3`).
+
 #### D8: Density Numerator and Flag Parse
 
 **Problem A — the density numerator undercounts.** `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count against `RFC029_MIN_SCANNED_DENSITY_FLOOR = 1500` (`config.py:565`). The numerator comes from `_flatten_tree_text` (`tree_validation.py:137-158`), which counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`. A scanned bilingual MOU with stamps and signature blocks is structurally under-counted relative to a floor calibrated on flat text. Doc 6 misses by 4% (1,437.7); Doc 18 by 6% (1,413.1).
