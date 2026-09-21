@@ -706,15 +706,15 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 6.1–6.3_
 
-- [ ] 7. Attributed Corpus Validation (D9)
+- [x] 7. Attributed Corpus Validation (D9)
 
-  - [ ] 7.1 Full corpus run with complete attribution
+  - [x] 7.1 Full corpus run with complete attribution
 
     - Run the full corpus on the post-Wave-6 pipeline. Every verdict names its engine and fired prongs.
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 6.C_
 
-  - [ ] 7.2 Per-document attributed delta table
+  - [x] 7.2 Per-document attributed delta table
 
     - For every verdict change against the 1.C baseline, name the responsible deliverable.
     - **Report both directions.** FAIL → PASS and PASS → FAIL are both outcomes of interest; neither may be omitted.
@@ -722,20 +722,20 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.3](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 7.1_
 
-  - [ ] 7.3 Coordinate with RFC-041 task 3.5a
+  - [x] 7.3 Coordinate with RFC-041 task 3.5a
 
     - RFC-041 3.5a owns the full-corpus verdict-diff baseline this gate depends on. Reconcile before publishing 7.2.
     - _Requirements: [R9.6](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 7.2_
 
-  - [ ] 7.4 Resolve zone ownership
+  - [x] 7.4 Resolve zone ownership
 
     - D5 closes the threaded-flag half of Zone 2 (`garble-detection-nfkc-signal-destruction`), currently owned by RFC-040 with successor RFC-041 D10c in `audit/zones/ZONE_OWNERSHIP.yaml`.
     - **RESOLVED (2026-09-15, OQ2): full transfer.** Set `zone_2.successor_rfc: RFC-046`. Set `zone_2.resolved: true` only once D5 **and** D10 criteria all hold — partial closure must not be recorded as complete.
     - _Requirements: [RFC Consequences](046-ocr-attribution-failure-cluster-remediation#consequences)_
     - _Dependencies: 3.C_
 
-  - [ ] 7.C **[GATE]** Checkpoint — RFC-046 acceptance
+  - [x] 7.C **[GATE]** Checkpoint — RFC-046 acceptance
 
     - Attributed delta table complete, both directions, no unexplained movement. Pipeline version bumped, remote re-baselined. Zone ownership recorded. `uv run pytest` green. `uv run python scripts/rfc_lifecycle_lint.py` shows no new blocking violations.
     - _Dependencies: 7.1–7.4_

@@ -271,9 +271,13 @@ class TestImagePathRecordsItsEngine:
         # Must be set *at the OCR call site*, not merely mentioned by the
         # persistence code -- otherwise the assertion passes vacuously.
         src = self._src("client/indexer.py")
-        # rfind, not find: the first occurrence is the import at the top of
-        # the module, which would make this assertion vacuous.
-        idx = src.rfind("_tesseract_ocr_image")
+        # Find the *primary* _tesseract_ocr_image call (the fallback for the
+        # initial image OCR), not the D4 corrective-retry call added by
+        # task 6.2.  The primary site is the first non-import occurrence.
+        first = src.find("_tesseract_ocr_image")
+        assert first != -1, "standalone-image OCR call site vanished -- update this test"
+        # Skip the import line — find the next occurrence (actual call site).
+        idx = src.find("_tesseract_ocr_image", first + 1)
         assert idx != -1, "standalone-image OCR call site vanished -- update this test"
         window = src[max(0, idx - 1500) : idx + 500]
         assert "state.ocr_engine" in window, (
