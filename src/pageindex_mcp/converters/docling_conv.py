@@ -378,48 +378,55 @@ def _run_pdf_inspector(pdf_path: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def probe_conversion_route(pdf_path: str) -> tuple[int, bool, dict | None]:
+def probe_conversion_route(pdf_path: str) -> tuple[int, bool, dict | None, dict | None]:
     """RFC-028 D0: cheap pre-flight probe run by ``converters_cli`` before the
     heavy conversion pipeline starts, so the worker can size its child timeout
     from the child's own startup handshake instead of re-deriving page count
     independently (which risks worker/child disagreement on a page-count failure).
 
-    Returns ``(chunk_count, is_docling_route, pdf_classification)`` using the
-    same pymupdf page-count read and ``MAX_DOCLING_PAGES`` threshold as the
-    routing guard at the top of ``pdf_to_markdown_docling``.  Non-PDF inputs
-    and PDFs whose page count cannot be read report ``is_docling_route=False``
-    so the worker falls back to the fixed ``CHILD_TIMEOUT`` unconditionally.
+    Returns ``(chunk_count, is_docling_route, pdf_classification,
+    pre_classification)`` using the same pymupdf page-count read and
+    ``MAX_DOCLING_PAGES`` threshold as the routing guard at the top of
+    ``pdf_to_markdown_docling``.  Non-PDF inputs and PDFs whose page count
+    cannot be read report ``is_docling_route=False`` so the worker falls back
+    to the fixed ``CHILD_TIMEOUT`` unconditionally.
 
-    ``pdf_classification`` is a dict with pdf-inspector shadow-mode results
-    (pdf_type, confidence, pages_needing_ocr, has_encoding_issues), or None
-    when pdf-inspector is not installed or classification fails.  Shadow mode:
-    classification is logged and metered. When PDF_INSPECTOR_PRECLASSIFY=1
-    (config.py), the classification influences behavior: scanned/image-based
-    documents with confidence >= 0.90 force first-pass OCR (client.py) and
-    receive a 16.5x timeout multiplier (worker.py). When the flag is disabled
-    (default), classification is shadow-mode only.
+    ``pdf_classification`` is a backward-compatible dict with pdf-inspector
+    results (pdf_type, confidence, pages_needing_ocr, has_encoding_issues),
+    extracted from the unified ``preclassify_document()`` result.  None when
+    pdf-inspector is not installed or classification fails.
+
+    ``pre_classification`` is the full unified pre-classification dict
+    (RFC-046 D4): file_type, pdf_type, detected_langs, ocr_langs,
+    lang_source, text_sample, garble signals — everything downstream needs.
     """
+    import os
+
     if not pdf_path.lower().endswith(".pdf"):
-        return 1, False, None
+        return 1, False, None, None
     from ..config import MAX_DOCLING_PAGES
+    from .preclassify import preclassify_document
 
-    classification = _run_pdf_inspector(pdf_path)
+    pre_class = preclassify_document(pdf_path, os.path.basename(pdf_path))
+    pre_class_dict = pre_class.to_dict() if pre_class.lang_source != "error" else None
 
-    try:
-        import pypdfium2 as pdfium  # BSD-3/Apache-2, not fitz/PyMuPDF (AGPL-3.0)
+    # Extract backward-compatible pdf_classification dict for existing consumers
+    # (subprocess_mgr timeout multiplier, indexer inspector_force_ocr gate).
+    classification: dict | None = None
+    if pre_class.pdf_type is not None:
+        classification = {
+            "pdf_type": pre_class.pdf_type,
+            "confidence": pre_class.pdf_confidence,
+            "pages_needing_ocr": pre_class.pages_needing_ocr,
+            "has_encoding_issues": pre_class.has_encoding_issues,
+        }
 
-        pdoc = pdfium.PdfDocument(pdf_path)
-        try:
-            page_count = len(pdoc)
-        finally:
-            pdoc.close()
-    except Exception:
-        return 1, False, classification
+    page_count = pre_class.page_count
     if page_count <= 0:
-        return 1, False, classification
+        return 1, False, classification, pre_class_dict
     if MAX_DOCLING_PAGES > 0 and page_count > MAX_DOCLING_PAGES:
-        return math.ceil(page_count / MAX_DOCLING_PAGES), True, classification
-    return 1, True, classification
+        return math.ceil(page_count / MAX_DOCLING_PAGES), True, classification, pre_class_dict
+    return 1, True, classification, pre_class_dict
 
 
 # ---------------------------------------------------------------------------

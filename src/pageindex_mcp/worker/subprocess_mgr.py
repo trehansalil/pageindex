@@ -362,6 +362,16 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
                 and pdf_class.get("confidence", 0) >= INSPECTOR_CONFIDENCE_THRESHOLD
             ):
                 ocr_multiplier = INSPECTOR_OCR_MULTIPLIER
+        pre_class = handshake.get("pre_classification")
+        if pre_class:
+            logger.info(
+                "preclassify: langs=%s source=%s chars=%d arabic_ratio=%.4f%s",
+                "+".join(pre_class.get("detected_langs", [])),
+                pre_class.get("lang_source", "?"),
+                pre_class.get("text_layer_chars", 0),
+                pre_class.get("arabic_ratio", 0.0),
+                " GARBLED" if pre_class.get("garbled_text_layer") else "",
+            )
 
     budget = effective_child_timeout(
         chunk_count=chunk_count,

@@ -304,6 +304,10 @@ mappings:
       - test_recovery.py
       - test_rfc_tables.py
 
+  converters/preclassify.py:
+    tests:
+      - test_preclassify.py
+
   converters/pipeline.py:
     tests:
       - test_config.py

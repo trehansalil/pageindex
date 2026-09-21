@@ -381,6 +381,7 @@ class PipelineConfig:
     # --- effective_config_snapshot fields (25 behavior flags) ---------------
     pipeline_version: int
     pdf_inspector_preclassify: bool
+    preclassify_enabled: bool
     allow_agpl_fallback: bool
     remote_md_renormalize: bool
     ocr_escalation_garble: bool
@@ -485,6 +486,7 @@ class PipelineConfig:
             .strip()
             .lower()
             in ("1", "true", "yes"),
+            preclassify_enabled=_envbool("PRECLASSIFY_ENABLED", "0"),
             allow_agpl_fallback=os.environ.get("ALLOW_AGPL_FALLBACK", "1").strip().lower()
             in ("1", "true", "yes"),
             remote_md_renormalize=os.environ.get("REMOTE_MD_RENORMALIZE", "1").strip().lower()
@@ -616,6 +618,7 @@ CONVERTER_TRANSIENT_RETRY_COUNT: int = pipeline_config.converter_transient_retry
 # Populate the backward-compat aliases declared above with live values from
 # pipeline_config (replaces the old frozen os.environ.get reads).
 PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
+PRECLASSIFY_ENABLED: bool = pipeline_config.preclassify_enabled
 ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
 REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
 OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
@@ -664,7 +667,7 @@ def reset_pipeline_config() -> None:
     ``compute_verdict`` and friends see the fresh config immediately.
     """
     global pipeline_config  # noqa: PLW0603
-    global PDF_INSPECTOR_PRECLASSIFY, ALLOW_AGPL_FALLBACK  # noqa: PLW0603
+    global PDF_INSPECTOR_PRECLASSIFY, PRECLASSIFY_ENABLED, ALLOW_AGPL_FALLBACK  # noqa: PLW0603
     global REMOTE_MD_RENORMALIZE, OCR_ESCALATION_GARBLE  # noqa: PLW0603
     global OCR_ESCALATION_LOW_CONTENT  # noqa: PLW0603
     global OCR_ESCALATION_PER_PICTURE, IMAGE_DOMINANT_OCR_ESCALATION_ENABLED  # noqa: PLW0603
@@ -675,6 +678,7 @@ def reset_pipeline_config() -> None:
     # Reassign deprecated backward-compat module-level aliases so that
     # `from ..config import X` consumers stay in sync with pipeline_config.
     PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
+    PRECLASSIFY_ENABLED = pipeline_config.preclassify_enabled
     ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
     REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
     OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
@@ -716,6 +720,7 @@ def effective_config_snapshot() -> dict:
         in {
             "pipeline_version",
             "pdf_inspector_preclassify",
+            "preclassify_enabled",
             "allow_agpl_fallback",
             "remote_md_renormalize",
             "ocr_escalation_garble",

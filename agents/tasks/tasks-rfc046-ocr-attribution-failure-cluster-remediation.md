@@ -513,6 +513,26 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R11.6](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11)_
     - _Dependencies: none_
 
+  - [x] 3.14 Expand `PreClassification` dataclass + add `preclassify_document()` unified entry point
+
+    - **DONE 2026-09-21.** Added `file_type`, `pdf_type`, `pdf_confidence`, `pages_needing_ocr`, `has_encoding_issues`, `page_count`, `ocr_langs` (Tesseract codes) fields to `PreClassification`. Added `_ISO_TO_TESS` mapping and `_iso_to_tess()` helper. Added `preclassify_document(filepath, filename)` that consolidates pdf_inspector + text-layer lang detection + filename heuristics into one call.
+    - _File: `src/pageindex_mcp/converters/preclassify.py`_
+
+  - [x] 3.15 Wire `preclassify_document()` into probe/handshake path
+
+    - **DONE 2026-09-21.** Replaced separate `_run_pdf_inspector()` + `detect_lang_from_text_layer()` calls in `probe_conversion_route()` with single `preclassify_document()` call. Backward-compatible `pdf_classification` dict extracted from the unified result. Exported `preclassify_document` from `converters/__init__.py`.
+    - _Files: `docling_conv.py:probe_conversion_route`, `converters/__init__.py`_
+
+  - [x] 3.16 Wire pre-classification into OCR language decisions + config flag
+
+    - **DONE 2026-09-21.** Added `PRECLASSIFY_ENABLED` config flag (default `0`, shadow mode). When enabled: replaced `detect_ocr_langs(filename)` at indexer lines 720/750 with `pre_classification.ocr_langs`; added D3a garble probe deduplication (`pre_garbled_from_preclassify` choice). Registered `preclassify_document` event and new `d3a_pre_garble_probe` choice in `decision_points.py`.
+    - _Files: `config.py`, `indexer.py:_convert_to_tree`, `obs/decision_points.py`_
+
+  - [x] 3.17 Tests + decision logging for unified pre-classification
+
+    - **DONE 2026-09-21.** Added 13 new tests: `TestIsoToTess` (4), `TestPreclassifyDocument` (5), `TestExpandedSerialisation` (4). Total: 27 tests in `test_preclassify.py`. All architecture guard tests green (new events and attrs registered).
+    - _File: `tests/test_preclassify.py`_
+
   - [ ] 3.C **[GATE]** Checkpoint — Independent fixes attributed
 
     - Corpus run. Per-document delta against the 1.C baseline, each change attributed to D5, D8, D10 or D11.
@@ -626,6 +646,20 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Dependencies: 5.1–5.4_
 
 - [ ] 6. Content-Derived OCR Language Selection (D4)
+
+  - [x] 6.0 Pre-classification: text-layer language detection in probe_conversion_route
+
+    - **Ported the Phase 0 pre-classification from `ocr_spike_eval.py` into the codebase.**
+    - New module: `converters/preclassify.py` — `detect_lang_from_text_layer()` uses pypdfium2 (BSD, no AGPL) to extract text from the first 3 PDF pages and classify language by Unicode-script ratio before any heavy conversion runs.
+    - `PreClassification` dataclass: bundles detected_langs, lang_source, text_sample, garble signal (alpha_ratio, junk_ratio). Serialisable to/from dict for the subprocess handshake.
+    - `merge_lang_sources()`: merges text-layer + filename-based language detection with provenance tracking.
+    - Wired into `probe_conversion_route()` (4-tuple return), threaded through converters_cli handshake → worker (logged) → indexer.
+    - `ScriptContext.from_document()` in `index()` now receives the text-layer sample, so Arabic-content PDFs with Latin filenames get correct `expected_script` from the start — before this, filename-only inference was all we had.
+    - Two decision events registered: `preclassify_text_layer` (detected/garbled), `preclassify_lang_merge` (filename_only/reclassified/confirmed).
+    - Tests: 14 in `tests/test_preclassify.py`, all green. Architecture guards green (events + attrs registered).
+    - Corpus smoke: 24/25 PDFs classified; text-layer detection reclassified language for 3 docs (Ministerial Resolution, cabinet_resolution_no_21, GHV-TKV-Tarif garbled → filename fallback).
+    - _Directly addresses the root cause of D4 for text-based PDFs. Scanned PDFs and images still need the bounded-retry in 6.2._
+    - _Dependencies: none (probe_conversion_route already ran pdf_inspector at this point)_
 
   - [ ] 6.1 Make garble recovery reachable for image inputs
 

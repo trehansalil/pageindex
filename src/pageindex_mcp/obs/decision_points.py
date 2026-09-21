@@ -127,6 +127,7 @@ _C_RECOVERY = "pageindex_mcp.client.recovery"
 _X_PICTURES = "pageindex_mcp.converters.pictures"
 _X_PIPELINE = "pageindex_mcp.converters.pipeline"
 _X_OCRLANGS = "pageindex_mcp.converters.ocr_langs"
+_X_PRECLASSIFY = "pageindex_mcp.converters.preclassify"
 
 
 # ---------------------------------------------------------------------------
@@ -687,10 +688,12 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         choices=(
             "pre_garbled_garble_detected",
             "pre_garbled_sparse_text",
+            "pre_garbled_from_preclassify",
             "clean_not_pre_garbled",
             "probe_error",
         ),
-        attrs=("page0_text_chars", "page_count", "d3a_sparse_page_char_floor", "error_type"),
+        attrs=("page0_text_chars", "page_count", "d3a_sparse_page_char_floor", "error_type",
+               "text_layer_chars", "alpha_ratio", "junk_ratio"),
         note=(
             "The bare `except Exception: pass` at 547-548 currently erases a "
             "probe crash; `probe_error` records it. Pure addition -- do not "
@@ -1501,6 +1504,69 @@ _PICTURES_POINTS: tuple[DecisionPoint, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# converters/preclassify.py -- text-layer language detection (RFC-046 D4)
+# ---------------------------------------------------------------------------
+_PRECLASSIFY_POINTS: tuple[DecisionPoint, ...] = (
+    _p(
+        event="preclassify_text_layer",
+        phase=Phase.LANGUAGE_SELECT,
+        module=_X_PRECLASSIFY,
+        function="detect_lang_from_text_layer",
+        choices=("detected", "garbled"),
+        attrs=(
+            "detected_langs",
+            "text_layer_chars",
+            "arabic_ratio",
+            "has_german_markers",
+            "alpha_ratio",
+            "junk_ratio",
+        ),
+        note="RFC-046 D4. Text-layer language detection using pypdfium2, before any OCR.",
+    ),
+    _p(
+        event="preclassify_lang_merge",
+        phase=Phase.LANGUAGE_SELECT,
+        module=_X_PRECLASSIFY,
+        function="merge_lang_sources",
+        choices=("filename_only", "reclassified", "confirmed"),
+        attrs=(
+            "fname_derived_langs",
+            "text_layer_langs",
+            "merged_langs",
+            "reclassified",
+        ),
+        note="RFC-046 D4. Merges filename + text-layer language detection.",
+    ),
+    _p(
+        event="preclassify_document",
+        phase=Phase.LANGUAGE_SELECT,
+        module=_X_PRECLASSIFY,
+        function="preclassify_document",
+        choices=(
+            "non_pdf",
+            "pdf_text_layer",
+            "pdf_filename",
+            "pdf_garbled_text_layer",
+            "pdf_error",
+            "pdf_no_pypdfium2",
+            "pdf_unavailable",
+        ),
+        attrs=(
+            "file_type",
+            "pdf_type",
+            "pdf_confidence",
+            "page_count",
+            "detected_langs",
+            "ocr_langs",
+            "lang_source",
+            "garbled_text_layer",
+        ),
+        note="RFC-046 D4. Unified pre-classification: doc type + lang + garble.",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # converters/pipeline.py -- converter chain construction + markdown source
 # ---------------------------------------------------------------------------
 _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
@@ -1641,6 +1707,7 @@ DECISION_POINTS: tuple[DecisionPoint, ...] = (
     + _INDEXER_POINTS
     + _RECOVERY_POINTS
     + _PICTURES_POINTS
+    + _PRECLASSIFY_POINTS
     + _PIPELINE_POINTS
 )
 

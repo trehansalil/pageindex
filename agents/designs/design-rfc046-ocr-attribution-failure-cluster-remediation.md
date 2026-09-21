@@ -201,6 +201,12 @@ For an image there is no content until OCR has run, so the union becomes a bound
 
 **Shape constraint:** any new recovery method is auto-enrolled by the AST discovery at `tests/test_architecture_guards.py:996` and must therefore carry an `if state.full_page_already_applied: return` guard lexically before its retry call (`:1063`), and must use `_all_defects(state)` rather than `state.first_defect` (`:1134`).
 
+**Addendum (2026-09-21, tasks 3.14–3.17): unified document pre-classification.** The eval harness's Phase 0 pre-classification has been consolidated into a single `preclassify_document()` entry point in `converters/preclassify.py`. It runs pdf_inspector (doc type), text-layer language detection via pypdfium2 (BSD, no AGPL), and filename heuristics in one call (~1-30ms). The result carries Tesseract-ready `ocr_langs` (e.g. `["ara","eng"]`) via `_ISO_TO_TESS` mapping, eliminating the ISO→Tesseract gap. Threads through `probe_conversion_route` → handshake → worker → indexer.
+
+When `PRECLASSIFY_ENABLED=1` (shadow-mode default off, same pattern as `PDF_INSPECTOR_PRECLASSIFY`): content-derived `ocr_langs` replace `detect_ocr_langs(filename)` at both force-OCR call sites in `_convert_to_tree`; the D3a fitz garble probe is skipped when pre-classification already detected a garbled text layer (`pre_garbled_from_preclassify`). Shadow mode: pre-classification still runs and logs, but OCR decisions use filename-only as before.
+
+This directly fixes D4's root cause for text-based PDFs (19 of 25 corpus docs): Arabic-content PDFs with Latin filenames now get correct OCR language selection from the start. Scanned PDFs and standalone images still require the bounded-retry approach in task 6.2, since they have no text layer to read.
+
 #### D5: Presentation-Forms Detector Alignment (C5)
 
 **Problem:** four presentation-form detectors, two thresholds.

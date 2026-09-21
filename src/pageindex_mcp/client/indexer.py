@@ -493,6 +493,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         expected_script: str | None,
         pdf_classification: dict | None,
         *,
+        pre_classification: dict | None = None,
         script_context: ScriptContext | None = None,
     ) -> None:
         """Conversion front-end: dispatch by extension, run initial validate_tree. Mutates state."""
@@ -523,8 +524,35 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 },
             )
 
+            # --- OCR language resolution: prefer pre-classification content-derived
+            # langs when PRECLASSIFY_ENABLED, else fall back to filename heuristic.
+            _preclass_ocr_langs = (pre_classification or {}).get("ocr_langs")
+            if pipeline_config.preclassify_enabled and _preclass_ocr_langs:
+                _ocr_lang_override = _preclass_ocr_langs
+            else:
+                _ocr_lang_override = detect_ocr_langs(filename)
+
             state.pre_garbled = False
             state.pdf_page_count = None
+
+            # When preclassify already detected a garbled text layer, consume
+            # that signal directly instead of re-probing with fitz.  The D3a
+            # fitz block below still runs for landscape_pages / page_count.
+            if (
+                pipeline_config.preclassify_enabled
+                and (pre_classification or {}).get("garbled_text_layer")
+            ):
+                state.pre_garbled = True
+                decision(
+                    event="d3a_pre_garble_probe",
+                    choice="pre_garbled_from_preclassify",
+                    reason="preclassify detected garbled text layer",
+                    attrs={
+                        "text_layer_chars": (pre_classification or {}).get("text_layer_chars", 0),
+                        "alpha_ratio": (pre_classification or {}).get("alpha_ratio", 0.0),
+                        "junk_ratio": (pre_classification or {}).get("junk_ratio", 0.0),
+                    },
+                )
 
             if not pipeline_config.allow_agpl_fallback:
                 decision(
@@ -716,7 +744,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
                                 self._staging_key,
                                 force_full_page_ocr=True,
-                                ocr_lang_override=detect_ocr_langs(filename),
+                                ocr_lang_override=_ocr_lang_override,
                                 expected_script=expected_script,
                             )
                         else:
@@ -746,7 +774,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 conv_fn,
                                 file_path,
                                 True,
-                                ocr_lang_override=detect_ocr_langs(filename),
+                                ocr_lang_override=_ocr_lang_override,
                                 expected_script=expected_script,
                             )
                         )
@@ -1748,6 +1776,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         file_path: str,
         mode: str = "auto",
         pdf_classification: dict | None = None,
+        pre_classification: dict | None = None,
         job_start_config: dict | None = None,
     ) -> str:
         """Index a document and persist it to MinIO. Returns the 8-char doc_id.
@@ -1777,11 +1806,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         logger.info("Indexing file: %s (ext=%s)", filename, ext)
 
         # Zone-3: compute ScriptContext once per index entry, thread through
-        # all garble/gate call sites.  Filename-based inference runs here;
-        # raw_text is not available yet (PDF text layer comes from the fitz
-        # probe inside _convert_to_tree).  ScriptContext.from_document
-        # handles empty raw_text gracefully (filename-only inference).
-        script_context = ScriptContext.from_document(filename)
+        # all garble/gate call sites.  When pre_classification carried a
+        # text-layer sample (RFC-046 D4), use it so Arabic-content PDFs with
+        # Latin filenames get correct expected_script from the start — before
+        # this, raw_text was unavailable until the fitz probe inside
+        # _convert_to_tree, so filename-only inference was all we had.
+        _pre_text_sample = (
+            (pre_classification or {}).get("text_sample", "") or ""
+        )
+        script_context = ScriptContext.from_document(filename, raw_text=_pre_text_sample)
         expected_script = script_context.dominant_script
 
         if ext not in _SUPPORTED:
@@ -1844,6 +1877,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     ext,
                     expected_script,
                     pdf_classification,
+                    pre_classification=pre_classification,
                     script_context=script_context,
                 )
 

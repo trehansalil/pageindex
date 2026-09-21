@@ -135,8 +135,8 @@ async def main() -> int:  # noqa: PLR0915
             # re-derive page count itself (avoids worker/child disagreement).
             from pageindex_mcp.converters import probe_conversion_route
 
-            chunk_count, is_docling_route, pdf_classification = probe_conversion_route(
-                args.input_path
+            chunk_count, is_docling_route, pdf_classification, pre_classification = (
+                probe_conversion_route(args.input_path)
             )
             handshake_payload = {
                 "handshake": True,
@@ -145,6 +145,8 @@ async def main() -> int:  # noqa: PLR0915
             }
             if pdf_classification is not None:
                 handshake_payload["pdf_classification"] = pdf_classification
+            if pre_classification is not None:
+                handshake_payload["pre_classification"] = pre_classification
             _emit(handshake_payload)
 
             try:
@@ -181,6 +183,7 @@ async def main() -> int:  # noqa: PLR0915
                 doc_id = await client.index(
                     args.input_path,
                     pdf_classification=pdf_classification,
+                    pre_classification=pre_classification,
                     job_start_config=job_start_config,
                 )
 

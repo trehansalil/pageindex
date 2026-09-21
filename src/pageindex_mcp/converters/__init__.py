@@ -39,6 +39,14 @@ from .docling_conv import (
     probe_conversion_route,
 )
 
+# --- preclassify.py ---
+from .preclassify import (
+    PreClassification,
+    detect_lang_from_text_layer,
+    merge_lang_sources,
+    preclassify_document,
+)
+
 # --- formats.py ---
 from .formats import (
     _D7_FITZ_FALLBACK_ENABLED,
@@ -277,6 +285,7 @@ __all__ = [
     "chunked_docling_timeout_s",
     "decide_rtl",
     "detect_garble",
+    "detect_lang_from_text_layer",
     "detect_ocr_langs",
     "docx_to_markdown",
     "ensure_tessdata",
@@ -289,6 +298,9 @@ __all__ = [
     "pdf_to_markdown",
     "pdf_to_markdown_docling",
     "pptx_to_markdown",
+    "PreClassification",
+    "merge_lang_sources",
+    "preclassify_document",
     "probe_conversion_route",
     "rasterize_pdf_pages",
     "rasterize_pdf_pages_fitz",
