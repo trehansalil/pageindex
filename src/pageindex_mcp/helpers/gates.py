@@ -342,7 +342,9 @@ def _gate_suspect_density(
         )
         return (False, "")
     chars_per_page = len(sig.flat_text) / page_count
+    chars_per_page_corrected = len(sig.flat_text_corrected) / page_count
     _fires = chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR
+    _would_fire_corrected = chars_per_page_corrected < _RFC029_MIN_SCANNED_DENSITY_FLOOR
     decision(
         event="suspect_density_gate",
         choice="fires" if _fires else "clear",
@@ -351,7 +353,13 @@ def _gate_suspect_density(
             if _fires
             else "chars_per_page within floor"
         ),
-        attrs={"page_count": page_count, "chars_per_page": chars_per_page},
+        attrs={
+            "page_count": page_count,
+            "chars_per_page": chars_per_page,
+            "chars_per_page_corrected": chars_per_page_corrected,
+            "corrected_delta": chars_per_page_corrected - chars_per_page,
+            "verdict_would_change": _fires != _would_fire_corrected,
+        },
     )
     if _fires:
         return (True, f"chars_per_page={chars_per_page:.1f}")

@@ -426,7 +426,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R5.7](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [DP-D5](design-rfc046-ocr-attribution-failure-cluster-remediation#d5-presentation-forms-detector-alignment-c5)_
     - _Dependencies: 3.1, 1.4 (needs `fired_prongs` persisted to be answerable)_
 
-  - [ ] 3.4 Correct the density numerator
+  - [x] 3.4 Correct the density numerator
 
     - `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count. The numerator from `_flatten_tree_text` (`tree_validation.py:137-158`) counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`.
     - Count content that is genuinely stored and retrievable.
