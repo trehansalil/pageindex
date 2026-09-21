@@ -325,6 +325,17 @@ Both are script-blind, which is the exact failure mode the RFC-045 escape patche
 
 **Third:** `_keep_best_wins` is a pairwise boolean and cannot express a three-candidate choice. D4's corrective re-OCR introduces a third candidate — this is a structural requirement of *this* RFC, independent of RFC-047.
 
+**Fourth (Amendment 1, 2026-09-21 — informed by Wave 2 eval + 3.C delta):** the unified arbitration policy must encode an **engine reliability ranking** derived from empirical eval data. Wave 2 eval (25-doc corpus, 4 engines, `agents/spikes/ocr_eval_rfc046/eval_report.json`) showed:
+
+| Engine | Wins (char yield) | Zero-output docs | Avg confidence |
+|--------|-------------------|------------------|----------------|
+| Tesseract | 22/25 | 0 | baseline |
+| Surya | 13/25 | 0 | 93–99% |
+| PaddleOCR (PP-OCRv5) | 3/25 | 1 (near-zero) | 65–80% |
+| PaddleOCR-VL | 12/25 | 6 | N/A (no conf) |
+
+Surya produces output for every document with consistently high confidence; PaddleOCR-VL silently returns 0 chars for 24% of the corpus. When the unified policy scores N candidates, it must: (a) discard any candidate with zero output before ranking, (b) weight engine reliability as a tiebreaker when char-count and script-awareness scores are close, (c) never prefer a PaddleOCR-VL result over Surya or Tesseract when VL returned zero on the same document class in eval. This ranking is a starting configuration, not a hardcoded order — it ships as a `config.py` constant so future evals can update it.
+
 #### D8: Density Numerator and Flag Parse
 
 **Problem A — the density numerator undercounts.** `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count against `RFC029_MIN_SCANNED_DENSITY_FLOOR = 1500` (`config.py:565`). The numerator comes from `_flatten_tree_text` (`tree_validation.py:137-158`), which counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`. A scanned bilingual MOU with stamps and signature blocks is structurally under-counted relative to a floor calibrated on flat text. Doc 6 misses by 4% (1,437.7); Doc 18 by 6% (1,413.1).
