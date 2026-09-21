@@ -4,8 +4,9 @@ import dataclasses
 import re
 import unicodedata
 
+from ..helpers.garble import _has_any_presentation_form, _pf_ratio
 from ..script import AR_CHAR_RE as _AR_SCRIPT_RE
-from ..script import RtlDecision, apply_rtl, decide_rtl
+from ..script import PF_SIGNAL_RATIO, RtlDecision, apply_rtl, decide_rtl
 
 # ---------------------------------------------------------------------------
 # Bidi normalization version — bump whenever reconstruct_bidi_order,
@@ -150,16 +151,14 @@ def _pre_inference_normalize(text: str) -> tuple[str, RtlDecision | None]:
     text = _fix_fi_hash_substitution(text)  # D4 (moved earlier in the pipeline)
     text, rtl_decision = reconstruct_bidi_order(text)  # D7 (Zone-3: sole bidi normalization step)
 
-    # Zone-6: capture presentation-form signal BEFORE NFKC destroys the
-    # codepoints, then canonicalize.  The boolean is threaded through
-    # RtlDecision.had_presentation_forms so the garble gate (helpers.py)
-    # can still detect presentation-form artefacts post-NFKC.
-    # Ranges: Arabic Presentation Forms-A U+FB50-U+FDFF,
-    #         Arabic Presentation Forms-B U+FE70-U+FEFF.
-    had_pres_forms = any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in text)
-    if had_pres_forms:
+    # NFKC triggers on ANY presentation-form codepoint (side effect).
+    # The had_presentation_forms SIGNAL is ratio-gated at PF_SIGNAL_RATIO
+    # so a single ﷲ among unshaped Arabic does not condemn the document.
+    has_any_pf = _has_any_presentation_form(text)
+    pf_signal = _pf_ratio(text) > PF_SIGNAL_RATIO if has_any_pf else False
+    if has_any_pf:
         text = unicodedata.normalize("NFKC", text)
-    if had_pres_forms and rtl_decision is not None:
+    if pf_signal and rtl_decision is not None:
         rtl_decision = dataclasses.replace(rtl_decision, had_presentation_forms=True)
 
     return text, rtl_decision

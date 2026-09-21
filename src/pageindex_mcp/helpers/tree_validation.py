@@ -8,8 +8,10 @@ from dataclasses import dataclass
 
 from ..config import pipeline_config
 from ..obs import Phase, decision, phase
+from .garble import _pf_ratio
 from ..script import (
     ARABIC_RANGES,
+    PF_SIGNAL_RATIO,
     PRESENTATION_RANGES,
     RtlDecision,
     ScriptContext,
@@ -304,21 +306,7 @@ class TreeSignals:
             # tree text is still pre-NFKC the scan detects Arabic
             # Presentation Forms; post-NFKC the ratio is 0 (same as the
             # prior False default).
-            _pf_count = (
-                sum(
-                    1
-                    for c in flat_text
-                    if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES)
-                )
-                if flat_text
-                else 0
-            )
-            _ar_count = (
-                sum(1 for c in flat_text if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
-                if flat_text
-                else 0
-            )
-            _had_pf = _ar_count > 0 and (_pf_count / _ar_count) > 0.50
+            _had_pf = _pf_ratio(flat_text) > PF_SIGNAL_RATIO if flat_text else False
             if not _had_pf:
                 logger.debug(
                     "TreeSignals.from_tree received bare expected_script=%r; "

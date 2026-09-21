@@ -28,6 +28,8 @@ PRESENTATION_RANGES: tuple[tuple[int, int], ...] = (
     (0xFE70, 0xFEFF),
 )
 
+PF_SIGNAL_RATIO: float = 0.50
+
 # ---------------------------------------------------------------------------
 # Pre-compiled regexes derived from the canonical ranges
 # ---------------------------------------------------------------------------
@@ -884,7 +886,7 @@ class ScriptContext:
             ar_count = sum(
                 1 for c in raw_text if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES)
             )
-            if ar_count > 0 and (pf_count / ar_count) > 0.50:
+            if ar_count > 0 and (pf_count / ar_count) > PF_SIGNAL_RATIO:
                 had_pf = True
 
         # 2. Filename-based script inference

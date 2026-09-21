@@ -804,7 +804,7 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         module=_C_INDEXER,
         function="_renormalize_bidi_guarded",
         choices=("nfkc_applied", "not_needed"),
-        attrs=("had_presentation_forms",),
+        attrs=("had_presentation_forms", "pf_any"),
         always_emits=False,
         note="Boolean only -- never the scanned text (R12.7).",
     ),

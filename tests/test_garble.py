@@ -1910,3 +1910,83 @@ class TestD10ArabicDeadCodeFix:
             config=config,
         )
         assert report is not None
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 D5: presentation-forms detector alignment (tasks 3.1, 3.2)
+# ---------------------------------------------------------------------------
+
+
+class TestPresentationFormsAlignment:
+    """Task 3.2: the signal (had_presentation_forms) is ratio-gated,
+    while NFKC normalization still triggers on any presence."""
+
+    def test_single_ligature_does_not_set_signal(self):
+        """One ﷲ among unshaped Arabic must not set had_presentation_forms."""
+        from pageindex_mcp.helpers.garble import PF_SIGNAL_RATIO, _pf_ratio
+
+        text = "بسم الله الرحمن الرحيم ﷲ والحمد لله"
+        ratio = _pf_ratio(text)
+        assert ratio <= PF_SIGNAL_RATIO, (
+            f"single ligature ratio {ratio} should be <= {PF_SIGNAL_RATIO}"
+        )
+
+    def test_single_ligature_still_triggers_nfkc(self):
+        """NFKC must trigger on ANY PF codepoint, even below the ratio."""
+        from pageindex_mcp.helpers.garble import _has_any_presentation_form
+
+        text = "بسم الله الرحمن الرحيم ﷲ والحمد لله"
+        assert _has_any_presentation_form(text) is True
+
+    def test_pf_dominated_text_sets_signal(self):
+        """>50% PF among Arabic chars must set the flag and fire the prong."""
+        from pageindex_mcp.helpers.garble import PF_SIGNAL_RATIO, _pf_ratio
+
+        pf_chars = "ﭐﭑﭒﭓﭔﭕ"
+        logical = "ا"
+        text = pf_chars + logical
+        ratio = _pf_ratio(text)
+        assert ratio > PF_SIGNAL_RATIO
+
+    def test_boundary_at_half(self):
+        """Exactly 50% PF should NOT set the signal (strict >)."""
+        from pageindex_mcp.helpers.garble import PF_SIGNAL_RATIO, _pf_ratio
+
+        pf_chars = "ﭐﭑﭒﭓﭔ"
+        logical = "ابةتث"
+        text = pf_chars + logical
+        ratio = _pf_ratio(text)
+        assert ratio <= PF_SIGNAL_RATIO
+
+    def test_infer_presentation_forms_matches_ratio(self):
+        """_infer_presentation_forms must agree with the ratio predicate."""
+        from pageindex_mcp.helpers.garble import (
+            PF_SIGNAL_RATIO,
+            _infer_presentation_forms,
+            _pf_ratio,
+        )
+
+        texts = [
+            "بسم الله الرحمن الرحيم ﷲ والحمد لله",
+            "ﭐﭑﭒﭓﭔﭕا",
+            "ﭐﭑابةتث",
+            "",
+            "Hello world",
+        ]
+        for text in texts:
+            assert _infer_presentation_forms(text) == (_pf_ratio(text) > PF_SIGNAL_RATIO)
+
+    def test_normalize_separates_nfkc_from_signal(self):
+        """normalize._pre_inference_normalize must NFKC even below ratio."""
+        import unicodedata
+
+        from pageindex_mcp.converters.normalize import _pre_inference_normalize
+
+        text_with_one_pf = "بسم الله الرحمن الرحيم ﷲ والحمد لله"
+        result, rtl_dec = _pre_inference_normalize(text_with_one_pf)
+        nfkc_expected = unicodedata.normalize("NFKC", text_with_one_pf)
+        assert "ﷲ" not in result, "NFKC should have decomposed the ligature"
+        if rtl_dec is not None:
+            assert rtl_dec.had_presentation_forms is False, (
+                "single ligature must not set the signal"
+            )

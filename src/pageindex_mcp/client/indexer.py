@@ -58,7 +58,9 @@ from ..helpers import (
     _flatten_tree_text,
     _garble_check_flat_blocks,
     _garble_config,
+    _has_any_presentation_form,
     _infer_presentation_forms,
+    _pf_ratio,
     _strip_text,
     _strip_toc_heading_nodes_guarded,
     _synthesize_preamble_node,
@@ -87,7 +89,7 @@ from ..metrics import (
 from ..obs import bind_log_context
 from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, strip_unresolved_image_markers
-from ..script import BlobKind, RtlDecision, ScriptContext
+from ..script import PF_SIGNAL_RATIO, BlobKind, RtlDecision, ScriptContext
 from ..storage import (
     hash_cache_get,
     hash_cache_set,
@@ -198,23 +200,22 @@ def _renormalize_bidi_guarded(
             BIDI_NORM_VERSION,
         )
 
-    # Bidi-RTL-split fix: capture presentation-form signal BEFORE NFKC
-    # destroys the codepoints, then canonicalize — matching the local
-    # path's _pre_inference_normalize depth.
-    # Ranges: Arabic Presentation Forms-A U+FB50-U+FDFF,
-    #         Arabic Presentation Forms-B U+FE70-U+FEFF.
-    had_pres_forms = any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in renorm)
-    if had_pres_forms:
+    # NFKC triggers on ANY presentation-form codepoint (side effect).
+    # The had_presentation_forms SIGNAL is ratio-gated at PF_SIGNAL_RATIO
+    # so a single ﷲ among unshaped Arabic does not condemn the document.
+    has_any_pf = _has_any_presentation_form(renorm)
+    pf_signal = _pf_ratio(renorm) > PF_SIGNAL_RATIO if has_any_pf else False
+    if has_any_pf:
         renorm = unicodedata.normalize("NFKC", renorm)
-    if had_pres_forms and rtl_decision is not None:
+    if pf_signal and rtl_decision is not None:
         rtl_decision = dataclasses.replace(rtl_decision, had_presentation_forms=True)
     decision(
         event="bidi_presentation_form_canonicalization",
-        choice="nfkc_applied" if had_pres_forms else "not_needed",
+        choice="nfkc_applied" if has_any_pf else "not_needed",
         reason="presentation-form codepoints found"
-        if had_pres_forms
+        if has_any_pf
         else "no presentation-form codepoints",
-        attrs={"had_presentation_forms": had_pres_forms},
+        attrs={"had_presentation_forms": pf_signal, "pf_any": has_any_pf},
     )
 
     return renorm, rtl_decision

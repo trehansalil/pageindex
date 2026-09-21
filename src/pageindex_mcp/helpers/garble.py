@@ -13,6 +13,7 @@ from ..config import pipeline_config
 from ..obs import decision
 from ..script import (
     ARABIC_RANGES,
+    PF_SIGNAL_RATIO,
     PRESENTATION_RANGES,
     BlobKind,
     ScriptContext,
@@ -59,6 +60,22 @@ _GARBLE_PRONG_EVAL_CAP = 50
 _GARBLE_VERDICT_CAP = 50
 
 
+def _has_any_presentation_form(text: str) -> bool:
+    """True when *text* contains at least one Arabic Presentation Form codepoint."""
+    return any(0xFB50 <= ord(ch) <= 0xFDFF or 0xFE70 <= ord(ch) <= 0xFEFF for ch in text)
+
+
+def _pf_ratio(text: str) -> float:
+    """Ratio of Arabic Presentation Form codepoints to all Arabic codepoints."""
+    if not text:
+        return 0.0
+    pf_count = sum(1 for c in text if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES))
+    ar_count = sum(1 for c in text if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
+    if ar_count == 0:
+        return 0.0
+    return pf_count / ar_count
+
+
 def _infer_presentation_forms(text: str) -> bool:
     """Best-effort Arabic Presentation-Forms detection from *text*.
 
@@ -73,11 +90,7 @@ def _infer_presentation_forms(text: str) -> bool:
     Zone-7 fix: extracted to close the ``had_presentation_forms=False``
     hardcoding pattern across 10+ fallback ScriptContext constructions.
     """
-    if not text:
-        return False
-    pf_count = sum(1 for c in text if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES))
-    ar_count = sum(1 for c in text if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
-    return ar_count > 0 and (pf_count / ar_count) > 0.50
+    return _pf_ratio(text) > PF_SIGNAL_RATIO
 
 
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z]{2,}")
@@ -678,9 +691,7 @@ def detect_garble(
 
     _had_pf = script_context.had_presentation_forms
     if not _had_pf:
-        _pf = sum(1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in PRESENTATION_RANGES))
-        _arc = sum(1 for c in blob if any(lo <= ord(c) <= hi for lo, hi in ARABIC_RANGES))
-        if _arc > 0 and (_pf / _arc) > 0.50:
+        if _pf_ratio(blob) > PF_SIGNAL_RATIO:
             _had_pf = True
         # Removed: the prior fallback here unconditionally set _had_pf=True
         # for ANY Arabic text with zero presentation forms, assuming NFKC had

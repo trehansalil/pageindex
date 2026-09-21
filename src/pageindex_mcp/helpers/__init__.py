@@ -10,6 +10,7 @@ from __future__ import annotations
 from ..script import (
     AR_RUN_RE,
     ARABIC_RANGES,
+    PF_SIGNAL_RATIO,
     PRESENTATION_RANGES,
     BlobKind,
     RtlDecision,
@@ -89,7 +90,9 @@ from .garble import (
     _garble_check_nodes,
     _garble_config,
     _garble_ratio,
+    _has_any_presentation_form,
     _infer_presentation_forms,
+    _pf_ratio,
     _is_morphologically_nonsense,
     _latin_token_ratio,
     detect_garble,
@@ -250,7 +253,10 @@ __all__ = [
     "_garble_check_nodes",
     "_garble_config",
     "_garble_ratio",
+    "PF_SIGNAL_RATIO",
+    "_has_any_presentation_form",
     "_infer_presentation_forms",
+    "_pf_ratio",
     "_infer_script",
     # tree node measurement (canonical — use instead of ad-hoc text sums)
     "_node_char_count",

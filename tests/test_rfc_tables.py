@@ -119,19 +119,33 @@ class TestPresentationFormsDetectedBeforeNFKC:
     def test_presentation_forms_detected_before_nfkc(self):
         import unicodedata
 
-        # U+FB50 (ALEF WASLA ISOLATED FORM) decomposes under NFKC to U+0671
+        # U+FB50 (ALEF WASLA ISOLATED FORM) decomposes under NFKC to U+0671.
+        # RFC-046 D5: the signal is ratio-gated (>50% of Arabic chars),
+        # so PF must dominate for had_presentation_forms to be True.
         pf_char = "ﭐ"
-        regular = "".join(chr(c) for c in range(0x0620, 0x0640))
-        raw = regular + pf_char * 20
+        regular = "اب"
+        raw = regular + pf_char * 10
         pf_before = sum(1 for c in raw if 0xFB50 <= ord(c) <= 0xFDFF)
         assert pf_before > 0
         nfkc_text = unicodedata.normalize("NFKC", raw)
         pf_after = sum(1 for c in nfkc_text if 0xFB50 <= ord(c) <= 0xFDFF)
         assert pf_after == 0, "NFKC must decompose U+FB50"
-        # _pre_inference_normalize captures the signal before NFKC runs
         result, rtl = _pre_inference_normalize(raw)
         assert rtl is not None
         assert rtl.had_presentation_forms is True
+
+    def test_minority_pf_does_not_set_signal(self):
+        """RFC-046 D5: a minority of PF chars among Arabic does not set
+        the had_presentation_forms signal, but NFKC still runs."""
+        import unicodedata
+
+        pf_char = "ﭐ"
+        regular = "".join(chr(c) for c in range(0x0620, 0x0640))
+        raw = regular + pf_char
+        result, rtl = _pre_inference_normalize(raw)
+        assert "ﭐ" not in result, "NFKC must still decompose the PF char"
+        assert rtl is not None
+        assert rtl.had_presentation_forms is False
 
 
 class TestBidiCoherenceCheck:

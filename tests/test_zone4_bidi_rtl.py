@@ -29,10 +29,20 @@ class TestPreInferenceNormalizeDelegation:
     def test_arabic_presentation_forms_detected(self):
         from pageindex_mcp.converters.pictures import _pre_inference_normalize
 
-        text = "ﭐﭑﭒ مرحبا بالعالم"  # U+FB50-range chars + regular Arabic
+        # RFC-046 D5: signal is ratio-gated (>50%), so PF must dominate
+        text = "ﭐﭑﭒﭓﭔﭕﭖﭗ اب"  # PF-dominated + two regular Arabic
         _, rtl_decision = _pre_inference_normalize(text)
         assert rtl_decision is not None
         assert rtl_decision.had_presentation_forms is True
+
+    def test_minority_pf_does_not_set_signal(self):
+        from pageindex_mcp.converters.pictures import _pre_inference_normalize
+
+        # RFC-046 D5: minority PF among Arabic does not set the signal
+        text = "ﭐﭑﭒ مرحبا بالعالم"  # 3 PF + ~11 regular Arabic = ~21%
+        _, rtl_decision = _pre_inference_normalize(text)
+        assert rtl_decision is not None
+        assert rtl_decision.had_presentation_forms is False
 
     def test_latin_text_works(self):
         from pageindex_mcp.converters.pictures import _pre_inference_normalize
