@@ -868,9 +868,26 @@ def generate_summary(all_results: list[dict]) -> dict:
 
 def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -> None:
     """Write a human-readable markdown report."""
+    import platform
+
     lines = [
-        "# RFC-046 POC: PaddleOCR vs Tesseract Evaluation Report",
+        "# RFC-046 POC: Multi-Engine OCR Evaluation Report",
         f"\nGenerated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Host: {platform.node()} ({platform.machine()}, {platform.system()} {platform.release()})",
+        f"Max pages/doc: {summary.get('max_pages', 'unlimited')} (0 = 9999 cap, not literally unlimited)",
+        "",
+        "> **This report measures character yield, not accuracy.**",
+        "> No ground-truth transcription exists for this corpus. \"Winner\" means",
+        "> the engine that produced more characters, which is a necessary but not",
+        "> sufficient signal for quality. A high character count from garbled output",
+        "> is noise, not accuracy. Interpret with that caveat.",
+        "",
+        "### Engine versions",
+        "",
+        f"- **Tesseract:** local (`tesseract --version` at runtime)",
+        f"- **PaddleOCR:** PP-OCRv5/v6 via service at {PADDLEOCR_URL}",
+        f"- **PaddleOCR-VL:** PaddleOCR-VL-1.6-GGUF via Ollama + service at {PADDLEOCR_VL_URL}",
+        f"- **Surya:** surya-ocr ≥0.22 via service at {SURYA_URL}",
         f"\n## Summary\n",
         f"- **Documents evaluated:** {summary['total_documents']}",
         f"- **PaddleOCR wins (by char yield):** {summary['overall']['paddleocr_wins']}",
@@ -1342,9 +1359,41 @@ def _run_pipeline(args: argparse.Namespace, doc_store: Path, out_dir: Path, max_
     total_elapsed = time.monotonic() - total_start
     print(f"\nTotal evaluation time: {total_elapsed:.1f}s")
 
+    # --- Artifact completeness gate (task 2.5) ---
+    _ENGINE_PAGE_KEYS = {
+        "tesseract": ("tesseract_pages", args.skip_tesseract),
+        "paddleocr": ("paddleocr_pages", args.skip_paddleocr),
+        "paddleocr_vl": ("paddleocr_vl_pages", args.skip_paddleocr_vl),
+        "surya": ("surya_pages", args.skip_surya),
+    }
+    completeness_failures: list[str] = []
+    for engine, (pages_key, skipped) in _ENGINE_PAGE_KEYS.items():
+        if skipped:
+            continue
+        for fp in doc_files:
+            doc = results_by_name[fp.name]
+            pages = doc.get(pages_key, [])
+            has_good_page = any(
+                "error" not in p and "skipped" not in p and p.get("char_count", 0) > 0
+                for p in pages
+            )
+            if not has_good_page:
+                completeness_failures.append(f"  {engine}: {fp.name}")
+    if completeness_failures:
+        print(
+            f"\nARTIFACT COMPLETENESS GATE FAILED — {len(completeness_failures)} "
+            f"engine/document pair(s) have no valid page with char_count > 0:",
+            file=sys.stderr,
+        )
+        for line in completeness_failures:
+            print(line, file=sys.stderr)
+        sys.exit(1)
+    print("\nArtifact completeness gate: PASSED")
+
     # --- Write outputs ---
     summary = generate_summary(all_results)
     summary["total_elapsed_s"] = round(total_elapsed, 1)
+    summary["max_pages"] = max_pages
 
     # Strip raw text from JSON to keep report manageable
     slim_results = []

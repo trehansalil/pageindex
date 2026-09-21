@@ -375,7 +375,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R12.1](046-ocr-attribution-failure-cluster-remediation#requirement-12-phase-and-decision-layer-logging-d12)_
     - _Dependencies: 12.1_
 
-  - [ ] 12.C **[GATE]** Checkpoint — the decision layer is reconstructable
+  - [x] 12.C **[GATE]** Checkpoint — the decision layer is reconstructable
 
     - Every decision point emits; a single document's full branch sequence is recoverable from logs alone via 12.10.
     - Redaction guard green; no text or title in any record.
@@ -400,7 +400,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 - [ ] 3. Independent Cluster Fixes (D5, D8, D10) + Reachable Dynamic Child Timeout (D11)
 
-  - [ ] 3.1 Align the presentation-forms detectors onto one shared ratio
+  - [x] 3.1 Align the presentation-forms detectors onto one shared ratio
 
     - Define `PF_SIGNAL_RATIO = 0.50` once in `helpers/garble.py`; consume it from all four detectors.
     - Change `indexer.py:190` and `converters/normalize.py:159` from `any(...)` to the ratio predicate, **measured pre-NFKC** (NFKC destroys the codepoints being counted).
@@ -409,7 +409,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R5.1](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.2](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [R5.3](046-ocr-attribution-failure-cluster-remediation#requirement-5-presentation-forms-detector-alignment-c5), [DP-D5](design-rfc046-ocr-attribution-failure-cluster-remediation#d5-presentation-forms-detector-alignment-c5)_
     - _Dependencies: 1.C_
 
-  - [ ] 3.2 Tests for presentation-forms alignment
+  - [x] 3.2 Tests for presentation-forms alignment
 
     - One-ligature negative: a document with a single ﷲ or ﷺ among unshaped Arabic does not set `had_presentation_forms`, **and is still NFKC-normalized**.
     - PF-dominated positive: >50% of Arabic characters as presentation forms still sets the flag and still fires the prong.
@@ -435,7 +435,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R8.1](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [R8.2](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
     - _Dependencies: 1.C_
 
-  - [ ] 3.5 Fix the `PRE_GARBLE_FORCE_OCR_ENABLED` parse asymmetry
+  - [x] 3.5 Fix the `PRE_GARBLE_FORCE_OCR_ENABLED` parse asymmetry
 
     - `config.py:505-508` uses `.lower() == "true"` — no `.strip()`, no `("1","true","yes")` — while its three siblings at `:492-504` all use the full predicate. `=1`, `=yes` and `=true ` are silent no-ops.
     - Switch to `_envbool`. **Default stays `false`** — this RFC does not relitigate RFC-021 QF1's doctrine.
@@ -451,7 +451,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R8.6](046-ocr-attribution-failure-cluster-remediation#requirement-8-density-numerator-correctness-and-flag-parse-consistency), [DP-D8](design-rfc046-ocr-attribution-failure-cluster-remediation#d8-density-numerator-and-flag-parse)_
     - _Dependencies: 3.5_
 
-  - [ ] 3.7 Threshold-immutability guard
+  - [x] 3.7 Threshold-immutability guard
 
     - Guard pinning every `VerdictThresholds` field, `RFC029_MIN_SCANNED_DENSITY_FLOOR`, `PASS_MAX_LEAF_RATIO` and `hard_fail_max_leaf_ratio` against pre-RFC values.
     - Protects against the anti-pattern `audit/zones/_index.md` names — threshold widening masking extraction defects.
