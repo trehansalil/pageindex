@@ -545,7 +545,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
 
 - [ ] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
 
-  - [ ] 4.1 Make the gate-signal source a caller-declared choice
+  - [x] 4.1 Make the gate-signal source a caller-declared choice
 
     - `evaluate_gates` takes `sig = validate_result.signals` (`verdict.py:151`) and consults `structure` only when `sig is None` (`:164-167`). Since `state.gate_result` is always a `TreeGateResult` on the flat route, `flat_structure` passed at `indexer.py:1122` is **dead on every flat-routed document**.
     - Replace the implicit fallback with an explicit caller-declared source so a dead argument cannot be passed unknowingly.
@@ -553,21 +553,21 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.1](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R6.2](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 3.C_
 
-  - [ ] 4.2 Route the flat leaf ratio to the verdict, not only the sidecar
+  - [x] 4.2 Route the flat leaf ratio to the verdict, not only the sidecar
 
     - `f_mlr` is computed at `indexer.py:1132` and written only to the sidecar (`:1183`, `:1215`), so the sidecar's `max_leaf_ratio` and its `verdict_reason` derive from two different structures.
     - Make the flat value reach both.
     - _Requirements: [R6.3](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [Property 6](design-rfc046-ocr-attribution-failure-cluster-remediation#property-6-verdict-sidecar-structural-consistency)_
     - _Dependencies: 4.1_
 
-  - [ ] 4.3 Make image-block OCR text visible to the flat garble gate
+  - [x] 4.3 Make image-block OCR text visible to the flat garble gate
 
     - `_garble_check_flat_blocks` reads via `block_text(block, CHAR_COUNT)` (`garble.py:804`); for `role == "image"`, `block_text` returns OCR/description text only under `BlockTextPurpose.SEARCH` (`helpers/flat.py:247-256`), so under `CHAR_COUNT` it returns `""` and the block is skipped at `garble.py:805-806`.
     - Consequence today: chart OCR noise is invisible to the gate, to `flat_char_count` (`indexer.py:1140`), and to `flat_structure` (filtered at `:1119`) — which is why Doc 14's 198 blocks yield 1,355 chars.
     - _Requirements: [R6.4](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1_
 
-  - [ ] 4.3b Give the flat path the image-specific garble threshold
+  - [x] 4.3b Give the flat path the image-specific garble threshold
 
     - `indexer.py:960-972` builds `_image_garble_cfg = GarbleConfig(garble_nonsense_ratio=IMAGE_OCR_NONSENSE_RATIO)` for `ext in _IMAGE_EXTS` and passes it to `validate_tree`. The flat gate at `indexer.py:1032-1036` passes the plain module-level `_garble_config`.
     - **Measured 2026-09-15:** this makes commit `d1f67c3` route-dependent. That commit added `IMAGE_OCR_NONSENSE_RATIO = 0.45` *specifically* so the garble gate would catch Doc 13; on the flat route the fix is inert twice over — the threshold is not passed, and image blocks are skipped before any threshold could apply.
@@ -575,20 +575,20 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.5](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1, 4.3_
 
-  - [ ] 4.4 Garble-check enrichment-mutated blocks
+  - [x] 4.4 Garble-check enrichment-mutated blocks
 
     - The gate runs at `indexer.py:1026-1036`, before `_apply_picture_enrichment` at `:1092` — and enrichment writes `ocr_text` into image blocks (`client/images.py:261-315`). Blocks created or mutated by enrichment are never checked.
     - Either move the gate after enrichment or re-run it over mutated blocks.
     - _Requirements: [R6.6](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1, 4.3_
 
-  - [ ] 4.5 Feed flat signals to downstream predicates
+  - [x] 4.5 Feed flat signals to downstream predicates
 
     - `_try_cat_b` (`verdict.py:313-336`) judges flat promotion on `sig.flat_text` = tree text. `_try_image_enrichment`'s `node_count >= 3` and character floor (`:242-249`) test tree node count.
     - _Requirements: [R6.7](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1_
 
-  - [ ] 4.6 Tests and guard for D6
+  - [x] 4.6 Tests and guard for D6
 
     - Unit test: a document whose tree ratio is 0.86 and whose flat blocks differ materially receives the flat value in both verdict and sidecar.
     - Unit test: image-block `ocr_text` is counted by the flat garble gate and by `flat_char_count`.
@@ -597,7 +597,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.8](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [Property 5](design-rfc046-ocr-attribution-failure-cluster-remediation#property-5-no-dead-verdict-arguments)_
     - _Dependencies: 4.1–4.5_
 
-  - [ ] 4.C **[GATE]** Checkpoint — Flat verdict plumbing attributed
+  - [x] 4.C **[GATE]** Checkpoint — Flat verdict plumbing attributed (2026-09-21: landscape FAIL→MARGINAL via D6 flat signals; portrait FAIL unchanged (density gate, D8 candidate); MOU MOHRE REJECTED→FAIL (garble resolved, density gate remains, D8 `verdict_would_change: true`). See `agents/baselines/rfc046-wave4-4c-checkpoint.md`.)
 
     - Corpus run. **Expect movement across the whole flat population, not only Doc 14.** Every change attributed to D6.
     - An improvement with no identifiable cause blocks this gate — see [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation).
