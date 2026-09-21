@@ -336,6 +336,8 @@ Both are script-blind, which is the exact failure mode the RFC-045 escape patche
 
 Surya produces output for every document with consistently high confidence; PaddleOCR-VL silently returns 0 chars for 24% of the corpus. When the unified policy scores N candidates, it must: (a) discard any candidate with zero output before ranking, (b) weight engine reliability as a tiebreaker when char-count and script-awareness scores are close, (c) never prefer a PaddleOCR-VL result over Surya or Tesseract when VL returned zero on the same document class in eval. This ranking is a starting configuration, not a hardcoded order — it ships as a `config.py` constant so future evals can update it.
 
+**Fifth — hallucination guard.** PaddleOCR-VL produced 39,732 chars on `قرار مجلس الوزراء رقم (1)` where Tesseract yielded 4,914 and Surya 4,994 — an 8× inflation strongly suggesting hallucinated repetition, not genuine content. The unified policy must cap trust in any engine whose char yield exceeds the median of other engines by more than a configurable factor (default 3×), and flag such results for repetition-density analysis before preferring them.
+
 #### D8: Density Numerator and Flag Parse
 
 **Problem A — the density numerator undercounts.** `_gate_suspect_density` (`gates.py:239-255`) divides `len(sig.flat_text)` by page count against `RFC029_MIN_SCANNED_DENSITY_FLOOR = 1500` (`config.py:565`). The numerator comes from `_flatten_tree_text` (`tree_validation.py:137-158`), which counts `title` + `text` + table cells but **not** node `summary` and **not** image-block `ocr_text`. A scanned bilingual MOU with stamps and signature blocks is structurally under-counted relative to a floor calibrated on flat text. Doc 6 misses by 4% (1,437.7); Doc 18 by 6% (1,413.1).
