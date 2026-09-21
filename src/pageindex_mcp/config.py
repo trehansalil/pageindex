@@ -12,7 +12,7 @@ load_dotenv()
 # Pipeline version — bumped in the same commit as any splitter/garble/OCR fix
 # that could change corpus classification (RFC-014 D3).
 # ---------------------------------------------------------------------------
-CURRENT_PIPELINE_VERSION: int = 4
+CURRENT_PIPELINE_VERSION: int = 5
 CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 # RFC-027 D7: page-count threshold above which pdf_to_markdown_docling routes
 # to the chunked-Docling path instead of a single direct conversion call.

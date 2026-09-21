@@ -165,12 +165,13 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R3.1](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [R3.2](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [R3.3](046-ocr-attribution-failure-cluster-remediation#requirement-3-corrected-run-8-baseline), [DP-D3](design-rfc046-ocr-attribution-failure-cluster-remediation#d3-corrected-run-8-baseline)_
     - _Dependencies: none (parallel with 1.1–1.7)_
 
-  - [ ] 1.9 Bump `CURRENT_PIPELINE_VERSION` and re-baseline the remote image
+  - [x] 1.9 Bump `CURRENT_PIPELINE_VERSION` and re-baseline the remote image
 
     - Bump `config.py:15` from 4 to 5 in the same commit as the first merged corpus-reclassifying change (RFC-014 D3).
     - **Remote re-baselining does not apply (2026-09-15)** — Docling runs in-process, so the `client/remote.py:62` handshake is out of the loop.
     - **Deferred out of Wave 1 (2026-09-15), by the rule this task cites.** Wave 1 lands no change that can reclassify the corpus: `OcrEngine`, the engine and prong fields, and the sidecar writes are all additive, and `DOCLING_CONVERTER_NAME` is byte-identical to the literal it replaces (frozen by `tests/test_rfc046_attribution.py::test_canonical_converter_name_exists`), so `_converter_contract` receives the same input as before. Bumping now would falsely mark every Run-8 row stale to `_SWEEP_CANDIDATES_SQL` (`registry/queries.py:232`) while no behaviour had changed. **Bump in the commit that lands the first Wave 3 deliverable instead.**
     - Note for whoever does bump it: the comment at `client/indexer.py:1250,1412` says the override applies "when VERDICT_DOWNGRADE_ENABLED **and pipeline_version is strictly newer**", but the code tests only the flag. The version half was never implemented. Either implement it or correct the comment when bumping — do not assume the version guard is live.
+    - **DONE 2026-09-21.** Bumped `config.py:15` from 4 to 5. Wave 3 deliverables (3.1/3.2, 3.5, 3.7) already landed, so the bump is correctly sequenced per the deferral rule. The misleading comment at `indexer.py` about "pipeline_version is strictly newer" is already absent — no correction needed. Remote re-baselining confirmed not applicable (Docling runs in-process). All pipeline-version-related tests pass (5/5).
     - _Requirements: [R9.5](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [DP-D9](design-rfc046-ocr-attribution-failure-cluster-remediation#d9-attribution-gated-corpus-validation)_
     - _Dependencies: 1.5_
 

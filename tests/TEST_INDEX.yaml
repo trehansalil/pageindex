@@ -208,6 +208,11 @@ mappings:
       - test_recovery.py
       - test_memory_redis.py
 
+  worker/timeouts.py:
+    tests:
+      - test_worker.py primary
+      - test_recovery.py
+
   # ── Standard modules (coverage: governance default 70%) ─────────────────────
   auth.py:
     tests:
@@ -615,6 +620,10 @@ mappings:
     tests:
       - test_obs_logging.py primary
       - test_rfc046_attribution.py
+  obs/redact.py:
+    tests:
+      - test_observability_combined.py primary
+      - test_obs_logging.py
   obs/safe.py:
     tests:
       - test_obs_logging.py primary
