@@ -8,11 +8,7 @@ from dataclasses import dataclass
 
 from ..config import pipeline_config
 from ..obs import Phase, decision, phase
-from .garble import _pf_ratio
 from ..script import (
-    ARABIC_RANGES,
-    PF_SIGNAL_RATIO,
-    PRESENTATION_RANGES,
     RtlDecision,
     ScriptContext,
     _infer_script,
@@ -260,8 +256,7 @@ def _tree_is_reordered(structure: list) -> bool:
 # Redirected to the canonical garble.py copies to eliminate
 # fix-one-miss-the-other drift (RFC-013 D7).
 # ---------------------------------------------------------------------------
-from .garble import GarbleConfig, _garble_ratio  # noqa: F401  (used by from_tree below)
-
+from .garble import GarbleConfig, _garble_ratio
 
 # ---------------------------------------------------------------------------
 # TreeSignals
@@ -294,8 +289,8 @@ class TreeSignals:
         garble_threshold: float = 0.05,
         garble_config: GarbleConfig | None = None,
     ) -> TreeSignals:
-        from .garble import _garble_config, detect_garble
         from ..script import BlobKind
+        from .garble import _garble_config, detect_garble
 
         node_count = _tree_node_count(structure)
         depth = _tree_depth(structure)
@@ -310,19 +305,18 @@ class TreeSignals:
             _eff_script = (
                 expected_script if expected_script is not None else _infer_script(flat_text)
             )
-            # Best-effort presentation-forms scan on flat_text.  When the
-            # tree text is still pre-NFKC the scan detects Arabic
-            # Presentation Forms; post-NFKC the ratio is 0 (same as the
-            # prior False default).
-            _had_pf = _pf_ratio(flat_text) > PF_SIGNAL_RATIO if flat_text else False
-            if not _had_pf:
-                logger.debug(
-                    "TreeSignals.from_tree received bare expected_script=%r; "
-                    "had_presentation_forms=%s (scanned flat_text; upstream "
-                    "should pass ScriptContext for accurate PF detection)",
-                    expected_script,
-                    _had_pf,
-                )
+            # RFC-046 D10 / task 3.8: flat_text is post-NFKC (tree built from
+            # converter output), so presentation-forms codepoints are already
+            # destroyed — scanning it always yields 0.  False is the only
+            # honest answer; callers with access to pre-NFKC text should pass
+            # a ScriptContext instead.
+            _had_pf = False
+            logger.debug(
+                "TreeSignals.from_tree received bare expected_script=%r; "
+                "had_presentation_forms=False (post-NFKC flat_text; upstream "
+                "should pass ScriptContext for accurate PF detection)",
+                expected_script,
+            )
 
         # Zone-4: unified detect_garble entry point replaces check_garble.
         _ctx = ScriptContext(
@@ -496,18 +490,13 @@ def validate_tree(
         )
 
         # Zone-4 + Zone-7 fix: build ScriptContext for gate dispatch AFTER
-        # TreeSignals.from_tree computes flat_text.  When expected_script is a
-        # bare string, the old from_script_str path hardcoded
-        # had_presentation_forms=False, causing _gate_node_garbling (which
-        # threads _script_ctx into _garble_check_nodes) to disagree with
-        # sig.garbled (which from_tree computed with accurate PF detection).
-        # Now: scan sig.flat_text for presentation forms so the gate dispatch
-        # ScriptContext is consistent with from_tree's internal PF detection.
+        # TreeSignals.from_tree computes flat_text.  RFC-046 D10 / task 3.8:
+        # sig.flat_text is post-NFKC, so _infer_presentation_forms would
+        # always return False — the codepoints are already destroyed.
+        # Callers with pre-NFKC text should pass a ScriptContext upstream.
         if isinstance(expected_script, ScriptContext):
             _script_ctx = expected_script
         else:
-            from .garble import _infer_presentation_forms
-
             _eff_script = (
                 expected_script
                 if expected_script is not None
@@ -517,7 +506,7 @@ def validate_tree(
             )
             _script_ctx = ScriptContext(
                 dominant_script=_eff_script,
-                had_presentation_forms=_infer_presentation_forms(sig.flat_text),
+                had_presentation_forms=False,
                 source="validate_tree",
             )
 

@@ -1273,12 +1273,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         # table amid clean prose passes the whole-blob threshold.
         _garble_blocks: list[dict]
         _, _garble_blocks = await asyncio.to_thread(route_and_extract_flat, flat_md)
+        # RFC-046 D10 / task 3.8: flat_md is post-NFKC (converter output
+        # after _pre_inference_normalize), so PF codepoints are destroyed.
         _flat_garble_ctx = (
             script_context
             if script_context is not None
             else ScriptContext(
                 dominant_script=expected_script,
-                had_presentation_forms=_infer_presentation_forms(flat_md),
+                had_presentation_forms=False,
                 source="flat_garble_gate",
             )
         )

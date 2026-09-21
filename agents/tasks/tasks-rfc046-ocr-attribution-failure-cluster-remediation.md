@@ -458,7 +458,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [Non-Goal 2](046-ocr-attribution-failure-cluster-remediation#non-goals), [Property 8](design-rfc046-ocr-attribution-failure-cluster-remediation#property-8-threshold-immutability)_
     - _Dependencies: none_
 
-  - [ ] 3.8 Enumerate and correct the seven post-NFKC ScriptContext sites (D10)
+  - [x] 3.8 Enumerate and correct the seven post-NFKC ScriptContext sites (D10)
 
     - RFC-040 D6 reordered NFKC-before-bidi only inside `_pre_inference_normalize`. Seven further `ScriptContext` construction sites still build their context from text that has **already been NFKC-normalized** — after the codepoints carrying the signal are gone.
     - Enumerate all seven by file and line. Correct each to construct pre-NFKC, **or** record at the site why its signal is provably NFKC-invariant.

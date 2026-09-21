@@ -7,11 +7,9 @@ import re
 from ..config import pipeline_config
 from ..obs import decision
 from ..script import ScriptContext
-from .heuristic_registry import registry as _heuristic_registry
 from .garble import (
     BlobKind,
     _garble_config,
-    _infer_presentation_forms,
     detect_garble,
     hash_pipe_ratio,
     ocr_noise_ratio,
@@ -21,6 +19,7 @@ from .gates import (
     GATE_TABLE,
     HARD_FAIL_DEFECTS,
 )
+from .heuristic_registry import registry as _heuristic_registry
 from .tree_validation import TreeSignals, _tree_max_leaf_ratio, _tree_node_count
 from .types import (
     GateOutcome,
@@ -96,7 +95,7 @@ def _dedupe_chart_text_lines(text: str) -> str:
 
 # Zone-3: _defect_from_reason_str moved to types.py next to finalize_gate_and_route.
 # Re-exported here for backward compat with any callers importing from verdict.
-from .types import _defect_from_reason_str as _defect_from_reason_str  # noqa: F811
+from .types import _defect_from_reason_str as _defect_from_reason_str
 
 
 def _clamp_pass(
@@ -305,12 +304,14 @@ def _try_image_enrichment(
     total_chars = len(_promoted_text)
     if total_chars < th.min_image_promoted_chars:
         return None
+    # RFC-046 D10 / task 3.8: _promoted_text derives from sig.primary_text
+    # (post-NFKC tree text), so PF codepoints are already destroyed.
     _sc = (
         script_context
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_presentation_forms(_promoted_text),
+            had_presentation_forms=False,
             source="apply_promotions",
         )
     )

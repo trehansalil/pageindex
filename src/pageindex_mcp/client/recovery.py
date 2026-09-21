@@ -35,7 +35,6 @@ from ..helpers import (
     route_and_extract_flat,
     validate_tree,
 )
-from ..helpers.garble import _infer_presentation_forms as _infer_pf
 from ..helpers.gates import _all_defects
 from ..helpers.heuristic_registry import registry as _heuristic_registry
 from ..metrics import (
@@ -119,16 +118,16 @@ def _keep_best_wins(
     """
     post_retry_chars = len(_flatten_tree_text(post_result.get("structure", [])))
 
-    # Zone-7 fix: scan pre-retry text for presentation forms instead of
-    # hardcoding False -- closes the ScriptContext threading gap so the
-    # garble-detection fallback at detect_garble:543-554 receives accurate
-    # had_presentation_forms when comparing pre vs post OCR results.
+    # RFC-046 D10 / task 3.8: pre_result tree text is post-NFKC (built
+    # from converter output), so PF codepoints are already destroyed —
+    # _infer_pf would always return False.  Callers with pre-NFKC text
+    # should pass a ScriptContext upstream.
     _kb_ctx = (
         script_context
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_pf(_flatten_tree_text(pre_result.get("structure", []))),
+            had_presentation_forms=False,
             source="ocr_retry_keep_best",
         )
     )
