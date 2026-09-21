@@ -646,7 +646,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R7.7](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [R7.8](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 5.1, 5.2, 5.3, 3.6_
 
-  - [ ] 5.C **[GATE]** Checkpoint — Arbitration attributed
+  - [x] 5.C **[GATE]** Checkpoint — Arbitration attributed
 
     - Corpus run, delta attributed to D7. `uv run pytest` green including the rewritten `test_zone3_ocr_recovery.py`.
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
