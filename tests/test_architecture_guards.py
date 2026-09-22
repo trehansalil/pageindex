@@ -220,15 +220,22 @@ class TestGateResultThreading:
     """state.gate_result must be passed to compute_verdict in both
     _persist_flat_result and _persist_tree_result."""
 
-    def test_flat_path_threads_gate_result(self):
-        """_persist_flat_result must pass state.gate_result to
-        compute_verdict (as the validate_result positional arg)."""
+    def test_flat_path_passes_none_not_gate_result(self):
+        """_persist_flat_result must pass None (not state.gate_result) to
+        compute_verdict so tree defects don't leak into flat verdicts (D4)."""
         import pageindex_mcp.client.indexer as indexer_mod
 
         src = inspect.getsource(indexer_mod.CustomPageIndexClient._persist_flat_result)
-        assert "state.gate_result" in src
-        # Must appear as arg to compute_verdict, not just in any context
         assert "compute_verdict" in src
+        import re as _re
+        call_match = _re.search(
+            r"compute_verdict\(\s*flat_structure,\s*content_class,\s*(\w+)",
+            src,
+        )
+        assert call_match is not None, "compute_verdict call not found in _persist_flat_result"
+        assert call_match.group(1) == "None", (
+            f"flat path must pass None as validate_result, got {call_match.group(1)!r}"
+        )
 
     def test_tree_path_threads_gate_result(self):
         """_persist_tree_result must pass state.gate_result to

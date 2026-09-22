@@ -1610,7 +1610,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             _vr = compute_verdict(
                 flat_structure,
                 content_class,
-                state.gate_result,
+                None,
                 image_enrichment_ratio=image_enrichment_ratio,
                 expected_script=_flat_script,
                 flat_signals=_flat_sig,
@@ -1671,10 +1671,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             if _flat_garble_report is not None and _flat_garble_report.fired_prongs:
                 flat_meta["garble_prongs"] = sorted(_flat_garble_report.fired_prongs)
                 flat_meta["garble_char_ratio"] = round(_flat_garble_report.garble_ratio, 6)
-            elif state.gate_result is not None and state.gate_result.signals is not None:
-                _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
-                if _prongs:
-                    flat_meta["garble_prongs"] = sorted(_prongs)
+            elif _flat_sig is not None and _flat_sig.garble_prongs:
+                flat_meta["garble_prongs"] = sorted(_flat_sig.garble_prongs)
             await asyncio.to_thread(save_flat_doc, doc_id, flat_meta)
             FLAT_DOCS_TOTAL.labels(content_class=content_class).inc()
 

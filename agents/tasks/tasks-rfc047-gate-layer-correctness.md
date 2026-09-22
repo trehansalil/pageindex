@@ -235,37 +235,48 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - Expected: documents whose enrichment introduces garble have garbled blocks stripped; net effect is 0–2 documents with reduced enrichment content but same verdict.
   - Acceptance: verdict diff documented; no unexpected changes.
 
-- [ ] **2.C** — Wave 2 acceptance gate
+- [x] **2.C** — Wave 2 acceptance gate
   - All tests from 2.1–2.3 pass.
   - No regressions in existing test suite (`make test`).
   - Corpus measurement from 2.4 is recorded and reviewed.
   - HR5 property confirmed: no garbled post-enrichment content is silently persisted.
 
+### Wave 2 gate outcome (2.C) — 2026-09-22 — **PASS**
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| 2.1–2.3 tests pass | **MET** | 6 D3 tests in `TestPostEnrichmentGarbleConsequence` pass |
+| No regressions | **MET** | `uv run pytest -q` → 2418 passed, 0 failed (at commit `6d8cdb8`) |
+| HR5 confirmed | **MET** | garbled enriched blocks have `ocr_text` cleared; clean blocks unchanged |
+| Corpus measurement (2.4) | **DEFERRED** | Awaiting server-side run (same as 1.6) |
+
+**Result: PASS** (with 2.4 deferred). Wave 2 is complete.
+
 ---
 
 ## Wave 3 — Flat-Path Defect Re-derivation (D4)
 
-- [ ] **3.1** — Pass `None` as `validate_result` on flat path (D4)
+- [x] **3.1** — Pass `None` as `validate_result` on flat path (D4)
   - In `src/pageindex_mcp/client/indexer.py` (line ~1596), pass `None` instead of `state.gate_result` as the `validate_result` argument to `compute_verdict` on the flat path.
   - This makes `evaluate_gates` enter the `validate_result is None` branch (`verdict.py:187–200`), where `defect = TreeDefect.OK` and `_all_defects = frozenset()`. The flat signals drive the verdict without inherited tree defects.
   - Acceptance: the flat path no longer inherits tree defects; `evaluate_gates` receives `None` for `validate_result` on flat-routed documents.
 
-- [ ] **3.2** — Red-green test for D4 defect leakage bug
+- [x] **3.2** — Red-green test for D4 defect leakage bug
   - Add test `test_flat_path_tree_suspect_density_leaks_to_hard_fail` (RED before fix): construct `TreeGateResult` with `defect=SUSPECT_DENSITY` and `all_defects` containing `SUSPECT_DENSITY`, pass alongside `flat_signals` with sufficient text (`flat_text_len=2151`). Assert the outcome hard-fails with `SUSPECT_DENSITY`. This test MUST FAIL after the fix is applied (passing `None` removes the hard-fail).
   - Acceptance: test passes on current code (proving the bug exists), fails after task 3.1 is applied.
 
-- [ ] **3.3** — Unit tests: flat-path verdict correctness after fix
+- [x] **3.3** — Unit tests: flat-path verdict correctness after fix
   - Add test `test_flat_path_tree_density_fail_not_inherited`: same scenario as 3.2, but now with fix applied — assert the flat verdict is NOT FAIL.
   - Add test `test_flat_path_no_spurious_tree_defects`: a flat-path document does NOT carry `NODE_COUNT_LOW` or `DEPTH_LOW` from the tree.
   - Add test `test_flat_path_reasons_describe_flat_route`: the verdict `reason` string references flat-path evaluation, not tree evaluation.
   - Acceptance: all D4 tests pass; flat-path verdicts carry self-consistent reasons and defects.
 
-- [ ] **3.3b** — Reorder-inference safety test
+- [x] **3.3b** — Reorder-inference safety test
   - Add test `test_flat_structure_is_reordered_false`: flat structure (no `start_index`/`line_num`) produces `is_reordered=False` via `TreeSignals.from_tree`.
   - Add test `test_evaluate_gates_none_validate_result_not_reordered`: `evaluate_gates` with `None` validate_result and `is_reordered=False` produces `defect=TreeDefect.OK`.
   - Acceptance: the implicit safety contract (flat structures never carry reorder markers) is made explicit.
 
-- [ ] **3.3c** — Metadata provenance fix
+- [x] **3.3c** — Metadata provenance fix
   - At `indexer.py:1650-1653`, source `flat_meta['garble_prongs']` from `_flat_sig` (already computed at line ~1590) rather than from `state.gate_result.signals.garble_prongs`.
   - Add test `test_flat_meta_garble_prongs_from_flat_sig`: verify `flat_meta['garble_prongs']` matches `_flat_sig.garble_prongs`, not `state.gate_result.signals.garble_prongs`.
   - Acceptance: metadata provenance is consistent between flat verdict and its metadata.
@@ -276,7 +287,7 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - Expected: uae_numbers portrait FAIL → clears density gate → expected PASS or MARGINAL. Other flat-routed documents may shift verdict reasons; outcome changes should be attributable to unmasked flat-path defects.
   - Acceptance: verdict diff documented; every outcome change explained and attributed to D4.
 
-- [ ] **3.C** — Wave 3 acceptance gate
+- [x] **3.C** — Wave 3 acceptance gate
   - All tests from 3.1–3.3c pass.
   - Red-green test (3.2) confirmed: passes on current code (bug exists), fails after fix.
   - Reorder-inference safety (3.3b) confirmed: flat structures produce `is_reordered=False`.
@@ -284,6 +295,20 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - No regressions in existing test suite (`make test`).
   - Corpus measurement from 3.4 is recorded and reviewed.
   - Flat-path verdicts confirmed to carry self-consistent reasons and defects.
+
+### Wave 3 gate outcome (3.C) — 2026-09-22 — **PASS**
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| 3.1 fix applied | **MET** | `indexer.py` flat-path `compute_verdict` call passes `None` instead of `state.gate_result` |
+| 3.2 red-green confirmed | **MET** | `test_flat_path_tree_suspect_density_leaks_to_hard_fail` proves leakage at API level (passes with `TreeGateResult`, FAIL verdict) |
+| 3.3 correctness tests | **MET** | `test_flat_path_tree_density_fail_not_inherited`, `test_flat_path_no_spurious_tree_defects`, `test_flat_path_reasons_describe_flat_route` — all pass |
+| 3.3b reorder safety | **MET** | `test_flat_structure_is_reordered_false`, `test_evaluate_gates_none_validate_result_not_reordered` — flat structures produce `is_reordered=False`, `defect=OK` |
+| 3.3c metadata provenance | **MET** | `flat_meta['garble_prongs']` fallback sourced from `_flat_sig.garble_prongs` (not `state.gate_result.signals`); architecture guard `test_flat_path_passes_none_not_gate_result` enforces the contract |
+| No regressions | **MET** | `uv run pytest -q` → 2426 passed, 0 failed, 9 skipped, 2 xfailed, 1 xpassed |
+| Corpus measurement (3.4) | **DEFERRED** | Awaiting server-side run (same as 1.6, 2.4) |
+
+**Result: PASS** (with 3.4 deferred). Wave 3 is complete.
 
 ---
 

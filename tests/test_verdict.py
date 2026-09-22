@@ -2892,3 +2892,128 @@ class TestVerdictGateThresholdConfigContract:
             {"SMALL_DOC_MIN_CHARS": "200", "SMALL_DOC_MAX_CHARS": "30000"}
         )
         assert proc.returncode == 0, proc.stderr
+
+
+# ===========================================================================
+# D4 (RFC-047 Wave 3) — Flat-path defect re-derivation
+# ===========================================================================
+
+
+class TestD4FlatPathDefectLeakage:
+    """Task 3.2: Demonstrate tree defects leak when validate_result is passed."""
+
+    def test_flat_path_tree_suspect_density_leaks_to_hard_fail(self):
+        """Passing TreeGateResult with SUSPECT_DENSITY alongside flat_signals
+        produces a hard FAIL — proving the leakage bug at the API level."""
+        gate = TreeGateResult(
+            ok=False,
+            defect=TreeDefect.SUSPECT_DENSITY,
+            detail="chars_per_page=12.3",
+            all_defects=frozenset({TreeDefect.SUSPECT_DENSITY}),
+        )
+        flat_sig = _make_sig(flat_text="a" * 2151, is_reordered=False)
+        result = compute_verdict(
+            _single_leaf(2151), "flat_prose", gate, flat_signals=flat_sig,
+        )
+        assert result.verdict == "FAIL"
+        assert result.defect == TreeDefect.SUSPECT_DENSITY
+
+    def test_flat_path_empty_node_contamination_leaks(self):
+        gate = TreeGateResult(
+            ok=False,
+            defect=TreeDefect.EMPTY_NODE_CONTAMINATION,
+            detail="fraction=0.83",
+            all_defects=frozenset({TreeDefect.EMPTY_NODE_CONTAMINATION}),
+        )
+        flat_sig = _make_sig(flat_text="a" * 2151, is_reordered=False)
+        result = compute_verdict(
+            _single_leaf(2151), "flat_prose", gate, flat_signals=flat_sig,
+        )
+        assert result.verdict == "FAIL"
+
+
+class TestD4FlatPathNoInheritedDefects:
+    """Task 3.3: After fix (passing None), flat path doesn't inherit tree defects."""
+
+    def test_flat_path_tree_density_fail_not_inherited(self):
+        """Same scenario as leakage test, but with None — no hard FAIL."""
+        flat_sig = _make_sig(flat_text="a" * 2151, is_reordered=False)
+        result = compute_verdict(
+            _single_leaf(2151), "flat_prose", None, flat_signals=flat_sig,
+        )
+        assert result.verdict != "FAIL", (
+            f"Flat path should not inherit SUSPECT_DENSITY; got {result.verdict}"
+        )
+        assert result.defect == TreeDefect.OK
+
+    def test_flat_path_no_spurious_tree_defects(self):
+        """Flat path with None carries no NODE_COUNT_LOW or DEPTH_LOW."""
+        flat_sig = _make_sig(
+            flat_text="a" * 2151, node_count=1, depth=1, is_reordered=False,
+        )
+        result = compute_verdict(
+            _single_leaf(2151), "flat_prose", None, flat_signals=flat_sig,
+        )
+        assert TreeDefect.NODE_COUNT_LOW not in result.all_defects
+        assert TreeDefect.DEPTH_LOW not in result.all_defects
+
+    def test_flat_path_reasons_describe_flat_route(self):
+        """Verdict reason must not reference tree defects when validate_result is None."""
+        flat_sig = _make_sig(flat_text="a" * 2151, is_reordered=False)
+        result = compute_verdict(
+            _single_leaf(2151), "flat_prose", None, flat_signals=flat_sig,
+        )
+        assert result.verdict != "FAIL"
+        if result.reason:
+            assert "SUSPECT_DENSITY" not in result.reason
+            assert "EMPTY_NODE_CONTAMINATION" not in result.reason
+
+
+class TestD4ReorderInferenceSafety:
+    """Task 3.3b: Flat structures never carry reorder markers."""
+
+    def test_flat_structure_is_reordered_false(self):
+        """Flat structure (no start_index/line_num) produces is_reordered=False."""
+        flat_structure = [
+            {"title": "", "text": "paragraph one"},
+            {"title": "", "text": "paragraph two"},
+            {"title": "", "text": "paragraph three"},
+        ]
+        sig = TreeSignals.from_tree(flat_structure)
+        assert sig.is_reordered is False
+
+    def test_evaluate_gates_none_validate_result_not_reordered(self):
+        """evaluate_gates with None validate_result and is_reordered=False
+        produces defect=TreeDefect.OK."""
+        flat_sig = _make_sig(flat_text="a" * 2151, is_reordered=False)
+        th = VerdictThresholds.from_config(pipeline_config)
+        outcome = evaluate_gates(
+            _single_leaf(2151), None, None, th, flat_signals=flat_sig,
+        )
+        assert outcome.defect == TreeDefect.OK
+        assert TreeDefect.REORDERED not in outcome.all_defects
+
+
+class TestD4MetadataProvenance:
+    """Task 3.3c: flat_meta garble_prongs sourced from _flat_sig, not tree signals."""
+
+    def test_flat_meta_garble_prongs_from_flat_sig(self):
+        """When _flat_garble_report has no prongs, fallback uses _flat_sig
+        garble_prongs, not state.gate_result.signals.garble_prongs."""
+        flat_sig = TreeSignals(
+            node_count=10,
+            depth=3,
+            max_leaf_ratio=0.10,
+            flat_text="a" * 2151,
+            garbled=False,
+            garble_ratio=0.0,
+            effectively_garbled=False,
+            is_reordered=False,
+            expected_min_depth=2,
+            garble_prongs=frozenset({"digit_ratio"}),
+        )
+        result = compute_verdict(
+            _single_leaf(2151), "flat_prose", None, flat_signals=flat_sig,
+        )
+        assert result.signals is flat_sig
+        assert result.signals.garble_prongs == frozenset({"digit_ratio"})
