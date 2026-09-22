@@ -448,30 +448,46 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - Add test `test_surya_fallback_timeout`: Surya service timeout → FAIL stands, `recovery_failed` logged.
   - Add test `test_surya_fallback_decision_event`: decision event logged with correct attrs.
   - Acceptance: all D8 tests pass.
-- [ ] **5.C** — Wave 5 acceptance gate
+- [x] **5.C** — Wave 5 acceptance gate
 
   - All tests from 5.1–5.8 pass.
   - Arabic density floor correctly differentiates Arabic vs non-Arabic documents.
   - Surya fallback fires on Arabic density-failed documents and recovers when Surya yields sufficient text.
   - No regressions in existing test suite (`make test`).
 
+### Wave 5 gate outcome (5.C) — 2026-09-22 — **PASS**
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| 5.1–5.3 D7 tests pass (8) | **MET** | `test_d7_arabic_density_floor.py`: Arabic between floors NOT firing, non-Arabic DOES fire, Arabic below 800 fires, boundary, no-script-context, decision attrs |
+| D7 gate code differentiates Arabic | **MET** | `gates.py:347-356`: `_is_arabic` selects `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` (800) vs general (1200) |
+| 5.4–5.8 D8 tests pass (17) | **MET** | `test_d8_surya_fallback.py`: config defaults, event registration, recovery helper (success/timeout/error), gating logic (5 conditions), architecture guard |
+| D8 wiring gates on all 5 conditions | **MET** | `indexer.py:1682-1688`: `FAIL` + `suspect_density` + `_is_arabic_dominant` + `surya_fallback_enabled` + `ext == ".pdf"` |
+| Config defaults correct | **MET** | `RFC029_MIN_SCANNED_DENSITY_FLOOR=1200.0`, `_ARABIC=800.0`, `SURYA_FALLBACK_ENABLED=False`, `SURYA_SERVICE_URL=http://localhost:8207`, `SURYA_FALLBACK_TIMEOUT_S=120.0` |
+| `surya_density_fallback` event | **MET** | 4 choices, 6 attrs |
+| `suspect_density_gate` D7 attrs | **MET** | `floor_used`, `floor_arabic`, `is_arabic` present |
+| No regressions | **MET** | `uv run pytest -q` → 2461 passed, 0 failed, 9 skipped, 2 xfailed, 1 xpassed |
+| All tasks 5.1–5.8 ticked | **MET** | 8/8 `[x]` |
+
+**Result: PASS**. Wave 5 is complete. Wave 6 (D9 — final corpus re-run + engine RFC decision) may proceed.
+
 ---
 
 ## Wave 6 — Final Corpus Re-run + Engine RFC Decision (D9)
 
-- [ ] **6.1** — Full attributed corpus re-run
+- [x] **6.1** — Full attributed corpus re-run
 
   - Run `make ingest` against the complete corpus with all Waves 1–5 (D1–D8) applied.
   - Produce a full verdict distribution report with per-document attribution showing which deliverable(s) changed each verdict.
   - Compare against the pre-RFC-047 baseline (post-RFC-046 state).
   - Acceptance: attributed corpus report is complete and covers every document.
-- [ ] **6.2** — Per-document delta table attributed to D1–D8
+- [x] **6.2** — Per-document delta table attributed to D1–D8
 
   - Every verdict movement SHALL be attributed to a named deliverable (D1–D8).
   - Movements SHALL be reported in both directions — improvements and regressions.
   - An unexplained movement SHALL block acceptance pending investigation.
   - Acceptance: delta table documented; zero unexplained movements.
-- [ ] **6.3** — Engine-tier successor RFC decision
+- [x] **6.3** — Engine-tier successor RFC decision
 
   - Based on the corpus results, decide whether an OCR engine-tier RFC (RFC-048) is still warranted.
   - The residue (documents still failing after all gate-layer fixes + Arabic recovery) determines the answer.
@@ -479,10 +495,24 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - If not warranted: document the rationale.
   - Closes `audit/RECONCILIATION_REPORT.md:148-156` item #2.
   - Acceptance: decision is documented with supporting evidence from the corpus run.
-- [ ] **6.C** — Wave 6 acceptance gate (RFC-047 final gate)
+- [x] **6.C** — Wave 6 acceptance gate (RFC-047 final gate)
 
   - Full corpus re-run from 6.1 is complete and attributed.
   - Delta table from 6.2 shows zero unexplained movements.
   - Engine RFC decision from 6.3 is documented.
   - All tests pass (`make test`).
   - RFC-047 is marked complete or hands off to a successor RFC.
+
+### Wave 6 gate outcome (6.C) — 2026-09-22 — **PASS**
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Full corpus re-run (6.1) | **MET** | 25 docs processed (24 registry + 1 REJECTED). See `agents/baselines/rfc047-d9-final-baseline.md` |
+| Delta table attributed (6.2) | **MET** | Every movement attributed to D1–D8 or Docling update. 4 improvements, 1 correct regression (image→REJECTED), 0 unexplained |
+| Engine RFC decision (6.3) | **MET** | NOT warranted — all 3 pre-RFC-047 FAILs are now PASS. Remaining MARGINALs are structural, not OCR extraction |
+| All tests pass | **MET** | 2461 passed, 0 failed (at commit `31b8d97`) |
+| No unexplained movements | **MET** | Zero unexplained movements |
+
+**Verdict distribution: 18 PASS / 6 MARGINAL / 0 FAIL / 1 REJECTED** (pre: 16/5/3/1)
+
+**Result: PASS**. RFC-047 is complete. No successor engine-tier RFC is warranted.
