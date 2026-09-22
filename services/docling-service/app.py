@@ -158,13 +158,13 @@ async def convert_pdf(req: PdfConvertRequest):
     try:
         from pageindex_mcp.converters import pdf_to_markdown_docling
 
-        md, pic_results = await asyncio.to_thread(
+        md, pic_results, _extraction_stages = await asyncio.to_thread(
             pdf_to_markdown_docling,
             tmp_path,
             force_full_page_ocr=req.force_full_page_ocr,
             ocr_lang_override=req.ocr_lang_override,
         )
-        serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]
+        serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         return PdfConvertResponse(
             markdown=md,
             picture_results=[PictureResultOut(**p) for p in serialized_pics],
