@@ -49,7 +49,7 @@ governs:
   - In `src/pageindex_mcp/helpers/garble.py`, add module-level constant `_GARBLE_BLOCK_RATIO_THRESHOLD = 0.10` at ~line 764, following the `_RFC029_DEEP_TREE_DEPTH_THRESHOLD` pattern.
   - Modify `_garble_check_flat_blocks` (line ~974) so it returns `None` when `garble_ratio < _GARBLE_BLOCK_RATIO_THRESHOLD` instead of condemning on any single garbled block (`garbled_count >= 1`).
   - Log the ratio on the `garble_flat_block_verdict` decision event regardless of whether the threshold fires.
-  - **Note:** This threshold change affects BOTH callers — main garble gate (`indexer.py:1409`) and post-enrichment gate (`indexer.py:1532`). Both become ratio-aware. Acceptable given dilution immunity guard at 0.2 holds.
+  - **Note (corrected at gate 1.C, 2026-09-22):** This threshold change affects **THREE** callers, not two — main garble gate (`indexer.py:1409`), **VLM-fallback recovery check (`indexer.py:1451`)** and post-enrichment gate (`indexer.py:1532`). All three became ratio-aware. The original "acceptable given dilution immunity guard at 0.2 holds" rationale is **unsound**: 0.2 is a property of a 5-block *fixture*, not of documents — at N > 10 blocks a single garbled block is no longer condemned at all. See the Wave 1 gate outcome note below.
   - Acceptance: unit test `test_flat_blocks_ratio_threshold_no_condemn_below` passes — ratio below 0.10 is NOT condemned; `test_single_garbled_block_not_diluted` still passes (ratio 0.2 > 0.10 → condemned).
 
 - [x] **1.4** — Add ratio-threshold tests for `_garble_check_flat_blocks` (D2)
@@ -73,6 +73,76 @@ governs:
   - No regressions in existing test suite (`make test`).
   - D1 acceptance criterion: proposed regex mechanically verified against existing mojibake fixtures; match counts still exceed 0.02 word-ratio threshold.
   - Corpus measurement from 1.6 is recorded and reviewed.
+
+### Wave 1 gate outcome — 2026-09-22 — **FAIL** (1.C stays unticked)
+
+Gate 1.C was evaluated on 2026-09-22. Criteria (a)–(d) are **MET** and independently
+re-verified at the gate, not merely self-reported:
+
+- (a) 1.1–1.4 tests pass — `make test PYTEST_ARGS="tests/test_garble.py -q"` → 114 passed.
+- (b) `test_single_garbled_block_not_diluted` passes (1/5 = 0.20 ≥ 0.10 → still condemned).
+- (c) No regressions — full `make test` → **2409 passed, 0 failed**, 12 skipped, 2 xfailed, 1 xpassed.
+- (d) Regex mechanically re-verified against the real existing mojibake fixtures: match
+  counts **identical** old vs new (`_SPARSE_MOJIBAKE` 60/60 → ratio 1.0000;
+  `test_rfc_reorder` moji 20/20 → 0.8000; `test_rfc_quality:315` 30/30 → 0.7500) — all
+  far above the 0.02 word-ratio threshold. Must-not-fire fixtures stay at 0.
+
+The gate nevertheless **FAILS** on an adversarially-found, gate-reproduced defect in D2's
+design, not in its implementation:
+
+> **BLOCKER — the 0.10 block-count ratio disables single-block garble detection for every
+> document above 10 blocks, with no backstop.** A single fully-garbled block is condemned
+> only while `1/N ≥ 0.10`, i.e. `N ≤ 10`. Measured at the gate against the real
+> `_garble_check_flat_blocks` and the real whole-blob `TreeSignals.from_tree`:
+>
+> | N blocks | 1 garbled — per-block gate | whole-blob backstop |
+> |---|---|---|
+> | 5 | CONDEMN r=0.2000 | GARBLED gr=1.0000 |
+> | 10 | CONDEMN r=0.1000 | clean gr=0.0000 |
+> | 11 | **PASS (None)** | clean gr=0.0000 |
+> | 20 / 50 / 198 / 297 | **PASS (None)** | clean gr=0.0000 |
+>
+> This project's own baselines record real corpus documents at 198 blocks
+> (`rfc046-wave4-4c-checkpoint.md`) and 297 blocks (`rfc046-wave7-7c-checkpoint.md`), so
+> the gate is effectively off for the entire corpus. The denominator is block **count**,
+> not character mass: a single garbled block holding up to **~60%** of a document's
+> characters, among 296 clean blocks, passes both layers (measured; it is caught only at
+> ≥0.65 mass, where the whole-blob `digit_ratio` prong finally clears its 0.60 floor).
+> Consequence: garbled content is persisted behind a PASS verdict with no trace —
+> `flat_meta["garble_prongs"]` is sourced from the **tree** signals
+> (`indexer.py:1650-1653`), so the prongs the flat check actually fired are logged to a
+> decision event and then dropped.
+
+Two corrections to this file's own text, recorded rather than silently edited:
+
+1. Task 1.3's note says the change affects "**BOTH** callers". There are **three** call
+   sites of `_garble_check_flat_blocks` in `indexer.py` — 1409 (main gate), **1451 (VLM
+   fallback recovery)** and 1532 (post-enrichment). Site 1451 became ratio-aware too and
+   was never analysed: VLM output up to 9.99% garbled now counts as `vlm_recovered`.
+2. The design/RFC justify deferring per-caller thresholds on the grounds that the sites
+   "already pass different `GarbleConfig` instances". They do not — all three pass the
+   identical expression `_image_garble_cfg if _image_garble_cfg is not None else
+   _garble_config`. That escape hatch does not exist without a code change.
+
+**1.1–1.4 remain ticked**: each meets its own stated acceptance criteria, and the TDD
+honesty audit plus the gate's own re-run found no weakened, deleted, or vacuous tests
+(test diff is 217 insertions / 1 reflowed import). The failure is at the gate level —
+D2's threshold design — not in the delivered tasks.
+
+**Before Wave 2 can start, D2 needs**: a character-mass term or an absolute garbled-block
+floor so detection survives large N; a decision on whether site 1451 is intended to be
+ratio-aware; and the below-threshold ratio/prongs threaded into `flat_meta` so
+sub-threshold garble is never silent.
+
+### Task 1.6 deferred — 2026-09-22
+
+Task **1.6** (corpus baseline) is **deferred to a human-supervised corpus run** and was
+deliberately excluded from this wave. Reason: a Docling converter child peaks at
+**1.9–3.1 GB** on this **7.6 GB** host, and `make ingest` over the full corpus would
+destabilise it (cf. the 2026-09-17 OOM incident that took down traefik, the webhook and
+postgres twice). No `make ingest`, `make up`, or `preprocess_client.py` was run at this
+gate. Because 1.6 is unrun, gate criterion (e) is **NOT MET** independently of the
+blocker above — 1.C could not have reached PASS in this session under any outcome.
 
 ---
 
