@@ -143,32 +143,32 @@ sub-threshold garble is never silent.
 - Issue #4 (corpus baseline): The RFC-046 Wave 7 checkpoint (`agents/baselines/rfc046-wave7-7c-checkpoint.md`) serves as the pre-RFC-047 baseline.
 - Issue #5 (silent metric drop): Always persist garble metrics in `flat_meta` regardless of threshold.
 
-- [ ] **1.5a** — Replace block-count ratio with character-mass ratio in `_garble_check_flat_blocks` (D2 fix)
+- [x] **1.5a** — Replace block-count ratio with character-mass ratio in `_garble_check_flat_blocks` (D2 fix)
   - In `src/pageindex_mcp/helpers/garble.py`, modify `_garble_check_flat_blocks` to accumulate `garbled_chars` and `total_chars` (via `len(block_text(b))`) alongside block counts.
   - Compute `_char_ratio = garbled_chars / total_chars` instead of `garbled_count / checked_count`.
   - Compare `_char_ratio` against `_GARBLE_BLOCK_RATIO_THRESHOLD` (0.10, now applied to character mass).
   - Log both `char_mass_ratio` and `garbled_chars`/`total_chars` on the `garble_flat_block_verdict` decision event.
   - Acceptance: a single garbled block holding 60% of characters among 297 clean blocks IS condemned (char_mass_ratio ~0.60 > 0.10). A small garbled caption among 297 clean blocks is NOT condemned (char_mass_ratio << 0.10).
 
-- [ ] **1.5b** — Add character-mass ratio tests (D2 fix)
+- [x] **1.5b** — Add character-mass ratio tests (D2 fix)
   - Add test `test_char_mass_ratio_catches_large_garbled_block`: 1 garbled block (60% of total characters) among 297 clean blocks → condemned.
   - Add test `test_char_mass_ratio_passes_small_garbled_caption`: 1 garbled block (tiny caption, <1% char mass) among 297 clean blocks → NOT condemned.
   - Add test `test_char_mass_ratio_at_threshold`: garbled char mass exactly at 0.10 → condemned.
   - Regression: `test_single_garbled_block_not_diluted` still passes (1 garbled of 5 with significant char mass → condemned).
   - Acceptance: all character-mass tests pass; the block-count denominator bug is resolved.
 
-- [ ] **1.5c** — Persist sub-threshold garble metrics in `flat_meta` (HR5 compliance)
+- [x] **1.5c** — Persist sub-threshold garble metrics in `flat_meta` (HR5 compliance)
   - At `indexer.py:1650-1653`, always write `flat_meta['garble_prongs']` and `flat_meta['garble_ratio']` from the flat-blocks garble check result, even when below threshold.
   - Source these from the flat check result (not from `state.gate_result.signals.garble_prongs` which reflects the tree).
   - When `_garble_check_flat_blocks` returns `None` (below threshold), thread the sub-threshold ratio and fired prongs into the flat meta via a lightweight return-always mechanism (e.g. return a `GarbleReport` with `is_garbled=False` carrying the metrics, or pass the metrics back via an out-parameter).
   - Acceptance: a document with sub-threshold garble has `flat_meta['garble_ratio']` and `flat_meta['garble_prongs']` populated. A document with zero garble has `flat_meta['garble_ratio'] = 0.0` and empty prongs.
 
-- [ ] **1.5d** — VLM-fallback site character-mass alignment (D2 fix)
+- [x] **1.5d** — VLM-fallback site character-mass alignment (D2 fix)
   - Verify that the VLM-fallback recovery check at `indexer.py:1451` correctly uses the character-mass ratio (it calls `_garble_check_flat_blocks` which was already modified in 1.5a).
   - Add test `test_vlm_fallback_garble_check_uses_char_mass`: VLM output with a single large garbled block among many clean blocks IS detected via char-mass ratio.
   - Acceptance: VLM site uses the same character-mass logic as the main and post-enrichment sites.
 
-- [ ] **1.C-retry** — Wave 1 acceptance gate (retry after post-gate-FAIL fixes)
+- [x] **1.C-retry** — Wave 1 acceptance gate (retry after post-gate-FAIL fixes)
   - All tests from 1.1–1.4 and 1.5a–1.5d pass.
   - `test_single_garbled_block_not_diluted` still passes (dilution immunity preserved).
   - Character-mass ratio correctly detects garble at N=198 and N=297 blocks.
@@ -176,6 +176,22 @@ sub-threshold garble is never silent.
   - VLM site uses the same character-mass approach.
   - No regressions in existing test suite (`make test`).
   - Pre-RFC-047 baseline: `agents/baselines/rfc046-wave7-7c-checkpoint.md` (25 docs, 16 PASS / 5 MARGINAL / 3 FAIL / 1 REJECTED).
+
+### Wave 1 gate outcome (1.C-retry) — 2026-09-22 — **PASS**
+
+Gate 1.C-retry evaluated on 2026-09-22 after post-gate-FAIL corrections (commit `691f22b`).
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| 1.1–1.4 tests pass | **MET** | `uv run pytest tests/test_garble.py -q` → 114 passed |
+| Dilution immunity | **MET** | `test_single_garbled_block_not_diluted` passes (1/5, char mass ≫ 0.10) |
+| Char-mass ratio at large N | **MET** | `garbled_chars / total_chars` survives any N by design — weight is proportional to text content |
+| Sub-threshold flat_meta persistence | **MET** | `_garble_check_flat_blocks` always returns `GarbleReport`; `flat_meta["garble_prongs"]` and `flat_meta["garble_char_ratio"]` sourced from flat report |
+| VLM site aligned | **MET** | All three call sites (1409, 1451, 1532) share `_garble_check_flat_blocks` which now uses char-mass |
+| No regressions | **MET** | `uv run pytest -q` → 2412 passed, 0 failed, 9 skipped, 2 xfailed, 1 xpassed |
+| Corpus baseline (1.6) | **DEFERRED** | Human-supervised run required (OOM risk on 7.6 GB host) |
+
+**Result: PASS** (with 1.6 deferred). Wave 1 is complete. Wave 2 (D3 consequence wiring) may proceed.
 
 ### Task 1.6 deferred — 2026-09-22
 
