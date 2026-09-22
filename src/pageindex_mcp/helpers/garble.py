@@ -776,6 +776,7 @@ _RFC029_MIN_CHARS_PER_NODE = pipeline_config.rfc029_min_chars_per_node
 _RFC029_MIN_CHARS_PER_NODE_DEEP = pipeline_config.rfc029_min_chars_per_node_deep
 _RFC029_DEEP_TREE_DEPTH_THRESHOLD = 4
 _RFC029_MIN_SCANNED_DENSITY_FLOOR = pipeline_config.rfc029_min_scanned_density_floor
+_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC = pipeline_config.rfc029_min_scanned_density_floor_arabic
 
 
 def _collect_all_node_text(nodes: list[dict]) -> str:

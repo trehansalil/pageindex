@@ -438,6 +438,7 @@ class PipelineConfig:
     empty_node_fraction_threshold: float
     rfc029_min_chars_per_node_deep: float
     rfc029_min_scanned_density_floor: float
+    rfc029_min_scanned_density_floor_arabic: float
     rfc029_table_segment_char_threshold: int
     rfc029_table_segment_min_rows: int
     rfc036_singleton_row_ratio_threshold: float
@@ -557,7 +558,10 @@ class PipelineConfig:
                 os.environ.get("RFC029_MIN_CHARS_PER_NODE_DEEP", "50")
             ),
             rfc029_min_scanned_density_floor=float(
-                os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR", "1500")
+                os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR", "1200")
+            ),
+            rfc029_min_scanned_density_floor_arabic=float(
+                os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC", "800")
             ),
             rfc029_table_segment_char_threshold=int(
                 os.environ.get("RFC029_TABLE_SEGMENT_CHAR_THRESHOLD", "2000")

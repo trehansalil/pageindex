@@ -397,6 +397,7 @@ mappings:
       - test_gates.py            # primary
       - test_verdict.py
       - test_density_gate.py
+      - test_d7_arabic_density_floor.py
       - test_helpers_combined.py
       - test_converters_pipeline.py
       - test_recovery.py

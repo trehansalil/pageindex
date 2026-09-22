@@ -242,10 +242,10 @@ def _sparse_tree(content: str) -> list[dict]:
 
 
 class TestSuspectDensityGate:
-    """42 pages x 54 000 chars -> 1285.7 chars/page < 1500 floor."""
+    """42 pages x 48 000 chars -> 1142.9 chars/page < 1200 floor."""
 
     PAGE_COUNT = 42
-    TOTAL_CHARS = 54_000
+    TOTAL_CHARS = 48_000
 
     def _tree(self) -> list[dict]:
         return _sparse_tree(_safe_repetitive_content(self.TOTAL_CHARS))
@@ -258,7 +258,7 @@ class TestSuspectDensityGate:
         assert "chars_per_page=" in reason
 
     def test_gate_does_not_fire_when_density_is_at_floor(self):
-        """Exactly 1500 chars/page must NOT trip the gate (strictly-less-than)."""
+        """Exactly at the floor must NOT trip the gate (strictly-less-than)."""
         at_threshold_chars = self.PAGE_COUNT * int(_RFC029_MIN_SCANNED_DENSITY_FLOOR)
         tree = _sparse_tree(_safe_repetitive_content(at_threshold_chars))
         _ok, reason = validate_tree(tree, page_count=self.PAGE_COUNT)

@@ -391,32 +391,98 @@ blocker above — 1.C could not have reached PASS in this session under any outc
 
 ---
 
-## Wave 5 — Corpus Re-run + Engine RFC Decision (D7)
+## Wave 5 — Arabic Density Recovery (D7 + D8)
 
-- [ ] **5.1** — Full attributed corpus re-run
+- [ ] **5.1** — Add `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` config field (D7)
 
-  - Run `make ingest` against the complete corpus with all Waves 1–4 applied.
+  - In `src/pageindex_mcp/config.py`, add `rfc029_min_scanned_density_floor_arabic: float` to `Settings`, sourced from env var `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC`, default `800`.
+  - In `src/pageindex_mcp/helpers/garble.py`, add `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` module-level constant alongside `_RFC029_MIN_SCANNED_DENSITY_FLOOR`, sourced from `pipeline_config.rfc029_min_scanned_density_floor_arabic`.
+  - Export from `helpers/__init__.py` alongside the existing floor constant.
+  - Acceptance: new config field is loadable; module constant is accessible.
+- [ ] **5.2** — Script-aware density floor in `_gate_suspect_density` (D7)
+
+  - In `src/pageindex_mcp/helpers/gates.py`, modify `_gate_suspect_density` to use `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` when `expected_script.dominant_script == "Arab"`.
+  - Log `floor_used`, `floor_arabic`, and `is_arabic` in the `suspect_density_gate` decision event attrs.
+  - Acceptance: Arabic-dominant documents are evaluated against the Arabic floor (800); non-Arabic documents use the general floor (1200).
+- [ ] **5.3** — Unit tests for script-aware density floor (D7)
+
+  - Add test `test_suspect_density_arabic_uses_lower_floor`: Arabic doc with cpp between 800 and 1200 does NOT fire.
+  - Add test `test_suspect_density_non_arabic_uses_general_floor`: non-Arabic doc with same cpp DOES fire.
+  - Add test `test_suspect_density_arabic_below_arabic_floor`: Arabic doc with cpp below 800 fires.
+  - Add test `test_suspect_density_decision_event_logs_floor`: decision event includes `floor_used` and `is_arabic`.
+  - Regression: no existing density gate tests break.
+  - Acceptance: all D7 tests pass.
+- [ ] **5.4** — Add Surya fallback config fields (D8)
+
+  - In `src/pageindex_mcp/config.py`, add `surya_fallback_enabled: bool` (env `SURYA_FALLBACK_ENABLED`, default `false`), `surya_service_url: str` (env `SURYA_SERVICE_URL`, default `http://localhost:8207`), `surya_fallback_timeout_s: float` (env `SURYA_FALLBACK_TIMEOUT_S`, default `120`).
+  - Acceptance: config fields are loadable; defaults are correct.
+- [ ] **5.5** — Register `surya_density_fallback` decision event (D8)
+
+  - In `src/pageindex_mcp/obs/decision_points.py`, register a new `surya_density_fallback` event with choices `recovery_succeeded`, `recovery_insufficient`, `recovery_failed`, `not_attempted`.
+  - Attrs: `original_cpp`, `surya_cpp`, `arabic_floor`, `surya_confidence`, `surya_duration_s`.
+  - Acceptance: AST guard passes; event is registered.
+- [ ] **5.6** — Implement `_surya_density_recovery` helper (D8)
+
+  - In `src/pageindex_mcp/client/indexer.py` (or a new helper module), implement `_surya_density_recovery` that:
+    - Fetches the document pages from MinIO (upload key)
+    - Sends pages to the Surya service HTTP API at `surya_service_url`
+    - Collects OCR text output per page
+    - Computes `chars_per_page` from the Surya result
+    - Returns `SuryaRecoveryResult(text, chars_per_page, confidence)` or `None` on failure/timeout
+  - Handle HTTP errors and timeouts gracefully (log and return `None`).
+  - Acceptance: helper function works against a running Surya service; returns `None` on timeout.
+- [ ] **5.7** — Wire Surya fallback into the density-fail recovery path (D8)
+
+  - In `src/pageindex_mcp/client/indexer.py`, after `compute_verdict` produces a FAIL with `suspect_density` on an Arabic-dominant document:
+    - If `surya_fallback_enabled` is `true`, call `_surya_density_recovery`.
+    - If Surya yields sufficient text (cpp >= Arabic floor), rebuild flat structure from Surya output, recompute verdict, and record `converter_name: "surya"` in meta.
+    - If Surya yields insufficient text or fails, let the FAIL stand.
+  - Log via `surya_density_fallback` decision event.
+  - Acceptance: Arabic density-failed documents trigger Surya fallback when enabled; recovery or failure is logged.
+- [ ] **5.8** — Unit tests for Surya fallback (D8)
+
+  - Add test `test_surya_fallback_disabled_no_attempt`: `SURYA_FALLBACK_ENABLED=false` → no fallback, FAIL stands.
+  - Add test `test_surya_fallback_non_arabic_no_attempt`: non-Arabic doc fails density → no fallback.
+  - Add test `test_surya_fallback_recovery_succeeds`: Arabic doc fails density + mock Surya yields sufficient text → verdict recovers.
+  - Add test `test_surya_fallback_recovery_insufficient`: Arabic doc fails density + mock Surya yields insufficient text → FAIL stands.
+  - Add test `test_surya_fallback_timeout`: Surya service timeout → FAIL stands, `recovery_failed` logged.
+  - Add test `test_surya_fallback_decision_event`: decision event logged with correct attrs.
+  - Acceptance: all D8 tests pass.
+- [ ] **5.C** — Wave 5 acceptance gate
+
+  - All tests from 5.1–5.8 pass.
+  - Arabic density floor correctly differentiates Arabic vs non-Arabic documents.
+  - Surya fallback fires on Arabic density-failed documents and recovers when Surya yields sufficient text.
+  - No regressions in existing test suite (`make test`).
+
+---
+
+## Wave 6 — Final Corpus Re-run + Engine RFC Decision (D9)
+
+- [ ] **6.1** — Full attributed corpus re-run
+
+  - Run `make ingest` against the complete corpus with all Waves 1–5 (D1–D8) applied.
   - Produce a full verdict distribution report with per-document attribution showing which deliverable(s) changed each verdict.
   - Compare against the pre-RFC-047 baseline (post-RFC-046 state).
   - Acceptance: attributed corpus report is complete and covers every document.
-- [ ] **5.2** — Per-document delta table attributed to D1–D5
+- [ ] **6.2** — Per-document delta table attributed to D1–D8
 
-  - Every verdict movement SHALL be attributed to a named deliverable (D1, D2, D3, D4, or D5).
+  - Every verdict movement SHALL be attributed to a named deliverable (D1–D8).
   - Movements SHALL be reported in both directions — improvements and regressions.
   - An unexplained movement SHALL block acceptance pending investigation.
   - Acceptance: delta table documented; zero unexplained movements.
-- [ ] **5.3** — Engine-tier successor RFC decision
+- [ ] **6.3** — Engine-tier successor RFC decision
 
-  - Based on the corpus results, decide whether an OCR engine-tier RFC is warranted.
-  - The residue (documents still failing after all gate-layer bugs are fixed) determines the answer.
-  - If warranted: draft a one-paragraph scope statement for the follow-up RFC (RFC-048).
-  - If not warranted: document the rationale (gate layer is now correct; remaining failures are capability gaps, not engine quality).
+  - Based on the corpus results, decide whether an OCR engine-tier RFC (RFC-048) is still warranted.
+  - The residue (documents still failing after all gate-layer fixes + Arabic recovery) determines the answer.
+  - If warranted: draft a one-paragraph scope statement for the follow-up RFC.
+  - If not warranted: document the rationale.
   - Closes `audit/RECONCILIATION_REPORT.md:148-156` item #2.
   - Acceptance: decision is documented with supporting evidence from the corpus run.
-- [ ] **5.C** — Wave 5 acceptance gate (RFC-047 final gate)
+- [ ] **6.C** — Wave 6 acceptance gate (RFC-047 final gate)
 
-  - Full corpus re-run from 5.1 is complete and attributed.
-  - Delta table from 5.2 shows zero unexplained movements.
-  - Engine RFC decision from 5.3 is documented.
+  - Full corpus re-run from 6.1 is complete and attributed.
+  - Delta table from 6.2 shows zero unexplained movements.
+  - Engine RFC decision from 6.3 is documented.
   - All tests pass (`make test`).
   - RFC-047 is marked complete or hands off to a successor RFC.

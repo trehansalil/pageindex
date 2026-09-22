@@ -380,14 +380,149 @@ No code change. This is a measurement-driven decision gate:
 
 ---
 
-## D7: Full Corpus Re-Run + Engine Decision
+## D7: Script-Aware Arabic Density Floor
 
-Full corpus run after D1–D5 have landed. Attributed per-document delta table.
+### Site
 
-1. Every verdict movement attributed to a named deliverable (D1, D2, D3, D4, or D5)
+**Files:**
+- `src/pageindex_mcp/helpers/gates.py` (`_gate_suspect_density`, lines 325–365)
+- `src/pageindex_mcp/helpers/garble.py` (module-level constant)
+- `src/pageindex_mcp/config.py` (`Settings` dataclass)
+
+### Current behaviour
+
+The density gate uses a single floor (`_RFC029_MIN_SCANNED_DENSITY_FLOOR`, lowered from 1500 to 1200 in this RFC) for all documents. The gate already receives `expected_script: ScriptContext` and computes `is_arabic` at `gates.py:290` (`expected_script.dominant_script == "Arab"`), but this information is not used in the density check.
+
+### Design
+
+1. **Config field:** Add `rfc029_min_scanned_density_floor_arabic: float` to `Settings`, sourced from `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` env var, default `800`.
+
+2. **Module constant:** In `garble.py`, add `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` alongside the existing `_RFC029_MIN_SCANNED_DENSITY_FLOOR`, sourced from `pipeline_config.rfc029_min_scanned_density_floor_arabic`.
+
+3. **Gate modification:** In `_gate_suspect_density`:
+
+```python
+# Determine script-aware floor
+_is_arabic = expected_script.dominant_script == "Arab" if expected_script else False
+_floor = (
+    _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC
+    if _is_arabic
+    else _RFC029_MIN_SCANNED_DENSITY_FLOOR
+)
+_fires = chars_per_page < _floor
+_would_fire_corrected = chars_per_page_corrected < _floor
+```
+
+4. **Decision event attrs:** Add `floor_used`, `floor_arabic`, `is_arabic` to the `suspect_density_gate` event attrs.
+
+### Threshold rationale
+
+800 chars/page is 2/3 of the general 1200 floor (lowered from 1500 in this RFC). From the corpus:
+- #24 اتفاقية مستوى الخدمة: 1211.6 cpp → PASS at both 1200 general floor and 800 Arabic floor (recovers from floor lowering alone)
+- #15 القرار التنظيمي: 153 cpp → still FAIL at 800 floor (needs D8 Surya fallback)
+- MOU MOHRE: 1333.1 cpp → PASS at 800 floor (already FAIL for other reasons)
+- وارد رقم 597: 1624 cpp (corrected) → safely above 800
+- مرسوم اتحادي (33): 1618 cpp (corrected) → safely above 800
+
+### Test plan
+
+- Unit: Arabic-dominant doc with cpp between 800 and 1200 → does NOT fire density gate (uses Arabic floor)
+- Unit: Non-Arabic doc with cpp between 800 and 1200 → DOES fire density gate (uses general 1200 floor)
+- Unit: Arabic doc with cpp below 800 → fires density gate
+- Decision event: `floor_used` and `is_arabic` present in attrs
+- Regression: no existing density tests break
+
+---
+
+## D8: Surya OCR Fallback for Arabic Density Failures
+
+### Site
+
+**Files:**
+- `src/pageindex_mcp/client/indexer.py` (post-density-fail recovery path)
+- `src/pageindex_mcp/config.py` (`Settings` dataclass)
+- `src/pageindex_mcp/obs/decision_points.py` (new decision event)
+
+### Current behaviour
+
+When the `suspect_density` gate fires, the document receives a FAIL verdict with no recovery attempt. The Surya OCR service exists (`services/surya-ocr-service/`, `docker-compose.yml`) and `"surya"` is in `ENGINE_RELIABILITY_ORDER` (`arbitrate.py:29`), but no code path invokes it.
+
+### Design
+
+1. **Config fields:**
+   - `SURYA_FALLBACK_ENABLED`: bool, default `false`
+   - `SURYA_SERVICE_URL`: str, default `http://localhost:8207`
+   - `SURYA_FALLBACK_TIMEOUT_S`: float, default `120`
+
+2. **Recovery path in indexer.py:** After `compute_verdict` produces a FAIL with `suspect_density` reason on an Arabic-dominant document:
+
+```python
+# After flat verdict computation, before final verdict assignment
+if (
+    _flat_verdict == "FAIL"
+    and "suspect_density" in _flat_reason
+    and _is_arabic_dominant
+    and settings.surya_fallback_enabled
+):
+    _surya_result = await _surya_density_recovery(
+        doc_id=state.doc_id,
+        upload_key=state.upload_key,
+        page_count=page_count,
+        arabic_floor=_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
+        surya_url=settings.surya_service_url,
+        timeout=settings.surya_fallback_timeout_s,
+    )
+    if _surya_result and _surya_result.chars_per_page >= _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC:
+        # Surya yields sufficient text — use Surya's extraction
+        # Re-derive flat signals from Surya output and recompute verdict
+        ...
+```
+
+3. **`_surya_density_recovery` function:** A focused helper that:
+   - Fetches the document from MinIO (upload key)
+   - Sends pages to the Surya service HTTP API
+   - Collects OCR text output
+   - Computes `chars_per_page` from the Surya result
+   - Returns a `SuryaRecoveryResult(text, chars_per_page, confidence)` or `None` on failure/timeout
+
+4. **Decision event:** Register `surya_density_fallback` in `decision_points.py` with choices:
+   - `recovery_succeeded`: Surya yields sufficient text, density clears the Arabic floor
+   - `recovery_insufficient`: Surya yields more text but still below the floor
+   - `recovery_failed`: Surya service error or timeout
+   - `not_attempted`: feature disabled or non-Arabic document
+   
+   Attrs: `original_cpp`, `surya_cpp`, `arabic_floor`, `surya_confidence`, `surya_duration_s`
+
+5. **Tree/meta update:** If Surya recovery succeeds, the flat structure is rebuilt from Surya output. The `converter_name` in meta.json records `"surya"` and `extraction_route` records `"surya_density_fallback"`.
+
+### Surya service API
+
+The existing `services/surya-ocr-service/app.py` exposes an HTTP endpoint. The recovery function calls it with the document's pages (extracted via PyMuPDF or from the original upload). The Surya service returns OCR text per page.
+
+### Licensing note
+
+Surya is GPL-3.0 (Endless Labs, Inc.). It runs as a separate Docker container behind HTTP — process-level isolation from the MIT codebase. Same legal clearance surface as pymupdf4llm/PyMuPDF (AGPL-3.0) per CLAUDE.md Hard Rule #4.
+
+### Test plan
+
+- Unit: `SURYA_FALLBACK_ENABLED=false` → no fallback attempt, FAIL stands
+- Unit: Non-Arabic doc fails density → no fallback attempt
+- Unit: Arabic doc fails density + Surya yields sufficient text → verdict recovers
+- Unit: Arabic doc fails density + Surya yields insufficient text → FAIL stands
+- Unit: Surya service timeout → FAIL stands, `recovery_failed` logged
+- Decision event: `surya_density_fallback` logged with correct attrs
+- Integration: end-to-end with mocked Surya service
+
+---
+
+## D9: Final Corpus Re-Run + Engine Decision
+
+Full corpus run after D1–D8 have landed. Attributed per-document delta table.
+
+1. Every verdict movement attributed to a named deliverable (D1–D8)
 2. Movements reported in both directions — improvements and regressions
 3. Unexplained movements block acceptance pending investigation
-4. Residue determines whether the engine-tier RFC (RFC-048) is written
+4. Residue determines whether an engine-tier successor RFC is still needed
 
 ---
 
@@ -400,13 +535,18 @@ Full corpus run after D1–D5 have landed. Attributed per-document delta table.
 | `garble_flat_block_verdict` | Existing — new choice `below_threshold` added | D2 |
 | `post_enrichment_garble_check` | Existing — extended with `blocks_stripped`/`strip_skipped` choices and `stripped_count`/`retained_count`/`garble_ratio` attrs | D3 |
 | `reordered_defect_inferred` | Existing — `validate_result_present=False` signals the `None` branch | D4 (audit trail) |
-| `suspect_density_gate` | Existing — unchanged | D6 (activation decision) |
+| `suspect_density_gate` | Existing — extended with `floor_used`/`floor_arabic`/`is_arabic` attrs | D7 |
+| `surya_density_fallback` | **New** — `recovery_succeeded`/`recovery_insufficient`/`recovery_failed`/`not_attempted` | D8 |
 
 ### Config Surface
 
 | Field | Location | Default | Deliverable |
 |-------|----------|---------|-------------|
 | `_GARBLE_BLOCK_RATIO_THRESHOLD` | Module-level constant in `garble.py:~764` | `0.10` (applied to **character mass**, not block count) | D2 |
+| `rfc029_min_scanned_density_floor_arabic` | `Settings` + env `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` | `800` | D7 |
+| `surya_fallback_enabled` | `Settings` + env `SURYA_FALLBACK_ENABLED` | `false` | D8 |
+| `surya_service_url` | `Settings` + env `SURYA_SERVICE_URL` | `http://localhost:8207` | D8 |
+| `surya_fallback_timeout_s` | `Settings` + env `SURYA_FALLBACK_TIMEOUT_S` | `120` | D8 |
 
 ### Facade Guards
 

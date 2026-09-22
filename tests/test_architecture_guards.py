@@ -1766,7 +1766,8 @@ class TestThresholdImmutability:
     }
 
     _PINNED_GATE_THRESHOLDS: dict[str, object] = {
-        "rfc029_min_scanned_density_floor": 1500.0,
+        "rfc029_min_scanned_density_floor": 1200.0,
+        "rfc029_min_scanned_density_floor_arabic": 800.0,
     }
 
     def test_verdict_thresholds_match_pre_rfc_values(self):

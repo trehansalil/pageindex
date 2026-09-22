@@ -14,6 +14,7 @@ from .garble import (
     _RFC029_MIN_CHARS_PER_NODE,
     _RFC029_MIN_CHARS_PER_NODE_DEEP,
     _RFC029_MIN_SCANNED_DENSITY_FLOOR,
+    _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
     _garble_check_nodes,
     _garble_config,
 )
@@ -343,8 +344,16 @@ def _gate_suspect_density(
         return (False, "")
     chars_per_page = len(sig.flat_text) / page_count
     chars_per_page_corrected = len(sig.flat_text_corrected) / page_count
-    _fires = chars_per_page < _RFC029_MIN_SCANNED_DENSITY_FLOOR
-    _would_fire_corrected = chars_per_page_corrected < _RFC029_MIN_SCANNED_DENSITY_FLOOR
+    _is_arabic = (
+        expected_script.dominant_script == "Arab" if expected_script else False
+    )
+    _floor = (
+        _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC
+        if _is_arabic
+        else _RFC029_MIN_SCANNED_DENSITY_FLOOR
+    )
+    _fires = chars_per_page < _floor
+    _would_fire_corrected = chars_per_page_corrected < _floor
     decision(
         event="suspect_density_gate",
         choice="fires" if _fires else "clear",
@@ -359,6 +368,9 @@ def _gate_suspect_density(
             "chars_per_page_corrected": chars_per_page_corrected,
             "corrected_delta": chars_per_page_corrected - chars_per_page,
             "verdict_would_change": _fires != _would_fire_corrected,
+            "floor_used": _floor,
+            "floor_arabic": _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
+            "is_arabic": _is_arabic,
         },
     )
     if _fires:

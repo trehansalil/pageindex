@@ -41,14 +41,16 @@ The four bugs share a common shape: a gate or detector produces a result, and th
 2. Wire a consequence onto the post-enrichment garble check so that garbled OCR content from image enrichment is never silently persisted -- closing the Hard Rule #5 surface -- with a ratio threshold that prevents a single garbled chart caption from condemning an entire document.
 3. Make the flat-path verdict compute its defects from flat signals, not from inherited tree defects, so that a flat document is never condemned by a gate that fires only on the tree.
 4. Split the `include_enrichment` flag in `_node_text_parts` into independent `include_ocr_text` and `include_summary` flags, so the density-corrected numerator (`flat_text_corrected`) counts only real OCR text and not LLM-generated summaries, unblocking D8 activation from RFC-046.
+5. Add a script-aware Arabic density floor so that Arabic documents with expected lower OCR yield are not falsely condemned by a Latin-calibrated density threshold.
+6. Add a Surya OCR fallback for Arabic documents that fail the density gate even with the lowered floor, recovering genuinely sparse extractions where Surya yields more text than Tesseract.
 
 ## Non-Goals
 
-1. **No OCR engine changes.** No Surya, Paddle, VL, or engine-selection code. Deferred to the engine-tier successor RFC.
-2. **No threshold changes.** `_RFC029_MIN_SCANNED_DENSITY_FLOOR`, `PASS_MAX_LEAF_RATIO`, `hard_fail_max_leaf_ratio`, and all `VerdictThresholds` values remain untouched.
+1. ~~**No OCR engine changes.**~~ **Revised 2026-09-22:** D8 adds Surya as an Arabic-specific density-recovery fallback, scoped narrowly to documents that fail the `suspect_density` gate on Arabic-dominant PDFs. No Paddle, VL, or general engine-selection changes. General multi-engine arbitration remains deferred to a successor RFC.
+2. ~~**No threshold changes.**~~ **Revised 2026-09-22:** D7 lowers the general density floor from 1500 to 1200 and adds a script-aware Arabic density floor (`RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC`, default 800). All other thresholds (`PASS_MAX_LEAF_RATIO`, `hard_fail_max_leaf_ratio`, `VerdictThresholds`) remain untouched.
 3. **No RFC-044 Phase B.** Authority consolidation is out of scope.
-4. **No new recovery methods.** The HR5 consequence wiring (D3) rejects or strips garbled blocks; it does not add a recovery rung.
-5. **No D8 activation.** D5 unblocks the activation decision; taking it is a separate deliverable (D6), gated on corpus measurement.
+4. **No new recovery methods** beyond D8's density-recovery fallback. The HR5 consequence wiring (D3) rejects or strips garbled blocks; D8 re-OCRs with Surya only when the density gate fires on an Arabic-dominant document.
+5. **No D6 activation.** D5 unblocks the activation decision; taking it is a separate deliverable (D6), gated on corpus measurement. D6 remains DEFERRED — the shadow metric `_would_fire_corrected` provides observability.
 6. **C6 (garble-primary masks flat lifeboat).** `decide_route` maps `GARBLING → RETRY_OCR → Route.TREE` unconditionally (`types.py:371-372`). This is a routing-authority defect belonging to [[RFC-044]] Phase B, not a gate-correctness issue. Deferred.
 7. **`ENGINE_RELIABILITY_ORDER` cleanup.** `arbitrate.py:20-24` lists `surya`/`paddleocr`/`paddleocr-vl` — names that appear nowhere else in `src/`. This is dead multi-engine framework, not a gate bug. Belongs in the engine-tier successor RFC.
 
@@ -230,14 +232,55 @@ Taken AFTER D5 lands and a corpus measurement shows the split numerator. This is
 2. A per-document table SHALL show, for every document, the old `chars_per_page_corrected` (summary + ocr_text) and the new value (ocr_text only), and which documents would change verdict.
 3. The decision SHALL be recorded with a dated entry and the measurement that drove it.
 
-### D7: Full Corpus Re-Run and Engine Decision
+### D7: Script-Aware Arabic Density Floor
 
-A full corpus run after D1--D5 have landed, producing an attributed per-document delta table. This is the gate for the engine-tier successor RFC:
+**File:** `src/pageindex_mcp/helpers/gates.py` (density gate), `src/pageindex_mcp/config.py` (config field)
 
-1. Every verdict movement SHALL be attributed to a named deliverable (D1, D2, D3, D4, or D5).
+**Motivation.** The `suspect_density` gate at `gates.py:325` uses a single floor (`_RFC029_MIN_SCANNED_DENSITY_FLOOR`, default 1200 chars/page) for all documents regardless of script. Arabic OCR consistently under-extracts compared to Latin-script documents -- the RFC-046 eval report shows Tesseract yields fewer characters on Arabic PDFs, and Surya (the strongest Arabic engine) still produces fewer chars/page than Latin equivalents. A script-aware floor acknowledges this reality.
+
+**Evidence from corpus.** Document #24 (اتفاقية مستوى الخدمة) has 1211.6 chars/page and is FAIL. This is a 20-page Arabic scanned PDF where Docling/Tesseract extracts sparse but real text. A Latin document at the same density would be genuinely suspect; an Arabic document at this density is within expected OCR yield.
+
+**Design.**
+1. Add config field `rfc029_min_scanned_density_floor_arabic: float` sourced from env var `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC`, default **800**.
+2. In `_gate_suspect_density` (`gates.py:325`), when `expected_script.dominant_script == "Arab"`, use the Arabic-specific floor instead of the general floor.
+3. Log both floors in the `suspect_density_gate` decision event attrs (`floor_used`, `is_arabic`).
+4. The gate already receives `expected_script: ScriptContext` -- no new parameter threading needed.
+
+**Threshold rationale.** 800 chars/page is 2/3 of the general 1200 floor (lowered from 1500 in this RFC). This accommodates Arabic OCR's lower yield while still catching genuinely empty or garbled extractions. Document #15 (القرار التنظيمي) at 153 chars/page is far below even the Arabic floor -- it is a genuine extraction failure that D8 (Surya fallback) addresses.
+
+### D8: Surya OCR Fallback for Arabic Density Failures
+
+**File:** `src/pageindex_mcp/client/indexer.py` (density-fail recovery path), `src/pageindex_mcp/config.py` (config fields)
+
+**Motivation.** After D7 lowers the Arabic density floor, document #15 (القرار التنظيمي, 153 chars/page) remains FAIL -- the extraction is genuinely too sparse. The RFC-046 multi-engine eval (`agents/spikes/ocr_eval_rfc046/eval_report.md`) shows Surya yields more characters on this document (3759 vs 3731 from Tesseract) with 95.57% confidence. Across all 10 Arabic documents, Surya wins 7/10 by char yield with 94--98% confidence.
+
+**Infrastructure.** The Surya OCR service already exists:
+- Docker service: `services/surya-ocr-service/` with `Dockerfile`, `app.py`, `pyproject.toml`
+- `docker-compose.yml`: `surya-ocr-service` at port 8207
+- `arbitrate.py:29`: `"surya"` is already in `ENGINE_RELIABILITY_ORDER`
+- GPL-3.0 licensed (same copyleft family as pymupdf4llm's AGPL-3.0 -- same legal clearance concern, per Hard Rule #4)
+
+**Design.**
+1. Add config fields: `SURYA_FALLBACK_ENABLED` (default `false`), `SURYA_SERVICE_URL` (default `http://localhost:8207`).
+2. In the density gate recovery path: when `suspect_density` fires AND `expected_script.dominant_script == "Arab"` AND `SURYA_FALLBACK_ENABLED=true`, re-OCR the document pages via the Surya service.
+3. Recompute `chars_per_page` from Surya output. If the new density clears the floor, use Surya's text; otherwise, keep the original (Tesseract) result and let the FAIL stand.
+4. Log the fallback attempt and outcome via a new `surya_density_fallback` decision event.
+5. The `arbitrate.py` multi-engine framework is NOT used -- this is a targeted density-recovery path, not general engine arbitration.
+
+**Expected outcomes:**
+- #15 القرار التنظيمي (153 cpp): Surya yields 3759 chars → ~188 cpp on 20 pages, or higher if Surya extracts more per-page. If Surya clears the Arabic floor (800), the document recovers to PASS/MARGINAL.
+- #24 اتفاقية مستوى الخدمة (1211.6 cpp): Already recovered by D7's Arabic floor (1211.6 > 800). Surya fallback does not fire.
+
+**Licensing note.** Surya is GPL-3.0 (Endless Labs, Inc.). Same copyleft concern as pymupdf4llm/PyMuPDF (AGPL-3.0) per Hard Rule #4. The Surya service runs as a separate container behind an HTTP API, which may provide process-level isolation from the main MIT-licensed codebase. Legal clearance is the same decision surface as the existing AGPL dependency.
+
+### D9: Full Corpus Re-Run and Engine Decision
+
+A full corpus run after D1--D8 have landed, producing an attributed per-document delta table. This is the final gate for RFC-047:
+
+1. Every verdict movement SHALL be attributed to a named deliverable (D1--D8).
 2. Movements SHALL be reported in both directions -- improvements and regressions.
 3. An unexplained movement SHALL block acceptance pending investigation.
-4. The residue (documents still failing after all four bugs are fixed) determines whether the engine-tier RFC is written.
+4. The residue (documents still failing after all gate-layer fixes + Arabic recovery) determines whether an engine-tier successor RFC is still needed.
 
 ## Waves
 
@@ -271,11 +314,19 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 
 **Exit gate:** `flat_text_corrected` contains only OCR text augmentation. The panel's "Hold; split fields first" precondition is discharged. D6 records the activation decision with its measurement.
 
-### Wave 5: D7 (Corpus Re-Run)
+### Wave 5: D7 + D8 (Arabic Density Recovery)
 
-**Scope:** Full corpus run, attributed per-document delta table, engine-tier decision.
+**Scope:** Script-aware Arabic density floor (D7) and Surya OCR fallback for Arabic density failures (D8).
 
-**Exit gate:** Every movement attributed. Residue documented. Engine-tier successor RFC scoped against the residue, or recorded as unnecessary.
+**Dependency:** Waves 1--4 (D1--D6). The Arabic recovery path builds on the corrected gate layer.
+
+**Exit gate:** Arabic density floor is script-aware. Surya fallback fires on Arabic density-failed documents and recovers those where Surya yields sufficient text. Tests cover both the floor switch and the fallback path. No regressions in existing test suite.
+
+### Wave 6: D9 (Final Corpus Re-Run)
+
+**Scope:** Full corpus run with all D1--D8 applied, attributed per-document delta table, final engine-tier decision.
+
+**Exit gate:** Every movement attributed to D1--D8. Residue documented. Engine-tier successor RFC scoped against the residue, or recorded as unnecessary. RFC-047 is marked complete.
 
 ## Test Strategy
 
@@ -284,7 +335,9 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 - **D3:** Integration test: flat path where image enrichment produces garbled OCR text, verifying garbled blocks have `ocr_text` cleared before persistence. Must FAIL before the fix and PASS after. Decision-log assertion for `post_enrichment_garble_check` event with `stripped_count`/`retained_count` attrs. Additional test: all enriched blocks garbled → all `ocr_text` cleared, document proceeds with zero image-derived text.
 - **D4:** Red-green test: construct `TreeGateResult` with `defect=SUSPECT_DENSITY` and `all_defects` containing `SUSPECT_DENSITY`, pass alongside `flat_signals` with sufficient text (`flat_text_len=2151`), assert hard-fail — this test FAILS after the fix. Unit test with divergent tree and flat leaf ratios asserting the flat value drives the verdict. Reorder-inference safety test: flat structure produces `is_reordered=False`. Metadata provenance test: `flat_meta['garble_prongs']` sourced from `_flat_sig`, not `state.gate_result.signals`.
 - **D5:** Parameterized unit test (4 cases): `_node_text_parts` with `include_ocr_text=True` includes `ocr_text` but not `summary`; with `include_summary=True` includes `summary` but not `ocr_text`; with both `True` includes both; with both `False` includes neither. Integration test: `TreeSignals.from_tree` produces `flat_text_corrected` that excludes summary. Regression test: density gate `chars_per_page_corrected` does not inflate with summary text. Facade guard updated for BOTH `_node_text_parts` (line 319) AND `_flatten_tree_text` (line 306).
-- **D7:** Attributed per-document delta table, both directions.
+- **D7:** Unit test: Arabic-dominant document uses `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` (800) instead of the general floor (1200). Non-Arabic document uses the general floor. Decision event logs `floor_used` and `is_arabic` attrs. Regression: no existing density gate tests break.
+- **D8:** Integration test: Arabic document that fails density gate triggers Surya fallback when enabled. Unit test: Surya fallback disabled → no fallback attempt. Unit test: Surya yields sufficient text → density clears, document recovers. Unit test: Surya yields insufficient text → FAIL stands. Decision event `surya_density_fallback` logged with outcome.
+- **D9:** Attributed per-document delta table, both directions.
 
 ## Implementation Plan
 
@@ -294,7 +347,8 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 2. **Wave 2 -- HR5 consequence** (D3). Depends on Wave 1. Closes the Hard Rule #5 surface.
 3. **Wave 3 -- Flat defect re-derivation** (D4). Independent of Waves 1--2. Touches the verdict computation contract; must land alone for attributable corpus delta.
 4. **Wave 4 -- Field split** (D5, D6). Independent of Waves 1--3. D6 is a decision gate taken on D5's measurement.
-5. **Wave 5 -- Corpus validation** (D7). Depends on all prior waves. Determines whether the engine-tier RFC is written.
+5. **Wave 5 -- Arabic density recovery** (D7, D8). Depends on Waves 1--4 (corrected gate layer). D7 lowers the Arabic floor; D8 adds Surya fallback for documents still failing.
+6. **Wave 6 -- Final corpus validation** (D9). Depends on all prior waves. Produces the final attributed delta table and closes RFC-047.
 
 ### Effort Estimate
 
@@ -306,8 +360,10 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 | 3 | D4: Flat-path defect re-derivation | ~4h | **High** -- changes verdict inputs for every flat-routed document |
 | 4 | D5: `ocr_text`/`summary` field split | ~3h | Low -- no external callers of the old flag |
 | 4 | D6: D8 activation decision | ~2h | Low -- measurement and a recorded decision |
-| 5 | D7: Corpus re-run + attribution table | ~4h | Medium -- long-running; every movement must be explained |
-| **Total** | | **~22h** | |
+| 5 | D7: Script-aware Arabic density floor | ~2h | Low -- additive config + conditional in existing gate |
+| 5 | D8: Surya OCR fallback for Arabic density failures | ~6h | Medium -- new recovery path, HTTP integration with Surya service |
+| 6 | D9: Final corpus re-run + attribution table | ~4h | Medium -- long-running; every movement must be explained |
+| **Total** | | **~30h** | |
 
 ## Risks
 
