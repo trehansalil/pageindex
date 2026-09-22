@@ -2185,3 +2185,144 @@ class TestPresentationFormsAlignment:
             assert rtl_dec.had_presentation_forms is False, (
                 "single ligature must not set the signal"
             )
+
+
+# ===========================================================================
+# D3 (RFC-047): Post-enrichment garble consequence — per-block field-clear
+# ===========================================================================
+
+
+class TestPostEnrichmentGarbleConsequence:
+    """D3 (RFC-047 Wave 2): per-block garble detection on enriched image
+    blocks clears ``ocr_text`` on individually-garbled blocks."""
+
+    _GARBLED_OCR = "9" * 600  # pure digits — trips digit_ratio prong
+    _CLEAN_OCR = (
+        "This table shows quarterly revenue figures across all regions. "
+        "The data is broken down by product category and sales channel. "
+        "Growth rates are calculated year-over-year for each segment. "
+    )
+
+    @staticmethod
+    def _image_block(ocr_text: str) -> dict:
+        return {"role": "image", "ocr_text": ocr_text, "figure_path": "img.png", "page": 1}
+
+    def test_clean_enriched_blocks_unchanged(self):
+        """Clean enriched blocks pass per-block detect_garble and keep ocr_text."""
+        blocks = [self._image_block(self._CLEAN_OCR) for _ in range(5)]
+        ctx = _default_ctx()
+        cfg = _default_config()
+        stripped = 0
+        for blk in blocks:
+            report = detect_garble(
+                blk.get("ocr_text", ""),
+                script_context=ctx,
+                config=cfg,
+                blob_kind=BlobKind.TREE_TEXT,
+            )
+            if report:
+                blk["ocr_text"] = ""
+                stripped += 1
+        assert stripped == 0
+        assert all(b["ocr_text"] == self._CLEAN_OCR for b in blocks)
+
+    def test_garbled_block_ocr_text_cleared(self):
+        """A garbled enriched image block has its ocr_text cleared."""
+        blk = self._image_block(self._GARBLED_OCR)
+        ctx = _default_ctx()
+        cfg = _default_config()
+        report = detect_garble(
+            blk.get("ocr_text", ""),
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert report, "pure-digit OCR must be detected as garbled"
+        blk["ocr_text"] = ""
+        assert blk["ocr_text"] == ""
+        assert blk["figure_path"] == "img.png", "image metadata must be preserved"
+        assert blk["page"] == 1, "image metadata must be preserved"
+
+    def test_mixed_garbled_and_clean_only_garbled_cleared(self):
+        """Among mixed blocks, only individually-garbled ones are cleared."""
+        blocks = [
+            self._image_block(self._GARBLED_OCR),
+            self._image_block(self._CLEAN_OCR),
+            self._image_block(self._CLEAN_OCR),
+            self._image_block(self._GARBLED_OCR),
+            self._image_block(self._CLEAN_OCR),
+        ]
+        ctx = _default_ctx()
+        cfg = _default_config()
+        stripped = 0
+        for blk in blocks:
+            report = detect_garble(
+                blk.get("ocr_text", ""),
+                script_context=ctx,
+                config=cfg,
+                blob_kind=BlobKind.TREE_TEXT,
+            )
+            if report:
+                blk["ocr_text"] = ""
+                stripped += 1
+        assert stripped == 2
+        assert blocks[0]["ocr_text"] == ""
+        assert blocks[1]["ocr_text"] == self._CLEAN_OCR
+        assert blocks[2]["ocr_text"] == self._CLEAN_OCR
+        assert blocks[3]["ocr_text"] == ""
+        assert blocks[4]["ocr_text"] == self._CLEAN_OCR
+
+    def test_all_garbled_clears_all(self):
+        """When all enriched blocks are garbled, all ocr_text is cleared."""
+        blocks = [self._image_block(self._GARBLED_OCR) for _ in range(5)]
+        ctx = _default_ctx()
+        cfg = _default_config()
+        stripped = 0
+        for blk in blocks:
+            report = detect_garble(
+                blk.get("ocr_text", ""),
+                script_context=ctx,
+                config=cfg,
+                blob_kind=BlobKind.TREE_TEXT,
+            )
+            if report:
+                blk["ocr_text"] = ""
+                stripped += 1
+        assert stripped == 5
+        assert all(b["ocr_text"] == "" for b in blocks)
+
+    def test_tiny_caption_not_stripped(self):
+        """A short clean caption on an image block is NOT stripped — it does
+        not trigger detect_garble individually."""
+        blk = self._image_block("Figure 3: Revenue by region")
+        ctx = _default_ctx()
+        cfg = _default_config()
+        report = detect_garble(
+            blk.get("ocr_text", ""),
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert not report, "short clean caption must not trigger garble"
+        assert blk["ocr_text"] == "Figure 3: Revenue by region"
+
+    def test_image_metadata_preserved_after_clear(self):
+        """Clearing ocr_text preserves all other block fields."""
+        blk = self._image_block(self._GARBLED_OCR)
+        blk["bbox"] = [10, 20, 300, 400]
+        blk["description"] = "A chart showing data"
+        ctx = _default_ctx()
+        cfg = _default_config()
+        report = detect_garble(
+            blk.get("ocr_text", ""),
+            script_context=ctx,
+            config=cfg,
+            blob_kind=BlobKind.TREE_TEXT,
+        )
+        assert report
+        blk["ocr_text"] = ""
+        assert blk["role"] == "image"
+        assert blk["figure_path"] == "img.png"
+        assert blk["page"] == 1
+        assert blk["bbox"] == [10, 20, 300, 400]
+        assert blk["description"] == "A chart showing data"

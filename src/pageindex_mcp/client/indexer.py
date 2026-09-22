@@ -1529,27 +1529,40 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             if b.get("role") == "image" and b.get("ocr_text")
         ]
         if _enriched_image_blocks:
-            _enrich_garble = _garble_check_flat_blocks(
-                _enriched_image_blocks,
-                script_context=(
-                    script_context
-                    if script_context is not None
-                    else ScriptContext(
-                        dominant_script=expected_script,
-                        had_presentation_forms=_infer_presentation_forms(flat_md),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
-                        source="post_enrichment_garble",
-                    )
-                ),
-                config=_image_garble_cfg if _image_garble_cfg is not None else _garble_config,
+            _pe_script_ctx = (
+                script_context
+                if script_context is not None
+                else ScriptContext(
+                    dominant_script=expected_script,
+                    had_presentation_forms=_infer_presentation_forms(flat_md),  # pre-NFKC
+                    source="post_enrichment_garble",
+                )
             )
-            if _enrich_garble:
+            _pe_cfg = _image_garble_cfg if _image_garble_cfg is not None else _garble_config
+            _pe_stripped = 0
+            _pe_all_prongs: set[str] = set()
+            for _pe_blk in _enriched_image_blocks:
+                _pe_report = detect_garble(
+                    _pe_blk.get("ocr_text", ""),
+                    script_context=_pe_script_ctx,
+                    config=_pe_cfg,
+                    blob_kind=BlobKind.TREE_TEXT,
+                )
+                if _pe_report:
+                    _pe_blk["ocr_text"] = ""
+                    _pe_stripped += 1
+                    _pe_all_prongs.update(_pe_report.fired_prongs or ())
+            _pe_retained = len(_enriched_image_blocks) - _pe_stripped
+            if _pe_stripped:
                 decision(
                     event="post_enrichment_garble_check",
-                    choice="enriched_blocks_garbled",
-                    reason="image blocks mutated by enrichment contain garbled OCR text",
+                    choice="blocks_stripped",
+                    reason=f"cleared ocr_text on {_pe_stripped} garbled enriched image block(s)",
                     attrs={
                         "checked_count": len(_enriched_image_blocks),
-                        "fired_prongs": list(_enrich_garble.fired_prongs) if _enrich_garble.fired_prongs else [],
+                        "stripped_count": _pe_stripped,
+                        "retained_count": _pe_retained,
+                        "fired_prongs": sorted(_pe_all_prongs),
                     },
                 )
             else:
@@ -1557,7 +1570,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     event="post_enrichment_garble_check",
                     choice="enriched_blocks_clean",
                     reason="image blocks mutated by enrichment passed garble check",
-                    attrs={"checked_count": len(_enriched_image_blocks)},
+                    attrs={
+                        "checked_count": len(_enriched_image_blocks),
+                        "stripped_count": 0,
+                        "retained_count": len(_enriched_image_blocks),
+                    },
                 )
 
         with bind_log_context(doc_id=doc_id):

@@ -209,7 +209,7 @@ blocker above — 1.C could not have reached PASS in this session under any outc
 
 ## Wave 2 — HR5 Consequence Wiring (D3)
 
-- [ ] **2.1** — Wire post-enrichment garble check to surgical field-clear (D3)
+- [x] **2.1** — Wire post-enrichment garble check to surgical field-clear (D3)
   - In `src/pageindex_mcp/client/indexer.py`, after the post-enrichment decision log (line ~1554) and before `flat_structure` construction (line ~1580):
     - Replace the `_garble_check_flat_blocks` call at the post-enrichment site with an inline per-block loop: call `detect_garble` on each enriched image block individually.
     - When garble ratio >= `_GARBLE_BLOCK_RATIO_THRESHOLD`, clear `ocr_text` on each garbled block (`block['ocr_text'] = ''`) rather than removing blocks from the list.
@@ -217,14 +217,14 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - **Edge case:** When ALL enriched blocks are garbled (ratio = 1.0), all `ocr_text` cleared; document proceeds with zero image-derived text.
   - Acceptance: unit test `test_post_enrichment_garble_clears_ocr_text` passes — garbled enriched blocks have empty `ocr_text`; clean blocks are unchanged.
 
-- [ ] **2.2** — Add consequence-wiring tests (D3)
+- [x] **2.2** — Add consequence-wiring tests (D3)
   - Add test `test_post_enrichment_clean_passes`: enrichment output that is NOT garbled proceeds to storage unchanged.
   - Add test `test_post_enrichment_garble_logs_strip`: the `post_enrichment_garble_check` decision event includes `stripped_count`, `retained_count`, `garble_ratio` attrs.
   - Add test `test_post_enrichment_single_garbled_among_many_retains_clean`: 1 garbled out of 10 enriched blocks → ratio below 0.10 → no field-clear (D2 threshold protects).
   - Add test `test_post_enrichment_all_garbled_clears_all`: all enriched blocks garbled → all `ocr_text` cleared, document proceeds.
   - Acceptance: all D3 tests pass; the field-clear path is exercised end-to-end.
 
-- [ ] **2.3** — Extend `post_enrichment_garble_check` decision event
+- [x] **2.3** — Extend `post_enrichment_garble_check` decision event
   - In `src/pageindex_mcp/obs/decision_points.py`, extend the existing `post_enrichment_garble_check` event with choices `blocks_stripped` / `strip_skipped` and attrs `stripped_count`, `retained_count`, `garble_ratio`.
   - No new decision point registration needed — reuse the existing event.
   - Acceptance: AST guard passes; decision event logged on strip with correct attrs.
