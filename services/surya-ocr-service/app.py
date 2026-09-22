@@ -60,6 +60,14 @@ class OcrResponse(BaseModel):
     elapsed_s: float = 0.0
 
 
+class ImageOcrResponse(BaseModel):
+    total_text: str
+    total_char_count: int
+    total_avg_confidence: float
+    regions: list[RegionResult] = []
+    elapsed_s: float = 0.0
+
+
 class PdfOcrResponse(BaseModel):
     pages: list[OcrPageResult]
     total_text: str
@@ -197,6 +205,30 @@ async def ocr(file: UploadFile = File(...), lang: str | None = None):
         regions=regions,
         region_count=len(regions),
         char_count=len(text),
+        elapsed_s=round(elapsed, 3),
+    )
+
+
+@app.post("/ocr/image", response_model=ImageOcrResponse)
+async def ocr_image(file: UploadFile = File(...)):
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
+
+    text, regions, elapsed = _ocr_image(img)
+    confs = [r.confidence for r in regions]
+    avg_conf = sum(confs) / len(confs) if confs else 0.0
+
+    return ImageOcrResponse(
+        total_text=text,
+        total_char_count=len(text),
+        total_avg_confidence=round(avg_conf, 4),
+        regions=regions,
         elapsed_s=round(elapsed, 3),
     )
 

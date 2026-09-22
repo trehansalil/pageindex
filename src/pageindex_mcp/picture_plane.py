@@ -46,6 +46,7 @@ class OcrEngine(StrEnum):
     """
 
     TESSERACT = "tesseract"
+    SURYA = "surya"
 
 
 @dataclass(frozen=True)

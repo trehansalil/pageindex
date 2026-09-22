@@ -35,9 +35,8 @@ class TestOcrEngineIdentity:
         # Interpolating into a log line or a sidecar must not yield "OcrEngine.X".
         assert f"{OcrEngine.TESSERACT}" == "tesseract"
 
-    def test_ships_exactly_one_member_this_rfc(self):
-        # RFC-046 Non-Goal 1: no engine is introduced. RFC-047 adds members.
-        assert [e.value for e in OcrEngine] == ["tesseract"]
+    def test_ships_known_members(self):
+        assert set(e.value for e in OcrEngine) == {"tesseract", "surya"}
 
 
 class TestOcrDecisionCarriesEngine:

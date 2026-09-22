@@ -19,6 +19,7 @@ mappings:
       - test_architecture_guards.py
       - test_verdict.py
       - test_d8_surya_fallback.py
+      - test_rfc048_surya_image.py
       - test_config.py
       - test_converters.py
       - test_converters_cli.py
@@ -533,6 +534,7 @@ mappings:
       - test_converters.py
       - test_recovery.py
       - test_zone3_ocr_recovery.py
+      - test_rfc048_surya_image.py
 
   queue_metrics.py:
     tests:
@@ -625,6 +627,7 @@ mappings:
       - test_d6_flat_verdicts.py
       - test_d7_arbitration.py
       - test_d8_surya_fallback.py
+      - test_rfc048_surya_image.py
   obs/decisions.py:
     tests:
       - test_obs_logging.py primary

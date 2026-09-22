@@ -1041,6 +1041,30 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         always_emits=False,
         note="RFC-047 D8: Surya OCR re-extraction when suspect_density fires on Arabic doc.",
     ),
+    _p(
+        event="surya_image_fallback",
+        phase=Phase.OCR,
+        module=_C_INDEXER,
+        function="_convert_to_tree",
+        choices=(
+            "gate_not_triggered",
+            "not_attempted",
+            "recovery_succeeded",
+            "recovery_insufficient",
+            "recovery_failed",
+        ),
+        attrs=(
+            "tesseract_chars",
+            "surya_chars",
+            "tesseract_garbled",
+            "surya_garbled",
+            "winner",
+            "surya_confidence",
+            "surya_duration_s",
+        ),
+        always_emits=False,
+        note="RFC-048: Surya OCR fallback for standalone images when Tesseract output is poor.",
+    ),
 )
 
 

@@ -480,6 +480,45 @@ async def _surya_density_recovery(
     )
 
 
+async def _surya_image_ocr(
+    file_bytes: bytes,
+    filename: str,
+    surya_url: str,
+    timeout_s: float,
+) -> SuryaRecoveryResult | None:
+    import httpx
+    import time as _time
+
+    t0 = _time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
+            resp = await client.post(
+                f"{surya_url}/ocr/image",
+                files={"file": (filename, file_bytes, "application/octet-stream")},
+            )
+            resp.raise_for_status()
+    except Exception:
+        logger.warning(
+            "Surya image OCR failed for %s", filename, exc_info=True,
+        )
+        return None
+
+    elapsed = _time.monotonic() - t0
+    data = resp.json()
+    total_text = data.get("total_text", "")
+    total_chars = data.get("total_char_count", 0) or len(total_text)
+    confidence = data.get("total_avg_confidence", 0.0)
+
+    return SuryaRecoveryResult(
+        pages_text=[total_text],
+        total_text=total_text,
+        total_chars=total_chars,
+        chars_per_page=float(total_chars),
+        confidence=confidence,
+        duration_s=round(elapsed, 3),
+    )
+
+
 class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
     """
     Extends PageIndexClient to support .docx, .pptx, .html, and .txt formats
@@ -1339,6 +1378,113 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 for _ in range(max(1, marker_count))
             ]
             state.md_content = md_content
+
+            # RFC-048: quality-gated Surya fallback for standalone images.
+            _tess_garbled = bool(detect_garble(
+                standalone_ocr_text,
+                script_context=script_context,
+                config=_garble_config,
+                blob_kind=BlobKind.TREE_TEXT,
+            )) if standalone_ocr_text else True
+            _tess_chars = len("".join(standalone_ocr_text.split())) if standalone_ocr_text else 0
+            _quality_gate_fails = _tess_chars <= MIN_STANDALONE_IMAGE_MD_CHARS or _tess_garbled
+
+            if _quality_gate_fails and settings.surya_fallback_enabled:
+                _surya_result = await _surya_image_ocr(
+                    file_bytes=img_bytes,
+                    filename=filename,
+                    surya_url=settings.surya_service_url,
+                    timeout_s=settings.surya_fallback_timeout_s,
+                )
+                if _surya_result and _surya_result.total_text.strip():
+                    _surya_garbled = bool(detect_garble(
+                        _surya_result.total_text,
+                        script_context=script_context,
+                        config=_garble_config,
+                        blob_kind=BlobKind.TREE_TEXT,
+                    ))
+                    if (not _surya_garbled and _surya_result.total_chars > _tess_chars) or (
+                        _tess_garbled and not _surya_garbled
+                    ):
+                        standalone_ocr_text = _surya_result.total_text
+                        if state.pic_results:
+                            state.pic_results[0]["ocr_text"] = _surya_result.total_text
+                        state.ocr_engine = str(OcrEngine.SURYA)
+                        decision(
+                            event="surya_image_fallback",
+                            choice="recovery_succeeded",
+                            reason="surya output better than tesseract",
+                            attrs={
+                                "tesseract_chars": _tess_chars,
+                                "surya_chars": _surya_result.total_chars,
+                                "tesseract_garbled": _tess_garbled,
+                                "surya_garbled": _surya_garbled,
+                                "winner": "surya",
+                                "surya_confidence": _surya_result.confidence,
+                                "surya_duration_s": _surya_result.duration_s,
+                            },
+                        )
+                    else:
+                        decision(
+                            event="surya_image_fallback",
+                            choice="recovery_insufficient",
+                            reason="surya output not better than tesseract",
+                            attrs={
+                                "tesseract_chars": _tess_chars,
+                                "surya_chars": _surya_result.total_chars,
+                                "tesseract_garbled": _tess_garbled,
+                                "surya_garbled": _surya_garbled,
+                                "winner": "tesseract",
+                                "surya_confidence": _surya_result.confidence,
+                                "surya_duration_s": _surya_result.duration_s,
+                            },
+                        )
+                else:
+                    decision(
+                        event="surya_image_fallback",
+                        choice="recovery_failed",
+                        reason="surya service error or empty result",
+                        attrs={
+                            "tesseract_chars": _tess_chars,
+                            "surya_chars": 0,
+                            "tesseract_garbled": _tess_garbled,
+                            "surya_garbled": False,
+                            "winner": "tesseract",
+                            "surya_confidence": 0.0,
+                            "surya_duration_s": 0.0,
+                        },
+                    )
+            elif _quality_gate_fails:
+                decision(
+                    event="surya_image_fallback",
+                    choice="not_attempted",
+                    reason="surya fallback disabled",
+                    attrs={
+                        "tesseract_chars": _tess_chars,
+                        "surya_chars": 0,
+                        "tesseract_garbled": _tess_garbled,
+                        "surya_garbled": False,
+                        "winner": "tesseract",
+                        "surya_confidence": 0.0,
+                        "surya_duration_s": 0.0,
+                    },
+                )
+            else:
+                decision(
+                    event="surya_image_fallback",
+                    choice="gate_not_triggered",
+                    reason="tesseract output acceptable",
+                    attrs={
+                        "tesseract_chars": _tess_chars,
+                        "surya_chars": 0,
+                        "tesseract_garbled": _tess_garbled,
+                        "surya_garbled": False,
+                        "winner": "tesseract",
+                        "surya_confidence": 0.0,
+                        "surya_duration_s": 0.0,
+                    },
+                )
+
             # Zone-8: splice picture OCR text into tree markers for standalone
             # images, mirroring the PDF path (lines 589-591).
             if state.pic_results and TREE_PATH_PICTURE_SPLICE_ENABLED:
