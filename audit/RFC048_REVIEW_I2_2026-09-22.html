@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RFC-048 Iteration 2 Review Report — 2026-09-22</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; }
+.critical { color: #d32f2f; font-weight: bold; }
+.moderate { color: #e65100; font-weight: bold; }
+.minor { color: #1565c0; }
+.fixed { color: #2e7d32; font-weight: bold; }
+code { background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
+pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>RFC-048 Iteration 2 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-22 &nbsp;|&nbsp; <strong>Iteration:</strong> 2 &nbsp;|&nbsp; <strong>RFC:</strong> 048 — Surya OCR Fallback for Standalone Images</p>
+
+<h2>Review Agents</h2>
+<table>
+<tr><th>Agent</th><th>Model</th><th>Focus</th></tr>
+<tr><td>rfc048-i2-root-cause</td><td>opus</td><td>GA-1 fix validity (PictureResult type, insertion point precision, splice ordering), GA-2 enum safety, SuryaRecoveryResult downstream</td></tr>
+<tr><td>rfc048-i2-test-coverage</td><td>sonnet</td><td>Test gaps for GA-1 amendment, task 3.0 enum, empty pic_results edge, standalone_ocr_text None vs empty</td></tr>
+<tr><td>rfc048-i2-cross-ref</td><td>fable</td><td>Requirement→Design→Task mapping, amendment marker consistency, dependency graph, effort estimate location</td></tr>
+</table>
+
+<h2>Findings</h2>
+<table>
+<tr><th>ID</th><th>Severity</th><th>Source</th><th>Finding</th><th>Status</th></tr>
+<tr>
+  <td>GB-1</td>
+  <td class="critical">CRITICAL</td>
+  <td>root-cause</td>
+  <td><code>PictureResult</code> is a <code>TypedDict</code> (in <code>converters/types.py</code>), NOT a <code>NamedTuple</code>. The design's <code>pic_results[0]._replace(ocr_text=...)</code> would raise <code>AttributeError</code> at runtime. Must use dict assignment: <code>pic_results[0]["ocr_text"] = ...</code></td>
+  <td class="fixed">FIXED</td>
+</tr>
+<tr>
+  <td>GB-2</td>
+  <td class="critical">CRITICAL</td>
+  <td>root-cause</td>
+  <td>Surya gate must go BETWEEN <code>pic_results</code> construction (~line 1344) and <code>splice_picture_text_for_tree</code> (~line 1353). If placed after splice, Surya text never reaches the tree — splice bakes <code>pic_results[i]["ocr_text"]</code> into <code>md_content</code>. Previous "after pic_results construction" was ambiguous about splice ordering.</td>
+  <td class="fixed">FIXED</td>
+</tr>
+<tr>
+  <td>GB-3</td>
+  <td class="moderate">MODERATE</td>
+  <td>test-coverage</td>
+  <td>Task 3.4 missing explicit test for Property 1a: assert <code>pic_results[0]["ocr_text"]</code> carries Surya text AND <code>md_content</code> markers intact at gate time.</td>
+  <td class="fixed">FIXED</td>
+</tr>
+<tr>
+  <td>GB-4</td>
+  <td class="minor">MINOR</td>
+  <td>cross-ref</td>
+  <td>No design property formalising the winner-selection invariant (R2 AC2). Logic was in the code snippet but not a named property.</td>
+  <td class="fixed">FIXED — added Property 5a</td>
+</tr>
+<tr>
+  <td>GB-5</td>
+  <td class="minor">MINOR</td>
+  <td>cross-ref</td>
+  <td>No design property for error response contract (R1 AC2 — 400 on bad image). Covered in Error Handling table but not formalised.</td>
+  <td class="fixed">FIXED — added Property 5b</td>
+</tr>
+<tr>
+  <td>GB-6</td>
+  <td class="minor">MINOR</td>
+  <td>cross-ref</td>
+  <td>No design property for decision-event emission (R2 AC6). Covered in tasks 3.3/3.4 but not formalised.</td>
+  <td class="fixed">FIXED — added Property 5c</td>
+</tr>
+<tr>
+  <td>GB-7</td>
+  <td class="minor">MINOR</td>
+  <td>cross-ref</td>
+  <td>Revised effort estimate (5–7 hours) only in iteration-1 review report, not in the tasks file where implementers look.</td>
+  <td class="fixed">FIXED — added to tasks overview</td>
+</tr>
+<tr>
+  <td>GB-8</td>
+  <td class="minor">MINOR</td>
+  <td>cross-ref</td>
+  <td>Wave 2 intra-wave ordering (3.0 before 3.2) documented in task text but not in dependency graph JSON.</td>
+  <td class="fixed">FIXED — added intra_wave_order</td>
+</tr>
+</table>
+
+<h2>Non-Findings (Confirmed Safe)</h2>
+<table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td><code>OcrEngine.SURYA = "surya"</code> vs PDF path's raw <code>"surya"</code> string</td><td><strong>Safe.</strong> <code>StrEnum</code> members compare equal to their string values. Existing <code>state.ocr_engine = "surya"</code> in PDF path won't break.</td></tr>
+<tr><td><code>SuryaRecoveryResult.pages_text</code> as single-element list</td><td><strong>Safe.</strong> No validation on list length. Only used by PDF path for per-page nodes.</td></tr>
+<tr><td>Empty <code>pic_results</code> edge case</td><td><strong>Cannot happen.</strong> <code>max(1, marker_count)</code> guarantees at least one entry. The <code>if pic_results:</code> guard is defensive-only.</td></tr>
+<tr><td><code>standalone_ocr_text</code> None vs empty string</td><td><strong>Always str.</strong> Initialized as <code>""</code>, all assignments return <code>str</code>. Empty string handled correctly by falsy check.</td></tr>
+<tr><td>Task 3.0 dedicated test</td><td><strong>Not needed.</strong> Enum identity implicitly validated by task 3.4 <code>ocr_engine="surya"</code> assertions.</td></tr>
+<tr><td>Amendment marker consistency</td><td><strong>All correct.</strong> Every GA-* and GB-* marker references the right finding ID across all three files.</td></tr>
+</table>
+
+<h2>Effort Estimate</h2>
+<p><strong>Original:</strong> 4–6 hours &nbsp;→&nbsp; <strong>Iteration 1 revised:</strong> 5–7 hours &nbsp;→&nbsp; <strong>Iteration 2:</strong> 5–7 hours (unchanged — GB fixes are design-doc precision, not additional implementation scope)</p>
+
+<h2>Assessment</h2>
+<p>Iteration 2 caught two <strong>critical runtime defects</strong> (GB-1 would crash, GB-2 would silently lose Surya text) that survived iteration 1. Both stem from the same root: iteration 1 corrected the <em>what</em> (gate after pic_results, not md_content) but missed the <em>how</em> (TypedDict API) and the <em>where precisely</em> (before splice, not just after construction). All 8 findings resolved. The RFC-048 triad is now internally consistent, with all requirements mapped to design properties mapped to tasks with acceptance criteria.</p>
+</body>
+</html>

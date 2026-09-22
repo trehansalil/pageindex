@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>RFC-048 Review Report — 2026-09-22</title>
+<style>
+body{font-family:system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;line-height:1.5}
+table{border-collapse:collapse;width:100%;margin:1rem 0}
+th,td{border:1px solid #ccc;padding:.4rem .6rem;text-align:left}
+th{background:#f5f5f5}
+.critical{color:#b91c1c;font-weight:700}
+.major{color:#c2410c;font-weight:700}
+.moderate{color:#a16207}
+.minor{color:#4b5563}
+.status-fixed{color:#15803d;font-weight:700}
+h1{border-bottom:2px solid #333;padding-bottom:.5rem}
+h2{margin-top:2rem}
+</style></head>
+<body>
+<h1>RFC-048 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-22 | <strong>Iteration:</strong> 1 | <strong>RFC:</strong> 048-surya-image-fallback</p>
+<h2>Review Agents</h2>
+<table>
+<tr><th>Agent</th><th>Model</th><th>Focus</th><th>Duration</th></tr>
+<tr><td>Root-cause validator</td><td>Opus</td><td>Trace every claim to file:line evidence</td><td>~45s</td></tr>
+<tr><td>Implementation reviewer</td><td>Sonnet</td><td>Technical feasibility of each deliverable</td><td>~64s</td></tr>
+<tr><td>Lead analyst</td><td>Fable</td><td>Gap analysis, completeness, risk</td><td>~67s</td></tr>
+</table>
+<h2>Findings</h2>
+<table>
+<tr><th>ID</th><th>Severity</th><th>Finding</th><th>Resolution</th><th>Status</th></tr>
+<tr><td>GA-1</td><td class="critical">CRITICAL</td><td><code>md_content = _surya_result.total_text</code> breaks <code>pic_results</code> marker construction. Surya returns plain text with no <code>&lt;!-- image --&gt;</code> markers.</td><td>Move gate AFTER pic_results. Replace only standalone_ocr_text + pic_results[0].ocr_text. Added Property 1a.</td><td class="status-fixed">FIXED</td></tr>
+<tr><td>GA-2</td><td class="major">MAJOR</td><td><code>OcrEngine.SURYA</code> does not exist. Only TESSERACT in the enum.</td><td>Added task 3.0: add SURYA member. Updated Property 3 and notes.</td><td class="status-fixed">FIXED</td></tr>
+<tr><td>GA-3</td><td class="moderate">MODERATE</td><td>Quality gate: RFC said AND, design said OR. OR is correct.</td><td>Amended RFC R2 AC1: AND to OR. Updated Property 1.</td><td class="status-fixed">FIXED</td></tr>
+<tr><td>GA-4</td><td class="minor">MINOR</td><td>HTTP total_char_count vs dataclass total_chars mapping undocumented.</td><td>Added mapping note to design and task 3.2.</td><td class="status-fixed">FIXED</td></tr>
+<tr><td>GA-5</td><td class="minor">MINOR</td><td>Design line numbers ~10 lines off.</td><td>Corrected to ~1324 / ~1340.</td><td class="status-fixed">FIXED</td></tr>
+</table>
+<h2>Amended Artifacts</h2>
+<ul>
+<li><strong>RFC</strong> agents/rfcs/048-surya-image-fallback.md — R2 AC1: AND to OR (GA-3)</li>
+<li><strong>Design</strong> agents/designs/design-rfc048-surya-image-fallback.md — insertion site (GA-1), Property 1a (GA-1), OR clarification (GA-3), enum prerequisite (GA-2), field mapping (GA-4), line numbers (GA-5)</li>
+<li><strong>Tasks</strong> agents/tasks/tasks-rfc048-surya-image-fallback.md — task 3.0 added (GA-2), task 3.2 rewritten (GA-1), dependency graph updated</li>
+</ul>
+<h2>Effort Estimate</h2>
+<p>Original: 4-6 hours. Revised: <strong>5-7 hours</strong> (+1h buffer for GA-1/GA-2 prerequisite work).</p>
+</body>
+</html>
