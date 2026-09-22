@@ -563,6 +563,11 @@ class TestStandaloneImageEnrichment:
                 vlm_model="gpt-4.1",
                 vlm_describe_images=False,
                 pii_corpus=False,
+                # RFC-048: the standalone-image gate reads these; the fallback
+                # is off here so these tests stay on the Tesseract-only path.
+                surya_fallback_enabled=False,
+                surya_service_url="http://localhost:8207",
+                surya_fallback_timeout_s=120.0,
             )
             monkeypatch.setattr(_idx, "settings", fake_settings)
             monkeypatch.setattr(_img, "settings", fake_settings)
@@ -786,6 +791,11 @@ class TestStandaloneImageSplice:
                 vlm_model="gpt-4.1",
                 vlm_describe_images=False,
                 pii_corpus=False,
+                # RFC-048: the standalone-image gate reads these; the fallback
+                # is off here so these tests stay on the Tesseract-only path.
+                surya_fallback_enabled=False,
+                surya_service_url="http://localhost:8207",
+                surya_fallback_timeout_s=120.0,
             )
             monkeypatch.setattr(_idx, "settings", fake_settings)
             monkeypatch.setattr(_img, "settings", fake_settings)
@@ -868,6 +878,11 @@ class TestStandaloneImageSplice:
                 vlm_model="gpt-4.1",
                 vlm_describe_images=False,
                 pii_corpus=False,
+                # RFC-048: the standalone-image gate reads these; the fallback
+                # is off here so these tests stay on the Tesseract-only path.
+                surya_fallback_enabled=False,
+                surya_service_url="http://localhost:8207",
+                surya_fallback_timeout_s=120.0,
             )
             monkeypatch.setattr(_idx, "settings", fake_settings)
             monkeypatch.setattr(_img, "settings", fake_settings)
@@ -962,6 +977,11 @@ class TestStandaloneImageDetectOcrLangs:
                 vlm_model="gpt-4.1",
                 vlm_describe_images=False,
                 pii_corpus=False,
+                # RFC-048: the standalone-image gate reads these; the fallback
+                # is off here so these tests stay on the Tesseract-only path.
+                surya_fallback_enabled=False,
+                surya_service_url="http://localhost:8207",
+                surya_fallback_timeout_s=120.0,
             )
             monkeypatch.setattr(_idx, "settings", fake_settings)
             monkeypatch.setattr(_img, "settings", fake_settings)

@@ -480,6 +480,31 @@ async def _surya_density_recovery(
     )
 
 
+def _image_ocr_quality_gate_fails(tess_chars: int, tess_garbled: bool) -> bool:
+    """RFC-048 Property 1: should the standalone-image path try Surya at all?
+
+    Sparse OR garbled Tesseract output opens the gate. Named so the tests
+    exercise the same expression the pipeline does, rather than a copy.
+    """
+    return tess_chars <= MIN_STANDALONE_IMAGE_MD_CHARS or tess_garbled
+
+
+def _surya_beats_tesseract(
+    tess_chars: int,
+    tess_garbled: bool,
+    surya_chars: int,
+    surya_garbled: bool,
+) -> bool:
+    """RFC-048 Property 5a: winner selection between the two OCR engines.
+
+    Surya wins when it is clean and says more, or when it is the only clean
+    candidate. Garbled Surya never wins, however many characters it emits.
+    """
+    return (not surya_garbled and surya_chars > tess_chars) or (
+        tess_garbled and not surya_garbled
+    )
+
+
 async def _surya_image_ocr(
     file_bytes: bytes,
     filename: str,
@@ -1387,7 +1412,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 blob_kind=BlobKind.TREE_TEXT,
             )) if standalone_ocr_text else True
             _tess_chars = len("".join(standalone_ocr_text.split())) if standalone_ocr_text else 0
-            _quality_gate_fails = _tess_chars <= MIN_STANDALONE_IMAGE_MD_CHARS or _tess_garbled
+            _quality_gate_fails = _image_ocr_quality_gate_fails(_tess_chars, _tess_garbled)
 
             if _quality_gate_fails and settings.surya_fallback_enabled:
                 _surya_result = await _surya_image_ocr(
@@ -1403,8 +1428,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         config=_garble_config,
                         blob_kind=BlobKind.TREE_TEXT,
                     ))
-                    if (not _surya_garbled and _surya_result.total_chars > _tess_chars) or (
-                        _tess_garbled and not _surya_garbled
+                    if _surya_beats_tesseract(
+                        _tess_chars, _tess_garbled, _surya_result.total_chars, _surya_garbled
                     ):
                         standalone_ocr_text = _surya_result.total_text
                         if state.pic_results:
