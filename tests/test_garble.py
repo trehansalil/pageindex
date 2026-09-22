@@ -1230,6 +1230,142 @@ class TestDilutionImmunity:
         assert report.garble_ratio == pytest.approx(1 / 5, abs=0.01)
 
 
+# ── Ratio threshold (RFC-047 D2) ──────────────────────────────────
+
+
+class TestFlatBlocksRatioThreshold:
+    """Contract (RFC-047 D2): _garble_check_flat_blocks condemns only once
+    the garbled-block ratio REACHES _GARBLE_BLOCK_RATIO_THRESHOLD.
+
+    The design condition is a strict less-than against the threshold, so a
+    ratio of exactly 0.10 still condemns; only a ratio strictly below it
+    returns None.  Dilution immunity is preserved because the pre-existing
+    condemning fixtures all sit at ratio >= 0.2.
+    """
+
+    # Long enough to clear the short_text_prior_garble short-circuit, and
+    # clean under every prong (same prose the dilution fixture uses).
+    _CLEAN_BLOCK_TEXT = (
+        "The quick brown fox jumps over the lazy dog near the river bank. "
+        "Birds sing loudly in tall oak trees during warm summer mornings. "
+        "Fresh coffee aroma fills the kitchen as sunlight streams through "
+        "windows. Cars drive along the highway while pedestrians cross at "
+        "marked intersections safely. "
+    )
+    # >500 chars of pure digits: trips the digit_ratio prong outright.
+    _GARBLED_BLOCK_TEXT = "9" * 600
+
+    @classmethod
+    def _blocks(cls, *, garbled: int, total: int) -> list[dict]:
+        """Build *total* non-empty blocks, of which the first *garbled* are
+        garbled.  Returns a fresh list; no caller state is mutated."""
+        return [
+            {"role": "table", "text": cls._GARBLED_BLOCK_TEXT}
+            if index < garbled
+            else {"role": "prose", "text": cls._CLEAN_BLOCK_TEXT}
+            for index in range(total)
+        ]
+
+    @classmethod
+    def _check(cls, blocks: list[dict]) -> GarbleReport | None:
+        return _garble_check_flat_blocks(
+            blocks,
+            script_context=_default_ctx(),
+            config=_default_config(),
+        )
+
+    def test_flat_blocks_ratio_threshold_constant_is_ten_percent(self):
+        # Arrange / Act -- imported locally so the rest of the class still
+        # collects before the constant exists.
+        from pageindex_mcp.helpers.garble import _GARBLE_BLOCK_RATIO_THRESHOLD
+
+        # Assert
+        assert _GARBLE_BLOCK_RATIO_THRESHOLD == 0.10
+
+    @pytest.mark.parametrize(
+        ("garbled", "total", "expected_ratio", "should_condemn"),
+        [
+            pytest.param(1, 10, 0.10, True, id="at-threshold-condemns"),
+            pytest.param(2, 10, 0.20, True, id="above-threshold-condemns"),
+            pytest.param(0, 10, 0.0, False, id="all-clean-passes"),
+        ],
+    )
+    def test_flat_blocks_ratio_threshold(
+        self, garbled, total, expected_ratio, should_condemn
+    ):
+        # Arrange
+        blocks = self._blocks(garbled=garbled, total=total)
+
+        # Act
+        report = self._check(blocks)
+
+        # Assert
+        if should_condemn:
+            assert report is not None
+            assert bool(report) is True
+            assert report.garble_ratio == pytest.approx(expected_ratio, abs=1e-9)
+        else:
+            assert report is None
+
+    def test_flat_blocks_ratio_threshold_no_condemn_below(self):
+        # Arrange: 1 garbled block of 20 -> ratio 0.05, strictly below 0.10.
+        blocks = self._blocks(garbled=1, total=20)
+
+        # Act
+        report = self._check(blocks)
+
+        # Assert
+        assert report is None
+
+    def test_flat_blocks_ratio_threshold_chart_caption_not_rejected(self):
+        # Arrange: twelve clean prose blocks plus one OCR-mangled chart
+        # caption -> ratio 1/13 = 0.077, strictly below the threshold.  This
+        # is the regression the RFC names: a single garbled caption must not
+        # condemn an otherwise clean document.
+        blocks = [
+            *self._blocks(garbled=0, total=12),
+            {"role": "caption", "text": self._GARBLED_BLOCK_TEXT},
+        ]
+
+        # Act
+        report = self._check(blocks)
+
+        # Assert
+        assert report is None
+
+    @pytest.mark.parametrize(
+        ("garbled", "total", "expected_choice", "expected_ratio"),
+        [
+            pytest.param(0, 10, "clean", 0.0, id="clean-path"),
+            pytest.param(1, 20, "below_threshold", 0.05, id="below-threshold-path"),
+            pytest.param(2, 10, "garbled", 0.20, id="garbled-path"),
+        ],
+    )
+    def test_flat_blocks_ratio_threshold_logged_on_every_path(
+        self, garbled, total, expected_choice, expected_ratio
+    ):
+        # Arrange
+        blocks = self._blocks(garbled=garbled, total=total)
+        events: list[dict] = []
+
+        def _capture(**kwargs):
+            if kwargs.get("event") == "garble_flat_block_verdict":
+                events.append(kwargs)
+
+        # Act
+        with patch("pageindex_mcp.helpers.garble.decision", side_effect=_capture):
+            self._check(blocks)
+
+        # Assert
+        assert len(events) == 1
+        assert events[0]["choice"] == expected_choice
+        attrs = events[0]["attrs"]
+        assert attrs["garble_ratio"] == pytest.approx(expected_ratio, abs=1e-9)
+        assert attrs["checked_count"] == total
+        assert attrs["garbled_count"] == garbled
+        assert "fired_prongs" in attrs
+
+
 # ── had_presentation_forms threading ──────────────────────────────
 
 

@@ -351,8 +351,14 @@ _GARBLE_POINTS: tuple[DecisionPoint, ...] = (
         phase=Phase.GARBLE_CHECK,
         module=_H_GARBLE,
         function="_garble_check_flat_blocks",
-        choices=("garbled", "clean"),
-        attrs=("checked_count", "garbled_count", "garble_ratio", "fired_prongs"),
+        choices=("garbled", "clean", "below_threshold"),
+        attrs=(
+            "checked_count",
+            "garbled_count",
+            "garble_ratio",
+            "threshold",
+            "fired_prongs",
+        ),
     ),
 )
 

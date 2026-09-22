@@ -761,6 +761,13 @@ _MIXED_SCRIPT_RE = re.compile(
 
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = pipeline_config.garble_node_ratio_threshold
 _GARBLE_NODE_RATIO_THRESHOLD = pipeline_config.garble_node_ratio_threshold
+# RFC-047 D2: minimum fraction of garbled BLOCKS before the flat per-block
+# gate condemns a document.  Distinct from the two tree-path thresholds it
+# sits beside: garble_node_ratio_threshold is per-NODE and feeds
+# _gate_node_garbling; garble_window_ratio_threshold is whole-blob and feeds
+# _gate_garbling.  Deliberately a plain module constant, not a GarbleConfig
+# field -- promote it only when a second consumer appears (YAGNI).
+_GARBLE_BLOCK_RATIO_THRESHOLD = 0.10
 _EMPTY_NODE_FRACTION_THRESHOLD = pipeline_config.empty_node_fraction_threshold
 _RFC029_FLAT_PREFER_MULTIPLIER = pipeline_config.rfc029_flat_prefer_multiplier
 _RFC029_MIN_CHARS_PER_NODE = pipeline_config.rfc029_min_chars_per_node
@@ -952,7 +959,11 @@ def _garble_check_flat_blocks(
     _flat_block_primary_text), eliminating the dilution problem where a
     single garbled table amid clean prose would pass the whole-blob check.
 
-    Returns a synthetic GarbleReport if any block is garbled, None otherwise.
+    RFC-047 D2: returns a synthetic GarbleReport only when the garbled-block
+    ratio reaches _GARBLE_BLOCK_RATIO_THRESHOLD; a strictly lower ratio
+    returns None, so one garbled caption among many clean blocks no longer
+    condemns the whole document.  A ratio of exactly the threshold still
+    condemns.
     """
     from .flat import BlockTextPurpose, block_text
 
@@ -975,6 +986,11 @@ def _garble_check_flat_blocks(
             garbled_count += 1
             all_fired.update(report.fired_prongs)
 
+    # RFC-047 D2 task 1.3: the ratio is computed once, up front, so it is
+    # carried on the decision event for EVERY path -- clean, below-threshold
+    # and garbled alike -- not only when a condemnation fires.
+    _ratio = garbled_count / checked_count if checked_count else 0.0
+
     if not garbled_count:
         decision(
             event="garble_flat_block_verdict",
@@ -982,15 +998,30 @@ def _garble_check_flat_blocks(
             reason="no_blocks_garbled",
             attrs={
                 "checked_count": checked_count,
-                "garbled_count": 0,
-                "garble_ratio": 0.0,
+                "garbled_count": garbled_count,
+                "garble_ratio": _ratio,
                 "fired_prongs": [],
             },
             logger=logger,
         )
         return None
 
-    _ratio = garbled_count / checked_count if checked_count else 0.0
+    if _ratio < _GARBLE_BLOCK_RATIO_THRESHOLD:
+        decision(
+            event="garble_flat_block_verdict",
+            choice="below_threshold",
+            reason="garbled_blocks_below_ratio_threshold",
+            attrs={
+                "checked_count": checked_count,
+                "garbled_count": garbled_count,
+                "garble_ratio": _ratio,
+                "threshold": _GARBLE_BLOCK_RATIO_THRESHOLD,
+                "fired_prongs": sorted(all_fired),
+            },
+            logger=logger,
+        )
+        return None
+
     decision(
         event="garble_flat_block_verdict",
         choice="garbled",
