@@ -57,8 +57,9 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src/ ./src/
 COPY --from=builder /opt/docling-models /opt/docling-models
 
-# Copy the service application.
+# Copy the service application and runtime patches.
 COPY services/docling-service/app.py ./app.py
+COPY services/docling-service/patches/ ./patches/
 
 ARG BUILD_SHA="unknown"
 ARG BUILD_TIMESTAMP="unknown"
