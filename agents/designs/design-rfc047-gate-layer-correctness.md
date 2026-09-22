@@ -107,19 +107,38 @@ Binary: one garbled block out of any number condemns the entire enrichment. The 
 ### Design
 
 1. Add a module-level constant `_GARBLE_BLOCK_RATIO_THRESHOLD = 0.10` at `garble.py:~764`, following the pattern of `_RFC029_DEEP_TREE_DEPTH_THRESHOLD`. Promote to `GarbleConfig` only when a second consumer or deployment-specific override appears (YAGNI).
-2. Change `_garble_check_flat_blocks` return logic:
+2. Change `_garble_check_flat_blocks` return logic to use **character-mass ratio** instead of block-count ratio:
 
 ```python
-_ratio = garbled_count / checked_count if checked_count else 0.0
-if _ratio < _GARBLE_BLOCK_RATIO_THRESHOLD:
+# Accumulate character counts alongside garble verdicts
+garbled_chars = 0
+total_chars = 0
+for block in blocks:
+    text = block_text(block, BlockTextPurpose.CHAR_COUNT)
+    if not text or not text.strip():
+        continue
+    checked_count += 1
+    block_len = len(text)
+    total_chars += block_len
+    report = detect_garble(text, ...)
+    if report:
+        garbled_count += 1
+        garbled_chars += block_len
+        all_fired.update(report.fired_prongs)
+
+# Character-mass ratio: garbled characters / total characters
+_char_ratio = garbled_chars / total_chars if total_chars else 0.0
+if _char_ratio < _GARBLE_BLOCK_RATIO_THRESHOLD:
     decision(
         event="garble_flat_block_verdict",
         choice="below_threshold",
-        reason="garbled_blocks_below_ratio_threshold",
+        reason="garbled_char_mass_below_ratio_threshold",
         attrs={
             "checked_count": checked_count,
             "garbled_count": garbled_count,
-            "garble_ratio": _ratio,
+            "garbled_chars": garbled_chars,
+            "total_chars": total_chars,
+            "char_mass_ratio": _char_ratio,
             "threshold": _GARBLE_BLOCK_RATIO_THRESHOLD,
             "fired_prongs": sorted(all_fired),
         },
@@ -128,19 +147,35 @@ if _ratio < _GARBLE_BLOCK_RATIO_THRESHOLD:
     return None
 ```
 
+### Post-gate-FAIL correction: character-mass ratio (2026-09-22)
+
+The Wave 1 gate FAIL demonstrated that using **block count** as the denominator (`garbled_blocks / total_blocks`) disables single-block garble detection for every document above 10 blocks (1/N < 0.10 when N > 10). The real corpus has 198–297 blocks per document, so the gate was effectively off. The corrected approach computes `garbled_chars / total_chars` — summing `len(block_text(b))` for garbled and total blocks respectively. This catches a single garbled block holding 60% of a document's characters while tolerating a tiny garbled caption among hundreds of clean blocks.
+
 ### Threshold choice (corrected 2026-09-22)
 
-Default **0.10** (not 0.3 — the original proposal was refuted by multi-agent review). `test_single_garbled_block_not_diluted` (`tests/test_garble.py:1134`) creates 5 blocks with 1 garbled (ratio 0.2) and asserts condemnation. A threshold of 0.3 would violate the RFC-026/RFC-027 dilution immunity invariant. The value 0.10 clears وارد رقم 597 at 0.017 (well below), preserves dilution immunity at 0.2 (well above), and aligns with the existing `garble_node_ratio_threshold = 0.10` pattern.
+Default **0.10** (not 0.3 — the original proposal was refuted by multi-agent review). `test_single_garbled_block_not_diluted` (`tests/test_garble.py:1134`) creates 5 blocks with 1 garbled (ratio 0.2) and asserts condemnation. A threshold of 0.3 would violate the RFC-026/RFC-027 dilution immunity invariant. The value 0.10 applied to **character mass** clears a small garbled caption (low char mass) while catching a large garbled block (high char mass).
 
-### Dual-caller impact
+### Tri-caller impact (corrected 2026-09-22)
 
-`_garble_check_flat_blocks` is called from two sites: the main garble gate (`indexer.py:1409`) and the post-enrichment gate (`indexer.py:1532`). Both become ratio-aware. The two sites already pass different `GarbleConfig` instances (`_garble_config` vs `_image_garble_cfg`), so per-caller thresholds are possible if the main gate needs to remain binary. For Wave 1, the module-level constant applies uniformly.
+`_garble_check_flat_blocks` is called from **three** sites — the main garble gate (`indexer.py:1409`), the **VLM-fallback recovery check (`indexer.py:1451`)**, and the post-enrichment gate (`indexer.py:1532`). All three pass the **identical** config expression `_image_garble_cfg if _image_garble_cfg is not None else _garble_config` — the claimed per-caller differentiation does not exist. All three become character-mass-ratio-aware. Per-caller config is deferred to a future investigation.
+
+### VLM site alignment (2026-09-22)
+
+The VLM-fallback site (`indexer.py:1451`) uses the same character-mass ratio approach as the main and post-enrichment sites. The 0.10 threshold applies uniformly. VLM output should be clean; if the vision model produces garbled text above the threshold, the recovery is correctly marked as failed.
+
+### flat_meta garble persistence (2026-09-22)
+
+Sub-threshold garble metrics MUST be persisted into `flat_meta` regardless of whether the condemnation threshold was crossed. Currently, below-threshold garble prongs are dropped from `flat_meta['garble_prongs']` — the document is persisted with no trace that garble was detected. This violates CLAUDE.md Hard Rule #5 (never silently persist a low-quality tree). The fix: always write `flat_meta['garble_ratio']` and `flat_meta['garble_prongs']` from the flat-blocks check. At `indexer.py:1650-1653`, source these from the flat check result rather than from `state.gate_result.signals.garble_prongs` (which reflects the tree, not the flat path).
 
 ### Test plan
 
-- Parameterized unit test (3 cases): 1 garbled of 10 (ratio 0.1, at threshold → condemned); 2 garbled of 10 (ratio 0.2, above threshold → condemned); 0 garbled of 10 (ratio 0.0, below threshold → clean)
+- **Character-mass critical test:** 1 garbled block holding 60% of characters among 297 clean blocks → char-mass ratio ~0.60 → CONDEMNED (this is the bug the block-count approach missed)
+- **Large-N survival:** 1 garbled block among 198 blocks where garbled block is small (low char mass, e.g. a caption) → char-mass ratio well below 0.10 → NOT condemned
+- Parameterized unit test (3 cases): garbled char mass above 0.10 → condemned; garbled char mass below 0.10 → clean; zero garbled → clean
+- Regression: `test_single_garbled_block_not_diluted` still passes (1 garbled of 5 with significant char mass → condemned)
 - Regression: one garbled chart caption among 10+ clean blocks does NOT trigger rejection
-- Constant: `_GARBLE_BLOCK_RATIO_THRESHOLD` defaults to 0.10 at module level
+- **flat_meta persistence:** sub-threshold garble ratio and prongs are written to `flat_meta` even when verdict is "below threshold"
+- Constant: `_GARBLE_BLOCK_RATIO_THRESHOLD` defaults to 0.10 at module level (now applied to character mass)
 
 ---
 
@@ -371,7 +406,7 @@ Full corpus run after D1–D5 have landed. Attributed per-document delta table.
 
 | Field | Location | Default | Deliverable |
 |-------|----------|---------|-------------|
-| `_GARBLE_BLOCK_RATIO_THRESHOLD` | Module-level constant in `garble.py:~764` | `0.10` | D2 |
+| `_GARBLE_BLOCK_RATIO_THRESHOLD` | Module-level constant in `garble.py:~764` | `0.10` (applied to **character mass**, not block count) | D2 |
 
 ### Facade Guards
 

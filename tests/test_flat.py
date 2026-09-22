@@ -997,4 +997,4 @@ class TestGarbleScoreRegression:
         ctx = ScriptContext(dominant_script="Latn", had_presentation_forms=False, source="test")
         cfg = GarbleConfig()
         report = _garble_check_flat_blocks(blocks, script_context=ctx, config=cfg)
-        assert report is None
+        assert not report

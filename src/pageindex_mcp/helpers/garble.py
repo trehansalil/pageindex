@@ -761,13 +761,15 @@ _MIXED_SCRIPT_RE = re.compile(
 
 _GARBLE_NODE_RATIO_THRESHOLD_RAW = pipeline_config.garble_node_ratio_threshold
 _GARBLE_NODE_RATIO_THRESHOLD = pipeline_config.garble_node_ratio_threshold
-# RFC-047 D2: minimum fraction of garbled BLOCKS before the flat per-block
-# gate condemns a document.  Distinct from the two tree-path thresholds it
-# sits beside: garble_node_ratio_threshold is per-NODE and feeds
-# _gate_node_garbling; garble_window_ratio_threshold is whole-blob and feeds
-# _gate_garbling.  Deliberately a plain module constant, not a GarbleConfig
-# field -- promote it only when a second consumer appears (YAGNI).
-_GARBLE_BLOCK_RATIO_THRESHOLD = 0.10
+# RFC-047 D2 (post-gate-FAIL): minimum fraction of garbled CHARACTER MASS
+# (not block count) for the per-block gate to condemn.  Character-mass
+# ratio survives large N: a single garbled block among 297 clean ones is
+# 1/297=0.003 by block count but may be 60% by character mass.  Sits
+# beside: garble_node_ratio_threshold (per-NODE, feeds _gate_node_garbling)
+# and garble_window_ratio_threshold (whole-blob, feeds _gate_garbling).
+# Plain module constant — promote to GarbleConfig only when a second
+# consumer appears (YAGNI).
+_GARBLE_CHAR_MASS_THRESHOLD = 0.10
 _EMPTY_NODE_FRACTION_THRESHOLD = pipeline_config.empty_node_fraction_threshold
 _RFC029_FLAT_PREFER_MULTIPLIER = pipeline_config.rfc029_flat_prefer_multiplier
 _RFC029_MIN_CHARS_PER_NODE = pipeline_config.rfc029_min_chars_per_node
@@ -952,30 +954,39 @@ def _garble_check_flat_blocks(
     *,
     script_context: ScriptContext,
     config: GarbleConfig,
-) -> GarbleReport | None:
+) -> GarbleReport:
     """Zone-1: per-block garble check for flat-routed documents.
 
-    Runs detect_garble on each block individually (using
-    _flat_block_primary_text), eliminating the dilution problem where a
-    single garbled table amid clean prose would pass the whole-blob check.
+    Runs detect_garble on each block individually, eliminating the dilution
+    problem where a single garbled table amid clean prose would pass the
+    whole-blob check.
 
-    RFC-047 D2: returns a synthetic GarbleReport only when the garbled-block
-    ratio reaches _GARBLE_BLOCK_RATIO_THRESHOLD; a strictly lower ratio
-    returns None, so one garbled caption among many clean blocks no longer
-    condemns the whole document.  A ratio of exactly the threshold still
-    condemns.
+    RFC-047 D2 (post-gate-FAIL): threshold uses CHARACTER MASS ratio
+    (garbled_chars / total_chars), not block-count ratio.  Block-count
+    ratio breaks above N=10 blocks; character-mass survives any N because
+    a single large garbled block carries proportional weight.
+
+    Always returns a GarbleReport — ``is_garbled=False`` when clean or
+    below threshold, ``True`` when condemned.  Callers use truthiness
+    (``if report:``) which maps to ``is_garbled`` via ``__bool__``.
+    Sub-threshold prongs and ratio are preserved so ``flat_meta`` can
+    record them (HR5: never silently persist low-quality data).
     """
     from .flat import BlockTextPurpose, block_text
 
     all_fired: set[str] = set()
     garbled_count = 0
     checked_count = 0
+    total_chars = 0
+    garbled_chars = 0
 
     for block in blocks:
         text = block_text(block, BlockTextPurpose.CHAR_COUNT)
         if not text or not text.strip():
             continue
         checked_count += 1
+        block_char_count = len(text)
+        total_chars += block_char_count
         report = detect_garble(
             text,
             script_context=script_context,
@@ -984,60 +995,64 @@ def _garble_check_flat_blocks(
         )
         if report:
             garbled_count += 1
+            garbled_chars += block_char_count
             all_fired.update(report.fired_prongs)
 
-    # RFC-047 D2 task 1.3: the ratio is computed once, up front, so it is
-    # carried on the decision event for EVERY path -- clean, below-threshold
-    # and garbled alike -- not only when a condemnation fires.
-    _ratio = garbled_count / checked_count if checked_count else 0.0
+    _block_ratio = garbled_count / checked_count if checked_count else 0.0
+    _char_ratio = garbled_chars / total_chars if total_chars else 0.0
+
+    _common_attrs = {
+        "checked_count": checked_count,
+        "garbled_count": garbled_count,
+        "block_ratio": _block_ratio,
+        "char_ratio": _char_ratio,
+        "total_chars": total_chars,
+        "garbled_chars": garbled_chars,
+    }
 
     if not garbled_count:
         decision(
             event="garble_flat_block_verdict",
             choice="clean",
             reason="no_blocks_garbled",
-            attrs={
-                "checked_count": checked_count,
-                "garbled_count": garbled_count,
-                "garble_ratio": _ratio,
-                "fired_prongs": [],
-            },
+            attrs={**_common_attrs, "fired_prongs": []},
             logger=logger,
         )
-        return None
+        return GarbleReport(
+            is_garbled=False,
+            fired_prongs=frozenset(),
+            garble_ratio=0.0,
+        )
 
-    if _ratio < _GARBLE_BLOCK_RATIO_THRESHOLD:
+    if _char_ratio < _GARBLE_CHAR_MASS_THRESHOLD:
         decision(
             event="garble_flat_block_verdict",
             choice="below_threshold",
-            reason="garbled_blocks_below_ratio_threshold",
+            reason="garbled_char_mass_below_threshold",
             attrs={
-                "checked_count": checked_count,
-                "garbled_count": garbled_count,
-                "garble_ratio": _ratio,
-                "threshold": _GARBLE_BLOCK_RATIO_THRESHOLD,
+                **_common_attrs,
+                "threshold": _GARBLE_CHAR_MASS_THRESHOLD,
                 "fired_prongs": sorted(all_fired),
             },
             logger=logger,
         )
-        return None
+        return GarbleReport(
+            is_garbled=False,
+            fired_prongs=frozenset(all_fired),
+            garble_ratio=_char_ratio,
+        )
 
     decision(
         event="garble_flat_block_verdict",
         choice="garbled",
-        reason="blocks_garbled",
-        attrs={
-            "checked_count": checked_count,
-            "garbled_count": garbled_count,
-            "garble_ratio": _ratio,
-            "fired_prongs": sorted(all_fired),
-        },
+        reason="char_mass_garbled",
+        attrs={**_common_attrs, "fired_prongs": sorted(all_fired)},
         logger=logger,
     )
     return GarbleReport(
         is_garbled=True,
         fired_prongs=frozenset(all_fired),
-        garble_ratio=_ratio,
+        garble_ratio=_char_ratio,
     )
 
 

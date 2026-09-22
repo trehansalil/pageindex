@@ -1647,7 +1647,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             # which is what makes corpus diffs unexplainable.
             if state.ocr_engine:
                 flat_meta["ocr_engine"] = state.ocr_engine
-            if state.gate_result is not None and state.gate_result.signals is not None:
+            # RFC-047 D2 (post-gate-FAIL) + HR5: source garble prongs from
+            # the flat garble report (computed on flat blocks), not from the
+            # tree's gate_result.signals.  Always persist — even below the
+            # condemnation threshold — so sub-threshold garble is never silent.
+            if _flat_garble_report is not None and _flat_garble_report.fired_prongs:
+                flat_meta["garble_prongs"] = sorted(_flat_garble_report.fired_prongs)
+                flat_meta["garble_char_ratio"] = round(_flat_garble_report.garble_ratio, 6)
+            elif state.gate_result is not None and state.gate_result.signals is not None:
                 _prongs = getattr(state.gate_result.signals, "garble_prongs", frozenset())
                 if _prongs:
                     flat_meta["garble_prongs"] = sorted(_prongs)

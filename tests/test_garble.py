@@ -1201,7 +1201,8 @@ class TestPerBlockGarbleCatchesGarbledTable:
             script_context=_default_ctx(dominant_script="Latn"),
             config=_default_config(),
         )
-        assert report is None
+        assert isinstance(report, GarbleReport)
+        assert bool(report) is False
 
 
 # ── Dilution immunity ─────────────────────────────────────────────
@@ -1227,20 +1228,26 @@ class TestDilutionImmunity:
             config=_default_config(),
         )
         assert report is not None
-        assert report.garble_ratio == pytest.approx(1 / 5, abs=0.01)
+        assert bool(report) is True
+        # char-mass ratio: 600 garbled chars / (4*204 clean + 600 garbled) ≈ 0.424
+        assert report.garble_ratio > 0.10
 
 
 # ── Ratio threshold (RFC-047 D2) ──────────────────────────────────
 
 
 class TestFlatBlocksRatioThreshold:
-    """Contract (RFC-047 D2): _garble_check_flat_blocks condemns only once
-    the garbled-block ratio REACHES _GARBLE_BLOCK_RATIO_THRESHOLD.
+    """Contract (RFC-047 D2, post-gate-FAIL): _garble_check_flat_blocks
+    condemns only once the garbled CHARACTER MASS ratio reaches
+    _GARBLE_CHAR_MASS_THRESHOLD (0.10).
 
-    The design condition is a strict less-than against the threshold, so a
-    ratio of exactly 0.10 still condemns; only a ratio strictly below it
-    returns None.  Dilution immunity is preserved because the pre-existing
-    condemning fixtures all sit at ratio >= 0.2.
+    Character-mass ratio = garbled_chars / total_chars, computed across
+    all checked blocks.  This survives large N (a single garbled block
+    among 297 clean ones is caught by its character weight, not its count).
+
+    The function always returns a GarbleReport — ``is_garbled=False``
+    when clean or below threshold, ``True`` when condemned.  Callers use
+    truthiness via ``__bool__``.
     """
 
     # Long enough to clear the short_text_prior_garble short-circuit, and
@@ -1274,24 +1281,24 @@ class TestFlatBlocksRatioThreshold:
             config=_default_config(),
         )
 
-    def test_flat_blocks_ratio_threshold_constant_is_ten_percent(self):
+    def test_flat_blocks_char_mass_threshold_constant_is_ten_percent(self):
         # Arrange / Act -- imported locally so the rest of the class still
         # collects before the constant exists.
-        from pageindex_mcp.helpers.garble import _GARBLE_BLOCK_RATIO_THRESHOLD
+        from pageindex_mcp.helpers.garble import _GARBLE_CHAR_MASS_THRESHOLD
 
         # Assert
-        assert _GARBLE_BLOCK_RATIO_THRESHOLD == 0.10
+        assert _GARBLE_CHAR_MASS_THRESHOLD == 0.10
 
     @pytest.mark.parametrize(
-        ("garbled", "total", "expected_ratio", "should_condemn"),
+        ("garbled", "total", "should_condemn"),
         [
-            pytest.param(1, 10, 0.10, True, id="at-threshold-condemns"),
-            pytest.param(2, 10, 0.20, True, id="above-threshold-condemns"),
-            pytest.param(0, 10, 0.0, False, id="all-clean-passes"),
+            pytest.param(1, 10, True, id="1-of-10-char-mass-above-threshold"),
+            pytest.param(2, 10, True, id="2-of-10-char-mass-above-threshold"),
+            pytest.param(0, 10, False, id="all-clean-passes"),
         ],
     )
-    def test_flat_blocks_ratio_threshold(
-        self, garbled, total, expected_ratio, should_condemn
+    def test_flat_blocks_char_mass_threshold(
+        self, garbled, total, should_condemn
     ):
         # Arrange
         blocks = self._blocks(garbled=garbled, total=total)
@@ -1299,50 +1306,56 @@ class TestFlatBlocksRatioThreshold:
         # Act
         report = self._check(blocks)
 
-        # Assert
+        # Assert — function always returns GarbleReport, never None
+        assert isinstance(report, GarbleReport)
         if should_condemn:
-            assert report is not None
             assert bool(report) is True
-            assert report.garble_ratio == pytest.approx(expected_ratio, abs=1e-9)
+            assert report.garble_ratio > 0.10
         else:
-            assert report is None
+            assert bool(report) is False
 
-    def test_flat_blocks_ratio_threshold_no_condemn_below(self):
-        # Arrange: 1 garbled block of 20 -> ratio 0.05, strictly below 0.10.
+    def test_flat_blocks_char_mass_threshold_no_condemn_below(self):
+        # Arrange: 1 garbled block (600 chars) among 20 total.
+        # char_ratio = 600 / (600 + 19*289) ≈ 0.099, strictly below 0.10.
         blocks = self._blocks(garbled=1, total=20)
 
         # Act
         report = self._check(blocks)
 
-        # Assert
-        assert report is None
+        # Assert — below threshold: is_garbled=False but prongs preserved
+        assert isinstance(report, GarbleReport)
+        assert bool(report) is False
+        assert report.fired_prongs  # prongs preserved for flat_meta (HR5)
 
-    def test_flat_blocks_ratio_threshold_chart_caption_not_rejected(self):
-        # Arrange: twelve clean prose blocks plus one OCR-mangled chart
-        # caption -> ratio 1/13 = 0.077, strictly below the threshold.  This
+    def test_flat_blocks_char_mass_chart_caption_not_rejected(self):
+        # Arrange: twelve clean prose blocks (~289 chars each) plus one short
+        # OCR-mangled chart caption (30 chars of digits).  Char mass ratio
+        # = 30 / (12*289+30) ≈ 0.009, far below the 0.10 threshold.  This
         # is the regression the RFC names: a single garbled caption must not
         # condemn an otherwise clean document.
+        _short_garbled_caption = "9" * 30
         blocks = [
             *self._blocks(garbled=0, total=12),
-            {"role": "caption", "text": self._GARBLED_BLOCK_TEXT},
+            {"role": "caption", "text": _short_garbled_caption},
         ]
 
         # Act
         report = self._check(blocks)
 
-        # Assert
-        assert report is None
+        # Assert — below threshold: is_garbled=False
+        assert isinstance(report, GarbleReport)
+        assert bool(report) is False
 
     @pytest.mark.parametrize(
-        ("garbled", "total", "expected_choice", "expected_ratio"),
+        ("garbled", "total", "expected_choice"),
         [
-            pytest.param(0, 10, "clean", 0.0, id="clean-path"),
-            pytest.param(1, 20, "below_threshold", 0.05, id="below-threshold-path"),
-            pytest.param(2, 10, "garbled", 0.20, id="garbled-path"),
+            pytest.param(0, 10, "clean", id="clean-path"),
+            pytest.param(1, 20, "below_threshold", id="below-threshold-path"),
+            pytest.param(2, 10, "garbled", id="garbled-path"),
         ],
     )
-    def test_flat_blocks_ratio_threshold_logged_on_every_path(
-        self, garbled, total, expected_choice, expected_ratio
+    def test_flat_blocks_char_mass_logged_on_every_path(
+        self, garbled, total, expected_choice
     ):
         # Arrange
         blocks = self._blocks(garbled=garbled, total=total)
@@ -1360,7 +1373,10 @@ class TestFlatBlocksRatioThreshold:
         assert len(events) == 1
         assert events[0]["choice"] == expected_choice
         attrs = events[0]["attrs"]
-        assert attrs["garble_ratio"] == pytest.approx(expected_ratio, abs=1e-9)
+        assert "char_ratio" in attrs
+        assert "block_ratio" in attrs
+        assert "total_chars" in attrs
+        assert "garbled_chars" in attrs
         assert attrs["checked_count"] == total
         assert attrs["garbled_count"] == garbled
         assert "fired_prongs" in attrs
@@ -1440,7 +1456,7 @@ class TestShortTextBlockGranularity:
             script_context=_default_ctx(),
             config=_default_config(),
         )
-        assert report is None
+        assert not report
 
 
 # ── Empty / whitespace blocks ─────────────────────────────────────
@@ -1464,9 +1480,9 @@ class TestEmptyAndWhitespaceBlocks:
             script_context=_default_ctx(),
             config=_default_config(),
         )
-        assert report is None
+        assert not report
 
-    def test_only_empty_blocks_returns_none(self):
+    def test_only_empty_blocks_returns_clean(self):
         blocks = [
             {"role": "prose", "text": ""},
             {"role": "prose", "text": ""},
@@ -1476,7 +1492,7 @@ class TestEmptyAndWhitespaceBlocks:
             script_context=_default_ctx(),
             config=_default_config(),
         )
-        assert report is None
+        assert not report
 
 
 # ── _flat_block_primary_text for table role ───────────────────────
