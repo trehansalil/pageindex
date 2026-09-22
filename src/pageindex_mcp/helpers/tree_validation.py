@@ -47,7 +47,12 @@ def _tree_depth(nodes: list) -> int:
     return best
 
 
-def _node_text_parts(n: dict, *, include_enrichment: bool = False) -> list[str]:
+def _node_text_parts(
+    n: dict,
+    *,
+    include_ocr_text: bool = False,
+    include_summary: bool = False,
+) -> list[str]:
     """Extract all text-bearing content from a single tree node.
 
     Zone-5 fix: table blocks carry content in 'headers', 'rows', and
@@ -107,11 +112,14 @@ def _node_text_parts(n: dict, *, include_enrichment: bool = False) -> list[str]:
         if body and body not in parts:
             parts.append(body)
 
-    if include_enrichment:
-        for field in ("summary", "ocr_text"):
-            value = str(n.get(field, ""))
-            if value and value not in parts:
-                parts.append(value)
+    if include_ocr_text:
+        value = str(n.get("ocr_text", ""))
+        if value and value not in parts:
+            parts.append(value)
+    if include_summary:
+        value = str(n.get("summary", ""))
+        if value and value not in parts:
+            parts.append(value)
 
     return parts
 
@@ -139,7 +147,12 @@ def _node_text_length(n: dict) -> int:
     return sum(len(p.strip()) for p in _node_text_parts(n))
 
 
-def _flatten_tree_text(nodes: list, *, include_enrichment: bool = False) -> str:
+def _flatten_tree_text(
+    nodes: list,
+    *,
+    include_ocr_text: bool = False,
+    include_summary: bool = False,
+) -> str:
     """Concatenate all title+text from a tree structure into a single string.
 
     RFC-033 D1: parts are newline-separated so adjacent node boundaries cannot
@@ -156,7 +169,7 @@ def _flatten_tree_text(nodes: list, *, include_enrichment: bool = False) -> str:
 
     def _walk(ns: list) -> None:
         for n in ns:
-            parts.extend(_node_text_parts(n, include_enrichment=include_enrichment))
+            parts.extend(_node_text_parts(n, include_ocr_text=include_ocr_text, include_summary=include_summary))
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
@@ -295,7 +308,7 @@ class TreeSignals:
         depth = _tree_depth(structure)
         _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
         flat_text = _flatten_tree_text(structure)
-        flat_text_corrected = _flatten_tree_text(structure, include_enrichment=True)
+        flat_text_corrected = _flatten_tree_text(structure, include_ocr_text=True, include_summary=False)
 
         if isinstance(expected_script, ScriptContext):
             _eff_script: str | None = expected_script.dominant_script

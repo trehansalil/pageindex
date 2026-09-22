@@ -9,8 +9,10 @@ Tests the canonical measurement helpers that zone-4 remediation exported:
 
 from pageindex_mcp.helpers import (
     _flat_block_primary_text,
+    _flatten_tree_text,
     _node_char_count,
     _node_text_parts,
+    TreeSignals,
 )
 
 
@@ -117,3 +119,97 @@ class TestNodeCharCount:
 
     def test_empty_node_zero(self):
         assert _node_char_count({}) == 0
+
+
+class TestNodeTextPartsFlagCombinations:
+    """D5 (RFC-047): _node_text_parts include_ocr_text / include_summary split."""
+
+    NODE = {
+        "title": "Title",
+        "text": "Body",
+        "ocr_text": "OCR content",
+        "summary": "LLM summary",
+    }
+
+    def test_ocr_only(self):
+        parts = _node_text_parts(self.NODE, include_ocr_text=True, include_summary=False)
+        assert "OCR content" in parts
+        assert "LLM summary" not in parts
+
+    def test_summary_only(self):
+        parts = _node_text_parts(self.NODE, include_ocr_text=False, include_summary=True)
+        assert "LLM summary" in parts
+        assert "OCR content" not in parts
+
+    def test_both_true(self):
+        parts = _node_text_parts(self.NODE, include_ocr_text=True, include_summary=True)
+        assert "OCR content" in parts
+        assert "LLM summary" in parts
+
+    def test_both_false(self):
+        parts = _node_text_parts(self.NODE, include_ocr_text=False, include_summary=False)
+        assert "OCR content" not in parts
+        assert "LLM summary" not in parts
+        assert "Title" in parts
+        assert "Body" in parts
+
+    def test_dedup_ocr_text_matching_body(self):
+        node = {"text": "same", "ocr_text": "same", "summary": "different"}
+        parts = _node_text_parts(node, include_ocr_text=True, include_summary=True)
+        assert parts.count("same") == 1
+        assert "different" in parts
+
+    def test_dedup_summary_matching_body(self):
+        node = {"text": "same", "ocr_text": "different", "summary": "same"}
+        parts = _node_text_parts(node, include_ocr_text=True, include_summary=True)
+        assert parts.count("same") == 1
+        assert "different" in parts
+
+
+class TestFlattenTreeTextSplitFlags:
+    """D5 (RFC-047): _flatten_tree_text passes split flags through."""
+
+    TREE = [
+        {
+            "title": "Root",
+            "text": "body",
+            "ocr_text": "ocr here",
+            "summary": "summary here",
+            "nodes": [],
+        }
+    ]
+
+    def test_ocr_only_passthrough(self):
+        text = _flatten_tree_text(self.TREE, include_ocr_text=True, include_summary=False)
+        assert "ocr here" in text
+        assert "summary here" not in text
+
+    def test_summary_only_passthrough(self):
+        text = _flatten_tree_text(self.TREE, include_ocr_text=False, include_summary=True)
+        assert "summary here" in text
+        assert "ocr here" not in text
+
+    def test_neither(self):
+        text = _flatten_tree_text(self.TREE, include_ocr_text=False, include_summary=False)
+        assert "ocr here" not in text
+        assert "summary here" not in text
+        assert "Root" in text
+
+
+class TestFlatTextCorrectedExcludesSummary:
+    """D5 (RFC-047): TreeSignals.flat_text_corrected includes OCR but not summary."""
+
+    def test_corrected_excludes_summary(self):
+        tree = [
+            {
+                "title": "Page 1",
+                "text": "body text",
+                "ocr_text": "ocr content",
+                "summary": "llm summary text",
+                "nodes": [],
+            }
+        ]
+        signals = TreeSignals.from_tree(tree)
+        assert "ocr content" in signals.flat_text_corrected
+        assert "llm summary text" not in signals.flat_text_corrected
+        assert "body text" in signals.flat_text_corrected
