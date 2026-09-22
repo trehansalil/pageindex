@@ -106,13 +106,12 @@ Binary: one garbled block out of any number condemns the entire enrichment. The 
 
 ### Design
 
-1. Add `garble_block_ratio_threshold: float = 0.3` to `GarbleConfig` (garble.py ~line 613)
-2. Add matching field to `PipelineConfig` with `from_config` wiring (following the pattern of `garble_node_ratio_threshold`)
-3. Change `_garble_check_flat_blocks` return logic:
+1. Add a module-level constant `_GARBLE_BLOCK_RATIO_THRESHOLD = 0.10` at `garble.py:~764`, following the pattern of `_RFC029_DEEP_TREE_DEPTH_THRESHOLD`. Promote to `GarbleConfig` only when a second consumer or deployment-specific override appears (YAGNI).
+2. Change `_garble_check_flat_blocks` return logic:
 
 ```python
 _ratio = garbled_count / checked_count if checked_count else 0.0
-if _ratio < config.garble_block_ratio_threshold:
+if _ratio < _GARBLE_BLOCK_RATIO_THRESHOLD:
     decision(
         event="garble_flat_block_verdict",
         choice="below_threshold",
@@ -121,7 +120,7 @@ if _ratio < config.garble_block_ratio_threshold:
             "checked_count": checked_count,
             "garbled_count": garbled_count,
             "garble_ratio": _ratio,
-            "threshold": config.garble_block_ratio_threshold,
+            "threshold": _GARBLE_BLOCK_RATIO_THRESHOLD,
             "fired_prongs": sorted(all_fired),
         },
         logger=logger,
@@ -129,16 +128,19 @@ if _ratio < config.garble_block_ratio_threshold:
     return None
 ```
 
-### Threshold choice
+### Threshold choice (corrected 2026-09-22)
 
-Default 0.3 (fewer than 30% of blocks garbled is tolerated). This is above وارد رقم 597's 0.017 (5/297) and below any reasonable majority threshold. Validated against the corpus before D3 wires the consequence.
+Default **0.10** (not 0.3 — the original proposal was refuted by multi-agent review). `test_single_garbled_block_not_diluted` (`tests/test_garble.py:1134`) creates 5 blocks with 1 garbled (ratio 0.2) and asserts condemnation. A threshold of 0.3 would violate the RFC-026/RFC-027 dilution immunity invariant. The value 0.10 clears وارد رقم 597 at 0.017 (well below), preserves dilution immunity at 0.2 (well above), and aligns with the existing `garble_node_ratio_threshold = 0.10` pattern.
+
+### Dual-caller impact
+
+`_garble_check_flat_blocks` is called from two sites: the main garble gate (`indexer.py:1409`) and the post-enrichment gate (`indexer.py:1532`). Both become ratio-aware. The two sites already pass different `GarbleConfig` instances (`_garble_config` vs `_image_garble_cfg`), so per-caller thresholds are possible if the main gate needs to remain binary. For Wave 1, the module-level constant applies uniformly.
 
 ### Test plan
 
-- Unit: `_garble_check_flat_blocks` with 1 garbled block out of 10 returns `None` at threshold 0.3
-- Unit: 4 garbled blocks out of 10 returns a `GarbleReport` at threshold 0.3
+- Parameterized unit test (3 cases): 1 garbled of 10 (ratio 0.1, at threshold → condemned); 2 garbled of 10 (ratio 0.2, above threshold → condemned); 0 garbled of 10 (ratio 0.0, below threshold → clean)
 - Regression: one garbled chart caption among 10+ clean blocks does NOT trigger rejection
-- Config: `GarbleConfig.garble_block_ratio_threshold` defaults to 0.3 and is overridable
+- Constant: `_GARBLE_BLOCK_RATIO_THRESHOLD` defaults to 0.10 at module level
 
 ---
 
@@ -157,7 +159,9 @@ The existing reject guard at lines 2128–2130 checks `state.flat_garble_unrecov
 
 ### Design
 
-Surgical strip (proportionate response): when `_enrich_garble` is truthy and the garble ratio exceeds the D2 threshold, strip the garbled image blocks from the blocks list before persistence. Log which blocks were stripped.
+Surgical field-clear (refined 2026-09-22): replace the `_garble_check_flat_blocks` call at the post-enrichment site with an inline per-block loop. When the garble ratio exceeds the D2 threshold, clear `ocr_text` on each garbled image block rather than removing blocks from the list. This preserves image metadata (`figure_path`, `page`, `bbox`), avoids list mutation and insertion-point sensitivity.
+
+**Insertion point:** After line ~1554 (decision log) and before line ~1580 (`flat_structure` construction).
 
 ```python
 if _enrich_garble:
@@ -166,33 +170,29 @@ if _enrich_garble:
         choice="enriched_blocks_garbled",
         ...
     )
-    # D3: strip garbled blocks instead of falling through
-    _garbled_block_ids = {id(b) for b in _enriched_image_blocks if ...}
-    _pre_strip_count = len(blocks)
-    blocks = [b for b in blocks if id(b) not in _garbled_block_ids]
+    # D3: clear ocr_text on garbled blocks instead of falling through
+    _stripped = 0
+    for block in _enriched_image_blocks:
+        if detect_garble(block_text(block), config=_image_garble_cfg).is_garbled:
+            block["ocr_text"] = ""
+            _stripped += 1
     decision(
-        event="post_enrichment_garble_strip",
-        choice="blocks_stripped",
-        reason="garbled enrichment blocks removed before persistence",
+        event="post_enrichment_garble_check",
+        choice="blocks_stripped" if _stripped else "strip_skipped",
+        reason="garbled enrichment blocks cleared before persistence",
         attrs={
-            "stripped_count": _pre_strip_count - len(blocks),
-            "remaining_count": len(blocks),
+            "stripped_count": _stripped,
+            "retained_count": len(_enriched_image_blocks) - _stripped,
+            "garble_ratio": _stripped / len(_enriched_image_blocks),
         },
     )
 ```
 
-### Decision point registration
+**Edge case — all blocks garbled:** When ALL enriched image blocks are garbled (ratio = 1.0), all `ocr_text` fields are cleared. The document proceeds with zero image-derived text but retains its image metadata and non-image content.
 
-New event in `decision_points.py`:
+### Decision point update
 
-```python
-"post_enrichment_garble_strip": DecisionPoint(
-    event="post_enrichment_garble_strip",
-    choices=("blocks_stripped", "strip_skipped"),
-    note="D3 consequence: garbled enrichment blocks stripped before persistence",
-    attrs=("stripped_count", "remaining_count"),
-)
-```
+Extend the existing `post_enrichment_garble_check` event in `decision_points.py` (`src/pageindex_mcp/obs/decision_points.py`) with `stripped_count`/`retained_count`/`garble_ratio` attrs and add `blocks_stripped`/`strip_skipped` to its choices, rather than registering a separate event.
 
 ### Dependencies
 
@@ -238,16 +238,9 @@ None,  # flat path: no tree validation result to inherit
 
 This makes `evaluate_gates` enter the `validate_result is None` branch (verdict.py:187–200), where `defect = TreeDefect.OK` and `_all_defects = frozenset()`. All hard-fail defects are absent, and the flat signals alone drive the verdict.
 
-Add a decision event recording the tree gate discard:
+The existing `reordered_defect_inferred` event at `verdict.py:192-200` already fires with `validate_result_present=False` when the `None` branch is taken, providing audit trail. If tree defect audit is needed, add tree defect values as attrs to the existing event rather than a separate event.
 
-```python
-decision(
-    event="flat_verdict_tree_gate_discarded",
-    choice="tree_gate_discarded",
-    reason="flat path does not inherit tree defects",
-    attrs={"tree_defect": str(state.gate_result.defect) if state.gate_result else None},
-)
-```
+**Metadata provenance fix:** After D4 passes `None`, source `flat_meta['garble_prongs']` (at `indexer.py:1650-1653`) from `_flat_sig` (already computed at line ~1590) rather than from `state.gate_result.signals.garble_prongs`, maintaining provenance consistency between the flat verdict and its metadata.
 
 ### Why NOT approach B (re-run validate_tree on flat_structure)
 
@@ -257,32 +250,21 @@ Re-running `validate_tree` on `flat_structure` would fire:
 
 This would create new false failures on every flat document with shallow structure.
 
-### Decision point registration
-
-New event in `decision_points.py`:
-
-```python
-"flat_verdict_tree_gate_discarded": DecisionPoint(
-    event="flat_verdict_tree_gate_discarded",
-    choices=("tree_gate_discarded",),
-    note="D4: flat verdict does not inherit tree defects",
-    attrs=("tree_defect",),
-)
-```
-
 ### Verdict movement
 
 Documents that currently FAIL on the flat path due to inherited tree defects will receive the verdict their flat signals produce. For the uae_numbers portrait: `FAIL` → clears density gate → proceeds to Phase 2 promotions → expected `PASS` or `MARGINAL`.
 
 ### Risk: reorder-inference branch activation
 
-With tree defects absent, the flat path may hit the reorder-inference branch for flat documents with `is_reordered=True`. This is correct behaviour (a reordered flat document should be flagged), but is a new code path that needs test coverage.
+With tree defects absent, the flat path may hit the reorder-inference branch for flat documents with `is_reordered=True`. Flat structures currently never carry `start_index`/`line_num`, so `is_reordered` is always `False` — but this safety is an implicit contract. This is correct behaviour (a reordered flat document should be flagged), but is a new code path that needs test coverage.
 
 ### Test plan
 
-- Unit: flat document whose tree had `SUSPECT_DENSITY` but with sufficient flat text does NOT receive FAIL
+- **Red-green test (mandatory):** Construct `TreeGateResult` with `defect=SUSPECT_DENSITY` and `all_defects` containing `SUSPECT_DENSITY`, pass alongside `flat_signals` with sufficient text (`flat_text_len=2151`), assert hard-fail. This test FAILS after the fix (passing `None` removes the hard-fail).
+- Unit: flat document whose tree had `SUSPECT_DENSITY` but with sufficient flat text does NOT receive FAIL (post-fix assertion)
 - Unit: divergent tree and flat leaf ratios — flat value drives the verdict
-- Decision event: `flat_verdict_tree_gate_discarded` logged with correct `tree_defect`
+- **Reorder-inference safety:** Flat structure produces `is_reordered=False`; `evaluate_gates` with `None` validate_result and `is_reordered=False` produces `defect=TreeDefect.OK`
+- **Metadata provenance:** `flat_meta['garble_prongs']` sourced from `_flat_sig`, not `state.gate_result.signals`
 - Regression: existing PASS flat documents remain PASS
 
 ---
@@ -332,7 +314,11 @@ flat_text_corrected = _flatten_tree_text(structure, include_ocr_text=True, inclu
 
 ### Facade guard update
 
-`tests/test_facade_surface_guard.py` exports `_node_text_parts` (line 319) and `_flatten_tree_text` (line 306). The signature change requires the guard assertions to match the new parameter names.
+`tests/test_facade_surface_guard.py` exports BOTH `_node_text_parts` (line 319) AND `_flatten_tree_text` (line 306). Both functions' signatures change in lockstep — the guard must be updated for both, not only `_node_text_parts`.
+
+### Dedup behavior note
+
+`_node_text_parts` lines 113-114 silently drop `ocr_text`/`summary` values that duplicate body text. This behavior is preserved after the split and prevents inflation from duplicated content. Implementation must not change this dedup check.
 
 ### Downstream impact
 
@@ -377,16 +363,15 @@ Full corpus run after D1–D5 have landed. Attributed per-document delta table.
 | Event | Status | Deliverable |
 |-------|--------|-------------|
 | `garble_flat_block_verdict` | Existing — new choice `below_threshold` added | D2 |
-| `post_enrichment_garble_check` | Existing — unchanged | — |
-| `post_enrichment_garble_strip` | **New** | D3 |
-| `flat_verdict_tree_gate_discarded` | **New** | D4 |
+| `post_enrichment_garble_check` | Existing — extended with `blocks_stripped`/`strip_skipped` choices and `stripped_count`/`retained_count`/`garble_ratio` attrs | D3 |
+| `reordered_defect_inferred` | Existing — `validate_result_present=False` signals the `None` branch | D4 (audit trail) |
 | `suspect_density_gate` | Existing — unchanged | D6 (activation decision) |
 
 ### Config Surface
 
 | Field | Location | Default | Deliverable |
 |-------|----------|---------|-------------|
-| `garble_block_ratio_threshold` | `GarbleConfig` + `PipelineConfig` | `0.3` | D2 |
+| `_GARBLE_BLOCK_RATIO_THRESHOLD` | Module-level constant in `garble.py:~764` | `0.10` | D2 |
 
 ### Facade Guards
 
@@ -401,7 +386,7 @@ Full corpus run after D1–D5 have landed. Attributed per-document delta table.
 |-------------|-----------|------|
 | D1 | Narrows regex matches — fewer matches, never more | Cannot introduce new false positives |
 | D2 | Raises bar for garble condemnation — some previously flagged may pass | Correct behaviour |
-| D3 | New strip path — additive | No backward concern |
+| D3 | New field-clear path — additive, preserves block metadata | No backward concern |
 | D4 | Changes verdict inputs for ALL flat-routed documents | **Highest risk** — must land alone |
 | D5 | Changes `flat_text_corrected` semantics | Only consumer is density gate |
 

@@ -82,6 +82,8 @@ _MIXED_SCRIPT_RE = re.compile(
 
 **Verified against existing tests:** all six assertions in `tests/test_garble.py::TestSparseMojibake`, `tests/test_rfc_reorder.py::TestSparseMojibakeDetection`, and `tests/test_rfc_quality.py:315` pass unchanged because their fixtures contain ASCII letters (`x`, `z`, `q`, `k`, `X`, `Y`, `Z`) within the bridging runs.
 
+**D1 acceptance criterion (added 2026-09-22).** Mechanically verify the proposed 3-alternation regex against each existing mojibake test fixture. Confirm match counts still exceed the 0.02 word-ratio threshold for the `sparse_mojibake` prong. Note: `_sparse_text` uses original (un-normalized) text, not NFKC-normalized blob — the lookahead fix must account for presentation-form Arabic codepoints in `original_text`.
+
 **New tests required:**
 - Parenthesized Arabic letters `(أ)` must not fire `sparse_mojibake`
 - Digit-only bridging `رقم597` must not match
@@ -94,9 +96,15 @@ _MIXED_SCRIPT_RE = re.compile(
 
 **Defect.** The function returns a `GarbleReport` if ANY single block is garbled (`garbled_count >= 1`). While it computes `garble_ratio` (line 989), the ratio is stored in report attrs only -- the return/no-return decision is binary on count. A single garbled chart caption among many clean image blocks condemns the entire enrichment.
 
-**Fix.** Change the threshold from `if not garbled_count: return None` to a ratio-aware check: `if garble_ratio < config.garble_block_ratio_threshold: return None`. Add `garble_block_ratio_threshold` to both `GarbleConfig` (`garble.py`) and `PipelineConfig` (`config.py`), with `from_config` wiring following the pattern of existing garble thresholds (e.g., `garble_node_ratio_threshold`). Default: 0.3. This prevents a single garbled decorative element from triggering a document-level rejection.
+**Fix.** Change the threshold from `if not garbled_count: return None` to a ratio-aware check: `if garble_ratio < _GARBLE_BLOCK_RATIO_THRESHOLD: return None`. Add a module-level constant `_GARBLE_BLOCK_RATIO_THRESHOLD = 0.10` at `garble.py:~764`, following the pattern of `_RFC029_DEEP_TREE_DEPTH_THRESHOLD`. Default: **0.10** (not 0.3 — see rationale below). Promote to `GarbleConfig` only when a second consumer or deployment-specific override appears (YAGNI). This prevents a single garbled decorative element from triggering a document-level rejection.
+
+**Threshold rationale (corrected 2026-09-22).** The original proposal of 0.3 was refuted by multi-agent review: `test_single_garbled_block_not_diluted` (`tests/test_garble.py:1134`) creates 5 blocks with 1 garbled (ratio 0.2) and asserts condemnation. A threshold of 0.3 would cause ratio 0.2 < 0.3 → return None, violating the RFC-026/RFC-027 dilution immunity invariant. The value 0.10 clears وارد رقم 597 at 0.017 (well below), preserves dilution immunity at 0.2 (well above), and aligns with the existing `garble_node_ratio_threshold = 0.10` pattern.
+
+**Dual-caller note.** `_garble_check_flat_blocks` is called from two sites: the main flat-blocks garble gate (`indexer.py:1409`) and the post-enrichment gate (`indexer.py:1532`). The two sites already pass different `GarbleConfig` instances (`_garble_config` vs `_image_garble_cfg`), so per-caller thresholds are possible if the main gate needs to remain binary. For Wave 1, the module-level constant applies uniformly; per-caller differentiation is deferred unless corpus measurement reveals a need.
 
 **Dependency:** Must land alongside or after D1. Without the `_MIXED_SCRIPT_RE` repair, the enrichment garble check false-positives on legitimate Arabic reference patterns, and raising the ratio threshold on a detector that over-matches would mask real garble.
+
+**Dual-caller impact:** This threshold change affects BOTH callers of `_garble_check_flat_blocks` — the main garble gate (`indexer.py:1409`) and the post-enrichment gate (`indexer.py:1532`). Both become ratio-aware. The main gate currently rejects any document with any garbled block; with a ratio threshold of 0.10, documents with fewer than 10% garbled blocks on the main path would start passing. This is acceptable given the dilution immunity guard at 0.2 holds.
 
 ### D3: HR5 Post-Enrichment Garble Consequence Wiring
 
@@ -107,9 +115,15 @@ _MIXED_SCRIPT_RE = re.compile(
 
 The existing reject guard at lines 2128--2130 checks `state.flat_garble_unrecovered`, which is set only by the MAIN flat-blocks garble gate (line 1415). The post-enrichment garble result is never written back into any state field that reaches the reject guard. This violates CLAUDE.md Hard Rule #5: "Never silently persist a low-quality tree."
 
-**Fix.** Surgical strip (option B): when `_enrich_garble` is truthy and the garble ratio exceeds the D2 threshold, remove the garbled image blocks from the blocks list before persistence. Log which blocks were stripped and persist only the clean content. This is more proportionate than a full reject -- a document that is mostly clean but has a few garbled chart captions retains its clean content.
+**Fix.** Surgical field-clear (option B, refined 2026-09-22): when `_enrich_garble` is truthy and the garble ratio exceeds the D2 threshold, clear the `ocr_text` field on each garbled image block (`block['ocr_text'] = ''`) rather than removing blocks from the list. This preserves image metadata (`figure_path`, `page`, `bbox`), avoids list mutation and insertion-point sensitivity, and the empty `ocr_text` yields empty string from `block_text()`, so the block contributes zero text to downstream consumers. Same effect as list removal, simpler implementation.
 
-Register a new `DecisionPoint` in `decision_points.py` for the strip consequence (e.g., `post_enrichment_garble_strip` with choices `blocks_stripped`/`strip_skipped`) following the existing AST-enforced registry pattern.
+**Insertion point:** The field-clear loop executes after line ~1554 (decision log for `post_enrichment_garble_check`) and before line ~1580 (`flat_structure` construction). All four downstream consumers (`flat_structure`, `flat_char_count`, `row_records`, `flat_meta['blocks']`) see only clean content.
+
+**Per-block identification mechanism:** Replace the `_garble_check_flat_blocks` call at the post-enrichment site with an inline per-block loop: test each enriched image block with `detect_garble` individually, count garbled, compute ratio, and if `ratio >= _GARBLE_BLOCK_RATIO_THRESHOLD` then clear `ocr_text` on the garbled blocks. This produces per-block identification naturally without modifying `_garble_check_flat_blocks`'s return type.
+
+**Edge case — all blocks garbled:** When ALL enriched image blocks are garbled (ratio = 1.0), all `ocr_text` fields are cleared. The document proceeds with zero image-derived text but retains its image metadata and non-image content. This is correct: the main flat-blocks garble gate (`indexer.py:1409`) provides a second check on overall document quality.
+
+Extend the existing `post_enrichment_garble_check` decision event in `decision_points.py` (`src/pageindex_mcp/obs/decision_points.py`) with `stripped_count`/`retained_count`/`garble_ratio` attrs, rather than registering a separate `post_enrichment_garble_strip` event. This avoids a new AST guard entry and reuses the existing event.
 
 **Dependencies:** MUST land after D1 (regex repair) and D2 (ratio threshold). Without D1, the regex false-positives on legitimate Arabic patterns. Without D2, a single garbled chart caption condemns all enriched blocks.
 
@@ -160,6 +174,12 @@ None,  # flat path: derive defects from flat signals, not from tree
 
 **Verdict movement.** Documents that currently FAIL on the flat path due to inherited tree defects will receive the verdict their flat signals produce. For the uae_numbers portrait: FAIL -> clears density gate -> proceeds to Phase 2 promotions -> expected PASS or MARGINAL.
 
+**Mandatory red-green test (added 2026-09-22).** D4 MUST include a test that demonstrates the bug before the fix: construct a `TreeGateResult` with `defect=SUSPECT_DENSITY` and `all_defects` containing `SUSPECT_DENSITY`, pass it alongside `flat_signals` with sufficient text (`flat_text_len=2151`), and assert the outcome hard-fails with `SUSPECT_DENSITY`. This test MUST FAIL after the fix (passing `None` removes the hard-fail). The existing `TestFlatSignalsOverrideTreeSignals` (`test_d6_flat_verdicts.py:28`) passes `TreeGateResult(defect=TreeDefect.OK)` — it tests signal override with a clean tree, NOT defect leakage.
+
+**Reorder-inference branch safety.** Passing `None` as `validate_result` activates the reorder-inference branch (`verdict.py:192-200`), which infers `REORDERED` from `sig.is_reordered`. Flat structures currently never carry `start_index`/`line_num`, so `is_reordered` is always `False` — but this safety is an implicit contract. D4 must include a test confirming flat structures produce `is_reordered=False`.
+
+**Metadata provenance fix.** After D4 passes `None`, `flat_meta['garble_prongs']` at `indexer.py:1650-1653` still reads from `state.gate_result.signals.garble_prongs` (tree). D4 should source this from `_flat_sig` (already computed at line ~1590) to maintain provenance consistency between the flat verdict and its metadata.
+
 ### D5: `ocr_text`/`summary` Field Split
 
 **File:** `src/pageindex_mcp/helpers/tree_validation.py` lines 110--114 (`_node_text_parts`), line 298 (`flat_text_corrected` construction), line 281 (`TreeSignals.flat_text_corrected` field); consumer at `gates.py:345`
@@ -191,7 +211,9 @@ Propagate the same two flags through `_flatten_tree_text`. In `TreeSignals.from_
 
 **Downstream impact.** The density gate at `gates.py:345` continues to use `flat_text_corrected`, which now contains only OCR text augmentation. D8 activation (switching the gate to fire on the corrected value) becomes safe.
 
-**Facade guard.** `tests/test_facade_surface_guard.py` exports `_node_text_parts` (line 319) and `_flatten_tree_text` (line 306). The signature change requires the guard to be updated to match the new parameter names.
+**Facade guard.** `tests/test_facade_surface_guard.py` exports both `_node_text_parts` (line 319) and `_flatten_tree_text` (line 306). Both functions' signatures change in lockstep — the guard must be updated for BOTH, not only `_node_text_parts`.
+
+**Dedup behavior note.** `_node_text_parts` lines 113-114 silently drop `ocr_text`/`summary` values that duplicate body text. This behavior is preserved after the split and prevents inflation from duplicated content. Implementation must not change this dedup check.
 
 ### D6: D8 Activation Decision
 
@@ -253,9 +275,9 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 
 - **D1:** Existing `TestSparseMojibake`, `TestSparseMojibakeDetection`, and `test_rfc_quality.py:315` assertions pass unchanged. New tests: parenthesized Arabic letters `(أ)` must not fire `sparse_mojibake`; digit-only bridging `رقم597` must not match; a realistic Arabic insurance document with section markers must remain clean.
 - **D2:** Unit test: `_garble_check_flat_blocks` with a mix of clean and garbled blocks returns `None` when `garble_ratio` is below `garble_block_ratio_threshold` and a `GarbleReport` when above. Regression test: one garbled chart caption among 10+ clean blocks does not trigger rejection.
-- **D3:** Integration test: flat path where image enrichment produces garbled OCR text, verifying garbled blocks are stripped from persisted structure. Must FAIL before the fix and PASS after. Decision-log assertion for `post_enrichment_garble_strip` event.
-- **D4:** Unit test with divergent tree and flat leaf ratios asserting the flat value drives the verdict. Test that a flat document whose tree had `SUSPECT_DENSITY` but with sufficient flat text does not receive FAIL. Decision-log assertions for the tree `gate_result` discard event.
-- **D5:** Unit tests: `_node_text_parts` with `include_ocr_text=True` includes `ocr_text` but not `summary`; with `include_summary=True` includes `summary` but not `ocr_text`; with both `True` includes both. Integration test: `TreeSignals.from_tree` produces `flat_text_corrected` that excludes summary. Regression test: density gate `chars_per_page_corrected` does not inflate with summary text. Facade guard updated for new parameter names.
+- **D3:** Integration test: flat path where image enrichment produces garbled OCR text, verifying garbled blocks have `ocr_text` cleared before persistence. Must FAIL before the fix and PASS after. Decision-log assertion for `post_enrichment_garble_check` event with `stripped_count`/`retained_count` attrs. Additional test: all enriched blocks garbled → all `ocr_text` cleared, document proceeds with zero image-derived text.
+- **D4:** Red-green test: construct `TreeGateResult` with `defect=SUSPECT_DENSITY` and `all_defects` containing `SUSPECT_DENSITY`, pass alongside `flat_signals` with sufficient text (`flat_text_len=2151`), assert hard-fail — this test FAILS after the fix. Unit test with divergent tree and flat leaf ratios asserting the flat value drives the verdict. Reorder-inference safety test: flat structure produces `is_reordered=False`. Metadata provenance test: `flat_meta['garble_prongs']` sourced from `_flat_sig`, not `state.gate_result.signals`.
+- **D5:** Parameterized unit test (4 cases): `_node_text_parts` with `include_ocr_text=True` includes `ocr_text` but not `summary`; with `include_summary=True` includes `summary` but not `ocr_text`; with both `True` includes both; with both `False` includes neither. Integration test: `TreeSignals.from_tree` produces `flat_text_corrected` that excludes summary. Regression test: density gate `chars_per_page_corrected` does not inflate with summary text. Facade guard updated for BOTH `_node_text_parts` (line 319) AND `_flatten_tree_text` (line 306).
 - **D7:** Attributed per-document delta table, both directions.
 
 ## Implementation Plan
@@ -298,7 +320,7 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 
 2. **Should D5 add a `flat_text_full` field (both `ocr_text` and `summary`) proactively?** Adding it costs one extra tree walk per document but prevents future callers from re-walking. Recommend deferring until a consumer needs it -- YAGNI.
 
-3. **What is the right `garble_block_ratio_threshold` default for D2?** 0.3 is proposed (fewer than 30% of blocks garbled is tolerated). Alternative: 0.5 (majority-garbled). The threshold should be validated against the corpus before D3 wires the consequence.
+3. ~~**What is the right `garble_block_ratio_threshold` default for D2?**~~ **RESOLVED (2026-09-22).** Multi-agent review identified that 0.3 breaks `test_single_garbled_block_not_diluted` (ratio 0.2 must condemn; threshold 0.3 would pass it). Corrected to **0.10**. This clears وارد رقم 597 at 0.017, preserves dilution immunity at 0.2, and aligns with the existing `garble_node_ratio_threshold = 0.10` pattern.
 
 ## Consequences
 
@@ -326,3 +348,5 @@ A full corpus run after D1--D5 have landed, producing an attributed per-document
 | Memory references | "Garble PF detector asymmetry", "Flat verdict uses tree signals", "Verdict CAS blocks downgrades" |
 | Constraints: facade guard | `tests/test_facade_surface_guard.py:306,319` (`_flatten_tree_text`, `_node_text_parts` exports) |
 | Constraints: architecture guards | `tests/test_architecture_guards.py` (various OCR and hot-path guards) |
+| Decision points registry | `src/pageindex_mcp/obs/decision_points.py` (NOT `helpers/decision_points.py`) |
+| Multi-agent review | 2026-09-22: 10-agent workflow (CBM + Serena + Obsidian + specialists), D2 threshold corrected 0.3→0.10, D3 refined to field-clear, D4 red-green test added |
