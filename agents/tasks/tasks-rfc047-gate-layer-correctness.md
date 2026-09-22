@@ -61,9 +61,11 @@ governs:
   - Regression: one garbled chart caption among 10+ clean blocks does NOT trigger rejection.
   - Acceptance: all D2 tests pass; no existing garble tests regress.
 
-- [ ] **1.6** — Corpus baseline measurement (Wave 1)
+- [~] **1.6** — Corpus baseline measurement (Wave 1)
   - Run `make ingest` against the full corpus with D1+D2+post-gate-FAIL fixes applied.
   - Record before/after verdict distribution diff against the RFC-046 Wave 7 baseline (`agents/baselines/rfc046-wave7-7c-checkpoint.md`: 25 docs, 16 PASS / 5 MARGINAL / 3 FAIL / 1 REJECTED).
+  - **Baseline template prepared:** `agents/baselines/rfc047-wave1-baseline.md` — pre-state table filled, post-state tables ready for server run.
+  - **Status:** Awaiting server-side `make ingest` run. Cannot execute from local (remote infra unreachable).
   - Expected: fewer false-positive garble verdicts on clean Arabic/mixed-script documents; character-mass ratio catches large garbled blocks at any N; no new false negatives on genuinely garbled documents.
   - Acceptance: verdict diff is documented in a commit message or audit note; no unexpected verdict regressions.
 
