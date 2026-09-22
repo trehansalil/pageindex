@@ -168,11 +168,30 @@ The panel splits on the conclusion, and the split is informative:
 
 ---
 
-## Decisions required from you
+## Decisions taken (2026-09-22)
 
-1. **F2 (Hard Rule #5):** make the post-enrichment garble detector act, or delete it? Current state is the one the RFC forbids.
-2. **F1:** confirm which route uae_numbers portrait actually takes, then decide whether the flat path should re-derive defects or stop inheriting them. This blocks any density work.
-3. **D8 activation (R8.4):** hold until `summary` and `ocr_text` are split, and until the numerator's run-to-run drift is characterised? (Recommended: yes, hold.)
-4. **وارد 597:** fix `_MIXED_SCRIPT_RE` rather than add a ratio threshold? (Recommended: yes.)
-5. **RFC-047 scope:** as framed above, or not written at all? Either closes `audit/RECONCILIATION_REPORT.md:148-156` decision #2.
-6. **Task checkboxes:** 4.4 and 5.3 are marked `[x]` but their requirements (R6.6, one-arbitrator) are not met. Re-open, or amend the requirements to match what shipped?
+Resolved interactively with the maintainer after a second verification round (three re-verification agents; every claim below is now **[VERIFIED]** unless marked).
+
+| # | Decision | Rationale |
+|---|---|---|
+| 1 | **F2 / Hard Rule #5: make the detector reject — sequenced AFTER the detector fix (#3).** | *Maintainer expressed no preference; call taken by Claude.* The check calls the same `_garble_check_flat_blocks` being repaired. Wiring a consequence onto it first would let one garbled chart caption discard a whole document — recreating the any-block-condemns defect being removed. It gets the fixed detector and the agreed ratio policy, then the HR5 consequence. The gap stays open and documented until then. |
+| 2 | **D8: hold. Split `ocr_text` from `summary` first.** | At gate time the corrected numerator adds **only LLM abstracts of leaves ≥200 tokens**: every `ocr_text` writer runs after `validate_tree`, verbatim short-leaf summaries are deduped at `tree_validation.py:111-113`, and `prefix_summary` is not in the enrichment list. R8.1's stated intent is not what the code does. |
+| 3 | **وارد 597: fix `_MIXED_SCRIPT_RE` (root cause) before considering a threshold.** | The regex matches Arabic→1-8 ASCII→Arabic, the shape of an embedded reference number in Arabic prose. A bidi-run classifier fixes the whole Arabic legal/government class. *(Correction to an earlier claim in this file: a threshold is NOT blocked by dilution immunity — the pinned test requires condemnation at 0.2, وارد sits at 0.017, so an existing 0.05/0.10 constant satisfies both. It is simply not the root-cause fix, and degenerates to any-block-condemns on short documents.)* |
+| 4 | **RFC-047: defer. Fix the gates, re-run the corpus, then decide.** | Three of four failures are gate bugs; today's residue would misattribute them to engine quality. This is exactly what RFC-046 did to its own predecessor. `ENGINE_RELIABILITY_ORDER` stays in place pending that decision. |
+| 5 | **F1: re-derive defects on the flat path.** | Finish R6.1 — when `flat_signals` is passed, evaluate gates against the flat structure rather than inheriting the tree's defect set. Largest blast radius of the set; every flat-routed verdict can move, so it lands alone with its own attributed corpus run. |
+| 6 | **Governance: a new RFC scoped to gate/detector correctness** — explicitly *not* the engine question. | Keeps RFC-046 closed as shipped, gives the corpus runs a clean baseline, matches how 041/045/046 were each scoped. R9 attribution-gated validation applies to every verdict-moving change in it. |
+| 7 | **Tasks 4.4 and 5.3: reopen; leave gates 4.C/5.C passed.** | Their requirements (R6.6; "one arbitration policy") are unmet — all three arbitrators remain live and `arbitrate()`'s only production call site is in the D4 retry path, not in `recovery.py` or `images.py`. The gates' other criteria genuinely held, so history is not rewritten. |
+| 8 | **Dead-code cleanup, separate no-behaviour-change commit:** `sub_threshold_garble` + `TreeGateResult.warnings`; `arbitrate()`'s unread `script_context`/`garble_config` + `_script_match_score`; `TreeSignals.primary_text` + `_bare_script`. | All verified unreachable or unread in `src/`. **`use_keep_best` was deliberately excluded** by the maintainer and stays. |
+
+### Sequencing that follows from the above
+
+1. Dead-code cleanup (#8) — no verdict movement, lands first, shrinks the surface everything else touches.
+2. New RFC (#6) covering #2's field split, #3, #1 and #5, each as its own wave with its own attributed corpus run.
+3. `_MIXED_SCRIPT_RE` repair (#3) → then the HR5 consequence (#1) on top of the repaired detector.
+4. Flat-path defect re-derivation (#5) lands alone.
+5. `ocr_text`/`summary` split (#2); D8 activation reconsidered only afterwards.
+6. Full corpus re-run → **then** the RFC-047 decision (#4), closing `audit/RECONCILIATION_REPORT.md:148-156` item #2.
+
+### Still unmeasured
+
+`uae_numbers portrait`'s `verdict_would_change` was never captured. One re-ingest of that single PDF with the decision log retained answers it — no code change needed, the gate already logs it — but the Redis hash-cache must be evicted first or the re-ingest no-ops. Note the realistic ceiling for that document is **FAIL → MARGINAL**, not PASS: `suspect_density` is `PERSIST_FAIL` so it can never be primary on a flat route, and the depth-1 clamp caps the flat structure regardless.
