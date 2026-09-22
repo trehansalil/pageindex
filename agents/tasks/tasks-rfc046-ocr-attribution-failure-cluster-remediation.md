@@ -543,7 +543,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.8](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R11.7](046-ocr-attribution-failure-cluster-remediation#requirement-11-reachable-dynamic-child-timeout-d11)_
     - _Dependencies: 3.1–3.13, 12.C-core_
 
-- [x] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone*
+- [ ] 4. Flat Verdicts From Flat Signals (D6) — *highest blast radius; lands alone* — *(parent un-ticked 2026-09-22: task 4.4 reopened. Gate 4.C remains passed.)*
 
   - [x] 4.1 Make the gate-signal source a caller-declared choice
 
@@ -575,7 +575,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.5](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [DP-D6](design-rfc046-ocr-attribution-failure-cluster-remediation#d6-flat-verdicts-from-flat-signals-c3)_
     - _Dependencies: 4.1, 4.3_
 
-  - [x] 4.4 Garble-check enrichment-mutated blocks
+  - [ ] 4.4 Garble-check enrichment-mutated blocks — **REOPENED 2026-09-22.** The gate runs (`indexer.py:1531-1561`) but has **no consequence**: on a positive result it emits `post_enrichment_garble_check / enriched_blocks_garbled` and falls through — it never sets `state.flat_garble_unrecovered`, never returns, and the document is persisted. R6.6 required the check to gate, not merely to log; R6.4 calls this exact situation a Hard Rule #5 surface. Gate 4.C is left **passed** — its other criteria held. See `agents/reviews/rfc046-post-wave7-panel-review.md` (F2, decision 1): the consequence is to be wired only **after** `_MIXED_SCRIPT_RE` is repaired, so one garbled chart caption cannot discard a whole document.
 
     - The gate runs at `indexer.py:1026-1036`, before `_apply_picture_enrichment` at `:1092` — and enrichment writes `ocr_text` into image blocks (`client/images.py:261-315`). Blocks created or mutated by enrichment are never checked.
     - Either move the gate after enrichment or re-run it over mutated blocks.
@@ -605,7 +605,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R6.9](046-ocr-attribution-failure-cluster-remediation#requirement-6-flat-verdicts-from-flat-signals-c3), [R9.2](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation), [R9.4](046-ocr-attribution-failure-cluster-remediation#requirement-9-attribution-gated-corpus-validation)_
     - _Dependencies: 4.1–4.6_
 
-- [x] 5. Arbitrate on the Extraction (D7)
+- [ ] 5. Arbitrate on the Extraction (D7) — *(parent un-ticked 2026-09-22: task 5.3 reopened. Gate 5.C remains passed.)*
 
   - [x] 5.1 Quality-check recovered markdown before the tree rebuild
 
@@ -622,7 +622,7 @@ Docling runs **in-process**; MinIO, Redis and Postgres are remote; Tesseract 5.3
     - _Requirements: [R7.2](046-ocr-attribution-failure-cluster-remediation#requirement-7-arbitrate-on-the-extraction-not-the-tree-c4), [DP-D7](design-rfc046-ocr-attribution-failure-cluster-remediation#d7-arbitrate-on-the-extraction-not-the-tree-c4)_
     - _Dependencies: 5.1_
 
-  - [x] 5.3 Reconcile the two arbitrators onto one script-aware policy
+  - [ ] 5.3 Reconcile the two arbitrators onto one script-aware policy — **REOPENED 2026-09-22.** A third arbitrator was added; neither of the two was removed. All three are live: `arbitrate()` (`helpers/arbitrate.py:91`), `_keep_best_wins` (`client/recovery.py:96-338`, called at `:599`), `_ocr_information_density` (`client/images.py:264`, called at `:308-309`). `arbitrate()`'s docstring claims it "replaces" the other two, and its only production call site (`indexer.py:1236`) is in the D4 corrective-retry path — not in either place this task named. Gate 5.C is left **passed**. See `agents/reviews/rfc046-post-wave7-panel-review.md` (S3, decision 7).
 
     - Two independent, unreconciled, script-blind arbitrators exist: `_keep_best_wins` (`recovery.py:92-208`, char count + `_repeating_token_density` at `:78`, reverts) and `client/images.py:296-309` (`_ocr_information_density` at `:252-258`, alnum+digit ratio, 1.5× rule, **concatenates** when it doesn't fire).
     - Both have already ranked random Latin gibberish above correct formal Arabic on this corpus — the failure the RFC-045 escape at `recovery.py:184-198` patches around.
