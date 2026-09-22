@@ -18,6 +18,7 @@ mappings:
       - test_client.py            # primary
       - test_architecture_guards.py
       - test_verdict.py
+      - test_d8_surya_fallback.py
       - test_config.py
       - test_converters.py
       - test_converters_cli.py
@@ -232,6 +233,7 @@ mappings:
       - test_verdict.py
       - test_converters.py
       - test_registry.py
+      - test_d8_surya_fallback.py
       - test_rfc_quality.py
       - test_rfc_registry.py
       - test_gates.py
@@ -398,6 +400,7 @@ mappings:
       - test_verdict.py
       - test_density_gate.py
       - test_d7_arabic_density_floor.py
+      - test_d8_surya_fallback.py
       - test_helpers_combined.py
       - test_converters_pipeline.py
       - test_recovery.py
@@ -621,6 +624,7 @@ mappings:
       - test_rfc046_attribution.py
       - test_d6_flat_verdicts.py
       - test_d7_arbitration.py
+      - test_d8_surya_fallback.py
   obs/decisions.py:
     tests:
       - test_obs_logging.py primary

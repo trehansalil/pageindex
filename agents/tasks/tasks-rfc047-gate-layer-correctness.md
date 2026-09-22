@@ -393,18 +393,18 @@ blocker above — 1.C could not have reached PASS in this session under any outc
 
 ## Wave 5 — Arabic Density Recovery (D7 + D8)
 
-- [ ] **5.1** — Add `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` config field (D7)
+- [x] **5.1** — Add `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` config field (D7)
 
   - In `src/pageindex_mcp/config.py`, add `rfc029_min_scanned_density_floor_arabic: float` to `Settings`, sourced from env var `RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC`, default `800`.
   - In `src/pageindex_mcp/helpers/garble.py`, add `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` module-level constant alongside `_RFC029_MIN_SCANNED_DENSITY_FLOOR`, sourced from `pipeline_config.rfc029_min_scanned_density_floor_arabic`.
   - Export from `helpers/__init__.py` alongside the existing floor constant.
   - Acceptance: new config field is loadable; module constant is accessible.
-- [ ] **5.2** — Script-aware density floor in `_gate_suspect_density` (D7)
+- [x] **5.2** — Script-aware density floor in `_gate_suspect_density` (D7)
 
   - In `src/pageindex_mcp/helpers/gates.py`, modify `_gate_suspect_density` to use `_RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC` when `expected_script.dominant_script == "Arab"`.
   - Log `floor_used`, `floor_arabic`, and `is_arabic` in the `suspect_density_gate` decision event attrs.
   - Acceptance: Arabic-dominant documents are evaluated against the Arabic floor (800); non-Arabic documents use the general floor (1200).
-- [ ] **5.3** — Unit tests for script-aware density floor (D7)
+- [x] **5.3** — Unit tests for script-aware density floor (D7)
 
   - Add test `test_suspect_density_arabic_uses_lower_floor`: Arabic doc with cpp between 800 and 1200 does NOT fire.
   - Add test `test_suspect_density_non_arabic_uses_general_floor`: non-Arabic doc with same cpp DOES fire.
@@ -412,16 +412,16 @@ blocker above — 1.C could not have reached PASS in this session under any outc
   - Add test `test_suspect_density_decision_event_logs_floor`: decision event includes `floor_used` and `is_arabic`.
   - Regression: no existing density gate tests break.
   - Acceptance: all D7 tests pass.
-- [ ] **5.4** — Add Surya fallback config fields (D8)
+- [x] **5.4** — Add Surya fallback config fields (D8)
 
   - In `src/pageindex_mcp/config.py`, add `surya_fallback_enabled: bool` (env `SURYA_FALLBACK_ENABLED`, default `false`), `surya_service_url: str` (env `SURYA_SERVICE_URL`, default `http://localhost:8207`), `surya_fallback_timeout_s: float` (env `SURYA_FALLBACK_TIMEOUT_S`, default `120`).
   - Acceptance: config fields are loadable; defaults are correct.
-- [ ] **5.5** — Register `surya_density_fallback` decision event (D8)
+- [x] **5.5** — Register `surya_density_fallback` decision event (D8)
 
   - In `src/pageindex_mcp/obs/decision_points.py`, register a new `surya_density_fallback` event with choices `recovery_succeeded`, `recovery_insufficient`, `recovery_failed`, `not_attempted`.
   - Attrs: `original_cpp`, `surya_cpp`, `arabic_floor`, `surya_confidence`, `surya_duration_s`.
   - Acceptance: AST guard passes; event is registered.
-- [ ] **5.6** — Implement `_surya_density_recovery` helper (D8)
+- [x] **5.6** — Implement `_surya_density_recovery` helper (D8)
 
   - In `src/pageindex_mcp/client/indexer.py` (or a new helper module), implement `_surya_density_recovery` that:
     - Fetches the document pages from MinIO (upload key)
@@ -431,7 +431,7 @@ blocker above — 1.C could not have reached PASS in this session under any outc
     - Returns `SuryaRecoveryResult(text, chars_per_page, confidence)` or `None` on failure/timeout
   - Handle HTTP errors and timeouts gracefully (log and return `None`).
   - Acceptance: helper function works against a running Surya service; returns `None` on timeout.
-- [ ] **5.7** — Wire Surya fallback into the density-fail recovery path (D8)
+- [x] **5.7** — Wire Surya fallback into the density-fail recovery path (D8)
 
   - In `src/pageindex_mcp/client/indexer.py`, after `compute_verdict` produces a FAIL with `suspect_density` on an Arabic-dominant document:
     - If `surya_fallback_enabled` is `true`, call `_surya_density_recovery`.
@@ -439,7 +439,7 @@ blocker above — 1.C could not have reached PASS in this session under any outc
     - If Surya yields insufficient text or fails, let the FAIL stand.
   - Log via `surya_density_fallback` decision event.
   - Acceptance: Arabic density-failed documents trigger Surya fallback when enabled; recovery or failure is logged.
-- [ ] **5.8** — Unit tests for Surya fallback (D8)
+- [x] **5.8** — Unit tests for Surya fallback (D8)
 
   - Add test `test_surya_fallback_disabled_no_attempt`: `SURYA_FALLBACK_ENABLED=false` → no fallback, FAIL stands.
   - Add test `test_surya_fallback_non_arabic_no_attempt`: non-Arabic doc fails density → no fallback.

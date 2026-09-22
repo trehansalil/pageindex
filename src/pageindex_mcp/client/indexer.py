@@ -56,6 +56,7 @@ from ..helpers import (
     TreeDefect,
     TreeSignals,
     VerdictThresholds,
+    _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,
@@ -420,6 +421,63 @@ from .remote import (  # noqa: E402
     _converter_contract,
     _remote_pdf_to_markdown,
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class SuryaRecoveryResult:
+    """Result of a Surya OCR density-recovery attempt."""
+
+    pages_text: list[str]
+    total_text: str
+    total_chars: int
+    chars_per_page: float
+    confidence: float
+    duration_s: float
+
+
+async def _surya_density_recovery(
+    file_bytes: bytes,
+    filename: str,
+    page_count: int,
+    surya_url: str,
+    timeout_s: float,
+) -> SuryaRecoveryResult | None:
+    import httpx
+    import time as _time
+
+    t0 = _time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s)) as client:
+            resp = await client.post(
+                f"{surya_url}/ocr/pdf",
+                files={"file": (filename, file_bytes, "application/pdf")},
+                params={"max_pages": page_count},
+            )
+            resp.raise_for_status()
+    except Exception:
+        logger.warning(
+            "Surya density recovery failed for %s", filename, exc_info=True,
+        )
+        return None
+
+    elapsed = _time.monotonic() - t0
+    data = resp.json()
+    pages = data.get("pages", [])
+    pages_text = [p.get("text", "") for p in pages]
+    total_text = data.get("total_text", "")
+    total_chars = data.get("total_char_count", 0) or len(total_text)
+    n_pages = data.get("page_count", page_count) or page_count
+    cpp = total_chars / n_pages if n_pages > 0 else 0.0
+    confidence = data.get("total_avg_confidence", 0.0)
+
+    return SuryaRecoveryResult(
+        pages_text=pages_text,
+        total_text=total_text,
+        total_chars=total_chars,
+        chars_per_page=cpp,
+        confidence=confidence,
+        duration_s=round(elapsed, 3),
+    )
 
 
 class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
@@ -1616,6 +1674,113 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 flat_signals=_flat_sig,
             )
             f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
+
+            # ── RFC-047 D8: Surya OCR fallback for Arabic density failures ──
+            _is_arabic_dominant = (
+                _flat_script.dominant_script == "Arab" if _flat_script else False
+            )
+            _surya_attempted = False
+            if (
+                f_verdict == "FAIL"
+                and "suspect_density" in f_verdict_reason
+                and _is_arabic_dominant
+                and settings.surya_fallback_enabled
+                and ext == ".pdf"
+            ):
+                _surya_attempted = True
+                _original_cpp = _flat_sig.chars_per_page if _flat_sig else 0.0
+                _surya_res = await _surya_density_recovery(
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    page_count=state.pdf_page_count or 1,
+                    surya_url=settings.surya_service_url,
+                    timeout_s=settings.surya_fallback_timeout_s,
+                )
+                if _surya_res is not None and _surya_res.chars_per_page >= _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC:
+                    decision(
+                        event="surya_density_fallback",
+                        choice="recovery_succeeded",
+                        reason="surya_ocr_yields_sufficient_text",
+                        attrs={
+                            "original_cpp": round(_original_cpp, 1),
+                            "surya_cpp": round(_surya_res.chars_per_page, 1),
+                            "arabic_floor": _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
+                            "surya_confidence": round(_surya_res.confidence, 4),
+                            "surya_duration_s": _surya_res.duration_s,
+                            "reason": "recovery_succeeded",
+                        },
+                        logger=logger,
+                    )
+                    flat_structure = [
+                        {"title": "", "children": [], "text": page_text}
+                        for page_text in _surya_res.pages_text
+                        if page_text.strip()
+                    ]
+                    blocks = flat_structure
+                    flat_md = _surya_res.total_text
+                    _flat_sig = TreeSignals.from_tree(
+                        flat_structure,
+                        expected_script=_flat_script,
+                        garble_threshold=VerdictThresholds.from_config(pipeline_config).garble_threshold,
+                    )
+                    _vr = compute_verdict(
+                        flat_structure,
+                        content_class,
+                        None,
+                        image_enrichment_ratio=image_enrichment_ratio,
+                        expected_script=_flat_script,
+                        flat_signals=_flat_sig,
+                    )
+                    f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
+                    state.ocr_engine = "surya"
+                elif _surya_res is not None:
+                    decision(
+                        event="surya_density_fallback",
+                        choice="recovery_insufficient",
+                        reason="surya_text_still_below_arabic_floor",
+                        attrs={
+                            "original_cpp": round(_original_cpp, 1),
+                            "surya_cpp": round(_surya_res.chars_per_page, 1),
+                            "arabic_floor": _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
+                            "surya_confidence": round(_surya_res.confidence, 4),
+                            "surya_duration_s": _surya_res.duration_s,
+                            "reason": "recovery_insufficient",
+                        },
+                        logger=logger,
+                    )
+                else:
+                    decision(
+                        event="surya_density_fallback",
+                        choice="recovery_failed",
+                        reason="surya_service_error_or_timeout",
+                        attrs={
+                            "original_cpp": round(_original_cpp, 1),
+                            "surya_cpp": 0.0,
+                            "arabic_floor": _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
+                            "surya_confidence": 0.0,
+                            "surya_duration_s": 0.0,
+                            "reason": "recovery_failed",
+                        },
+                        logger=logger,
+                    )
+
+            if not _surya_attempted and _is_arabic_dominant and f_verdict == "FAIL" and "suspect_density" in f_verdict_reason:
+                decision(
+                    event="surya_density_fallback",
+                    choice="not_attempted",
+                    reason="fallback_disabled_or_non_pdf",
+                    attrs={
+                        "original_cpp": round((_flat_sig.chars_per_page if _flat_sig else 0.0), 1),
+                        "surya_cpp": 0.0,
+                        "arabic_floor": _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
+                        "surya_confidence": 0.0,
+                        "surya_duration_s": 0.0,
+                        "reason": "not_attempted",
+                    },
+                    logger=logger,
+                )
+            # ── end D8 Surya fallback ──
+
             f_promotion_paths = list(_vr.promotion_paths_matched)
 
             _, _, f_mlr = _tree_max_leaf_ratio(flat_structure)
@@ -1664,6 +1829,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             # which is what makes corpus diffs unexplainable.
             if state.ocr_engine:
                 flat_meta["ocr_engine"] = state.ocr_engine
+            if state.ocr_engine == "surya":
+                flat_meta["extraction_route"] = "surya_density_fallback"
             # RFC-047 D2 (post-gate-FAIL) + HR5: source garble prongs from
             # the flat garble report (computed on flat blocks), not from the
             # tree's gate_result.signals.  Always persist — even below the

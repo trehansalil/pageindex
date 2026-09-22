@@ -1019,6 +1019,28 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
             "control."
         ),
     ),
+    _p(
+        event="surya_density_fallback",
+        phase=Phase.RECOVERY,
+        module=_C_INDEXER,
+        function="_persist_flat_doc",
+        choices=(
+            "recovery_succeeded",
+            "recovery_insufficient",
+            "recovery_failed",
+            "not_attempted",
+        ),
+        attrs=(
+            "original_cpp",
+            "surya_cpp",
+            "arabic_floor",
+            "surya_confidence",
+            "surya_duration_s",
+            "reason",
+        ),
+        always_emits=False,
+        note="RFC-047 D8: Surya OCR re-extraction when suspect_density fires on Arabic doc.",
+    ),
 )
 
 

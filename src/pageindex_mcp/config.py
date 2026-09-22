@@ -159,6 +159,10 @@ class Settings:
     # partial-write rows whose processed_at was not yet flushed.  Set to False
     # only to sweep truly stale legacy rows that will never get a timestamp.
     cleanup_protect_empty_processed_at: bool
+    # RFC-047 D8: Surya OCR fallback for Arabic density failures.
+    surya_fallback_enabled: bool
+    surya_service_url: str
+    surya_fallback_timeout_s: float
     # Zone-4 Phase 3: registry_verdict_authority removed — Postgres is now the
     # sole verdict authority.  MinIO sidecar is archival-only (best-effort
     # backfill).  See _upsert_registry_row in worker/registry_mirror.py.
@@ -342,6 +346,10 @@ def _load_settings() -> Settings:
         .strip()
         .lower()
         not in ("0", "false", "no"),
+        surya_fallback_enabled=os.environ.get("SURYA_FALLBACK_ENABLED", "false").strip().lower()
+        in ("1", "true", "yes"),
+        surya_service_url=(os.environ.get("SURYA_SERVICE_URL") or "http://localhost:8207").rstrip("/"),
+        surya_fallback_timeout_s=float(os.environ.get("SURYA_FALLBACK_TIMEOUT_S", "120")),
     )
 
 
