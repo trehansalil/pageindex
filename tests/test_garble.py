@@ -38,7 +38,13 @@ from pageindex_mcp.helpers import (
     normalize_for_garble,
     validate_tree,
 )
-from pageindex_mcp.helpers.garble import GarbleConfig, GarbleReport, _garble_prongs, detect_garble
+from pageindex_mcp.helpers.garble import (
+    GarbleConfig,
+    GarbleReport,
+    _MIXED_SCRIPT_RE,
+    _garble_prongs,
+    detect_garble,
+)
 from pageindex_mcp.helpers.gates import FLAT_GATE_COVERAGE
 from pageindex_mcp.helpers.types import Route, TreeDefect, decide_route
 from pageindex_mcp.picture_plane import PictureGateConfig
@@ -276,6 +282,80 @@ class TestSparseMojibake:
     def test_short_text_skipped(self):
         short = "هذاx3zالنصq7k عربي "
         prongs = _garble_prongs(short, expected_script="Arab", original_text=short)
+        assert "sparse_mojibake" not in prongs
+
+
+class TestMixedScriptReFalsePositives:
+    """RFC-047 D1 — `_MIXED_SCRIPT_RE` must require a Latin letter in the bridge.
+
+    Before the repair the pattern matched any ASCII run of 1-8 chars between
+    Arabic codepoints, so ordinary legal-document punctuation (parenthesised
+    section markers, comma-glued article numbers) was condemned as mojibake.
+    """
+
+    # Arabic clause filler used to push each fixture past the 100-char floor
+    # that guards the sparse_mojibake prong.
+    _FILLER = "شروط التأمين والتغطية القانونية العامة "
+
+    def test_mixed_script_re_no_false_positive_on_arabic_markers(self):
+        # Arrange: a parenthesised Arabic letter marker in clean Arabic prose.
+        text = "(أ) " + self._FILLER * 4
+
+        # Act
+        prongs = _garble_prongs(text, expected_script="Arab", original_text=text)
+
+        # Assert
+        assert _MIXED_SCRIPT_RE.findall(text) == []
+        assert "sparse_mojibake" not in prongs
+
+    def test_mixed_script_re_no_false_positive_on_digit_bridging(self):
+        # Arrange: digit-adjacent references, both space-separated and glued to
+        # Arabic punctuation.  Only the glued form matched the pre-repair
+        # pattern, so both are asserted to keep the test non-vacuous.
+        spaced = "وارد رقم597 " + self._FILLER * 4
+        glued = "المادة15،الفقرة رقم597،البند " + self._FILLER * 4
+
+        # Act
+        spaced_prongs = _garble_prongs(spaced, expected_script="Arab", original_text=spaced)
+        glued_prongs = _garble_prongs(glued, expected_script="Arab", original_text=glued)
+
+        # Assert
+        assert _MIXED_SCRIPT_RE.findall(spaced) == []
+        assert _MIXED_SCRIPT_RE.findall(glued) == []
+        assert "sparse_mojibake" not in spaced_prongs
+        assert "sparse_mojibake" not in glued_prongs
+
+    def test_mixed_script_re_still_catches_true_garble(self):
+        # Arrange: Latin letters wedged between Arabic characters -- real
+        # mojibake, both densely and diluted into clean prose.
+        dense = "كtابcجديد " * 12
+        diluted = "نص عربي سليم شروط التأمين كtابcجديد والتغطية القانونية " * 3
+
+        # Act
+        dense_prongs = _garble_prongs(dense, expected_script="Arab", original_text=dense)
+        diluted_prongs = _garble_prongs(diluted, expected_script="Arab", original_text=diluted)
+
+        # Assert
+        assert _MIXED_SCRIPT_RE.findall(dense)
+        assert _MIXED_SCRIPT_RE.findall(diluted)
+        assert "sparse_mojibake" in dense_prongs
+        assert "sparse_mojibake" in diluted_prongs
+
+    def test_mixed_script_re_realistic_arabic_insurance_clean(self):
+        # Arrange: a realistic Arabic insurance clause carrying every marker
+        # class at once -- parenthesised letters, article numbers, a policy
+        # number and a date.
+        clause = (
+            "المادة15: تلتزم الشركة بتعويض المؤمن له عن الأضرار المادية وفقا للبند (أ) "
+            "من الوثيقة رقم597 الصادرة بتاريخ 2026/01/15، وتسري أحكام الفقرة (ب) "
+            "والفقرة (ج) من المادة16، على أن يقدم الطلب خلال ثلاثين يوما من تاريخ الحادث."
+        )
+
+        # Act
+        prongs = _garble_prongs(clause, expected_script="Arab", original_text=clause)
+
+        # Assert
+        assert _MIXED_SCRIPT_RE.findall(clause) == []
         assert "sparse_mojibake" not in prongs
 
 

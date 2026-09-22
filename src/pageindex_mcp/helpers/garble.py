@@ -750,8 +750,12 @@ def detect_garble(
 
 
 _MIXED_SCRIPT_RE = re.compile(
-    r"[؀-ۿ][\x21-\x7E]{1,8}[؀-ۿ]"
-    r"|[\x21-\x7E]{1,8}[؀-ۿ][\x21-\x7E]{1,8}"
+    # Alt 1: Arabic + (ASCII run containing ≥1 letter) + Arabic
+    r"[؀-ۿ](?=[\x21-\x7E]{0,7}[A-Za-z])[\x21-\x7E]{1,8}[؀-ۿ]"
+    # Alt 2: letter-led ASCII run + Arabic + any ASCII run
+    r"|[A-Za-z][\x21-\x7E]{0,7}[؀-ۿ][\x21-\x7E]{1,8}"
+    # Alt 3: any ASCII run + Arabic + ASCII run containing letter
+    r"|[\x21-\x7E]{1,8}[؀-ۿ][\x21-\x7E]{0,7}[A-Za-z]"
 )
 
 
