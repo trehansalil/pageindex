@@ -192,6 +192,51 @@ Resolved interactively with the maintainer after a second verification round (th
 5. `ocr_text`/`summary` split (#2); D8 activation reconsidered only afterwards.
 6. Full corpus re-run → **then** the RFC-047 decision (#4), closing `audit/RECONCILIATION_REPORT.md:148-156` item #2.
 
-### Still unmeasured
+### MEASURED 2026-09-22 — `uae_numbers portrait` (sha8 e62cbd24)
 
-`uae_numbers portrait`'s `verdict_would_change` was never captured. One re-ingest of that single PDF with the decision log retained answers it — no code change needed, the gate already logs it — but the Redis hash-cache must be evicted first or the re-ingest no-ops. Note the realistic ceiling for that document is **FAIL → MARGINAL**, not PASS: `suspect_density` is `PERSIST_FAIL` so it can never be primary on a flat route, and the depth-1 clamp caps the flat structure regardless.
+Single-document re-ingest, local Docling, run under a memory-capped cgroup (`MemoryMax=2800M`, `MemorySwapMax=0`, `oom_score_adj=900`). Child peak **1342 MB**, no OOM. New `doc_id a68a1068-8b3a-4ee9-bcf4-67b655c43e34`.
+
+**`suspect_density_gate` decision event:**
+
+```
+choice=fires  page_count=1
+chars_per_page=1427.0   chars_per_page_corrected=2027.0
+corrected_delta=600.0   verdict_would_change=TRUE
+```
+
+Floor is 1500. **D8 activation would clear this document's density gate.** The 8.1 caution ("8.2 must not assume D8 activation clears it") is now resolved — it does.
+
+**But the far more important result: it does not need to.**
+
+| Signal | Value | vs floor 1500 |
+|---|---|---|
+| Tree `chars_per_page` (what condemns it) | 1427.0 | fires |
+| Tree `chars_per_page_corrected` (+600 of LLM abstract) | 2027.0 | clears |
+| **Flat `flat_text_len` over 1 page (real extracted text)** | **2151** | **clears** |
+
+The flat document carries **2151 characters of genuinely extracted text on one page** — comfortably above the floor, with no LLM prose involved. The corrected numerator's padded 2027 is *lower* than the honest flat measurement. **Fixing F1 clears this document on real content; activating D8 clears it on model-written summaries. F1 is strictly the better fix, and it makes D8 unnecessary here.**
+
+**F1 confirmed live on this document:**
+
+```
+route_selected            final_route=flat   first_defect=node_count<3
+tree_gate_verdict         all_defects=[depth<2, node_count<3, suspect_density]  node_count=1 depth=1
+zero_content_check        node_count=84  flat_text_len=2151
+hard_fail_resolution      masked_hard_fail  defect=node_count<3  worst_defect=suspect_density
+```
+
+The flat artifact has **84 blocks**; it is condemned by the discarded tree's `node_count<3` and `suspect_density`. The persisted sidecar then records `max_leaf_ratio=0.1252` (flat) beside `verdict_reason=suspect_density` (tree) — the provenance mismatch is visible in the stored artifact, not just in memory.
+
+**Final verdict: FAIL / `suspect_density`**, pipeline_version 5.
+
+Also observed: `post_enrichment_garble_check = enriched_blocks_clean` (4 blocks) — F2's no-consequence detector ran clean here, so this document does not exercise the Hard Rule #5 surface.
+
+### Consequences for the decisions above
+
+- **Decision 2 (D8 held) is reinforced, and partly superseded.** The +600 delta on a single page is pure LLM abstract — 42% inflation over the 1427 real characters. Meanwhile the honest flat measurement already clears the floor. D8 activation is not needed for this document and should not be justified by it.
+- **Decision 5 (F1) gains priority.** It is no longer only a correctness fix; it is the fix that resolves this FAIL on real evidence.
+- The FAIL → MARGINAL ceiling still stands: `depth=1` on the flat structure means the depth clamp applies once density stops condemning.
+
+### Housekeeping
+
+This measurement created a new `doc_id` (uuid4 per ingest), leaving the prior copy unreachable — the known re-ingestion-orphan pattern. The bucket held only 2 documents before this run and now holds 3; the `d32fa3f0` 7.1 artifacts are **not** in this MinIO at all, which is worth reconciling against the 7.C checkpoint's claim of a 25-document run on 2026-09-21.
