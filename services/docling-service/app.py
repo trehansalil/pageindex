@@ -82,9 +82,6 @@ class ImageConvertResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from patches.tesseract_ocr_cli_keyerror import apply as _patch_tesseract
-    _patch_tesseract()
-
     logger.info("Warming Docling converter cache...")
     try:
         from pageindex_mcp.converters import _docling_converter
