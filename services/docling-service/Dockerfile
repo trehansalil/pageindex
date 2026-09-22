@@ -52,7 +52,8 @@ RUN mkdir -p /opt/tessdata && \
     echo "2005976778bbc14fc56a4ea8d43c6080847aeee72fcc2201488f240daca15c5b  /opt/tessdata/ara.traineddata" | sha256sum -c - && \
     curl -fsSL -o /opt/tessdata/osd.traineddata \
         https://github.com/tesseract-ocr/tessdata/raw/ced78752cc61322fb554c280d13360b35b8684e4/osd.traineddata && \
-    echo "e19f2ae860792fdf372cf48d8ce70ae5da3c4052962fe22e9de1f680c374bb0e  /opt/tessdata/osd.traineddata" | sha256sum -c -
+    echo "e19f2ae860792fdf372cf48d8ce70ae5da3c4052962fe22e9de1f680c374bb0e  /opt/tessdata/osd.traineddata" | sha256sum -c - && \
+    cp -r /usr/share/tesseract-ocr/5/tessdata/configs /opt/tessdata/configs
 
 WORKDIR /app
 
