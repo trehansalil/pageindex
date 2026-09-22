@@ -49,7 +49,10 @@ RUN mkdir -p /opt/tessdata && \
     echo "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047  /opt/tessdata/eng.traineddata" | sha256sum -c - && \
     curl -fsSL -o /opt/tessdata/ara.traineddata \
         https://github.com/tesseract-ocr/tessdata/raw/ced78752cc61322fb554c280d13360b35b8684e4/ara.traineddata && \
-    echo "2005976778bbc14fc56a4ea8d43c6080847aeee72fcc2201488f240daca15c5b  /opt/tessdata/ara.traineddata" | sha256sum -c -
+    echo "2005976778bbc14fc56a4ea8d43c6080847aeee72fcc2201488f240daca15c5b  /opt/tessdata/ara.traineddata" | sha256sum -c - && \
+    curl -fsSL -o /opt/tessdata/osd.traineddata \
+        https://github.com/tesseract-ocr/tessdata/raw/ced78752cc61322fb554c280d13360b35b8684e4/osd.traineddata && \
+    echo "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff  /opt/tessdata/osd.traineddata" | sha256sum -c -
 
 WORKDIR /app
 
@@ -57,9 +60,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src/ ./src/
 COPY --from=builder /opt/docling-models /opt/docling-models
 
-# Copy the service application and runtime patches.
+# Copy the service application.
 COPY services/docling-service/app.py ./app.py
-COPY services/docling-service/patches/ ./patches/
 
 ARG BUILD_SHA="unknown"
 ARG BUILD_TIMESTAMP="unknown"
