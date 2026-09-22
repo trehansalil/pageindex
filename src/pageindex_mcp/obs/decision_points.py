@@ -416,7 +416,10 @@ _TREEVAL_POINTS: tuple[DecisionPoint, ...] = (
         note=(
             "THE 'never silently persist a low-quality tree' decision. "
             "`warning_labels` is the near-gate warning NAMES only "
-            "(near_gate_node_count, ...), not the formatted strings. Log "
+            "(near_gate_node_count, ...). The formatted f-string variants it "
+            "was once contrasted against lived on TreeGateResult.warnings, "
+            "which was deleted 2026-09-22 as unreachable; these labels are now "
+            "the only surviving near-gate signal. Log "
             "primary_defect as the TreeDefect enum value, not a gate `detail` "
             "string, unless phase 3 has confirmed every gate detail string is "
             "content-free."

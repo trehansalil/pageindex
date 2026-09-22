@@ -274,7 +274,6 @@ class TreeSignals:
     effectively_garbled: bool
     is_reordered: bool
     expected_min_depth: int
-    primary_text: str = ""
     # RFC-046 D2/R2.5: which garble prongs fired. Computed on every evaluation
     # and previously discarded by the surrounding bool(), leaving no stored
     # record of WHY a document was called garbled.
@@ -379,7 +378,6 @@ class TreeSignals:
             effectively_garbled=effectively_garbled,
             is_reordered=is_reordered,
             expected_min_depth=expected_min_depth,
-            primary_text=flat_text,
             garble_prongs=garble_prongs,
             flat_text_corrected=flat_text_corrected,
         )
@@ -547,24 +545,16 @@ def validate_tree(
             )
         # Advisory warnings for sub-threshold garble signals (no behavioral
         # change: ok=True verdict is preserved).
-        _warnings: list[str] = []
         _warning_labels: list[str] = []
         if sig.garble_ratio > 0.0:
-            _warnings.append(f"sub_threshold_garble: ratio={sig.garble_ratio:.3f}")
             _warning_labels.append("sub_threshold_garble")
         # Near-firing checks for structural gates (cheap — uses pre-computed
         # signals; advisory only, no behavioral change).
         if sig.node_count <= 5:
-            _warnings.append(f"near_gate_node_count: count={sig.node_count} (gate fires <3)")
             _warning_labels.append("near_gate_node_count")
         if sig.depth == 2:
-            _warnings.append(f"near_gate_depth: depth={sig.depth} (gate fires <2)")
             _warning_labels.append("near_gate_depth")
         if sig.max_leaf_ratio > th.pass_max_leaf_ratio * 0.8:
-            _warnings.append(
-                f"near_gate_leaf_concentration: ratio={sig.max_leaf_ratio:.3f} "
-                f"(pass threshold={th.pass_max_leaf_ratio:.2f})"
-            )
             _warning_labels.append("near_gate_leaf_concentration")
         _emit_tree_gate_verdict(sig, TreeDefect.OK, (), warning_labels=_warning_labels)
         return TreeGateResult(
@@ -572,5 +562,4 @@ def validate_tree(
             defect=TreeDefect.OK,
             signals=sig,
             all_defects=frozenset(),
-            warnings=tuple(_warnings),
         )

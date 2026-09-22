@@ -635,14 +635,17 @@ class TestLatinGibberishProngGuard:
         assert "latin_gibberish" not in prongs
 
 
-class TestTreeGateResultWarnings:
-    """Contract: TreeGateResult.warnings is populated when garble_ratio is
-    sub-threshold but non-zero."""
+class TestCleanTreePassesAllGates:
+    """Restored 2026-09-22. The enclosing TestTreeGateResultWarnings class was
+    deleted with the unreachable ``sub_threshold_garble`` advisory, but one of
+    its two tests carried a LIVE assertion — it called the real ``validate_tree``
+    on a clean tree and asserted ``ok is True``. Only the sibling tautology (which
+    hand-built a TreeSignals state ``from_tree`` cannot produce and re-implemented
+    the production ``if`` inline) deserved deletion. This keeps the real assertion
+    and drops the ``.warnings`` access that went with the removed field.
+    """
 
-    def test_warnings_populated_for_sub_threshold_garble(self):
-        from pageindex_mcp.helpers.tree_validation import TreeSignals
-        from pageindex_mcp.helpers.types import TreeGateResult, TreeDefect
-
+    def test_clean_german_tree_passes(self):
         clean = "Dieser Text ist sauber und gut lesbar und hat viele Worte " * 20
         tree = [
             {
@@ -656,54 +659,14 @@ class TestTreeGateResultWarnings:
             }
         ]
 
-        # Build a TreeSignals with garble_ratio non-zero but sub-threshold
-        real_sig = TreeSignals.from_tree(tree)
-        fake_sig = TreeSignals(
-            node_count=real_sig.node_count,
-            depth=real_sig.depth,
-            max_leaf_ratio=real_sig.max_leaf_ratio,
-            flat_text=real_sig.flat_text,
-            garbled=False,
-            garble_ratio=0.02,  # non-zero but below 0.05 threshold
-            effectively_garbled=False,
-            is_reordered=real_sig.is_reordered,
-            expected_min_depth=real_sig.expected_min_depth,
-            primary_text=real_sig.primary_text,
-        )
-
-        # Directly construct the result as validate_tree would
-        _warnings: list[str] = []
-        if fake_sig.garble_ratio > 0.0:
-            _warnings.append(f"sub_threshold_garble: ratio={fake_sig.garble_ratio:.3f}")
-        result = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-            signals=fake_sig,
-            all_defects=frozenset(),
-            warnings=tuple(_warnings),
-        )
-
-        assert result.ok is True
-        assert len(result.warnings) > 0
-        assert any("sub_threshold_garble" in w for w in result.warnings)
-
-    def test_no_warnings_when_garble_ratio_zero(self):
-        clean = "Dieser Text ist sauber und gut lesbar und hat viele Worte " * 20
-        tree = [
-            {
-                "title": "Root",
-                "text": clean,
-                "nodes": [
-                    {"title": "A", "text": clean, "nodes": []},
-                    {"title": "B", "text": clean, "nodes": []},
-                    {"title": "C", "text": clean, "nodes": []},
-                ],
-            }
-        ]
         result = validate_tree(tree)
+
         assert result.ok is True
-        # When garble_ratio is exactly 0, no warnings should be emitted
-        assert not any("sub_threshold_garble" in w for w in result.warnings)
+        assert result.defect is TreeDefect.OK
+        # garble_ratio is forced to 0.0 whenever `garbled` is False, which is
+        # precisely why the sub-threshold advisory was unreachable.
+        assert result.signals.garble_ratio == 0.0
+        assert result.signals.garbled is False
 
 
 class TestConcatenatedFallback:

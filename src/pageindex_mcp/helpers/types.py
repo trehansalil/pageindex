@@ -57,7 +57,6 @@ class TreeGateResult:
     detail: str = ""
     signals: TreeSignals | None = None
     all_defects: frozenset[TreeDefect] = frozenset()
-    warnings: tuple[str, ...] = ()
 
     def __str__(self) -> str:
         if self.detail:
@@ -67,7 +66,7 @@ class TreeGateResult:
     def __iter__(self) -> Iterator[bool | str]:
         """Yield (ok, reason_str) for backward-compat tuple unpacking.
 
-        ``signals``, ``all_defects``, and ``warnings`` are intentionally
+        ``signals`` and ``all_defects`` are intentionally
         excluded from iteration so that ``ok, reason = validate_tree(...)``
         keeps working at all call sites.
         """

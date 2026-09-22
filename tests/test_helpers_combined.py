@@ -198,10 +198,6 @@ class TestTreeSignalsFromTreeTableBlocks:
         sig = TreeSignals.from_tree(_table_only_tree())
         assert len(sig.flat_text) > 0, "TreeSignals.flat_text is empty for table-only tree"
 
-    def test_primary_text_matches_flat_text(self):
-        sig = TreeSignals.from_tree(_table_only_tree())
-        assert sig.primary_text == sig.flat_text
-
     def test_node_count_correct_for_table_tree(self):
         sig = TreeSignals.from_tree(_table_only_tree())
         assert sig.node_count == 3  # root + 2 children

@@ -75,11 +75,8 @@ def _sig(**kw) -> TreeSignals:
         effectively_garbled=False,
         is_reordered=False,
         expected_min_depth=2,
-        primary_text=None,
     )
     d.update(kw)
-    if d["primary_text"] is None:
-        d["primary_text"] = d["flat_text"]
     return TreeSignals(**d)  # type: ignore[arg-type]
 
 

@@ -1,9 +1,19 @@
-"""D7 (RFC-046): unified script-aware OCR arbitration policy.
+"""D7 (RFC-046): N-candidate OCR arbitration scorer.
 
-Replaces the pairwise, script-blind ``_keep_best_wins`` and the
-``_ocr_information_density`` 1.5x rule with one N-candidate scorer
-that weights script correctness, garble status, char volume, and
-engine reliability.
+Scores candidates on garble status, char volume and engine reliability.
+
+Two caveats, both recorded 2026-09-22 and NOT fixed here because either
+would change scoring output (see ``agents/reviews/rfc046-post-wave7-panel-review.md``):
+
+1. This is **not** script-aware, despite what earlier wording claimed. The
+   ``script_context``/``garble_config`` parameters were accepted and never read,
+   and ``_script_match_score`` was defined but never called; all three were
+   removed as dead. ``script_score`` below is a byte-identical duplicate of
+   ``garble_score``, so ``cand.garbled`` is counted twice — a hidden extra
+   weight. Collapsing the two terms is a behaviour change and needs an RFC.
+2. It does **not** yet replace ``client/recovery.py::_keep_best_wins`` or
+   ``client/images.py::_ocr_information_density``. All three arbitrators are
+   still live; RFC-046 task 5.3 is reopened on that basis.
 """
 
 from __future__ import annotations
@@ -12,8 +22,6 @@ import logging
 from dataclasses import dataclass
 
 from ..obs.decisions import decision
-from ..script import BlobKind, ScriptContext
-from .garble import GarbleConfig, detect_garble
 
 logger = logging.getLogger(__name__)
 
@@ -71,29 +79,7 @@ def _is_hallucinated(candidate: Candidate, median: float) -> bool:
     return candidate.char_count > median * HALLUCINATION_CHAR_RATIO
 
 
-def _script_match_score(
-    text: str,
-    script_context: ScriptContext | None,
-    garble_config: GarbleConfig | None = None,
-) -> float:
-    """Score 0.0-1.0 for script correctness.  1.0 = clean, 0.0 = garbled."""
-    if not text or script_context is None:
-        return 0.5
-    result = detect_garble(
-        text,
-        script_context=script_context,
-        config=garble_config,
-        blob_kind=BlobKind.TREE_TEXT,
-    )
-    return 0.0 if result else 1.0
-
-
-def arbitrate(
-    candidates: list[Candidate],
-    *,
-    script_context: ScriptContext | None = None,
-    garble_config: GarbleConfig | None = None,
-) -> int:
+def arbitrate(candidates: list[Candidate]) -> int:
     """Select the best candidate from N extractions.
 
     Returns the index of the winning candidate.

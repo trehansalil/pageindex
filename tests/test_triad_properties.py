@@ -96,7 +96,6 @@ st_tree_gate_result = st.builds(
     detail=st.text(min_size=0, max_size=20),
     signals=st.none(),
     all_defects=st.frozensets(st_tree_defect, max_size=4),
-    warnings=st.tuples(),
 )
 
 

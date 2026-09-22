@@ -159,11 +159,6 @@ def evaluate_gates(
         sig = None
         _all_defects = frozenset[TreeDefect]()
 
-    if isinstance(expected_script, ScriptContext):
-        _bare_script: str | None = expected_script.dominant_script
-    else:
-        _bare_script = expected_script
-
     if flat_signals is not None:
         sig = flat_signals
     elif sig is None:
@@ -305,7 +300,7 @@ def _try_image_enrichment(
         return None
     if sig.effectively_garbled:
         return None
-    _promoted_text = _dedupe_chart_text_lines(sig.primary_text)
+    _promoted_text = _dedupe_chart_text_lines(sig.flat_text)
     total_chars = len(_promoted_text)
     if total_chars < th.min_image_promoted_chars:
         return None

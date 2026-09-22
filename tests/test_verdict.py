@@ -1006,7 +1006,6 @@ def _make_sig(
     effectively_garbled: bool = False,
     is_reordered: bool = False,
     expected_min_depth: int = 2,
-    primary_text: str | None = None,
 ) -> TreeSignals:
     return TreeSignals(
         node_count=node_count,
@@ -1018,7 +1017,6 @@ def _make_sig(
         effectively_garbled=effectively_garbled,
         is_reordered=is_reordered,
         expected_min_depth=expected_min_depth,
-        primary_text=primary_text if primary_text is not None else flat_text,
     )
 
 
@@ -1229,7 +1227,7 @@ class TestTrySmallDoc:
 
 class TestTryImageEnrichment:
     def test_high_ratio_with_enough_chars_returns_pass(self):
-        sig = _make_sig(flat_text="a" * 600, primary_text="a" * 600, effectively_garbled=False)
+        sig = _make_sig(flat_text="a" * 600, effectively_garbled=False)
         th = _default_th(min_image_promoted_chars=500)
         with patch("pageindex_mcp.helpers.verdict.detect_garble", return_value=False):
             result = _try_image_enrichment(sig, "flat_prose", 0.9, th, None, None)
@@ -1252,7 +1250,7 @@ class TestTryImageEnrichment:
         assert result is None
 
     def test_below_char_floor_returns_none(self):
-        sig = _make_sig(flat_text="short", primary_text="short")
+        sig = _make_sig(flat_text="short")
         th = _default_th(min_image_promoted_chars=500)
         result = _try_image_enrichment(sig, "flat_prose", 0.9, th, None, None)
         assert result is None
@@ -1262,7 +1260,6 @@ class TestTryImageEnrichment:
         sig = _make_sig(
             node_count=1,
             flat_text="a" * 600,
-            primary_text="a" * 600,
             effectively_garbled=False,
         )
         result = _try_image_enrichment(sig, "flat_prose", 0.9, _default_th(), None, None)
@@ -1272,7 +1269,6 @@ class TestTryImageEnrichment:
         """D1: effectively_garbled blocks image enrichment."""
         sig = _make_sig(
             flat_text="a" * 600,
-            primary_text="a" * 600,
             effectively_garbled=True,
         )
         result = _try_image_enrichment(sig, "flat_prose", 0.9, _default_th(), None, None)
@@ -1305,7 +1301,6 @@ class TestTryImageEnrichmentPresentationFormsRegression:
         sig = _make_sig(
             node_count=5,
             flat_text=garbled_arabic_text,
-            primary_text=garbled_arabic_text,
             effectively_garbled=False,
         )
         th = _default_th(min_image_promoted_chars=500)
@@ -1331,7 +1326,6 @@ class TestTryImageEnrichmentPresentationFormsRegression:
         sig = _make_sig(
             node_count=5,
             flat_text=clean_arabic,
-            primary_text=clean_arabic,
             effectively_garbled=False,
         )
         th = _default_th(min_image_promoted_chars=500)
@@ -1356,7 +1350,6 @@ class TestApplyPromotionsOrderedPipeline:
         sig = _make_sig(
             max_leaf_ratio=0.10,
             flat_text="a" * 600,
-            primary_text="a" * 600,
             effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
@@ -1481,7 +1474,6 @@ class TestRFCRegressionFixtures:
         sig = _make_sig(
             max_leaf_ratio=1.0,
             flat_text="a" * 600,
-            primary_text="a" * 600,
             effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
@@ -1523,7 +1515,6 @@ class TestRFC040UnconditionalHardFail:
             node_count=1,
             max_leaf_ratio=1.0,
             flat_text="a" * 600,
-            primary_text="a" * 600,
             effectively_garbled=False,
         )
         outcome = _make_outcome(sig)
@@ -1536,7 +1527,6 @@ class TestRFC040UnconditionalHardFail:
         sig = _make_sig(
             max_leaf_ratio=1.0,
             flat_text="a" * 600,
-            primary_text="a" * 600,
             effectively_garbled=True,
         )
         outcome = _make_outcome(sig)
@@ -1550,7 +1540,6 @@ class TestRFC040UnconditionalHardFail:
             node_count=5,
             max_leaf_ratio=1.0,
             flat_text="a" * 5000,
-            primary_text="a" * 5000,
             effectively_garbled=False,
         )
         outcome = _make_outcome(sig)

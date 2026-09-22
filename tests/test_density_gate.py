@@ -78,7 +78,6 @@ def _make_sig(node_count: int, depth: int, chars: int) -> TreeSignals:
         effectively_garbled=False,
         is_reordered=False,
         expected_min_depth=2,
-        primary_text=text,
     )
 
 

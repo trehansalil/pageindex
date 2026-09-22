@@ -1233,7 +1233,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             engine=str(OcrEngine.TESSERACT),
                         ),
                     ]
-                    winner_idx = arbitrate(candidates, script_context=script_context)
+                    winner_idx = arbitrate(candidates)
                     if winner_idx == 1:
                         md_content = corrective_md
                         standalone_ocr_text = corrective_ocr_text
