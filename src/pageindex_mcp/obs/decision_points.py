@@ -104,11 +104,6 @@ class DecisionPoint:
     note: str = ""
 
     @property
-    def source_path(self) -> str:
-        """Repo-relative source file, for the task 12.6 AST scan."""
-        return "src/" + self.module.replace(".", "/") + ".py"
-
-    @property
     def levelno(self) -> int:
         return logging.getLevelName(self.level)  # type: ignore[return-value]
 

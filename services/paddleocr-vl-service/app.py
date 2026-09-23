@@ -119,13 +119,6 @@ def _ocr_image_bytes(img_bytes: bytes) -> tuple[str, float]:
     return text, elapsed
 
 
-def _image_to_png_bytes(img_array: np.ndarray) -> bytes:
-    img = Image.fromarray(img_array)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
 def _page_to_png(pdf_bytes: bytes, page_idx: int, dpi: int = 150) -> bytes:
     import fitz
 
