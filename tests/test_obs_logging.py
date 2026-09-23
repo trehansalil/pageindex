@@ -2196,7 +2196,11 @@ def test_llm_call_increments_counter():
         MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
         from pageindex_mcp.helpers import _llm
 
-        asyncio.get_event_loop().run_until_complete(_llm("test prompt"))
+        # asyncio.run, not get_event_loop().run_until_complete: the latter is
+        # deprecated and raises RuntimeError when no current event loop is set
+        # in the main thread, which is the state any preceding async test
+        # leaves behind. That made this test's result depend on file ordering.
+        asyncio.run(_llm("test prompt"))
 
     assert _counter_value(LLM_CALLS) == before + 1
 
