@@ -12,10 +12,10 @@ contracts:
     boundary: "pdf_to_markdown succeeds without raising an exception"
 
   - id: INDEX-01-C2
-    desc: "A .pdf input falls back to _run_page_index only when pdf_to_markdown raises an exception"
-    trigger: "client.index() called with a .pdf file path and pdf_to_markdown raises any exception"
-    effect: "_run_page_index is invoked as the try/except last-resort fallback; the fallback invocation is observable via a logged warning or metric"
-    boundary: "pdf_to_markdown raises an exception during the primary route"
+    desc: "A .pdf input falls back to the legacy _run_page_index only when every converter in the pdf_markdown_converters() chain fails"
+    trigger: "client.index() called with a .pdf and every converter in pdf_markdown_converters() (built client/indexer.py:830) fails; a single converter raising is not sufficient"
+    effect: "The chain's else-arm (:1192-1205) increments PDF_EXTRACT_FALLBACKS, emits pdf_conversion_outcome with choice all_converters_failed_legacy_fallback, and calls _run_page_index_retrying(file_path) (consistent with CONV-01-C1)"
+    boundary: "Full-chain failure of pdf_markdown_converters()"
 
   - id: INDEX-01-C3
     desc: "Non-.pdf inputs (.docx, .html) follow their existing converter routes unchanged"

@@ -139,7 +139,7 @@ if [[ "$ALL_CONTRACTS_IN_TESTS" == "true" ]]; then
             while IFS= read -r cid; do
                 [[ -z "$cid" ]] && continue
                 # Search for the contract ID in test function names, markers, or comments
-                GREP_HITS=$( (grep -r "$cid" "$REPO_ROOT/tests/" 2>/dev/null || true) | wc -l | tr -d ' ')
+                GREP_HITS=$( (grep -r --include='*.py' --exclude-dir=__pycache__ "$cid" "$REPO_ROOT/tests/" 2>/dev/null || true) | wc -l | tr -d ' ')
 
                 if [[ "$GREP_HITS" -gt 0 ]]; then
                     pass "contracts[${cid}]: found in tests/ ($GREP_HITS occurrence(s))"

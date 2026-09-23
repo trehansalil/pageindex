@@ -6,8 +6,11 @@ source: rfcs/005-hard-corpus-ingestion-fixes.md#fix-5
 
 # RFC-005 Fix 5. Pure Unicode-block-ratio classification -- no model, no network, no
 # LLM call (HR4: hand-rolled, not a heavy detector dependency). Feeds Fix-3's OCR
-# escalation and Fix-4's image route. ensure_tessdata NEVER fails hard: a missing
-# language degrades gracefully to deu,eng rather than raising.
+# escalation and Fix-4's image route. ensure_tessdata degrades for missing
+# Latin-script languages (dropped, result superset of deu,eng) and raises
+# TessdataUnavailableError for a missing non-Latin-script language (D6/ISS-34:
+# Latin OCR on a non-Latin script yields gibberish, not less text). Callers
+# that can proceed catch and degrade at their own call site.
 
 contracts:
   - id: LANG-01-C1
@@ -19,8 +22,8 @@ contracts:
   - id: LANG-01-C2
     desc: "ensure_tessdata provisions requested languages without raising when a language cannot be provisioned"
     trigger: "ensure_tessdata(langs) is called with one or more language codes not currently present as <lang>.traineddata under TESSDATA_PREFIX"
-    effect: "For each missing language, _try_download_tessdata attempts to fetch it only when TESSDATA_ALLOW_DOWNLOAD permits network egress; on download failure or when downloads are disallowed, the language is dropped from the returned set rather than raising, and the function logs the degradation; the returned language list always falls back to at least deu,eng rather than being empty"
-    boundary: "TESSDATA_PREFIX is set (or the default path is used); network egress may or may not be available; the function must return control to the caller without an exception in all cases"
+    effect: "For each missing language, _try_download_tessdata attempts a fetch only when TESSDATA_ALLOW_DOWNLOAD permits egress. A missing Latin-script language (member of _LATIN_LANGS) is dropped with a logged degradation and the returned list falls back to at least ['deu','eng'], never empty. A missing non-Latin-script language raises TessdataUnavailableError; callers that can proceed catch it and degrade explicitly (e.g. client/indexer.py:1262, client/images.py:137)"
+    boundary: "TESSDATA_PREFIX is set (or the default path is used); network egress may or may not be available; returns without exception when every missing language is Latin-script; raises TessdataUnavailableError when a missing language is non-Latin-script"
 
   - id: LANG-01-C3
     desc: "Pre-baked tessdata is a no-op provisioning path"

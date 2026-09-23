@@ -418,7 +418,7 @@ def test_extract_page_hits_table():
 
 
 def test_ensure_tessdata_non_latin_raises_latin_degrades(monkeypatch, tmp_path):
-    """D6/ISS-34: a missing non-Latin language (e.g. 'ara') must raise
+    """LANG-01-C2. D6/ISS-34: a missing non-Latin language (e.g. 'ara') must raise
     TessdataUnavailableError rather than being silently dropped; a missing
     Latin-script language degrades to ['deu', 'eng']; a present language is
     returned untouched."""
@@ -523,8 +523,7 @@ def test_flat_01_c1_content_class_table():
 
 def test_flat_01_c3_roles_are_typed_and_gate_independent(monkeypatch):
     """FLAT-01-C3: every block route_and_extract_flat returns carries a role from
-    {title, prose, kv, table} (plus the later-added 'image' role, which the
-    contract text predates), and the classifier is independent of the quality
+    {title, prose, kv, table, image}, and the classifier is independent of the quality
     gate: the flat module holds no validate_tree reference, and neither
     validate_tree nor a socket is touched while classifying."""
     from pageindex_mcp.helpers import flat as flat_mod

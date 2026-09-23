@@ -26,5 +26,5 @@ contracts:
   - id: FLAT-01-C3
     desc: "Blocks are role-typed and the classifier is independent of the quality gate"
     trigger: "route_and_extract_flat returns its blocks list"
-    effect: "Every block carries a role in {title, prose, kv, table}; the function does not import, call, or depend on validate_tree, and makes no MinIO/Redis/LLM/VLM call (pure, in-process classification)"
+    effect: "Every block carries a role in {title, prose, kv, table, image}; the function does not import, call, or depend on validate_tree, and makes no MinIO/Redis/LLM/VLM call (pure, in-process classification)"
     boundary: "Any markdown input accepted by C1"
