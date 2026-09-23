@@ -378,7 +378,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - **Versioning check:** run `mc version info <alias>/<bucket>`.
       - If versioning is **enabled**, also add a noncurrent-version expiry rule, `mc ilm rule add --prefix "quarantine/" --noncurrent-expire-days 30 <alias>/<bucket>`. Record in the PR that `remove_object`-based erasure (HR2) leaves noncurrent versions behind **in every prefix**. That is a general HR2 gap, outside this RFC's scope.
       - If versioning is disabled, record that.
-    - **Owner: open** (operator/infra). An in-code `set_bucket_lifecycle` is deliberately not proposed.
+    - **Owner: Salil Trehan** (operator/infra). An in-code `set_bucket_lifecycle` is deliberately not proposed.
     - _Requirements:_ [R4 AC5](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC Open Question 4](../rfcs/049-contract-drift-remediation.md#open-questions) | [RFC-049 Risk 6](../rfcs/049-contract-drift-remediation.md#risks)
     - _Properties:_ [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time)
 
