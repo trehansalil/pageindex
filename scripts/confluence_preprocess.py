@@ -158,11 +158,22 @@ def rewrite_links(
     return MD_LINK_RE.sub(_replace, text)
 
 
+_RFC_NUM_RE = re.compile(r"^(\d{3})-")
+
+
 def _build_stem_map(title_map: dict[Path, str]) -> dict[str, str]:
-    """Build {filename_stem: page_title} from the path-keyed title_map."""
+    """Build {filename_stem: page_title} from the path-keyed title_map.
+
+    Also registers RFC-NNN aliases (e.g. RFC-043) so [[RFC-043]] resolves
+    to the RFC's Confluence page.
+    """
     stem_map: dict[str, str] = {}
     for path, title in title_map.items():
         stem_map[path.stem] = title
+        if path.parent.name == "rfcs":
+            m = _RFC_NUM_RE.match(path.stem)
+            if m:
+                stem_map.setdefault(f"RFC-{m.group(1)}", title)
     return stem_map
 
 
