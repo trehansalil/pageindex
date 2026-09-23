@@ -421,13 +421,14 @@ class TestSafetyNetsIntactAfterInspectorForcedOcr:
         self, monkeypatch, pdf_file
     ):
         validate = MagicMock(side_effect=[(False, "garbling"), (True, None)])
-        mocks = await _pdi_run_index(
-            monkeypatch,
-            pdf_file,
-            preclassify=True,
-            pdf_classification={"pdf_type": "scanned", "confidence": 0.95},
-            validate_tree=validate,
+        mocks = _pdi_wire_index(monkeypatch, preclassify=True, validate_tree=validate)
+        monkeypatch.setattr(_idx, "save_quarantine", MagicMock())
+        c = _make_client()
+        monkeypatch.setattr(
+            c, "_run_md_to_tree", AsyncMock(return_value={"structure": [], "doc_description": "ok"})
         )
+        with pytest.raises(LowQualityTreeError):
+            await c.index(pdf_file, pdf_classification={"pdf_type": "scanned", "confidence": 0.95})
 
         # D1: full_page_already_applied was set True by the inspector-forced
         # conversion pass, so _recover_garble_ocr's re-entry guard fires and
@@ -435,9 +436,8 @@ class TestSafetyNetsIntactAfterInspectorForcedOcr:
         assert validate.call_count == 1
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_called_once()
         mocks["OCR_ESCALATION_TOTAL"].labels.assert_not_called()
-        # The tree still fails its gate (garbling was never repaired), so it
-        # is persisted with a FAIL verdict rather than routed to flat.
-        mocks["save_doc"].assert_called_once()
+        # D2-C: garbled tree is now REJECTED (not persisted with FAIL verdict).
+        mocks["save_doc"].assert_not_called()
         mocks["save_flat_doc"].assert_not_called()
 
 
@@ -1150,14 +1150,15 @@ async def test_VLM_C2_C3_C4_non_recovery_outcomes(monkeypatch, pdf_file):
         mocks, vlm_mock = _wire_vlm(
             monkeypatch, validate_side_effect=list(side_effect), **wire_kwargs
         )
+        monkeypatch.setattr(_idx, "save_quarantine", MagicMock())
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
 
+        # D2-C: garbled trees are now REJECTED, not persisted with FAIL verdict.
         with patch("pageindex_mcp.converters.vlm_extract_markdown", vlm_mock):
-            doc_id = await c.index(pdf_file)
+            with pytest.raises(LowQualityTreeError):
+                await c.index(pdf_file)
 
-        if not (isinstance(doc_id, str) and len(doc_id) == 36):
-            failures.append(f"{label}: doc_id {doc_id!r}")
         try:
             if expected_label is None:
                 vlm_mock.assert_not_awaited()

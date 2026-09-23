@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from pathlib import Path
 import json
 import logging
 import os
@@ -162,6 +164,12 @@ async def process_document_job(  # noqa: C901, PLR0915
             # Download staged file from MinIO to local temp
             await asyncio.to_thread(download_staging, staging_key, local_path)
             logger.info("Downloaded staged file to %s", local_path)
+            try:
+                file_sha256 = await asyncio.to_thread(
+                    lambda: hashlib.sha256(Path(local_path).read_bytes()).hexdigest()
+                )
+            except FileNotFoundError:
+                file_sha256 = None
 
             # Memory-admission gate: with up to 2 worker pods, wait until the node
             # has headroom for one ~1.9Gi conversion before spawning the child.
@@ -254,6 +262,7 @@ async def process_document_job(  # noqa: C901, PLR0915
                     ttl=JOB_TTL,
                     reason=reason,
                     error=exc.stderr_tail,
+                    **({"sha256": file_sha256} if file_sha256 else {}),
                     **job_start_fields,
                 )
                 UPLOADS.labels(status="error").inc()

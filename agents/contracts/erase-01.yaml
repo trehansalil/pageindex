@@ -25,3 +25,9 @@ contracts:
     trigger: "delete_doc(doc_id) where one store delete (e.g. the Redis cache key) raises after an earlier store delete succeeded"
     effect: "The failure is surfaced (raised or returned with a reason), names which store was not purged, and the operation is safe to retry to completion; no derivative is reported as erased while still present"
     boundary: "An infra error occurs on one of the cascade steps"
+
+  - id: ERASE-01-C4
+    desc: "The erasure cascade includes quarantine/<sha256>.json and quarantine/<sha256>.meta.json"
+    trigger: "delete_doc(doc_id) runs the _ERASURE_MANIFEST and the quarantine step's sha256 is available"
+    effect: "quarantine/<sha256>.json and quarantine/<sha256>.meta.json are removed by _erase_quarantine; the step is required=False (quarantine may not exist for every doc); idempotent on NoSuchKey"
+    boundary: "sha256 must be discovered before the quarantine step runs (meta_json sidecar read provides it)"

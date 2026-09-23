@@ -722,6 +722,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
         "figures",
         "verdicts",
         "meta_json",
+        "quarantine",
         "redis_cache",
         "reconcile_etag",
         "hash_cache",
@@ -738,6 +739,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
     assert name_to_step["uploads"] == 1
     assert name_to_step["processed_json"] == 2
     assert name_to_step["meta_json"] == 3
+    assert name_to_step["quarantine"] == 3
     assert name_to_step["redis_cache"] == 4
     assert name_to_step["hash_cache"] == 5
     assert name_to_step["registry"] == 6
@@ -748,7 +750,8 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
     for earlier, later in (
         ("uploads", "processed_json"),
         ("processed_json", "meta_json"),
-        ("meta_json", "redis_cache"),
+        ("meta_json", "quarantine"),
+        ("quarantine", "redis_cache"),
         ("redis_cache", "reconcile_etag"),
         ("reconcile_etag", "hash_cache"),
         ("hash_cache", "registry"),
@@ -775,6 +778,7 @@ def test_erasure_manifest_required_flags_match_behaviour():
         # Optional: an unreachable sidecar carries no sha256 to key on.
         "verdicts": False,
         "meta_json": True,
+        "quarantine": False,
         "redis_cache": True,
         "reconcile_etag": True,
         "hash_cache": True,

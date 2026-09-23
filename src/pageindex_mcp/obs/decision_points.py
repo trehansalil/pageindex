@@ -124,6 +124,7 @@ _X_PICTURES = "pageindex_mcp.converters.pictures"
 _X_PIPELINE = "pageindex_mcp.converters.pipeline"
 _X_OCRLANGS = "pageindex_mcp.converters.ocr_langs"
 _X_PRECLASSIFY = "pageindex_mcp.converters.preclassify"
+_S_DOCUMENTS = "pageindex_mcp.storage.documents"
 
 
 # ---------------------------------------------------------------------------
@@ -1826,6 +1827,21 @@ _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# storage/documents.py -- quarantine persistence
+# ---------------------------------------------------------------------------
+_STORAGE_POINTS: tuple[DecisionPoint, ...] = (
+    _p(
+        event="quarantine_write",
+        phase=Phase.PERSIST,
+        module=_S_DOCUMENTS,
+        function="save_quarantine",
+        choices=("quarantine_saved", "quarantine_write_error"),
+        attrs=("sha256", "payload_size", "meta_filenames_count"),
+    ),
+)
+
+
 #: The registry. Ordered by pipeline module for readability; order is not
 #: semantically meaningful.
 DECISION_POINTS: tuple[DecisionPoint, ...] = (
@@ -1841,6 +1857,7 @@ DECISION_POINTS: tuple[DecisionPoint, ...] = (
     + _PICTURES_POINTS
     + _PRECLASSIFY_POINTS
     + _PIPELINE_POINTS
+    + _STORAGE_POINTS
 )
 
 

@@ -146,12 +146,12 @@ class TestErasureEndToEnd:
     steps, the D5 loud-skip contract on step 1 failure, and the D5 sha256
     registry fallback for the verdicts step."""
 
-    async def test_full_cascade_completes_all_11_steps(self):
+    async def test_full_cascade_completes_all_12_steps(self):
         """Every store in ``_ERASURE_MANIFEST`` is reached: no errors, no
         partial purge."""
         from pageindex_mcp.storage.documents import _ERASURE_MANIFEST, delete_doc
 
-        assert len(_ERASURE_MANIFEST) == 11
+        assert len(_ERASURE_MANIFEST) == 12
 
         mock_mc = MagicMock()
         mock_mc.list_objects.return_value = iter([])

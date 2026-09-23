@@ -29,3 +29,9 @@ contracts:
     trigger: "OCR-01-C1's re-evaluated validate_tree still returns (False, 'garbling') after the force_full_page_ocr retry, OR OCR_ESCALATION is disabled, OR an exception is raised during the retry itself"
     effect: "index() raises LowQualityTreeError('garbling') (or routes through the normal non-garbling rejection path if the retry's failure reason changed); no processed/<doc_id>.json is written; on an exception during the retry, OCR_ESCALATION_TOTAL{result='error'} is incremented and the original (pre-retry) validation failure still applies"
     boundary: "Retry either did not recover the tree, was disabled by the kill-switch, or the retry itself raised"
+
+  - id: OCR-01-C4
+    desc: "A garbling rejection writes quarantine/<sha256>.json before raising LowQualityTreeError"
+    trigger: "index() reaches (False, Route.REJECT) with first_defect in {GARBLING, NODE_GARBLING}"
+    effect: "save_quarantine(sha256, state.result, [filename]) is called before raising LowQualityTreeError; QUARANTINE_WRITES_TOTAL{result='ok'} is incremented; the quarantine payload is the rejected tree structure; on save_quarantine failure the rejection still fires (best-effort quarantine)"
+    boundary: "Tree-route garbling rejections only; flat-route garbling also quarantines via _persist_flat_result return-None path"

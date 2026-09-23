@@ -10,12 +10,15 @@ from ..config import settings  # noqa: F401
 
 # documents ────────────────────────────────────────────────────────────────────
 from .documents import (
+    clear_quarantine,
     delete_doc,
+    erase_quarantine,
     get_flat_doc,
     load_doc,
     save_doc,
     save_figure,
     save_flat_doc,
+    save_quarantine,
     save_raw,
     wipe_processed,
 )

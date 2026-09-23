@@ -14,7 +14,8 @@ from typing import Any
 from minio.error import S3Error
 
 from ..config import settings
-from ..metrics import MINIO_DURATION, MINIO_OPS
+from ..metrics import MINIO_DURATION, MINIO_OPS, QUARANTINE_WRITES_TOTAL
+from ..obs.decisions import decision
 from . import minio_ops as _minio_ops
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ register_storage_prefix("figures/")
 # preloaded/ and verdicts/ are written by external processes but erased here.
 register_storage_prefix("preloaded/")
 register_storage_prefix("verdicts/")
+register_storage_prefix("quarantine/")
 
 
 # ---------------------------------------------------------------------------
@@ -587,10 +589,30 @@ async def _erase_preloaded(ctx: ErasureContext) -> bool:
     )
 
 
+async def _erase_quarantine(ctx: ErasureContext) -> bool:
+    """Erase quarantine/<sha256>.json and quarantine/<sha256>.meta.json."""
+    if not ctx.sha256:
+        logger.debug("ERASE %s quarantine: sha256 unavailable, skipping", ctx.doc_id)
+        return False
+    ok_data = _remove_object_idempotent(
+        ctx,
+        f"quarantine/{ctx.sha256}.json",
+        "quarantine/",
+        "ERASE %s quarantine: removed %s",
+    )
+    ok_meta = _remove_object_idempotent(
+        ctx,
+        f"quarantine/{ctx.sha256}.meta.json",
+        "quarantine/",
+        "ERASE %s quarantine: removed %s",
+    )
+    return ok_data and ok_meta
+
+
 # Ordering is the CLAUDE.md HR2 contract: uploads -> processed -> meta ->
-# Redis -> hash-cache -> registry -> preloaded.  Adding a derived store is a
-# one-line entry here plus its _erase_* coroutine; the driver in delete_doc
-# needs no change.
+# quarantine -> Redis -> hash-cache -> registry -> preloaded.  Adding a
+# derived store is a one-line entry here plus its _erase_* coroutine; the
+# driver in delete_doc needs no change.
 _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
     ErasureStep(
         name="uploads",
@@ -639,6 +661,13 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         description="Sidecar at processed/<doc_id>.meta.json",
         execute=_erase_meta_json,
         deletes=frozenset({"processed/{id}.meta.json"}),  # D4
+    ),
+    ErasureStep(
+        name="quarantine",
+        step=3,
+        description="Quarantine payloads at quarantine/<sha256>.json + .meta.json",
+        execute=_erase_quarantine,
+        required=False,
     ),
     ErasureStep(
         name="redis_cache",
@@ -692,6 +721,7 @@ _PREFIX_TO_ERASURE_STEPS: dict[str, tuple[str, ...]] = {
     "figures/": ("figures",),
     "verdicts/": ("verdicts",),
     "preloaded/": ("preloaded",),
+    "quarantine/": ("quarantine",),
 }
 
 
@@ -827,3 +857,92 @@ def save_figure(doc_id: str, index: int, png_bytes: bytes) -> str:
     finally:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
     return key
+
+
+# ---------------------------------------------------------------------------
+# Quarantine storage  (MinIO: quarantine/<sha256>.json + .meta.json)
+#   RFC-049 D2-C: rejected documents are quarantined for diagnosis.
+# ---------------------------------------------------------------------------
+
+
+def save_quarantine(
+    sha256: str, payload: dict, filenames: list[str], *, bucket: str | None = None
+) -> None:
+    """Write quarantine/<sha256>.json and merge *filenames* into quarantine/<sha256>.meta.json."""
+    mc = _minio_ops.get_minio()
+    bkt = bucket or settings.minio_bucket
+
+    data_key = f"quarantine/{sha256}.json"
+    content = json.dumps(payload, indent=2).encode()
+    mc.put_object(bkt, data_key, BytesIO(content), len(content), content_type="application/json")
+
+    meta_key = f"quarantine/{sha256}.meta.json"
+    existing_filenames: list[str] = []
+    try:
+        resp = mc.get_object(bkt, meta_key)
+        try:
+            existing = json.loads(resp.read())
+            existing_filenames = existing.get("filenames", [])
+        finally:
+            resp.close()
+            resp.release_conn()
+    except S3Error as e:
+        if getattr(e, "code", "") != "NoSuchKey":
+            logger.warning("save_quarantine: meta read error for %s: %s", sha256, e)
+    except Exception:
+        pass
+
+    merged = sorted(set(existing_filenames) | set(filenames))
+    meta = {"filenames": merged}
+    meta_content = json.dumps(meta, indent=2).encode()
+    mc.put_object(bkt, meta_key, BytesIO(meta_content), len(meta_content), content_type="application/json")
+
+    QUARANTINE_WRITES_TOTAL.labels(result="ok").inc()
+    decision(
+        event="quarantine_write",
+        choice="quarantine_saved",
+        reason="quarantine payload persisted",
+        attrs={
+            "sha256": sha256[:8],
+            "payload_size": len(content),
+            "meta_filenames_count": len(merged),
+        },
+    )
+    logger.info("save_quarantine: wrote %s (%d bytes, %d filenames)", data_key, len(content), len(merged))
+
+
+
+
+
+def erase_quarantine(sha256: str) -> list[str]:
+    """Standalone quarantine erasure — remove both quarantine objects for *sha256*.
+
+    Returns a list of error strings (empty on full success).
+    """
+    mc = _minio_ops.get_minio()
+    ctx = ErasureContext(doc_id=sha256, mc=mc, sha256=sha256)
+    ok_data = _remove_object_idempotent(
+        ctx,
+        f"quarantine/{sha256}.json",
+        "quarantine/",
+        "ERASE %s quarantine: removed %s",
+    )
+    ok_meta = _remove_object_idempotent(
+        ctx,
+        f"quarantine/{sha256}.meta.json",
+        "quarantine/",
+        "ERASE %s quarantine: removed %s",
+    )
+    if not (ok_data and ok_meta):
+        logger.warning("erase_quarantine(%s): partial removal", sha256)
+    return ctx.errors
+
+
+def clear_quarantine(sha256: str) -> None:
+    """Best-effort quarantine cleanup — logs warnings, never raises."""
+    try:
+        errors = erase_quarantine(sha256)
+        if errors:
+            logger.warning("clear_quarantine(%s): partial: %s", sha256, errors)
+    except Exception as e:
+        logger.warning("clear_quarantine(%s): failed: %s", sha256, e)

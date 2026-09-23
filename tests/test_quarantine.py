@@ -213,7 +213,7 @@ def _wire_flat_garble_probe(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ocr_01_c3_garbling_survives_retry_rejects(monkeypatch, pdf_probe):
-    """Garbling persists after the force_full_page_ocr retry.
+    """OCR-01-C3 + OCR-01-C4: garbling persists after force_full_page_ocr retry.
     Expected: LowQualityTreeError('garbling'), nothing persisted, quarantine written."""
     mocks = _wire_tree_garble_probe(
         monkeypatch, validate_return=(False, "garbling")
@@ -234,8 +234,8 @@ async def test_ocr_01_c3_garbling_survives_retry_rejects(monkeypatch, pdf_probe)
 
 @pytest.mark.asyncio
 async def test_ocr_01_c3_ocr_escalation_disabled_rejects(monkeypatch, pdf_probe):
-    """OCR_ESCALATION disabled via env var.
-    Expected: LowQualityTreeError('garbling'), nothing persisted."""
+    """OCR-01-C3 + OCR-01-C4: OCR_ESCALATION disabled via env var.
+    Expected: LowQualityTreeError('garbling'), nothing persisted, quarantine written."""
     mocks = _wire_tree_garble_probe(
         monkeypatch, validate_return=(False, "garbling"), ocr_disabled=True
     )
@@ -251,8 +251,8 @@ async def test_ocr_01_c3_ocr_escalation_disabled_rejects(monkeypatch, pdf_probe)
 
 @pytest.mark.asyncio
 async def test_ocr_01_c3_retry_exception_rejects(monkeypatch, pdf_probe):
-    """Exception raised inside the OCR retry converter.
-    Expected: LowQualityTreeError('garbling'), OCR_ESCALATION_TOTAL{result='error'}."""
+    """OCR-01-C3 + OCR-01-C4: exception during OCR retry converter.
+    Expected: LowQualityTreeError('garbling'), quarantine written."""
     mocks = _wire_tree_garble_probe(
         monkeypatch,
         validate_return=(False, "garbling"),
@@ -276,8 +276,8 @@ async def test_ocr_01_c3_retry_exception_rejects(monkeypatch, pdf_probe):
 
 @pytest.mark.asyncio
 async def test_flat_03_c2_tree_garbling_rejects(monkeypatch, pdf_probe):
-    """Tree route, validate_tree -> (False, 'garbling').
-    Expected: LowQualityTreeError('garbling'), LOW_QUALITY_TREES incremented."""
+    """OCR-01-C4: tree route, validate_tree -> (False, 'garbling').
+    Expected: LowQualityTreeError('garbling'), quarantine written."""
     mocks = _wire_tree_garble_probe(
         monkeypatch, validate_return=(False, "garbling")
     )
@@ -299,8 +299,8 @@ async def test_flat_03_c2_tree_garbling_rejects(monkeypatch, pdf_probe):
 
 @pytest.mark.asyncio
 async def test_node_garbling_rejects(monkeypatch, pdf_probe):
-    """Tree route, validate_tree -> NODE_GARBLING defect.
-    Expected: LowQualityTreeError('node_garbling'), nothing persisted."""
+    """OCR-01-C4: tree route, validate_tree -> NODE_GARBLING defect.
+    Expected: LowQualityTreeError('node_garbling'), quarantine written."""
     mocks = _wire_tree_garble_probe(
         monkeypatch,
         validate_return=TreeGateResult(
@@ -355,8 +355,8 @@ async def test_route_guard_flat_routed_garbling_not_rejected(monkeypatch, pdf_pr
 
 @pytest.mark.asyncio
 async def test_flat_garble_quarantines_before_raise(monkeypatch, md_probe):
-    """A flat-routed doc whose per-block garble check fires must write
-    quarantine/<sha256>.json and .meta.json BEFORE _persist_flat_result
+    """OCR-01-C4: a flat-routed doc whose per-block garble check fires must
+    write quarantine/<sha256>.json and .meta.json before _persist_flat_result
     returns None and the (False, FLAT) arm raises."""
     mocks = _wire_flat_garble_probe(monkeypatch)
     c = _make_client(monkeypatch)
@@ -371,3 +371,134 @@ async def test_flat_garble_quarantines_before_raise(monkeypatch, md_probe):
     from pageindex_mcp.storage.documents import save_quarantine  # noqa: F811
 
     assert save_quarantine is not None, "save_quarantine must exist"
+
+
+# ===========================================================================
+# ERASE-01-C4 + OCR-01-C4: quarantine storage helpers (Task 7.2)
+# ===========================================================================
+
+
+class _FakeMinio:
+    """Minimal MinIO stub for quarantine storage tests."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put_object(self, bucket, key, data, length, content_type=None):
+        self.objects[key] = data.read()
+
+    def get_object(self, bucket, key):
+        if key not in self.objects:
+            from minio.error import S3Error
+
+            raise S3Error("NoSuchKey", "NoSuchKey", "", "", "", "")
+
+        class _Resp:
+            def __init__(self, body):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def close(self):
+                pass
+
+            def release_conn(self):
+                pass
+
+        return _Resp(self.objects[key])
+
+    def remove_object(self, bucket, key):
+        if key not in self.objects:
+            from minio.error import S3Error
+
+            raise S3Error("NoSuchKey", "NoSuchKey", "", "", "", "")
+        del self.objects[key]
+
+
+def _patch_minio(monkeypatch, fake_mc):
+    """Patch _minio_ops.get_minio and replace frozen settings with a mutable copy."""
+    import pageindex_mcp.storage.documents as _docs
+
+    monkeypatch.setattr(_docs._minio_ops, "get_minio", lambda: fake_mc)
+    fake_settings = SimpleNamespace(minio_bucket="test-bucket")
+    monkeypatch.setattr(_docs, "settings", fake_settings)
+
+
+class TestSaveQuarantine:
+    def test_writes_payload_and_meta(self, monkeypatch):
+        from pageindex_mcp.storage.documents import save_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        sha = "aabbcc"
+        save_quarantine(sha, {"tree": "bad"}, ["file1.pdf"])
+
+        import json
+
+        payload = json.loads(mc.objects[f"quarantine/{sha}.json"])
+        assert payload == {"tree": "bad"}
+        meta = json.loads(mc.objects[f"quarantine/{sha}.meta.json"])
+        assert meta == {"filenames": ["file1.pdf"]}
+
+    def test_merges_filenames_on_repeat(self, monkeypatch):
+        from pageindex_mcp.storage.documents import save_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        sha = "dd0011"
+        save_quarantine(sha, {"v": 1}, ["a.pdf"])
+        save_quarantine(sha, {"v": 2}, ["b.pdf"])
+
+        import json
+
+        meta = json.loads(mc.objects[f"quarantine/{sha}.meta.json"])
+        assert meta["filenames"] == ["a.pdf", "b.pdf"]
+
+    def test_increments_metric(self, monkeypatch):
+        from pageindex_mcp.metrics import QUARANTINE_WRITES_TOTAL
+        from pageindex_mcp.storage.documents import save_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        before = QUARANTINE_WRITES_TOTAL.labels(result="ok")._value.get()
+        save_quarantine("ff00", {}, ["x.pdf"])
+        after = QUARANTINE_WRITES_TOTAL.labels(result="ok")._value.get()
+        assert after == before + 1
+
+
+class TestEraseQuarantine:
+    def test_removes_both_objects(self, monkeypatch):
+        from pageindex_mcp.storage.documents import erase_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        sha = "erase01"
+        mc.objects[f"quarantine/{sha}.json"] = b"{}"
+        mc.objects[f"quarantine/{sha}.meta.json"] = b"{}"
+
+        errors = erase_quarantine(sha)
+        assert errors == []
+        assert f"quarantine/{sha}.json" not in mc.objects
+        assert f"quarantine/{sha}.meta.json" not in mc.objects
+
+    def test_idempotent_on_missing(self, monkeypatch):
+        from pageindex_mcp.storage.documents import erase_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        errors = erase_quarantine("nonexist")
+        assert errors == []
+
+
+class TestClearQuarantine:
+    def test_never_raises(self, monkeypatch):
+        from pageindex_mcp.storage.documents import clear_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        monkeypatch.setattr(
+            mc, "remove_object",
+            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        clear_quarantine("crash01")  # must not raise

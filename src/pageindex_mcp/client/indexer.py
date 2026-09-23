@@ -96,12 +96,14 @@ from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import PF_SIGNAL_RATIO, BlobKind, RtlDecision, ScriptContext
 from ..storage import (
+    clear_quarantine,
     hash_cache_get,
     hash_cache_set,
     list_processed_docs,
     save_doc,
     save_doc_meta,
     save_flat_doc,
+    save_quarantine,
     save_raw,
 )
 from ..worker.constants import INSPECTOR_CONFIDENCE_THRESHOLD
@@ -1877,6 +1879,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 attrs={"fired_prongs": [], "fired_prongs_count": 0},
             )
         if state.flat_garble_unrecovered:
+            try:
+                save_quarantine(sha256, state.result, [filename])
+            except Exception:
+                logger.warning(
+                    "quarantine write failed for %s", filename, exc_info=True,
+                )
             return None
 
         doc_id, content_class, blocks, image_enrichment_ratio = await _apply_picture_enrichment(
@@ -2223,6 +2231,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             )
             if VERDICT_DOWNGRADE_ENABLED:
                 self.last_verdict_fields["force_verdict_override"] = True
+            clear_quarantine(sha256)
             return doc_id
 
     async def _persist_tree_result(
@@ -2397,6 +2406,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             )
             if VERDICT_DOWNGRADE_ENABLED:
                 self.last_verdict_fields["force_verdict_override"] = True
+            clear_quarantine(sha256)
             return doc_id
 
     # ------------------------------------------------------------------
@@ -2604,6 +2614,27 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 await self._recover_flat_prefer(state, filename, expected_script)
                 await self._recover_landscape_reroute(state, filename)
 
+                # D2-C (RFC-049): force REJECT for garbled trees that survived
+                # recovery.  Without this, (False, Route.TREE) persists a
+                # garbled tree with a FAIL verdict — HR5 forbids that.
+                if (
+                    not state.ok
+                    and state.route == Route.TREE
+                    and state.first_defect
+                    in {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
+                ):
+                    _vt_raw = (
+                        state.gate_result
+                        if state.gate_result is not None
+                        else (state.ok, state.reason)
+                    )
+                    finalize_gate_and_route(
+                        state,
+                        _vt_raw,
+                        settings.flat_doc_routing,
+                        force_route=Route.REJECT,
+                    )
+
                 # Zone-2: orthogonal garble reject guard.  flat_garble_unrecovered
                 # is currently only set inside _persist_flat_result, but it is an
                 # independent reject trigger that must not be lost in the route
@@ -2682,6 +2713,22 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
                     case (False, Route.REJECT):
                         _reject_reason = state.first_defect.value
+                        if state.first_defect in {
+                            TreeDefect.GARBLING,
+                            TreeDefect.NODE_GARBLING,
+                        }:
+                            try:
+                                save_quarantine(
+                                    sha256,
+                                    state.result,
+                                    [filename],
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "quarantine write failed for %s",
+                                    filename,
+                                    exc_info=True,
+                                )
                         LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
                         logger.warning(
                             "Rejecting low-quality tree for %s: reason=%s",

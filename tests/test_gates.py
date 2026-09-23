@@ -66,7 +66,7 @@ from pageindex_mcp.helpers.gates import (
     _gate_suspect_density,
     validate_recovery_method_names,
 )
-from pageindex_mcp.helpers.types import ExtractionState
+from pageindex_mcp.helpers.types import ExtractionState, LowQualityTreeError
 from pageindex_mcp.picture_plane import (
     OcrDecision,
     OcrMode,
@@ -1604,9 +1604,11 @@ class TestOcrDeferralQF1:
             return "# still garbled md"
 
         monkeypatch.setattr(_rec, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
+        monkeypatch.setattr(_idx, "save_quarantine", MagicMock())
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
-        await c.index(pdf_file)
+        with pytest.raises(LowQualityTreeError):
+            await c.index(pdf_file)
         assert escalation_calls == [True]
         mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="still_garbled")
 

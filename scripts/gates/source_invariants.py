@@ -387,6 +387,7 @@ FROZEN_SURFACE: dict[str, tuple[str, ...]] = {
         "PDF_INSPECTOR_FORCED_OCR",
         "PDF_INSPECTOR_LATENCY",
         "PDF_PRIMARY_CONVERTER_FAILURES",
+        "QUARANTINE_WRITES_TOTAL",
         "RAG_DURATION",
         "RAG_PARSE_FAILURES",
         "RAG_SEARCHES",

@@ -146,6 +146,13 @@ LOW_QUALITY_TREES = Counter(
     "Trees rejected by validate_tree before persistence (HR5/WORKER-01-C2)",
     ["reason"],
 )
+
+QUARANTINE_WRITES_TOTAL = Counter(
+    "pageindex_quarantine_writes_total",
+    "Quarantine store writes (RFC-049 D2-C)",
+    ["result"],
+)
+
 FLAT_DOCS_TOTAL = Counter(
     "pageindex_flat_docs_total",
     "Documents routed to the flat success path after a non-garbling validate_tree "
