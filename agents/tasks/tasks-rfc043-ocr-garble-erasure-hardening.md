@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: OCR Recovery, Garble Defense & Erasure Hardening -->
+<!-- Folder: Tasks -->
+
 ---
 id: "tasks-rfc043-ocr-garble-erasure-hardening"
 title: "Tasks: OCR Recovery, Garble Defense & Erasure Hardening"

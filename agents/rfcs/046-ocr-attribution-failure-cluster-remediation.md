@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-046: Ocr Attribution Failure Cluster Remediation -->
+<!-- Folder: RFCs -->
+
 ---
 id: RFC-046
 title: OCR Attribution & Failure-Cluster Remediation

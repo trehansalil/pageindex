@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-043: Ocr Garble Erasure Hardening -->
+<!-- Folder: RFCs -->
+
 ---
 id: "RFC-043"
 title: "OCR Recovery, Garble Defense & Erasure Hardening"

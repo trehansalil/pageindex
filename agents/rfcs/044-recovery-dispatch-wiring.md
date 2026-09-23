@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-044: Recovery Dispatch Wiring -->
+<!-- Folder: RFCs -->
+
 ---
 id: RFC-044
 title: Recovery Dispatch Wiring & OCR Decision Authority

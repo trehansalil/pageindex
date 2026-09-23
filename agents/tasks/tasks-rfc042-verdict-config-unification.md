@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Verdict & Config Unification -->
+<!-- Folder: Tasks -->
+
 ---
 id: "tasks-rfc042-verdict-config-unification"
 title: "Tasks: Verdict & Config Unification"

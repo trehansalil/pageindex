@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: OCR Attribution & Failure-Cluster Remediation -->
+<!-- Folder: Tasks -->
+
 ---
 id: tasks-rfc046-ocr-attribution-failure-cluster-remediation
 title: "Tasks: OCR Attribution & Failure-Cluster Remediation"

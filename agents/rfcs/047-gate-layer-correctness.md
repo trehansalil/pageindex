@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Before (indexer.py:1596) -->
+<!-- Folder: RFCs -->
+
 ---
 id: RFC-047
 title: Gate-Layer Correctness

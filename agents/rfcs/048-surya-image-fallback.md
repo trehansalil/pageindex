@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-048: Surya Image Fallback -->
+<!-- Folder: RFCs -->
+
 ---
 id: "RFC-048"
 title: "Surya OCR Fallback for Standalone Images"

@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-042: Verdict Config Unification -->
+<!-- Folder: RFCs -->
+
 ---
 id: "RFC-042"
 title: "Verdict & Config Unification"

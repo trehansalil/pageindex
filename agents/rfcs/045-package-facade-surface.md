@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-045: Package Facade Surface -->
+<!-- Folder: RFCs -->
+
 ---
 id: RFC-045
 title: Package-Facade Surface — Shrink the Barrels to Their Real Consumers

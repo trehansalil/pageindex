@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Recovery Dispatch Wiring & OCR Decision Authority -->
+<!-- Folder: Designs -->
+
 ---
 id: design-rfc044-recovery-dispatch-wiring
 title: "Design: Recovery Dispatch Wiring & OCR Decision Authority"

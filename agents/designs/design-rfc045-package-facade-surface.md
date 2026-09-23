@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Package-Facade Surface Shrink -->
+<!-- Folder: Designs -->
+
 ---
 id: design-rfc045-package-facade-surface
 title: "Design: Package-Facade Surface Shrink"

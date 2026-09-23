@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Verdict & Config Unification -->
+<!-- Folder: Designs -->
+
 ---
 id: "design-rfc042-verdict-config-unification"
 title: "Design: Verdict & Config Unification"

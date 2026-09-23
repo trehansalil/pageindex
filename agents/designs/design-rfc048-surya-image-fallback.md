@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Surya OCR Fallback for Standalone Images -->
+<!-- Folder: Designs -->
+
 ---
 id: "design-rfc048-surya-image-fallback"
 title: "Design: Surya OCR Fallback for Standalone Images"

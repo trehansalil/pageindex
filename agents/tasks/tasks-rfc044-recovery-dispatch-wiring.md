@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Recovery Dispatch Wiring & OCR Decision Authority -->
+<!-- Folder: Tasks -->
+
 ---
 id: tasks-rfc044-recovery-dispatch-wiring
 title: "Tasks: Recovery Dispatch Wiring & OCR Decision Authority"

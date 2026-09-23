@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Surya OCR Fallback for Standalone Images -->
+<!-- Folder: Tasks -->
+
 ---
 id: "tasks-rfc048-surya-image-fallback"
 title: "Tasks: Surya OCR Fallback for Standalone Images"

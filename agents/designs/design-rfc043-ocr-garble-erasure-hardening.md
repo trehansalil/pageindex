@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: OCR Recovery, Garble Defense & Erasure Hardening -->
+<!-- Folder: Designs -->
+
 ---
 id: "design-rfc043-ocr-garble-erasure-hardening"
 title: "Design: OCR Recovery, Garble Defense & Erasure Hardening"

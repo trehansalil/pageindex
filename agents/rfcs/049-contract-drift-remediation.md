@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-049: Contract Drift Remediation -->
+<!-- Folder: RFCs -->
+
 ---
 id: "RFC-049"
 title: "Contract Drift Remediation"

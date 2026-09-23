@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Package-Facade Surface Shrink -->
+<!-- Folder: Tasks -->
+
 ---
 id: tasks-rfc045-package-facade-surface
 title: "Tasks: Package-Facade Surface Shrink"

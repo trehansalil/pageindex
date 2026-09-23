@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: OCR Attribution & Failure-Cluster Remediation -->
+<!-- Folder: Designs -->
+
 ---
 id: design-rfc046-ocr-attribution-failure-cluster-remediation
 title: "Design: OCR Attribution & Failure-Cluster Remediation"

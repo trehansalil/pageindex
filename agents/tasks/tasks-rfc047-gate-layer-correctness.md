@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Tasks — RFC-047 Gate-Layer Correctness -->
+<!-- Folder: Tasks -->
+
 ---
 id: tasks-rfc047
 title: "Tasks — RFC-047 Gate-Layer Correctness"

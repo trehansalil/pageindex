@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Gate-Layer Correctness -->
+<!-- Folder: Designs -->
+
 ---
 id: design-rfc047-gate-layer-correctness
 title: "Design: Gate-Layer Correctness"
