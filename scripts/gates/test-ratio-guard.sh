@@ -5,8 +5,15 @@
 #   1. Ratio ceiling: count(tests/test_*.py) / count(src/**/*.py excl __init__)
 #      must not exceed unit.max_test_file_ratio.
 #   2. New-file justification: any test file added relative to merge-base with
-#      master must either map to a source file with no other primary test, or
-#      carry an # ALLOW-NEW-TEST-FILE marker in its first 10 lines.
+#      master must carry an # ALLOW-NEW-TEST-FILE marker in its first 10 lines,
+#      and (unless grandfathered) that marker must NAME the topical file it
+#      could not join and say why:
+#
+#        # ALLOW-NEW-TEST-FILE: not tests/test_converters.py because <reason>
+#
+#      A bare marker is free, and free is how 60 test files happened one RFC
+#      wave at a time. Naming the home forces the author to go look for one
+#      before making a new one, and gives a reviewer something to disagree with.
 #   3. Orphan check (WARN): test files not mapped in TEST_INDEX.yaml.
 #
 # Needs infra: no
@@ -37,6 +44,33 @@ cd "$REPO_ROOT"
 # ── Read thresholds ────────────────────────────────────────────────────────────
 MAX_RATIO=$(gate_threshold "unit.max_test_file_ratio" 2>/dev/null || echo "0.65")
 REQUIRE_MARKER=$(gate_threshold "unit.new_test_file_requires_marker" 2>/dev/null || echo "true")
+MARKER_NAMES_HOME=$(gate_threshold "unit.new_test_file_marker_names_home" 2>/dev/null || echo "true")
+
+# ── Grandfathered test files ──────────────────────────────────────────────────
+# The 27 test files that existed at the end of the ICR-97 consolidation
+# (2026-09-23, branch ICR-97-rfc48-surya-image-fallback). Several of them ARE
+# the consolidation targets — they predate the "name the home you could not
+# join" rule and, being the homes themselves, could not have named one. They are
+# exempt from the strict marker FORM; every file created after this date is not.
+#
+# This list only ever shrinks. Do not add to it: a new file added today has a
+# home to name, which is the entire point of the rule.
+GRANDFATHERED_TEST_FILES="
+test_bidi.py test_cache.py test_client.py test_config.py test_converters.py
+test_density_gate.py test_flat.py test_garble.py test_gates.py
+test_helpers_combined.py test_hr3_zdr_egress.py test_image_blocks.py
+test_inspector.py test_integration.py test_obs_logging.py test_ocr_fallback.py
+test_recovery.py test_registry_backfill.py test_registry.py test_script.py
+test_source_invariants.py test_staging_e2e.py test_storage.py
+test_triad_golden.py test_upload.py test_verdict.py test_worker.py
+"
+
+is_grandfathered() {
+    case " $(echo $GRANDFATHERED_TEST_FILES) " in
+        *" $1 "*) return 0 ;;
+        *)        return 1 ;;
+    esac
+}
 
 # ── Check 1: ratio ceiling ────────────────────────────────────────────────────
 TEST_COUNT=$(find tests -maxdepth 1 -name 'test_*.py' | wc -l | tr -d ' ')
@@ -63,14 +97,32 @@ if [ "$REQUIRE_MARKER" = "true" ]; then
     if [ -n "$MERGE_BASE" ]; then
         NEW_FILES=$(git diff --name-only --diff-filter=A "$MERGE_BASE" -- 'tests/test_*.py' 2>/dev/null || echo "")
         UNJUSTIFIED=()
+        VAGUE=()
         for f in $NEW_FILES; do
             [ -f "$f" ] || continue
-            if ! head -10 "$f" | grep -q '# ALLOW-NEW-TEST-FILE'; then
+            MARKER=$(head -10 "$f" | grep -m1 '# ALLOW-NEW-TEST-FILE' || true)
+            if [ -z "$MARKER" ]; then
                 UNJUSTIFIED+=("$f")
+                continue
+            fi
+            [ "$MARKER_NAMES_HOME" = "true" ] || continue
+            is_grandfathered "$(basename "$f")" && continue
+            # Required form: names a concrete tests/<file>.py it could not join,
+            # then "because" + a reason with actual words in it.
+            if ! printf '%s' "$MARKER" \
+                 | grep -Eq '# ALLOW-NEW-TEST-FILE:[[:space:]]+not[[:space:]]+tests/[A-Za-z0-9_]+\.py[[:space:]]+because[[:space:]]+[^[:space:]]+([[:space:]]+[^[:space:]]+){2,}'; then
+                VAGUE+=("$f")
             fi
         done
         if [ ${#UNJUSTIFIED[@]} -gt 0 ]; then
             fail "Check 2 (new-file): ${#UNJUSTIFIED[@]} new test file(s) without # ALLOW-NEW-TEST-FILE marker: ${UNJUSTIFIED[*]}"
+        elif [ ${#VAGUE[@]} -gt 0 ]; then
+            fail "Check 2 (new-file): ${#VAGUE[@]} new test file(s) carry a marker that does not name the home it could not join: ${VAGUE[*]}
+            Required form (first 10 lines of the file):
+              # ALLOW-NEW-TEST-FILE: not tests/test_converters.py because <reason, >=3 words>
+            Name the topical file you considered and rejected. If no such file
+            exists, say which one you would have extended and why it is the
+            wrong home. A bare marker is not a justification."
         else
             pass "Check 2 (new-file): all new test files justified or none added"
         fi

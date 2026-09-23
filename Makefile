@@ -59,6 +59,12 @@ help:
 	@echo "  make ingest-dry-run  list what would be submitted"
 	@echo "  make ingest-minio    ingest from the MinIO bucket   [PREFIX=some/folder/]"
 	@echo ""
+	@echo "Quality gates (same set the gates.yml CI workflow runs)"
+	@echo "  make gates           blocking gates: dag, test-ratio-guard, test-budget"
+	@echo "  make gates-advisory  currently-red gates: static, contracts (report only)"
+	@echo "  make gates-all       both, keep-going, non-zero if any blocking gate fails"
+	@echo "  make test-budget     just the collected-test-count ratchet"
+	@echo ""
 	@echo "Toggles: PROFILE APP MINIO REDIS POSTGRES DOCLING MINIO_ACCESS"
 	@echo "  e.g. make preflight PROFILE=local     make ingest MINIO=remote DOCLING=remote"
 
@@ -228,3 +234,51 @@ test:
 # Escape hatch. Only for a host with no systemd, and never in the background.
 test-uncapped:
 	timeout 1800 uv run pytest $(PYTEST_ARGS)
+
+# ─── Quality gates ──────────────────────────────────────────────────────────
+# The gates were a suite of scripts nothing ever executed: before 2026-09-23 no
+# workflow, hook or make target ran them, which is why `unit.max_test_file_ratio`
+# could sit RED for 20 days (2026-09-02 → HEAD) while the collected suite grew
+# 1393 → 2510 and nobody noticed. `make gates` is the local half of the fix;
+# .github/workflows/gates.yml is the CI half, and runs exactly this split.
+#
+# BLOCKING  — green on this tree today, so a red result is a regression YOU
+#             introduced. Keep it that way.
+# ADVISORY  — static has pre-existing ruff/mypy violations and contracts has
+#             outstanding FAILs on this branch. Reported, not enforced, until
+#             2026-10-07 (see gates.yml). Thresholds are NOT to be relaxed to
+#             close that gap — that needs an RFC.
+#
+# Every gate runs inside the same memory-capped scope as `make test`: the unit
+# gate shells out to a full pytest run and the budget gate collects the suite,
+# and an uncapped pytest is what OOM-killed this host on 2026-09-17 (see the
+# banner above `make test`).
+GATES_BLOCKING ?= --gate=dag --gate=test-ratio-guard --gate=test-budget
+GATES_ADVISORY ?= --gate=static --gate=contracts
+
+# Run a command inside the capped scope, or plainly if systemd is unavailable.
+# $(1) = the command line.
+define capped
+	@if command -v systemd-run >/dev/null 2>&1 && systemd-run --scope --quiet --collect true >/dev/null 2>&1; then \
+		systemd-run --scope --quiet --collect \
+			-p MemoryMax=$(TEST_MEM_MAX) -p MemorySwapMax=0 \
+			sh -c 'echo 900 > /proc/self/oom_score_adj; exec timeout 1800 $(1)'; \
+	else \
+		echo "systemd-run unavailable — running under timeout only, watch memory yourself"; \
+		timeout 1800 $(1); \
+	fi
+endef
+
+.PHONY: gates gates-advisory gates-all test-budget
+gates:
+	$(call capped,bash scripts/eval.sh --keep-going $(GATES_BLOCKING))
+
+# Never fails the caller: these are the known-red ones, reported so the gap
+# stays visible instead of being silently deleted from the pipeline.
+gates-advisory:
+	-$(call capped,bash scripts/eval.sh --keep-going $(GATES_ADVISORY))
+
+gates-all: gates-advisory gates
+
+test-budget:
+	@bash scripts/gates/test_budget.sh

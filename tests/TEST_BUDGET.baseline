@@ -1,0 +1,43 @@
+# tests/TEST_BUDGET.baseline — the committed collected-test-count ratchet.
+#
+# THIS IS THE CANONICAL HOME of the test-suite size budget. It is read by
+# scripts/gates/test_budget.sh and by nothing else. Same discipline as
+# FROZEN_SURFACE / REMOVED_SURFACE in scripts/gates/source_invariants.py:
+# edit it HERE (and nowhere else), in the SAME COMMIT that legitimately adds
+# tests, with a one-line justification appended to the history below.
+#
+# Why this file exists
+# --------------------
+# The suite went 1393 -> 2510 collected in ~3 weeks: `def test_` +131%,
+# parametrize decorators 29 -> 76, files 37 -> 60. An earlier consolidation had
+# already cut it to 977 once and it regrew anyway, so a one-off cut demonstrably
+# does not hold. The pre-existing `unit.max_test_file_ratio` gate counted FILES,
+# not tests -- 27 files can hold 3000 tests and it stays green -- and it went RED
+# on 2026-09-02 and was ignored for 20 days while the suite doubled. This file
+# gates the number that actually grew, and turns invisible drift into a
+# reviewable one-line diff.
+#
+# How to change it
+# ----------------
+#   DOWN: automatic. When the collected count falls more than the allowance
+#         below this number, the gate rewrites this file and fails once, telling
+#         you to commit it. That locks the reduction in: a later regrowth back
+#         to the old number can no longer hide.
+#   UP:   manual, deliberate, reviewable. Edit the number below and append a
+#         history line saying which RFC/task earned the extra tests. A reviewer
+#         sees a +N line in the diff and can ask "could these have been
+#         parametrized into an existing case instead?" -- which is exactly the
+#         question nobody got to ask between 1393 and 2510.
+#
+# Never raise this number to make a red gate green without that justification.
+# Thresholds (the allowance itself) live in agents/governance/verify-gates.yaml
+# and are amendable only via RFC.
+#
+# History (newest last)
+# ---------------------
+# 2026-09-23  941  ICR-97 test-budget work: suite consolidated 2510 -> 941 in
+#                  27 files (927 at the start of the consolidation wave, +14
+#                  contract tests added by the parallel contract-gate fixes).
+#                  Initial baseline, measured with
+#                  `uv run pytest --collect-only -q`.
+941

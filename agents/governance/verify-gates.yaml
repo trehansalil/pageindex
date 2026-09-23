@@ -48,6 +48,9 @@ gates:
     test_index_guard: true      # rationale: tests/TEST_INDEX.yaml enforces source↔test mapping; prevents drift
     max_test_file_ratio: 0.65   # rationale: post-RFC-039 consolidation sits at ~0.63; trips before the 1.47 regression returns
     new_test_file_requires_marker: true  # rationale: new test files must justify themselves via # ALLOW-NEW-TEST-FILE
+    new_test_file_marker_names_home: true  # rationale: a bare marker is free and is how 60 test files happened one RFC wave at a time; the marker must name the topical file it could not join ("# ALLOW-NEW-TEST-FILE: not tests/test_x.py because <reason>") so the author has to look for a home before making one
+    test_budget_baseline_file: tests/TEST_BUDGET.baseline  # rationale: max_test_file_ratio counts FILES, so 27 files could hold 3000 tests and stay green; the collected-test count is the number that actually grew 1393 -> 2510, and it is ratcheted in a committed file so drift becomes a reviewable diff line
+    test_budget_allowance: 15   # rationale: absolute, not a percentage — a percentage loosens fastest exactly when the suite is worst (5% is 47 at 941 and 125 at 2500); ~1.6% of the 941 baseline absorbs one branch of genuine new cases while tripping on the first ~+100 RFC wave
 
   # ── 3. CONTRACTS ─────────────────────────────────────────────────────────────
   # Every contract ID grep-found in tests/; feature completeness
