@@ -299,9 +299,9 @@ services:
       context: services/surya-ocr-service
       dockerfile: Dockerfile
     container_name: pageindex-surya-ocr-service
-    profiles: ["ocr-spike"]
     environment:
       SURYA_DPI: ${SURYA_DPI:-150}
+      SURYA_TIMEOUT: ${SURYA_TIMEOUT:-600}
       HF_HOME: /root/.cache/huggingface
     volumes:
       - surya_model_cache:/root/.cache/huggingface
