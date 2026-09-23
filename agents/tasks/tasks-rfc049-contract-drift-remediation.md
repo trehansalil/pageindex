@@ -516,9 +516,11 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Properties:_ [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged)
     - **Validates:** [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="9-close-out"></a>9. Close-out
+- [x] <a id="9-close-out"></a>9. Close-out
 
   *Wave 3*
+
+  **Closed 2026-09-23** with [7.5c](#75c-configure-the-quarantine-lifecycle-ttl) carved out as a tracked operator follow-up (explicit user decision — see 9.1). Every other Wave 0–3 task is complete.
 
   - [x] <a id="91-set-rfc-status-accepted"></a>9.1 Set the status to implemented
 
@@ -532,9 +534,23 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ all of [R1–R4](../rfcs/049-contract-drift-remediation.md#requirements)
     - _Properties:_ P1–P12, P12a, P12b, P12c, P12d ([Design Correctness Properties](../designs/design-rfc049-contract-drift-remediation.md#correctness-properties))
 
-  - [ ] <a id="92-confluence-sync"></a>9.2 Sync to Confluence
+  - [x] <a id="92-confluence-sync"></a>9.2 Sync to Confluence
 
     - Sync the RFC, design and tasks to Confluence (CITRA space) via the `corpus-sync-commit` / mark flow.
+    - **Done 2026-09-23.** Ran `scripts/confluence_sync.sh` directly rather than the `corpus-sync-commit` workflow: that workflow bundles sync **with** batched git commits and a push, and the commits were already made here by the coordinator. `mark` 16.12.1, exit 0, 153 pages resolved.
+    - Full mode rather than `--local-diff`, because `--local-diff` selects on *uncommitted* changes and the tree was already clean — it would have synced nothing. Full mode is safe: `mark` runs with `--changes-only`, so untouched pages are skipped rather than re-written.
+
+      | Artifact | CITRA page |
+      |---|---|
+      | RFC | [RFC-049: Contract Drift Remediation](https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5284233225/RFC-049+Contract+Drift+Remediation) |
+      | Design | [Design: Contract Drift Remediation](https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5285249034/Design+Contract+Drift+Remediation) |
+      | Tasks | [Implementation Plan: Contract Drift Remediation](https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5284331603/Implementation+Plan+Contract+Drift+Remediation) |
+      | Run 22 audit | [Corpus Re-ingestion Audit — Run 22](https://inheaden.atlassian.net/wiki/spaces/CITRA/pages/5286821903/Corpus+Re-ingestion+Audit+Run+22+RFC-049+Contract+Drift+Remediation) |
+
+    - Confirmed by a second idempotent run: all four report *"is already up to date"*, so the first run is what actually landed the content. No `Confluence-Page-ID` write-back occurred — these pages resolve by Space + Title + Folder.
+    - **Two unrelated observations, not fixed here (outside RFC-049 scope):**
+      1. `mark` 16.12.1 logs `ERROR encountered unknown header "Confluence-Page-Id"` for older RFCs (RFC-001, RFC-002, …) that carry `<!-- Confluence-Page-ID -->` / `<!-- Confluence-URL -->` comments written by an earlier `mark`. It is non-fatal — the run still exits 0 and resolves those pages by title — but the log reads alarmingly. The RFC-049 files carry no such headers.
+      2. `Makefile` sets `AGENTS_DIR := .agents` (leading dot) while `scripts/confluence_sync.sh` uses `$ROOT_DIR/agents`. `.agents/` is empty, so the `make confluence-sync` stamp target has an **empty** `DOC_FILES` prerequisite list: the stamp never invalidates and the change-detection its comment describes does not work. Calling the script directly sidesteps this.
     - _Requirements:_ [RFC-049 Consequences](../rfcs/049-contract-drift-remediation.md#consequences)
 
 ## Notes
